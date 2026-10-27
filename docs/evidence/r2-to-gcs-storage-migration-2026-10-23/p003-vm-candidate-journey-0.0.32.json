@@ -1,0 +1,229 @@
+{
+  "schemaVersion": "r2gcs-p003-vm-candidate-journey-v1",
+  "workItem": "WI-6554700010025562",
+  "planItem": "r2-to-gcs-storage-migration-2026-10-23#P-003",
+  "requirement": "R-3 / R-6: the exact migration candidate installs, upgrades from the shipped baseline preserving user data, and rolls back to it on a clean Linux VM; an old client does not silently read an unavailable channel as up to date",
+  "observedAt": "2026-10-27T17:44:53.236234+00:00",
+  "observer": "su-24b08564-911f-4221-ac22-89f3e2ff33c1",
+  "governingDecisions": [
+    "D-006",
+    "D-007",
+    "D-009",
+    "D-010"
+  ],
+  "candidate": {
+    "version": "0.0.32",
+    "channel": "alpha",
+    "tag": "desktop-v0.0.32-alpha (local, not pushed)",
+    "sourceSha": "22fedce4804d063b72d0a06c792a3f1a858b3958",
+    "desktopGitlink": "27e936447bbf698da1b5a3aa2c697e1723abb9f1",
+    "buildSha": "27e93644",
+    "releaseCut": {
+      "task": "0mvqsd26mc3d9v86loi",
+      "operation": "9559c2ee-4d92-4e1b-8cae-1fe63881c1de",
+      "exitCode": 0,
+      "harnessResult": "release-local verdict=pass run=20261027T143810Z-3919355 passed=5 failed=0",
+      "buildProvenance": "sha256:e4eb3e096c6c6a02825afe3bf1c7ff7e8113e9db1c0e88637945e9c4c5254aa8",
+      "artifactSet": "sha256:5cf416cbda99b327548b30867bd102c9836ba624bdb38e2976c64617aac21974",
+      "manifestReceipt": "sha256:a4659a381c6294e82e7438ca15aba12aba1031610d7ce879e96aa3a0e0edce0e"
+    },
+    "independentProvenance": {
+      "task": "0mvqxt0fw9yd4s0nxpt",
+      "command": "papercusp-desktop/bin/verify-provenance.sh <bundle> --require-signed --latest-json /tmp/papercusp-latest-desktop-v0.0.32-alpha.json --health-sha 27e93644",
+      "result": "PASS exit 0"
+    },
+    "releaseHostBaked": "GCS-backed Worker release namespace via ~/.papercusp/release-host-gcs.env (D-006); not R2",
+    "artifacts": {
+      "Papercusp_GUI_0.0.32_amd64.AppImage": "2967e19928274e013f6e22d482f9c17148d2bd0c93fa0e6dc9a911b7f6e00c41",
+      "Papercusp GUI_0.0.32_amd64.deb": "de10f9716b58c79949690a725b31dbea043e8aa3944ba8a74bacf8bd590f8ff5",
+      "Papercusp Server_0.0.32_amd64.deb": "aa026321cb8344f89d0c347d21f86dd96cc10518b1c262d051f335efacbc5b66",
+      "papercusp-server-seed_0.0.32_all.deb": "723333516617f559c44483ac9e9ce0fb3394a2e49960531cc52de0d5065b1237"
+    }
+  },
+  "journey": {
+    "task": "0mvqxy2zi1ypkm0111p",
+    "vm": "clean",
+    "window": {
+      "finishedAt": "2026-10-27T17:44:53.236234+00:00",
+      "startedAt": "2026-10-27T17:20:20Z"
+    },
+    "flags": [
+      "--vm clean",
+      "--legacy-host-unavailable"
+    ],
+    "baselineEvidenceRoot": "/mnt/data/offload/papercusp-private-release-evidence/su-07164/wi10007067-d223-20261013T0241Z",
+    "receiptPath": "/mnt/data/offload/papercusp-r2gcs-p003-vm/0.0.32-22fedce4/candidate-install-upgrade-rollback.json",
+    "receiptSha256": "2107859026cd99db178db56486023cb51dd2f318a173cbe7b2d42aa09592d2f3",
+    "exit": "JOURNEY_EXIT rc=0 2026-10-27T17:44:53Z"
+  },
+  "verdict": "PASS",
+  "summary": {
+    "upgrade": "0.0.26(2018b667) -> 0.0.32(27e93644) ok=True portHeld=True failures=0",
+    "rollback": "0.0.32(27e93644) -> 0.0.26(2018b667) ok=True portHeld=True failures=0",
+    "userData": [
+      "candidate-upgrade=preserved",
+      "exact-baseline-rollback=preserved"
+    ],
+    "signatures": [
+      "Papercusp GUI_0.0.32_amd64.deb valid=True",
+      "Papercusp Server_0.0.32_amd64.deb valid=True"
+    ],
+    "oldClientUpdateCheck": "not-silent"
+  },
+  "limitations": [
+    "Linux x86_64 only; this cut produced no macOS or Windows legs.",
+    "Pre-publication: the old-client update check ran with the legacy host asserted unavailable (both products report cannot_check/fetch_failed, i.e. not silently up to date). A real update served from the GCS Worker namespace is NOT exercised until publication.",
+    "serverCompanionCount=0: the papercusp-server-seed companion deb was not installed by this journey.",
+    "smokeReceipt is empty for both the upgrade and the rollback; the verifier asserted version, sha, port and user-data preservation, not an in-app smoke.",
+    "The candidate is not yet published, independently accepted, or shipped."
+  ],
+  "rawReceipt": {
+    "candidate": {
+      "buildSha": "27e93644",
+      "gui": {
+        "bytes": 51344450,
+        "path": "/mnt/data/cargo-target/.papercusp-target-slots/pid3919355/release/bundle/deb/Papercusp GUI_0.0.32_amd64.deb",
+        "sha256": "de10f9716b58c79949690a725b31dbea043e8aa3944ba8a74bacf8bd590f8ff5"
+      },
+      "server": {
+        "bytes": 5047649244,
+        "path": "/mnt/data/cargo-target/.papercusp-target-slots/pid3919355/release/bundle/deb/Papercusp Server_0.0.32_amd64.deb",
+        "sha256": "aa026321cb8344f89d0c347d21f86dd96cc10518b1c262d051f335efacbc5b66"
+      },
+      "upgrade": {
+        "downgradeAllowed": false,
+        "expectedSha": "27e93644",
+        "expectedVersion": "0.0.32",
+        "failures": [],
+        "flipped": true,
+        "installationMode": "install",
+        "managedPolicy": {
+          "after": null,
+          "before": null
+        },
+        "notes": [
+          "relaunch output: Warning: Permanently added '[127.0.0.1]:2224' (ED25519) to the list of known hosts."
+        ],
+        "ok": true,
+        "platform": "linux",
+        "portAfter": "16721",
+        "portBefore": "16721",
+        "portHeld": true,
+        "serverArtifact": "/mnt/data/cargo-target/.papercusp-target-slots/pid3919355/release/bundle/deb/Papercusp Server_0.0.32_amd64.deb",
+        "serverCompanionCount": 0,
+        "shaAfter": "27e93644",
+        "shaBefore": "2018b667",
+        "smokeReceipt": "",
+        "versionAfter": "0.0.32",
+        "versionBefore": "0.0.26"
+      },
+      "version": "0.0.32"
+    },
+    "kind": "candidate-install-upgrade-rollback-evidence",
+    "legacyClient": {
+      "baselineSourceSha": "2018b667",
+      "signatures": [
+        {
+          "artifact": "Papercusp GUI_0.0.32_amd64.deb",
+          "exitCode": 0,
+          "keyId": "449908a7d47d3a5d",
+          "valid": true
+        },
+        {
+          "artifact": "Papercusp Server_0.0.32_amd64.deb",
+          "exitCode": 0,
+          "keyId": "449908a7d47d3a5d",
+          "valid": true
+        }
+      ],
+      "trustedKeySha256": "5de37bce5fa95bc52c56f3e0231ec1ef75f3c7546abe6ac01d88046a4fd902c8",
+      "updateCheck": {
+        "hostUnavailableAsserted": true,
+        "reports": [
+          {
+            "check": "cannot_check",
+            "product": "gui",
+            "reason": "fetch_failed",
+            "status": 204
+          },
+          {
+            "check": "cannot_check",
+            "product": "server",
+            "reason": "fetch_failed",
+            "status": 204
+          }
+        ],
+        "verdict": "not-silent"
+      },
+      "userData": {
+        "checks": [
+          {
+            "line": "PAPERCUSP_USER_DATA_CHECK phase=candidate-upgrade pg=1 file=present key=5c4180c2cbdf7fd49f00d7b041ee035e97bc6c1e7a2273e86f3a9b3af4712e1d agent=1f13d5f43f038f21d1e82c9f14c28cfd31282a114973983a1a5dc1ee8fa508a4",
+            "phase": "candidate-upgrade",
+            "verdict": "preserved"
+          },
+          {
+            "line": "PAPERCUSP_USER_DATA_CHECK phase=exact-baseline-rollback pg=1 file=present key=5c4180c2cbdf7fd49f00d7b041ee035e97bc6c1e7a2273e86f3a9b3af4712e1d agent=1f13d5f43f038f21d1e82c9f14c28cfd31282a114973983a1a5dc1ee8fa508a4",
+            "phase": "exact-baseline-rollback",
+            "verdict": "preserved"
+          }
+        ],
+        "nonce": "f36a03c88732dfd4f5a5710fae7409d8",
+        "seed": "PAPERCUSP_USER_DATA_SEEDED nonce=f36a03c88732dfd4f5a5710fae7409d8 key=5c4180c2cbdf7fd49f00d7b041ee035e97bc6c1e7a2273e86f3a9b3af4712e1d agent=1f13d5f43f038f21d1e82c9f14c28cfd31282a114973983a1a5dc1ee8fa508a4"
+      }
+    },
+    "platform": "linux",
+    "rollbackTarget": {
+      "buildSha": "2018b667",
+      "gui": {
+        "bytes": 51268526,
+        "path": "/mnt/data/offload/papercusp-private-release-evidence/su-07164/wi10007067-d223-20261013T0241Z/linux-gui-production/cargo/release/bundle/deb/Papercusp GUI_0.0.26_amd64.deb",
+        "sha256": "d022b96031f4f58007ff69da502e30b13bd26820a54395c1c08280a47aa44857"
+      },
+      "rollback": {
+        "downgradeAllowed": true,
+        "expectedSha": "2018b667",
+        "expectedVersion": "0.0.26",
+        "failures": [],
+        "flipped": true,
+        "installationMode": "install",
+        "managedPolicy": {
+          "after": null,
+          "before": null
+        },
+        "notes": [
+          "relaunch output: Warning: Permanently added '[127.0.0.1]:2224' (ED25519) to the list of known hosts."
+        ],
+        "ok": true,
+        "platform": "linux",
+        "portAfter": "16721",
+        "portBefore": "16721",
+        "portHeld": true,
+        "serverArtifact": "/mnt/data/offload/papercusp-private-release-evidence/su-07164/wi10007067-d223-20261013T0241Z/linux-server-production/final-artifacts/deb/Papercusp Server_0.0.26_amd64.deb",
+        "serverCompanionCount": 0,
+        "shaAfter": "2018b667",
+        "shaBefore": "27e93644",
+        "smokeReceipt": "",
+        "versionAfter": "0.0.26",
+        "versionBefore": "0.0.32"
+      },
+      "server": {
+        "bytes": 1483261060,
+        "path": "/mnt/data/offload/papercusp-private-release-evidence/su-07164/wi10007067-d223-20261013T0241Z/linux-server-production/final-artifacts/deb/Papercusp Server_0.0.26_amd64.deb",
+        "sha256": "966509144a93d7e8b3e56cb69c77ff81b3fadd074cec29611c9e20fbba05c6f1"
+      },
+      "version": "0.0.26"
+    },
+    "schemaVersion": 2,
+    "target": {
+      "sshHost": "tester@127.0.0.1",
+      "sshPort": 2224
+    },
+    "verdict": "PASS",
+    "vm": "clean",
+    "window": {
+      "finishedAt": "2026-10-27T17:44:53.236234+00:00",
+      "startedAt": "2026-10-27T17:20:20Z"
+    }
+  }
+}

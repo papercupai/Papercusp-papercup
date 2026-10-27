@@ -6,54 +6,93 @@
   "plan": "code-intel-delivery-and-outcomes-2026-10-26",
   "specId": "SPEC-P-004-D",
   "workItemId": "WI-6554700010029478",
-  "host": "127.0.0.1:3170",
-  "buildSha": "ebe9abeb3f",
+  "host": "127.0.0.1:3271 (routine worker; fire requested via 127.0.0.1:3170)",
+  "buildSha": "5475dc1b4b",
   "command": [
-    "node scripts/mcp-call.mjs routines:fire '{\"name\":\"plan-schedule-code-intel-delivery-and-outcomes-2026-10-26\",\"installSlug\":\"papercusp\"}' --port 3170",
-    "dev:pg_query SELECT id, action, ts, details FROM harness_shared.audit_log WHERE workspace_id='papercusp-workspace' AND action='code-intel.unknown-rate.probe' AND ts > now() - 30 hours"
+    "node scripts/mcp-call.mjs routines:fire '{\"id\":\"rt_papercusp_plan_schedule_code_intel_delivery_and_outcomes_2026_10_26\"}' --port 3170",
+    "sudo -n -u postgres psql -d papercusp -c \"SELECT id, actor, subject, ts, details FROM harness_shared.audit_log WHERE workspace_id='papercusp-workspace' AND action='code-intel.unknown-rate.probe' AND ts > now() - 30 hours\"",
+    "dev:pg_query SELECT tool_name, status, duration_ms, serving_host, serving_build_sha, error_code FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND coord_owner_id='system:code-intel-canary' AND invoked_at > now() - interval '20 minutes'"
   ],
-  "startedAt": "2026-10-27T13:24:52Z",
-  "finishedAt": "2026-10-27T13:30:40Z",
+  "startedAt": "2026-10-27T17:57:34Z",
+  "finishedAt": "2026-10-27T18:01:30Z",
   "exitCode": 0,
-  "summary": "The registered instrument code-intel:unknown-rate-probe (packages/operator-core/lib/code-intelligence/code-intel-unknown-rate-probe.ts, R-9 check per plan Decision D-024) is run by the plan's system:rubric-rescore routine. Its latest recorded run is audit_log ci-unknown-rate-mvqq0874-xrpija at 2026-10-27T13:27:43.744Z on build ebe9abeb3f, the build :3170 serves. Seven more runs are recorded in the preceding 30 h (bg-host builds 3faacb0a3b, f579aa4d8b, bf1055224b), so the 24 h window has a run.",
+  "summary": "The registered instrument code-intel:unknown-rate-probe (packages/operator-core/lib/code-intelligence/code-intel-unknown-rate-probe.ts, R-9 check per plan Decision D-024) is run by the plan's system:rubric-rescore routine. Its latest recorded run is audit_log ci-unknown-rate-mvqzok6u-17dsgb at 2026-10-27T17:58:35.574Z, executed by the routine worker on port 3271 at build 5475dc1b4b. All 12 canary cases passed and the fixture half raised its alarm decision. Fifteen earlier runs are recorded in the preceding 30 h, so the 24 h window has runs.",
   "observations": {
     "latestRun": {
-      "auditLogId": "ci-unknown-rate-mvqq0874-xrpija",
+      "auditLogId": "ci-unknown-rate-mvqzok6u-17dsgb",
       "action": "code-intel.unknown-rate.probe",
       "actor": "system:code-intel-unknown-rate-probe",
       "subject": "code-intel:unknown-rate-probe",
-      "at": "2026-10-27T13:27:43.744Z",
-      "buildSha": "ebe9abeb3f",
+      "at": "2026-10-27T17:58:35.574Z",
+      "buildSha": "5475dc1b4b",
+      "servingHost": "port-3271",
       "detailKeys": ["live", "canary", "fixture", "buildSha", "windowEnd", "observedAt", "canaryError", "windowStart", "workspaceId"],
+      "canary": { "ok": true, "cases": 12, "failedCases": 0, "canaryError": null },
+      "fixtureDecision": {
+        "rate": { "alarm": true, "share": 0.22, "total": 50, "reason": "above-threshold", "unknown": 11 },
+        "alarm": true,
+        "reasons": ["above-threshold"],
+        "gradable": true,
+        "recovered": false
+      },
       "liveDecision": {
-        "rate": { "alarm": false, "share": 0.6666666666666666, "total": 6, "reason": "insufficient-calls", "unknown": 4 },
+        "rate": { "alarm": false, "share": 0.6666666666666666, "total": 9, "reason": "insufficient-calls", "unknown": 6 },
         "alarm": false,
         "reasons": [],
         "gradable": false,
         "recovered": false
-      }
+      },
+      "liveReconciliation": { "gaps": [], "total": 9, "owners": 7, "unknown": 6, "canaryCallsExcluded": 184,
+        "unknownByReason": { "partial": 5, "scope-refused": 1 } },
+      "canaryInvocations": [
+        { "id": 45295456, "tool": "graph:query", "forced": "return", "status": "ok", "durationMs": 1582 },
+        { "id": 45295457, "tool": "graph:query", "forced": "timeout", "status": "timeout", "durationMs": 42 },
+        { "id": 45295458, "tool": "graph:query", "forced": "scope-refused", "status": "invalid-input", "durationMs": 158 },
+        { "id": 45295459, "tool": "graph:query", "forced": "cancelled", "status": "error/aborted", "durationMs": 20 },
+        { "id": 45295460, "tool": "lsp:query", "forced": "return", "status": "ok", "durationMs": 360 },
+        { "id": 45295461, "tool": "lsp:query", "forced": "timeout", "status": "timeout", "durationMs": 25 },
+        { "id": 45295462, "tool": "lsp:query", "forced": "scope-refused", "status": "invalid-input", "durationMs": 24 },
+        { "id": 45295463, "tool": "lsp:query", "forced": "cancelled", "status": "error/aborted", "durationMs": 25 },
+        { "id": 45295477, "tool": "code:pack", "forced": "return", "status": "ok", "durationMs": 3559 },
+        { "id": 45295493, "tool": "code:pack", "forced": "timeout", "status": "timeout", "durationMs": 1145 },
+        { "id": 45295496, "tool": "code:pack", "forced": "scope-refused", "status": "invalid-input", "durationMs": 1555 },
+        { "id": 45295510, "tool": "code:pack", "forced": "cancelled", "status": "error/aborted", "durationMs": 355 }
+      ]
     },
     "earlierRunsLast30h": [
-      { "auditLogId": "ci-unknown-rate-mvqoei9l-mdqw7y", "at": "2026-10-27T12:42:50.745Z", "buildSha": "3faacb0a3b" },
-      { "auditLogId": "ci-unknown-rate-mvqo26f9-uwg0yb", "at": "2026-10-27T12:33:15.525Z", "buildSha": "3faacb0a3b" },
-      { "auditLogId": "ci-unknown-rate-mvqnang3-m81hes", "at": "2026-10-27T12:11:51.219Z", "buildSha": "3faacb0a3b" },
-      { "auditLogId": "ci-unknown-rate-mvqlp7dx-hvn9wo", "at": "2026-10-27T11:27:11.013Z", "buildSha": "f579aa4d8b" },
-      { "auditLogId": "ci-unknown-rate-mvqk4d54-qaqi75", "at": "2026-10-27T10:42:59.080Z", "buildSha": "f579aa4d8b" },
-      { "auditLogId": "ci-unknown-rate-mvqd6tom-91uptk", "at": "2026-10-27T07:28:56.518Z", "buildSha": "bf1055224b" },
-      { "auditLogId": "ci-unknown-rate-mvqcp5k3-eso91t", "at": "2026-10-27T07:15:12.099Z", "buildSha": "bf1055224b" }
+      { "auditLogId": "ci-unknown-rate-mvqxgrl8-8rlhxa", "at": "2026-10-27T16:56:32.684Z", "buildSha": "e88347a92c", "canaryOk": false, "canaryFailedCases": 5 },
+      { "auditLogId": "ci-unknown-rate-mvqtbtyi-be9aap", "at": "2026-10-27T15:00:44.010Z", "buildSha": "ebe9abeb3f", "canaryOk": false, "canaryFailedCases": 6 },
+      { "auditLogId": "ci-unknown-rate-mvqsg090-nqtgig", "at": "2026-10-27T14:35:59.172Z", "buildSha": "1ce2a30782", "canaryOk": false, "canaryFailedCases": 6 },
+      { "auditLogId": "ci-unknown-rate-mvqrop6u-8z3qcy", "at": "2026-10-27T14:14:45.126Z", "buildSha": "ebe9abeb3f", "canaryOk": false, "canaryFailedCases": 6 },
+      { "auditLogId": "ci-unknown-rate-mvqr96x3-3x7ldw", "at": "2026-10-27T14:02:41.607Z", "buildSha": "32d39c0567", "canaryOk": false, "canaryFailedCases": 6 },
+      { "auditLogId": "ci-unknown-rate-mvqqxvzw-41q3ih", "at": "2026-10-27T13:53:54.236Z", "buildSha": "649fee60dd", "canaryOk": false, "canaryFailedCases": 6 },
+      { "auditLogId": "ci-unknown-rate-mvqqtunj-3cewoc", "at": "2026-10-27T13:50:45.871Z", "buildSha": "649fee60dd", "canaryOk": false, "canaryFailedCases": 6 },
+      { "auditLogId": "ci-unknown-rate-mvqq0874-xrpija", "at": "2026-10-27T13:27:43.744Z", "buildSha": "ebe9abeb3f", "canaryOk": false, "canaryFailedCases": 7 },
+      { "auditLogId": "ci-unknown-rate-mvqoei9l-mdqw7y", "at": "2026-10-27T12:42:50.745Z", "buildSha": "3faacb0a3b", "canaryOk": false, "canaryFailedCases": 6 },
+      { "auditLogId": "ci-unknown-rate-mvqo26f9-uwg0yb", "at": "2026-10-27T12:33:15.525Z", "buildSha": "3faacb0a3b", "canaryOk": false, "canaryFailedCases": 6 },
+      { "auditLogId": "ci-unknown-rate-mvqnang3-m81hes", "at": "2026-10-27T12:11:51.219Z", "buildSha": "3faacb0a3b", "canaryOk": false, "canaryFailedCases": 6 },
+      { "auditLogId": "ci-unknown-rate-mvqlp7dx-hvn9wo", "at": "2026-10-27T11:27:11.013Z", "buildSha": "f579aa4d8b", "canaryOk": false, "canaryFailedCases": 6 },
+      { "auditLogId": "ci-unknown-rate-mvqk4d54-qaqi75", "at": "2026-10-27T10:42:59.080Z", "buildSha": "f579aa4d8b", "canaryOk": false, "canaryFailedCases": 6 },
+      { "auditLogId": "ci-unknown-rate-mvqd6tom-91uptk", "at": "2026-10-27T07:28:56.518Z", "buildSha": "bf1055224b", "canaryOk": false, "canaryFailedCases": 12 },
+      { "auditLogId": "ci-unknown-rate-mvqcp5k3-eso91t", "at": "2026-10-27T07:15:12.099Z", "buildSha": "bf1055224b", "canaryOk": false, "canaryFailedCases": 12 }
     ]
   },
   "assertions": [
     {
       "id": "probe-has-run-within-24h",
       "passed": true,
-      "evidence": "Latest run ci-unknown-rate-mvqq0874-xrpija at 2026-10-27T13:27:43.744Z, about 3 minutes before observation at 13:30:40Z, well inside 24 h."
+      "evidence": "Latest run ci-unknown-rate-mvqzok6u-17dsgb at 2026-10-27T17:58:35.574Z, about 3 minutes before observation at 18:01Z, well inside 24 h."
     },
     {
       "id": "probe-run-is-on-running-build",
       "passed": true,
-      "evidence": "The run's details.buildSha is ebe9abeb3f, which /api/health on :3170 reported at 2026-10-27T13:24:31Z."
+      "evidence": "The run's details.buildSha is 5475dc1b4b, and every canary invocation row it wrote (tool_invocations 45295456-45295510) has serving_host port-3271 and serving_build_sha 5475dc1b4b, so the routine worker that executes the plan schedule was running that build."
+    },
+    {
+      "id": "canary-passes-on-running-build",
+      "passed": true,
+      "evidence": "canary.ok true, 12 of 12 cases passed, canaryError null. Each forced timeout or cancellation exited through the dispatcher in 20-1145 ms with status timeout or error/aborted."
     }
   ],
-  "notMeasuredHere": "This record does not prove R-9's live half (>=50 non-canary invocations from >=3 owners). The window held 6 invocations, so the probe reported insufficient-calls and gradable=false."
+  "notMeasuredHere": "1. This record does not prove R-9's live half (>=50 non-canary invocations from >=3 owners). The window held 9 invocations, so the probe reported insufficient-calls and gradable=false. 2. Build 5475dc1b4b predates the canary fix in 1094cfde37 (abortCooperative in code-intel-canary.ts; worker blob a13069bf18, staging blob 2b5924b4ae). The 15 earlier runs failed 5-12 cases because the forced 1 ms timeout or parent abort fired while the handler ran to completion, so the dispatcher correctly recorded measured (dispatch-stack.ts invokeStep; e.g. tool_invocations 45279818, 2544 ms, status ok). In this run the forced calls ended before the handler returned, so the unfixed canary passed. The fix that makes the forced exit deterministic is unit-proven (code-intel-canary.test.ts, test run 22415538, 20/20) and is not yet observed live on the worker."
 }

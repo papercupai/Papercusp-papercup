@@ -378,7 +378,9 @@ async function runNativeSnapshotJourney({ call, workspace, root, owner, repo, en
   assert(delivered.text.includes(consumer), delivered.text);
   if (leg === 'first-touch') {
     assert.match(delivered.text, /firstTouchTarget:1 >=1 static calls/);
-    assert(delivered.text.includes(`testing:run ${JSON.stringify({ files: [testPath], harness: workspace })}`), delivered.text);
+    // P-006: the covering test is inline; a `Next: testing:run …` line appears only for a
+    // session whose tools/list included testing:run (this fixture's owner never listed tools).
+    assert.match(delivered.text, new RegExp(`Tests with static import reach[^:]*: ${testPath.replace(/\./g, '\\.')}\\.`), delivered.text);
     assert.match(delivered.text, /dynamic dispatch.*runtime execution are unknown/);
   } else {
     assert(delivered.text.includes(`firstTouchTarget: definition ${target}:1`), delivered.text);
