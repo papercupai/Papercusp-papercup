@@ -25,13 +25,21 @@
  * explicit row/time cap so a pathological workspace cannot turn a presence read
  * into a table scan.
  */
+import { createHash } from 'node:crypto';
+import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 import type {
+  CodeDependencyCallers,
+  CodeDependencyEvidence,
+  CodeDependencyShadowResult,
   CouplingDerivationSources,
   ObligationEdge,
   ObligationLiveness,
   ObligationRelation,
   PlanBlockingEdge,
 } from '../../coord/coupling-derivation';
+import { CODE_DEPENDENCY_EVIDENCE_ACTION, codeDependencyPairKey } from '../../coord/coupling-derivation';
+import { listCouplingsFor } from '../../coord/couplings';
+import { liveLockHoldingsStrict } from '../locks/live-lock-paths';
 import { resolveSessionStates } from './liveness-oracle';
 import { fetchFleetSupervisionRows } from './presence-fleet';
 import { fetchPresencePathInterests } from './presence-snapshot';
@@ -624,5 +632,166 @@ export function couplingSourcesFor(opts: {
       ]);
       return [...consults, ...supervision, ...grading];
     },
+    // Code-intel P-011, SHADOW: the result is logged, never delivered (see deriveCouplings).
+    codeDependency: () => fetchCodeDependencyEvidence(opts.selfOwnerId),
+    shadowLog: (result) => logCodeDependencyShadow(opts.selfOwnerId, result),
   };
+}
+
+// ── Code-intel P-011: code-dependency coupling evidence (SHADOW) ────────────────
+
+/** How long a measured signature-edit observation stays eligible. The edge itself
+ *  ends sooner when the editor's work ends or a holder lets go of the caller file. */
+export const CODE_DEPENDENCY_EVIDENCE_HORIZON_MS = 6 * 60 * 60 * 1000;
+/** Bound on evidence rows per read. */
+export const CODE_DEPENDENCY_EVIDENCE_ROW_CAP = 50;
+/** audit_log action for logged would-be edges and outcomes. */
+export const CODE_DEPENDENCY_SHADOW_ACTION = 'coord.coupling.code-dependency.shadow';
+/** One shadow row per (decision, pair/editor, symbol, path) per bucket. */
+export const CODE_DEPENDENCY_SHADOW_BUCKET_MS = 60 * 60 * 1000;
+const CODE_DEPENDENCY_TERMINAL_STATUSES = new Set(['done', 'resolved', 'dropped', 'closed', 'deprecated', 'passed']);
+
+interface EvidenceRowDetails {
+  editorOwnerId?: unknown;
+  symbol?: unknown;
+  path?: unknown;
+  callers?: unknown;
+  holders?: unknown;
+  workItemIds?: unknown;
+}
+
+const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+const strList = (v: unknown): string[] => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
+
+/**
+ * Re-read the evidence `recordInterfaceDependencyEvidence` (peer-edit-impact.ts)
+ * persisted, scoped to rows where the caller is the editor or a recorded holder, and
+ * re-check every condition that bounds the edge's lifetime NOW:
+ *   · editor and holders: presence fresh and latest session not ended;
+ *   · each holder still holds the caller file (a live lock or its working set);
+ *   · the editor's recorded work items are not all terminal.
+ * Also returns the caller's explicit decouples, which win over any derived edge.
+ * Fail-soft: any error yields no evidence, never a throw into coord:presence.
+ */
+export async function fetchCodeDependencyEvidence(selfOwnerId: string): Promise<{
+  evidence: CodeDependencyEvidence[];
+  suppressedPairs: string[];
+}> {
+  const empty = { evidence: [] as CodeDependencyEvidence[], suppressedPairs: [] as string[] };
+  const self = selfOwnerId.trim();
+  if (!self || !coordHasPgFastPath()) return empty;
+  try {
+    const sql = coordSql();
+    const ws = coordWorkspaceId();
+    const rows = await sql<{ details: EvidenceRowDetails | null }[]>`
+      SELECT details FROM harness_shared.audit_log
+       WHERE action = ${CODE_DEPENDENCY_EVIDENCE_ACTION}
+         AND workspace_id = ${ws}
+         AND ts >= ${Date.now() - CODE_DEPENDENCY_EVIDENCE_HORIZON_MS}
+         AND (actor = ${self} OR jsonb_exists(details->'holderOwners', ${self}))
+       ORDER BY ts DESC
+       LIMIT ${CODE_DEPENDENCY_EVIDENCE_ROW_CAP}`;
+    const parsed = rows.map((r) => r.details ?? {}).map((d) => ({
+      editor: str(d.editorOwnerId),
+      symbol: str(d.symbol),
+      path: str(d.path),
+      callers: (d.callers === 'measured' || d.callers === 'stale' ? d.callers : 'unknown') as CodeDependencyCallers,
+      holders: (Array.isArray(d.holders) ? d.holders : []).map((h) => {
+        const o = (h ?? {}) as Record<string, unknown>;
+        return { ownerId: str(o.ownerId), path: str(o.path), via: o.via === 'lock' ? 'lock' as const : 'working-set' as const };
+      }).filter((h) => h.ownerId && h.path),
+      workItemIds: strList(d.workItemIds),
+    })).filter((e) => e.editor && e.symbol && e.path);
+    const couplings = await listCouplingsFor(self, ws).catch(() => []);
+    const suppressedPairs = couplings
+      .filter((c) => c.state === 'suppressed')
+      .map((c) => codeDependencyPairKey(c.agentA, c.agentB));
+    if (!parsed.length) return { evidence: [], suppressedPairs };
+
+    const owners = [...new Set(parsed.flatMap((e) => [e.editor, ...e.holders.map((h) => h.ownerId)]))];
+    const itemIds = [...new Set(parsed.flatMap((e) => e.workItemIds))];
+    const [liveRows, itemRows, locks] = await Promise.all([
+      sql<{ owner_id: string; current_files: unknown }[]>`
+        SELECT p.owner_id, p.current_files FROM harness_shared.coord_presence p
+          JOIN LATERAL (SELECT a.ended_at FROM harness_shared.adv_sessions a
+             WHERE a.workspace_id = p.workspace_id AND a.coord_owner_id = p.owner_id
+             ORDER BY a.started_at DESC, a.session_id DESC LIMIT 1) a ON a.ended_at IS NULL
+         WHERE p.workspace_id = ${ws} AND p.owner_id = ANY(${owners}::text[])
+           AND p.heartbeat_at >= now() - ${`${PRESENCE_STALE_MS} milliseconds`}::interval`,
+      itemIds.length
+        ? sql<{ feature_id: string; status: string }[]>`
+            SELECT feature_id, status FROM harness_shared.work_items
+             WHERE workspace_id = ${ws} AND feature_id = ANY(${itemIds}::text[])`
+        : Promise.resolve([] as { feature_id: string; status: string }[]),
+      liveLockHoldingsStrict(),
+    ]);
+    const live = new Set<string>();
+    const heldNow = new Set<string>();
+    for (const r of liveRows) {
+      live.add(r.owner_id);
+      const files = typeof r.current_files === 'string' ? JSON.parse(r.current_files) : r.current_files;
+      for (const f of strList(files)) heldNow.add(`${r.owner_id}\0${f}`);
+    }
+    for (const l of locks) heldNow.add(`${l.owner}\0${l.path}`);
+    const terminal = new Map(itemRows.map((r) => [r.feature_id, CODE_DEPENDENCY_TERMINAL_STATUSES.has(r.status)]));
+    const evidence: CodeDependencyEvidence[] = parsed.map((e) => ({
+      editorOwnerId: e.editor,
+      symbol: e.symbol,
+      path: e.path,
+      callers: e.callers,
+      holders: e.holders.map((h) => ({ ...h, live: live.has(h.ownerId) && heldNow.has(`${h.ownerId}\0${h.path}`) })),
+      // A recorded item that no longer resolves counts as ended, never as live work.
+      editorWorkTerminal: e.workItemIds.length > 0 && e.workItemIds.every((id) => terminal.get(id) ?? true),
+      editorSessionLive: live.has(e.editor),
+    }));
+    return { evidence, suppressedPairs };
+  } catch {
+    return empty;
+  }
+}
+
+/** Deterministic id so both endpoints' reads converge on ONE row per decision and bucket. */
+export function codeDependencyShadowRowId(parts: readonly string[], at: number): string {
+  const bucket = Math.floor(at / CODE_DEPENDENCY_SHADOW_BUCKET_MS);
+  return `ccd-sh-${createHash('sha256').update([...parts, String(bucket)].join('\0')).digest('hex').slice(0, 32)}`;
+}
+
+/** Write the shadow result to audit_log: one row per would-be edge (naming BOTH
+ *  agents) and one per non-edge outcome. Deduplicated per hour bucket. Fail-soft. */
+export async function logCodeDependencyShadow(selfOwnerId: string, result: CodeDependencyShadowResult): Promise<number> {
+  const self = selfOwnerId.trim();
+  if (!self || !coordHasPgFastPath()) return 0;
+  const at = Date.now();
+  const rows: { id: string; subject: string; details: Record<string, unknown> }[] = [];
+  for (const e of result.edges.slice(0, 20)) {
+    rows.push({
+      id: codeDependencyShadowRowId(['edge', codeDependencyPairKey(e.a, e.b), e.symbol, e.path], at),
+      subject: `${e.path}#${e.symbol}`,
+      details: { mode: 'shadow', kind: 'edge', ...e, agents: [e.a, e.b] },
+    });
+  }
+  for (const o of result.outcomes.filter((x) => x.kind !== 'edge').slice(0, 20)) {
+    rows.push({
+      id: codeDependencyShadowRowId([o.kind, o.editorOwnerId, o.peerOwnerId ?? '', o.symbol, o.path], at),
+      subject: `${o.path}#${o.symbol}`,
+      details: { mode: 'shadow', ...o },
+    });
+  }
+  if (!rows.length) return 0;
+  try {
+    const sql = coordSql();
+    const ws = coordWorkspaceId();
+    let written = 0;
+    for (const r of rows) {
+      const inserted = await sql`
+        INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+        VALUES (${r.id}, ${at}, ${self}, ${CODE_DEPENDENCY_SHADOW_ACTION}, ${r.subject},
+                ${sql.json(JSON.parse(JSON.stringify(r.details)))}, ${ws})
+        ON CONFLICT (id) DO NOTHING`;
+      written += inserted.count;
+    }
+    return written;
+  } catch {
+    return 0;
+  }
 }

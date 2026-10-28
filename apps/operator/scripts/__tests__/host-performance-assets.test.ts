@@ -37,6 +37,15 @@ describe('WI-37533 host performance assets', () => {
     expect(unit).toContain('ProtectKernelTunables=no');
   });
 
+  it('writes after power-profiles-daemon, which resets every governor to powersave when it starts', () => {
+    const unit = readFileSync(UNIT, 'utf8');
+    const directives = unit.split('\n').filter((line) => !line.trimStart().startsWith('#'));
+    // Unordered, the daemon's startup profile raced the verified sweep, failed this unit, and
+    // left the Postgres that Requires= it dead at boot. Ordering only: never pull the daemon in.
+    expect(directives).toContain('After=power-profiles-daemon.service');
+    expect(directives.some((line) => /^(Wants|Requires)=.*power-profiles-daemon/.test(line))).toBe(false);
+  });
+
   it('cannot be manually stopped or restarted, because that would bounce the Postgres that Requires it (WI-10004865)', () => {
     const unit = readFileSync(UNIT, 'utf8');
     const directives = unit.split('\n').filter((line) => !line.trimStart().startsWith('#'));

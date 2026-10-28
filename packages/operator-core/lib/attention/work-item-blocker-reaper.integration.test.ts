@@ -593,3 +593,94 @@ describe('malformed active blocker rows are reported, pinned to the typed parser
     });
   });
 });
+
+describe('durable parks with no release contract get a re-check against the real store (WI-6554700010030449)', () => {
+  // A park made without claimHoldRelease (fleet pause, drain skip, bare release) has no trigger,
+  // so durable-park-recheck.ts cannot reach it. This runs the production listings and the
+  // compare-and-set write against real Postgres; only the escalation transport is spied.
+  async function seedItem(id: string, status = 'open', payload: Record<string, unknown> | null = null): Promise<void> {
+    await db.sql`INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload)
+      VALUES (${H}, ${id}, 'change', ${`title ${id}`}, ${status}, NULL, ${WS}, 100, 0,
+              ${payload === null ? null : JSON.stringify(payload)}::text::jsonb)`;
+  }
+  // setWorkItemClaimHold now refuses a park without a complete contract (P-006), so a legacy
+  // contract-less park is written as the payload such parks actually carry.
+  const legacyPark = (reason: string, parkedAt: string, extra: Record<string, unknown> = {}) => ({
+    _claimHold: true, claim_hold_by: 'park-owner', claim_hold_reason: reason, claim_hold_at: parkedAt, ...extra,
+  });
+
+  it('stamps only uncovered contract-less parks, escalates them when due, re-arms, and drops the date once a blocker owns the park', async () => {
+    const { stampContractlessParkRecheckDates, sweepDueContractlessParkRechecks, defaultContractlessParkRecheckDeps,
+      CLAIM_HOLD_RECHECK_KEY, CONTRACTLESS_PARK_RECHECK_ACTOR } = await import('./contractless-park-recheck');
+    const { assertHoldRegistered } = await import('../hold-registry');
+    const interval = assertHoldRegistered('park', 'park').recheckSec * 1000;
+    const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+    await seedItem('EI-cl-bare', 'open', legacyPark('fleet pause', hourAgo));
+    await seedItem('EI-cl-contract');
+    await wi.setWorkItemClaimHold('EI-cl-contract', true, { harness: H, parkedBy: 'park-owner',
+      releaseContract: await buildDurableParkReleaseContract({ condition: 'the deploy landed', trigger: 'release:deployed:parkrecheck' }, 'park-owner') });
+    await seedItem('EI-cl-blocked', 'open', legacyPark('waiting on owner', hourAgo, { externalBlockers: [ask()] }));
+    await seedItem('EI-cl-lease');
+    await wi.setWorkItemClaimHold('EI-cl-lease', true, { harness: H, by: 'su-holder', reason: 'live lease' });
+    await seedItem('EI-cl-done', 'done', legacyPark('old', hourAgo));
+    await seedItem('EI-cl-cleared', 'open', legacyPark('old', hourAgo));
+    await wi.setWorkItemClaimHold('EI-cl-cleared', false, { harness: H });
+    const escalate = vi.fn(async (_park: { id: string; parkedReason: string | null }) => undefined);
+    const deps = { ...defaultContractlessParkRecheckDeps, escalate };
+    const now = new Date();
+
+    expect(await stampContractlessParkRecheckDates({ now, deps })).toMatchObject({ parks: 1, stamped: 1, skipped: {} });
+    const bare = await rowOf('EI-cl-bare');
+    const parkedAt = String(bare.payload.claim_hold_at);
+    const due = new Date(Date.parse(parkedAt) + interval);
+    expect(bare.payload[CLAIM_HOLD_RECHECK_KEY]).toEqual({
+      recheckAt: due.toISOString(), parkedBy: 'park-owner', parkedAt, source: CONTRACTLESS_PARK_RECHECK_ACTOR,
+    });
+    for (const id of ['EI-cl-contract', 'EI-cl-blocked', 'EI-cl-lease', 'EI-cl-done', 'EI-cl-cleared']) {
+      expect((await rowOf(id)).payload).not.toHaveProperty(CLAIM_HOLD_RECHECK_KEY);
+    }
+    // Idempotent, and nothing is due yet.
+    expect((await stampContractlessParkRecheckDates({ now, deps })).parks).toBe(0);
+    expect((await sweepDueContractlessParkRechecks({ now, deps })).examined).toBe(0);
+
+    expect(await sweepDueContractlessParkRechecks({ now: due, deps }))
+      .toEqual({ examined: 1, escalated: 1, dropped: {}, skipped: {}, truncatedByLimit: false });
+    expect(escalate).toHaveBeenCalledOnce();
+    expect(escalate.mock.calls[0]![0]).toMatchObject({ id: 'EI-cl-bare', parkedReason: 'fleet pause' });
+    const rearmed = new Date(due.getTime() + interval);
+    expect((await rowOf('EI-cl-bare')).payload[CLAIM_HOLD_RECHECK_KEY]).toMatchObject({
+      recheckAt: rearmed.toISOString(), recheckedAt: due.toISOString(), escalations: 1,
+    });
+    // The park is otherwise untouched: still parked, same parker and reason.
+    expect((await rowOf('EI-cl-bare')).payload).toMatchObject({ _claimHold: true, claim_hold_by: 'park-owner', claim_hold_reason: 'fleet pause' });
+
+    // The compare-and-set refuses a park whose identity moved underneath it.
+    const [candidate] = await deps.listDue(rearmed.toISOString(), 5);
+    expect(candidate?.id).toBe('EI-cl-bare');
+    expect(await deps.writeRecheck({ ...candidate!, parkedBy: 'someone-else' }, null)).toBe(false);
+
+    // Once a blocker owns the park, its re-check takes over: the date is dropped, no escalation.
+    await wi.mergeWorkItemPayload('EI-cl-bare', { externalBlockers: [ask()] }, { harness: H });
+    expect((await sweepDueContractlessParkRechecks({ now: rearmed, deps })).dropped).toEqual({ blocker: 1 });
+    expect(escalate).toHaveBeenCalledOnce();
+    expect((await rowOf('EI-cl-bare')).payload).not.toHaveProperty(CLAIM_HOLD_RECHECK_KEY);
+  });
+
+  it('a re-park or a clear drops the date with the park it was stamped for', async () => {
+    const { stampContractlessParkRecheckDates, CLAIM_HOLD_RECHECK_KEY } = await import('./contractless-park-recheck');
+    const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+    for (const id of ['EI-cl-repark', 'EI-cl-clear', 'EI-cl-leased']) await seedItem(id, 'open', legacyPark('first', hourAgo));
+    expect((await stampContractlessParkRecheckDates({ now: new Date() })).stamped).toBe(3);
+
+    await wi.setWorkItemClaimHold('EI-cl-repark', true, { harness: H, parkedBy: 'park-owner-2',
+      releaseContract: await buildDurableParkReleaseContract({ condition: 'the deploy landed', trigger: 'release:deployed:parkrecheck' }, 'park-owner-2') });
+    await wi.setWorkItemClaimHold('EI-cl-clear', false, { harness: H });
+    // A lease-only hold on a parked item leaves the park, and its date, alone.
+    await wi.setWorkItemClaimHold('EI-cl-leased', true, { harness: H, by: 'su-holder', reason: 'lease' });
+    expect((await rowOf('EI-cl-repark')).payload).not.toHaveProperty(CLAIM_HOLD_RECHECK_KEY);
+    expect((await rowOf('EI-cl-clear')).payload).not.toHaveProperty(CLAIM_HOLD_RECHECK_KEY);
+    expect((await rowOf('EI-cl-leased')).payload).toHaveProperty(CLAIM_HOLD_RECHECK_KEY);
+    expect((await stampContractlessParkRecheckDates({ now: new Date() })).parks).toBe(0);
+  });
+});

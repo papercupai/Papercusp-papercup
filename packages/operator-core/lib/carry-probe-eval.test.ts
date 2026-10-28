@@ -166,6 +166,8 @@ describe('R-1 / R-25: changed and could-not-run probes get a line; matching prob
     expect(dispatchTool).toHaveBeenCalledTimes(CONTINUITY_PROBE_MAX_PER_WAKE);
     expect(block).toContain(`${CONTINUITY_PROBE_MAX_PER_WAKE} hold · 0 changed · 0 could not run · 2 not run`);
     expect(block).toMatch(/… 2 more carried probe\(s\) were NOT run \(per-delivery cap 8 probes/);
+    expect(block).toContain('consult each stored re-check and honor its trigger before taking manual re-check action');
+    expect(block).not.toContain('run their re-checks by hand before relying on them');
   });
 });
 

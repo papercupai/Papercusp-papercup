@@ -250,7 +250,9 @@ export async function censusLegacyFsMutexRoot(legacyRoot, staleMs = staleMsFromE
       }
       census.scanned++;
       const entryPath = join(legacyRoot, entry.name);
-      if (entry.name.endsWith(".readers") && entry.isDirectory()) {
+      // A `.readers-staging` dir is the pre-rename half of an atomic reader-root
+      // create; one left by a killed process holds reader leases or nothing.
+      if ((entry.name.endsWith(".readers") || entry.name.endsWith(".readers-staging")) && entry.isDirectory()) {
         await censusLegacyContainer(entryPath, "reader", ".lock", census, staleMs, openDirectory);
       } else if (entry.name.endsWith(".queue") && entry.isDirectory()) {
         await censusLegacyContainer(entryPath, "queue", ".ticket", census, staleMs, openDirectory);

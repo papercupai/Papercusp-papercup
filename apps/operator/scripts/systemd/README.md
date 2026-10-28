@@ -22,6 +22,15 @@ sudo install -o root -g root -m 0755 papercusp-host-performance.sh \
   /etc/systemd/system/papercusp-host-performance.sh
 sudo systemctl reload papercusp-host-performance.service
 ```
+The unit is ordered `After=power-profiles-daemon.service`. That daemon re-applies
+its persisted profile when it starts, and under `amd-pstate-epp` the `balanced`
+profile writes `powersave` to every policy. Without the ordering it raced the
+sweep at boot, the read-back failed partway through, and PostgreSQL stayed down
+with `result 'dependency'`. To recover a host that booted into that state:
+`sudo systemctl start papercusp-host-performance.service` (it is failed, so
+`start` is allowed), then `sudo systemctl start postgresql@18-main.service`, then
+`systemctl --user reset-failed` any operator host that hit its start limit.
+
 The shared development host has no battery and runs latency-sensitive PostgreSQL,
 Node, TypeScript and git work continuously; the stock `powersave` governor kept
 all 128 logical CPUs near base clock even though hardware boost was enabled.

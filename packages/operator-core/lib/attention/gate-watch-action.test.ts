@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   register: vi.fn(), recover: vi.fn(), watch: vi.fn(), reviews: vi.fn(), gates: vi.fn(), blockers: vi.fn(),
-  backfill: vi.fn(), parkBackfill: vi.fn(), parkSweep: vi.fn(),
+  backfill: vi.fn(), parkBackfill: vi.fn(), parkSweep: vi.fn(), contractlessStamp: vi.fn(), contractlessSweep: vi.fn(),
 }));
 vi.mock('../harness/routines/system-actions', () => ({ registerSystemAction: h.register }));
 vi.mock('../owner-directive-recovery', () => ({ sweepOwnerDirectiveRecovery: h.recover }));
@@ -14,6 +14,9 @@ vi.mock('./work-item-blocker-reaper', () => ({
 vi.mock('./durable-park-recheck', () => ({
   backfillUnprovableParkRecheckDates: h.parkBackfill, sweepDueParkRechecks: h.parkSweep,
 }));
+vi.mock('./contractless-park-recheck', () => ({
+  stampContractlessParkRecheckDates: h.contractlessStamp, sweepDueContractlessParkRechecks: h.contractlessSweep,
+}));
 const { UNPROVABLE_WAIT_BACKFILL_EVERY_MS, resetUnprovableWaitBackfillThrottleForTest } = await import('./gate-watch-action');
 const action = h.register.mock.calls.find(([name]) => name === 'gate-watcher-tick')?.[1];
 const ctx = { workspaceId: 'ws', installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: null };
@@ -22,7 +25,10 @@ beforeEach(() => {
   h.watch.mockReset().mockResolvedValue({ scannedFiles: 0, roots: [], opened: 0, alreadyOpen: 0, closed: 0, errors: [] });
   h.reviews.mockReset().mockResolvedValue({ examined: 0, released: 0, errors: [] });
   h.gates.mockReset().mockResolvedValue({ examined: 0, closedAskerGone: 0, closedDefaultApplied: 0, skipped: {} });
-  h.blockers.mockReset().mockResolvedValue({ examined: 0, skipped: {}, recovered: { keys: 0, failed: 0 }, repaired: { reopened: 0, skipped: {} } });
+  h.blockers.mockReset().mockResolvedValue({
+    examined: 0, skipped: {}, recovered: { keys: 0, failed: 0 }, repaired: { reopened: 0, skipped: {} },
+    malformed: { count: 0, sample: [], truncatedByLimit: false, failed: false },
+  });
   h.backfill.mockReset().mockResolvedValue({
     items: 0, examined: 0, unprovable: 0, stamped: 0, provable: 0, skipped: {}, byReason: {}, truncatedByLimit: false,
   });
@@ -30,7 +36,45 @@ beforeEach(() => {
     parks: 0, unprovable: 0, stamped: 0, provable: 0, skipped: {}, byReason: {}, nextAfterId: null, truncatedByLimit: false,
   });
   h.parkSweep.mockReset().mockResolvedValue({ examined: 0, escalated: 0, provable: 0, skipped: {}, truncatedByLimit: false });
+  h.contractlessStamp.mockReset().mockResolvedValue({
+    parks: 0, stamped: 0, wouldStamp: 0, skipped: {}, nextAfterId: null, truncatedByLimit: false,
+  });
+  h.contractlessSweep.mockReset().mockResolvedValue({ examined: 0, escalated: 0, dropped: {}, skipped: {}, truncatedByLimit: false });
   resetUnprovableWaitBackfillThrottleForTest();
+});
+describe('gate-watcher contract-less park re-check leg (WI-6554700010030449)', () => {
+  it('stamps then sweeps on every tick, paging the stamp after the last park the previous tick read', async () => {
+    h.contractlessStamp
+      .mockResolvedValueOnce({ parks: 200, stamped: 200, wouldStamp: 0, skipped: {}, nextAfterId: 'WI-0200', truncatedByLimit: true })
+      .mockResolvedValueOnce({ parks: 46, stamped: 46, wouldStamp: 0, skipped: {}, nextAfterId: null, truncatedByLimit: false });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await action(ctx);
+      await action(ctx);
+      await action(ctx);
+      expect(h.contractlessStamp.mock.calls.map(([o]) => o.afterId)).toEqual([null, 'WI-0200', null]);
+      expect(h.contractlessSweep).toHaveBeenCalledTimes(3);
+      // The stamp lands before the sweep, so a park whose first date is already due escalates on the same tick.
+      expect(h.contractlessStamp.mock.invocationCallOrder[0]).toBeLessThan(h.contractlessSweep.mock.invocationCallOrder[0]);
+      expect(log.mock.calls.flat().join('\n')).toContain('[contractless-park-recheck] 200/200 park(s) stamped');
+    } finally {
+      log.mockRestore();
+    }
+  });
+  it('isolates a failed contract-less leg from every other leg', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.contractlessStamp.mockRejectedValueOnce(new Error('listing failed'));
+    try {
+      await action(ctx);
+      expect(warning).toHaveBeenCalledWith('[contractless-park-recheck]   ! pass skipped: listing failed');
+      expect(h.parkSweep).toHaveBeenCalledOnce();
+      expect(h.blockers).toHaveBeenCalledOnce();
+      await action(ctx);
+      expect(h.contractlessSweep).toHaveBeenCalledOnce();
+    } finally {
+      warning.mockRestore();
+    }
+  });
 });
 describe('gate-watcher durable-park re-check legs (WI-6554700010030346)', () => {
   it('stamps unprovable parks inside the throttled backfill window and sweeps due parks on every tick', async () => {
@@ -120,6 +164,27 @@ describe('gate-watcher unprovable-wait backfill leg (WI-6554700010029948)', () =
       expect(h.blockers).toHaveBeenCalledOnce();
       await action(ctx);
       expect(h.backfill).toHaveBeenCalledTimes(2);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+});
+describe('gate-watcher malformed blocker report (WI-6554700010030445)', () => {
+  it('warns with the sampled items when the sweep found malformed active blocker rows, and is quiet otherwise', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.blockers.mockResolvedValueOnce({
+      examined: 0, skipped: {}, recovered: { keys: 0, failed: 0 }, repaired: { reopened: 0, skipped: {} },
+      malformed: { count: 2, sample: ['papercusp/WI-a', 'papercusp/WI-b'], truncatedByLimit: true, failed: false },
+    });
+    try {
+      await action(ctx);
+      expect(warning).toHaveBeenCalledWith(
+        '[blocker-recheck] ! 2+ item(s) parked by an active blocker row readExternalBlockers rejects, ' +
+          'so nothing can release them: papercusp/WI-a, papercusp/WI-b',
+      );
+      warning.mockClear();
+      await action(ctx);
+      expect(warning.mock.calls.flat().join('\n')).not.toContain('[blocker-');
     } finally {
       warning.mockRestore();
     }

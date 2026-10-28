@@ -18,7 +18,8 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
-import { interfaceSignatureEdits, readInterfacePeerContext, type InterfacePeerContext } from './peer-edit-impact';
+import { interfaceSignatureEdits, readInterfacePeerContext, recordInterfaceDependencyEvidence,
+  type InterfacePeerContext } from './peer-edit-impact';
 import type { TaskBrief } from './task-brief';
 import { shellSearchPatterns } from './native-adoption';
 import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushProofSource, type PushSnapshot, type SnapshotSymbol } from './push-snapshot';
@@ -1123,6 +1124,8 @@ export interface PushChannelDeps {
   resumeContext?(input: PushInput, diagnostics?: ResumeReadDiagnostics): Promise<ResumeContext>;
   notesContext?(input: PushInput, paths: readonly string[]): Promise<NotesContext>;
   interfaceContext?(input: PushInput, snapshot: PushSnapshot): Promise<InterfacePeerContext>;
+  /** Code-intel P-011: persist the measured interface context as shadow-coupling evidence. */
+  interfaceEvidence?(input: PushInput, context: InterfacePeerContext): Promise<unknown>;
   /** P-006: the recipient's last listed toolset. Absent (or slow, or failed) is unknown, and
    * an unknown toolset names no follow-up tool. */
   toolset?(input: PushInput): Promise<RecipientToolset>;
@@ -1451,6 +1454,7 @@ const defaults: PushChannelDeps = {
   commit: commitPushFacts,
   incidentContext: readPushIncidentAttribution,
   interfaceContext: readInterfacePeerContext,
+  interfaceEvidence: recordInterfaceDependencyEvidence,
   resumeContext: (input, diagnostics) => readPushResumeContext(input, undefined, diagnostics),
   notesContext: (input, paths) => readPushNotesContext(input, paths),
   toolset: input => readRecipientToolset({ workspace: input.workspace, owner: input.owner }),
@@ -1574,6 +1578,10 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
           const context = await withBoundedTimeout(() => deps.interfaceContext!(input, snapshot),
             { timeoutMs: Math.min(100, gatherLeft()), fallback: undefined, label: 'code-intel-interface-peers' });
           input.interfacePeerContext = context.value;
+          // Off the push path: the shadow-coupling evidence write never delays or fails the push.
+          if (context.value && deps.interfaceEvidence) {
+            void deps.interfaceEvidence(input, context.value).catch(() => undefined);
+          }
         }
         if (id === 'first-touch' && deps.context && touchedPaths.length) {
           const diagnostics: ResumeReadDiagnostics = {

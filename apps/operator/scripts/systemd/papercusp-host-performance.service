@@ -2,6 +2,12 @@
 Description=Papercusp shared-host CPU performance policy (WI-37533)
 Documentation=file:///etc/systemd/system/papercusp-host-performance.sh
 After=systemd-modules-load.service
+# power-profiles-daemon applies its persisted profile at startup, and under
+# amd-pstate-epp `balanced` writes scaling_governor=powersave to every policy.
+# Unordered, it raced this unit's verified sweep at boot: the read-back failed
+# mid-sweep, this unit failed, and the Postgres that Requires= it never started.
+# Ordering only (no Wants=): our performance writes land last when it exists.
+After=power-profiles-daemon.service
 Before=postgresql@18-main.service
 # WI-10004865: postgresql@18-main Requires= this unit (RequiredBy below), so a
 # manual stop/restart of it propagates and restarts the shared Postgres. Refuse

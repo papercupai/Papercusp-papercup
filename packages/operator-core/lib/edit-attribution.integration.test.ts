@@ -39,6 +39,7 @@ beforeAll(async () => {
       '1540-git-sync-commit-attribution-repo-committed-at.sql',
       '1584-edit-attribution-symbols.sql',
       '1587-edit-attribution-signal-eligibility.sql',
+      '1599-edit-attribution-work-item-resolution.sql',
     ],
     { runtimeTables: ['harness_shared.git_sync_commit_attribution'] },
   );

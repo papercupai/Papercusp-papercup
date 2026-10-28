@@ -71,10 +71,14 @@ describe('REUSE-P-018-01 native interface peer impact, migrated PG', () => {
 
   it('names caller lock and working-set peers in the existing interface leg, excluding unrelated/dead/stale/self/foreign peers', async () => {
     const context = await read();
-    expect(context.byPath['target.ts']).toEqual({ status: 'measured', peers: [
+    const expectedPeers = [
       { owner: 'su-lock-peer', path: 'caller.ts', via: 'lock' },
       { owner: 'su-work-peer', path: 'caller.ts', via: 'working-set' },
-    ] });
+    ];
+    // code-intel P-011: the full holder list and the changed symbol ride along as
+    // shadow-coupling evidence; `peers` stays the display slice.
+    expect(context.byPath['target.ts']).toEqual({ status: 'measured', peers: expectedPeers,
+      symbols: ['target'], holders: expectedPeers, callers: 'measured' });
     const fact = snapshotInterfaceLeg({ ...input, interfacePeerContext: context }, snapshot)[0];
     expect(fact.leg).toBe('interface');
     expect(fact.text).toContain('su-lock-peer caller.ts (lock)');
@@ -86,6 +90,8 @@ describe('REUSE-P-018-01 native interface peer impact, migrated PG', () => {
   it('retains unknown for mixed-generation caller or definition evidence and for source changes during the peer read', async () => {
     await writeFile(join(root, 'caller.ts'), CALLER + '// new generation');
     expect((await read()).byPath['target.ts'].status).toBe('unknown');
+    // A moved callers generation is STALE evidence for the shadow coupling, not "no callers".
+    expect((await read()).byPath['target.ts'].callers).toBe('stale');
     await writeFile(join(root, 'caller.ts'), CALLER);
     const edit = input.calls[0].interfaceEdit as any;
     edit.sourceChange.beforeSha256 = 'f'.repeat(64);

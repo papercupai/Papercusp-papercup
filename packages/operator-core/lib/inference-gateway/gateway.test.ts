@@ -2046,6 +2046,54 @@ test('accepted operation model policy lookup failure refuses before the initial 
   assert.equal(upstreamCalls, 0);
 });
 
+test.each([
+  {
+    backend: 'claude',
+    path: '/v1/messages',
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  },
+  {
+    backend: 'codex',
+    path: '/v1/responses',
+    body: JSON.stringify({ model: 'gpt-5.6-sol', input: 'x' }),
+  },
+] as const)('logs thrown accepted-operation policy reads and refuses upstream traffic ($backend)', async ({ backend, path, body }) => {
+  resetGovernorRegistry();
+  let upstreamCalls = 0;
+  const logs: Array<{ level: string; message: string }> = [];
+  upstream = await startUpstream((_req, res) => {
+    upstreamCalls++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const policyPool = () => createFailoverPool([
+    { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
+    { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
+  ]);
+  gw = createInferenceGateway({
+    pool: policyPool(),
+    codexPool: policyPool(),
+    upstreamBase: upstream.base,
+    openaiUpstreamBase: upstream.base,
+    maxQueueWaitMs: 200,
+    readAcceptedOperationModelPolicy: async () => {
+      throw new Error('synthetic TransformError: operation policy module failed to load');
+    },
+    log: (level, message) => logs.push({ level, message }),
+  });
+  port = await gw.listen(0);
+  const response = await ask(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker' },
+    body,
+  });
+  assert.equal(response.status, 503);
+  assert.match(await response.text(), /model policy unavailable/);
+  assert.equal(upstreamCalls, 0);
+  assert.ok(logs.some(({ level, message }) => level === 'error' &&
+    message.includes('backend=' + backend) && message.includes('TransformError')));
+});
+
 test('a NON-org 403 is forwarded unchanged (not treated as account-disqualifying)', async () => {
   resetGovernorRegistry();
   upstream = await startUpstream((_req, res) => {

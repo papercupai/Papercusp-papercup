@@ -4,11 +4,27 @@ import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
 import { corroboratePushSources, safeSnapshotPath, type PushSnapshot } from './push-snapshot';
 import type { PushInput } from './push-channel';
+import { CODE_DEPENDENCY_EVIDENCE_ACTION } from '../coord/coupling-derivation';
 
 export interface InterfacePeerContext {
   byPath: Record<string, { status: 'measured' | 'unknown';
-    peers: { owner: string; path: string; via: 'lock' | 'working-set' }[]; reason?: string }>;
+    peers: { owner: string; path: string; via: 'lock' | 'working-set' }[]; reason?: string;
+    /** The changed exported symbols (from `signature <name>`). Code-intel P-011 evidence. */
+    symbols?: string[];
+    /** Every matched peer (up to the 16-owner read cap), before the display slice, so the
+     *  shadow coupling's fan-in cap counts real holders, not the first four. */
+    holders?: { owner: string; path: string; via: 'lock' | 'working-set' }[];
+    /** `stale` = the callers index did not match the pre-edit source or moved during
+     *  the read; `unknown` = no usable measurement. */
+    callers?: 'measured' | 'unknown' | 'stale';
+  }>;
 }
+
+const STALE_CALLER_REASONS = new Set([
+  'caller snapshot does not match the pre-edit source',
+  'caller/source generation changed',
+  'caller/source generation changed during peer read',
+]);
 
 export interface InterfacePeerDeps {
   locks(): Promise<LiveLockHolding[]>;
@@ -37,7 +53,11 @@ export async function readInterfacePeerContext(input: PushInput, snapshot: PushS
   const harness = input.harness;
   if (!input.root || !harness) return result;
   for (const edit of interfaceSignatureEdits(input)) {
-    const unknown = (reason: string) => { result.byPath[edit.path] = { status: 'unknown', peers: [], reason }; };
+    const names = edit.changes.filter(s => /^signature [A-Za-z_$][\w$]*$/.test(s)).map(s => s.slice(10));
+    const unknown = (reason: string) => {
+      result.byPath[edit.path] = { status: 'unknown', peers: [], reason, symbols: names,
+        callers: STALE_CALLER_REASONS.has(reason) ? 'stale' : 'unknown' };
+    };
     const pin = edit.sourceChange;
     if (!pin || pin.root !== input.root || pin.path !== edit.path || pin.base !== edit.base
       || !/^[a-f0-9]{40,64}$/.test(edit.base) || !Number.isFinite(pin.at) || pin.at > Date.now()
@@ -45,7 +65,6 @@ export async function readInterfacePeerContext(input: PushInput, snapshot: PushS
       || !/^[a-f0-9]{64}$/.test(pin.sha256) || pin.beforeSha256 === pin.sha256) {
       unknown('edit/source pin unavailable'); continue;
     }
-    const names = edit.changes.filter(s => /^signature [A-Za-z_$][\w$]*$/.test(s)).map(s => s.slice(10));
     const symbols = names.flatMap(name => (snapshot.symbols?.get(name) ?? []).filter(s => s.path === edit.path));
     if (symbols.length !== names.length || symbols.some(s => s.sha256 !== pin.beforeSha256 || !s.sources?.length)) {
       unknown('caller snapshot does not match the pre-edit source'); continue;
@@ -55,7 +74,10 @@ export async function readInterfacePeerContext(input: PushInput, snapshot: PushS
       unknown('caller/source generation changed'); continue;
     }
     const paths = [...new Set(symbols.flatMap(s => s.callers.map(c => c.path)).filter(safeSnapshotPath))].slice(0, 64);
-    if (!paths.length) { result.byPath[edit.path] = { status: 'measured', peers: [] }; continue; }
+    if (!paths.length) {
+      result.byPath[edit.path] = { status: 'measured', peers: [], symbols: names, holders: [], callers: 'measured' };
+      continue;
+    }
     try {
       const locks = (await deps.locks()).filter(l => l.owner !== input.owner
         && l.coordinationDomain === input.root && paths.includes(l.path));
@@ -85,8 +107,48 @@ export async function readInterfacePeerContext(input: PushInput, snapshot: PushS
       if (!await corroboratePushSources(input.root, sources, AbortSignal.timeout(75))) {
         unknown('caller/source generation changed during peer read'); continue;
       }
-      result.byPath[edit.path] = { status: 'measured', peers: peers.slice(0, 4) };
+      result.byPath[edit.path] = { status: 'measured', peers: peers.slice(0, 4), symbols: names,
+        holders: peers, callers: 'measured' };
     } catch { unknown('live peer read unavailable'); }
   }
   return result;
+}
+
+const TERMINAL_WORK_ITEM_STATUSES = ['done', 'resolved', 'dropped', 'closed', 'deprecated', 'passed'];
+
+/**
+ * Code-intel P-011: persist what `readInterfacePeerContext` measured, so the coupling
+ * derivation can re-read it later (coupling-sources.ts `fetchCodeDependencyEvidence`).
+ * One audit_log row per changed symbol, carrying the editor's held non-terminal work
+ * items at measurement time: the shadow edge ends when every one of them is terminal.
+ * Fail-soft and bounded; the push never waits on it.
+ */
+export async function recordInterfaceDependencyEvidence(input: PushInput, context: InterfacePeerContext,
+  deps: { sql: ReturnType<typeof getOrgPg>['sql'] } = { sql: getOrgPg().sql }): Promise<number> {
+  const entries = Object.entries(context.byPath).filter(([, e]) => e.symbols?.length);
+  if (!entries.length || !input.owner || !input.workspace) return 0;
+  return deps.sql.begin(async tx => {
+    await tx`SELECT set_config('statement_timeout', '250ms', true)`;
+    const items = await tx<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = ${input.workspace} AND assignee = ${input.owner}
+         AND status <> ALL(${TERMINAL_WORK_ITEM_STATUSES}::text[])
+       ORDER BY updated_at DESC LIMIT 8`;
+    const workItemIds = items.map(r => r.feature_id);
+    const now = Date.now();
+    let written = 0;
+    for (const [path, entry] of entries) {
+      const holders = (entry.holders ?? []).map(h => ({ ownerId: h.owner, path: h.path, via: h.via }));
+      for (const symbol of entry.symbols!) {
+        const details = { editorOwnerId: input.owner, symbol, path, callers: entry.callers ?? 'unknown',
+          reason: entry.reason ?? null, holders, holderOwners: [...new Set(holders.map(h => h.ownerId))],
+          workItemIds, root: input.root ?? null, harness: input.harness ?? null };
+        await tx`INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+          VALUES (${`ccd-ev-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`}, ${now}, ${input.owner},
+            ${CODE_DEPENDENCY_EVIDENCE_ACTION}, ${`${path}#${symbol}`}, ${tx.json(details)}, ${input.workspace})`;
+        written += 1;
+      }
+    }
+    return written;
+  });
 }

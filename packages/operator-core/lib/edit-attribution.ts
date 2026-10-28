@@ -16,7 +16,6 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { getActiveClaimForOwner } from './work-item-claims';
 import { getPresence } from './agent-tools/coordination/presence';
 import { isLifecycleIntent } from './agent-tools/coordination/presence-payload';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
@@ -45,9 +44,120 @@ export interface RecordEditAttributionInput {
 }
 
 /**
- * Append edit-attribution ledger rows for a just-granted lock. Resolves the holder's
- * exact canonical work-item from a supplied goal pointer, or from the legacy active
- * claim when no pointer exists, then writes one row per file. Never throws.
+ * How an edit row's work_item_id was chosen — persisted as
+ * edit_attribution_ledger.work_item_resolution (migration 1599). Plan
+ * change-provenance-and-admission-throughput-2026-10-27 P-005 (R-4).
+ */
+export type EditWorkItemResolution =
+  | 'goal-ref' // the caller's goal pointer names an item the editor holds
+  | 'goal-ref-unowned' // the pointer names nothing the editor holds: NULL, never a guess
+  | 'single-holder' // the editor holds exactly one item
+  | 'lock-intent' // several held; the lock's own intent names exactly one
+  | 'declared-intent' // several held; the presence intent names exactly one
+  | 'ambiguous' // several held, none singled out: NULL + candidates
+  | 'none' // the editor holds nothing
+  | 'lookup-failed' // the held-set read failed: NULL (unknown, not "none")
+  | 'no-workspace'; // no workspace scope to resolve within
+
+export interface HeldWorkItemRef {
+  harnessSlug: string | null;
+  workItemId: string;
+}
+
+export interface EditWorkItemChoice {
+  harnessSlug: string | null;
+  workItemId: string | null;
+  resolution: EditWorkItemResolution;
+  /** The held ids when no single one was chosen (ambiguous / goal-ref-unowned); else null. */
+  candidates: string[] | null;
+}
+
+/** Held items whose id appears in `text` as a whole token (WI-12 never matches WI-123). */
+function heldItemsNamedIn(text: string | null, held: readonly HeldWorkItemRef[]): HeldWorkItemRef[] {
+  if (!text) return [];
+  return held.filter((item) => {
+    const id = item.workItemId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?<![A-Za-z0-9_-])${id}(?![A-Za-z0-9_])`).test(text);
+  });
+}
+
+/**
+ * Pure: choose the work-item an edit belongs to from what its editor HOLDS. A goal pointer
+ * wins when it names a held item and yields an honest NULL when it does not (it never falls
+ * through to a different item). Otherwise one held item is stamped; several are narrowed by
+ * the lock intent, then the declared presence intent, each only when it names exactly one;
+ * anything else stays NULL with the held ids as candidates, so "ambiguous" is readable apart
+ * from "held nothing". `held === null` means the read failed — unknown, never "none".
+ */
+export function resolveEditWorkItem(input: {
+  goalRef: string | null;
+  held: readonly HeldWorkItemRef[] | null;
+  lockIntent: string | null;
+  declaredIntent: string | null;
+}): EditWorkItemChoice {
+  const chose = (item: HeldWorkItemRef, resolution: EditWorkItemResolution): EditWorkItemChoice => ({
+    harnessSlug: item.harnessSlug,
+    workItemId: item.workItemId,
+    resolution,
+    candidates: null,
+  });
+  const unresolved = (resolution: EditWorkItemResolution, candidates: string[] | null = null): EditWorkItemChoice => ({
+    harnessSlug: null,
+    workItemId: null,
+    resolution,
+    candidates,
+  });
+  const { held } = input;
+  if (held === null) return unresolved('lookup-failed');
+  const ids = held.map((item) => item.workItemId);
+  if (input.goalRef) {
+    const item = held.find((h) => h.workItemId === input.goalRef);
+    return item ? chose(item, 'goal-ref') : unresolved('goal-ref-unowned', ids.length > 0 ? ids : null);
+  }
+  if (held.length === 0) return unresolved('none');
+  if (held.length === 1) return chose(held[0]!, 'single-holder');
+  const byLock = heldItemsNamedIn(input.lockIntent, held);
+  if (byLock.length === 1) return chose(byLock[0]!, 'lock-intent');
+  const byIntent = heldItemsNamedIn(input.declaredIntent, held);
+  if (byIntent.length === 1) return chose(byIntent[0]!, 'declared-intent');
+  return unresolved('ambiguous', ids);
+}
+
+/** Cap on the held set read per edit; a holder past it is pathological, and the cap bounds the candidates array. */
+const EDIT_HELD_SET_LIMIT = 100;
+
+/**
+ * The editor's non-terminal held work-items (work_items.taken_by), observation lane
+ * excluded. Returns null when the read fails so the caller records 'lookup-failed'.
+ * carry-brief's readHeldWorkItems also loads summaries and checkpoints — too heavy for the
+ * per-edit lock path — so this is the two-column form of the same population.
+ */
+async function readEditorHeldWorkItems(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  workspaceId: string,
+  agentId: string,
+): Promise<HeldWorkItemRef[] | null> {
+  try {
+    const rows = await sql<Array<{ harness_slug: string | null; feature_id: string }>>`
+      SELECT harness_slug, feature_id
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND taken_by = ${agentId}
+         AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+         AND lane IS DISTINCT FROM 'observation'
+       ORDER BY feature_id
+       LIMIT ${EDIT_HELD_SET_LIMIT}
+    `;
+    return rows.map((row) => ({ harnessSlug: row.harness_slug, workItemId: row.feature_id }));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Append edit-attribution ledger rows for a just-granted lock. Resolves the work-item from
+ * the editor's held set (resolveEditWorkItem), records how it was chosen, then writes one
+ * row per file. Never throws (except in strict mode).
  */
 export async function recordEditAttribution(
   input: RecordEditAttributionInput,
@@ -59,38 +169,15 @@ export async function recordEditAttribution(
 
     const { sql } = getOrgPg();
 
-    // The work-item join, at edit time (D-002). The state stamp disambiguates owners who
-    // hold several canonical work-items at once. Validate the exact pointer against the
-    // canonical row's workspace, holder, and lifecycle; a stale/foreign/non-item pointer
-    // becomes honest NULL and MUST NOT fall through to a different legacy claim. Only
-    // callers without a pointer retain the old work_item_claims fallback.
-    let harnessSlug: string | null = null;
-    let workItemId: string | null = null;
-    if (input.workspaceId) {
-      const goalRef = input.goalRef?.trim() || null;
-      if (goalRef) {
-        const rows = await sql<Array<{ harness_slug: string; feature_id: string }>>`
-          SELECT harness_slug, feature_id
-            FROM harness_shared.work_items
-           WHERE workspace_id = ${input.workspaceId}
-             AND feature_id = ${goalRef}
-             AND taken_by = ${input.agentId}
-             AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
-           LIMIT 1
-        `.catch(() => []);
-        const item = rows[0];
-        if (item) {
-          harnessSlug = item.harness_slug;
-          workItemId = item.feature_id;
-        }
-      } else {
-        const claim = await getActiveClaimForOwner(input.workspaceId, input.agentId).catch(() => null);
-        if (claim) {
-          harnessSlug = claim.harnessSlug ?? null;
-          workItemId = claim.workItemId ?? null;
-        }
-      }
-    }
+    // The work-item join, at edit time (D-002), resolved from the HELD set — the editor's
+    // non-terminal work_items.taken_by rows — never from the short-lived work_item_claims
+    // lease. Plan change-provenance-and-admission-throughput-2026-10-27 P-005 (R-4): the
+    // lease held 13 rows fleet-wide while 1,185 of 2,167 unstamped Claude edits in 24 h came
+    // from agents that DID hold an item. Started here, awaited after presence (it needs the
+    // declared intent), so the two reads overlap on this per-edit hot path.
+    const heldRead = input.workspaceId
+      ? readEditorHeldWorkItems(sql, input.workspaceId, input.agentId)
+      : null;
 
     // WI-6584: plan_slug was UNCONDITIONALLY written as NULL here — the input type didn't
     // even carry a planSlug field, so there was nothing to thread even if a caller wanted to.
@@ -98,7 +185,7 @@ export async function recordEditAttribution(
     // and a declared plan lane are different things), so the only live source for "which plan
     // is this agent working under, right now" is its own presence row (coord:declare-intent /
     // coord:orient write `current_plan_slug` there — agent-coordination-architecture-v2 §4.2).
-    // One more cheap single-row indexed read (by agentId, mirrors the claim lookup above);
+    // One more cheap single-row indexed read (by agentId, overlapping the held-set read above);
     // best-effort like everything else here — absent/stale presence just means an honest
     // unattributed plan_slug, never a guess.
     let planSlug: string | null = null;
@@ -133,15 +220,27 @@ export async function recordEditAttribution(
       : rawIntent;
     const acquiredVia = lifecycleLabel ? rawIntent : null;
 
+    const choice: EditWorkItemChoice = heldRead
+      ? resolveEditWorkItem({
+          goalRef: input.goalRef?.trim() || null,
+          held: await heldRead,
+          lockIntent: lifecycleLabel ? null : rawIntent,
+          declaredIntent: isLifecycleIntent(declaredIntent) ? null : declaredIntent,
+        })
+      : { harnessSlug: null, workItemId: null, resolution: 'no-workspace', candidates: null };
+    const { harnessSlug, workItemId } = choice;
+
     // One row per file via unnest — a single round-trip on the hot path.
     const inserted = await sql<{ id: string; file: string }[]>`
       INSERT INTO harness_shared.edit_attribution_ledger
         (repo_root, file, agent_id, session_id, contributor, workspace_id,
-         harness_slug, work_item_id, plan_slug, intent, acquired_via, dispatch_call_id)
+         harness_slug, work_item_id, plan_slug, intent, acquired_via, dispatch_call_id,
+         work_item_resolution, work_item_candidates)
       SELECT ${input.repoRoot}, f, ${input.agentId}, ${input.sessionId ?? null},
              ${input.contributor ?? null}, ${input.workspaceId ?? null},
              ${harnessSlug}, ${workItemId}, ${planSlug}, ${intent}, ${acquiredVia},
-             ${input.dispatchCallId ?? null}
+             ${input.dispatchCallId ?? null},
+             ${choice.resolution}, ${choice.candidates}::text[]
         FROM unnest(${files}::text[]) AS f
       ON CONFLICT DO NOTHING
       RETURNING id::text, file

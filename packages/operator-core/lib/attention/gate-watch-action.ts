@@ -24,6 +24,7 @@ import { tickGateWatch } from './gate-watch';
 import { sweepSessionIndependentGates } from './gate-reaper';
 import { backfillUnprovableWaitRecheckDates, sweepWorkItemBlockerDefaults } from './work-item-blocker-reaper';
 import { backfillUnprovableParkRecheckDates, sweepDueParkRechecks } from './durable-park-recheck';
+import { stampContractlessParkRecheckDates, sweepDueContractlessParkRechecks } from './contractless-park-recheck';
 import { sweepOmittedReviews } from './review-stall-reaper';
 import { sweepOwnerDirectiveRecovery } from '../owner-directive-recovery';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -34,11 +35,14 @@ const unprovableBackfill = pinModuleState('@papercusp/operator-core.unprovableWa
   lastCompletedAt: 0,
   /** WI-6554700010030346: where the paged durable-park backfill resumes (null = from the start). */
   parkAfterId: null as string | null,
+  /** WI-6554700010030449: where the paged contract-less park stamp resumes (null = from the start). */
+  contractlessParkAfterId: null as string | null,
 }));
 
 export function resetUnprovableWaitBackfillThrottleForTest(): void {
   unprovableBackfill.lastCompletedAt = 0;
   unprovableBackfill.parkAfterId = null;
+  unprovableBackfill.contractlessParkAfterId = null;
 }
 
 registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
@@ -172,6 +176,15 @@ registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
           `skipped ${JSON.stringify(repaired.skipped)}${repaired.truncatedByLimit ? ' (TRUNCATED BY LIMIT)' : ''}`,
       );
     }
+    // WI-6554700010030445: an active blocker row no typed reader parses parks its item with
+    // nothing able to release it. Name the items so the row and its writer get found.
+    const { malformed } = reaped;
+    if (malformed.count > 0) {
+      console.warn(
+        `[blocker-recheck] ! ${malformed.count}${malformed.truncatedByLimit ? '+' : ''} item(s) parked by an active ` +
+          `blocker row readExternalBlockers rejects, so nothing can release them: ${malformed.sample.join(', ')}`,
+      );
+    }
   } catch (err) {
     console.warn(`[blocker-default-reaper]   ! sweep skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -187,6 +200,27 @@ registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
     }
   } catch (err) {
     console.warn(`[park-recheck]   ! sweep skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // WI-6554700010030449: parks with NO release contract (and no active blocker or lease) had
+  // no re-check at all. Stamping is cheap (no classification) and first dates are spread over
+  // a day, so it runs every tick; it pages by id like the park backfill. Then escalate the due.
+  try {
+    const stamp = await stampContractlessParkRecheckDates({
+      limit: readPositiveMs(cfg.contractless_park_stamp_limit),
+      afterId: unprovableBackfill.contractlessParkAfterId ?? null,
+    });
+    unprovableBackfill.contractlessParkAfterId = stamp.nextAfterId;
+    const due = await sweepDueContractlessParkRechecks({ limit: readPositiveMs(cfg.park_recheck_sweep_limit) });
+    if (stamp.stamped > 0 || due.examined > 0 || Object.keys(stamp.skipped).length > 0 || Object.keys(due.skipped).length > 0) {
+      console.log(
+        `[contractless-park-recheck] ${stamp.stamped}/${stamp.parks} park(s) stamped; ${due.examined} due → ` +
+          `${due.escalated} escalated, dropped ${JSON.stringify(due.dropped)}; skipped ${JSON.stringify({ ...stamp.skipped, ...due.skipped })}` +
+          (due.truncatedByLimit ? ' — TRUNCATED BY LIMIT, more remain' : ''),
+      );
+    }
+  } catch (err) {
+    console.warn(`[contractless-park-recheck]   ! pass skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
 

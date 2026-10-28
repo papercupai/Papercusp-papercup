@@ -683,6 +683,203 @@ export function deriveCouplingsFromObligations(
   return out;
 }
 
+// ── Code-dependency coupling, SHADOW ONLY ─────────────────────────────────────
+//
+// Plan code-intel-delivery-and-outcomes-2026-10-26 P-011 (extends
+// code-intel-reuse-signals-2026-10-21#P-018). Trigger: one agent changes an exported
+// signature (`interfaceSignatureEdits`, peer-edit-impact.ts) and another live agent
+// holds a caller file of that symbol (a live lock or its working set).
+//
+// ⛔ NEVER SURFACED. The result of this derivation is LOGGED as would-be edges and
+// is never merged into `deriveCouplings`' delivered list, so no agent's coupling
+// view changes (SPEC-P-011). That is also why there is no `DERIVED_COUPLING_RELATIONS`
+// token for it: an untyped relation cannot reach `expanded[]`. Going live is P-012's
+// decision, and only after a graded rubric check over at least a week of shadow data.
+
+/** Above this many distinct caller-holding agents a symbol forms NO edges and records
+ *  one fan-in skip instead (SPEC-P-011-D). All-or-nothing: a capped symbol never
+ *  couples a subset of its agents. */
+export const CODE_DEPENDENCY_FAN_IN_CAP = 5;
+
+/** audit_log action for one measured signature-edit → caller-holder observation.
+ *  Written by peer-edit-impact.ts, read by coupling-sources.ts. */
+export const CODE_DEPENDENCY_EVIDENCE_ACTION = 'coord.coupling.code-dependency.evidence';
+
+/** Callers-index state for the changed symbol, as measured by the evidence producer.
+ *  Only `measured` can form an edge (SPEC-P-011-C). */
+export type CodeDependencyCallers = 'measured' | 'unknown' | 'stale';
+
+export interface CodeDependencyHolder {
+  ownerId: string;
+  /** The caller file this agent holds. */
+  path: string;
+  via: 'lock' | 'working-set';
+  /** Re-read at derivation time: presence is fresh, the session has not ended, and the
+   *  agent STILL holds `path`. False ⇒ this holder contributes nothing. */
+  live: boolean;
+}
+
+export interface CodeDependencyEvidence {
+  editorOwnerId: string;
+  /** The exported symbol whose signature changed. */
+  symbol: string;
+  /** The file the signature changed in. */
+  path: string;
+  callers: CodeDependencyCallers;
+  holders: readonly CodeDependencyHolder[];
+  /** Every work item the editor held when the edit was measured is now terminal. */
+  editorWorkTerminal: boolean;
+  /** The editor's session is still live (presence fresh, session not ended). */
+  editorSessionLive: boolean;
+}
+
+export type CodeDependencyOutcomeKind =
+  | 'edge'
+  | 'unknown'
+  | 'fan-in-skip'
+  | 'no-holder'
+  | 'ended'
+  | 'suppressed';
+
+export interface CodeDependencyOutcome {
+  kind: CodeDependencyOutcomeKind;
+  editorOwnerId: string;
+  symbol: string;
+  path: string;
+  /** Set on `unknown`: which callers state blocked the edge. */
+  callers?: CodeDependencyCallers;
+  /** Set on `fan-in-skip`: how many distinct live holders the symbol had. */
+  holderCount?: number;
+  /** Set on `edge` / `suppressed`: the other agent. */
+  peerOwnerId?: string;
+}
+
+/** ONE undirected record per pair: both endpoints read the same row, so the edge
+ *  cannot exist for only one of the two agents (AUTO-BAR-R-6 falsifier). */
+export interface CodeDependencyShadowEdge {
+  /** Lexically smaller endpoint. */
+  a: string;
+  /** Lexically larger endpoint. */
+  b: string;
+  editorOwnerId: string;
+  holderOwnerId: string;
+  symbol: string;
+  path: string;
+  callerPaths: string[];
+  /** Plain text, names the symbol. */
+  reason: string;
+}
+
+export interface CodeDependencyShadowResult {
+  mode: 'shadow';
+  edges: CodeDependencyShadowEdge[];
+  outcomes: CodeDependencyOutcome[];
+}
+
+/** The order-independent key for a pair, shared with the decouple mask. */
+export function codeDependencyPairKey(x: string, y: string): string {
+  return x < y ? `${x}|${y}` : `${y}|${x}`;
+}
+
+const EXPORTED_SYMBOL_NAME = /^[A-Za-z_$][\w$]*$/;
+
+/** The plain reason string: names the symbol, the file it changed in, and the held
+ *  caller file(s). No markup and no ids, so it reads the same to both agents. */
+export function codeDependencyReason(symbol: string, path: string, callerPaths: readonly string[]): string {
+  const files = callerPaths.length <= 2
+    ? callerPaths.join(' and ')
+    : `${callerPaths.slice(0, 2).join(', ')} and ${callerPaths.length - 2} more`;
+  return `signature of ${symbol} changed in ${path}; caller ${files} is held by the other agent`;
+}
+
+/**
+ * Pure: evidence in, would-be edges + one outcome per decision out.
+ *
+ * Rules, in order, each recorded as an outcome so a missing edge is never silent:
+ *   1. the editor's work item is terminal, or its session ended ⇒ `ended` (SPEC-P-011-E);
+ *   2. the callers index is not `measured` ⇒ `unknown` with the state (SPEC-P-011-C);
+ *   3. holders that are the editor, not live, or carry no path are dropped;
+ *   4. no holder left ⇒ `no-holder`;
+ *   5. more than {@link CODE_DEPENDENCY_FAN_IN_CAP} distinct holders ⇒ `fan-in-skip`,
+ *      no edges at all (SPEC-P-011-D);
+ *   6. a pair the caller explicitly decoupled ⇒ `suppressed` (SPEC-P-011-F);
+ *   7. otherwise one undirected edge per (editor, holder) pair (SPEC-P-011-B).
+ * Malformed rows (no editor, no path, a symbol that is not an identifier) are skipped.
+ */
+export function deriveCouplingsFromCodeDependency(
+  evidence: readonly unknown[],
+  opts: { suppressedPairs?: ReadonlySet<string> } = {},
+): CodeDependencyShadowResult {
+  const suppressed = opts.suppressedPairs ?? new Set<string>();
+  const outcomes: CodeDependencyOutcome[] = [];
+  const edges = new Map<string, CodeDependencyShadowEdge>();
+  for (const raw of Array.isArray(evidence) ? evidence : []) {
+    const ev = (raw ?? {}) as Partial<CodeDependencyEvidence>;
+    const editor = cleanId(ev.editorOwnerId);
+    const symbol = cleanId(ev.symbol);
+    const path = cleanId(ev.path);
+    if (!editor || !path || !EXPORTED_SYMBOL_NAME.test(symbol)) continue;
+    const base = { editorOwnerId: editor, symbol, path };
+    if (ev.editorWorkTerminal === true || ev.editorSessionLive !== true) {
+      outcomes.push({ kind: 'ended', ...base });
+      continue;
+    }
+    if (ev.callers !== 'measured') {
+      outcomes.push({ kind: 'unknown', ...base, callers: ev.callers === 'stale' ? 'stale' : 'unknown' });
+      continue;
+    }
+    const byHolder = new Map<string, Set<string>>();
+    for (const h of Array.isArray(ev.holders) ? ev.holders : []) {
+      const holder = (h ?? {}) as Partial<CodeDependencyHolder>;
+      const owner = cleanId(holder.ownerId);
+      const callerPath = cleanId(holder.path);
+      if (!owner || owner === editor || !callerPath || holder.live !== true) continue;
+      if (holder.via !== 'lock' && holder.via !== 'working-set') continue;
+      let paths = byHolder.get(owner);
+      if (!paths) byHolder.set(owner, (paths = new Set()));
+      paths.add(callerPath);
+    }
+    if (byHolder.size === 0) {
+      outcomes.push({ kind: 'no-holder', ...base });
+      continue;
+    }
+    if (byHolder.size > CODE_DEPENDENCY_FAN_IN_CAP) {
+      outcomes.push({ kind: 'fan-in-skip', ...base, holderCount: byHolder.size });
+      continue;
+    }
+    for (const holder of [...byHolder.keys()].sort()) {
+      const pair = codeDependencyPairKey(editor, holder);
+      if (suppressed.has(pair)) {
+        outcomes.push({ kind: 'suppressed', ...base, peerOwnerId: holder });
+        continue;
+      }
+      const callerPaths = [...byHolder.get(holder)!].sort();
+      const [a, b] = editor < holder ? [editor, holder] : [holder, editor];
+      edges.set(`${pair}|${symbol}|${path}`, {
+        a, b, editorOwnerId: editor, holderOwnerId: holder, symbol, path, callerPaths,
+        reason: codeDependencyReason(symbol, path, callerPaths),
+      });
+      outcomes.push({ kind: 'edge', ...base, peerOwnerId: holder });
+    }
+  }
+  const ordered = [...edges.entries()].sort(([x], [y]) => x.localeCompare(y)).map(([, e]) => e);
+  return { mode: 'shadow', edges: ordered, outcomes };
+}
+
+/** What ONE endpoint would see if the shadow edges went live. Used to prove the edge
+ *  is bidirectional (each endpoint sees the other, with the same reason); it is never
+ *  wired into a delivered coupling view. */
+export function codeDependencyViewFor(
+  ownerId: string,
+  result: CodeDependencyShadowResult,
+): { peerOwnerId: string; because: string }[] {
+  const id = cleanId(ownerId);
+  if (!id) return [];
+  return result.edges
+    .filter((e) => e.a === id || e.b === id)
+    .map((e) => ({ peerOwnerId: e.a === id ? e.b : e.a, because: e.reason }));
+}
+
 /** Normalize a claimed-items / blocked-by list to clean ids. */
 function itemList(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
@@ -714,6 +911,19 @@ export interface CouplingDerivationSources {
    * the vocabulary ahead of its producer instead of being born unobservable.
    */
   obligations?: () => Promise<readonly ObligationEdge[]>;
+  /**
+   * Code-intel P-011, SHADOW: code-dependency evidence touching the caller, plus the
+   * caller's explicit decouples as {@link codeDependencyPairKey} keys. Its result goes
+   * ONLY to {@link CouplingDerivationSources.shadowLog}; it never reaches the
+   * delivered list.
+   */
+  codeDependency?: () => Promise<{
+    evidence: readonly CodeDependencyEvidence[];
+    suppressedPairs: readonly string[];
+  }>;
+  /** Sink for the code-dependency shadow result. Fail-soft, and it cannot change what
+   *  is delivered. */
+  shadowLog?: (result: CodeDependencyShadowResult) => void | Promise<void>;
   /**
    * P-007 — the DEAD-SIGNAL CENSUS sink. Optional and fail-soft: a caller that
    * wires it gets one `DerivedSignalCensus` per run (see derived-signal-census.ts
@@ -797,13 +1007,18 @@ export async function deriveCouplings(
     }
   }
 
-  const [held, partners, edges, obligations] = await Promise.all([
+  const [held, partners, edges, obligations, codeDependency] = await Promise.all([
     settle(sources.heldFiles, new Map<string, readonly string[]>() as ReadonlyMap<string, readonly string[]>),
     settle(sources.recentPartners, [] as readonly string[]),
     planSignalPossible && myPlan && sources.planEdges
       ? settle(() => sources.planEdges!(myPlan), [] as readonly PlanBlockingEdge[])
       : Promise.resolve([] as readonly PlanBlockingEdge[]),
     settle(sources.obligations, [] as readonly ObligationEdge[]),
+    // Only read when there is somewhere to log it: a shadow result nobody records is
+    // a cost with no output.
+    sources.shadowLog
+      ? settle(sources.codeDependency, null)
+      : Promise.resolve(null),
   ]);
 
   const all = [
@@ -859,6 +1074,27 @@ export async function deriveCouplings(
       );
     } catch {
       /* an observer must never degrade what it observes */
+    }
+  }
+
+  // Code-intel P-011, SHADOW. Computed AFTER `delivered` is fixed and never merged
+  // into it: the would-be edges go to the log and nowhere else (SPEC-P-011). The same
+  // roster access boundary applies — only pairs where the caller is an endpoint and
+  // the other endpoint is on its roster are logged.
+  if (codeDependency && sources.shadowLog) {
+    try {
+      const shadow = deriveCouplingsFromCodeDependency(codeDependency.evidence, {
+        suppressedPairs: new Set(codeDependency.suppressedPairs),
+      });
+      const scoped: CodeDependencyShadowResult = {
+        mode: 'shadow',
+        edges: shadow.edges.filter((e) => (e.a === self || e.b === self) && inRoster.has(e.a === self ? e.b : e.a)),
+        outcomes: shadow.outcomes.filter((o) =>
+          o.editorOwnerId === self || o.peerOwnerId === self || o.peerOwnerId === undefined),
+      };
+      await sources.shadowLog(scoped);
+    } catch {
+      /* the shadow log must never degrade the delivered derivation */
     }
   }
 

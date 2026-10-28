@@ -16,6 +16,10 @@ import { codexRateLimitBucket, parseCodexRateLimitHeaders } from './codex-oauth-
 import { makeBearerCredentialResolver, makeCredentialResolver, type CredentialResolver } from './credential-store';
 import { createFailoverPool, type FailoverPoolOptions } from './account-failover';
 import { recordDbOutcome, setDbHealthTransitionHandler, type DbHealthSnapshot } from './db-health';
+// Keep this module graph eager: Node caches rejected dynamic imports, which otherwise leaves the
+// live gateway returning 503 for owner-tagged requests until process restart (EI-27172731940303933).
+import { readActiveOperationModelPolicy } from '../blueprint/operation-worker-binding';
+import { activeWorkspaceId } from '../workspace-registry';
 import {
   formatAtRiskAlertSuffix,
   buildSelfDrainWake,
@@ -1032,10 +1036,6 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       return readSupportOperationBudgetBinding(opts.workspace ?? activeWorkspaceId(), ownerId);
     },
     readAcceptedOperationModelPolicy: opts.readAcceptedOperationModelPolicy ?? (async (ownerId, backend = 'claude') => {
-      const [{ activeWorkspaceId }, { readActiveOperationModelPolicy }] = await Promise.all([
-        import('../workspace-registry'),
-        import('../blueprint/operation-worker-binding'),
-      ]);
       return readActiveOperationModelPolicy(opts.workspace ?? activeWorkspaceId(), ownerId, backend);
     }),
     recordAcceptedOperationModelAttestation: opts.recordAcceptedOperationModelAttestation ?? (async (context, evidence) => {

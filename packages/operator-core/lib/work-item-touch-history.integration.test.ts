@@ -20,6 +20,7 @@ beforeAll(async () => {
     // P-007's producer migration: the real nullable symbols text[] column and its indexes.
     '1584-edit-attribution-symbols.sql',
     '1587-edit-attribution-signal-eligibility.sql',
+    '1599-edit-attribution-work-item-resolution.sql',
   ]);
 }, 120_000);
 afterAll(async () => { await h.db?.cleanup(); });

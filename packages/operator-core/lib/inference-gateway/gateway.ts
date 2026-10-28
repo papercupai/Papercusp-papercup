@@ -6154,7 +6154,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (wantOwner && deps.readAcceptedOperationModelPolicy) {
       try {
         operationModelPolicy = await deps.readAcceptedOperationModelPolicy(wantOwner);
-      } catch {
+      } catch (error) {
+        const detail = error instanceof Error ? error.name + ': ' + error.message : String(error);
+        const message = 'inference-gateway: accepted operation model policy lookup failed (backend=claude): ' + detail;
+        if (deps.log) log('error', message);
+        else console.error('[inference-gateway:error] ' + scrubSecrets(message));
         operationModelPolicy = { status: 'unavailable', reason: 'model policy lookup failed' };
       }
       if (operationModelPolicy.status === 'unavailable') {
@@ -10167,7 +10171,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
       let operationModelPolicy: ActiveOperationModelPolicyRead;
       try {
         operationModelPolicy = await deps.readAcceptedOperationModelPolicy(wantOwner, 'codex');
-      } catch {
+      } catch (error) {
+        const detail = error instanceof Error ? error.name + ': ' + error.message : String(error);
+        const message = 'inference-gateway: accepted operation model policy lookup failed (backend=codex): ' + detail;
+        if (deps.log) log('error', message);
+        else console.error('[inference-gateway:error] ' + scrubSecrets(message));
         operationModelPolicy = { status: 'unavailable', reason: 'model policy lookup failed' };
       }
       if (operationModelPolicy.status === 'unavailable') {

@@ -75,6 +75,19 @@ describe('mutex-root migration across native processes', () => {
     }
   });
 
+  it('treats an orphaned empty reader-staging dir as a reader container, not an unknown owner', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'mutex-migration-staging-'));
+    try {
+      const legacyRoot = join(temp, 'legacy');
+      await mkdir(join(legacyRoot, 'npm-install-abc.readers'), { recursive: true });
+      await mkdir(join(legacyRoot, 'npm-install-abc.readers-staging'), { recursive: true });
+      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir: join(temp, 'home'), legacyRoot }))
+        .resolves.toEqual(expect.any(String));
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('fails closed on a genuinely unreadable legacy directory', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'mutex-migration-permissions-'));
     const legacyRoot = join(temp, 'legacy');

@@ -21,7 +21,6 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: h.db!.sql }),
 }));
 // No live lease and no goal pointer: the editor holds no work item.
-vi.mock('./work-item-claims', () => ({ getActiveClaimForOwner: async () => null }));
 vi.mock('./agent-tools/coordination/presence', () => ({ getPresence: async () => h.presence }));
 
 const { recordEditAttribution } = await import('./edit-attribution');
@@ -43,6 +42,7 @@ beforeAll(async () => {
       '1540-git-sync-commit-attribution-repo-committed-at.sql',
       '1584-edit-attribution-symbols.sql',
       '1587-edit-attribution-signal-eligibility.sql',
+      '1599-edit-attribution-work-item-resolution.sql',
     ],
     { runtimeTables: ['harness_shared.git_sync_commit_attribution'] },
   );

@@ -57,7 +57,7 @@ describe('verifier disk reservation cleanup', () => {
 
 describe('native budget calibration lifetime', () => {
   const start = source.indexOf('# Share source-preview\'s absolute task admission');
-  const end = source.indexOf('# WI-10005763', start);
+  const end = source.indexOf('verifier_run_step() {', start);
   const cleanup = source.match(/^cleanup_verifier_source_snapshot\(\) \{[\s\S]*?^\}/m)?.[0];
   if (start < 0 || end < start || !cleanup) throw new Error('Maintained verifier budget lifecycle was not found');
 

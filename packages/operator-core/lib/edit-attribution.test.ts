@@ -8,11 +8,23 @@ const insertCalls: unknown[][] = [];
 // able to fail), so the stub reads from a mutable holder. Defaults keep every pre-existing
 // recordEditAttribution test byte-identical (they only inspect insertCalls, never the result).
 const sqlStub: { rows: unknown[]; throws: boolean } = { rows: [], throws: false };
+// P-005 (change-provenance-and-admission-throughput-2026-10-27): the writer reads the
+// editor's HELD set from harness_shared.work_items before the INSERT. That read is routed
+// to its own stub so insertCalls keeps holding only ledger statements.
+const heldCalls: unknown[][] = [];
+const heldStub: { rows: Array<{ harness_slug: string | null; feature_id: string }>; throws: boolean } = {
+  rows: [],
+  throws: false,
+};
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     sql: Object.assign(
-      (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      (strings: TemplateStringsArray, ...values: unknown[]) => {
+        if (strings.join('?').includes('FROM harness_shared.work_items')) {
+          heldCalls.push(values);
+          return heldStub.throws ? Promise.reject(new Error('pg unreachable')) : Promise.resolve(heldStub.rows);
+        }
         insertCalls.push(values);
         if (sqlStub.throws) return Promise.reject(new Error('pg unreachable'));
         return Promise.resolve(sqlStub.rows);
@@ -22,18 +34,24 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   }),
 }));
 
-let mockClaim: { harnessSlug?: string; workItemId?: string } | null = null;
-vi.mock('./work-item-claims', () => ({
-  getActiveClaimForOwner: async () => mockClaim,
-}));
-
 let mockPresence: { currentPlanSlug: string | null; intent?: string | null } | null = null;
 vi.mock('./agent-tools/coordination/presence', () => ({
   getPresence: async () => mockPresence,
 }));
 
-import { parsePapercuspTrailers, readEditAttributionRoster, recordEditAttribution } from './edit-attribution';
+import {
+  parsePapercuspTrailers,
+  readEditAttributionRoster,
+  recordEditAttribution,
+  resolveEditWorkItem,
+} from './edit-attribution';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
+
+beforeEach(() => {
+  heldCalls.length = 0;
+  heldStub.rows = [];
+  heldStub.throws = false;
+});
 
 describe('readEditAttributionRoster — workspace-scoped, never repo_root-scoped (WI-37668)', () => {
   beforeEach(() => {
@@ -134,7 +152,6 @@ describe('readEditAttributionRoster — workspace-scoped, never repo_root-scoped
 describe('recordEditAttribution — plan_slug fill (WI-6584)', () => {
   beforeEach(() => {
     insertCalls.length = 0;
-    mockClaim = null;
     mockPresence = null;
   });
 
@@ -175,8 +192,8 @@ describe('recordEditAttribution — plan_slug fill (WI-6584)', () => {
     expect(insertCalls[0][7]).toBeNull();
   });
 
-  it('still fills harnessSlug/workItemId from the claim alongside plan_slug from presence', async () => {
-    mockClaim = { harnessSlug: 'papercusp', workItemId: 'WI-6584' };
+  it('still fills harnessSlug/workItemId from the single held item alongside plan_slug from presence', async () => {
+    heldStub.rows = [{ harness_slug: 'papercusp', feature_id: 'WI-6584' }];
     mockPresence = { currentPlanSlug: 'my-plan' };
     await recordEditAttribution({
       repoRoot: '/repo',
@@ -196,7 +213,6 @@ describe('recordEditAttribution — authoritative state-stamp goal (WI-39137)', 
     insertCalls.length = 0;
     sqlStub.rows = [];
     sqlStub.throws = false;
-    mockClaim = null;
     mockPresence = null;
   });
 
@@ -205,9 +221,16 @@ describe('recordEditAttribution — authoritative state-stamp goal (WI-39137)', 
     return { harnessSlug: insert[5], workItemId: insert[6] };
   };
 
-  it('uses the exact nonterminal canonical work-item owned by the editor', async () => {
-    sqlStub.rows = [{ harness_slug: 'papercusp', feature_id: 'WI-39137' }];
-    mockClaim = { harnessSlug: 'papercusp', workItemId: 'WI-wrong-newest' };
+  const recordedResolution = () => {
+    const insert = insertCalls.at(-1)!;
+    return { resolution: insert[11], candidates: insert[12] };
+  };
+
+  it('uses the goal pointer when it names an item the editor holds', async () => {
+    heldStub.rows = [
+      { harness_slug: 'papercusp', feature_id: 'WI-39137' },
+      { harness_slug: 'papercusp', feature_id: 'WI-wrong-newest' },
+    ];
 
     await recordEditAttribution({
       repoRoot: '/repo',
@@ -217,14 +240,16 @@ describe('recordEditAttribution — authoritative state-stamp goal (WI-39137)', 
       goalRef: 'WI-39137',
     });
 
-    expect(insertCalls).toHaveLength(2); // canonical validation + ledger INSERT
-    expect(insertCalls[0]).toEqual(expect.arrayContaining(['ws-1', 'WI-39137', 'su-1']));
-    expect(insertCalls[0]).toContainEqual([...ANY_FAMILY_TERMINAL_STATES]);
+    expect(heldCalls).toHaveLength(1); // one held-set read
+    expect(heldCalls[0]).toEqual(expect.arrayContaining(['ws-1', 'su-1']));
+    expect(heldCalls[0]).toContainEqual([...ANY_FAMILY_TERMINAL_STATES]);
+    expect(insertCalls).toHaveLength(1); // the ledger INSERT only
     expect(recordedWorkItem()).toEqual({ harnessSlug: 'papercusp', workItemId: 'WI-39137' });
+    expect(recordedResolution()).toEqual({ resolution: 'goal-ref', candidates: null });
   });
 
   it('writes honest nulls for an invalid explicit goal instead of guessing from a competing claim', async () => {
-    mockClaim = { harnessSlug: 'papercusp', workItemId: 'WI-wrong-newest' };
+    heldStub.rows = [{ harness_slug: 'papercusp', feature_id: 'WI-wrong-newest' }];
 
     await recordEditAttribution({
       repoRoot: '/repo',
@@ -234,12 +259,20 @@ describe('recordEditAttribution — authoritative state-stamp goal (WI-39137)', 
       goalRef: 'plan:history#P-003',
     });
 
-    expect(insertCalls).toHaveLength(2);
+    expect(insertCalls).toHaveLength(1);
     expect(recordedWorkItem()).toEqual({ harnessSlug: null, workItemId: null });
+    expect(recordedResolution()).toEqual({ resolution: 'goal-ref-unowned', candidates: ['WI-wrong-newest'] });
   });
 
-  it('preserves the legacy live-claim fallback only when no goal pointer was supplied', async () => {
-    mockClaim = { harnessSlug: 'legacy-harness', workItemId: 'WI-legacy' };
+  it('records lookup-failed (not none) when the held-set read fails', async () => {
+    heldStub.throws = true;
+    await recordEditAttribution({ repoRoot: '/repo', files: ['a.ts'], agentId: 'su-1', workspaceId: 'ws-1' });
+    expect(recordedWorkItem()).toEqual({ harnessSlug: null, workItemId: null });
+    expect(recordedResolution()).toEqual({ resolution: 'lookup-failed', candidates: null });
+  });
+
+  it('stamps the single held item when no goal pointer was supplied', async () => {
+    heldStub.rows = [{ harness_slug: 'legacy-harness', feature_id: 'WI-legacy' }];
 
     await recordEditAttribution({
       repoRoot: '/repo',
@@ -248,8 +281,46 @@ describe('recordEditAttribution — authoritative state-stamp goal (WI-39137)', 
       workspaceId: 'ws-1',
     });
 
-    expect(insertCalls).toHaveLength(1); // no canonical validation read
+    expect(heldCalls).toHaveLength(1);
+    expect(insertCalls).toHaveLength(1);
     expect(recordedWorkItem()).toEqual({ harnessSlug: 'legacy-harness', workItemId: 'WI-legacy' });
+    expect(recordedResolution()).toEqual({ resolution: 'single-holder', candidates: null });
+  });
+});
+
+describe('resolveEditWorkItem — choose from the held set (P-005, R-4)', () => {
+  const held = [
+    { harnessSlug: 'papercusp', workItemId: 'WI-12' },
+    { harnessSlug: 'papercusp', workItemId: 'WI-123' },
+  ];
+  const base = { goalRef: null, held, lockIntent: null, declaredIntent: null };
+
+  it('records none when the editor holds nothing', () => {
+    expect(resolveEditWorkItem({ ...base, held: [] })).toEqual({
+      harnessSlug: null, workItemId: null, resolution: 'none', candidates: null,
+    });
+  });
+
+  it('picks the item the lock intent names when several are held', () => {
+    expect(resolveEditWorkItem({ ...base, lockIntent: 'fixing WI-123 stamping' })).toMatchObject({
+      workItemId: 'WI-123', resolution: 'lock-intent',
+    });
+  });
+
+  it('falls back to the declared intent when the lock intent names none', () => {
+    expect(resolveEditWorkItem({ ...base, lockIntent: 'tidy', declaredIntent: 'working WI-12 now' })).toMatchObject({
+      workItemId: 'WI-12', resolution: 'declared-intent',
+    });
+  });
+
+  it('matches ids as whole tokens (WI-12 never matches WI-123)', () => {
+    expect(resolveEditWorkItem({ ...base, declaredIntent: 'on WI-123' })).toMatchObject({ workItemId: 'WI-123' });
+  });
+
+  it('leaves several-held unstamped with candidates when no intent singles one out', () => {
+    expect(resolveEditWorkItem({ ...base, declaredIntent: 'WI-12 and WI-123' })).toEqual({
+      harnessSlug: null, workItemId: null, resolution: 'ambiguous', candidates: ['WI-12', 'WI-123'],
+    });
   });
 });
 
@@ -277,7 +348,6 @@ describe('recordEditAttribution — intent is DECLARED work, never the lock hook
 
   beforeEach(() => {
     insertCalls.length = 0;
-    mockClaim = null;
     mockPresence = null;
   });
 
