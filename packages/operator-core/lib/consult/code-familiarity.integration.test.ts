@@ -9,9 +9,11 @@
  * The fixture tables carry exactly the columns the measurement reads.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import postgres, { type Sql } from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { codeAuthorshipScore, familiarityFilePatterns, measureCodeFamiliarity } from './code-familiarity';
+import { WORKING_SET_TOOLS } from '../code-intelligence/working-set';
 
 const WS = 'ws-fam';
 const FILE = 'packages/operator-core/lib/consult/relevance-router.ts';
@@ -32,6 +34,10 @@ beforeAll(async () => {
       coord_owner_id text, args_json jsonb, status text NOT NULL DEFAULT 'ok',
       invoked_at timestamptz NOT NULL DEFAULT now());
   `);
+  await sql.unsafe(readFileSync(
+    new URL('../../../../libs/papercusp/libs/db/sql/1606-tool-invocations-code-familiarity-index.sql', import.meta.url),
+    'utf8',
+  ));
   const edit = (agent: string, file: string, ts: string, ws = WS) =>
     sql`INSERT INTO harness_shared.edit_attribution_ledger (workspace_id, agent_id, file, ts) VALUES (${ws}, ${agent}, ${file}, ${ts})`;
   const read = (owner: string, tool: string, args: object, ts: string, status = 'ok') =>
@@ -111,6 +117,46 @@ describe('measureCodeFamiliarity (R-2)', () => {
     expect(m.reads).toBe('measured');
     expect(m.byOwner.get('file-reader')).toEqual({ edits: 0, reads: 4 });
     expect(m.byOwner.get('prefix-reader')).toBeUndefined();
+  });
+
+  it('uses the composite lookup when one candidate has substantial unrelated tool history', async () => {
+    await sql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, harness_slug, tool_name, coord_owner_id, args_json, status)
+      SELECT ${WS}, 'papercusp', 'coord:send', 'reader', jsonb_build_object('body', 'unrelated'), 'ok'
+        FROM generate_series(1, 20_000)
+    `;
+    await sql`ANALYZE harness_shared.tool_invocations`;
+    const { exact, suffix } = familiarityFilePatterns([FILE]);
+
+    const plan = await sql`
+      EXPLAIN (FORMAT JSON)
+      SELECT coord_owner_id
+        FROM harness_shared.tool_invocations
+       WHERE workspace_id = ${WS}
+         AND tool_name = ANY(${[...WORKING_SET_TOOLS]}::text[])
+         AND coord_owner_id = ANY(${['reader']}::text[])
+         AND status = 'ok'
+         AND EXISTS (
+           SELECT 1 FROM (
+             SELECT COALESCE(args_json->>'file_path', args_json->>'path') AS file
+              WHERE tool_name IN ('capability:read', 'capability:edit', 'capability:write')
+             UNION ALL
+             SELECT args_json->>'file'
+              WHERE tool_name IN ('lsp:query', 'graph:query')
+             UNION ALL
+             SELECT jsonb_array_elements_text(
+               CASE WHEN jsonb_typeof(args_json->'paths') = 'array' THEN args_json->'paths' ELSE '[]'::jsonb END)
+              WHERE tool_name IN ('lsp:query', 'graph:query')
+           ) AS named_files
+           WHERE named_files.file = ANY(${exact}::text[]) OR named_files.file LIKE ANY(${suffix}::text[])
+         )
+    `;
+    expect(JSON.stringify(plan[0]?.['QUERY PLAN'])).toContain('tool_invocations_code_familiarity_idx');
+
+    const measured = await measureCodeFamiliarity(sql, { workspaceId: WS, owners: ['reader'], files: [FILE] });
+    expect(measured.reads).toBe('measured');
+    expect(measured.byOwner.get('reader')?.reads).toBe(2);
   });
 
   it('reports the read leg unmeasured, and gives no read credit, when it times out', async () => {

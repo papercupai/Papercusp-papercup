@@ -548,7 +548,7 @@ describe('automatic compaction recovery — carried probes run at recovery', () 
         source: source.kind === 'work-item' ? `${source.kind}:${source.id}` : `${source.kind}:${source.ownerId}`,
         checkIndex,
         checkId: check.id,
-        probeTool: check.probe?.tool ?? null,
+        probeTool: check.probe?.kind === 'tool' ? check.probe.tool : null,
       })),
       dispatchCalls: dispatchCalls.map((call) => ({
         tool: call[0],

@@ -399,7 +399,9 @@ export async function mintBlindGapReviewer(
 }
 
 export type ResumeBlindGapReviewerResult =
-  | { ok: true; launch: unknown; activationAuditSeq: number; reviewerOwnerId: string; leaseReleased: boolean }
+  | { ok: true; launch: unknown; activationAuditSeq: number; reviewerOwnerId: string; leaseReleased: boolean;
+      /** The resumed reviewer's session binding row — its post fires blindReviewPostedEventKey(slug, bindingId). */
+      bindingId: number }
   | { ok: false; code: string; message: string };
 
 export async function resumeBlindGapReviewer(
@@ -449,7 +451,7 @@ export async function resumeBlindGapReviewer(
     result = (launch as { isError?: unknown } | null)?.isError === true
       ? { ok: false, code: 'resume_failed', message: 'The exact in-place recruiter resume was refused by capability:launch-agent.' }
       : { ok: true, launch, activationAuditSeq: brief.activationAuditSeq,
-          reviewerOwnerId: acquired.binding.reviewerOwnerId, leaseReleased: false };
+          reviewerOwnerId: acquired.binding.reviewerOwnerId, leaseReleased: false, bindingId: acquired.binding.id };
   } catch (error) {
     result = { ok: false, code: 'resume_failed', message: error instanceof Error ? error.message : String(error) };
   }

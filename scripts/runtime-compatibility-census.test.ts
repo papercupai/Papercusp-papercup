@@ -228,7 +228,7 @@ describe('committed runtime migration inventory discovery', () => {
       '  PAPERCUSP_BACKGROUND_WORKERS=1 \\', '  node dist-host/hono-host.mjs"',
       'EnvironmentFile=-/external/runtime.env', '[Unit]', 'Requires=db.service'].join('\n');
     const result = inventorySources(snapshot([source('systemd/host.service.d/95-entry.conf', text)]));
-    const control = result.files[0].launchControl;
+    const control = result.files[0].launchControl!;
     expect(control.directives.filter((row) => row.key === 'ExecStart')).toEqual([
       { section: 'Service', key: 'ExecStart', value: '', firstLine: 3, lastLine: 3 },
       { section: 'Service', key: 'ExecStart', value: '/bin/bash -c "exec env    PAPERCUSP_BACKGROUND_WORKERS=1    node dist-host/hono-host.mjs"', firstLine: 4, lastLine: 7 },
@@ -240,7 +240,7 @@ describe('committed runtime migration inventory discovery', () => {
     expect(result.closureAccepted).toBe(false);
   });
   it('keeps malformed or incomplete unit input as a gap instead of certifying its launch command', () => {
-    const control = collectSystemdDirectives('host.service', 'ExecStart=node outside-section.mjs\n[Service]\n.invalid\nExecStart=node \\');
+    const control = collectSystemdDirectives('host.service', 'ExecStart=node outside-section.mjs\n[Service]\n.invalid\nExecStart=node \\')!;
     expect(control.directives).toEqual([]);
     expect(control.unresolved.map((row) => row.reason)).toEqual([
       'unparsed-systemd-statement', 'unparsed-systemd-statement', 'unterminated-systemd-continuation',
@@ -249,7 +249,7 @@ describe('committed runtime migration inventory discovery', () => {
     expect(result.unresolved).toContainEqual(expect.objectContaining({ path: 'host.service', reason: 'unterminated-systemd-continuation' }));
   });
   it('selects generated unit templates without interpreting arbitrary scripts or inline hash characters as comments', () => {
-    const control = collectSystemdDirectives('infra/systemd/host.service.tmpl', '[Service]\nEnvironment="LABEL=a#b"\nExecStart=node host.mjs');
+    const control = collectSystemdDirectives('infra/systemd/host.service.tmpl', '[Service]\nEnvironment="LABEL=a#b"\nExecStart=node host.mjs')!;
     expect(control.directives[0].value).toBe('"LABEL=a#b"');
     expect(collectSystemdDirectives('infra/systemd/install.sh', '[Service]\nExecStart=node host.mjs')).toBeNull();
   });

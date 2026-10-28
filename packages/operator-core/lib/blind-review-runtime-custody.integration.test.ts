@@ -18,10 +18,10 @@ import { reconcileRuntimeNamespaces, retireRuntimeNamespacesForBinding,
   retireRuntimeNamespacesForNativeEnd } from './blind-review-runtime-recovery';
 import { _endLongLivedAdminPoolForTests } from './long-lived-admin-pool';
 import { createRuntimeCustodyStore, RUNTIME_RESOURCE_KINDS, runtimeCustodyFingerprint,
-  type RuntimeReviewerIdentity, type RuntimeSourceAdmission } from './blind-review-runtime-custody';
+  type RuntimeResourceIntent, type RuntimeReviewerIdentity, type RuntimeSourceAdmission } from './blind-review-runtime-custody';
 
-// Exercises the transaction boundary and canonical authority adapter. Actual OS
-// custody and sealed source-image admission require separate runtime controls.
+// Exercises transaction/authority boundaries and a real managed guest failure.
+// Full product readiness still requires separate runtime acceptance controls.
 let fx: PlanPgFixture;
 let serial = 0;
 function deferred<T>() {
@@ -237,6 +237,53 @@ async function withAdmittedRuntime(run: (context: {
 }
 
 describe('blind reviewer runtime custody on private PostgreSQL', () => {
+  it('reaps a real managed guest after workspace creation fails before its durable append', async () => {
+    const { createLinuxRuntimeNamespaceBackend, runtimeManagedTaskId } = await import('./blind-review-runtime-backend');
+    await withAdmittedRuntime(async ({ f, leaseId, image }) => {
+      const backend = createLinuxRuntimeNamespaceBackend();
+      const lease = await f.store.checkProvisioning(f.identity, leaseId);
+      let unrecordedIntent: string | undefined;
+      const store: typeof f.store = {
+        ...f.store,
+        async recordResource(identity, id, intentId, observed) {
+          if (observed.path === '/tmp/workspaces') {
+            // The trusted guest reports only after mkdir. Verify its owning
+            // scope is live before injecting the append failure, so an absent
+            // launch or an early refusal cannot satisfy this cleanup control.
+            expect(await backend.inspect(lease, [], AbortSignal.timeout(5_000)))
+              .toMatchObject({ scopeAbsent: false, creatorStopped: false });
+            unrecordedIntent = intentId;
+            throw new Error('test_create_before_append');
+          }
+          await f.store.recordResource(identity, id, intentId, observed);
+        },
+      };
+      try {
+        await expect(provisionRuntimeNamespace({ store, identity: f.identity, leaseId, image, backend,
+          signal: AbortSignal.timeout(30_000) })).rejects.toThrow('test_create_before_append');
+        expect(unrecordedIntent).toBeDefined();
+        const [current] = await fx.admin`SELECT state, revoked_at FROM harness_shared.blind_review_runtime_leases
+          WHERE id = ${leaseId}`;
+        expect(current!.state).toBe('released'); expect(current!.revoked_at).not.toBeNull();
+        const resources = await fx.admin<RuntimeResourceIntent[]>`SELECT * FROM harness_shared.blind_review_runtime_resources
+          WHERE lease_id = ${leaseId}`;
+        expect(resources.find(row => row.kind === 'managed-scope')!.identity)
+          .toMatchObject({ taskId: runtimeManagedTaskId(lease) });
+        expect(resources.find(row => row.id === unrecordedIntent)).toMatchObject({
+          kind: 'workspace', identity: null,
+        });
+        const absence = await backend.inspect(lease, resources, AbortSignal.timeout(5_000));
+        expect(absence).toMatchObject({ scopeAbsent: true, creatorStopped: true });
+        expect(absence.absentIntentIds.sort()).toEqual(resources.map(row => row.id).sort());
+        await expect(f.store.checkProvisioning(f.identity, leaseId)).rejects.toThrow();
+      } finally {
+        // A failed assertion must not strand the real scope or private inputs.
+        expect(await releaseRuntimeNamespace({ store: f.store, identity: f.identity, leaseId, backend,
+          reason: 'test-finally' })).toBe(true);
+      }
+    });
+  }, 90_000);
+
   it('consumes the measured retained image into canonical custody and refuses copies and post-cutoff retries', async () => {
     const roots: string[] = [];
     const source = await brokerSourceFixture(roots, { gitCheckout: true });

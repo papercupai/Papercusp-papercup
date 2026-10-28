@@ -318,7 +318,7 @@ export async function acquireTrackedSessionSource(
   const sessionId = backend === 'omp' ? source.ompThreadId ?? source.sessionId : source.sessionId;
   if (!sessionId) throw new Error('source is missing exact native session identity');
   const readArchive = () => deps.readArchive
-    ? deps.readArchive({ backend, sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)())
+    ? deps.readArchive({ backend, sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)(), undefined, diagnostics)
     : readCanonicalNativeArchive({ backend, sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)(), undefined, diagnostics);
   const readLive = async () => {
     const root = deps.rootForSource?.(source) ?? join(backend === 'codex'
@@ -362,7 +362,7 @@ export async function acquireTrackedClaudeSource(
   if (!source.sessionId || !source.coordOwnerId || !source.cwd) throw new Error('source is missing tracked Claude identity/cwd');
   const { sessionId, coordOwnerId } = source;
   const readArchive = () => deps.readArchive
-    ? deps.readArchive({ sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)())
+    ? deps.readArchive({ sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)(), undefined, diagnostics)
     : readCanonicalClaudeArchive({ sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)(), undefined, diagnostics);
   const readLive = async () => {
     const path = await measure('port.source.live-lookup', () => (deps.findLive ?? findCanonicalClaudeLiveJsonl)(

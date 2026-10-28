@@ -52,7 +52,7 @@ import {
   CHECKPOINT_MAX_RUNTIME_SEC,
   MANUAL_CHECKPOINT_WATCHDOG_ENV,
   MANUAL_CHECKPOINT_WATCHDOG_MS,
-  REPLACE_STALE_MIN_AGE_SEC,
+  REPLACE_STALE_MIN_SILENCE_SEC,
 } from "@papercusp/operator-core/lib/release-checkpoint-launch";
 
 import {
@@ -63,7 +63,6 @@ import {
   MANUAL_SELF_WATCHDOG_ENV,
   MIN_MANUAL_SELF_WATCHDOG_MS,
   SELF_WATCHDOG_MS,
-  SUITE_KILL_BUDGET_MIRROR_MS,
 } from "./green-checkpoint";
 
 const MIN = 60_000;
@@ -176,26 +175,18 @@ describe("green-gate timing chain (WI-6112)", () => {
     ).toBeGreaterThanOrEqual(sweepHeadroom);
   });
 
-  it("stops starting refires BEFORE the suite timeout would kill one mid-flight (EI-19343532231631821)", () => {
-    // The refire budget is the new TIGHTEST link, and it belongs to the same one decision as the
-    // four above. A stale-red auto-refire recurses in-process, so a refire begun near the suite
-    // timeout is killed part-way through and the run dies having recorded NO verdict at all —
-    // strictly worse than recording the red it already had. Keeping the budget strictly under the
-    // suite timeout is what makes "stop refiring" happen before "get killed".
-    expect(DEFAULT_REFIRE_RUN_BUDGET_MS).toBeLessThan(
-      GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
-    );
-    // …with enough headroom that the deadline check (which predicts the next pass from the last
-    // one) is not itself racing the timeout it exists to stay clear of.
-    expect(
-      GREEN_CHECKPOINT_SUITE_TIMEOUT_MS - DEFAULT_REFIRE_RUN_BUDGET_MS,
-    ).toBeGreaterThanOrEqual(5 * MIN);
+  it("puts no wall-clock budget on refires by default (WI-6554700010042457, was EI-19343532231631821)", () => {
+    // The refire budget used to sit just under the suite-timeout kill so a refire never started
+    // into it (EI-19343532231631821). Avi #2574 removed that kill from the main-greening path, so
+    // the budget's only remaining effect would be to stop a healthy run before its verdict.
+    // Recursion stays bounded by COUNT (refireAbsoluteCeiling), never by the clock.
+    expect(DEFAULT_REFIRE_RUN_BUDGET_MS).toBe(Number.POSITIVE_INFINITY);
   });
 
   /**
    * WI-38026 (2026-08-12) — the EXTERNAL link in the same chain, and the one that was missing.
    *
-   * The four constants above bound what the run does to ITSELF. `REPLACE_STALE_MIN_AGE_SEC`
+   * The four constants above bound what the run does to ITSELF. The replace threshold
    * bounds when someone ELSE may kill it, and it was a hand-written `20 * 60` that nothing
    * tied to the rest of the chain — six times tighter than the suite budget. So a healthy run
    * became "replaceable" ~20 min into a suite allowed to take 120, and with several agents
@@ -206,9 +197,16 @@ describe("green-gate timing chain (WI-6112)", () => {
    *
    * The invariant: a run still inside its own suite budget is not wedged, so replacement
    * cannot unlock before that budget is spent.
+   *
+   * WI-6554700010042457 restated it for a run with no wall clock: the threshold is SILENCE
+   * (REPLACE_STALE_MIN_SILENCE_SEC), and it is exactly the run's own idle budget. A peer may
+   * replace a run only once it has been quiet as long as its own watchdog would tolerate.
    */
-  it("does not let a peer kill a run that is still inside its own suite budget (WI-38026)", () => {
-    expect(REPLACE_STALE_MIN_AGE_SEC * 1000).toBeGreaterThanOrEqual(
+  it("does not let a peer kill a run that is still inside its own idle budget (WI-38026)", () => {
+    expect(REPLACE_STALE_MIN_SILENCE_SEC * 1000).toBeGreaterThanOrEqual(
+      MANUAL_CHECKPOINT_WATCHDOG_MS,
+    );
+    expect(REPLACE_STALE_MIN_SILENCE_SEC * 1000).toBeGreaterThanOrEqual(
       GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
     );
   });
@@ -216,33 +214,14 @@ describe("green-gate timing chain (WI-6112)", () => {
   /**
    * EI-20669541349219660 — the isolation phase must be able to PLAN around the kill.
    *
-   * The gate had a positive feedback loop between how red it was and whether it could
-   * produce a verdict at all: first isolation attempts were unbounded (only retries had a
-   * budget), so a wide-but-<=cap red made the serial isolation phase outlast the 120m suite
-   * budget; the kill landed mid-isolation and the verdict was status:'error' with NO
-   * failing-test list — the next run learned nothing and re-derived the same red, forever.
-   * The fix bounds the phase against a deadline derived from the ACTUAL killer, which for a
-   * scheduled run is the parent group-kill at the suite budget. That budget used to be
-   * hand-copied into green-checkpoint.ts, because its old home registered routine actions as
-   * a module-load side effect; it now lives in a side-effect-free leaf and is IMPORTED, so
-   * the two names below are one constant.
-   *
-   * The assertion is kept, and is not the no-op that makes it look: it fails the moment
-   * someone re-hardcodes the mirror, which is exactly how it got hand-copied the first time.
-   * What it no longer has to do is catch a retune that updated one file and not the other —
-   * that drift is now impossible rather than detected.
+   * The phase deadline is derived from the ACTUAL killer. WI-6554700010042457 removed the
+   * scheduled parent's suite-budget group-kill (the old SUITE_KILL_BUDGET_MIRROR_MS), so the
+   * only killer left is a deadline a caller transports; isolationPhaseDeadlineMs stops starting
+   * work this reserve before it (and is unbounded without one — pinned in green-checkpoint.test).
    */
-  it("the isolation phase deadline mirror tracks the scheduled parent's kill budget (EI-20669541349219660)", () => {
-    expect(SUITE_KILL_BUDGET_MIRROR_MS).toBe(GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
-  });
-
   it("the phase reserve covers one in-flight isolation attempt plus verdict-write margin (EI-20669541349219660)", () => {
     expect(ISOLATION_PHASE_RESERVE_MS).toBeGreaterThanOrEqual(
       ISOLATION_RUN_TIMEOUT_MS + MIN,
-    );
-    // sanity: the reserve must not eat the budget itself
-    expect(ISOLATION_PHASE_RESERVE_MS).toBeLessThan(
-      SUITE_KILL_BUDGET_MIRROR_MS / 4,
     );
   });
 
@@ -277,10 +256,10 @@ describe("green-gate timing chain (WI-6112)", () => {
   });
 
   it("keeps replacement possible for a genuinely wedged run, below the lock-stale reclaim", () => {
-    // The guard must not swing so far that replaceStale becomes unreachable: past its own
-    // suite timeout a still-running process IS the EI-9672 salvage case, and it must be
+    // The guard must not swing so far that replaceStale becomes unreachable: silent past its
+    // own idle budget, a still-running process IS the EI-9672 salvage case, and it must be
     // stoppable before the lock would be reclaimed out from under it anyway.
-    expect(REPLACE_STALE_MIN_AGE_SEC * 1000).toBeLessThan(
+    expect(REPLACE_STALE_MIN_SILENCE_SEC * 1000).toBeLessThan(
       CHECKPOINT_LOCK_STALE_MS,
     );
   });

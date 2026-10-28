@@ -3,7 +3,7 @@
  * are what keep `ready` a trustworthy deployable pin. Real temp repo for the ref
  * logic; stub deps for the (heavy) suite run.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -136,7 +136,6 @@ import {
   terminalVerdictRecordOptions,
   MANUAL_SELF_WATCHDOG_ENV,
   MIN_MANUAL_SELF_WATCHDOG_MS,
-  SUITE_KILL_BUDGET_MIRROR_MS,
   ISOLATION_PHASE_RESERVE_MS,
   isolationPhaseDeadlineMs,
   writeFailingFilesMarker,
@@ -874,22 +873,49 @@ describe("P-022: one bounded short-delay retry after a typed precondition refusa
     expect(calls).not.toContain("reclaim");
   });
 
-  it("does not retry when the delay plus a full pass would overrun the run budget", async () => {
+  it("does not retry when the delay plus a full pass would overrun an explicitly configured run budget", async () => {
+    // WI-6554700010042457: the default budget is unbounded, so the clock bound only applies when
+    // an operator sets PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS. Pin that the explicit bound still works.
+    vi.stubEnv("PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS", String(110 * MIN));
+    try {
+      const { candidate } = await seed();
+      const { deps, calls } = stubDeps(true);
+      const { logs } = withRetrySeams(deps, calls);
+      deps.checkDiskHeadroom = async () => ({ ok: false, summary: "short" });
+
+      const result = await runGreenCheckpoint(cfg(), deps, {
+        candidate,
+        noPush: true,
+        runStartedAtMs: Date.now() - 60 * MIN,
+      });
+
+      expect(result).toMatchObject({ green: null, reason: "disk-headroom" });
+      expect(result.preconditionRetry).toBeUndefined();
+      expect(calls).not.toContain("reclaim");
+      expect(logs.some((l) => l.includes("reason=deadline"))).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("with the default (unbounded) run budget a long-running pass still gets its one precondition retry", async () => {
     const { candidate } = await seed();
     const { deps, calls } = stubDeps(true);
-    const { logs } = withRetrySeams(deps, calls);
-    deps.checkDiskHeadroom = async () => ({ ok: false, summary: "short" });
+    withRetrySeams(deps, calls);
+    let probes = 0;
+    deps.checkDiskHeadroom = async () => {
+      probes += 1;
+      return probes === 1 ? { ok: false, summary: "short" } : { ok: true, summary: "ok" };
+    };
 
     const result = await runGreenCheckpoint(cfg(), deps, {
       candidate,
       noPush: true,
-      runStartedAtMs: Date.now() - 60 * MIN,
+      runStartedAtMs: Date.now() - 6 * 60 * MIN,
     });
 
-    expect(result).toMatchObject({ green: null, reason: "disk-headroom" });
-    expect(result.preconditionRetry).toBeUndefined();
-    expect(calls).not.toContain("reclaim");
-    expect(logs.some((l) => l.includes("reason=deadline"))).toBe(true);
+    expect(result.preconditionRetry?.blocker).toBe("disk-headroom");
+    expect(probes).toBe(2);
   });
 
   it("a caller that supplies no retry delay keeps the historical single-pass refusal", async () => {
@@ -910,7 +936,11 @@ describe("P-022: one bounded short-delay retry after a typed precondition refusa
   });
 
   it("decideGatePreconditionRetry bounds: verdict, blocker, attempt count and run budget", () => {
-    const base = { retriesSoFar: 0, elapsedMs: 0, delayMs: 5 * MIN, budgetMs: DEFAULT_REFIRE_RUN_BUDGET_MS };
+    // An explicit finite budget (PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS) still bounds the retry.
+    const base = { retriesSoFar: 0, elapsedMs: 0, delayMs: 5 * MIN, budgetMs: 110 * MIN };
+    // WI-6554700010042457: the DEFAULT budget is unbounded, so a long run is never refused a retry by the clock.
+    expect(decideGatePreconditionRetry({ ...base, budgetMs: DEFAULT_REFIRE_RUN_BUDGET_MS, elapsedMs: 10 * 60 * MIN,
+      result: { green: null, preconditionBlocker: "disk-headroom" } })).toEqual({ retry: true, blocker: "disk-headroom" });
     expect(decideGatePreconditionRetry({ ...base, result: { green: null, preconditionBlocker: "disk-headroom" } }))
       .toEqual({ retry: true, blocker: "disk-headroom" });
     expect(decideGatePreconditionRetry({ ...base, result: { green: null } }))
@@ -2385,18 +2415,24 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
 
   it.each([
     {
+      // WI-6554700010042457: the default run budget is unbounded; this case pins an
+      // operator-configured finite budget (PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS).
       reason: "shared gate-run wall budget",
       opts: { runStartedAtMs: 1_000 },
+      budgetEnv: String(110 * 60_000),
       expectedLog: "the shared gate-run wall budget cannot fit another pass",
     },
     {
       reason: "admission-refire bound",
       opts: { admissionRefires: MAX_ADMISSION_REFIRE_ATTEMPTS },
+      budgetEnv: undefined,
       expectedLog: `the admission self-refire bound ${MAX_ADMISSION_REFIRE_ATTEMPTS} is exhausted`,
     },
   ])(
     "P-001 keeps the durable marker and reports deferred retry after the $reason",
-    async ({ opts, expectedLog }) => {
+    async ({ opts, budgetEnv, expectedLog }) => {
+      if (budgetEnv !== undefined) vi.stubEnv("PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS", budgetEnv);
+      onTestFinished(() => { vi.unstubAllEnvs(); });
       const ready = await commit("a", "1", "ready");
       await git(repo, ["branch", "ready", ready]);
       const frozen = await commit("b", "broken", "frozen candidate");
@@ -11256,8 +11292,11 @@ describe("refire charge accounting (EI-19343532231631821)", () => {
       ).toBe(false);
     });
 
-    it("the run budget stays strictly under the suite timeout that would kill a mid-flight refire", () => {
-      expect(refireRunBudgetMsFromEnv({})).toBe(DEFAULT_REFIRE_RUN_BUDGET_MS);
+    it("the default run budget is unbounded; only an explicit finite override bounds refires (WI-6554700010042457)", () => {
+      expect(refireRunBudgetMsFromEnv({})).toBe(Number.POSITIVE_INFINITY);
+      // Fail-open by design on a non-finite budget, so hours of healthy passes never stop a refire.
+      expect(refireDeadlineExceeded({ elapsedMs: 10 * 60 * 60_000, lastPassMs: 60 * 60_000,
+        budgetMs: refireRunBudgetMsFromEnv({}) })).toBe(false);
       expect(
         refireRunBudgetMsFromEnv({
           PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS: "900000",
@@ -12855,30 +12894,25 @@ describe("EI-20669541349219660: isolation phase budget — a wide red yields a v
   });
 });
 
-describe("isolationPhaseDeadlineMs (EI-20669541349219660)", () => {
-  const nowMs = 10_000_000;
-  const uptimeMs = 60_000;
-  const processStartMs = nowMs - uptimeMs;
+describe("isolationPhaseDeadlineMs (EI-20669541349219660, WI-6554700010042457)", () => {
+  // The env name the launcher/scope transports (systemd-scope TASK_DEADLINE_EPOCH_MS_ENV).
+  const TASK_DEADLINE_ENV = "PAPERCUSP_TASK_DEADLINE_EPOCH_MS";
 
-  it("manual run: the transported watchdog deadline minus the reserve, anchored at process start", () => {
-    const env = {
-      [MANUAL_SELF_WATCHDOG_ENV]: String(MIN_MANUAL_SELF_WATCHDOG_MS),
-    };
-    expect(isolationPhaseDeadlineMs(env, nowMs, uptimeMs)).toBe(
-      processStartMs + MIN_MANUAL_SELF_WATCHDOG_MS - ISOLATION_PHASE_RESERVE_MS,
+  it("a transported caller deadline is the only killer left: the phase stops starting work the reserve before it", () => {
+    const callerDeadline = 50_000_000;
+    expect(isolationPhaseDeadlineMs({ [TASK_DEADLINE_ENV]: String(callerDeadline) })).toBe(
+      callerDeadline - ISOLATION_PHASE_RESERVE_MS,
     );
   });
 
-  it("scheduled run: the PARENT's suite-budget mirror, never the 180m parent-death backstop", () => {
-    const deadline = isolationPhaseDeadlineMs({}, nowMs, uptimeMs);
-    expect(deadline).toBe(
-      processStartMs + SUITE_KILL_BUDGET_MIRROR_MS - ISOLATION_PHASE_RESERVE_MS,
-    );
-    // the self-watchdog (180m) fires only parent-dead; planning against it would let the
-    // parent's 120m group-kill land mid-isolation — the exact no-verdict loop this fixes
-    expect(deadline).toBeLessThan(
-      processStartMs + SELF_WATCHDOG_MS - ISOLATION_PHASE_RESERVE_MS,
-    );
+  it("without one, no run-level clock bounds the phase — scheduled or manual (Avi #2574)", () => {
+    expect(isolationPhaseDeadlineMs({})).toBe(Number.POSITIVE_INFINITY);
+    // The manual watchdog budget is now an IDLE budget, not a kill clock from process start.
+    expect(
+      isolationPhaseDeadlineMs({ [MANUAL_SELF_WATCHDOG_ENV]: String(MIN_MANUAL_SELF_WATCHDOG_MS) }),
+    ).toBe(Number.POSITIVE_INFINITY);
+    // A garbage transported deadline is ignored, never read as an immediate stop.
+    expect(isolationPhaseDeadlineMs({ [TASK_DEADLINE_ENV]: "soon" })).toBe(Number.POSITIVE_INFINITY);
   });
 });
 

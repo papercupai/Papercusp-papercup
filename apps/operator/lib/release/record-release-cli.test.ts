@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { OwnerDirectiveRow } from '@papercusp/operator-core/lib/owner-directives';
 import {
@@ -1303,17 +1304,33 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
     expect(publish).toContain('papercusp-page-mode" content="holding"');
   });
 
-  it('public publish verification rejects stale history.json even when index/detail are current (EI-22012030186241177)', () => {
+  it.each(['match', 'stale'] as const)('public publish verification checks history.json with current index/detail (EI-22012030186241177): %s', (historyMode) => {
     const publish = path.resolve(desktopDir, 'bin', 'publish-release-history.sh');
-    const runFixture = (historyMode: 'match' | 'stale') => {
+    const runFixture = () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-history-publish-'));
       const site = path.join(root, 'site');
       const home = path.join(root, 'home');
       const bin = path.join(root, 'bin');
+      const fetchPreload = path.join(root, 'fixture-fetch.mjs');
+      const fetchLog = path.join(root, 'link-probes.jsonl');
       fs.mkdirSync(path.join(site, 'plans'), { recursive: true });
       fs.mkdirSync(path.join(site, 'work-items'), { recursive: true });
       fs.mkdirSync(path.join(home, '.papercusp'), { recursive: true });
       fs.mkdirSync(bin, { recursive: true });
+      // The publisher also runs the real Node link checker. Its fetch calls
+      // bypass the curl stub below, so contain them in this fixture too.
+      fs.writeFileSync(fetchPreload, `import fs from 'node:fs';
+globalThis.fetch = async (url, options = {}) => {
+  const target = new URL(url);
+  if (target.origin !== 'https://release.example' || !target.pathname.startsWith('/secret-path/')) {
+    throw new Error('Unexpected fixture fetch: ' + target.href);
+  }
+  const relative = decodeURIComponent(target.pathname.slice('/secret-path/'.length));
+  if (relative.split('/').includes('..')) throw new Error('Unsafe fixture fetch path');
+  fs.appendFileSync(process.env.PROBE_FETCH_LOG, JSON.stringify({ method: options.method, path: target.pathname }) + '\\n');
+  return new Response(null, { status: fs.existsSync(process.env.PROBE_SITE + '/' + relative) ? 200 : 404 });
+};
+`);
 
       const index = '<html><body><section class="rel" data-newest-release="1.2.3"><h2>1.2.3</h2><a href="work-items/WI-1.html">item</a><a href="changes/desktop-v1.2.3-alpha.html">Changes</a></section></body></html>\n';
       const history = '{"releases":[{"version":"1.2.3","artifacts":[]}]}\n';
@@ -1395,34 +1412,59 @@ if (args.includes('-w')) process.stdout.write('200');
         { mode: 0o755 },
       );
 
-      const result = spawnSync('bash', [publish, '1.2.3'], {
-        cwd: path.resolve(__dirname, '../../../../'),
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH ?? ''}`,
-          HOME: home,
-          PAPERCUSP_RELEASE_STORAGE_ENV: path.join(home, '.papercusp', 'release-storage.env'),
-          PAPERCUSP_RELEASE_SITE_DIR: site,
-          PAPERCUSP_RELEASE_OWNER_NAME: 'Synthetic Owner',
-          PROBE_SITE: site,
-          PROBE_GCS_STATE: path.join(root, 'gcloud-state.json'),
-          DRY_RUN: '0',
-        },
-        encoding: 'utf8',
-      });
-      fs.rmSync(root, { recursive: true, force: true });
-      return result;
+      const startedAt = Date.now();
+      try {
+        const result = spawnSync('bash', [publish, '1.2.3'], {
+          cwd: path.resolve(__dirname, '../../../../'),
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            HOME: home,
+            PAPERCUSP_RELEASE_STORAGE_ENV: path.join(home, '.papercusp', 'release-storage.env'),
+            PAPERCUSP_RELEASE_SITE_DIR: site,
+            PAPERCUSP_RELEASE_OWNER_NAME: 'Synthetic Owner',
+            PROBE_SITE: site,
+            PROBE_GCS_STATE: path.join(root, 'gcloud-state.json'),
+            PROBE_FETCH_LOG: fetchLog,
+            // Fixture CLIs are synthetic programs outside the repository. Do
+            // not bootstrap the outer test runner's source loader in each one.
+            NODE_OPTIONS: `--import=${pathToFileURL(fetchPreload).href}`,
+            DRY_RUN: '0',
+          },
+          encoding: 'utf8',
+          timeout: 45_000,
+          killSignal: 'SIGKILL',
+        });
+        process.stderr.write(`RELEASE_HISTORY_FIXTURE ${JSON.stringify({
+          historyMode, durationMs: Date.now() - startedAt, status: result.status,
+          signal: result.signal, error: result.error?.message,
+        })}\n`);
+        const linkProbes: Array<{ method: string; path: string }> = fs.existsSync(fetchLog)
+          ? fs.readFileSync(fetchLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+          : [];
+        return { ...result, linkProbes };
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
     };
 
-    // Positive control: matching public bytes still complete the publisher.
-    const matching = runFixture('match');
-    expect(matching.status, [matching.error?.message, matching.stdout, matching.stderr].filter(Boolean).join('\n')).toBe(0);
-    expect(matching.stdout).toContain('history.json served and byte-identical');
-
-    // Falsifier: before the fix this stale feed was never fetched and the same
-    // publisher exited 0 after checking only index/detail. It must now refuse.
-    const stale = runFixture('stale');
-    expect(stale.status).not.toBe(0);
-    expect(`${stale.stdout}\n${stale.stderr}`).toContain('served history.json does NOT match');
+    // Each full publisher invocation gets its own test budget. Combining both
+    // controls in one synchronous test hid which invocation exhausted it.
+    const result = runFixture();
+    const diagnostics = [result.error?.message, result.stdout, result.stderr].filter(Boolean).join('\n');
+    expect(result.error, diagnostics).toBeUndefined();
+    expect(result.linkProbes.sort((a, b) => a.path.localeCompare(b.path))).toEqual([
+      { method: 'HEAD', path: '/secret-path/changes/desktop-v1.2.3-alpha.html' },
+      { method: 'HEAD', path: '/secret-path/work-items/WI-1.html' },
+    ]);
+    if (historyMode === 'match') {
+      expect(result.status, diagnostics).toBe(0);
+      expect(result.stdout).toContain('history.json served and byte-identical');
+    } else {
+      // Falsifier: the publisher must refuse stale public feed bytes even
+      // when its index and detail page are current.
+      expect(result.status, diagnostics).not.toBe(0);
+      expect(diagnostics).toContain('served history.json does NOT match');
+    }
   });
 });

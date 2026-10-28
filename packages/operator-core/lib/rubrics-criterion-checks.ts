@@ -106,6 +106,8 @@ export interface CriterionCheckPathFailure {
   criterionKey: string;
   path: string;
   reason: string;
+  /** A future case in an existing file; never a whole-file planning exemption. */
+  testName?: string;
   /** Present for native checks so the refusal can name the affected runner. */
   checkKind?: 'cargo';
 }
@@ -144,10 +146,9 @@ export interface CriterionCheckPathValidation {
    *  repo-root-relative form. */
   normalizedCargoByKey: Record<string, NormalizedCargoCheckPaths>;
   /**
-   * EI-24372605712471072: check paths accepted as PLANNED — not in the tree yet, admitted
-   * only because the caller passed `allowPlannedPaths`. Always present (empty when the
-   * allowance is off). Grading re-validates without the allowance, so a planned file that
-   * never gets written still refuses the emit (`check_path_unresolved`).
+   * Check paths or explicitly declared cases accepted as PLANNED, admitted only
+   * because the caller passed `allowPlannedPaths`. A row with testName names one
+   * case, not every selector in that file. Grading always requires real execution.
    */
   planned: CriterionCheckPathFailure[];
 }
@@ -176,8 +177,8 @@ export function subjectPlanAllowsPlannedPaths(status: string | null | undefined)
 export interface CriterionCheckPathOptions {
   root?: string;
   /**
-   * Accept a relative check path that does not exist yet as planned instead of refusing
-   * it. Only a rubric write against an un-started subject plan may pass this (see
+   * Accept a missing relative check path, or a missing case with an explicit
+   * plannedReason, as planned. Only a write against an un-started subject plan may pass this (see
    * {@link subjectPlanAllowsPlannedPaths}); grading never does. Absolute paths, ambiguous
    * workspace-relative spellings, and non-test filenames are still refused.
    */
@@ -539,7 +540,7 @@ export function assertCriterionCheckPathsResolve(
     allowPlannedPaths: opts.allowPlannedPaths === true,
   }).validation;
   if (v.ok) {
-    const caseFailures = validateCriterionTestCaseCitations(criteria, v);
+    const caseFailures = validateCriterionTestCaseCitations(criteria, v, opts);
     if (caseFailures.length === 0) return v;
     v.ok = false;
     v.failures.push(...caseFailures);
@@ -582,16 +583,17 @@ export function assertCriterionCheckPathsResolve(
 export function validateCriterionTestCaseCitations(
   criteria: ReadonlyArray<CheckedCriterion>,
   validation: Pick<CriterionCheckPathValidation, 'root' | 'normalizedByKey' | 'planned'>,
+  opts: Pick<CriterionCheckPathOptions, 'allowPlannedPaths'> = {},
 ): CriterionCheckPathFailure[] {
   const failures: CriterionCheckPathFailure[] = [];
   const snapshots = new Map<string, ReturnType<typeof declaredCaseTitles>>();
   for (const criterion of criteria) {
     const check = criterion.check;
     if (check?.kind !== 'tests') continue;
-    const selectors = check.cases ?? (check.testName ? [{ file: check.files[0]!, testName: check.testName }] : []);
+    const selectors = check.cases ?? (check.testName ? [{ file: check.files[0]!, testName: check.testName, plannedReason: undefined }] : []);
     for (const selector of selectors) {
       const file = validation.normalizedByKey[criterion.key]?.[check.files.indexOf(selector.file)] ?? selector.file;
-      if (validation.planned.some(row => row.criterionKey === criterion.key && row.path === file)) continue;
+      if (validation.planned.some(row => row.criterionKey === criterion.key && row.path === file && row.testName === undefined)) continue;
       const absolute = resolve(validation.root, file);
       let snapshot = snapshots.get(absolute);
       if (!snapshot) {
@@ -604,6 +606,13 @@ export function validateCriterionTestCaseCitations(
       }
       if (!hasMatchingDeclaredCaseTitle(selector.testName, snapshot.titles) &&
           !mayMatchUnresolvedCaseTitle(selector.testName, snapshot.unresolvedTitles)) {
+        if (opts.allowPlannedPaths === true && typeof selector.plannedReason === 'string' && selector.plannedReason.trim()) {
+          if (!validation.planned.some(row => row.criterionKey === criterion.key && row.path === file && row.testName === selector.testName)) {
+            validation.planned.push({ criterionKey: criterion.key, path: file, testName: selector.testName,
+              reason: `case not in the tree yet — accepted as planned: ${selector.plannedReason.trim()}; grading requires exact passing execution` });
+          }
+          continue;
+        }
         failures.push({ criterionKey: criterion.key, path: file,
           reason: `test case '${selector.testName}' matches no maintained case title. Use a complete case title or a suffix at a ' > ' hierarchy boundary; embedded tags and suite-only names do not select a case.`,
         });

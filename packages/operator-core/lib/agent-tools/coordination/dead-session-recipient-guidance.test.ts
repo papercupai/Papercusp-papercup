@@ -85,6 +85,15 @@ describe('the guidance itself', () => {
     expect(text?.toLowerCase()).toContain('re-record');
   });
 
+  it('does not claim an ended ownerId can never become live again', () => {
+    for (const kind of ['ended', 'session-shaped'] as const) {
+      const text = roleAddressingGuidance([{ id: INCIDENT_ID, kind }]) ?? '';
+      expect(text).toContain('identity-preserving resume may make the same ownerId live again');
+      expect(text).not.toContain('no send to it can ever succeed again');
+      expect(text).not.toContain('no live session will ever hold that id again');
+    }
+  });
+
   it('CONTROL: a plain typo gets NO extra guidance', () => {
     // Calibration — without this, the control above would also pass if the
     // function simply appended the lecture to every refusal, which would train

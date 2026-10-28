@@ -3448,7 +3448,7 @@ const SELF_REVIEW_UNCLAIMED_LOOKBACK_MS = 24 * 60 * 60 * 1000;
  * two are the same silence downstream, but conflating them here would let a database error
  * masquerade as a positive finding of no runs.
  */
-async function latestTestingRunForOwner(
+export async function latestTestingRunForOwner(
   ownerId: string,
   workItemId: string,
   workspaceId: string | null,
@@ -3464,12 +3464,14 @@ async function latestTestingRunForOwner(
       duration_ms: number | null;
       files: unknown;
       work_item_id: string | null;
+      run_group_id?: string | null;
     }>>`
+      WITH attributable_runs AS (
       SELECT invoked_at, duration_ms, args_json->'files' AS files,
              COALESCE(
                NULLIF(args_json->>'work_item_id', ''),
                NULLIF(args_json #>> '{evidence,workItemId}', '')
-             ) AS work_item_id
+             ) AS work_item_id, NULL::text AS run_group_id
         FROM harness_shared.tool_invocations
        WHERE coord_owner_id = ${ownerId}
          AND invoked_at >= ${cutoff}
@@ -3488,6 +3490,26 @@ async function latestTestingRunForOwner(
          )
          AND (${workspaceId}::text IS NULL OR workspace_id = ${workspaceId})
          AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
+      UNION ALL
+      SELECT MAX(finished_at) AS invoked_at,
+             (EXTRACT(EPOCH FROM (MAX(finished_at) - MIN(started_at))) * 1000)::double precision AS duration_ms,
+             jsonb_agg(DISTINCT file_path) AS files,
+             ${workItemId}::text AS work_item_id, run_group_id
+        FROM harness_shared.test_runs
+       WHERE finished_at >= ${cutoff}
+         AND execution_details #>> '{attribution,ownerId}' = ${ownerId}
+         AND execution_details #>> '{attribution,workItemId}' = ${workItemId}
+         AND execution_details->>'schemaVersion' = '1'
+         AND execution_details->>'runGroupId' = run_group_id
+         AND NULLIF(run_group_id, '') IS NOT NULL
+         AND source = 'local'
+         AND is_scratch_config IS NOT TRUE
+         AND (${workspaceId}::text IS NULL OR workspace_id = ${workspaceId})
+         AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
+       GROUP BY run_group_id
+      HAVING bool_and(status IN ('pass', 'fail', 'error', 'skip'))
+      )
+      SELECT * FROM attributable_runs
        ORDER BY invoked_at DESC
        LIMIT 1
     `;
@@ -3502,6 +3524,7 @@ async function latestTestingRunForOwner(
       durationMs: row.duration_ms ?? null,
       workItemId: row.work_item_id ?? null,
       files,
+      ...(row.run_group_id ? { runGroupId: row.run_group_id } : {}),
     };
   } catch {
     return undefined;
@@ -3518,10 +3541,11 @@ async function latestTestingRunForOwner(
  * finished_at DESC)` index carries the query, and the caller's single-run-group rule
  * supplies the attribution that scoping would not have added anyway.
  */
-async function testRunLedgerRowsInWindow(
+export async function testRunLedgerRowsInWindow(
   paths: readonly string[],
   from: Date,
   to: Date,
+  runGroupId?: string,
 ): Promise<readonly TestRunLedgerRow[] | undefined> {
   try {
     const { sql } = getOrgPg();
@@ -3531,6 +3555,7 @@ async function testRunLedgerRowsInWindow(
        WHERE file_path = ANY(${paths as string[]})
          AND finished_at >= ${from}
          AND finished_at <= ${to}
+         AND (${runGroupId ?? null}::text IS NULL OR run_group_id = ${runGroupId ?? null})
        LIMIT 200
     `;
     return rows.map((r) => ({ filePath: r.file_path, status: r.status, runGroupId: r.run_group_id }));
@@ -6388,16 +6413,20 @@ async function completeOneTracked(
 
   // P-039: advisory source consequences on successful closes. The canonical
   // completion and its acceptance verdict have already landed; this cannot gate them.
+  // WI-6554700010030397: the brief's own deadline ends inside this outer bound. With equal
+  // 6s bounds the outer null fallback always won, discarding even the brief's named reason.
+  const COMPLETION_BRIEF_TIMEOUT_MS = 6_000, COMPLETION_BRIEF_RETURN_MARGIN_MS = 750;
   const completionBrief = closeLanded && !stateError && !finishFailed && completionEvidenceForGate?.filesChanged?.length
     && await getFlag(FLAGS.CODE_INTEL_PUSH_COMPLETION, ident.ownerId).catch(() => false)
     ? (await withBoundedTimeout(async signal => {
+      const briefDeadlineMs = Date.now() + COMPLETION_BRIEF_TIMEOUT_MS - COMPLETION_BRIEF_RETURN_MARGIN_MS;
       const { getCompletionTimeBrief } = await import('../../code-intelligence/task-brief');
       const { createReuseBriefIdentity } = await import('../../code-intelligence/reuse-brief-providers');
       let coverageBinding: { runGroupId: string; testFiles: readonly string[] } | undefined;
       if (signal.aborted) return null;
       // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/complete.ts#<module>/completeOneTracked/<callback>:12344fc20ebef8d38331:1","classification":"durable","reason":"Completion brief providers include computed dispatch; their notification consequences retain the existing delivery obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return getCompletionTimeBrief({ workspaceId: ctx.workspaceId ?? activeWorkspaceId(),
-        workItem: it.id, reuse: createReuseBriefIdentity(ident.ownerId, ctx.dispatchCallId,
+        deadlineMs: briefDeadlineMs, workItem: it.id, reuse: createReuseBriefIdentity(ident.ownerId, ctx.dispatchCallId,
           outcomes => ctx.metadata?.({ reuseBriefProviders: outcomes })),
         harness: it.harness ?? existing.harness ?? '', paths: completionEvidenceForGate.filesChanged ?? [],
         subject: { id: it.id, harness: it.harness ?? existing.harness,
@@ -6410,8 +6439,11 @@ async function completeOneTracked(
           if (run === null) return [];
           if (run.workItemId !== it.id || !Number.isFinite(run.invokedAt.getTime())
             || Date.now() - run.invokedAt.getTime() > MAX_TEST_BINDING_LOOKBACK_MS) return null;
-          const rows = await testRunLedgerRowsInWindow(run.files, run.invokedAt,
-            new Date(run.invokedAt.getTime() + Math.max(0, run.durationMs ?? 0) + TEST_BINDING_WINDOW_SLACK_MS));
+          const candidates = await testRunLedgerRowsInWindow(run.files, run.invokedAt,
+            new Date(run.invokedAt.getTime() + Math.max(0, run.durationMs ?? 0) + TEST_BINDING_WINDOW_SLACK_MS),
+            run.runGroupId);
+          const rows = run.runGroupId
+            ? candidates?.filter(row => row.runGroupId === run.runGroupId) : candidates;
           if (!rows) return null;
           const groups = new Set(rows.map(row => row.runGroupId));
           if (groups.size !== 1 || groups.has(null)) return null;
@@ -6425,7 +6457,7 @@ async function completeOneTracked(
           return readNativeCoverageScope(context, signal, coverageBinding);
         },
       });
-    }, { timeoutMs: 6_000, fallback: null, label: 'work_items:complete:change-brief', signal: ctx.signal })).value
+    }, { timeoutMs: COMPLETION_BRIEF_TIMEOUT_MS, fallback: null, label: 'work_items:complete:change-brief', signal: ctx.signal })).value
     : null;
   // code-intel-delivery-and-outcomes-2026-10-26 P-002: the delivered brief is the completion
   // push leg's own ledger row (like the intent leg). Best-effort; it never gates the close.

@@ -9,6 +9,7 @@ import { BLIND_GAP_REVIEW_ACTOR } from './blind-review-session-bindings';
 import { BLIND_REVIEWER_BACKENDS, blindReviewerConfinement } from './blind-reviewer-mint';
 import { assertMigrationPassesPreApplyLints } from './migration-preapply-lint';
 import { replaceBlindGapReviewer, type BlindReviewReplacementDeps, type BlindReviewReplacementInput } from './blind-review-replacement';
+import { blindReviewPostedEventKey } from './blind-review-post-event';
 
 let fx: PlanPgFixture;
 let root = '';
@@ -132,6 +133,11 @@ describe('same-activation replacement on private PostgreSQL', () => {
     const complete = await first;
     expect(complete).toMatchObject({ ok: true, attempt: { attemptSeq: 1, status: 'ready' } });
     expect((complete.attempt as { id: number }).id).toBe((second.attempt as { id: number }).id);
+    // awaitable-review-post-events-2026-10-27 R-2: the reservation row is the replacement's
+    // binding, so the launching and the completed reply hand out the same post key.
+    const attemptId = (complete.attempt as { id: number }).id;
+    expect(complete).toMatchObject({ bindingId: attemptId, awaitKey: blindReviewPostedEventKey(s.input.slug, attemptId) });
+    expect(second.awaitKey).toBe(complete.awaitKey);
     expect(launch).toHaveBeenCalledTimes(1);
     expect(await fx.admin`SELECT * FROM harness_shared.plan_blind_reviews WHERE id = ${s.input.sourceReviewId}`).toEqual(before);
     expect(await fx.admin`SELECT * FROM harness_shared.plan_blind_review_sessions WHERE id = ${s.bindingId}`).toEqual(originalBinding);
@@ -143,7 +149,10 @@ describe('same-activation replacement on private PostgreSQL', () => {
     const s = await seed();
     const launch = vi.fn(async () => ({ isError: true, data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } }));
     s.deps.launcher = async () => ({ handler: launch, confinementKey: Symbol() });
-    expect(await replaceBlindGapReviewer(s.input, s.deps)).toMatchObject({ ok: true, attempt: { attemptSeq: 1, status: 'failed' } });
+    const failedAttempt = await replaceBlindGapReviewer(s.input, s.deps);
+    expect(failedAttempt).toMatchObject({ ok: true, attempt: { attemptSeq: 1, status: 'failed' } });
+    // A confirmed-inactive attempt never posts, so it hands out no key to sleep on.
+    expect(failedAttempt).not.toHaveProperty('awaitKey');
     expect(await replaceBlindGapReviewer(s.input, s.deps)).toMatchObject({ ok: true, deduped: true, attempt: { attemptSeq: 1 } });
     const next = await replaceBlindGapReviewer({ ...s.input, requestKey: 'retry-after-refusal' }, s.deps);
     expect(next).toMatchObject({ ok: true, attempt: { attemptSeq: 2, status: 'failed' },

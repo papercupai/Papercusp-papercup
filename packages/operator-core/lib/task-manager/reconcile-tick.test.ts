@@ -60,6 +60,7 @@ vi.mock('./store', () => ({
   residueTaskId: (p: string) => `u${p.replace(/[^a-z0-9]/g, '').slice(0, 12)}`,
 }));
 
+const { recoverPendingTaskTerminalEvents } = await import('./store');
 const { reconcileTick, resetNotifyDebounce, cleanupEndedBrowserDirectory, createReconcileStageReporter } = await import('./reconcile-tick');
 const { scanProcesses } = await import('./scan');
 
@@ -682,6 +683,42 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     expect(store.recovered).toEqual([
       expect.objectContaining({ taskId: 'ok888', state: 'exited', exitCode: 0, reason: expect.stringMatching(/^runner-log: /) }),
     ]);
+  });
+
+  it('does not let a pending terminal-event recovery block closure of current task rows', async () => {
+    const terminal = collected('pc-outboxblocked.service');
+    let finishRecovery!: (count: number) => void;
+    const blockedRecovery = new Promise<number>((resolve) => { finishRecovery = resolve; });
+    const recoveryMock = vi.mocked(recoverPendingTaskTerminalEvents);
+    const callsBefore = recoveryMock.mock.calls.length;
+    recoveryMock.mockReturnValueOnce(blockedRecovery);
+    const liveTask = row({ taskId: 'outboxblocked', scopeUnit: terminal.scopeUnit, logPath: '/logs/outboxblocked.log' });
+    const recoveryWorkspace = 'ws-task-terminal-recovery-stall';
+    const args = {
+      workspaceId: recoveryWorkspace,
+      listLive: async () => [liveTask],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      inspectTaskUnitTerminals: async () => new Map([[terminal.scopeUnit, terminal]]),
+      resetFailedTaskUnit: vi.fn(async () => true),
+      readJobLogTerminal: () => ({ status: 'failed' as const, exitCode: 7 }),
+    };
+
+    try {
+      const out = await reconcileTick(args);
+      expect(out.recoveredFromJobLogCount).toBe(1);
+      expect(store.recovered).toEqual([
+        expect.objectContaining({ taskId: liveTask.taskId, state: 'exited', exitCode: 7 }),
+      ]);
+      expect(recoveryMock).toHaveBeenCalledTimes(callsBefore + 1);
+      expect(recoveryMock).toHaveBeenCalledWith(recoveryWorkspace);
+
+      // The held retry remains single-flight while subsequent task scans proceed.
+      await reconcileTick({ ...args, listLive: async () => [] });
+      expect(recoveryMock).toHaveBeenCalledTimes(callsBefore + 1);
+    } finally {
+      finishRecovery(0);
+    }
   });
 
   it('keeps a failed runner exit as exited with its real non-zero code', async () => {

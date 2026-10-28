@@ -164,6 +164,9 @@ export const HOLD_REGISTRY: readonly HoldRegistryEntry[] = [
   entry('blocker', 'external-service-action', 'structural', owner('external-operator'), DAY),
   entry('blocker', 'live-dependency', 'transient', lane('dependency-owner'), HOUR),
   entry('blocker', 'product-decision', 'structural', owner('product-owner'), DAY),
+  // one-work-graph-structured-holds-2026-10-26#D-014: a restriction hold is reviewed by its
+  // placer at reviewAt; the recheck surfaces it and never lifts it.
+  entry('blocker', 'restriction-hold', 'structural', lane('hold-placer'), DAY),
 
   // ── review: every non-approved agentReview status ──
   entry('review', 'pending', 'transient', AGENT_REVIEW_LANE, HOUR),

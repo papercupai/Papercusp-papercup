@@ -105,6 +105,13 @@ export const DAMAGED_EVENT_WAKE_RE = /^\s*[a-f0-9]{1,16}⟧\r?\n[ \t]*\[await-ev
 export const CROSS_SESSION_MESSAGE_RE =
   /^\s*(?:Another Claude session sent a message:\s*)?<cross-session-message\s+from="[^"\r\n]*"/i;
 
+/** EI-26851488432023641: managed-host parent recovery diagnostics can arrive
+ * as bare native `mode:'turn'` submissions, with no envelope or ledger row.
+ * Require both the Papercusp peer id and the diagnostic label; a generic
+ * `[peer:…]` owner message remains ordinary owner text. */
+export const PAPERCUSP_PEER_RECOVERY_DIAGNOSTIC_RE =
+  /^\s*\[peer:su-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\]\s+Parent recovery diagnostic\b/i;
+
 /** The sender named by a cross-session message's opening tag, or null when the
  * turn is not one. `fromName` is the sending session's display name (for
  * example `papercusp-ec`); `from` is its transport address. */
@@ -121,6 +128,7 @@ export function parseCrossSessionSender(text: string): { from: string; fromName:
 export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
   DAMAGED_EVENT_WAKE_RE,
   CROSS_SESSION_MESSAGE_RE,
+  PAPERCUSP_PEER_RECOVERY_DIAGNOSTIC_RE,
   // Claude's background-task completion banner (self-labels "NOT USER INPUT").
   /\[\s*SYSTEM NOTIFICATION\b[^\]]*\bNOT USER INPUT\b[^\]]*\]/i,
   // Claude's app-level usage-limit reset continuation (no Papercusp injector
@@ -292,7 +300,10 @@ export const CLASSIFY_HEAD_CHARS = 240;
 // owner directives. Make the existing rows findable for reclassification.
 // 9 → 10: a dialog's answer wording alone does not prove human authorship.
 // Reclassify legacy owner-dialog rows through the existing provenance backfill.
-export const MACHINE_SURFACE_CATALOGUE_VERSION = 10;
+// 10 → 11 (EI-26851488432023641): managed-host parent recovery diagnostics
+// arrived as bare peer-labeled mode:'turn' text and fell through to owner.
+// Make those persisted rows findable for reclassification.
+export const MACHINE_SURFACE_CATALOGUE_VERSION = 11;
 
 /** Does this turn's head carry a CLI/subsystem synthetic-command wrapper? */
 export function hasSyntheticMarker(text: string): boolean {

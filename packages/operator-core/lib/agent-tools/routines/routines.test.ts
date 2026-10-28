@@ -1329,6 +1329,69 @@ describe('routines:list', () => {
     });
   });
 
+  it('clips a huge legacy content-error signature while preserving remediation fields', async () => {
+    const now = Date.now();
+    const hugeSignature = Array.from({ length: 20_000 }, (_, index) =>
+      'superproject\u001fdocs/file-' + index + '.md\u001fmdx',
+    ).join('\u001e');
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'home-harness',
+        name: 'git-sync',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 */3 * * * *' },
+        target_role: 'system:git-sync',
+        active: true,
+        next_fire_at: new Date(now + 60_000),
+        last_fired_at: new Date(now - 60_000),
+        group_slug: null,
+        metadata: {
+          last_status: 'quarantined',
+          last_synced_at: now - 30_000,
+          consecutive_content_error_ticks: 3,
+          last_content_errors: ['root/docs/evidence/bad.json [identity-leak]'],
+          last_content_error_count: 20_001,
+          last_content_errors_omitted: 20_000,
+          last_content_errors_artifact: 'git-sync/content-errors/sha256.json',
+          last_content_error_signature: hugeSignature,
+        },
+      },
+    ]);
+
+    const raw = body(
+      await listTool.handler({ installSlug: 'home-harness', name: 'git-sync' } as never, { role: 'su' } as never),
+    );
+    expect(raw.routines[0].health.last_content_error_signature.length).toBeGreaterThan(4_800);
+    const b = listTool.shape!.trimmed!({
+      count: 1,
+      routines: [{
+        ...raw.routines[0],
+        health: {
+          consecutive_content_error_ticks: raw.routines[0].health.consecutive_content_error_ticks,
+          last_content_error_signature: raw.routines[0].health.last_content_error_signature,
+          last_content_error_count: raw.routines[0].health.last_content_error_count,
+          last_content_errors_omitted: raw.routines[0].health.last_content_errors_omitted,
+          last_content_errors_artifact: raw.routines[0].health.last_content_errors_artifact,
+        },
+      }],
+    }, { args: {} } as never) as {
+      routines: Array<{ health: Record<string, unknown> }>;
+    };
+    const health = b.routines[0].health;
+    const signature = health.last_content_error_signature as string;
+    expect(signature.length).toBeLessThanOrEqual(1_000);
+    expect(signature).toContain('[TRUNCATED +');
+    expect(health).toMatchObject({
+      consecutive_content_error_ticks: 3,
+      last_content_error_count: 20_001,
+      last_content_errors_omitted: 20_000,
+      last_content_errors_artifact: 'git-sync/content-errors/sha256.json',
+    });
+    expect(JSON.stringify(health).length).toBeLessThanOrEqual(2_600);
+    expect(JSON.stringify(b.routines).length).toBeLessThanOrEqual(4_200);
+  });
+
   it('surfaces the git-sync head_sha through the callable health reader', async () => {
     const now = Date.now();
     cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));

@@ -439,6 +439,24 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true,
     replacesPoll: 'the hourly system:green-checkpoint cron wait after release:repair-queue admit confirm',
   },
+  {
+    family: 'repair-admit-preview',
+    keyTemplate: 'release:repair-queue:admit-preview-settled:<operationId>',
+    // One key per preview handle; the fire is the operation's terminal state (settled | failed).
+    fireProves: 'condition',
+    params: [
+      {
+        name: 'operationId',
+        required: true,
+        describe: 'the preview-operation handle a long-running release:repair-queue admit dry run returned',
+      },
+    ],
+    describe:
+      'A release:repair-queue admit dry run that outlasted its inline budget settled or failed; read it with release:repair-queue { op:\'get\', previewOperationId }.',
+    emitter: 'emitAdmissionPreviewSettled (packages/operator-core/lib/release/admission-preview-operation.ts)',
+    exists: true,
+    replacesPoll: 'polling release:repair-queue op:get on a preview-operation handle',
+  },
   // ── Locks / plan runs ─────────────────────────────────────────────────────
   {
     family: 'lock',
@@ -1178,11 +1196,22 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 're-polling consult state for an explicit close disposition',
   },
   {
+    // awaitable-review-post-events-2026-10-27 R-1/R-3: keyed per reviewer SESSION BINDING,
+    // not per plan. Events latch, so a per-plan key woke a second reviewer's waiter on the
+    // first review's post. Built by blindReviewPostedEventKey (lib/blind-review-post-event.ts),
+    // the same helper that hands the key to the recruiter on mint/replace/resume.
     family: 'plan-blind-review-posted',
-    keyTemplate: 'plan:blind-review-posted:<slug>',
-    params: [{ name: 'slug', required: true, describe: 'the plan slug awaiting a blind review post' }],
-    describe: 'A blind review and its required session receipt persisted. Payload includes reviewId, activationAuditSeq and outcome; filter by activationAuditSeq for a specific audit. Posting does not prove conclusive review or acceptance.',
-    emitter: 'plans:blind-review op post (packages/operator-core/lib/agent-tools/plans/blind-review.ts)',
+    keyTemplate: 'plan:blind-review-posted:<slug>:<bindingId>',
+    // A recorded review post is immutable and the binding posts once, so the fire certifies
+    // the condition "this reviewer's review is recorded" (never acceptance).
+    fireProves: 'condition',
+    params: [
+      { name: 'slug', required: true, describe: 'the reviewed plan slug' },
+      { name: 'bindingId', required: true, describe: "the reviewer's blind-review session binding id — returned as awaitKey by plans:blind-review mint, replace and resume" },
+    ],
+    describe: "A bound blind reviewer's review and its session receipt both persisted. Unbound posts emit nothing. Payload includes bindingId, reviewId, activationAuditSeq and outcome. Posting does not prove a conclusive review or acceptance.",
+    emitter:
+      'plans:blind-review op post (packages/operator-core/lib/agent-tools/plans/blind-review.ts) + blindReviewPostedEventKey (packages/operator-core/lib/blind-review-post-event.ts)',
     exists: true,
     replacesPoll: 're-polling blind-review sessions for a posted review',
   },

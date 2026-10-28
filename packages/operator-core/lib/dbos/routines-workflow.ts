@@ -25,6 +25,7 @@
  * routines unsupervised. Registered only when `bootstrap.ts` imports this module.
  */
 import { DBOS, DBOSClient, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { performance } from 'node:perf_hooks';
 import { runSweepStepWithOverrunBudget, ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS } from './routines-sweep-step-overrun';
 import { observeFallback } from '../degradation/fallback-observations';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
@@ -51,7 +52,7 @@ import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine, claimedRoutineDispatchAllowed } from '../harness/routines/claim';
-import { routineFireProvenance, readMonitoredFireSnapshot, type RoutineFireProvenance } from '../harness/routines/fire-provenance';
+import { routineFireProvenance, readMonitoredFireSnapshot, scheduledCensusWorkflowId, type RoutineFireProvenance } from '../harness/routines/fire-provenance';
 import {
   classifyClaimSkip,
   recordUnclaimableRoutine,
@@ -827,17 +828,37 @@ async function routineFireImpl(
     // system-action, or role-spawn side effect. One-shots remain valid because
     // their successful claim intentionally deactivates the row; the helper owns
     // that distinction.
-    const dispatchAllowed = await DBOS.runStep(
+    const dispatchFence = await DBOS.runStep(
       async () => {
+        const bodyStartedAt = performance.now();
+        const bodyStartedAtEpochMs = Date.now();
+        const poolStartedAt = performance.now();
         const { sql } = getOrgPg();
-        return claimedRoutineDispatchAllowed(sql, {
+        const poolAcquireMs = performance.now() - poolStartedAt;
+        const predicateStartedAt = performance.now();
+        const allowed = await claimedRoutineDispatchAllowed(sql, {
           id: routineId,
           triggerConfig,
           rescheduleIntervalSec: rescheduleIntervalSec ?? null,
         });
+        const predicateReadMs = performance.now() - predicateStartedAt;
+        return {
+          allowed,
+          timing: {
+            bodyStartedAtEpochMs,
+            bodyCompletedAtEpochMs: Date.now(),
+            bodyElapsedMs: performance.now() - bodyStartedAt,
+            poolAcquireMs,
+            predicateReadMs,
+          },
+        };
       },
       { name: 'routine-fire-active-fence' },
-    );
+    ) as boolean | { allowed: boolean };
+    // DBOS can replay a pre-instrumentation operation_output for this same step
+    // name. Preserve its historical boolean contract while new fires persist the
+    // measured object.
+    const dispatchAllowed = typeof dispatchFence === 'boolean' ? dispatchFence : dispatchFence.allowed;
     if (!dispatchAllowed) {
       console.warn(`[routines] ${routineId} fire CANCELLED — recurring routine was paused or removed after claim`);
       return;
@@ -1359,6 +1380,11 @@ async function routinesTickImpl(): Promise<void> {
     void clearUnclaimableRoutine(sql, r.id);
     try {
       await DBOS.startWorkflow(routineFireWorkflow, {
+        // The native verifier can select this canonical due slot before it fires.
+        // Manual fires retain their distinct SDK identity and manual provenance.
+        ...(r.targetRole === 'system:sql-read-census' ? {
+          workflowID: scheduledCensusWorkflowId(r.workspaceId, r.id, r.nextFireAt),
+        } : {}),
         // Queue classification isolates both must-never-starve persistence work (git-sync)
         // and deadline-sensitive loop wakes; long/unknown work stays on the shared lane.
         queueName,

@@ -21,7 +21,7 @@ it.skipIf(bwrap.status !== 0)('keeps native custody outside a mutation overlay a
       native.stdout.once('data', () => done());
       native.once('error', reject);
     });
-    const env = { ...process.env, VERIFY_TAURI_PID: String(native.pid), OPERATOR_SOURCE_ROOT: root,
+    const env: Record<string, string | undefined> = { ...process.env, VERIFY_TAURI_PID: String(native.pid), OPERATOR_SOURCE_ROOT: root,
       VERIFY_TAURI_SOURCE_REF: commit, VERIFY_TAURI_SOURCE_RECEIPT: receipt,
       PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET: undefined };
     // Actual-goal journeys can use the shared database read-only. Native

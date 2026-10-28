@@ -59,8 +59,10 @@ test('instance selection clears the old desktop and restores its target through 
   const fixture = await installInventory(page);
   await fixture.open({ desktopHost: first, host: first, desktop: 'watch:old', desktopPins: 'old', desktopFilter: 'old' });
   await expectTarget(page, first, 'Selection home');
+  const documentStartedAt = await page.evaluate(() => performance.timeOrigin);
   await choose(page, 'Selection laptop — stopped');
   await expectTarget(page, second, 'Selection laptop');
+  expect(await page.evaluate(() => performance.timeOrigin)).toBe(documentStartedAt);
   const selected = new URL(page.url());
   expect(selected.pathname).toBe('/desktops');
   expect(selected.searchParams.get('host')).toBe(second);

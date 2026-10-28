@@ -158,4 +158,21 @@ describe('completionClaimMismatch', () => {
       missingFromBasedOn: ['work-item:EI-251616'],
     });
   });
+
+  it('uses a matching structured goal read to resolve an abbreviated completion id', () => {
+    const goalRef = 'EI-26250875597402287';
+    expect(completionClaimMismatch({
+      goalRef,
+      summary: 'EI-262 source fix and regression verified; R-4 and deferred wake item remain open (part 2/2)',
+      basedOn: read(`work-item:${goalRef}`),
+    })).toBeUndefined();
+  });
+
+  it('does not use an unread or unrelated goal to resolve an abbreviated completion id', () => {
+    expect(completionClaimMismatch({
+      goalRef: 'EI-26250875597402287',
+      summary: 'Verified EI-262 source fix.',
+      basedOn: read('work-item:EI-26250875597402288'),
+    })).toMatchObject({ missingFromBasedOn: ['work-item:EI-262'] });
+  });
 });

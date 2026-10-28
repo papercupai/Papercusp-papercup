@@ -203,4 +203,45 @@ describe('carryRefChangesForRecovery', () => {
     expect(out).toBeNull();
     expect(readLoop).not.toHaveBeenCalled();
   });
+
+  it('re-resolves each recovery source in its owning harness when the session is unscoped', async () => {
+    const dep = 'file:packages/operator-core/lib/shared.ts';
+    const checkpoint = 'See packages/operator-core/lib/shared.ts.';
+    const heldItems = [
+      { id: 'EI-1001', harness: 'papercusp', checkpoint },
+      { id: 'EI-1002', harness: 'other-harness', checkpoint },
+    ];
+    const readWorkItemRefStamps = vi.fn(async () => new Map([
+      ['EI-1001', { note: checkpoint, stamps: [stamp(dep, 'sha256:papercusp')] }],
+      ['EI-1002', { note: checkpoint, stamps: [stamp(dep, 'sha256:other-harness')] }],
+    ]));
+    const currentByHarness = new Map([
+      ['loop-harness', 'sha256:loop-harness'],
+      ['papercusp', 'sha256:papercusp'],
+      ['other-harness', 'sha256:other-harness'],
+    ]);
+    const resolve = vi.fn<CarryRefResolver>(async (deps, ctx) => {
+      const token = ctx.harness ? currentByHarness.get(ctx.harness) ?? null : null;
+      return new Map(deps.map((ref) => [ref, token]));
+    });
+
+    const out = await carryRefChangesForRecovery({
+      ownerId: 'su-1',
+      workspaceId: WS,
+      sessionHarness: null,
+      readAtIso: READ_AT,
+      getLoopStatus: async () => ({ active: true, harnessSlug: 'loop-harness' }),
+      readLoopRefStamps: async () => ({ note: checkpoint, stamps: [stamp(dep, 'sha256:loop-harness')] }),
+      heldItems,
+      readWorkItemRefStamps,
+      resolve,
+    });
+
+    expect(out).toBeNull();
+    expect(resolve.mock.calls.map(([, ctx]) => ctx.harness)).toEqual([
+      'loop-harness',
+      'papercusp',
+      'other-harness',
+    ]);
+  });
 });

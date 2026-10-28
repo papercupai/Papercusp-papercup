@@ -394,13 +394,16 @@ export interface CarryRefSource {
   /** Shown on each line, e.g. "loop note" or "WI-1 checkpoint". */
   label: string;
   stamps: readonly DepStamp[];
+  /** Harness owning these references; omitted sources inherit the caller's harness. */
+  harness?: string | null;
 }
 
 /**
  * READ side, used by wake delivery and compaction recovery: re-resolve every stamped
- * reference (one batched resolution across all sources, bounded by
- * {@link CARRY_REF_DELIVERY_MAX} and {@link CARRY_REF_DELIVERY_TIMEOUT_MS}) and render
- * one line per changed or gone reference. Returns null when nothing moved.
+ * reference (one batched resolution per source harness, bounded by the total
+ * harness/reference pairs in {@link CARRY_REF_DELIVERY_MAX} and by
+ * {@link CARRY_REF_DELIVERY_TIMEOUT_MS}) and render one line per changed or gone
+ * reference. Returns null when nothing moved.
  */
 export async function carryRefChangesBlock(
   sources: readonly CarryRefSource[],
@@ -413,31 +416,46 @@ export async function carryRefChangesBlock(
     timeoutMs?: number;
   },
 ): Promise<string | null> {
-  const deps: string[] = [];
-  const seen = new Set<string>();
+  const batches = new Map<string | null, { deps: string[]; seen: Set<string> }>();
+  let dependencyCount = 0;
   for (const source of sources) {
+    const harness = source.harness === undefined ? opts.harness : source.harness;
+    const batch = batches.get(harness) ?? { deps: [], seen: new Set<string>() };
+    batches.set(harness, batch);
     for (const stamp of source.stamps) {
-      if (seen.has(stamp.dep) || deps.length >= CARRY_REF_DELIVERY_MAX) continue;
-      seen.add(stamp.dep);
-      deps.push(stamp.dep);
+      if (batch.seen.has(stamp.dep) || dependencyCount >= CARRY_REF_DELIVERY_MAX) continue;
+      batch.seen.add(stamp.dep);
+      batch.deps.push(stamp.dep);
+      dependencyCount += 1;
     }
   }
-  if (deps.length === 0 || !opts.workspaceId) return null;
+  const resolutionBatches = [...batches.entries()].filter(([, batch]) => batch.deps.length > 0);
+  const workspaceId = opts.workspaceId;
+  if (dependencyCount === 0 || !workspaceId) return null;
+  const resolve = opts.resolve ?? resolveCarryRefTokens;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const current = await Promise.race([
-      (opts.resolve ?? resolveCarryRefTokens)(deps, { workspaceId: opts.workspaceId, harness: opts.harness }),
+    const resolved = await Promise.race([
+      Promise.all(resolutionBatches.map(async ([harness, batch]) => [
+        harness,
+        await resolve(batch.deps, { workspaceId, harness }),
+      ] as const)),
       new Promise<'timeout'>((resolve) => {
         timer = setTimeout(() => resolve('timeout'), opts.timeoutMs ?? CARRY_REF_DELIVERY_TIMEOUT_MS);
       }),
     ]);
-    if (current === 'timeout') {
+    if (resolved === 'timeout') {
       return (
-        `🔗 CARRIED REFERENCES — COULD NOT RE-CHECK at ${opts.where}: ${deps.length} stamped reference(s) did not ` +
+        `🔗 CARRIED REFERENCES — COULD NOT RE-CHECK at ${opts.where}: ${dependencyCount} stamped reference(s) did not ` +
         `resolve within ${opts.timeoutMs ?? CARRY_REF_DELIVERY_TIMEOUT_MS}ms. This is NOT evidence they are unchanged.`
       );
     }
-    const changes = sources.flatMap((s) => diffCarryRefStamps(s.stamps, current, s.label));
+    const currentBySourceHarness = new Map(resolved);
+    const changes = sources.flatMap((source) => {
+      const harness = source.harness === undefined ? opts.harness : source.harness;
+      const current = currentBySourceHarness.get(harness);
+      return current ? diffCarryRefStamps(source.stamps, current, source.label) : [];
+    });
     return renderCarryRefChanges(changes, { where: opts.where, readAtIso: opts.readAtIso });
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);

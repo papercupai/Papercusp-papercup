@@ -951,6 +951,76 @@ describe('codex OAuth kernel adapter — a transient pool-wide pause holds inste
     expect(seen).toEqual(['pro-a']);
     expect(started).toEqual([]);
   });
+
+  it('jitters the hold so held requests do not re-hit the recovering account in one tick', async () => {
+    const seen: string[] = [];
+    const { options } = harness(async () => upstream(200, {}, sseBody('ok')), {
+      accounts: [cli('pro-a'), cli('pro-b')],
+      extra: {
+        transientRecovery: () => ({ accountId: 'pro-b', recoverAt: Date.now() + 100 }),
+        transientHoldJitterMs: 400,
+        random: () => 0.5,
+      },
+    });
+    options.admission = { ...options.admission, acquireAttempt: pausedThenFree(seen) };
+    const t0 = Date.now();
+
+    await executeGatewayRequestKernel(options);
+
+    // 100ms reset + 50ms boundary pad + 0.5 × 400ms jitter.
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(340);
+    expect(seen).toEqual(['pro-a', 'pro-b']);
+  });
+
+  // The live walk this replaces (gateway_request_outcomes, 2026-10-28 15:55Z): an account-unavailable
+  // request rotated aviynw6 → aviynw2 → aviynw4 → aviynw5 → aviynw3 (all walled) and was shed in <2s
+  // while a serving account was never tried.
+  const walledFirstPool = () => {
+    const pool = makePool([]);
+    pool.active = () => ({ accountId: 'walled-b' }) as ReturnType<AccountPool['active']>;
+    return pool;
+  };
+
+  it('rotates onto the health-best untried account instead of walking a walled one', async () => {
+    const seen: string[] = [];
+    const excluded: string[][] = [];
+    const { options, started } = harness(async () => upstream(200, {}, sseBody('ok')), {
+      accounts: [cli('pro-a'), cli('walled-b'), cli('serving-c')],
+      pool: walledFirstPool(),
+      extra: {
+        transientRecovery: () => null,
+        selectRotation: (exclude: ReadonlySet<string>) => {
+          excluded.push([...exclude]);
+          return { accountId: 'serving-c' };
+        },
+      },
+    });
+    options.admission = { ...options.admission, acquireAttempt: pausedThenFree(seen) };
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result).toMatchObject({ status: 200, attempts: 2 });
+    expect(seen).toEqual(['pro-a', 'serving-c']);
+    expect(excluded[0]).toEqual(['pro-a']);
+    expect(started[0]?.metadata.accountId).toBe('serving-c');
+  });
+
+  it('sheds at once when no untried account can serve now, rather than walking walled accounts', async () => {
+    const seen: string[] = [];
+    const { options, started } = harness(async () => upstream(200, {}, sseBody('ok')), {
+      accounts: [cli('pro-a'), cli('walled-b')],
+      pool: walledFirstPool(),
+      extra: { transientRecovery: () => null, selectRotation: () => null },
+    });
+    options.admission = { ...options.admission, acquireAttempt: pausedThenFree(seen) };
+
+    const error = await executeGatewayRequestKernel(options).catch((e) => e);
+
+    expect(error).toBeInstanceOf(GatewayRequestKernelError);
+    expect(error.code).toBe('account-unavailable');
+    expect(seen).toEqual(['pro-a']);
+    expect(started).toEqual([]);
+  });
 });
 
 describe('Codex OAuth quota errors inside successful HTTP streams', () => {

@@ -279,7 +279,6 @@ describe('native session id round-trip (bootstrap-su → suLaunchArgs → resume
     expect(json.envelopeEnv.PAPERCUSP_MODEL_SOURCE).toBe('configured-default');
     const launch = suLaunchArgs('codex', {
       promptFile: json.promptFile,
-      model: 'gpt-5.6-sol:xhigh',
     });
     expect(launch.args).not.toContain('--session-id');
 

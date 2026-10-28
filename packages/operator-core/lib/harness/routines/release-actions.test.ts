@@ -3050,6 +3050,33 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     }
   });
 
+  // WI-6554700010042457 (Avi #2574): the scheduled main-greening run has no wall clock of its
+  // own. With nothing inherited, no route may hand the child a deadline: a deadline env is what
+  // made affected-tests refuse `deadline-insufficient` (192/192 UNDETERMINED, zero files run)
+  // after a slow early typecheck, and the paired SIGTERM discarded runs still making progress.
+  it.each(['scope', 'direct', 'fallback'])('adds no run-level deadline through the scheduled %s launch', async route => {
+    const key = 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
+    const saved = process.env[key];
+    delete process.env[key];
+    try {
+      if (route === 'direct') process.env.PAPERCUSP_CHECKPOINT_SCOPE = '0';
+      else delete process.env.PAPERCUSP_CHECKPOINT_SCOPE;
+      if (route === 'fallback') spawnMock.mockImplementationOnce(() =>
+        fakeSpawnFail('Failed to connect to bus: No such file or directory', 1));
+      spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+      await getSystemAction('green-checkpoint')!(ctx);
+      expect(spawnMock).toHaveBeenCalledTimes(route === 'fallback' ? 2 : 1);
+      // The kill timer and this env are gated on the same resolved deadline (null here), so an
+      // absent env also proves no SIGTERM timer was armed for the child.
+      for (const call of spawnMock.mock.calls) {
+        const options = call[2] as { env?: Record<string, string | undefined> };
+        expect(options.env?.[key]).toBeUndefined();
+      }
+    } finally {
+      if (saved === undefined) delete process.env[key]; else process.env[key] = saved;
+    }
+  });
+
   it('a PAYLOAD failure inside a healthy scope does NOT retry (one suite run per tick)', async () => {
     delete process.env.PAPERCUSP_CHECKPOINT_SCOPE;
     // Non-zero exit but no scope-launch-shaped stderr → the suite itself failed; no fallback.

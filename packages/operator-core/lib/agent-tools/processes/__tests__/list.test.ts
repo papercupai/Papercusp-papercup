@@ -58,7 +58,7 @@ function tickResult(
     summary: summarizeReconcile(result),
     result,
     scan: {
-      ownedRootExists: true, ownedTruncated: false, foreignTruncated: false,
+      ownedRootExists: true, ownedTruncated: false, foreignTruncated: false, scanTimedOut: false,
       processes: 0, userManagerRoot: null, ...scanOver,
     },
     scannedProcesses: [],

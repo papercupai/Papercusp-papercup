@@ -65,6 +65,7 @@ const MACHINE_TURNS: ReadonlyArray<readonly [label: string, text: string]> = [
   ['claude usage reset', 'Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.'],
   ['torn nonce event wake', '0d55a713f50015a⟧\n[await-event] coord:inbox-wake:su-a20d fired — continue the work'],
   ['claude cross-session message', 'Another Claude session sent a message:\n<cross-session-message from="uds:/run/user/1000/cc-socks/957123.sock" from-name="papercusp-86" from-mode="bypass">\nConfirmed.\n</cross-session-message>'],
+  ['Papercusp peer recovery diagnostic', '[peer:su-4a84c93a-e530-450c-b01e-8beb7bdc670f] Parent recovery diagnostic under existing EI-26842368936683990.'],
 ];
 
 /**
@@ -83,6 +84,8 @@ const OWNER_TURNS: ReadonlyArray<readonly [label: string, text: string]> = [
   ['quotes a machine marker mid-sentence', 'why does my transcript keep saying "This session is being continued from a previous conversation"? it is annoying'],
   ['quotes a migrated marker mid-sentence', 'the agent printed Base directory for this skill: and I have no idea what that means'],
   ['quotes a torn wake', 'Why did this appear?\n0d55a713f50015a⟧\n[await-event] coord:inbox-wake:su-a20d fired — continue the work'],
+  ['quotes a Papercusp peer diagnostic', 'Why did this appear? [peer:su-4a84c93a-e530-450c-b01e-8beb7bdc670f] Parent recovery diagnostic under existing EI-26842368936683990.'],
+  ['ordinary untagged native ownerTurn mode turn', "Please keep this native ownerTurn mode:'turn' request as owner input."],
 ];
 
 describe('owner-visibility parity across altitudes', () => {

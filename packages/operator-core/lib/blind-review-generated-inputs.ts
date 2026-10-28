@@ -33,6 +33,38 @@ const DIRECTORIES = ['apps/operator/dist-verify',
 const FILES = ['apps/operator-vite/src/routeTree.gen.ts',
   'apps/operator/public/silero_vad_v5.onnx', 'apps/operator/public/silero_vad_legacy.onnx',
   'apps/operator/public/vad.worklet.bundle.min.js'];
+const PREPARED_MODEL = 'apps/operator/public/porcupine/porcupine_params.pv';
+
+async function generatedRoots(root: string): Promise<string[]> {
+  const names = await readdir(join(root, 'apps/operator/public')).catch(error => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  return [...DIRECTORIES, ...FILES, ...names.filter(name => /^ort-wasm-[^/]+\.(?:wasm|mjs)$/.test(name))
+    .map(name => 'apps/operator/public/' + name)];
+}
+
+async function assertFreshOutputs(root: string, source: Source): Promise<void> {
+  const recorded = new Set(source.files.map(file => file.path));
+  async function visit(path: string, optional = false): Promise<void> {
+    const info = await lstat(join(root, path)).catch(error => {
+      if (optional && error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!info) return;
+    const refuse = () => { throw new Error('broker_generated_output_already_exists:' + path); };
+    if (info.isDirectory()) {
+      const names = await readdir(join(root, path));
+      if (!names.length) refuse();
+      for (const name of names) await visit(path + '/' + name);
+    } else if (!info.isFile() || !recorded.has(path) && path !== PREPARED_MODEL) refuse();
+    // prepareVerifierDependencies already installs this one immutable asset.
+    // The mandatory build.runtime-assets command independently validates its
+    // committed checksum before any generated receipt can be produced. No other
+    // file in that directory, redirect, or prior build output is admissible.
+  }
+  for (const path of await generatedRoots(root)) await visit(path, true);
+}
 
 async function census(root: string, source: Source): Promise<VerifierSourceFile[]> {
   const includedPaths = new Set<string>();
@@ -51,9 +83,7 @@ async function census(root: string, source: Source): Promise<VerifierSourceFile[
     include(path);
     if (info.isDirectory()) for (const name of await readdir(join(root, path))) await visit(path + '/' + name);
   }
-  for (const path of [...DIRECTORIES, ...FILES]) await visit(path, true);
-  for (const name of await readdir(join(root, 'apps/operator/public')))
-    if (/^ort-wasm-[^/]+\.(?:wasm|mjs)$/.test(name)) await visit('apps/operator/public/' + name);
+  for (const path of await generatedRoots(root)) await visit(path, true);
   const recorded = new Set(source.files.map(file => file.path));
   const rows = verifierSourceFiles(root, { includedPaths, symlinkRoot: root }).filter(file => !recorded.has(file.path));
   const paths = new Set(rows.map(file => file.path));
@@ -116,16 +146,11 @@ export async function buildRuntimeGeneratedInputs(options: {
     () => verifyInputs(root, source, dependencies, stage, runPhase));
   signal?.throwIfAborted();
   const root = await realpath(options.root);
+  // Diagnose inadmissible leftovers before the expensive dependency census.
+  // Check individual files: one committed sibling must not admit arbitrary
+  // pre-existing output throughout an otherwise generated directory.
+  await runPhase('build.outputs.preflight', () => assertFreshOutputs(root, source));
   await verify('initial');
-  // Never adopt pre-existing generated output as evidence of this invocation.
-  for (const path of DIRECTORIES) {
-    const info = await lstat(join(root, path)).catch(error => {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    });
-    if (info && !source.files.some(file => file.path.startsWith(path + '/')))
-      throw new Error('broker_generated_output_already_exists');
-  }
   const work = await mkdtemp(join(await realpath(options.custodyRoot), 'broker-build-'));
   await chmod(work, 0o700);
   let retain = false;

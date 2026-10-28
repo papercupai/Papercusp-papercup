@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AwaitRow, DeliveryWork, WakeOutcome } from './types';
 import type { ProducerHealthCertificate, VerifiedWaitTimeoutResult } from './verified-wait';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { configureScheduledRegistry, getManaged, resetScheduledRegistry } from '@papercusp/scheduled-registry';
 
 type SettleVerifiedAwaitTimeoutInput = {
   id: number;
@@ -36,6 +37,9 @@ const h = vi.hoisted(() => ({
     claimDueVerifiedAwaits: vi.fn(async (): Promise<AwaitRow[]> => []),
     settleVerifiedAwaitTimeout: vi.fn(async (_input: SettleVerifiedAwaitTimeoutInput): Promise<AwaitRow | null> => null),
     fireTimedOutAwaits: vi.fn(async (): Promise<unknown[]> => []),
+    observeAwaitingTurnProofs: vi.fn(async () => 0),
+    listExpiredPickups: vi.fn(async (): Promise<unknown[]> => []),
+    settleExpiredPickup: vi.fn(async () => ({ settled: false, requeuedDeliveryId: null })),
     expireLapsedAwaits: vi.fn(async () => 0),
     stampAnnouncementsFired: vi.fn(async (): Promise<number> => 0),
     // event-wait-settlement-2026-10-20 P-004: the unannounced proving-fire settlement.
@@ -153,6 +157,7 @@ const {
   cancelSupersededCandidateAwaits,
   isInboxWakeGroupRedundant,
   setAutoPumpEnabledForTests,
+  startAwaitSweeper,
   sweepAllWorkspaces,
   sweepOnce,
   wakeClaimableAwaitersForSubscribers,
@@ -2785,5 +2790,104 @@ describe('WI-10008194 — every pump / sweep run reports its outcome to pump hea
     expect(tracker.recordSuccess).toHaveBeenCalledWith('ws-test', 'sweep');
     expect(tracker.recordSuccess).toHaveBeenCalledWith('ws-test', 'pump');
     expect(tracker.recordFailure).not.toHaveBeenCalledWith('ws-test', 'sweep', expect.anything());
+  });
+});
+
+describe('await-event-sweeper timing evidence', () => {
+  afterEach(() => {
+    resetScheduledRegistry();
+    delete (globalThis as { __papercuspAwaitSweeperStarted?: boolean }).__papercuspAwaitSweeperStarted;
+  });
+
+  it('keeps the managed timer running until the async sweep settles and prevents overlapping sweeps', async () => {
+    let tick: (() => void) | undefined;
+    let signalStarted!: () => void;
+    let releaseSweep!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      releaseSweep = resolve;
+    });
+    h.store.reconcileFiredWakeDeliveries.mockImplementationOnce(async () => {
+      signalStarted();
+      await held;
+      return 0;
+    });
+    configureScheduledRegistry({
+      setIntervalImpl: (callback) => {
+        tick = callback;
+        return { unref: () => undefined };
+      },
+      clearIntervalImpl: () => undefined,
+      now: () => 1_000,
+      log: () => undefined,
+    });
+
+    startAwaitSweeper();
+    expect(getManaged('await-event-sweeper')).toMatchObject({
+      category: 'global-sweep',
+      classification: 'timeout-reaper',
+    });
+    expect(tick).toBeDefined();
+    tick!();
+    await started;
+
+    expect(getManaged('await-event-sweeper')).toMatchObject({ running: true, skippedWhileRunning: 0 });
+    tick!();
+    expect(getManaged('await-event-sweeper')).toMatchObject({ running: true, skippedWhileRunning: 1 });
+    expect(h.store.reconcileFiredWakeDeliveries).toHaveBeenCalledTimes(1);
+
+    releaseSweep();
+    await vi.waitFor(() => {
+      expect(getManaged('await-event-sweeper')).toMatchObject({ running: false });
+    });
+  });
+
+  it('logs one aggregate warning when timeout rows are more than five minutes late', async () => {
+    const firedAt = Date.now();
+    const timedOut = [
+      awaitRow({
+        id: 501,
+        eventKey: 'private:timeout-one',
+        expiresTs: new Date(firedAt - 6 * 60_000).toISOString(),
+        firedAt: new Date(firedAt).toISOString(),
+        firedReason: 'timeout',
+      }),
+      awaitRow({
+        id: 502,
+        eventKey: 'private:timeout-two',
+        expiresTs: new Date(firedAt - 15 * 60_000).toISOString(),
+        firedAt: new Date(firedAt).toISOString(),
+        firedReason: 'timeout',
+      }),
+    ];
+    h.store.fireTimedOutAwaits.mockResolvedValueOnce(timedOut);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await sweepOnce('ws-test');
+      expect(warning).toHaveBeenCalledWith(
+        '[await-event] timeout sweep reconciled 2 overdue await(s); oldest deadline was 900s ago (ws=ws-test)',
+      );
+
+      h.store.fireTimedOutAwaits.mockResolvedValueOnce([
+        awaitRow({
+          id: 503,
+          eventKey: 'private:timely-timeout',
+          expiresTs: new Date(firedAt - 30_000).toISOString(),
+          firedAt: new Date(firedAt).toISOString(),
+          firedReason: 'timeout',
+        }),
+      ]);
+      await sweepOnce('ws-test');
+      expect(
+        warning.mock.calls.filter((call) =>
+          String(call[0]).startsWith('[await-event] timeout sweep reconciled '),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      warning.mockRestore();
+    }
   });
 });

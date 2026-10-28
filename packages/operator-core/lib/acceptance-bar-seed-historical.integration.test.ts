@@ -95,6 +95,47 @@ function seedInput(planSlug: string, planContent: string, actorId: string) {
 }
 
 describe('historical deterministic acceptance BAR rubric collision', () => {
+  it('persists an explicitly planned case extension while an unmarked selector refuses before writes', async () => {
+    const slug = 'seed-planned-case-extension';
+    const file = 'packages/operator-core/lib/acceptance-bar-seed-historical.integration.test.ts';
+    const selector = { file, testName: 'future permission-change journey',
+      plannedReason: 'This pre-start plan adds the new journey to the existing integration suite.' };
+    const content = (planned: boolean) => contentFor(slug).replace('status: active', 'status: ready').replace(
+      '**R-1 — Canonical outcome.** The first outcome holds.',
+      '**R-1 — Canonical outcome.**\n```requirement\n' + JSON.stringify({
+        intent: { request: 'Implement the new journey in the maintained suite.', sourceRefs: ['session_turn:fixture'] },
+        acceptance: { condition: 'The exact journey must pass.', falsifier: 'The required journey is absent or fails.',
+          evidencePlane: 'tree', requiredScope: ['P-001'], requiredTestLayers: ['integration'] },
+        verification: { method: 'Run the exact future journey.', check: { kind: 'tests', files: [file],
+          cases: [planned ? selector : { file, testName: selector.testName }] } },
+      }) + '\n```',
+    );
+    await insertSubject(slug, content(true));
+    await db.adminSql`UPDATE harness_shared.harness_plans SET status = 'ready'
+      WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}`;
+    const seed = (planned: boolean) => db.adminSql.begin(tx => seedAcceptanceBarsInTransaction({
+      ...seedInput(slug, content(planned), 'su-seeder'), planStatus: 'ready', executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(await seed(false)).toMatchObject({ ok: false, error: 'bar_contract_check_invalid' });
+    expect(await db.adminSql`SELECT plan_slug FROM harness_shared.harness_plans
+      WHERE workspace_id = ${WORKSPACE} AND plan_slug = ${`acceptance-${slug}`}`).toHaveLength(0);
+    expect(await db.adminSql`SELECT spec_id FROM harness_shared.plan_spec_clauses
+      WHERE workspace_id = ${WORKSPACE} AND plan_slug = ${slug}`).toHaveLength(0);
+
+    const seeded = await seed(true);
+    expect(seeded.ok).toBe(true);
+    if (!seeded.ok) throw new Error(seeded.message);
+    const stored = await runWithWorkspace(WORKSPACE, () => getRubric(seeded.rubricSlug, 1));
+    expect(stored?.criteria.find(criterion => criterion.barKey === 'R-1')?.check).toEqual({
+      kind: 'tests', files: [file], cases: [selector],
+    });
+    const activeReaudit = await db.adminSql.begin(tx => seedAcceptanceBarsInTransaction({
+      ...seedInput(slug, content(true), 'su-seeder'), planStatus: 'active', executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(activeReaudit).toMatchObject({ ok: false, error: 'bar_contract_check_invalid' });
+    expect(await runWithWorkspace(WORKSPACE, () => getRubric(seeded.rubricSlug, 1))).toEqual(stored);
+  });
+
   it('refuses an embedded case selector before activation writes and accepts its exact repair R5-CONTRACT', async () => {
     const slug = 'seed-named-case-guard';
     const file = 'packages/operator-core/lib/acceptance-bar-seed-historical.integration.test.ts';

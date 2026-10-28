@@ -1970,6 +1970,7 @@ async function sendOne(
     summary: msg.summary,
     body: msg.body,
     planSlug: msg.plan_slug,
+    goalRef: msg.why?.goalRef,
     basedOn: readTrace,
   });
   if (completionMismatch) extra[COMPLETION_CLAIM_MISMATCH_FIELD] = completionMismatch;

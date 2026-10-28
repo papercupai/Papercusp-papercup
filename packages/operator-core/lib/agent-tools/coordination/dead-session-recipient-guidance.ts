@@ -14,8 +14,9 @@
  * `coord:send`'s `unknown_recipient` message offers: use the short handle, the
  * `su-` prefix, the full ownerId, or look one up in `coord:presence`. Every one
  * of those answers "which LIVE agent did you mean" — a question with no answer
- * here, because no live session will ever again hold that id, and
- * `coord:presence` cannot tell you who owns the inference gateway. So the
+ * here because this session is not live. An identity-preserving resume may make
+ * the same ownerId live again; `coord:presence` still cannot tell you who owns
+ * the inference gateway. So the
  * refusal read as "you typed it wrong" for a caller who had typed exactly what
  * their knowledge said.
  *
@@ -166,9 +167,9 @@ export function roleAddressingGuidance(
   const death =
     confirmed.length > 0
       ? confirmed[0].endedAt
-        ? ` That session ENDED (${confirmed[0].endedAt}) — this is not a typo, and no send to it can ever succeed again.`
-        : ' That session has ENDED — this is not a typo, and no send to it can ever succeed again.'
-      : ' An id of that shape names ONE SESSION, which is mortal — if it is not in the roster it has almost certainly ended rather than been mistyped.';
+        ? ` That session ENDED (${confirmed[0].endedAt}) — this is not a typo. While it remains ended, direct sends fail; an identity-preserving resume may make the same ownerId live again.`
+        : ' That session has ENDED — this is not a typo. While it remains ended, direct sends fail; an identity-preserving resume may make the same ownerId live again.'
+      : ' An id of that shape names ONE SESSION, not a standing responsibility. It is not in the live roster now; that does not prove the ownerId is permanently unavailable.';
 
   const namedFleet = fleetSlug?.trim();
   const fleetRoute = namedFleet
@@ -187,10 +188,12 @@ export function roleAddressingGuidance(
     fleetRoute +
     ' If you are addressing WHO OWNS A SUBSYSTEM (or "whoever runs X") rather than that one' +
     ' person, address the ROLE instead: `@role:<slot>`. A role selector resolves to whoever' +
-    ' holds it live AND parks for the next spawn if nobody does, so it cannot hard-refuse the' +
-    ' way a session id does — `coord:presence` cannot help you here because no live session' +
-    ' will ever hold that id again. If a memory or a fact told you this id owns something,' +
-    ' that record is the actual defect: it captured a session where it meant a role, and it' +
-    ' will strand the next agent too — re-record it as the role selector.'
+    ' holds it live AND parks for the next spawn if nobody does, so it cannot hard-refuse' +
+    ' because one particular session is absent. `coord:presence` only reports current live' +
+    ' sessions; it cannot identify which role owns a subsystem. An identity-preserving resume' +
+    ' may make the same ownerId live again, but the id still names one session instance, not' +
+    ' a standing responsibility. For continuity across session replacements, use the role' +
+    ' selector; re-record it as a role selector for continuity across session replacements.' +
+    ' Keep a session id when you intentionally target that session.'
   );
 }

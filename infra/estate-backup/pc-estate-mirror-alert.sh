@@ -65,6 +65,18 @@ REPO="${PC_REPO:-$(cd "$SELF_DIR/../.." && pwd)}"
 
 mkdir -p "$ROOT" 2>/dev/null || true
 
+# The health probe raises a detailed, multi-channel alarm before returning
+# non-zero. systemd then starts this generic OnFailure unit. If that detailed
+# alarm already latched the same mirror failure, preserve its reason and avoid
+# publishing a second, less useful alert. A failure before the script can raise
+# its own alarm still reaches this fallback when the marker is absent.
+if [ "$MODE" = raise ] \
+  && [ "$REASON" = "pc-estate-mirror unit failed" ] \
+  && [ -e "$MARKER" ]; then
+  echo "MIRROR ALERT already latched; suppressing duplicate generic OnFailure notification" >&2
+  exit 0
+fi
+
 # Channels 1-3. In --resolved mode the caller has ALREADY deleted the marker
 # (that deletion is what proves recovery), so re-writing it here would re-assert
 # the exact fault we are standing down from.

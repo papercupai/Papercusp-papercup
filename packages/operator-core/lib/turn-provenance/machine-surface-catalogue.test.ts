@@ -95,6 +95,18 @@ describe('machine-surface catalogue — predicates', () => {
     expect(parseCrossSessionSender(`look at this: ${tag}`)).toBeNull();
   });
 
+  it('HIDES the specific Papercusp peer recovery diagnostic, but keeps generic peer text and owner quotations', () => {
+    const diagnostic =
+      '[peer:su-4a84c93a-e530-450c-b01e-8beb7bdc670f] Parent recovery diagnostic under existing EI-26842368936683990.';
+    expect(isUnenrolledMachineSurface(diagnostic)).toBe(true);
+    expect(isUnenrolledMachineSurface(`Why did this appear? ${diagnostic}`)).toBe(false);
+    expect(
+      isUnenrolledMachineSurface(
+        '[peer:su-4a84c93a-e530-450c-b01e-8beb7bdc670f] Ordinary note from my own text.',
+      ),
+    ).toBe(false);
+  });
+
   it('HIDES a synthetic slash-command wrapper', () => {
     expect(isUnenrolledMachineSurface('<command-name>compact</command-name>')).toBe(true);
     expect(hasSyntheticMarker('<local-command-stdout>ok</local-command-stdout>')).toBe(true);
@@ -275,6 +287,7 @@ describe('machine-surface catalogue — ONE HOME (recurrence guard)', () => {
   const MARKERS = [
     'This session is being continued from a previous conversation',
     'Request interrupted by user',
+    'Parent recovery diagnostic',
   ];
 
   /**

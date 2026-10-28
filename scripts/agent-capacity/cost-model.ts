@@ -888,7 +888,7 @@ export function trialEconomicsCoverage(dossier: TrialEconomicsDossier, expectedS
           const usage = readSource(cost.usageRef), rate = readSource(cost.rateRef), allocation = readSource(cost.allocationRef);
           if (usage.kind !== 'usage' || !sameIdentity(usage.identity, identity) || usage.profileId !== profile.profileId ||
             usage.category !== category || !text(usage.sourceRef) || !text(usage.unit) ||
-            !integer(usage.observedQuantityMicros) || usage.observedQuantityMicros === 0 ||
+            !integer(usage.observedQuantityMicros) ||
             !integer(usage.monthQuantityMicros) || usage.provenance !== 'observed-to-month' ||
             !integer(usage.observedExposureMicros) || usage.observedExposureMicros === 0 ||
             !['active-hours', 'tasks', 'retained-month'].includes(String(usage.projectionBasis)) ||

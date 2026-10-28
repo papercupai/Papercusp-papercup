@@ -668,6 +668,56 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     });
   });
 
+  it('does not let a stale pump park reopen an ACKed wake', async () => {
+    const fired = await store
+      .registerAwait({ subscriberId: 'su-ack-stale-park', eventKey: 'ack:stale-park' })
+      .then(() => store.fireAwaitsForKey({ eventKey: 'ack:stale-park' }));
+    await store.insertDeliveries({ awaits: fired });
+    const [w] = (await store.claimDueDeliveries({ limit: 5 })).filter(
+      (row) => row.subscriberId === 'su-ack-stale-park',
+    );
+    expect(w).toBeDefined();
+
+    await store.markDeliveryParked(w.id, 'first pump park', 60_000);
+    expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-ack-stale-park' })).toEqual({
+      acked: true,
+      alreadySettled: false,
+    });
+
+    // Model an older pump result completing after the subscriber has ACKed.
+    await store.markDeliveryParked(w.id, 'late stale park', 60_000);
+    expect((await store.listRecentDeliveries('su-ack-stale-park'))[0]).toMatchObject({
+      id: w.id,
+      status: 'delivered',
+      channel: 'inbox',
+      lastError: 'acked by subscriber while awake',
+    });
+  });
+
+  it('does not reopen a suppressed delivery from a late detached-resume exit', async () => {
+    const fired = await store
+      .registerAwait({ subscriberId: 'su-resume-suppressed', eventKey: 'resume:suppressed' })
+      .then(() => store.fireAwaitsForKey({ eventKey: 'resume:suppressed' }));
+    await store.insertDeliveries({ awaits: fired });
+    const [w] = (await store.claimDueDeliveries({ limit: 5 })).filter(
+      (row) => row.subscriberId === 'su-resume-suppressed',
+    );
+    expect(w).toBeDefined();
+    await store.markDeliveryDelivered(w.id, 'suppressed-redundant');
+
+    expect(await store.reopenDeliveredAfterResumeDeath({
+      id: w.id,
+      error: 'resume-turn-death:late-callback',
+      maxAttempts: 8,
+      backoffMs: 1,
+    })).toBe('ignored');
+    expect((await store.listRecentDeliveries('su-resume-suppressed'))[0]).toMatchObject({
+      id: w.id,
+      status: 'delivered',
+      channel: 'suppressed-redundant',
+    });
+  });
+
   it('retries an ACK miss when the owned delivery is parked again', async () => {
     const fired = await store
       .registerAwait({ subscriberId: 'su-ack-reparked', eventKey: 'ack:reparked' })

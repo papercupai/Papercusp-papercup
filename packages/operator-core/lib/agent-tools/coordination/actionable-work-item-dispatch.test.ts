@@ -62,6 +62,13 @@ function deps(patch: Partial<ActionableWorkItemDispatchDeps> = {}): ActionableWo
     claim: vi.fn(async (id, assignee) => workItem(id, 'open', assignee)),
     authorize: vi.fn(async () => ({ allowed: true as const })),
     explainClaimFloors: vi.fn(async () => []),
+    readClaimConcurrency: vi.fn(async () => ({
+      blocked: false,
+      activeClaims: 0,
+      maxConcurrentClaims: 1,
+      heldIds: [],
+      blockerParkedIds: [],
+    })),
     blockers: vi.fn(async () => []),
     planBlock: vi.fn(async () => null),
     planClaim: vi.fn(async () => null),
@@ -159,6 +166,88 @@ describe('assignActionableWorkItems', () => {
         code: 'dependency_blocked',
         blockers: ['WI-ROOT'],
       }),
+    ]);
+  });
+
+  it('caps a multi-id dispatch to the target’s effective available slots and leaves the rest unassigned', async () => {
+    const claim = vi.fn(async (id: string, assignee: string) => workItem(id, 'open', assignee));
+    const readClaimConcurrency = vi.fn(async () => ({
+      blocked: false,
+      activeClaims: 0,
+      maxConcurrentClaims: 1,
+      heldIds: [],
+      blockerParkedIds: [],
+    }));
+    const d = deps({ claim, readClaimConcurrency });
+
+    const result = await assignActionableWorkItems({
+      workItemIds: ['WI-FIRST', 'WI-SECOND'],
+      targetAgent: 'su-cap-one',
+      workspaceId: 'ws-test',
+      harness: 'email',
+    }, d);
+
+    expect(readClaimConcurrency).toHaveBeenCalledWith({ cupId: 'su-cap-one', workspaceId: 'ws-test' });
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(claim).toHaveBeenCalledWith('WI-FIRST', 'su-cap-one', { harness: 'email' });
+    expect(result.assigned).toEqual(['WI-FIRST']);
+    expect(result.actionable).toEqual(['WI-FIRST']);
+    expect(result.executionWorkItemIds).toEqual(['WI-FIRST']);
+    expect(result.skipped).toEqual([
+      expect.objectContaining({
+        workItemId: 'WI-SECOND',
+        code: 'concurrency_limited',
+        capacity: {
+          activeClaims: 0,
+          maxConcurrentClaims: 1,
+          availableSlots: 1,
+          heldIds: [],
+          blockerParkedIds: [],
+        },
+      }),
+    ]);
+  });
+
+  it('uses the shared oracle’s count so typed external-blocker parks do not consume a slot', async () => {
+    const claim = vi.fn(async (id: string, assignee: string) => workItem(id, 'open', assignee));
+    const d = deps({
+      claim,
+      readClaimConcurrency: vi.fn(async () => ({
+        blocked: false,
+        activeClaims: 0,
+        maxConcurrentClaims: 1,
+        heldIds: [],
+        blockerParkedIds: ['WI-PARKED-EXTERNAL'],
+      })),
+    });
+
+    const result = await assignActionableWorkItems({
+      workItemIds: ['WI-READY'],
+      targetAgent: 'su-cap-one',
+    }, d);
+
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(result.assigned).toEqual(['WI-READY']);
+  });
+
+  it('fails closed when the target capacity cannot be read', async () => {
+    const claim = vi.fn();
+    const d = deps({
+      claim,
+      readClaimConcurrency: vi.fn(async () => { throw new Error('claim census unavailable'); }),
+    });
+
+    const result = await assignActionableWorkItems({
+      workItemIds: ['WI-ONE', 'WI-TWO'],
+      targetAgent: 'su-cap-one',
+    }, d);
+
+    expect(claim).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(result.actionable).toEqual([]);
+    expect(result.skipped).toEqual([
+      expect.objectContaining({ workItemId: 'WI-ONE', code: 'read_failed' }),
+      expect.objectContaining({ workItemId: 'WI-TWO', code: 'read_failed' }),
     ]);
   });
 

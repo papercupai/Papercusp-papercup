@@ -1192,7 +1192,7 @@ export function deriveVerdict(result: Pick<HarnessRunResult, 'preflight' | 'phas
   return { verdict: 'fail', firstFailure: { phase: bad.phase, step: bad.step, reasonCode: bad.reasonCode } };
 }
 
-/** One greppable line: `HARNESS_RESULT harness=… verdict=… first_failure=phase/step/reason … evidence=…`. */
+/** One greppable line with the original evidence dir and a JSON-quoted compact archive pointer. */
 export function formatSummaryLine(result: HarnessRunResult): string {
   const count = (s: PhaseResult['status']) => result.phases.filter((p) => p.status === s).length;
   const ff = result.firstFailure;
@@ -1208,10 +1208,15 @@ export function formatSummaryLine(result: HarnessRunResult): string {
     ? ''
     : ` tier=${result.tier}` +
       (tg ? ` tier_gate=${tg.refused > 0 ? `refused:${tg.refused}${tg.override ? ':overridden' : ''}` : 'admitted'}` : '');
+  // writeRunResult archives terminal verdicts before either runner prunes. Keep
+  // the original evidence path for phase artifacts; the archive is diagnosis only.
+  const retained = result.endedAt
+    ? ` retained_result=${JSON.stringify(path.join(path.dirname(result.evidenceDir), 'retained', result.runId, 'result.json'))}`
+    : '';
   return (
     `HARNESS_RESULT harness=${result.harness} verdict=${result.verdict} run=${result.runId} first_failure=${first}` +
     ` passed=${count('passed')} failed=${count('failed')} blocked=${count('blocked')} skipped=${count('skipped')}` +
-    ` reused=${count('reused')}${rails}${tier} evidence=${result.evidenceDir}`
+    ` reused=${count('reused')}${rails}${tier} evidence=${result.evidenceDir}${retained}`
   );
 }
 
@@ -1222,6 +1227,8 @@ export interface SummaryLineFields {
   runId: string;
   /** null when the line says `first_failure=none`. `-` placeholders read back as null. */
   firstFailure: { phase: string; step: string | null; reasonCode: string | null } | null;
+  /** Compact original terminal result, not a replacement for the full phase evidence. Absent on legacy lines. */
+  retainedResult?: string;
 }
 
 const SUMMARY_LINE_RE = /\bHARNESS_RESULT\s+harness=(\S+)\s+verdict=(\S+)\s+run=(\S+)\s+first_failure=(\S+)/;
@@ -1237,15 +1244,19 @@ export function parseSummaryLine(line: string): SummaryLineFields | null {
   const m = SUMMARY_LINE_RE.exec(line);
   if (!m) return null;
   const [, harness, verdict, runId, first] = m as unknown as [string, string, string, string, string];
-  if (first === 'none') return { harness, verdict, runId, firstFailure: null };
+  const fields: Omit<SummaryLineFields, 'firstFailure'> = { harness, verdict, runId };
+  const retained = /\sretained_result=("(?:[^"\\]|\\.)*")\s*$/.exec(line);
+  if (retained) {
+    // A damaged optional archive field must not hide the original failure fingerprint.
+    try { fields.retainedResult = JSON.parse(retained[1]!) as string; } catch { /* legacy core fields still apply */ }
+  }
+  if (first === 'none') return { ...fields, firstFailure: null };
   const a = first.indexOf('/');
   const z = first.lastIndexOf('/');
-  if (a < 0 || z === a) return { harness, verdict, runId, firstFailure: null };
+  if (a < 0 || z === a) return { ...fields, firstFailure: null };
   const dash = (s: string): string | null => (s === '-' || s === '' ? null : s);
   return {
-    harness,
-    verdict,
-    runId,
+    ...fields,
     firstFailure: { phase: first.slice(0, a), step: dash(first.slice(a + 1, z)), reasonCode: dash(first.slice(z + 1)) },
   };
 }

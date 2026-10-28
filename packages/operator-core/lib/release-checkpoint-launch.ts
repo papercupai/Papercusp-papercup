@@ -396,10 +396,11 @@ export interface ActiveCheckpointCheck {
   /** What `eta_sec` measures. `full-suite` is the systemd backstop remainder; `delivery-phase`
    *  deliberately carries a null `eta_sec` until the run publishes a bounded verdict estimate. */
   eta_basis?: 'full-suite' | 'delivery-phase';
-  /** EI-11667: set when a `replaceStale:true` request found the run stale but YOUNGER than
-   *  REPLACE_STALE_MIN_AGE_SEC — the stop was refused (a young stale run is healthy-in-progress
-   *  on a busy tree, not wedged; see the constant's doc for the 2026-07-13 replace-storm). */
-  replace_refused_young?: boolean;
+  /** EI-11667 / WI-6554700010042457: set when a `replaceStale:true` request found the run stale
+   *  but SILENT for less than REPLACE_STALE_MIN_SILENCE_SEC (or its silence is unmeasurable) —
+   *  the stop was refused (a progressing stale run is healthy on a busy tree, not wedged; see
+   *  the constant's doc for the 2026-07-13 replace-storm). */
+  replace_refused_progressing?: boolean;
   /** EI-18757156963245979: the run has finished its SUITE and is in the verdict path
    *  (stale-red re-triage -> auto-refire -> prefix salvage), as published by the run itself
    *  in the run-lock's `phase.json`. Such a run is seconds-to-minutes from a verdict — and
@@ -408,9 +409,9 @@ export interface ActiveCheckpointCheck {
    *  never written): the decision then degrades to the age test alone, as before. */
   delivering?: boolean;
   /** EI-18757156963245979: set when a `replaceStale:true` request was refused because the run
-   *  is `delivering`. Distinct from `replace_refused_young` on purpose — "too young to be
-   *  wedged" and "too close to done to interrupt" are different reasons to wait, and a caller
-   *  that sees this one knows a verdict is imminent rather than ~20 minutes out. */
+   *  is `delivering`. Distinct from `replace_refused_progressing` on purpose — "still making
+   *  progress" and "too close to done to interrupt" are different reasons to wait, and a caller
+   *  that sees this one knows a verdict is imminent rather than further out. */
   replace_refused_delivering?: boolean;
   /** WI-5685: true when this active run was detected via the shared file-based RUN LOCK, not
    *  the manual systemd unit — almost certainly the hourly cron tick (or another out-of-band
@@ -1797,27 +1798,31 @@ export function checkActiveCheckpointRun(
 }
 
 /** EI-11667 replace-storm guard: an in-flight run judging a "stale" candidate is the NORMAL
- *  state of a HEALTHY young run on a busy tree — the suite needs ~20-55 min while the tip moves
- *  every few minutes, so `candidate_stale` alone is not evidence of a wedged run. On 2026-07-13
- *  four sus each followed the "pass replaceStale:true" nudge and serially killed each other's
- *  runs (21:25→22:02); no verdict landed and the green pin froze for 2h. replaceStale therefore
- *  only unlocks once the run is old enough that it plausibly SHOULD have verdicted already (the
- *  true EI-9672 wedged-salvage case); younger runs — and runs whose age systemd cannot report —
- *  are refused with `replace_refused_young` so callers wait for the verdict instead.
+ *  state of a HEALTHY run on a busy tree — the suite runs far longer than the tip takes to
+ *  move, so `candidate_stale` alone is not evidence of a wedged run. On 2026-07-13 four sus
+ *  each followed the "pass replaceStale:true" nudge and serially killed each other's runs
+ *  (21:25→22:02); no verdict landed and the green pin froze for 2h. replaceStale therefore only
+ *  unlocks once the run has demonstrably STOPPED PROGRESSING (the true EI-9672 wedged-salvage
+ *  case); a run still making progress — and a run whose progress cannot be measured at all —
+ *  is refused with `replace_refused_progressing` so callers wait for the verdict instead.
  *
- *  ⚠ THIS NUMBER IS NOT FREE TO PICK — it is pinned to GREEN_CHECKPOINT_SUITE_TIMEOUT_MS
- *  (release/green-checkpoint-schedule.ts) by release-timing-invariants.test.ts, which is
- *  where the whole gate timing chain is enforced. It was written as a literal here for a
- *  real reason: release-actions.ts, its old home, calls registerSystemAction at module scope
- *  and pulls a large graph (pipeline-events, release-checkpoint-config, dev-data), so
- *  importing it into this low-level launch helper would have dragged that registration side
- *  effect into every consumer of this file. That is fixed at the source — the budget now
- *  lives in release/green-checkpoint-schedule.ts, a leaf with no imports — so this and the
- *  other former copies IMPORT it. Retuning the suite budget moves them automatically; the
- *  test now guards the ORDERING of the genuinely-different numbers in the chain, which is
- *  the part no import can enforce.
+ *  WI-6554700010042457 (Avi #2574): the unlock is SILENCE, not AGE. Silence = now −
+ *  `progress_at` (the newest of log timestamp, phase marker, log mtime and unit start; see
+ *  checkpointProgressAtMs), falling back to `elapsed_sec` when no progress signal exists. It
+ *  used to be AGE (`REPLACE_STALE_MIN_AGE_SEC`, last pinned to the 120m suite budget on the
+ *  reasoning below: "a run still inside its own suite budget is not wedged"). That item removed
+ *  the run-level wall clock from the main-greening path, so a healthy run now routinely passes
+ *  120m (measured 2026-10-28: prep ~50m + lane-stateful ~81m), and an age unlock would make
+ *  every such run killable by any peer — the same starvation, reintroduced.
  *
- *  It was a literal `20 * 60` for months, which is SIX TIMES tighter than the budget the
+ *  ⚠ THIS NUMBER IS NOT FREE TO PICK — it is the run's OWN idle budget,
+ *  MANUAL_CHECKPOINT_WATCHDOG_MS (the no-progress window its self-watchdog enforces; see
+ *  green-checkpoint.ts writeSelfWatchdogArmMarker `idleMs`). A run silent that long is one its
+ *  own watchdog would already kill, so replacing it destroys no work the system still expects.
+ *  DERIVED, never a literal, so retuning the idle budget moves this with it;
+ *  release-timing-invariants.test.ts pins the relation.
+ *
+ *  History of the AGE threshold this replaced: it was a literal `20 * 60` for months, which is SIX TIMES tighter than the budget the
  *  system actually grants a run, so
  *  "old enough to plausibly be wedged" was false by construction: every healthy run became
  *  replaceable ~20 min into a suite that is allowed to take 120. WI-38026 measured the
@@ -1840,20 +1845,34 @@ export function checkActiveCheckpointRun(
  *  two numbers ONE decision: retuning the suite budget now carries this with it.
  *
  *  This is not the only protection — `delivering` (checked FIRST in classifyReplaceRequest)
- *  covers the verdict tail at any age, and an abandoned lock is reclaimed independently via
+ *  covers the verdict tail at any silence, and an abandoned lock is reclaimed independently via
  *  CHECKPOINT_LOCK_STALE_MS. Enforced by release-timing-invariants.test.ts. */
-export const REPLACE_STALE_MIN_AGE_SEC = 120 * 60;
+export const REPLACE_STALE_MIN_SILENCE_SEC = Math.ceil(MANUAL_CHECKPOINT_WATCHDOG_MS / 1000);
 
 /** Why a `replaceStale:true` request was (not) allowed to stop the in-flight run. */
-export type ReplaceDecision = { replace: true } | { replace: false; reason: 'not_stale' | 'young' | 'delivering' };
+export type ReplaceDecision = { replace: true } | { replace: false; reason: 'not_stale' | 'progressing' | 'delivering' };
+
+/** Seconds the in-flight run has gone without a progress signal, or null when neither
+ *  `progress_at` nor `elapsed_sec` is measurable. `progress_at` wins: it already folds in the
+ *  start time (checkpointProgressAtMs), so it is never older than the start. */
+export function checkpointSilenceSec(
+  active: Pick<ActiveCheckpointCheck, 'elapsed_sec' | 'progress_at'>,
+  nowMs: number = Date.now(),
+): number | null {
+  const progressMs = active.progress_at ? Date.parse(active.progress_at) : Number.NaN;
+  if (Number.isFinite(progressMs)) return Math.max(0, Math.floor((nowMs - progressMs) / 1000));
+  return typeof active.elapsed_sec === 'number' && Number.isFinite(active.elapsed_sec)
+    ? active.elapsed_sec
+    : null;
+}
 
 /** Pure replace policy — extracted so the rule is testable rather than inline in the launch
  *  path (EI-18757156963245979; the bug below shipped precisely because the decision had no
  *  test of its own).
  *
- *  ORDER IS LOAD-BEARING: `delivering` is checked BEFORE the age test, because the two
- *  disagree exactly where it matters. `REPLACE_STALE_MIN_AGE_SEC` encodes "old enough to
- *  plausibly be wedged (past the fastest full-suite duration)" — but on a loaded box the
+ *  ORDER IS LOAD-BEARING: `delivering` is checked BEFORE the silence test. History: under the
+ *  former AGE test the two disagreed exactly where it matters. The age threshold encoded "old
+ *  enough to plausibly be wedged (past the fastest full-suite duration)" — but on a loaded box the
  *  suite REACHES that duration, so a healthy run crosses the age line at the very moment it
  *  finishes its suite and starts the verdict path. Measured 2026-07-27: candidate e4a93f8b's
  *  suite ran 1180s against the 1200s threshold, so it became "replaceable" ~20s after the
@@ -1863,16 +1882,19 @@ export type ReplaceDecision = { replace: true } | { replace: false; reason: 'not
  *
  *  So age alone is a bad proxy for "wedged": it protects YOUNG runs (which have the most work
  *  left) and kills MATURE ones (which are about to deliver). The run's own published phase is
- *  the direct signal, and it wins. Age remains the fallback for a run that never published a
- *  phase (older build, or wedged before it got that far) — which is also the genuine
- *  EI-9672 salvage case this flag exists for. */
+ *  the direct signal, and it wins. SILENCE (WI-6554700010042457, see
+ *  REPLACE_STALE_MIN_SILENCE_SEC) is the fallback for a run that never published a phase
+ *  (older build, or wedged before it got that far) — which is also the genuine EI-9672
+ *  salvage case this flag exists for. */
 export function classifyReplaceRequest(
-  active: Pick<ActiveCheckpointCheck, 'candidate_stale' | 'elapsed_sec' | 'delivering'>,
+  active: Pick<ActiveCheckpointCheck, 'candidate_stale' | 'elapsed_sec' | 'progress_at' | 'delivering'>,
+  nowMs: number = Date.now(),
 ): ReplaceDecision {
   if (!active.candidate_stale) return { replace: false, reason: 'not_stale' };
   if (active.delivering) return { replace: false, reason: 'delivering' };
-  const oldEnough = typeof active.elapsed_sec === 'number' && active.elapsed_sec >= REPLACE_STALE_MIN_AGE_SEC;
-  return oldEnough ? { replace: true } : { replace: false, reason: 'young' };
+  const silentSec = checkpointSilenceSec(active, nowMs);
+  const wedged = silentSec != null && silentSec >= REPLACE_STALE_MIN_SILENCE_SEC;
+  return wedged ? { replace: true } : { replace: false, reason: 'progressing' };
 }
 
 /** Pure: the full `systemd-run` argv for the detached green-checkpoint suite. Mirrors
@@ -2889,7 +2911,7 @@ export async function launchDetachedCheckpoint(
       // superseded candidate) can be replaced instead of refused. Deliberately narrow: a
       // run judging the CURRENT candidate is never touched, replaceStale or not.
       if (opts.replaceStale && active.candidate_stale) {
-        // EI-11667 (age) + EI-18757156963245979 (phase): see classifyReplaceRequest for why a
+        // EI-11667 (silence, WI-6554700010042457) + EI-18757156963245979 (phase): see classifyReplaceRequest for why a
         // run in its verdict path is never replaceable, and why age alone was the wrong axis.
         const decision = classifyReplaceRequest(active);
         if (!decision.replace) {
@@ -2901,7 +2923,7 @@ export async function launchDetachedCheckpoint(
             reason: 'already_running',
             alreadyRunning: {
               ...active,
-              ...(decision.reason === 'young' ? { replace_refused_young: true } : {}),
+              ...(decision.reason === 'progressing' ? { replace_refused_progressing: true } : {}),
               ...(decision.reason === 'delivering' ? { replace_refused_delivering: true } : {}),
             },
           });

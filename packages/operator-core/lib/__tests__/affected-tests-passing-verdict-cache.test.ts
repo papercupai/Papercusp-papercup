@@ -119,6 +119,64 @@ describe('P005 runtime-specific passing proofs', () => {
     }
   });
 
+  // WI-6554700010030941: the operator-core lanes are wrapped (`PC_TEST_LANE=… pc-heavy.sh -- …`),
+  // and the bare-only match gave them no identity, so the gate reused ZERO verdicts. These run
+  // against a PINNED fixture root, so a null here is the unwrap refusing, not the missing pin.
+  it('gives the real wrapped lane scripts an identity bound to their launcher bytes', () => {
+    if (process.platform === 'win32') return;
+    const root = mkdtempSync(join(tmpdir(), 'runtime-npm-lanes-'));
+    try {
+      const workspaceRoot = join(root, 'packages/operator-core');
+      const bin = join(workspaceRoot, 'node_modules/.bin');
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(join(root, 'node_modules'));
+      mkdirSync(join(root, 'scripts'));
+      writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}');
+      writeFileSync(join(root, 'node_modules/.papercusp-dependency-generation'),
+        `identity=v1-${'a'.repeat(64)}\nsource=${'a'.repeat(64)}\n`);
+      writeFileSync(join(bin, 'vitest'), '#!/usr/bin/env node\n', { mode: 0o755 });
+      symlinkSync(process.env.PAPERCUSP_RUNTIME_TEST_BUN || process.execPath, join(bin, 'node'));
+      writeFileSync(join(root, 'scripts/pc-heavy.sh'), '#!/usr/bin/env bash\nexec "$@"\n', { mode: 0o755 });
+      writeFileSync(join(root, 'scripts/run-vitest-pure-lane.mjs'), 'spawn("vitest")\n');
+      writeFileSync(join(root, 'scripts/other.sh'), '#!/usr/bin/env bash\nexec "$@"\n', { mode: 0o755 });
+      const capture = (scriptText: string) =>
+        captureNpmTaskRuntimeIdentity({ root, workspaceRoot, scriptText, environment: process.env });
+      const sha = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+
+      const stateful = 'PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests';
+      const pure = 'PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- node ../../scripts/run-vitest-pure-lane.mjs';
+      expect(capture(stateful)?.launcherDigests).toEqual({
+        script: sha(stateful), 'scripts/pc-heavy.sh': sha(readFileSync(join(root, 'scripts/pc-heavy.sh'))),
+      });
+      expect(capture(pure)?.launcherDigests).toEqual({
+        script: sha(pure), 'scripts/pc-heavy.sh': sha(readFileSync(join(root, 'scripts/pc-heavy.sh'))),
+        'scripts/run-vitest-pure-lane.mjs': sha(readFileSync(join(root, 'scripts/run-vitest-pure-lane.mjs'))),
+      });
+      // The bare form keeps its pre-existing identity: no launcherDigests key at all.
+      const bare = capture('vitest run --passWithNoTests');
+      expect(bare).not.toBeNull();
+      expect(bare).not.toHaveProperty('launcherDigests');
+
+      for (const opaque of [
+        'NODE_OPTIONS=--require=./preload.cjs vitest run', // changes the runtime; preload bytes unhashed
+        'PC_TEST_LANE=pure NODE_OPTIONS=--inspect vitest run',
+        'PC_TEST_LANE=pure ../../scripts/other.sh -- vitest run', // not the measured wrapper
+        `PC_TEST_LANE=pure ${join(tmpdir(), 'pc-heavy.sh')} -- vitest run`, // same name, outside root
+        'PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- vitest run; rm -rf x',
+        'PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- node ../../scripts/other.sh',
+        'vitest run && echo done',
+      ]) expect(capture(opaque), opaque).toBeNull();
+
+      // Editing a wrapper changes the proof identity, so a verdict proved under the old bytes misses.
+      const before = identity({ runtimeIdentity: capture(stateful) });
+      writeFileSync(join(root, 'scripts/pc-heavy.sh'), '#!/usr/bin/env bash\nexport X=1\nexec "$@"\n');
+      const after = identity({ runtimeIdentity: capture(stateful) });
+      expect(before.fingerprint).not.toBe(after.fingerprint);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(['dependencyHash', 'command', 'environment', 'gateConfig'])
   ('refuses a missing %s input even with a measured runtime', (field) => {
     expect(identity({ [field]: undefined })).toBeNull();

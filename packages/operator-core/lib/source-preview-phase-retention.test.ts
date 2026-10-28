@@ -92,7 +92,7 @@ describe('verifier phase evidence retention', () => {
     const run = verifierPhaseRunner(path, { PAPERCUSP_HOME: join(root, 'persistent') }, join(root, 'child.json'));
     const dependencies = await run('deps.postverify', () => captureVerifierDependencies({
       dest: root,
-      receipt: { sourceCommit: 'fixture' },
+      receipt: { schemaVersion: 'fixture', sourceCommit: 'fixture', testedInputs: [], files: [], submodules: [] },
       env: {},
       onProgress: progress => run.reportProgress?.('deps.postverify', progress),
     }));

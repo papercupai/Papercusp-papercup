@@ -1372,6 +1372,20 @@ export interface PipelinePosition {
     onStaging: MarkerContainment | null;
     inMain: MarkerContainment | null;
     deployed: MarkerContainment | null;
+    /**
+     * EI-27242252657062361 — the marker counted in each SERVING RUNTIME's own build
+     * (`servingRuntimes[].buildSha`), keyed by runtime id. It answers "does the code this
+     * runtime is executing carry my change" without pinning a byte-exact source hash, so a
+     * later unrelated edit to the same hot file cannot falsify it (an
+     * `expectedSourceSha256` probe goes permanently stale on the next edit).
+     *
+     * `null` for a runtime = that runtime reports no build sha, so there is nothing to
+     * read; a MarkerContainment with `present: null` = the read itself failed
+     * (`unknownReason` says why). Empty when no path was given. This is a separate
+     * measurement: it never rewrites `servingRuntimes[].containsChange`. Like every
+     * marker read, `present: true` proves the change only when the marker is unique to it.
+     */
+    runtimes: Partial<Record<ServingRuntimeEntry['runtime'], MarkerContainment | null>>;
   } | null;
   /**
    * WI-6646 — legs whose `false` is a NEWER-COMMIT ARTIFACT: the ref does not contain
@@ -6979,6 +6993,8 @@ export async function gitPipelinePosition(
 
   let runtimeGenerations: RuntimeGeneration[] = [];
   let servingRuntimes: ServingRuntimeEntry[] = [];
+  /** EI-27242252657062361 — marker read at each serving runtime's own build sha. */
+  let runtimeMarkers: Partial<Record<ServingRuntimeEntry['runtime'], MarkerContainment | null>> = {};
   let acceptedSource: AcceptedSourceContainment | undefined;
   if (inp.path) {
     const probeUnit = deps.probeUnitStart ?? realProbeUnitStart;
@@ -7057,6 +7073,37 @@ export async function gitPipelinePosition(
       listPtyHostInstances: deps.listPtyHostInstances ?? realListPtyHostInstances,
       blobContainsAt,
     }).catch(() => []);
+    if (marker) {
+      // EI-27242252657062361: a marker read is robust to later unrelated edits to the
+      // same file, which an `expectedSourceSha256` pin is not. Count the marker in the
+      // build each runtime reports. `markerAtCandidateForPath` resolves the gitlink for a
+      // submodule path; a throw is reported as an UNKNOWN read, never as absence.
+      const markerAtBuild = new Map<string, Promise<MarkerContainment>>();
+      const readAt = (sha: string): Promise<MarkerContainment> => {
+        let pending = markerAtBuild.get(sha);
+        if (!pending) {
+          pending = markerAtCandidateForPath(servingGitRead, sha, servingPath, marker, servingSubmodules).catch(
+            (err: unknown): MarkerContainment => ({
+              marker,
+              sha,
+              present: null,
+              count: null,
+              pathPresent: null,
+              unknownReason: cellUnknown(
+                'resolver-failed',
+                `Marker read at runtime build ${sha.slice(0, 10)} failed: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            }),
+          );
+          markerAtBuild.set(sha, pending);
+        }
+        return pending;
+      };
+      const entries = await Promise.all(
+        servingRuntimes.map(async (rt) => [rt.runtime, rt.buildSha ? await readAt(rt.buildSha) : null] as const),
+      );
+      runtimeMarkers = Object.fromEntries(entries) as typeof runtimeMarkers;
+    }
     if (expectedSource) {
       const deployedContains = deployedSha ? (await blobContainsAt(deployedSha)).contains : null;
       const observedBytes = await readBytes(sourcePath);
@@ -7356,7 +7403,13 @@ export async function gitPipelinePosition(
     assessments,
     positionsUnknown,
     positionsMarker: marker
-      ? { marker, onStaging: markerLegs.onStaging, inMain: markerLegs.inMain, deployed: markerLegs.deployed }
+      ? {
+          marker,
+          onStaging: markerLegs.onStaging,
+          inMain: markerLegs.inMain,
+          deployed: markerLegs.deployed,
+          runtimes: runtimeMarkers,
+        }
       : null,
     positionsNewerCommit,
     verdictProvenance,

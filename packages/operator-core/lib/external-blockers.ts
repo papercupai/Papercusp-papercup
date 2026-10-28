@@ -3,8 +3,15 @@ import {
   type ExternalConditionReachability,
 } from './external-condition-reachability';
 import { assertHoldRegistered } from './hold-registry';
+import type { RestrictionHold } from './restriction-holds';
 
-export type ExternalBlockerKind = 'event' | 'gate' | 'runtime' | 'human';
+/** `hold` is a restriction (one-work-graph-structured-holds-2026-10-26#D-014): it forbids
+ * one action on one target until it is reviewed and lifted. It is never a wait that clears
+ * itself, and reaching its review date surfaces it for review rather than releasing it. */
+export type ExternalBlockerKind = 'event' | 'gate' | 'runtime' | 'human' | 'hold';
+
+/** Every kind a stored blocker row may carry. readExternalBlockers drops any other value. */
+export const EXTERNAL_BLOCKER_KINDS = ['event', 'gate', 'runtime', 'human', 'hold'] as const satisfies readonly ExternalBlockerKind[];
 
 /** What capability is actually missing. The trigger shape (`kind`) and the
  * capability needed to clear it are deliberately separate: a `human` blocker
@@ -16,8 +23,9 @@ export type ExternalBlockerCapability =
   | 'physical-device'
   | 'external-service-action'
   | 'live-dependency'
-  | 'product-decision';
-export type HumanBlockerCapability = Exclude<ExternalBlockerCapability, 'live-dependency'>;
+  | 'product-decision'
+  | 'restriction-hold';
+export type HumanBlockerCapability = Exclude<ExternalBlockerCapability, 'live-dependency' | 'restriction-hold'>;
 export type DirectHumanCapability = Extract<
   HumanBlockerCapability,
   'credential' | 'physical-device' | 'external-service-action'
@@ -35,7 +43,8 @@ export interface ExternalBlockerCapabilityPolicy {
     | 'device-holder'
     | 'external-operator'
     | 'dependency-owner'
-    | 'product-owner';
+    | 'product-owner'
+    | 'hold-placer';
   recommendedAction: string;
 }
 
@@ -46,6 +55,7 @@ export const EXTERNAL_BLOCKER_CAPABILITIES = [
   'external-service-action',
   'live-dependency',
   'product-decision',
+  'restriction-hold',
 ] as const satisfies readonly ExternalBlockerCapability[];
 
 const HUMAN_BLOCKER_CAPABILITIES = new Set<HumanBlockerCapability>([
@@ -109,6 +119,13 @@ const CAPABILITY_POLICIES: Record<ExternalBlockerCapability, Omit<ExternalBlocke
     recommendedAction:
       'Obtain or infer the product-direction decision according to the active operating-mode contract.',
   },
+  'restriction-hold': {
+    autoClearable: false,
+    requiresOwnerCapability: false,
+    resolutionOwner: 'hold-placer',
+    recommendedAction:
+      'Review the hold by its reviewAt: renew it with a new review date and reason, or lift it with a reason. Time passing never lifts it.',
+  },
 };
 
 export function externalBlockerCapabilityPolicy(
@@ -118,7 +135,9 @@ export function externalBlockerCapabilityPolicy(
 }
 
 export function inferExternalBlockerCapability(kind: ExternalBlockerKind): ExternalBlockerCapability {
-  return kind === 'human' ? 'product-decision' : 'live-dependency';
+  if (kind === 'human') return 'product-decision';
+  if (kind === 'hold') return 'restriction-hold';
+  return 'live-dependency';
 }
 
 /**
@@ -179,6 +198,8 @@ export interface ExternalBlockerRecord {
   clearedBy?: string;
   /** Advisory, evidence-bearing condition verdict. Absence means not measured. */
   reachability?: ExternalConditionReachability;
+  /** Present exactly on `kind:'hold'` rows: the validated restriction (#D-014). */
+  hold?: RestrictionHold;
 }
 
 /**
@@ -242,7 +263,7 @@ export function readExternalBlockers(payload: unknown): ExternalBlockerRecord[] 
     // attention/work-item-blocker-reaper.ts: its SQL reports every active row rejected here.
     if (
       typeof r.kind !== 'string' ||
-      !['event', 'gate', 'runtime', 'human'].includes(r.kind) ||
+      !(EXTERNAL_BLOCKER_KINDS as readonly string[]).includes(r.kind) ||
       typeof r.ref !== 'string' ||
       typeof r.summary !== 'string' ||
       (r.status !== 'active' && r.status !== 'cleared') ||
@@ -305,6 +326,8 @@ export function updateExternalBlockerHistory(
     /** WI-10005010: typed executable default; see {@link OWNER_ASK_DEFAULT_ACTIONS}. */
     defaultAction?: OwnerAskDefaultAction;
     ownerAskConversationId?: string;
+    /** The validated restriction for a `kind:'hold'` row (#D-014). */
+    hold?: RestrictionHold;
     clear?: boolean;
   },
   actor: string,
@@ -368,6 +391,7 @@ export function updateExternalBlockerHistory(
       ...(input.ownerAskConversationId?.trim()
         ? { ownerAskConversationId: input.ownerAskConversationId.trim() }
         : {}),
+      ...(input.hold ? { hold: input.hold } : {}),
     };
     return { blockers, changed: true };
   }
@@ -391,6 +415,7 @@ export function updateExternalBlockerHistory(
     ...(input.ownerAskConversationId?.trim()
       ? { ownerAskConversationId: input.ownerAskConversationId.trim() }
       : {}),
+    ...(input.hold ? { hold: input.hold } : {}),
   });
   const active = blockers.filter((row) => row.status === 'active');
   const cleared = blockers.filter((row) => row.status === 'cleared').slice(-40);

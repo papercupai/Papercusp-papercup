@@ -5757,7 +5757,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // origin before the child spawns. A direct live :3070 base inherited from a host
     // without the proxy env is routed like a fresh long-lived launch (WI-6554700010008371).
     const normalizedOperatorUrl = resolveResumedSessionOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL);
-    if (normalizedOperatorUrl) env.PAPERCUSP_OPERATOR_URL = normalizedOperatorUrl;
+    if (normalizedOperatorUrl) {
+      env.PAPERCUSP_OPERATOR_URL = normalizedOperatorUrl;
+      // The wake executor selected this route for a managed child; it is not a
+      // caller-pinned URL. Preserve the existing marker so ptool can recover a
+      // current same-host catalog when the inherited proxy serves a legacy one.
+      env.PAPERCUSP_OPERATOR_URL_PROVENANCE = 'psu-launcher';
+    }
     // Tracked hive launches keep their per-session CLAUDE_CONFIG_DIR (transcript
     // + plugin isolation) at a conventional path — point the resumed claude at
     // it so `--resume <sessionId>` finds the session file (D-010 resume leg).

@@ -158,12 +158,12 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
 /** @typedef {(<T>(phase: string, operation: () => T | Promise<T>, metadata?: VerifierPhaseMetadata) => Promise<T>) & {
  *   reportProgress?: (phase: 'deps.census' | 'deps.postverify', progress: VerifierDependencyProgress) => void
  * }} VerifierPhaseRunner */
-/** Keep the verifier's snapshot path selection explicit and independently checkable. */
-export function selectVerifierDependencySnapshot(copyMode: any, generationSnapshotSupported: any): {
-    copyMode: any;
-    generationSnapshotSupported: any;
-    command: string;
-};
+/** Keep the verifier's snapshot path selection explicit and independently checkable.
+ * @param {VerifierSnapshotSelection['copyMode']} copyMode
+ * @param {boolean} generationSnapshotSupported
+ * @returns {VerifierSnapshotSelection}
+ */
+export function selectVerifierDependencySnapshot(copyMode: VerifierSnapshotSelection["copyMode"], generationSnapshotSupported: boolean): VerifierSnapshotSelection;
 /** Append outside the owned tree synchronously: a blocked event loop or SIGKILL
  * must leave the last started phase readable without claiming it completed.
  * Mirror exact records into the existing checkpoint-log store so temporary
@@ -220,7 +220,9 @@ export function verifyBgVerifierSource(prepared: BgVerifierPreparation, boundary
  * to esbuild, and retain that same buffer as its contents; never reopen it after
  * validation. Retain original file identities across the whole compile interval
  * as well: resolver metadata can select different original-censused bytes while
- * restoring its content before endpoint hashes run. Absent resolver inputs,
+ * restoring its content before endpoint hashes run. Retain ancestor directory
+ * identities too: originally absent metadata can be created for resolution and
+ * removed before publication without changing any censused file. Compiler
  * invocation/toolchain identity and runtime external imports still require
  * their separate qualification boundaries.
  * @param {{ prepared: BgVerifierPreparation,
@@ -1513,9 +1515,11 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
  * complete evidence. Re-entry always refuses the existing stage, including an
  * attempt whose compiler failed. There is no cache/fallback or service effect.
  * This does not establish the production runtime closure or authorize activation.
- * @param {Parameters<typeof beginBgVerifierBuildTransaction>[0]} args
+ * @param {Parameters<typeof beginBgVerifierBuildTransaction>[0] & { runPhase?: VerifierPhaseRunner }} args
  */
-export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifierBuildTransaction>[0]): Promise<{
+export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifierBuildTransaction>[0] & {
+    runPhase?: VerifierPhaseRunner;
+}): Promise<{
     identity: {
         path: string;
         realpath: string;
@@ -1805,13 +1809,14 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
  * This does not qualify resolver metadata, compiler self-consumption, runtime
  * imports, a complete multi-entry host build, or service readiness.
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
- *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string }} args
+ *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string, runPhase?: VerifierPhaseRunner }} args
  */
-export function compileBgVerifierInvocation({ record, invocation, argv, expectedVersion }: {
+export function compileBgVerifierInvocation({ record, invocation, argv, expectedVersion, runPhase }: {
     record: ReturnType<typeof prepareBgVerifierBuildRecord>;
     invocation: BgBuildInvocation;
     argv: string[];
     expectedVersion: string;
+    runPhase?: VerifierPhaseRunner;
 }): Promise<{
     metafile?: {
         path: string;
@@ -1948,11 +1953,11 @@ export function verifierCommandAdmissionEnv({ repo, env, preflight }: {
 }): NodeJS.ProcessEnv;
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number,
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
  *   clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs, preparationMaxMs, clock }: {
+export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs, preparationMaxMs, releaseParentPrivatePg, requestParentPgReleaseImpl, clock }: {
     repo: string;
     ref: string;
     receiptPath: string;
@@ -1964,6 +1969,8 @@ export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile,
     budgetFrom?: string;
     childEstimateMs?: number;
     preparationMaxMs?: number;
+    releaseParentPrivatePg?: boolean;
+    requestParentPgReleaseImpl?: (token: string) => Promise<unknown>;
     clock?: {
         now: () => number;
         setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
@@ -2052,11 +2059,12 @@ export function readVerifierPhaseMeasurements(path: string): Record<string, numb
  * Reserve at least 30s, or 125% of an explicitly measured launch delay. This is
  * a forecast; admission still checks the actual remaining clock independently.
  * @param {Record<string, number>} measurements @param {number} [childEstimateMs]
- * @param {{ observedLaunchMs?: number, maxTimeoutMs?: number }} [options]
+ * @param {{ observedLaunchMs?: number, maxTimeoutMs?: number, parentPgRelease?: boolean }} [options]
  */
-export function estimateVerifierCommandBudget(measurements: Record<string, number>, childEstimateMs?: number, { observedLaunchMs, maxTimeoutMs }?: {
+export function estimateVerifierCommandBudget(measurements: Record<string, number>, childEstimateMs?: number, { observedLaunchMs, maxTimeoutMs, parentPgRelease }?: {
     observedLaunchMs?: number;
     maxTimeoutMs?: number;
+    parentPgRelease?: boolean;
 }): {
     preparationMs: number;
     sourceCheckMs: number;

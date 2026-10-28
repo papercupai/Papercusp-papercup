@@ -326,7 +326,7 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
                                                 THEN w.payload -> 'externalBlockers' ELSE '[]'::jsonb END) b
                 WHERE b ->> 'status' = 'active'
                   AND (jsonb_typeof(b -> 'kind') IS DISTINCT FROM 'string'
-                    OR b ->> 'kind' NOT IN ('event', 'gate', 'runtime', 'human')
+                    OR b ->> 'kind' NOT IN ('event', 'gate', 'runtime', 'human', 'hold')
                     OR jsonb_typeof(b -> 'ref') IS DISTINCT FROM 'string'
                     OR jsonb_typeof(b -> 'summary') IS DISTINCT FROM 'string'
                     OR jsonb_typeof(b -> 'createdAt') IS DISTINCT FROM 'string'

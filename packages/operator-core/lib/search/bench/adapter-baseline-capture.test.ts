@@ -1,5 +1,56 @@
 import { describe, expect, it } from 'vitest';
-import { decodeDocsSearchCapture, DOCS_FINAL_INPUT_CONTRACT } from './adapter-baseline-capture';
+import { decodeDocsSearchCapture, DOCS_FINAL_INPUT_CONTRACT, decodeTypesenseCapture } from './adapter-baseline-capture';
+
+describe('actual Typesense adapter capture', () => {
+  function sample() {
+    const args = { q: 'laptop', region: 'US', limit: 2, mainUnfiltered: true, facets: {} };
+    const expected = { id: 'ts-1', adapter: 'restart:typesense.search' as const, args };
+    const response = { hits: [{ id: 'b', variants: '[{"qty":0}]', qualifier: 'source snapshot' }, { id: 'a' }],
+      found: 90, facets: { categories: [{ value: 'Laptop', count: 80 }] } };
+    const saved = { schemaVersion: 1, adapter: expected.adapter, attemptId: expected.id, request: args,
+      exitCode: 0, stdout: JSON.stringify(response), deliveryWallMs: 15,
+      observation: { path: 'hybrid', degraded: false, evidenceRef: 'runner:ts-1' } };
+    return { expected, response, saved };
+  }
+  it('retains projected fields, delivered order and disjunctive counts without metric inference', () => {
+    const f = sample(), result = decodeTypesenseCapture(f.saved, f.expected);
+    expect(result.hits.map(h => h.docId)).toEqual(['b', 'a']);
+    expect(JSON.parse(result.hits[0]!.docText)).toEqual(f.response.hits[0]);
+    expect(result.response).toEqual(f.response);
+    expect(result).not.toHaveProperty('costUsd');
+    expect(result).not.toHaveProperty('quality');
+  });
+  it('refuses request drift, partial rows, duplicate ids and unobserved emptiness', () => {
+    const f = sample();
+    for (const saved of [
+      { ...f.saved, request: { ...f.saved.request, region: 'FR' } },
+      { ...f.saved, stdout: JSON.stringify({ ...f.response, hits: [{ id: 'a', _partial: true }] }) },
+      { ...f.saved, stdout: JSON.stringify({ ...f.response, hits: [{ id: 'a' }, { id: 'a' }] }) },
+      { ...f.saved, observation: {}, stdout: JSON.stringify({ hits: [], found: 0 }) },
+    ]) expect(() => decodeTypesenseCapture(saved, f.expected)).toThrow();
+  });
+  it('retains explicit fallback and refuses fallback disguised as healthy conversation', () => {
+    const f = sample();
+    const expected = { ...f.expected, adapter: 'restart:typesense.searchWithConversation' as const };
+    const saved = { ...f.saved, adapter: expected.adapter,
+      stdout: JSON.stringify({ hits: [], found: 0, answer: null, conversationId: null }),
+      observation: { path: 'conversation-fallback', degraded: true, evidenceRef: 'runner:fallback' } };
+    expect(decodeTypesenseCapture(saved, expected)).toMatchObject({ degraded: true, hits: [] });
+    expect(() => decodeTypesenseCapture({ ...saved, observation: { ...saved.observation, degraded: false } }, expected)).toThrow();
+    expect(() => decodeTypesenseCapture({ ...saved, stdout: JSON.stringify({ hits: [], found: 0, answer: 'invented', conversationId: null }) }, expected)).toThrow();
+  });
+  it('applies the conversation twenty-hit cap only before plain-search fallback', () => {
+    const f = sample();
+    const args = { ...f.expected.args, limit: 24 };
+    const expected = { ...f.expected, adapter: 'restart:typesense.searchWithConversation' as const, args };
+    const saved = { ...f.saved, adapter: expected.adapter, request: args,
+      stdout: JSON.stringify({ hits: Array.from({ length: 24 }, (_, i) => ({ id: String(i) })),
+        found: 24, answer: null, conversationId: null }),
+      observation: { path: 'conversation-fallback', degraded: true, evidenceRef: 'runner:fallback' } };
+    expect(decodeTypesenseCapture(saved, expected).hits).toHaveLength(24);
+    expect(() => decodeTypesenseCapture({ ...saved, observation: { ...saved.observation, path: 'conversation' } }, expected)).toThrow(/cutoff/);
+  });
+});
 
 function fixture() {
   const args = { query: 'retrieval quality', harness: 'engineering', semantic: true, limit: 2 };

@@ -47,6 +47,8 @@ import { linkWorkItemRefDependencies } from './work-item-ref-blocker-edges';
 import { workItemRefDependencyRefusal } from './work-item-ref-dependency-refusal';
 import { OWNER_AUTHORITY_TOPICS, type OwnerAuthorityTopic } from '../../consult/decision-review';
 import { asRecord, completedResultPayload } from '../abort-completion-payload';
+import { checkHoldLift, holdArg, ownerTurnRefField, prepareHoldPlacement, type HoldArg } from './set-blocker-hold';
+import type { RestrictionHold } from '../../restriction-holds';
 
 // Older callers used the missing capability as `kind` (for example,
 // `kind:'credential'`). Keep accepting those inputs at the tool boundary, but
@@ -61,6 +63,7 @@ const BLOCKER_KIND = z.enum([
   'external-service-action',
   'product-decision',
   'approval-auto-clearable',
+  'hold',
 ]);
 const BLOCKER_CAPABILITY = z.enum(EXTERNAL_BLOCKER_CAPABILITIES);
 type BlockerKindInput = z.infer<typeof BLOCKER_KIND>;
@@ -85,6 +88,9 @@ type BlockerInput = {
   clear?: boolean;
   harness?: string;
   migrateWorkItemRefs?: boolean;
+  /** one-work-graph-structured-holds-2026-10-26#D-014: the restriction a kind:'hold' row records. */
+  hold?: HoldArg;
+  ownerTurnRef?: string;
 };
 type NormalizedBlockerInput = Omit<BlockerInput, 'kind'> & { kind?: ExternalBlockerKind };
 const CAPABILITY_KIND_ALIASES = {
@@ -96,9 +102,20 @@ const CAPABILITY_KIND_ALIASES = {
 } as const satisfies Record<string, { kind: ExternalBlockerKind; capability: ExternalBlockerCapability }>;
 
 function validateCapabilityKindAlias(
-  value: { kind?: BlockerKindInput; capability?: BlockerCapabilityInput },
+  value: { kind?: BlockerKindInput; capability?: BlockerCapabilityInput; hold?: unknown },
   ctx: z.RefinementCtx,
 ) {
+  // D-014 item 3: kind 'hold' and capability 'restriction-hold' only ever travel together.
+  if ((value.kind === 'hold') !== (value.capability === 'restriction-hold') && value.capability !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['capability'],
+      message: "capability 'restriction-hold' belongs to kind 'hold' only (and kind 'hold' takes no other capability)",
+    });
+  }
+  if (value.hold !== undefined && value.kind !== 'hold') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['hold'], message: "hold is only accepted with kind 'hold'" });
+  }
   const alias = value.kind ? CAPABILITY_KIND_ALIASES[value.kind as keyof typeof CAPABILITY_KIND_ALIASES] : undefined;
   if (alias && value.capability && value.capability !== alias.capability) {
     ctx.addIssue({
@@ -110,6 +127,7 @@ function validateCapabilityKindAlias(
 }
 
 function normalizeBlockerInput(input: BlockerInput): NormalizedBlockerInput {
+  if (input.kind === 'hold') return { ...input, kind: 'hold', capability: 'restriction-hold' };
   const alias = input.kind ? CAPABILITY_KIND_ALIASES[input.kind as keyof typeof CAPABILITY_KIND_ALIASES] : undefined;
   if (!alias) return { ...input, kind: input.kind as ExternalBlockerKind | undefined };
   return {
@@ -254,6 +272,8 @@ const fields = {
     .boolean()
     .optional()
     .describe('Migrate this item\'s legacy rows that name only work-items to blocks edges; pass id (+harness) only.'),
+  hold: holdArg.optional().describe("kind 'hold' only: the restriction; summary is its reason. ref is derived."),
+  ownerTurnRef: ownerTurnRefField.optional().describe('Owner turn placing (or lifting) a hold; absent means an agent hold.'),
 };
 
 /** A migration request names only the item: it rewrites existing rows, so a set/clear field is contradictory. */
@@ -543,13 +563,19 @@ export default defineTool({
       clear: z.boolean().optional(),
       harness: z.string().max(80).optional(),
       migrateWorkItemRefs: fields.migrateWorkItemRefs,
+      hold: fields.hold,
+      ownerTurnRef: fields.ownerTurnRef,
       items: z.array(itemSpec).min(1).max(100).optional(),
     })
     .strict()
     .refine(
       (args) =>
         (args.items?.length ?? 0) > 0 ||
-        (Boolean(args.id) && (Boolean(args.ref) || args.clear === true || args.migrateWorkItemRefs === true)),
+        (Boolean(args.id) &&
+          (Boolean(args.ref) ||
+            args.clear === true ||
+            args.migrateWorkItemRefs === true ||
+            (args.kind === 'hold' && args.hold !== undefined))),
       {
         message:
           'pass { id, ref, kind?, summary? } for one, or items:[{ id, ref, kind?, … }]; clear:true may omit ref when one active blocker matches; migrateWorkItemRefs:true takes only id',
@@ -561,7 +587,8 @@ export default defineTool({
       if (!args.items?.length) return;
       for (const [index, item] of args.items.entries()) {
         validateMigrateOnly(item, ctx, ['items', index]);
-        if (!item.clear && !item.ref && item.migrateWorkItemRefs !== true) {
+        const holdDerivesRef = item.kind === 'hold' && item.hold !== undefined;
+        if (!item.clear && !item.ref && item.migrateWorkItemRefs !== true && !holdDerivesRef) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['items', index, 'ref'],
@@ -627,6 +654,8 @@ export default defineTool({
             clear: args.clear,
             harness: args.harness,
             migrateWorkItemRefs: args.migrateWorkItemRefs,
+            hold: args.hold,
+            ownerTurnRef: args.ownerTurnRef,
           },
         ];
     const items: NormalizedBlockerInput[] = rawItems.map(normalizeBlockerInput);
@@ -659,6 +688,32 @@ export default defineTool({
             error: `work_item '${input.id}' is already terminal ('${workItem.state}') — reopen it explicitly before adding an active blocker`,
           };
         }
+        // one-work-graph-structured-holds-2026-10-26#D-014: a hold's ref, review date and
+        // placer are derived here, never taken from the caller.
+        let holdRow: RestrictionHold | undefined;
+        const isHold = input.kind === 'hold';
+        if (!input.clear && isHold) {
+          const prepared = await trackPhase(ctx.phases, 'set_blocker:prepare-hold', () =>
+            prepareHoldPlacement({
+              workspaceId: identity.workspaceId ?? 'default',
+              hold: input.hold,
+              reason: input.summary,
+              ownerTurnRef: input.ownerTurnRef,
+              ctx,
+            }),
+          );
+          if (!prepared.ok) {
+            return {
+              ok: false as const,
+              id: input.id,
+              code: prepared.code,
+              field: prepared.field,
+              error: `work_item '${input.id}' hold refused — ${prepared.error} Blocker was not written.`,
+            };
+          }
+          holdRow = prepared.hold;
+          input = { ...input, ref: prepared.ref, recheckAt: prepared.hold.reviewAt };
+        }
         if (!input.clear) {
           if (!input.ref) {
             return {
@@ -685,7 +740,8 @@ export default defineTool({
               blocker.ref === input.ref &&
               blocker.capability === input.capability,
             );
-          const referents = existingSelfOwnerAsk ? null : pureWorkItemDependencyReferents(input.ref);
+          // A hold ref names its target (often a work-item id) but is not a dependency.
+          const referents = existingSelfOwnerAsk || isHold ? null : pureWorkItemDependencyReferents(input.ref);
           if (referents) {
           const linked = await trackPhase(ctx.phases, 'set_blocker:link-dependency', () =>
             linkWorkItemRefDependencies({
@@ -728,7 +784,8 @@ export default defineTool({
           // WI-2141488: a bare work-item id MIXED with other conditions is still
           // inert as external text — refuse at the write; `clear` is deliberately
           // exempt so rows already carrying a bad ref stay clearable.
-          const workItemRef = existingSelfOwnerAsk ? null : workItemRefBlockerProblem({ itemId: input.id, ref: input.ref });
+          const workItemRef =
+            existingSelfOwnerAsk || isHold ? null : workItemRefBlockerProblem({ itemId: input.id, ref: input.ref });
           if (workItemRef) {
             return {
               ok: false as const,
@@ -737,7 +794,9 @@ export default defineTool({
               code: workItemRef.code,
             };
           }
-          const stagingFirst = stagingFirstBlockerProblem({
+          // A hold restricts an action ('deploy', 'release', …); it is not a wait on the release
+          // plane, so the staging-first dependency classifier does not apply to it.
+          const stagingFirst = isHold ? null : stagingFirstBlockerProblem({
             itemId: input.id,
             itemText: `${workItem.title ?? ''}\n${workItem.summary ?? ''}`,
             // The staging-first guard classifies dependency semantics, not the
@@ -1008,6 +1067,24 @@ export default defineTool({
               : 'kind and ref are required when setting a blocker',
           };
         }
+        if (input.clear && resolvedKind === 'hold') {
+          // R-6: an owner hold lifts only on a verified owner turn; P-011 adds the review verbs.
+          const activeHold = activeExternalBlockers(workItem.payload).find(
+            (blocker) => blocker.kind === 'hold' && blocker.ref === resolvedRef,
+          );
+          const lift = await trackPhase(ctx.phases, 'set_blocker:check-hold-lift', () =>
+            checkHoldLift(activeHold?.hold, { ownerTurnRef: input.ownerTurnRef, ctx }),
+          );
+          if (!lift.ok) {
+            return {
+              ok: false as const,
+              id: input.id,
+              code: lift.code,
+              field: lift.field,
+              error: `work_item '${input.id}' hold not lifted — ${lift.error}`,
+            };
+          }
+        }
 
         const history = applyExternalBlockerUpdate(
           workItem.payload,
@@ -1024,6 +1101,7 @@ export default defineTool({
             defaultAction: input.defaultAction,
             ownerAskConversationId,
             clear: input.clear,
+            ...(holdRow ? { hold: holdRow } : {}),
           },
           identity.ownerId,
           { autoAuthority },

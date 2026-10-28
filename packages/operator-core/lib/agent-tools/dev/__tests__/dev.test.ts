@@ -80,6 +80,7 @@ describe('dev:build_status', () => {
       prodLogTail: null,
       dev3055Reachable: true,
       prod3070Reachable: true,
+      dev3055ApiReachable: true,
       awaitable: {
         hint: 'Waiting on a build/deploy? Don\'t re-poll — events:await the deploy or the gate (or use deploy:await / checkpoint:await), then END YOUR TURN. Full list: events:catalog.',
         events: ['release:deployed', 'release:green'],
@@ -107,6 +108,7 @@ describe('dev:build_status', () => {
       prodLogTail: null,
       dev3055Reachable: true,
       prod3070Reachable: true,
+      dev3055ApiReachable: true,
     };
     vi.doMock('../../../dev-data', () => ({
       buildStatus: vi.fn(async () => data),
@@ -147,6 +149,7 @@ describe('dev:build_status', () => {
       prodLogTail: 'build output '.repeat(1000),
       dev3055Reachable: true,
       prod3070Reachable: true,
+      dev3055ApiReachable: true,
     };
     vi.doMock('../../../dev-data', () => ({
       buildStatus: vi.fn(async () => data),
@@ -165,6 +168,7 @@ describe('dev:build_status', () => {
     });
     expect(payload.prodLogTail_truncated).toBe(true);
     expect(payload.prodLogTail_full_chars).toBe(data.prodLogTail.length);
+    expect(payload.dev3055ApiReachable).toBe(true);
     expect(payload.flake_suspects_truncated).toBe(true);
     expect(payload.flake_suspects_total).toBe(suspects.length);
     expect((payload.flake_suspects as unknown[]).length).toBeLessThan(suspects.length);
@@ -552,16 +556,21 @@ describe('dev:resolve_owner', () => {
 describe('dev:telemetry', () => {
   it('returns count + poll_suspects + entries', async () => {
     const entries = [{ tool_name: 'x', call_count: 5, error_count: 0, refused_count: 0, p50_ms: 10, p95_ms: 20, workspaces: ['default'] }];
+    const observability = { initialized: false, observerFailures: 0, posthog: null, tracing: null };
     // Keep the REAL flagPollSuspects (EI-7029) — only the PG-backed rollup is mocked.
     vi.doMock('../../../dev-data', async (importOriginal) => ({
       ...(await importOriginal<typeof import('../../../dev-data')>()),
       telemetryRollup: vi.fn(async () => ({ entries })),
+    }));
+    vi.doMock('../../../observability/runtime', () => ({
+      runtimeObservabilityHealth: vi.fn(() => observability),
     }));
     const { default: tool } = await import('../telemetry');
     expect(parsePayload((await tool.handler({ hours: 24 }, MAKE_CTX())) as never)).toEqual({
       count: 1,
       // 5 calls/24h is nowhere near poll-shaped → the guard stays quiet.
       poll_suspects: [],
+      observability,
       entries,
     });
   });

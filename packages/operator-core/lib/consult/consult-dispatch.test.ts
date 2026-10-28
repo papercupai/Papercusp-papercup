@@ -1693,6 +1693,12 @@ describe('launchLogFailureReason (the launcher’s own words, from a real log)',
     expect(launchLogFailureReason(WALL_LOG)).toBe("You've hit your weekly limit · resets Sep 26, 5am (America/New_York)");
   });
 
+  it('extracts a provider API error at the terminal result marker, never a brief quoting the same 429', () => {
+    const failure = "API Error: Request rejected (429) · This request would exceed your account's rate limit.";
+    expect(launchLogFailureReason(`consult brief\n⎿ ${failure}\n`)).toBe(failure);
+    expect(launchLogFailureReason(`The request quotes ${failure} for investigation.\n`)).toBeNull();
+  });
+
   it('reports the LAST failure when a log holds several', () => {
     const log = 'psu: tracked resume failed: first\npsu: refusing fork: second\n';
     expect(launchLogFailureReason(log)).toBe('psu: refusing fork: second');
@@ -1828,6 +1834,8 @@ describe('dispatchConsultResponder — every walk is persisted on its consult (W
     expect(r.dispatched).toBe(true);
     expect(calls.logReads).toEqual([]);
     expect(r.attempts.some((a) => 'launchError' in a)).toBe(false);
+    expect(r.attempts[0]).toMatchObject({ outcome: 'dispatched', launchLogPath: '/logs/x-1.log' });
+    expect(calls.recorded[0]!.result.attempts[0]!.launchLogPath).toBe('/logs/x-1.log');
   });
 });
 
@@ -1926,8 +1934,8 @@ describe('rejudgeFirstTurn (the same first-turn judge, run after the window)', (
   const started = { type: 'event_msg', payload: { type: 'task_started' } };
   const target = { agent: 'codex' as const, transcriptPath: '/codex/rollout-a.jsonl' };
 
-  it('a Codex first turn that ended on model_not_found is a rejection with the dispatcher reason', () => {
-    const verdict = rejudgeFirstTurn(target, codex(started, {
+  it('a Codex first turn that ended on model_not_found is a rejection with the dispatcher reason', async () => {
+    const verdict = await rejudgeFirstTurn(target, codex(started, {
       type: 'event_msg',
       payload: {
         type: 'task_complete',
@@ -1945,24 +1953,24 @@ describe('rejudgeFirstTurn (the same first-turn judge, run after the window)', (
     );
   });
 
-  it('a usage-limit first turn is an account wall', () => {
-    const verdict = rejudgeFirstTurn(target, codex(started, {
+  it('a usage-limit first turn is an account wall', async () => {
+    const verdict = await rejudgeFirstTurn(target, codex(started, {
       type: 'event_msg', payload: { type: 'task_complete', error: { message: 'You’ve hit your usage limit. Upgrade to Pro' } },
     }));
     expect(verdict).toMatchObject({ status: 'rejected', reason: 'account-walled' });
   });
 
-  it('a turn still running is pending, a clean turn is replied, an unreadable file is unreadable', () => {
-    expect(rejudgeFirstTurn(target, codex(started))).toEqual({ status: 'pending' });
-    expect(rejudgeFirstTurn(target, codex(started, {
+  it('a turn still running is pending, a clean turn is replied, an unreadable file is unreadable', async () => {
+    await expect(rejudgeFirstTurn(target, codex(started))).resolves.toEqual({ status: 'pending' });
+    await expect(rejudgeFirstTurn(target, codex(started, {
       type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'answered' },
-    }))).toEqual({ status: 'replied' });
-    expect(rejudgeFirstTurn(target, { analyzeClaudeTranscript: () => null, analyzeCodexRollout: () => null }))
-      .toEqual({ status: 'unreadable' });
+    }))).resolves.toEqual({ status: 'replied' });
+    await expect(rejudgeFirstTurn(target, { analyzeClaudeTranscript: () => null, analyzeCodexRollout: () => null }))
+      .resolves.toEqual({ status: 'unreadable' });
   });
 
-  it('a Claude first reply is judged by the Claude reader, never the Codex one', () => {
-    const verdict = rejudgeFirstTurn({ agent: 'claude', transcriptPath: '/native/answer.jsonl' }, {
+  it('a Claude first reply is judged by the Claude reader, never the Codex one', async () => {
+    const verdict = await rejudgeFirstTurn({ agent: 'claude', transcriptPath: '/native/answer.jsonl' }, {
       analyzeClaudeTranscript: (path) => path === '/native/answer.jsonl' ? {
         trailingMissingToolReferenceTurns: 0, lastMissingToolReferenceName: null,
         assistantTurnsSinceLastPrompt: 1, trailingContextLimitTurns: 1, lastContextLimitEvidence: 'Prompt is too long',

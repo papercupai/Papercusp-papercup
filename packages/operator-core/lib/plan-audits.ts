@@ -661,7 +661,7 @@ export interface CitationDeps {
   /** Repo-relative → the absolute path the citation resolves to (sibling and registered
    *  roots included). Lets `measureCitationBlobsAtHead` group citations by repository.
    *  Optional: injected deps without it are measured from their working-tree bytes. */
-  locate?: (rel: string) => string | null;
+  locate?: (rel: string, repoRoot?: string) => string | null;
   /** The same admission/precedence decision, with its owning repository retained.
    * Declaration readers need this identity for canonical containment and native context. */
   locateRepository?: (rel: string) => { repoRoot: string; absolutePath: string } | null;

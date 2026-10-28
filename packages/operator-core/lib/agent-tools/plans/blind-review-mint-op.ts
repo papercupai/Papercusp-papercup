@@ -17,6 +17,7 @@ import {
   type MintBlindGapReviewerDeps,
   type BlindReviewerProductReads,
 } from '../../blind-reviewer-mint';
+import { blindReviewPostedEventKey } from '../../blind-review-post-event';
 
 /** Longest raw (non-JSON) launch text echoed back to the caller. */
 const RAW_LAUNCH_TEXT_CAP = 2000;
@@ -97,7 +98,16 @@ export async function runBlindReviewMintOp(
       launch: launch.body,
       binding: minted.binding ? { reviewerOwnerId: minted.binding.reviewerOwnerId,
         advSessionId: minted.binding.advSessionId, nativeSessionId: minted.binding.nativeSessionId } : null,
+      ...(minted.binding ? { bindingId: minted.binding.id, awaitKey: blindReviewPostedEventKey(input.slug, minted.binding.id) } : {}),
       message: 'A reviewer process opened and its exact native session is bound, but startup verification failed. Do not mint again; inspect or resume this bound reviewer.',
+    } };
+  }
+  // A 'bound' mint always carries its binding; without one there is no post key to hand out.
+  if (!minted.binding) {
+    return { isError: true, payload: {
+      error: 'session_binding_failed', slug: input.slug, activationAuditSeq: minted.activationAuditSeq,
+      launch: launch.body,
+      message: 'The reviewer launched without a session binding, so its post cannot be awaited. Do not mint again until the binding is reconciled.',
     } };
   }
   return {
@@ -110,7 +120,10 @@ export async function runBlindReviewMintOp(
       activationAuditSeq: minted.activationAuditSeq,
       kickoffChars: minted.kickoff.length,
       launch: launch.body,
-      next: "The reviewer posts its gaps with op 'post'. After it posts, map each gap with op 'dispose'.",
+      // awaitable-review-post-events-2026-10-27 R-2: the exact key this reviewer's post fires.
+      bindingId: minted.binding.id,
+      awaitKey: blindReviewPostedEventKey(input.slug, minted.binding.id),
+      next: "The reviewer posts its gaps with op 'post'. Await awaitKey (events:await { event: awaitKey }) instead of polling; after it fires, map each gap with op 'dispose'.",
     },
   };
 }

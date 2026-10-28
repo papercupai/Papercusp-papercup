@@ -366,6 +366,7 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
       excludeAuthorId: 'su-implementer',
     });
     expect(launchFresh).toHaveBeenCalledTimes(1);
+    if (result.state === 'not-required') throw new Error('Expected a reviewer attempt');
     expect(result.freshReviewer).toEqual({ state: 'not-launched', reason: 'fresh launch attempted' });
     expect(result.next).not.toContain('later thread reply');
   });

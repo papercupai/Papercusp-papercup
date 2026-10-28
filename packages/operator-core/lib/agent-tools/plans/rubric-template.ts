@@ -235,6 +235,9 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
       cases: z.array(z.object({
         file: z.string().trim().min(1),
         testName: z.string().trim().min(1).max(500),
+        plannedReason: z.string().trim().min(1).max(1000).optional().describe(
+          'Why a pre-start plan will add this exact case to its suite. Only the existing planned-path authoring allowance admits an absent declaration; grading still requires exact passing execution.',
+        ),
       }).strict()).min(1).max(200).optional().describe(
         'Required executed cases: select every listed file and no others. Names use full titles or complete hierarchy suffixes, checked against static declarations before activation and recorded cases at grading. Exclusive with testName.',
       ),

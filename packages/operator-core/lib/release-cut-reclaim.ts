@@ -1351,67 +1351,57 @@ function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<
 
 /** One slot per canonical repository, independent of population changes. A live obsolete
  * population must finish before replacement, otherwise each scheduled call forks more du.
- * The existing census lifetime also bounds the age of an unconsumed terminal receipt. */
+ * The existing census lifetime also bounds the age of an unconsumed terminal receipt.
+ * The enclosing retention mutex serializes every slot read, launch and consumption.
+ * A second slot mutex adds admission work and a separate deadline without protection. */
 async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: number, opts: Omit<DetachedWalkOptions, 'signal'>) {
   const remaining = () => notAfterMs - Date.now();
   if (!Number.isFinite(notAfterMs) || remaining() <= 0) throw new Error('release-cut usage run deadline exhausted');
-  let usageAdmission: { slot: string; waitedMs: number; timeoutMs: number;
-    admissionSubphaseTimingsMs?: Record<string, number> } | undefined;
-  return withFsMutex(`release-cut-usage:${path.resolve(opts.dir)}`, async () => {
-    const state = await readWalkState(opts.dir);
-    // The wrapper may die before writing exit.<attempt>. Its verified process
-    // death permits retirement, never adoption of its incomplete allocation.
-    const terminal = !!state && !walkProcessAlive(state);
-    const consumed = path.join(opts.dir, 'consumed');
-    if (fs.existsSync(consumed)) {
-      if (!terminal) throw new Error('release-cut usage previous measurement is still retiring');
+  const state = await readWalkState(opts.dir);
+  // The wrapper may die before writing exit.<attempt>. Its verified process
+  // death permits retirement, never adoption of its incomplete allocation.
+  const terminal = !!state && !walkProcessAlive(state);
+  const consumed = path.join(opts.dir, 'consumed');
+  if (fs.existsSync(consumed)) {
+    if (!terminal) throw new Error('release-cut usage previous measurement is still retiring');
+    await fs.promises.rm(opts.dir, { recursive: true, force: true });
+  } else if (!state && fs.existsSync(opts.dir) && (await fs.promises.readdir(opts.dir)).length) {
+    throw new Error('release-cut usage slot has unreadable state');
+  }
+  const controller = new AbortController();
+  const waitMs = Math.min(10_000, remaining());
+  if (waitMs <= 0) throw new Error('release-cut usage run deadline exhausted');
+  const timer = setTimeout(() => controller.abort(), waitMs);
+  try {
+    const run = () => runDetachedDuUsage(roots, { ...opts, pollMs: Math.min(opts.pollMs ?? 250, 250), signal: controller.signal });
+    let result;
+    try { result = await run(); }
+    catch (e) {
+      // A different root order or inode cannot adopt the old allocation table.
+      // Retire only a terminal, dead worker; a live mismatch remains unknown.
+      if (!terminal || !(e instanceof Error) || !e.message.includes('census walk request changed')) throw e;
       await fs.promises.rm(opts.dir, { recursive: true, force: true });
-    } else if (!state && fs.existsSync(opts.dir) && (await fs.promises.readdir(opts.dir)).length) {
-      throw new Error('release-cut usage slot has unreadable state');
+      result = await run();
     }
-    const controller = new AbortController();
-    const waitMs = Math.min(10_000, remaining());
-    if (waitMs <= 0) throw new Error('release-cut usage run deadline exhausted');
-    const timer = setTimeout(() => controller.abort(), waitMs);
-    try {
-      const run = () => runDetachedDuUsage(roots, { ...opts, pollMs: Math.min(opts.pollMs ?? 250, 250), signal: controller.signal });
-      let result;
-      try { result = await run(); }
-      catch (e) {
-        // A different root order or inode cannot adopt the old allocation table.
-        // Retire only a terminal, dead worker; a live mismatch remains unknown.
-        if (!terminal || !(e instanceof Error) || !e.message.includes('census walk request changed')) throw e;
-        await fs.promises.rm(opts.dir, { recursive: true, force: true });
-        result = await run();
+    if (!result.complete || !result.bytes || result.finishedAt === null) {
+      const ended = await readWalkState(opts.dir);
+      if (ended && (fs.existsSync(walkAttemptFiles(opts.dir, ended.attempt).exit) || !walkProcessAlive(ended))) {
+        await fs.promises.writeFile(consumed, 'failed\n');
       }
-      if (!result.complete || !result.bytes || result.finishedAt === null) {
-        const ended = await readWalkState(opts.dir);
-        if (ended && (fs.existsSync(walkAttemptFiles(opts.dir, ended.attempt).exit) || !walkProcessAlive(ended))) {
-          await fs.promises.writeFile(consumed, 'failed\n');
-        }
-        throw new Error(result.error ?? 'incomplete release-cut usage measurement');
-      }
-      // Mark consumed BEFORE effects. A crash or a subsequent removal can never
-      // turn the old before-reclaim allocation into a fresh after-reclaim total.
-      await fs.promises.writeFile(consumed, 'consumed\n');
-      if (Date.now() - result.finishedAt > CENSUS_DU_TIMEOUT_MS ||
-          !Number.isSafeInteger([...result.bytes.values()].reduce((sum, n) => sum + n, 0))) {
-        throw new Error('stale or unsafe release-cut usage measurement');
-      }
-      return result.bytes;
-    } catch (e) {
-      if (e instanceof DetachedWalkAbandoned) throw new Error('release-cut usage pending; managed census continues for adoption');
-      throw e;
-    } finally { clearTimeout(timer); }
-  }, { timeoutMs: Math.max(1, Math.min(1000, remaining())), retryMs: 25,
-    onTimedOut: (timing) => { usageAdmission = { slot: path.resolve(opts.dir), ...timing }; },
-  }).catch((error: unknown) => {
-    // Keep the exact slot and admission phases separate from the bounded human
-    // message, which can end halfway through a long slot path. A timeout alone
-    // cannot distinguish a held mutex from slow admission metadata operations.
-    if (usageAdmission && error instanceof Error) Object.assign(error, { usageAdmission });
-    throw error;
-  });
+      throw new Error(result.error ?? 'incomplete release-cut usage measurement');
+    }
+    // Mark consumed BEFORE effects. A crash or a subsequent removal can never
+    // turn the old before-reclaim allocation into a fresh after-reclaim total.
+    await fs.promises.writeFile(consumed, 'consumed\n');
+    if (Date.now() - result.finishedAt > CENSUS_DU_TIMEOUT_MS ||
+        !Number.isSafeInteger([...result.bytes.values()].reduce((sum, n) => sum + n, 0))) {
+      throw new Error('stale or unsafe release-cut usage measurement');
+    }
+    return result.bytes;
+  } catch (e) {
+    if (e instanceof DetachedWalkAbandoned) throw new Error('release-cut usage pending; managed census continues for adoption');
+    throw e;
+  } finally { clearTimeout(timer); }
 }
 
 /** The scheduled adapter holds the pin mutex across discovery and this owner call.
@@ -1516,12 +1506,11 @@ async function reclaimCutWorktreesUnlocked(
   // Error.message starts with du's complete argument list. Retain the actual
   // failure before that list consumes the bounded receipt's diagnostic budget.
   const usageFailure = (error: unknown): string => {
-    const detail = error as { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown; usageProgress?: CutUsageProgress;
-      usageAdmission?: { slot: string; waitedMs: number; timeoutMs: number; admissionSubphaseTimingsMs?: Record<string, number> } } | null;
+    const detail = error as { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown; usageProgress?: CutUsageProgress } | null;
     return JSON.stringify({ code: detail?.code ?? null, signal: detail?.signal ?? null,
       killed: detail?.killed === true,
       stderr: String(detail?.stderr ?? '').slice(-1024), usageProgress: detail?.usageProgress,
-      usageAdmission: detail?.usageAdmission, message: errText(error) });
+      message: errText(error) });
   };
   const pinnedAllocation = async (usage: Map<string, number>) => {
     const allocation = new RetentionAllocationCounter();

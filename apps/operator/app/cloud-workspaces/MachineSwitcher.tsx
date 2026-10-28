@@ -69,7 +69,9 @@ function AuthorizedMachineSwitcher({ localMode, onSelect, connectHref }: Machine
           if (value === null) url.searchParams.delete(key);
           else url.searchParams.set(key, value);
         }
-        navigateClient(url.toString(), { hard: true });
+        // This changes the machine within the same workspace. Keep the shell
+        // mounted; the navigation helper still reloads for a workspace change.
+        navigateClient(url.toString());
       }
     }}
   />;

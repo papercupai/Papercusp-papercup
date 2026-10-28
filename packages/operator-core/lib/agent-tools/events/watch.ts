@@ -28,6 +28,7 @@ import { z } from 'zod';
 import { dataConditionSchema } from '@papercusp/rules';
 import { defineTool, lookupByMcpName, SU_ROLES } from '@papercusp/agent-mcp';
 import { InvalidInputError } from '@papercusp/tooldef';
+import { claimableWatchBeforeSleep } from './claimable-watch-before-sleep';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait, cancelAwait, findMatchingActiveStandingWatch } from '../../events/await/store';
@@ -199,15 +200,6 @@ const predicateWatchSchema = z.object({
   predicate: predicateInputSchema.describe(predicateDescription),
   interval_sec: watchIntervalSchema,
 });
-
-/** Shared with the behavioral SU experiment so it consumes the delivered protocol. */
-export function claimableWatchBeforeSleep(pattern: string, once: boolean) {
-  return !once && pattern === 'work-item:claimable'
-    ? { tool: 'scheduler:get_next', required: true,
-        afterMiss: { tool: 'loop:end', required: true },
-        reason: 'Re-run scheduler:get_next BEFORE sleeping: work may predate this watch or arrive during registration. Continue on a claim; only a verified miss permits loop:end to stop the timer loop and end your turn, with this standing watch retained.' }
-    : undefined;
-}
 
 export default defineTool({
   name: 'watch:create',

@@ -34,6 +34,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { contentReportPreviewText, CONTENT_REPORT_PREVIEW_LIMIT, gitSyncContentEscalationBody, gitSyncContentPreview, gitSyncContentSignature, persistGitSyncContentReport } from './git-sync-content-report';
 import { readFile, realpath } from 'node:fs/promises';
+import { performance } from 'node:perf_hooks';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
@@ -2979,29 +2980,76 @@ async function checkForNewStashes(slug: string, workspaceId: string, superRepoPa
  * and run time can never disagree on the vocabulary. Best-effort: an unreadable
  * registry FAILS OPEN (the pipeline's own path resolution will surface the error).
  */
+interface GitSyncRuntimeGateTiming {
+  registryReadMs: number;
+  pathEligibilityMs: number;
+  registryReadFailed?: boolean;
+}
+
+interface GitSyncRuntimeGateResult {
+  gate: GitSyncEligibility;
+  entry?: ProjectEntry;
+  projects?: readonly ProjectEntry[];
+  timing: GitSyncRuntimeGateTiming;
+}
+
+interface GitSyncEligibilityStepTiming extends GitSyncRuntimeGateTiming {
+  bodyStartedAtEpochMs: number;
+  bodyCompletedAtEpochMs: number;
+  bodyElapsedMs: number;
+  routineMetadataPatchMs: number;
+  potGitModeReadMs?: number;
+  integrationModeReadMs?: number;
+  submoduleForksReadMs?: number;
+  integrationDecisionMs?: number;
+}
+
 async function gitSyncRuntimeGate(
   slug: string,
   workspaceId: string,
   repoPathOverride?: string | null,
-): Promise<{ gate: GitSyncEligibility; entry?: ProjectEntry; projects?: readonly ProjectEntry[] }> {
+): Promise<GitSyncRuntimeGateResult> {
   let entry: ProjectEntry | undefined;
   let projects: readonly ProjectEntry[] | undefined;
+  const registryReadStartedAt = performance.now();
+  let registryReadMs = 0;
   try {
     projects = (await loadHarnessRegistry(workspaceId)).projects;
     entry = projects.find((p) => p.slug === slug);
+    registryReadMs = performance.now() - registryReadStartedAt;
   } catch (e) {
+    registryReadMs = performance.now() - registryReadStartedAt;
     console.warn(
       `[git-sync] ${slug}: registry unreadable for the eligibility gate — proceeding: ${e instanceof Error ? e.message : e}`,
     );
-    return { gate: { eligible: true } };
+    return {
+      gate: { eligible: true },
+      timing: { registryReadMs, pathEligibilityMs: 0, registryReadFailed: true },
+    };
   }
   // A vanished registry entry reads the same as a vanished checkout: no path.
-  if (!entry) return { gate: { eligible: false, reason: 'no_path' }, projects };
+  if (!entry) {
+    return {
+      gate: { eligible: false, reason: 'no_path' },
+      projects,
+      timing: { registryReadMs, pathEligibilityMs: 0 },
+    };
+  }
   // A manual fire pins the exact tree it measured before entering the action.
   // Validate that pinned path rather than silently gating a freshly-resolved
   // sibling checkout if the ambient registry changes underneath the call.
   const gatedEntry = repoPathOverride === undefined ? entry : { ...entry, path: repoPathOverride ?? '' };
-  return { gate: gitSyncEligibility(gatedEntry), entry: gatedEntry, projects };
+  const pathEligibilityStartedAt = performance.now();
+  const gate = gitSyncEligibility(gatedEntry);
+  return {
+    gate,
+    entry: gatedEntry,
+    projects,
+    timing: {
+      registryReadMs,
+      pathEligibilityMs: performance.now() - pathEligibilityStartedAt,
+    },
+  };
 }
 
 /** P-004/P-006: build the live attribution roster (active agents + their declared files) from
@@ -3529,13 +3577,35 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         hiveGitMode?: PotGitMode;
         hiveGitIdentity?: { potHomeSlug: string; repoKey: string };
         repoPath?: string;
+        timing: GitSyncEligibilityStepTiming;
         /** pot-review-integration-mode P-014: this tick's push target under hiveGit.integration. */
         integration?: IntegrationPushDecision;
       }
     > => {
       eligibilityRanLive = true;
+      const bodyStartedAt = performance.now();
+      const timing: Omit<GitSyncEligibilityStepTiming, 'bodyElapsedMs' | 'bodyCompletedAtEpochMs'> = {
+        bodyStartedAtEpochMs: Date.now(),
+        routineMetadataPatchMs: 0,
+        registryReadMs: 0,
+        pathEligibilityMs: 0,
+      };
+      const withTiming = <T extends object>(value: T) => ({
+        ...value,
+        timing: {
+          ...timing,
+          bodyCompletedAtEpochMs: Date.now(),
+          bodyElapsedMs: performance.now() - bodyStartedAt,
+        },
+      });
+      let phaseStartedAt = performance.now();
       await patchRoutineMetadata(slug, workspaceId, { fire_started_at: Date.now() });
-      const { gate: g, entry, projects } = await gitSyncRuntimeGate(slug, workspaceId, repoPathOverride);
+      timing.routineMetadataPatchMs = performance.now() - phaseStartedAt;
+      const runtimeGate = await gitSyncRuntimeGate(slug, workspaceId, repoPathOverride);
+      timing.registryReadMs = runtimeGate.timing.registryReadMs;
+      timing.pathEligibilityMs = runtimeGate.timing.pathEligibilityMs;
+      if (runtimeGate.timing.registryReadFailed) timing.registryReadFailed = true;
+      const { gate: g, entry, projects } = runtimeGate;
       if (!g.eligible) {
         if (g.reason === 'no_path' && workspaceId) {
           // WI-10006867: a vanished checkout gets its own lifecycle (missing-checkout.ts) —
@@ -3553,7 +3623,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
               `[git-sync] ${slug}: checkout missing since ${new Date(recorded.since).toISOString()} — routine retired (paused with reason); resume with routines:set { active:true } once restored`,
             );
           }
-          return g;
+          return withTiming(g);
         }
         await patchRoutineMetadata(slug, workspaceId, {
           last_status: 'skipped',
@@ -3561,7 +3631,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           last_skip_reason: g.reason,
           last_skipped_at: Date.now(),
         });
-        return g;
+        return withTiming(g);
       }
       // github-bridge P-003 (S-5, run-time half): re-consult the hive's git mode
       // EVERY tick — a hive flipped legacy→bridged must stop origin-pushing without
@@ -3570,12 +3640,16 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // is fail-open: absent/junk/store-error all read 'legacy' (today's behavior).
       const potHomeSlug = entry ? (entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined)) : undefined;
       if (potHomeSlug && workspaceId) {
+        phaseStartedAt = performance.now();
         const mode = await getPotGitMode(workspaceId, potHomeSlug);
+        timing.potGitModeReadMs = performance.now() - phaseStartedAt;
         // pot-review-integration-mode P-014 (D-005/D-006): hiveGit.integration is
         // orthogonal to hiveGit.mode and re-read EVERY tick, so flipping a pot into
         // working-copy mode stops main-repo pushes on the next tick. Unlike the git
         // mode it fails CLOSED: an unreadable or malformed setting means commit-only.
+        phaseStartedAt = performance.now();
         const integrationRead = await readPotIntegrationMode(workspaceId, potHomeSlug);
+        timing.integrationModeReadMs = performance.now() - phaseStartedAt;
         // WI-10006333: a repo pot's HOME is the pot's own metadata repository, not the
         // subject a working copy protects, once a member holds the fork. Only that case
         // needs the full registry; a failed read stays governed (fail-closed).
@@ -3583,6 +3657,13 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         if (integrationRead.mode === 'review' && entry && !entry.hive_slug && !entry.fork_remote) {
           governed = integrationModeGovernsHarness(entry, projects ?? []);
         }
+        let submoduleForks: Awaited<ReturnType<typeof readSubmoduleForks>> | undefined;
+        if (integrationRead.mode === 'review') {
+          phaseStartedAt = performance.now();
+          submoduleForks = await readSubmoduleForks(workspaceId, potHomeSlug);
+          timing.submoduleForksReadMs = performance.now() - phaseStartedAt;
+        }
+        phaseStartedAt = performance.now();
         const integration: IntegrationPushDecision = governed
           ? resolveIntegrationPushRemote({
               read: integrationRead,
@@ -3590,23 +3671,22 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
               ...(entry ? { entry } : {}),
               ...(projects ? { projects } : {}),
               // D-017: a working copy with submodules pushes them to the pot's per-submodule forks.
-              ...(integrationRead.mode === 'review'
-                ? { submoduleForks: await readSubmoduleForks(workspaceId, potHomeSlug) }
-                : {}),
+              ...(submoduleForks !== undefined ? { submoduleForks } : {}),
             })
           : { kind: 'unchanged', reason: 'pot home repository — the working copy lives on a member (WI-10006333)' };
+        timing.integrationDecisionMs = performance.now() - phaseStartedAt;
         const withIntegration = integration.kind === 'unchanged' ? {} : { integration };
         if (mode !== 'legacy' && entry)
-          return {
+          return withTiming({
             ...g,
             hiveGitMode: mode,
             hiveGitIdentity: { potHomeSlug, repoKey: canonicalRepoKey(entry) },
             ...(entry.path ? { repoPath: entry.path } : {}),
             ...withIntegration,
-          };
-        return { ...g, ...(entry?.path ? { repoPath: entry.path } : {}), ...withIntegration };
+          });
+        return withTiming({ ...g, ...(entry?.path ? { repoPath: entry.path } : {}), ...withIntegration });
       }
-      return { ...g, ...(entry?.path ? { repoPath: entry.path } : {}) };
+      return withTiming({ ...g, ...(entry?.path ? { repoPath: entry.path } : {}) });
     },
   );
   if (!gate.eligible) {

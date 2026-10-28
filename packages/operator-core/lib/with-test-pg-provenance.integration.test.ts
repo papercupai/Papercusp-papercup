@@ -237,7 +237,12 @@ describe('isolated PostgreSQL mutation evidence', () => {
 });
 
 describe('isolated PostgreSQL signal cleanup', () => {
-  it.each(['supervisor', 'process-group'] as const)('finishes owned cleanup after SIGINT to %s', async target => {
+  it.each([
+    { target: 'supervisor', signal: 'SIGINT', exitCode: 130 },
+    { target: 'process-group', signal: 'SIGINT', exitCode: 130 },
+    { target: 'supervisor', signal: 'SIGTERM', exitCode: 143 },
+    { target: 'process-group', signal: 'SIGTERM', exitCode: 143 },
+  ] as const)('finishes owned cleanup after $signal to $target', async ({ target, signal, exitCode }) => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'private-pg-signal-lifecycle-'));
     const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
       '--isolated-runtime', '--', process.execPath, '-e',
@@ -267,17 +272,22 @@ describe('isolated PostgreSQL signal cleanup', () => {
       expect(output, errors.slice(-1500)).toContain('SIGNAL_CLEANUP_WORKER_READY');
       expect(observation.observationError).toBeUndefined();
       expect(observation.lifecycle).toBeDefined();
-      if (target === 'process-group') process.kill(-child.pid!, 'SIGINT');
-      else child.kill('SIGINT');
+      if (target === 'process-group') process.kill(-child.pid!, signal);
+      else child.kill(signal);
       let timer: ReturnType<typeof setTimeout> | undefined;
       const result = await Promise.race([closed, new Promise<never>((_, fail) => {
         timer = setTimeout(() => fail(new Error('Private signal cleanup did not close: ' + output.slice(-2000) + errors.slice(-500))), 30_000);
       })]).finally(() => clearTimeout(timer));
       finished = true;
-      expect(result.code === 130 || result.signal === 'SIGINT').toBe(true);
-      const receipt = output.split('\n').filter(line => line.startsWith('[with-test-pg] cleanup '))
-        .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)))
-        .find(row => row.stage === 'complete');
+      expect(result.code === exitCode || result.signal === signal).toBe(true);
+      const cleanupReceipts = output.split('\n').filter(line => line.startsWith('[with-test-pg] cleanup '))
+        .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)));
+      const receipt = cleanupReceipts.find(row => row.stage === 'complete');
+      // Intentional cancellation must fence supervision before PostgreSQL can
+      // restart during child teardown. Successful eventual cleanup alone misses it.
+      expect(cleanupReceipts.find(row => row.stage === 'pg-stop'), output.slice(-4000) + errors.slice(-500))
+        .toMatchObject({ health: { restarts: 0, pendingAttempt: 0 } });
+      expect(output).not.toMatch(/postgres restart(?:ed| attempt)/);
       expect(receipt, output.slice(-2000) + errors.slice(-500)).toMatchObject({ runtimeRemoved: true, pgDataRemoved: true });
       expect(observation.observationError).toBeUndefined();
       expect(observation.ended).toMatchObject({

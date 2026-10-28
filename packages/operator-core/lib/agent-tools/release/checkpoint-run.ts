@@ -38,7 +38,7 @@ import {
   classifyReplaceRequest,
   launchDetachedCheckpoint,
   renderPreLaunchRefusal,
-  REPLACE_STALE_MIN_AGE_SEC,
+  REPLACE_STALE_MIN_SILENCE_SEC,
   scheduleCheckpointEligibilityWait,
   type CheckpointEligibilityWaitReceipt,
 } from '../../release-checkpoint-launch';
@@ -385,7 +385,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        `EI-9672: when the active run is CONFIRMED stale (candidate_stale:true in a prior already_running reply) AND ≥${Math.round(REPLACE_STALE_MIN_AGE_SEC / 60)} min old (EI-11667: a YOUNG stale run is normal on a busy tree and is refused, not stopped — serial replacement starves the gate of every verdict), stop that run and launch a fresh one. Unlike force, this actually frees the singleton; a run judging the current candidate is never stopped.`,
+        `EI-9672: when the active run is CONFIRMED stale (candidate_stale:true in a prior already_running reply) AND silent (no progress) for ≥${Math.round(REPLACE_STALE_MIN_SILENCE_SEC / 60)} min (EI-11667: a PROGRESSING stale run is normal on a busy tree and is refused, not stopped — serial replacement starves the gate of every verdict), stop that run and launch a fresh one. Unlike force, this actually frees the singleton; a run judging the current candidate is never stopped.`,
       ),
     paths: z
       .array(z.string())
@@ -2166,7 +2166,7 @@ export default defineTool({
               current_phase: a.current_phase ?? null,
               eta_sec: a.eta_sec ?? null,
               eta_basis: a.eta_basis ?? null,
-              replace_refused_young: a.replace_refused_young ?? false,
+              replace_refused_progressing: a.replace_refused_progressing ?? false,
               // EI-18757736867106199: expose the phase signal the decision actually turns on.
               // It was computed and enforced but never returned, so a caller could not see WHY
               // a replace was refused — only that it was.
@@ -2270,8 +2270,8 @@ export default defineTool({
                         // gate repairing itself. Age cannot distinguish this from wedged; the phase
                         // can, and it is decisive.
                         'A checkpoint run for this root is already in flight and has published the `delivering` phase: its SUITE IS DONE and it is in the verdict path (stale-red re-triage → auto-refire → prefix salvage). It is seconds-to-minutes from a verdict, and may VOID a stale red and re-fire itself onto a newer tip — this is the gate self-healing, not a wedge. It is NOT replaceable at any age: replaceStale:true will be refused (replace_refused_delivering), and killing it out-of-band DISCARDS the salvage (that is exactly how four consecutive runs died on 2026-07-27 with nothing actually broken). Wait for it: checkpoint:await, then release:trace to confirm your commit is included.'
-                      : replaceDecision.reason === 'young'
-                        ? `A checkpoint run is in flight and its candidate trails current staging — that is NORMAL for a young run on a busy tree (the tip moves faster than the ~20-55 min suite runs; the NEXT run picks up the newer tip). Do NOT replace it: serial replaceStale calls are the EI-11667 replace-storm that starves the gate of every verdict. Judge liveness from current_phase + progress_at; eta_sec is only the remaining systemd backstop when eta_basis is full-suite, not a measured time-to-verdict. replaceStale only unlocks once the run is ≥${Math.round(REPLACE_STALE_MIN_AGE_SEC / 60)} min old AND not delivering.`
+                      : replaceDecision.reason === 'progressing'
+                        ? `A checkpoint run is in flight and its candidate trails current staging — that is NORMAL for a progressing run on a busy tree (the tip moves faster than the suite runs; the NEXT run picks up the newer tip). Do NOT replace it: serial replaceStale calls are the EI-11667 replace-storm that starves the gate of every verdict. Judge liveness from current_phase + progress_at; eta_sec is only the remaining systemd backstop when eta_basis is full-suite, not a measured time-to-verdict. replaceStale only unlocks once the run has been silent (no progress_at movement) for ≥${Math.round(REPLACE_STALE_MIN_SILENCE_SEC / 60)} min AND is not delivering.`
                         : 'A checkpoint run for this root is already in flight and its candidate matches the current quiet-cut-eligible staging state; a re-fire is unnecessary and replaceStale will NOT touch it (only a confirmed-stale run is ever stopped) — wait for it, or pass force:true to launch a second one anyway.',
             }),
           },

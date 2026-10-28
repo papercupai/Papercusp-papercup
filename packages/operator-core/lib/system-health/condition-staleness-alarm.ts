@@ -46,7 +46,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { coordScopeWorkspace } from '../agent-tools/coordination/log';
 import { SELF_RECONCILING_META_KEY } from '../attention/reconcile-escalations';
 import { broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
-import { DEGRADATION_CONDITION_PREFIX } from '../coord/actionable-conditions';
+import { isLifecycleOwnedBySource } from '../coord/actionable-conditions';
 import {
   actionableConditionFor,
   reconcileConditions,
@@ -504,14 +504,16 @@ export function selectDeadOneShotConditions(
         s.open &&
         s.one_shot === true &&
         livenessByKey.get(s.condition_key) === 'dead' &&
-        // Degradation conditions are owned by the degradation watchdog, which
-        // has the durable fallback-observation window needed to establish
-        // recovery.  Emitter death/replacement is not evidence that the
-        // degraded signal recovered: the 2026-10-17 retrieval incident closed
-        // `degraded:retrieval:mixed` at 65–69% recovery solely because its old
-        // emitter exited.  Leave this family open until its source emits the
-        // metric-backed resolution (or a replacement alarm changes the fold).
-        !s.condition_key.startsWith(DEGRADATION_CONDITION_PREFIX),
+        // A family whose lifecycle a recomputing source owns (catalog flag
+        // `lifecycleOwnedBySource`) is resolved by that source's next tick, not by
+        // the process that last emitted: emitter death/replacement is not evidence
+        // of recovery. `degraded:` — only the watchdog's metric-backed window can
+        // establish recovery (the 2026-10-17 retrieval incident closed it at 65–69%
+        // recovery because its old emitter exited). `frozen-repair-leg:` — opened by
+        // the gate's per-RUN process, so every run's exit closed still-failing legs
+        // and their items (EI-27231825178306204). Leave both open until their source
+        // resolves them (or a replacement alarm changes the fold).
+        !isLifecycleOwnedBySource(s.condition_key),
     )
     .map((s) => s.condition_key);
 }

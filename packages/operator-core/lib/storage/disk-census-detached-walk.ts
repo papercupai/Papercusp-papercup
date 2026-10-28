@@ -469,7 +469,9 @@ export async function runDetachedDuUsage(roots: readonly string[], opts: Detache
   }, requestKey);
 }
 
-async function waitForWalk(
+/** Read-only wait, also used by a checkpointed retention continuation outside
+ * its writer mutex. It neither replaces an attempt nor consumes its output. */
+export async function waitForWalk(
   state: DetachedWalkState,
   exitPath: string,
   o: {

@@ -165,6 +165,8 @@ describe('PTY host event classification for Blender', () => {
       'gated-delivery-pipeline-error', 'gated-delivery-refused', 'control-socket-error',
       'control-socket-rebind-failed', 'session-scope-cleanup-partial',
       'session-scope-cleanup-failed', 'session-port-failure-ack-failed',
+      // EI-27244198558252718: a must-deliver re-poll pending past its stall interval.
+      'respawn-rearm-still-pending', 'wake-rearm-still-pending',
     ]) {
       expect(classifyPtyHostEvent(kind), kind).toBe('failure');
     }

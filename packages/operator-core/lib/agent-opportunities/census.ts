@@ -1,6 +1,6 @@
 /** Five-family pass on the existing SQL census cadence; only minimized diagnostics are persisted. */
-import { createHash, createHmac, randomUUID } from 'node:crypto';
-import { monitoredRuntimeId } from '../harness/routines/fire-provenance';
+import { createHmac, randomUUID } from 'node:crypto';
+import { monitoredCensusRunId, monitoredRuntimeId } from '../harness/routines/fire-provenance';
 import { getOrgPg } from '@papercusp/db-org';
 import { getBuildInfo } from '../build-info';
 import type { SqlMiningOptions, SqlMiningResult } from '../bash-substitution/sql-tool-candidates';
@@ -228,8 +228,7 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
   sqlStage: () => Promise<SqlMiningResult>, deps: Parameters<typeof productionOpportunityReaders>[1] = {}) {
   const sql = opts.client ?? getOrgPg().sql, scopeId = miningScopeId(opts.scope, opts.harnessSlug);
   if (opts.workspaceId !== opts.scope.workspaceId) throw new Error('invalid_sql_mining_scope');
-  const hex = createHash('sha256').update(JSON.stringify([opts.workspaceId, opts.workflowId])).digest('hex');
-  const runId = opts.workflowId ? hex.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, '$1-$2-$3-$4-$5') : randomUUID();
+  const runId = opts.workflowId ? monitoredCensusRunId(opts.workspaceId, opts.workflowId) : randomUUID();
   const started = new Date().toISOString(), now = opts.now ?? Date.now();
   const readers = productionOpportunityReaders({ ...opts, sourceBoundary: opts.scope.sourceBoundary }, deps);
   const common = { ...opts, since: new Date(now - 7 * 86400_000).toISOString(), until: new Date(now).toISOString(),

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   ADMISSION_CREATE_BYPASSES,
+  ADMISSION_DEGRADED_RESCREEN_ATTEMPTS,
   ADMISSION_FAIL_OPEN_EXCLUSIONS,
   ADMISSION_FAIL_OPEN_TICKS,
   asAdmissionFailOpenExclusion,
@@ -105,6 +106,9 @@ describe('admission-pending states a bound, derived from the promoter cadence', 
     expect(degraded).toContain('could NOT RUN');
     expect(degraded).toContain(`every ${ADMISSION_FAIL_OPEN_TICKS} ticks of the 7-minute promoter`);
     expect(degraded).not.toContain('30-minute');
+    // EI-26515695311006297: the re-screen budget is finite, and the text says what happens after it.
+    expect(degraded).toContain(`After ${ADMISSION_DEGRADED_RESCREEN_ATTEMPTS} re-screens that still cannot run`);
+    expect(degraded).toContain('CLEARS ON ITS OWN');
   });
 
   it('a duplicate-verdict row names its canonical row and is told it never clears on its own', () => {

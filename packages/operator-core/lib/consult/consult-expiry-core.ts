@@ -120,7 +120,18 @@ export function currentUnjudgedFirstTurn(
     const kickoffMs = typeof kickoffAt === 'string' ? Date.parse(kickoffAt) : Number.NaN;
     if (!Number.isFinite(kickoffMs) || !Number.isFinite(nowMs)) return null;
     if (nowMs - kickoffMs > FIRST_TURN_REJUDGE_WINDOW_MS) return null;
-    return { agent, transcriptPath, kickoffAt: kickoffAt as string, answeringOwnerId: answerer };
+    const launchLogPath = typeof attempt.launchLogPath === 'string' && attempt.launchLogPath.trim()
+      ? attempt.launchLogPath
+      : typeof unjudged.launchLogPath === 'string' && unjudged.launchLogPath.trim()
+        ? unjudged.launchLogPath
+        : undefined;
+    return {
+      agent,
+      transcriptPath,
+      kickoffAt: kickoffAt as string,
+      answeringOwnerId: answerer,
+      ...(launchLogPath ? { launchLogPath } : {}),
+    };
   }
   return null;
 }
@@ -426,6 +437,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
           agent: unjudged.agent,
           transcriptPath: unjudged.transcriptPath,
           kickoffAt: unjudged.kickoffAt,
+          ...(unjudged.launchLogPath ? { launchLogPath: unjudged.launchLogPath } : {}),
         });
         if (verdict.status === 'rejected') {
           firstTurnRejections.set(

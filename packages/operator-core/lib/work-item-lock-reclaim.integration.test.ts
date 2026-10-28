@@ -19,7 +19,7 @@ vi.mock('./degradation/fallback-observations', async (importOriginal) => ({
 }));
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
+import { EVENT_AWAITS_LIVENESS_MIN_DDL, HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import {
   ensureBootstrap,
   getTxPool,
@@ -98,6 +98,7 @@ beforeAll(async () => {
   await sql.unsafe(AGENT_ACTIVITY_DDL);
   await sql.unsafe(TOOL_INVOCATIONS_DDL);
   await sql.unsafe(ROUTINES_DDL);
+  await sql.unsafe(EVENT_AWAITS_LIVENESS_MIN_DDL); // warm-dead leg reads it (EI-27232210222510304)
 
   sideDbLive = await checkSideDb();
 }, 120_000);

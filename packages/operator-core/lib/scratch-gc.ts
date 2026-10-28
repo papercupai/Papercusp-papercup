@@ -47,7 +47,7 @@ import {
   rename as renameAsync,
   realpath as realpathAsync,
 } from 'node:fs/promises';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
@@ -936,6 +936,7 @@ async function listDir(
     const names = await measureScratchQuotaRecoveryOperation(
       diagnostics,
       'readdir',
+      dir,
       () => readdirAsync(dir),
     );
     scratchGcBudgetExpired(budget);
@@ -958,12 +959,12 @@ async function childDirs(
     entries = await measureScratchQuotaRecoveryOperation(
       diagnostics,
       'readdir',
+      dir,
       () => readdirAsync(dir, { withFileTypes: true }),
     );
   } catch (error) {
     if (scratchFsErrorCode(error) !== 'ENOENT' && diagnostics) {
       diagnostics.directoryReadErrors += 1;
-      rememberScratchSizeWalkErrorCode(diagnostics, error);
     }
     return out;
   }
@@ -976,11 +977,10 @@ async function childDirs(
     const child = join(dir, entry.name);
     let st;
     try {
-      st = await measureScratchQuotaRecoveryOperation(diagnostics, 'stat', () => statAsync(child));
+      st = await measureScratchQuotaRecoveryOperation(diagnostics, 'stat', child, () => statAsync(child));
     } catch (error) {
       if (scratchFsErrorCode(error) !== 'ENOENT' && diagnostics) {
         diagnostics.fileStatErrors += 1;
-        rememberScratchSizeWalkErrorCode(diagnostics, error);
       }
       continue;
     }
@@ -1190,12 +1190,12 @@ async function evictWorkspaceQuotaLocked(
             stats = await measureScratchQuotaRecoveryOperation(
               diagnostics,
               'stat',
+              run.dir,
               () => lstatAsync(run.dir),
             );
           } catch (error) {
             if (scratchFsErrorCode(error) !== 'ENOENT' && diagnostics) {
               diagnostics.fileStatErrors += 1;
-              rememberScratchSizeWalkErrorCode(diagnostics, error);
             }
             canMeasureIncrementally = false;
             break;
@@ -1548,7 +1548,7 @@ async function sizeOfDirAsync(
   let entries;
   try {
     entries = await withScratchSizeScanSlot(() =>
-      measureScratchQuotaRecoveryOperation(diagnostics, 'readdir', () =>
+      measureScratchQuotaRecoveryOperation(diagnostics, 'readdir', dir, () =>
         readdirAsync(dir, { withFileTypes: true }),
       ),
     );
@@ -1557,7 +1557,6 @@ async function sizeOfDirAsync(
     if (scratchFsErrorCode(error) === 'ENOENT') return 0; // an absent or concurrently removed directory is empty
     if (diagnostics) {
       diagnostics.directoryReadErrors += 1;
-      rememberScratchSizeWalkErrorCode(diagnostics, error);
     }
     return 0; // unreadable — the caller sees the diagnostic and rejects an incomplete measurement
   }
@@ -1583,7 +1582,7 @@ async function sizeOfDirAsync(
       if (diagnostics) diagnostics.sizeWalkFiles += 1;
       try {
         const bytes = (await withScratchSizeScanSlot(() =>
-          measureScratchQuotaRecoveryOperation(diagnostics, 'stat', () => statAsync(child)),
+          measureScratchQuotaRecoveryOperation(diagnostics, 'stat', child, () => statAsync(child)),
         )).size;
         total += bytes;
         if (observedFileBytes?.has(child)) observedFileBytes.set(child, bytes);
@@ -1594,7 +1593,6 @@ async function sizeOfDirAsync(
         if (scratchFsErrorCode(error) === 'ENOENT') continue; // removed after readdir; it no longer consumes quota
         if (diagnostics) {
           diagnostics.fileStatErrors += 1;
-          rememberScratchSizeWalkErrorCode(diagnostics, error);
         }
         /* Other stat failures make the measurement incomplete. */
       }
@@ -1923,11 +1921,22 @@ export interface ScratchWriteTimings {
   totalMs: number;
   /** Present when this write initiated an actual request-time quota-recovery scan. */
   quotaRecoveryDiagnostics?: ScratchQuotaRecoveryDiagnostics;
+  /** Final snapshot of a shared workspace-usage refresh awaited by this write. */
+  usageRefreshDiagnostics?: ScratchQuotaRecoveryDiagnostics;
   /** Present only for the one-shot progress notification while a phase is still pending. */
   progress?: ScratchWriteProgress;
 }
 
 type ScratchQuotaRecoveryOperationKind = 'readdir' | 'stat';
+
+/** Keep filesystem diagnostics actionable without logging the host's home-directory prefix. */
+function scratchQuotaDiagnosticPath(filePath: string): string {
+  const root = resolve(scratchRoot());
+  const relativePath = relative(root, resolve(filePath));
+  if (!relativePath) return '.';
+  if (relativePath === '..' || relativePath.startsWith(`..${sep}`)) return '<outside-scratch-root>';
+  return relativePath.slice(0, 512);
+}
 
 export interface ScratchQuotaRecoveryDiagnostics {
   sizeWalkMs: number;
@@ -1941,7 +1950,11 @@ export interface ScratchQuotaRecoveryDiagnostics {
   maxOperationMs: number;
   maxOperationKind: ScratchQuotaRecoveryOperationKind | null;
   currentOperationKind: ScratchQuotaRecoveryOperationKind | null;
+  currentOperationPath: string | null;
   currentOperationElapsedMs: number;
+  firstOperationErrorCode: string | null;
+  firstOperationErrorKind: ScratchQuotaRecoveryOperationKind | null;
+  firstOperationErrorPath: string | null;
   directoryReadErrors: number;
   fileStatErrors: number;
   runListingMs: number;
@@ -1967,7 +1980,7 @@ export interface ScratchQuotaRecoveryDiagnostics {
   deletedBytes: number;
 }
 
-function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
+export function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
   return {
     sizeWalkMs: 0,
     sizeWalkDirectories: 0,
@@ -1979,7 +1992,11 @@ function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
     maxOperationMs: 0,
     maxOperationKind: null,
     currentOperationKind: null,
+    currentOperationPath: null,
     currentOperationElapsedMs: 0,
+    firstOperationErrorCode: null,
+    firstOperationErrorKind: null,
+    firstOperationErrorPath: null,
     directoryReadErrors: 0,
     fileStatErrors: 0,
     runListingMs: 0,
@@ -2001,22 +2018,23 @@ function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
   };
 }
 
-const scratchSizeWalkErrorCodes = new WeakMap<ScratchQuotaRecoveryDiagnostics, string>();
-
 function scratchFsErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const code = (error as { code?: unknown }).code;
   return typeof code === 'string' ? code : undefined;
 }
 
-function rememberScratchSizeWalkErrorCode(
+function rememberScratchQuotaOperationError(
   diagnostics: ScratchQuotaRecoveryDiagnostics,
+  kind: ScratchQuotaRecoveryOperationKind,
+  path: string,
   error: unknown,
 ): void {
   const code = scratchFsErrorCode(error);
-  if (code && !scratchSizeWalkErrorCodes.has(diagnostics)) {
-    scratchSizeWalkErrorCodes.set(diagnostics, code);
-  }
+  if (!code || diagnostics.firstOperationErrorPath !== null) return;
+  diagnostics.firstOperationErrorCode = code;
+  diagnostics.firstOperationErrorKind = kind;
+  diagnostics.firstOperationErrorPath = path;
 }
 
 function scratchQuotaReadErrorCount(diagnostics?: ScratchQuotaRecoveryDiagnostics): number {
@@ -2028,13 +2046,14 @@ function incompleteScratchQuotaMeasurementError(
   diagnostics: ScratchQuotaRecoveryDiagnostics,
 ): Error {
   const error = new Error('Unable to establish a complete shared scratch quota measurement for workspace ' + workspaceId);
-  const code = scratchSizeWalkErrorCodes.get(diagnostics);
+  const code = diagnostics.firstOperationErrorCode;
   if (code) Object.assign(error, { code });
   return error;
 }
 
 interface ActiveScratchQuotaRecoveryOperation {
   kind: ScratchQuotaRecoveryOperationKind;
+  path: string;
   startedAt: number;
 }
 
@@ -2045,6 +2064,7 @@ let nextScratchQuotaRecoveryOperationId = 0;
 async function measureScratchQuotaRecoveryOperation<T>(
   diagnostics: ScratchQuotaRecoveryDiagnostics | undefined,
   kind: ScratchQuotaRecoveryOperationKind,
+  filePath: string,
   operation: () => Promise<T>,
 ): Promise<T> {
   if (!diagnostics) return operation();
@@ -2053,16 +2073,22 @@ async function measureScratchQuotaRecoveryOperation<T>(
   else diagnostics.statOperations += 1;
 
   const startedAt = performance.now();
+  const diagnosticPath = scratchQuotaDiagnosticPath(filePath);
   let active = activeScratchQuotaRecoveryOperations.get(diagnostics);
   if (!active) {
     active = new Map();
     activeScratchQuotaRecoveryOperations.set(diagnostics, active);
   }
   const operationId = ++nextScratchQuotaRecoveryOperationId;
-  active.set(operationId, { kind, startedAt });
+  active.set(operationId, { kind, path: diagnosticPath, startedAt });
 
   try {
     return await operation();
+  } catch (error) {
+    if (scratchFsErrorCode(error) !== 'ENOENT') {
+      rememberScratchQuotaOperationError(diagnostics, kind, diagnosticPath, error);
+    }
+    throw error;
   } finally {
     const elapsedMs = Math.max(0, performance.now() - startedAt);
     diagnostics.operationTotalMs += elapsedMs;
@@ -2087,6 +2113,7 @@ function snapshotScratchQuotaRecoveryDiagnostics(
   return {
     ...diagnostics,
     currentOperationKind: current?.kind ?? null,
+    currentOperationPath: current?.path ?? null,
     currentOperationElapsedMs: current
       ? Math.max(0, performance.now() - current.startedAt)
       : 0,
@@ -2254,6 +2281,15 @@ export async function writeWithScratchQuota(
       if (phase === 'quotaRecoveryMs' && emitActiveRecoveryProgress === emitProgress) {
         emitActiveRecoveryProgress = undefined;
       }
+    }
+  };
+  const waitForUsageRefresh = async (phase: 'refreshWaitMs' | 'quotaWaitMs') => {
+    const refresh = refreshScratchUsage(opts.workspaceId);
+    const diagnostics = entry.refreshDiagnostics;
+    try {
+      await timed(phase, () => refresh);
+    } finally {
+      if (diagnostics) timings.usageRefreshDiagnostics = snapshotScratchQuotaRecoveryDiagnostics(diagnostics);
     }
   };
   let succeeded = false;
@@ -2589,7 +2625,7 @@ export async function writeWithScratchQuota(
         break;
       }
       if (outcome === SCRATCH_USAGE_REFRESH_REQUIRED) {
-        await timed('refreshWaitMs', () => refreshScratchUsage(opts.workspaceId));
+        await waitForUsageRefresh('refreshWaitMs');
         continue;
       }
       if (outcome === SCRATCH_QUOTA_RECOVERY_WAIT_REQUIRED) {
@@ -2606,7 +2642,7 @@ export async function writeWithScratchQuota(
         const refresh = entry.refreshing;
         if (refresh) {
           emitLockWaitProgress();
-          await timed(refreshWaitOwner ? 'refreshWaitMs' : 'quotaWaitMs', () => refresh);
+          await waitForUsageRefresh(refreshWaitOwner ? 'refreshWaitMs' : 'quotaWaitMs');
           continue;
         }
         if (quotaRecoveryAttempted) {

@@ -1,0 +1,314 @@
+{
+  "schemaVersion": 1,
+  "kind": "idop-p001-current-source-override-boundary-supplement",
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "driverWorkItem": "WI-6554700010020777",
+  "ownerId": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+  "nativeSessionId": "01a183bb-7c6f-7610-ac0f-8336da1db00e",
+  "capturedAt": "2026-10-28T18:38:26.272Z",
+  "acceptance": "OPEN",
+  "canonicalAcceptance": false,
+  "purpose": "Extend the existing remaining-observation matrix with source-located current override paths and newly measured maintained fixture controls. Preserve every historical population, argument-permission and vault gap.",
+  "canonicalSpec": {
+    "id": "P-001-BASELINE-CENSUS",
+    "revision": 3,
+    "contentHash": "aedda400a80e5f23a214ac6969bb171e8abcc5d0df4b860e420dd79821e77dc7",
+    "requiredTestLayers": [
+      "integration"
+    ]
+  },
+  "previousMatrix": "docs/evidence/idop-p001-remaining-observation-matrix-2026-10-25.json",
+  "baseline": {
+    "path": "docs/evidence/idop-p001-baseline-2026-10-22.json",
+    "expectedSha256": "28926b71afbeb048c02fd0e137fb72de33e5b30b82131fe0f3d74edd65403c18",
+    "modified": false
+  },
+  "measuredSupport": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/agent-mcp/src/http-projection.test.ts packages/operator-core/lib/auth/principal/from-superuser-token.test.ts libs/papercusp/packages/orchestrator/src/spawn-mcp.test.ts",
+    "nativeProcessSession": 59610,
+    "exitCode": 0,
+    "requestedFiles": 3,
+    "executedFiles": 3,
+    "matchedFiles": 3,
+    "passed": 116,
+    "failed": 0,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "runnerResult": "TEST_FILE_RESULT requested=3 executed=3 matched=3 status=passed head=32656f8a73 uncommittedPaths=0/3 provenance=stamped startedAt=2026-10-28T18:29:40.736Z childSubstituted=0 skippedTests=0",
+    "log": {
+      "path": "/tmp/idop-p001-override-boundaries-20261028.log",
+      "bytes": 43927,
+      "sha256": "0f8a75a0c54433243dbcf3811ce1865af8e93e1d2884b21abca6e993fec76750",
+      "durableEvidence": "Exact per-file test_runs receipts below retain authoritative execution details after the temporary log is removed."
+    },
+    "ledgerReceipts": [
+      {
+        "id": 22562042,
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "root": null,
+        "filePath": "packages/agent-mcp/src/http-projection.test.ts",
+        "status": "pass",
+        "framework": "vitest",
+        "startedAt": "2026-10-28T18:30:00.634Z",
+        "finishedAt": "2026-10-28T18:30:00.948Z",
+        "durationMs": 314,
+        "commitSha": "32656f8a73481634aee84c9c7d951f168398bac7",
+        "runGroupId": null,
+        "source": "local",
+        "branch": "staging",
+        "outputTail": null,
+        "loopLagP95Ms": null,
+        "rssMb": 224.3,
+        "saturationSuspect": null,
+        "worktreeDirty": true,
+        "isScratchConfig": false
+      },
+      {
+        "id": 22562047,
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "root": null,
+        "filePath": "packages/operator-core/lib/auth/principal/from-superuser-token.test.ts",
+        "status": "pass",
+        "framework": "vitest",
+        "startedAt": "2026-10-28T18:30:31.102Z",
+        "finishedAt": "2026-10-28T18:30:31.193Z",
+        "durationMs": 91,
+        "commitSha": "32656f8a73481634aee84c9c7d951f168398bac7",
+        "runGroupId": null,
+        "source": "local",
+        "branch": "staging",
+        "outputTail": null,
+        "loopLagP95Ms": null,
+        "rssMb": 246.2,
+        "saturationSuspect": null,
+        "worktreeDirty": true,
+        "isScratchConfig": false
+      },
+      {
+        "id": 22562053,
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "root": null,
+        "filePath": "libs/papercusp/packages/orchestrator/src/spawn-mcp.test.ts",
+        "status": "pass",
+        "framework": "vitest",
+        "startedAt": "2026-10-28T18:30:56.496Z",
+        "finishedAt": "2026-10-28T18:30:56.759Z",
+        "durationMs": 263,
+        "commitSha": "32656f8a73481634aee84c9c7d951f168398bac7",
+        "runGroupId": null,
+        "source": "local",
+        "branch": "staging",
+        "outputTail": null,
+        "loopLagP95Ms": null,
+        "rssMb": 230.9,
+        "saturationSuspect": null,
+        "worktreeDirty": true,
+        "isScratchConfig": false
+      }
+    ],
+    "executionReadback": [
+      {
+        "testRunId": 22562042,
+        "passed": 36,
+        "failed": 0,
+        "skipped": 0,
+        "recordedTitles": 36,
+        "testLayer": "unit",
+        "testNamePattern": null,
+        "collectionFailed": false,
+        "exactControlSubstrings": [
+          "validateSuperuser returns false",
+          "NO validateSuperuser is provided",
+          "validateSuperuser returns true"
+        ],
+        "controlSubstringMatchCounts": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "testRunId": 22562047,
+        "passed": 7,
+        "failed": 0,
+        "skipped": 0,
+        "recordedTitles": 7,
+        "testLayer": "unit",
+        "testNamePattern": null,
+        "collectionFailed": false,
+        "exactControlSubstrings": [
+          "non-loopback request",
+          "with no Authorization header",
+          "bearer is present but invalid",
+          "a valid loopback bearer"
+        ],
+        "controlSubstringMatchCounts": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "testRunId": 22562053,
+        "passed": 73,
+        "failed": 0,
+        "skipped": 0,
+        "recordedTitles": 73,
+        "testLayer": "unit",
+        "testNamePattern": null,
+        "collectionFailed": false,
+        "exactControlSubstrings": [
+          "harness= (the launched project slug)",
+          "narrows tools= to the role catalog on the superuser door too"
+        ],
+        "controlSubstringMatchCounts": [
+          1,
+          1
+        ]
+      }
+    ],
+    "countWriter": "libs/test-config/src/admin-test-runs-reporter.ts:1025 collectModuleExecution counts completed Vitest cases and stores unique unambiguous passed fullName identities. The three readback title counts equal their respective case counts.",
+    "provenanceQualification": "All three named test paths were clean before/after the run; the orchestrator submodule pin matched 3edc517bcc8ab0a7d90e2f3a31a96bb2c573d901. Every authoritative ledger row still records worktreeDirty:true. This is local current-source fixture evidence, not a clean committed import closure."
+  },
+  "sourceCapture": {
+    "superprojectHead": "32656f8a73481634aee84c9c7d951f168398bac7",
+    "sourceFiles": [
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/spawn-mcp.ts",
+        "bytes": 51858,
+        "sha256": "598758fde72b5806025ae32847f18a9adb39ab96069907476414f1fb7e64548a"
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/spawn-mcp.test.ts",
+        "bytes": 50241,
+        "sha256": "808f47c6693409aaaf9fa82e9b382d9f489f63e6a8af67e0e2af4a3a691a67f4"
+      },
+      {
+        "path": "libs/generic/tooldef-http/src/http-projection.ts",
+        "bytes": 26378,
+        "sha256": "6f4aebeaa56ddd2fcbfe432fe9b0bd67d5537146f39d4ca5e2a9089fcde382ad"
+      },
+      {
+        "path": "packages/agent-mcp/src/http-projection.test.ts",
+        "bytes": 27613,
+        "sha256": "e212d4c167621813d33e69c248e9a5a640b1b001f806bdec5862ec4a20e624df"
+      },
+      {
+        "path": "packages/operator-core/lib/auth/principal/from-superuser-token.ts",
+        "bytes": 1319,
+        "sha256": "5ef012832f831c67267ed12af47ba1e0b0346c04484d68049fae5d20e45f5888"
+      },
+      {
+        "path": "packages/operator-core/lib/auth/principal/from-superuser-token.test.ts",
+        "bytes": 4471,
+        "sha256": "c7e983c3268b75ff50b5d14ca8b552ceca8680bbce61a6b9e564ebddd0779232"
+      },
+      {
+        "path": "packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.ts",
+        "bytes": 37569,
+        "sha256": "ddf02bc62b1ec4a2b413140b6c391a163649842f930ac75358ddeef80f2c5400"
+      },
+      {
+        "path": "packages/operator-core/lib/endpoint-route/routes/transport/scoped-superuser-transport-boundary.ts",
+        "bytes": 3699,
+        "sha256": "e584e0baaee6d444a2b63e4c3f9eb7b6c26ae9d490ba218bfd7678f4a4744478"
+      },
+      {
+        "path": "packages/agent-mcp/src/gate-bypass.ts",
+        "bytes": 4893,
+        "sha256": "f7ae2cee0f18ef6a16627ae77c2f88c19d1672df2e2b06c27b627f4b12340992"
+      },
+      {
+        "path": "packages/operator-core/lib/auth-config-overrides.ts",
+        "bytes": 13103,
+        "sha256": "7ac689c052a6a0ccddc1f729462539a89a143b4170d1cb274eae000c8488ab0b"
+      }
+    ],
+    "timing": "Selected source hashes captured during the run after the first file completed; final readback separately verifies stability. These are selected boundary sources, not an exhaustive executed import graph."
+  },
+  "overridePopulation": [
+    {
+      "channel": "launch environment",
+      "status": "CURRENT_SOURCE_AND_UNIT_FIXTURE_SUPPORT_ONLY",
+      "sources": [
+        "libs/papercusp/packages/orchestrator/src/spawn-mcp.ts:writeSignedSpawnMcp",
+        "packages/agent-mcp/src/gate-bypass.ts:testingFullAccess",
+        "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts:mcpInstructionsForServer"
+      ],
+      "observation": "In the selected launch writer, nonempty PAPERCUSP_SPAWN_SU_BEARER selects the bearer-authenticated superuser URL while retaining harness/workspace/client and role/tool-list hints. PAPERCUSP_TESTING_FULL_ACCESS_ROLES=off independently removes the testing-role bypass; PAPERCUSP_SU_MEMORY_INJECTION=off suppresses the selected MCP instruction text and is not an authorization grant.",
+      "testRunIds": [
+        22562053
+      ],
+      "remaining": "No full launch-environment population or real launched principal/argument comparison was measured. The two other environment observations are source reads, not newly executed controls."
+    },
+    {
+      "channel": "legacy superuser query parameter",
+      "status": "CURRENT_SOURCE_AND_UNIT_FIXTURE_SUPPORT_ONLY",
+      "sources": [
+        "libs/generic/tooldef-http/src/http-projection.ts:resolveToolAndContext",
+        "packages/agent-mcp/src/http-projection.test.ts"
+      ],
+      "observation": "The HTTP adapter rejects superuser=1 if its host validator is absent or returns false; a true validator runs the projected fixture tool and supplies role/capability/quota bypass. The validator is injected in this suite, so these cases do not measure the real loopback/token verifier or the MCP host end to end.",
+      "testRunIds": [
+        22562042
+      ],
+      "remaining": "Historical real-session argument/authorization observations for the complete population."
+    },
+    {
+      "channel": "authenticated principal kind",
+      "status": "CURRENT_SOURCE_AND_UNIT_FIXTURE_SUPPORT_ONLY",
+      "sources": [
+        "packages/operator-core/lib/auth/principal/from-superuser-token.ts:principalFromSuperuserToken",
+        "packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.ts:synthesizeTransportPrincipal/synthesizeDispatchPrincipal"
+      ],
+      "observation": "The bearer resolver's real body refuses nonloopback, missing and invalid bearer conditions and emits a trusted system principal with wildcard capability on its valid control. Its three host dependencies are mocked. The transport/dispatch synthesis code preserves an existing authenticatedPrincipal; its system/harness/legacy loopback branches were read but not newly executed in this unit.",
+      "testRunIds": [
+        22562047
+      ],
+      "remaining": "Actual signed/bearer launched principal and effective handler argument scopes; do not infer these from a mocked resolver."
+    },
+    {
+      "channel": "role envelope",
+      "status": "PRIOR_FIXTURE_SUPPORT_AND_REMAINING_LAUNCHED_OBSERVATIONS",
+      "sources": [
+        "packages/agent-mcp/src/gate-bypass.ts",
+        "packages/operator-core/lib/auth-config-overrides.ts",
+        "packages/operator-core/lib/endpoint-route/routes/transport/scoped-superuser-transport-boundary.ts"
+      ],
+      "priorEvidence": "docs/evidence/idop-p001-access-override-fixtures-2026-10-23.json",
+      "observation": "Selected sources separate the testing-role role/capability bypass from quota and retain the scoped-superuser cross-workspace clamp. The runtime safeToolsRemove dial subtracts from the reviewed safe list. No new role fixture run is claimed here.",
+      "testRunIds": [],
+      "remaining": "Every independently registered role's source-bound native catalog, exact annotations and real per-argument observations."
+    },
+    {
+      "channel": "mode registry",
+      "status": "REMAINING_REAL_OBSERVATIONS",
+      "priorEvidence": "docs/evidence/idop-p001-independent-mode-fleet-population-2026-10-25.json",
+      "observation": "The retained original registry product is preparation. This supplement neither sets a mode nor promotes enumerated candidates to observed stacks.",
+      "testRunIds": [],
+      "remaining": "Real admitted legal-stack observations with emission/application/ACK provenance and effective argument scopes."
+    },
+    {
+      "channel": "fleet posture",
+      "status": "REMAINING_REAL_OBSERVATIONS",
+      "priorEvidence": "docs/evidence/idop-p001-independent-mode-fleet-population-2026-10-25.json",
+      "observation": "Retain fleet-position candidates and measured refusals from the existing population. No fleet membership or observer was created.",
+      "testRunIds": [],
+      "remaining": "Real source-bound leader/member/solo catalog and argument observations, preserving refused admissions."
+    }
+  ],
+  "limits": [
+    "No historical role, identity, worn-stack or four-setting vault baseline is accepted by these current unit fixtures.",
+    "No argument-scope population claim, integration acceptance, immutable import-closure claim or final shipment claim follows.",
+    "Source-authentication question conv-mvjy4dsp-0000-a44413cc2aeb4f568e412f6d1f81d163 remains distinct and unresolved; no substitute answer was created.",
+    "P-001/P-024/P-002, activation provenance, the three implementation milestones and final shipment remain open.",
+    "No observer, implementation worker, mode, principal, credential, grant, real personal setting, release or live gate operation was changed."
+  ],
+  "next": "Join this supporting supplement to the unchanged matrix; continue actual population and argument observations only through the approved route and real admission. Preserve independent acceptance and historical source requirements."
+}

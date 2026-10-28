@@ -29,7 +29,8 @@ export interface SqlCandidateWorklist {
 export type SqlCandidateWorklistOptions = SqlCandidateReadOptions & { limit?: number };
 export interface SqlCandidateWorklistDeps {
   read?: typeof readSqlCandidates;
-  history?: (candidate: SqlToolCandidateScore) => Promise<SqlCandidateDecisionRef[]>;
+  /** Receives the caller's read options too, so an injected history can stay scope-aware like the default. */
+  history?: (candidate: SqlToolCandidateScore, opts: SqlCandidateWorklistOptions) => Promise<SqlCandidateDecisionRef[]>;
 }
 const empty = (): SqlCandidateWorklist => ({ status: 'UNKNOWN', candidates: [], snapshots: [],
   population: { candidates: 0, returned: 0, omitted: 0, snapshotCap: 120 } });
@@ -60,7 +61,7 @@ export async function readSqlToolCandidateWorklist(opts: SqlCandidateWorklistOpt
     const selected = [...entries.values()].sort((a, b) => b.candidate.score - a.candidate.score
       || a.candidate.id.localeCompare(b.candidate.id)).slice(0, limit);
     for (const entry of selected) {
-      const history = deps.history ? await deps.history(entry.candidate) : await readHistory(opts, entry.candidate);
+      const history = deps.history ? await deps.history(entry.candidate, opts) : await readHistory(opts, entry.candidate);
       entry.decisionHistory = history.slice(0, 20);
       entry.decisionHistoryTruncated = history.length > 20;
     }

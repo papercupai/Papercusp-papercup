@@ -25,6 +25,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 vi.mock('../../agent-tools/plans/rubric-template', () => ({ RUBRIC_TEMPLATE_NAME: 'rubric' }));
 vi.mock('../../plan-acceptance-gate', () => ({ evaluatePlanAcceptanceGate: vi.fn() }));
+vi.mock('../../plan-types/pins', () => ({
+  withPinnedPlanTypes: async (_subject: unknown, work: () => Promise<unknown>) => work(),
+}));
 vi.mock('../../acceptance-grader', () => ({
   ACCEPTANCE_GRADING_SWEEP_ACTOR: 'system:sweep', acceptanceGraderLabelPrefix: vi.fn(), resolveAcceptanceGrader: h.resolveGrader,
   gradingLaunchProfile: (ctx: { gradingLaunch?: unknown }) => ctx.gradingLaunch,
@@ -45,6 +48,7 @@ beforeAll(async () => {
   await Promise.all([
     import('@papercusp/db-org'), import('../../agent-tools/plans/rubric-template'),
     import('../../plan-acceptance-gate'), import('../../acceptance-grader'),
+    import('../../plan-types/pins'),
     import('../../grading-integrity'), import('../../task-manager/store'),
     import('../../coord/condition-upsert'), import('../../acceptance-grading-sweep-run'),
     import('../../acceptance-grading-sweep-observe'), import('../../acceptance-bar-pin-sweep'),
@@ -66,6 +70,7 @@ afterEach(() => vi.useRealTimers());
 describe('registered acceptance sweep audit entrypoint', () => {
   it('releases a slow repair at its deadline and joins it on the next tick', async () => {
     vi.useFakeTimers();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let finishPins!: (value: unknown) => void;
     h.pinSweep.mockImplementationOnce(() => new Promise(resolve => { finishPins = resolve; }));
     const handler = h.handlers.get('acceptance-grading-sweep')!;
@@ -84,6 +89,53 @@ describe('registered acceptance sweep audit entrypoint', () => {
     await handler({ workspaceId: 'ws-sweep' } as SystemActionCtx);
     expect(h.pinSweep).toHaveBeenCalledOnce();
     for (const timer of h.progressTimers) expect(timer.stop).toHaveBeenCalledOnce();
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('observation-over-deadline key=subject-pins:null state=pending'));
+    warning.mockRestore();
+  });
+
+  it.each([
+    { outcome: 'completed', settle: 'resolve' },
+    { outcome: 'failed', settle: 'reject' },
+  ])('records a bounded gate observation that settles late as $outcome', async ({ outcome, settle }) => {
+    vi.useFakeTimers();
+    let resolveGate!: (value: unknown) => void;
+    let rejectGate!: (error: Error) => void;
+    const gatePromise = new Promise<unknown>((resolve, reject) => {
+      resolveGate = resolve;
+      rejectGate = reject;
+    });
+    const { evaluatePlanAcceptanceGate } = await import('../../plan-acceptance-gate');
+    vi.mocked(evaluatePlanAcceptanceGate).mockReturnValue(gatePromise as never);
+    h.runSweep.mockImplementation(async (deps: { evaluateGate: (planSlug: string, row: unknown) => Promise<unknown> }) => {
+      try {
+        await deps.evaluateGate('slow-plan', {
+          workspaceId: 'ws-sweep', harnessSlug: 'papercusp', gradeableSinceMs: 123,
+        });
+      } catch {
+        // The sweep records the deadline as a per-plan observation failure.
+      }
+    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const handler = h.handlers.get('acceptance-grading-sweep')!;
+      const running = handler({ workspaceId: 'ws-sweep' } as SystemActionCtx);
+      await vi.waitFor(() => expect(evaluatePlanAcceptanceGate).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(5_001);
+      await running;
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('observation-over-deadline key=gate:papercusp:slow-plan:123 state=pending'));
+
+      if (settle === 'resolve') resolveGate({ satisfied: true });
+      else rejectGate(new Error('late gate failure'));
+      await gatePromise.then(() => undefined, () => undefined);
+      await vi.waitFor(() => expect(warning).toHaveBeenCalledWith(expect.stringContaining(
+        `observation-late-settled key=gate:papercusp:slow-plan:123 outcome=${outcome}`,
+      )));
+      if (settle === 'reject') {
+        expect(warning).toHaveBeenCalledWith(expect.stringContaining('error=late gate failure'));
+      }
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it('logs the exact plan operation before its settlement', async () => {

@@ -476,20 +476,20 @@ export function warnMissingReexecLoop({
  * configuration that `warnMissingReexecLoop` exists to warn about.
  *
  * @param {{ onReexec?: unknown, reexecCode?: unknown, bridgeTty?: unknown,
- *           allowInteractive?: boolean, pendingTurnDelivery?: boolean }} args
+ *           allowInteractive?: boolean, pendingWakeDelivery?: boolean }} args
  */
 export function shouldAdoptHostCode({
   onReexec,
   reexecCode,
   bridgeTty,
   allowInteractive = false,
-  pendingTurnDelivery = false,
+  pendingWakeDelivery = false,
 }) {
   if (!onReexec || !reexecCode) return false;
-  // The current host owns pending turn text and delivery IDs in carryRearm's
+  // The current host owns pending turn/cold-carry delivery IDs in carryRearm's
   // process-local state. A launcher handoff carries the compaction first turn,
-  // not those queued loop wakes; cleanup would settle them as host-ending.
-  if (pendingTurnDelivery) return false;
+  // not those queued IDs; cleanup would settle them as host-ending.
+  if (pendingWakeDelivery) return false;
   if (!bridgeTty) return true;
   return Boolean(allowInteractive);
 }
@@ -2036,8 +2036,34 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
     completedTools.add(id);
     if (gateToolIds.has(id)) completedGateTools.add(id);
   };
+  // EI-27244198558252718: a tool result names its call id, so it is an
+  // id-exact clearing receipt for a gate retained from an earlier observation
+  // (retainPendingNativeExecution). The floor below scopes which turn's STATE
+  // is observed; it must not also hide that receipt. When owner input (even a
+  // terminal focus report) moved the floor past an already-answered
+  // AskUserQuestion's result row, the retained gate could never clear: the
+  // host vetoed every prompt for hours, so its carry-respawn never fired and
+  // every wake was deferred behind it.
+  const resultIdsOf = (row) => {
+    const ids = [];
+    const message = row?.message;
+    if (agent === 'codex' && row?.type === 'response_item' &&
+      ['function_call_output', 'custom_tool_call_output'].includes(row?.payload?.type)) {
+      ids.push(row.payload?.call_id);
+    } else if (agent === 'claude' || agent === 'omp') {
+      if (Array.isArray(message?.content)) {
+        for (const block of message.content) if (block?.type === 'tool_result') ids.push(block?.tool_use_id);
+      }
+      if (message?.role === 'toolResult') ids.push(message.toolCallId);
+    }
+    return ids.filter((id) => typeof id === 'string' && id);
+  };
   for (const row of rows) {
     const at = Date.parse(row?.timestamp);
+    if (Number.isFinite(at) && at < receivedAtMs) {
+      for (const id of resultIdsOf(row)) completedTools.add(id);
+      continue;
+    }
     if (!Number.isFinite(at) || at < receivedAtMs || at > nowMs) continue;
     const verdict = classify(row, { receivedAtMs, nowMs });
     const message = row?.message;
@@ -2073,7 +2099,14 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
       }
       // An aborted model does not prove its external tool effects stopped.
       // Keep unmatched calls visible until their results arrive.
-      if (!failed) pendingTools.clear();
+      // A COMPLETED turn does prove it, including for an owner gate: the model
+      // cannot end its turn while an AskUserQuestion still awaits its answer.
+      // Leaving the gate id listed here re-pinned it as running on the next
+      // floor advance (EI-27244198558252718).
+      if (!failed) {
+        pendingTools.clear();
+        pendingGateTools.clear();
+      }
       lastProgressAt = at;
       continue;
     }
@@ -2159,6 +2192,10 @@ export function retainRunningNativeExecution(previous, current) {
  */
 export function retainPendingNativeExecution(previous, current, { sameChild = true } = {}) {
   if (!sameChild || !previous) return current;
+  // A completed turn after the floor is positive proof that every earlier gate
+  // was answered (the model cannot finish a turn while one is open), even when
+  // a bounded tail no longer carries the gate's own tool_result row.
+  if (current?.phase === 'settled') return current;
   const previousIds = Array.isArray(previous.pendingGateToolIds) ? previous.pendingGateToolIds : [];
   // A result can land after the input floor while its original gate tool_use
   // is older than that floor, so this observation cannot classify the id as a
@@ -5469,6 +5506,10 @@ export function makeAgentBusyGate({
       // impossible — measured live on 2026-08-04, where a respawn died with no
       // evidence either way.
       let maxQuietForMs = 0;
+      // EI-27244198558252718: whether the NATIVE execution veto (not pty output)
+      // was what held the prompt shut. A long quiet window plus nativeBusy:true
+      // means the gate refused an idle agent on native evidence alone.
+      let nativeBusyObserved = false;
       // Re-check in case the agent keeps emitting during the wait.
       // eslint-disable-next-line no-constant-condition
       while (true) {
@@ -5480,6 +5521,7 @@ export function makeAgentBusyGate({
         if (shouldAbort) return { deferred: false, boundary: 'abort-before-write' };
 
         const nativeBusy = nativeExecutionBlocksInjection(nativeExecution());
+        nativeBusyObserved = nativeBusy;
         if (!nativeBusy && verifiedBoundary?.()) {
           await new Promise((resolve) => setImmediate(resolve));
           if (!nativeExecutionBlocksInjection(nativeExecution()) && verifiedBoundary()) {
@@ -5514,7 +5556,9 @@ export function makeAgentBusyGate({
             return { deferred: false };
           }
         }
-        if (now() >= deadline) return { deferred: true, reason: 'agent-busy', maxQuietForMs, quietMs };
+        if (now() >= deadline) {
+          return { deferred: true, reason: 'agent-busy', maxQuietForMs, quietMs, nativeBusy: nativeBusyObserved };
+        }
         // P-004 (the part that IS a real defect): recompute the sleep from the
         // CURRENT quiet window, not the stale pre-confirmation `quietFor`.
         //
@@ -5647,6 +5691,14 @@ export function makeCarryRearmController({
   // must not inherit the much slower policy and carry-ordering poll.
   nativeBindingRetryMs = 250,
   waitWakeModeRetry = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  // EI-27244198558252718: a production re-poll is unbounded by design, and it
+  // used to be SILENT between `*-rearm-queued` and its terminal row. One stuck
+  // for 3h left 86 deferred wakes and nothing that named the cause. Every
+  // `stallReportEveryMs` of pending age it now emits `*-rearm-still-pending`
+  // with the defer reason and whether the native veto held the prompt shut.
+  // 0 disables. Drills are bounded and keep their P-020 ledger shape.
+  stallReportEveryMs = 15 * 60_000,
+  now = Date.now,
 }) {
   const pending = new Set();
   // A host teardown must close the detached re-arm loop before the PTY and its
@@ -5918,6 +5970,20 @@ export function makeCarryRearmController({
         let observedMaxQuietMs = 0;
         let attemptsMade = 0;
         let deferReason = 'busy-gate-expired';
+        const queuedAtMs = now();
+        let nextStallReportAtMs = queuedAtMs + stallReportEveryMs;
+        let lastNativeBusy = null;
+        const stalledKind = mode === 'carry-respawn' ? 'respawn-rearm-still-pending' : 'wake-rearm-still-pending';
+        const reportIfStalled = () => {
+          if (isDrill || !(stallReportEveryMs > 0)) return;
+          const t = now();
+          if (t < nextStallReportAtMs) return;
+          emitEvent(stalledKind, {
+            ...extra, reason: deferReason, pendingForMs: t - queuedAtMs,
+            attempts: attemptsMade - 1, observedMaxQuietMs, nativeBusy: lastNativeBusy, ...terminalIds(),
+          });
+          nextStallReportAtMs = t + stallReportEveryMs;
+        };
         const dropSuperseded = (candidate) => {
           const reason = isCancelled(candidate) ? 'carry-fenced' : isSuperseded(candidate) ? 'superseded' : null;
           if (!reason) return false;
@@ -5942,6 +6008,7 @@ export function makeCarryRearmController({
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             attemptsMade = attempt + 1;
             if (disposed) return;
+            reportIfStalled();
             const beforeLock = latest.get(key) ?? msg;
             if (dropSuperseded(beforeLock) || dropExpired(beforeLock)) return;
             const release = await acquireInject();
@@ -5997,6 +6064,7 @@ export function makeCarryRearmController({
                 atPrompt = await waitAtPrompt(capMs, current);
                 if (disposed) return;
                 if (Number.isFinite(atPrompt?.quietMs)) finalPromptQuietMs = atPrompt.quietMs;
+                if (typeof atPrompt?.nativeBusy === 'boolean') lastNativeBusy = atPrompt.nativeBusy;
                 if (typeof atPrompt?.verifier === 'string' && atPrompt.verifier) {
                   verifierReason = atPrompt.verifier;
                 }
@@ -17608,13 +17676,13 @@ export function hostThroughPty(o) {
         const hostCode = hostCodeStalenessFn();
         if (hostCode.stale) {
           const allowInteractive = interactiveAdoptionOptIn();
-          const pendingTurnDelivery = carryRearm.pendingCount('turn') > 0;
+          const pendingWakeDelivery = carryRearm.pendingCount('turn') > 0 || carryRearm.pendingCount('carry-respawn') > 0;
           const adoptable = shouldAdoptHostCode({
             onReexec,
             reexecCode,
             bridgeTty,
             allowInteractive,
-            pendingTurnDelivery,
+            pendingWakeDelivery,
           });
           appendHostEvent(ownerId, 'host-code-stale', {
             mode: respawnMode,
@@ -17626,7 +17694,7 @@ export function hostThroughPty(o) {
             // ADDITIVE — absent on rows written by older hosts, so a reader must
             // treat `undefined` as "not recorded", never as false.
             adoptable,
-            pendingTurnDelivery,
+            pendingWakeDelivery,
             willAdopt: adoptable && !quotaRecovery && !freshChildOnly,
             notAdoptingReason: adoptable
               ? quotaRecovery
@@ -17640,7 +17708,7 @@ export function hostThroughPty(o) {
                   ? 'no-reexec-callback'
                   : !reexecCode
                     ? 'no-reexec-code'
-                    : 'pending-turn-delivery',
+                    : 'pending-wake-delivery',
             bridgeTty,
             hasReexecCallback: Boolean(onReexec),
             reexecCode: reexecCode ?? null,
@@ -17930,7 +17998,7 @@ export function hostThroughPty(o) {
         reexecCode,
         bridgeTty,
         allowInteractive,
-        pendingTurnDelivery: carryRearm.pendingCount('turn') > 0,
+        pendingWakeDelivery: carryRearm.pendingCount('turn') > 0 || carryRearm.pendingCount('carry-respawn') > 0,
       }) && !freshChildOnly) {
         let hostCode = { stale: false };
         try {

@@ -144,7 +144,7 @@ describe('pc-estate-backup.sh ClickHouse export (WI-10006330)', () => {
     (enumFail) => {
       const r = runBackup({ chFails: 0, enumFail });
       expect(r.attempts).toBe(0);
-      expect(r.stdout).toContain('enumeration failed');
+      expect(r.stderr).toContain('enumeration failed');
       expect(r.manifestText).toBeDefined();
       const manifest = JSON.parse(r.manifestText!);
       expect(manifest.artifacts.some((artifact: { name: string }) => artifact.name.includes('cannot exec'))).toBe(false);

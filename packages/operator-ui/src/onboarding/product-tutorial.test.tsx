@@ -245,7 +245,10 @@ describe('account product guide entry', () => {
     render(<AccountProductTutorial account={account}><p>Destination</p></AccountProductTutorial>);
     await screen.findByRole('heading', { name: 'Welcome to Papercusp' });
     fireEvent.click(screen.getByText('Help with this lesson'));
-    fireEvent.change(screen.getByLabelText('Lesson question'), { target: { value: 'What is a workspace?' } });
+    const question = screen.getByLabelText('Lesson question') as HTMLTextAreaElement;
+    fireEvent.change(question, { target: { value: 'What is a workspace?' } });
+    expect(question.value).toBe('What is a workspace?');
+    expect(screen.getByRole('button', { name: 'Ask AI Help' }).hasAttribute('disabled')).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: 'Ask AI Help' }));
     await screen.findByText('AI Help is unavailable. You can continue with the lesson instructions.');
     expect(screen.getByRole('button', { name: 'Reviewed — next lesson' }).hasAttribute('disabled')).toBe(false);

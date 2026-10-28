@@ -48,4 +48,24 @@ describe('people:get qualification evidence opt-in (P-019)', () => {
     await call({ id: 'PER-missing', includeQualificationEvidence: true });
     expect(h.evidence).not.toHaveBeenCalled();
   });
+
+  it('passes the exact measurement window with the canonical survivor and authorized workspace', async () => {
+    const qualificationWindow = { windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' };
+    await call({ id: 'PER-old', includeQualificationEvidence: true, qualificationWindow });
+    expect(h.evidence).toHaveBeenCalledWith(h.sql, 'ws-1', 'PER-current', qualificationWindow);
+  });
+
+  it.each([
+    { windowStart: 'bad', windowEnd: '2026-10-02T00:00:00Z' },
+    { windowStart: '2026-10-02T00:00:00Z', windowEnd: '2026-10-01T00:00:00Z' },
+    { windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-01T00:00:00Z' },
+  ])('refuses malformed, reversed or empty observation windows at admission', qualificationWindow => {
+    expect(tool.args.safeParse({ id: 'PER-old', includeQualificationEvidence: true, qualificationWindow }).success).toBe(false);
+  });
+
+  it('requires explicit evidence opt-in when a window is supplied', () => {
+    const qualificationWindow = { windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' };
+    expect(tool.args.safeParse({ id: 'PER-old', qualificationWindow }).success).toBe(false);
+    expect(tool.args.safeParse({ id: 'PER-old', includeQualificationEvidence: true, qualificationWindow }).success).toBe(true);
+  });
 });

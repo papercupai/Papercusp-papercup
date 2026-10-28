@@ -83,7 +83,8 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
   let environmentError: unknown;
   const runId = await recordIsolatedIntegrationProof({
     root, filePath,
-    sourcePaths: [...new Set([assertion, selectedAssertion, censusAssertion, reclaimSource, censusSource,
+    sourcePaths: [...new Set([assertion, selectedAssertion, selectedSource, censusAssertion, reclaimSource, censusSource,
+      ...(selection.observedSources ?? []),
       releaseSource, usageSource, 'packages/operator-core/lib/storage/usage.ts',
       'packages/operator-core/lib/native-bg-task-ledger.ts',
       'packages/operator-core/lib/storage/retention-policy.ts',
@@ -221,6 +222,20 @@ it('checkpoints productive scheduled effects and preserves standalone fairness i
     'checkpoints the first productive effect batch before a slow independent census',
     'bounds effect work per root, records the remainder and resumes from a fresh policy census',
   ], expectedReclaimCases: 2, census: false }, context), options.testTimeoutMs);
+it('continues pending census passes with fresh effect guards in the observed private background runtime',
+  context => runSelection({ reclaimTitles: [
+    'continues a pending census outside admission and rechecks',
+  ], expectedReclaimCases: 3, census: false,
+  observedSources: ['packages/operator-core/lib/storage/retention-census-walk.ts',
+    'packages/operator-core/lib/storage/disk-census-detached-walk.ts'] }, context), options.testTimeoutMs);
+it('adopts the same native census completion in the observed private background runtime',
+  context => runSelection({
+    assertion: 'packages/operator-core/lib/storage/retention-census-walk.integration.test.ts',
+    source: 'packages/operator-core/lib/storage/retention-census-walk.ts',
+    reclaimTitles: ['survives an abandoned caller and adopts the full hardlink/protection census without relaunch'],
+    expectedReclaimCases: 1, census: false,
+    observedSources: ['packages/operator-core/lib/storage/disk-census-detached-walk.ts'],
+  }, context), options.testTimeoutMs);
 it('supervises release usage progress and refuses incomplete measurement in the observed private background runtime',
   context => runSelection({ assertion: releaseAssertion, source: releaseSource, reclaimTitles: [
     'finishes a productive usage walk past ten seconds',

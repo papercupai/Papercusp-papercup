@@ -679,7 +679,8 @@ describe('mintBlindGapReviewer', () => {
       slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
       ctx: { workspaceId: 'ws-1', ownerId: 'su-author' },
     }, d.deps);
-    expect(result).toMatchObject({ ok: true, activationAuditSeq: 7, reviewerOwnerId: 'su-reviewer-1', leaseReleased: true });
+    // awaitable-review-post-events-2026-10-27 R-2: the resumed binding's id, which keys its post event.
+    expect(result).toMatchObject({ ok: true, activationAuditSeq: 7, reviewerOwnerId: 'su-reviewer-1', leaseReleased: true, bindingId: 7 });
     const [args, ctx] = d.handler.mock.calls[0] as unknown as [Record<string, unknown>, Record<PropertyKey, unknown>];
     expect(args).toMatchObject({ resume: { sessionId: 'native-review-1' }, fork: false, headless: true, harness: 'papercusp' });
     expect(args).not.toHaveProperty('agent');

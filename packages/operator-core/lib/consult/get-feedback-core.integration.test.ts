@@ -20,13 +20,15 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import type { RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance-router';
 import { routingHealthFromRows, type RoutingHealthConsultRow } from './consult-routing-health';
-import { appendDispatchRecord, makeConsultReachDispatcher } from './consult-dispatch';
+import { appendDispatchRecord, makeConsultReachDispatcher, rejudgeFirstTurn } from './consult-dispatch';
 import { mockOrgPgSql } from '../testing/mock-org-pg';
 import {
   resolveProseProfileSelection,
@@ -1768,6 +1770,149 @@ describe('getFeedbackCore — routed', () => {
       via: 'floor',
       liveness: 'unknown',
     });
+  });
+
+  it('routes a rubric review, then cascades only the dispatch whose launch log ends on provider 429', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'consult-request-429-'));
+    try {
+      const rejectedOwner = `request-429-reviewer-${randomBytes(5).toString('hex')}`;
+      const rejectedAnswerer = `${rejectedOwner}-fork`;
+      const rejectedFixture = makeDeps(routeOf([cand(rejectedOwner), cand(`${rejectedOwner}-fallback`)]), {
+        answeringOwnerId: rejectedAnswerer,
+      });
+      const rejectedRequest = asOk(await getFeedbackCore({
+        ...baseReq,
+        question: `Review a rubric for terminal provider failure ${rejectedOwner}.`,
+        policy: 'rubric-vetting',
+        archiveFloor: 2,
+        latencyContract: 'hard-blocked',
+      }, rejectedFixture.deps));
+
+      const quotedOwner = `request-429-quoted-${randomBytes(5).toString('hex')}`;
+      const quotedAnswerer = `${quotedOwner}-fork`;
+      const quotedFixture = makeDeps(routeOf([cand(quotedOwner), cand(`${quotedOwner}-fallback`)]), {
+        answeringOwnerId: quotedAnswerer,
+      });
+      const quotedRequest = asOk(await getFeedbackCore({
+        ...baseReq,
+        question: `Review a rubric that discusses a provider error as text ${quotedOwner}.`,
+        policy: 'rubric-vetting',
+        archiveFloor: 2,
+        latencyContract: 'hard-blocked',
+      }, quotedFixture.deps));
+
+      const healthyOwner = `request-429-healthy-${randomBytes(5).toString('hex')}`;
+      const healthyAnswerer = `${healthyOwner}-fork`;
+      const healthyFixture = makeDeps(routeOf([cand(healthyOwner), cand(`${healthyOwner}-fallback`)]), {
+        answeringOwnerId: healthyAnswerer,
+      });
+      const healthyRequest = asOk(await getFeedbackCore({
+        ...baseReq,
+        question: `Review a rubric with a healthy response despite a launcher 429 ${healthyOwner}.`,
+        policy: 'rubric-vetting',
+        archiveFloor: 2,
+        latencyContract: 'hard-blocked',
+      }, healthyFixture.deps));
+
+      const kickoffAt = new Date(NOW.getTime() - 2 * 60_000).toISOString();
+      const rejectedTranscript = join(directory, 'rejected-rollout.jsonl');
+      const quotedTranscript = join(directory, 'quoted-rollout.jsonl');
+      const healthyTranscript = join(directory, 'healthy-rollout.jsonl');
+      const rejectedLog = join(directory, 'rejected-launch.log');
+      const quotedLog = join(directory, 'quoted-launch.log');
+      const healthyLog = join(directory, 'healthy-launch.log');
+      const started = JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } });
+      writeFileSync(rejectedTranscript, `${started}\n`);
+      writeFileSync(quotedTranscript, `${started}\n`);
+      writeFileSync(healthyTranscript, `${started}\n${JSON.stringify({
+        type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'review complete' },
+      })}\n`);
+      writeFileSync(rejectedLog,
+        "review brief\n⎿ API Error: Request rejected (429) · This request would exceed your account's rate limit.\n");
+      writeFileSync(quotedLog,
+        "The review brief quotes API Error: Request rejected (429) · This request would exceed your account's rate limit.\n");
+      writeFileSync(healthyLog,
+        "review brief\n⎿ API Error: Request rejected (429) · This request would exceed your account's rate limit.\n");
+
+      for (const entry of [
+        {
+          conversationId: rejectedRequest.conversation_id,
+          sourceOwnerId: rejectedOwner,
+          answeringOwnerId: rejectedAnswerer,
+          transcriptPath: rejectedTranscript,
+          launchLogPath: rejectedLog,
+        },
+        {
+          conversationId: quotedRequest.conversation_id,
+          sourceOwnerId: quotedOwner,
+          answeringOwnerId: quotedAnswerer,
+          transcriptPath: quotedTranscript,
+          launchLogPath: quotedLog,
+        },
+        {
+          conversationId: healthyRequest.conversation_id,
+          sourceOwnerId: healthyOwner,
+          answeringOwnerId: healthyAnswerer,
+          transcriptPath: healthyTranscript,
+          launchLogPath: healthyLog,
+        },
+      ]) {
+        await appendDispatchRecord(rootSql, {
+          workspaceId: WS,
+          conversationId: entry.conversationId,
+          sourceOwnerId: entry.sourceOwnerId,
+          result: {
+            dispatched: true,
+            answeringOwnerId: entry.answeringOwnerId,
+            operation: 'fork',
+            agent: 'codex',
+            model: 'sol',
+            verified: true,
+            detail: 'forked and registered',
+            attempts: [{
+              rank: 1,
+              agent: 'codex',
+              model: 'sol',
+              operation: 'fork',
+              outcome: 'dispatched',
+              detail: 'first turn not yet observed',
+              launchLogPath: entry.launchLogPath,
+              firstTurnUnjudged: { agent: 'codex', transcriptPath: entry.transcriptPath, kickoffAt },
+            }],
+          },
+        }, kickoffAt);
+      }
+
+      const reached: Array<{ conversationId: string; responder: string }> = [];
+      const r = await sweepExpiredConsults({
+        getSql: () => rootSql,
+        now: () => NOW,
+        emitReplyEvent: async () => {},
+        notifyRequester: async () => {},
+        rejudgeFirstTurn: (unjudged) => rejudgeFirstTurn(unjudged),
+        dispatch: async (opts) => {
+          reached.push({ conversationId: opts.conversationId, responder: opts.responder });
+          return { woke: 1, answeringOwnerId: `${opts.responder}-fork` };
+        },
+      });
+
+      expect(r.advanced).toBeGreaterThanOrEqual(1);
+      expect(await stateRow(rejectedRequest.conversation_id)).toMatchObject({
+        state: 'awaiting_responder', responder_id: `${rejectedOwner}-fallback`, cascade_cursor: 1,
+      });
+      expect(await stateRow(quotedRequest.conversation_id)).toMatchObject({
+        state: 'awaiting_responder', responder_id: quotedOwner, cascade_cursor: 0,
+      });
+      expect(await stateRow(healthyRequest.conversation_id)).toMatchObject({
+        state: 'awaiting_responder', responder_id: healthyOwner, cascade_cursor: 0,
+      });
+      expect(reached.filter((entry) => entry.conversationId === rejectedRequest.conversation_id)
+        .map((entry) => entry.responder)).toEqual([`${rejectedOwner}-fallback`]);
+      expect(reached.filter((entry) => entry.conversationId === quotedRequest.conversation_id)).toEqual([]);
+      expect(reached.filter((entry) => entry.conversationId === healthyRequest.conversation_id)).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

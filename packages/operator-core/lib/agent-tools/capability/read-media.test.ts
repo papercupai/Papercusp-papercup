@@ -15,7 +15,11 @@ function fixture(bytes: Buffer, suffix = '.png') {
   writeFileSync(path, bytes);
   return path;
 }
-const read = (args: Record<string, unknown>, caller = ctx) => readTool.handler(args as never, caller);
+const read = async (args: Record<string, unknown>, caller = ctx) => {
+  const result = await readTool.handler(args as never, caller);
+  if (!('content' in result)) throw new Error('capability:read returned a non-MCP ToolResponse');
+  return result;
+};
 
 describe('capability:read raster media (MC-P026-MEDIA)', () => {
   it('returns the original authorized raster bytes in a permitted image block', async () => {

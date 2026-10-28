@@ -1714,6 +1714,8 @@ async function handleSettledResumeTurnExit(
 // ── the sweeper ───────────────────────────────────────────────────────────────
 
 const SWEEP_INTERVAL_MS = 30_000;
+// Ten sweep intervals filters ordinary timer jitter while surfacing a real missed window.
+const LATE_TIMEOUT_LOG_THRESHOLD_MS = 5 * 60_000;
 
 type Globals = typeof globalThis & { __papercuspAwaitSweeperStarted?: boolean };
 
@@ -1734,9 +1736,14 @@ export function startAwaitSweeper(): void {
   const g = globalThis as Globals;
   if (g.__papercuspAwaitSweeperStarted) return;
   g.__papercuspAwaitSweeperStarted = true;
-  managedSetInterval('await-event-sweeper', SWEEP_INTERVAL_MS, () => {
-    void sweepAllWorkspaces();
-  }, { category: 'global-sweep' });
+  managedSetInterval(
+    'await-event-sweeper',
+    SWEEP_INTERVAL_MS,
+    async () => {
+      await sweepAllWorkspaces();
+    },
+    { category: 'global-sweep', classification: 'timeout-reaper' },
+  );
 }
 
 /** One tick of the sweeper: sweep the coordination workspace and each background workspace. */
@@ -1864,6 +1871,19 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
   }
 
   const timedOut = await fireTimedOutAwaits();
+  const oldestLateTimeoutMs = timedOut.reduce((oldest, awaited) => {
+    const expiresAt = awaited.expiresTs ? Date.parse(awaited.expiresTs) : NaN;
+    const firedAt = awaited.firedAt ? Date.parse(awaited.firedAt) : NaN;
+    return Number.isFinite(expiresAt) && Number.isFinite(firedAt)
+      ? Math.max(oldest, firedAt - expiresAt, 0)
+      : oldest;
+  }, 0);
+  if (oldestLateTimeoutMs >= LATE_TIMEOUT_LOG_THRESHOLD_MS) {
+    log(
+      `timeout sweep reconciled ${timedOut.length} overdue await(s); ` +
+        `oldest deadline was ${Math.round(oldestLateTimeoutMs / 1000)}s ago (ws=${ws})`,
+    );
+  }
   if (timedOut.length > 0) {
     const wakes: AwaitRow[] = timedOut.filter((a) => a.policy === 'wake');
     if (wakes.length > 0) {

@@ -14,10 +14,12 @@ describe('inboxWakeHeldWorkReminderText (WI-6554700010018536)', () => {
     expect(inboxWakeHeldWorkReminderText({ held: [], autonomyModes: ['auto'], loopActive: false })).toBe('');
   });
 
-  it('names the held items and says handling the mail does not finish them', () => {
+  it('labels held items as a snapshot and requires a live recheck before acting', () => {
     const t = inboxWakeHeldWorkReminderText({ held: [item('WI-1'), item('WI-2')], autonomyModes: [], loopActive: null });
-    expect(t).toContain('you still hold 2 unfinished work-item(s) [WI-1, WI-2]');
-    expect(t).toContain('does not finish them');
+    expect(t).toContain('work list snapshot): a recent read found 2 unfinished work-item(s) [WI-1, WI-2]');
+    expect(t).toContain("recheck each item's current state and assignee with work_items:get");
+    expect(t).toContain('does not finish any still-open items');
+    expect(t).not.toContain('you still hold');
     // No autonomy mode ⇒ no claim about wakes.
     expect(t).not.toContain('nothing will wake you');
     expect(t).not.toContain('\n');
@@ -42,7 +44,7 @@ describe('inboxWakeHeldWorkReminderText (WI-6554700010018536)', () => {
   it('caps the listed ids and summarises the rest', () => {
     const held = Array.from({ length: INBOX_WAKE_HELD_WORK_LISTED_CAP + 3 }, (_, i) => item(`WI-${i + 1}`));
     const t = inboxWakeHeldWorkReminderText({ held, autonomyModes: [], loopActive: null });
-    expect(t).toContain(`you still hold ${held.length} unfinished`);
+    expect(t).toContain(`a recent read found ${held.length} unfinished`);
     expect(t).toContain(`WI-${INBOX_WAKE_HELD_WORK_LISTED_CAP}, +3 more]`);
     expect(t).not.toContain(`WI-${INBOX_WAKE_HELD_WORK_LISTED_CAP + 1},`);
   });

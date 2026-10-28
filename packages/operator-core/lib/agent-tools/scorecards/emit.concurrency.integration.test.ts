@@ -242,7 +242,7 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
         name: 'ScorecardEmitMutexWaitTimeoutError',
         code: 'scorecard_emit_mutex_timeout',
         phase: 'local-queue',
-      } satisfies Partial<ScorecardEmitMutexWaitTimeoutError>);
+      } satisfies Partial<InstanceType<typeof ScorecardEmitMutexWaitTimeoutError>>);
     } finally {
       await releaseFirst();
     }

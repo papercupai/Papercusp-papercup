@@ -438,6 +438,8 @@ describe('machine-surface banner (EI-9904 — never false-OWNER a CLI notificati
   const CROSS_SESSION_MESSAGE =
     '<cross-session-message from="uds:/run/user/1000/cc-socks/1113327.sock" from-name="papercusp-ec" from-mode="bypass">\n' +
     'Relay request: please do 2 calls marked as a relay.\n</cross-session-message>';
+  const PAPERCUSP_PEER_DIAGNOSTIC =
+    '[peer:su-4a84c93a-e530-450c-b01e-8beb7bdc670f] Parent recovery diagnostic under existing EI-26842368936683990.';
 
   it('a Claude cross-session message is a peer machine-surface that names its sender, NOT owner', () => {
     const res = classify(CROSS_SESSION_MESSAGE, [row()], { nowMs: NOW + 1000, ttlMs: TTL });
@@ -463,6 +465,25 @@ describe('machine-surface banner (EI-9904 — never false-OWNER a CLI notificati
     expect(classify('<cross-session-message> means what?', [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe(
       'owner-interactive',
     );
+  });
+
+  it('an untagged Papercusp peer recovery diagnostic is machine-surface, but ordinary native owner turns stay owner', () => {
+    const diagnostic = classify(PAPERCUSP_PEER_DIAGNOSTIC, [], { nowMs: NOW, ttlMs: TTL });
+    expect(diagnostic.verdict).toBe('machine-surface');
+    expect(diagnostic.reason).toMatch(/Papercusp peer recovery diagnostic/);
+    expect(detectMachineSurface(PAPERCUSP_PEER_DIAGNOSTIC)).toBe(true);
+
+    // Native ownerTurn mode:'turn' remains an untagged interactive submission
+    // unless it carries this exact peer diagnostic signature.
+    expect(
+      classify("Please keep this native ownerTurn mode:'turn' request as owner input.", [], {
+        nowMs: NOW,
+        ttlMs: TTL,
+      }).verdict,
+    ).toBe('owner-interactive');
+    expect(
+      classify(`Why did this appear? ${PAPERCUSP_PEER_DIAGNOSTIC}`, [], { nowMs: NOW, ttlMs: TTL }).verdict,
+    ).toBe('owner-interactive');
   });
 
   it('a genuine LEDGER-verified injected turn wins over the banner guard (guard is last-resort)', () => {

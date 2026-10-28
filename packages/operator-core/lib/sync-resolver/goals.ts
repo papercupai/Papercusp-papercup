@@ -866,10 +866,13 @@ export async function resolveGoalDetail(args: {
                WHERE sib.workspace_id = gp.workspace_id
                  AND sib.harness_slug = gp.harness_slug
                  AND sib.removed_at IS NULL) AS serves_goals,
-             (SELECT COALESCE(SUM(s.cost_usd), 0)
-                FROM harness_shared.agent_usage_samples s
-               WHERE s.workspace_id = gp.workspace_id
-                 AND s.harness_slug = gp.harness_slug) AS spend_usd,
+             -- The all-time harness total is maintained with each source-row
+             -- insert/update/delete; the primary key makes this a bounded lookup.
+             COALESCE((SELECT totals.total_cost_usd
+                         FROM harness_shared.agent_usage_harness_spend_totals totals
+                        WHERE totals.workspace_id = gp.workspace_id
+                          AND totals.harness_slug = gp.harness_slug),
+                      0::double precision) AS spend_usd,
              (SELECT COUNT(*) FROM harness_shared.work_items wi
                WHERE wi.harness_slug = gp.harness_slug
                  AND wi.goal_id = gp.goal_id

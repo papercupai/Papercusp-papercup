@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { inspectDetachedRetentionTrees, RETENTION_CENSUS_LIFETIME_MS, withRetentionMutex, type RetentionMutexContext } from './retention-census-walk';
+import { awaitRetentionCensusCompletion, inspectDetachedRetentionTrees, RETENTION_CENSUS_LIFETIME_MS, withRetentionMutex, type RetentionMutexContext } from './retention-census-walk';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { readWalkState, walkAttemptFiles, type WalkLauncher } from './disk-census-detached-walk';
 
@@ -95,6 +95,38 @@ describe('complete retention census adoption', () => {
     launcher.mockImplementation(async () => { await finish(); return { pid: 999_999_999, taskId: 'new', confined: true }; });
     expect((await inspectDetachedRetentionTrees(root, options, walk(launcher))).error).toBeUndefined();
     expect(launcher).toHaveBeenCalledTimes(2);
+  });
+  it('waits outside retention admission for the exact pending attempt, then adopts it with fresh admission', async () => {
+    const launcher = launch(false);
+    const pending = await inspectDetachedRetentionTrees(root, options, walk(launcher, 15));
+    expect(pending.pendingWalk).toEqual(expect.objectContaining({ root, dir: slot, attempt: 1 }));
+    const admissions = vi.mocked(withFsMutex).mock.calls.length;
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const deadline = clock + RETENTION_CENSUS_LIFETIME_MS;
+      expect(await awaitRetentionCensusCompletion(pending.pendingWalk!, deadline, {
+        isAlive: () => true, sleep: async () => { clock += 16_000; await finish(); },
+      })).toBe(true);
+      expect(vi.mocked(withFsMutex).mock.calls).toHaveLength(admissions);
+      expect(existsSync(join(slot, 'consumed'))).toBe(false);
+      const adopted = await inspectDetachedRetentionTrees(root, options, walk(launcher));
+      expect(adopted.error).toBeUndefined();
+      expect(adopted.entries.map(entry => entry.path)).toEqual([join(root, 'entry')]);
+      expect(launcher).toHaveBeenCalledOnce();
+    } finally { now.mockRestore(); }
+  });
+  it.each(['consumed', 'replaced', 'deadline', 'gone'])('does not turn a %s pending attempt into continuation authority', async mode => {
+    const launcher = launch(false);
+    const pending = await inspectDetachedRetentionTrees(root, options, walk(launcher, 15));
+    if (mode === 'consumed') await fs.writeFile(join(slot, 'consumed'), 'consumed\n');
+    if (mode === 'replaced') {
+      const state = (await readWalkState(slot))!;
+      await fs.writeFile(join(slot, 'state.json'), JSON.stringify({ ...state, requestKey: 'replacement' }));
+    }
+    expect(await awaitRetentionCensusCompletion(pending.pendingWalk!, mode === 'deadline' ? Date.now() - 1 : Date.now() + 1000,
+      { isAlive: () => false })).toBe(false);
+    expect(launcher).toHaveBeenCalledOnce();
   });
   it('yields the held retention mutex to a queued writer by abandoning only the census wait (EI-26942454413534533)', async () => {
     const launcher = launch(false);

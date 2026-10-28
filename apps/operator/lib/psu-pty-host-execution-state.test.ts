@@ -201,6 +201,94 @@ describe('native execution observations', () => {
     expect(retainPendingNativeExecution(previous, afterFloor, { sameChild: false })).toBe(afterFloor);
   });
 
+  describe('EI-27244198558252718: an answered gate never stays retained', () => {
+    // The su-f9f01e3c incident (2026-10-28): AskUserQuestion at 14:01:57, answered
+    // 14:04:59, turn completed 14:10:15. Owner input then moved the floor past the
+    // result row. The retained gate vetoed every prompt for 3h, so the queued
+    // carry-respawn never fired and 86 wakes were deferred behind it.
+    const at = (ms: number) => new Date(ms).toISOString();
+    const ask = {
+      type: 'assistant', timestamp: at(1000),
+      message: { role: 'assistant', stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'ask-1', name: 'AskUserQuestion', input: { questions: [] } }] },
+    };
+    const answer = {
+      type: 'user', timestamp: at(2000),
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'ask-1', content: 'answered' }] },
+    };
+    const work = {
+      type: 'assistant', timestamp: at(3000),
+      message: { role: 'assistant', stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'work-1', name: 'Bash', input: {} }] },
+    };
+    const workResult = {
+      type: 'user', timestamp: at(3500),
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'work-1', content: 'ok' }] },
+    };
+    // A real Claude row always carries `uuid`; classifyClaudeTranscriptRow
+    // refuses to certify a turn boundary from a row without one.
+    const done = {
+      type: 'assistant', uuid: 'done-1', timestamp: at(4000),
+      message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'done' }] },
+    };
+    const rows = [ask, answer, work, workResult, done];
+    const dialogOpen = nativeExecutionFromRows([ask], { agent: 'claude', receivedAtMs: 900, nowMs: 1500 });
+
+    it('clears the gate when the floor moved past its result row, mid-turn and after the turn', () => {
+      expect(dialogOpen).toMatchObject({ phase: 'running', pendingGateToolIds: ['ask-1'] });
+      // [floor, now, still busy]: mid-turn the floor still scopes genuine work, so
+      // the agent reads busy for its own running turn but not for the answered
+      // gate. Past the turn the window is empty (phase unknown), which is the
+      // f9f01e3c shape: before the fix the retained gate blocked it forever.
+      for (const [floor, nowMs, busy] of [[2500, 3800, true], [5000, 6000, false]] as const) {
+        const current = nativeExecutionFromRows(rows, { agent: 'claude', receivedAtMs: floor, nowMs });
+        expect(current.completedToolIds).toContain('ask-1');
+        const observed = retainNativeExecutionObservation(dialogOpen, current, { sameChild: true, sameFence: false });
+        expect(observed.pendingGateToolIds ?? []).not.toContain('ask-1');
+        expect(observed.pendingGateTools ?? 0).toBe(0);
+        expect(nativeExecutionBlocksInjection(observed)).toBe(busy);
+      }
+    });
+
+    it('drops a retained gate once a completed turn is observed, even without its result row', () => {
+      // A bounded transcript tail can evict the result row itself.
+      const tailOnly = nativeExecutionFromRows([work, workResult, done], { agent: 'claude', receivedAtMs: 2500, nowMs: 6000 });
+      expect(tailOnly.phase).toBe('settled');
+      const observed = retainNativeExecutionObservation(dialogOpen, tailOnly, { sameChild: true, sameFence: false });
+      expect(observed).toBe(tailOnly);
+      expect(nativeExecutionBlocksInjection(observed)).toBe(false);
+    });
+
+    it('does not list a gate as pending after the same window shows the turn completed', () => {
+      const unanswered = nativeExecutionFromRows([ask, done], { agent: 'claude', receivedAtMs: 900, nowMs: 6000 });
+      expect(unanswered).toMatchObject({ phase: 'settled', pendingTools: 0, pendingGateTools: 0, pendingGateToolIds: [] });
+    });
+
+    it('still retains a genuinely open gate across an owner-input floor', () => {
+      const typed = { type: 'user', timestamp: at(2500), message: { role: 'user', content: 'typed while the dialog is open' } };
+      const current = nativeExecutionFromRows([ask, typed], { agent: 'claude', receivedAtMs: 2500, nowMs: 6000 });
+      expect(current.completedToolIds).not.toContain('ask-1');
+      const observed = retainNativeExecutionObservation(dialogOpen, current, { sameChild: true, sameFence: false });
+      expect(observed).toMatchObject({ phase: 'running', pendingGateToolIds: ['ask-1'] });
+      expect(nativeExecutionBlocksInjection(observed)).toBe(true);
+    });
+
+    it('unblocks the busy gate once the floor-hidden answer is visible as a receipt', async () => {
+      let previous: ReturnType<typeof nativeExecutionFromRows> | null = dialogOpen;
+      const gate = makeAgentBusyGate({
+        lastOutputAt: () => 0,
+        quietMs: 10,
+        capMs: 50,
+        nativeExecution: () => {
+          const current = nativeExecutionFromRows(rows, { agent: 'claude', receivedAtMs: 5000, nowMs: 6000 });
+          previous = retainNativeExecutionObservation(previous, current, { sameChild: true, sameFence: false });
+          return previous;
+        },
+      });
+      await expect(gate.waitAtPrompt(50)).resolves.toMatchObject({ deferred: false });
+    });
+  });
+
   it.each(['running', 'settled'])('observes the bound Codex writer when a newer sibling is %s', siblingPhase => {
     const root = mkdtempSync(join(tmpdir(), 'codex-native-execution-sibling-'));
     const sessionDir = join(root, 'sessions', '2026', '10', '17');

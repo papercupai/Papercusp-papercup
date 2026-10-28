@@ -1421,6 +1421,7 @@ describe('P010 production session authority and existing persisted card workflow
     expect(rows[1]).toMatchObject({ role: 'user', text: 'Proceed', source: 'card_pick' });
     expect(Number(rows[1].created_at)).toBe(Math.trunc(rows[0].tools[0].answered.at));
     const winner = results.find(result => result.ok)!;
+    expect(winner.ok).toBe(true);
     if (winner.ok) {
       expect(await b.resolver.resolve(identity, scope, pick(winner.value.submissionId)))
         .toEqual({ ok: false, code: 'already-decided' });

@@ -1391,7 +1391,16 @@ async function diskRetentionReclaimTick(): Promise<void> {
     });
     if (!receipt.complete) console.warn(`[disk-retention] partial run: ${receipt.errors.join('; ')}`);
     return receipt;
-  }, { name: DISK_RECLAIM_STEP }));
+  }, { name: DISK_RECLAIM_STEP }), {
+    // One fixed workflow window allows the bounded native census to finish
+    // and a fresh pass to adopt it; replay never resets this deadline. Each
+    // individual pass still uses its normal 15-minute maximum.
+    maxElapsedMs: 30 * 60_000,
+    awaitPendingCensus: (pending, notAfterMs) => DBOS.runStep(async () => {
+      const { awaitRetentionCensusCompletion } = await import('../storage/retention-census-walk');
+      return awaitRetentionCensusCompletion(pending, notAfterMs);
+    }, { name: 'disk-retention-census-completion' }),
+  });
   console.log(`[disk-retention] ${result.batches} batch(es), stop=${result.stop}, receipt=${result.lastReceiptId ?? 'none'}`);
 }
 const diskRetentionReclaimWorkflow = idempotentRegisterWorkflow('diskRetentionReclaim', () =>

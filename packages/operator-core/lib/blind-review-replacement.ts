@@ -13,6 +13,7 @@ import { blindReviewScratchPrefix } from './blind-review-scratch-plans';
 import { blindReviewLaunchReceipt, blindReviewerConfinement, buildBlindReviewerKickoff, BLIND_GAP_REVIEW_ACCOUNT, BLIND_REVIEWER_BACKENDS, defaultKnownToolNames, launchProvablyNotStarted,
   howToRunOutsideCeilingMessage, howToRunToolsOutsideCeiling, type BlindReviewerProductReads } from './blind-reviewer-mint';
 import { BLIND_GAP_REVIEW_ACTOR, createBlindReviewSessionBinding, recordBlindReviewSessionPost } from './blind-review-session-bindings';
+import { blindReviewPostedEventKey } from './blind-review-post-event';
 import { TERMINAL_TASK_STATES } from './task-manager/types';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
@@ -359,7 +360,13 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
     const history = await sql<Attempt[]>`
       SELECT * FROM harness_shared.plan_blind_review_sessions WHERE replacement_of = ${attempt.replacement_of} ORDER BY attempt_seq`;
     attempt = history.find(row => Number(row.id) === Number(attempt.id)) ?? attempt;
+    // awaitable-review-post-events-2026-10-27 R-2: the reservation row IS the replacement's
+    // session binding (createBlindReviewSessionBinding binds it in place), so its id keys
+    // the post event from the first launch on. A confirmed-inactive attempt never posts, so
+    // it hands out no key to sleep on.
+    const awaitKey = attempt.status === 'failed' ? undefined : blindReviewPostedEventKey(input.slug, Number(attempt.id));
     return { ok: true, op: 'replace', slug: input.slug, deduped: !selected.launch,
+      ...(awaitKey ? { bindingId: Number(attempt.id), awaitKey } : {}),
       attempt: publicAttempt(attempt), attempts: history.map(publicAttempt),
       next: attempt.status === 'failed' ? 'The previous launch is confirmed inactive. Correct the launch cause and use a new requestKey for a new ordered attempt.'
         : attempt.status === 'launching' || attempt.status === 'uncertain'

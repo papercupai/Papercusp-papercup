@@ -320,7 +320,18 @@ describe('tracked Claude source acquisition', () => {
       readArchive,
       archiveStore: () => ({} as never),
     })).resolves.toBe(archived);
-    expect(readArchive).toHaveBeenCalledWith({ sessionId: row.sessionId }, expect.anything());
+    expect(readArchive).toHaveBeenCalledWith({ sessionId: row.sessionId }, expect.anything(), undefined, undefined);
+    // The injected archive reader receives the caller's diagnostics, exactly like the default
+    // reader does (lint:di-seam-arity-strands — the seam must not drop what the default uses).
+    const diagnostics = { measure: (_phase: string, work: () => unknown) => Promise.resolve().then(work) } as never;
+    readArchive.mockClear();
+    await expect(acquireTrackedClaudeSource(row, {
+      configDirForOwner: () => '/config',
+      findLive: async () => { throw new Error('canonical live Claude JSONL is missing'); },
+      readArchive,
+      archiveStore: () => ({} as never),
+    }, diagnostics)).resolves.toBe(archived);
+    expect(readArchive).toHaveBeenCalledWith({ sessionId: row.sessionId }, expect.anything(), undefined, diagnostics);
   });
 
   it('falls back when the live JSONL disappears after its path was resolved', async () => {
@@ -504,7 +515,7 @@ describe('session-port preparation service', () => {
       findLive: async () => { throw new Error(`canonical live ${backend} JSONL is missing`); },
       readArchive, archiveStore: () => ({} as never),
     })).resolves.toBe(archived);
-    expect(readArchive).toHaveBeenCalledWith({ backend, sessionId: row.sessionId }, expect.anything());
+    expect(readArchive).toHaveBeenCalledWith({ backend, sessionId: row.sessionId }, expect.anything(), undefined, undefined);
     readArchive.mockClear();
     await expect(acquireTrackedSessionSource(sourceRow, {
       findLive: async () => { throw new Error(`canonical live ${backend} JSONL is ambiguous`); },

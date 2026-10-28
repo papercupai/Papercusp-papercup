@@ -58,8 +58,9 @@ export function inboxWakeHeldWorkReminderText(f: InboxWakeHeldWorkFacts): string
     ids.slice(0, INBOX_WAKE_HELD_WORK_LISTED_CAP).join(', ') +
     (ids.length > INBOX_WAKE_HELD_WORK_LISTED_CAP ? `, +${ids.length - INBOX_WAKE_HELD_WORK_LISTED_CAP} more` : '');
   const parts = [
-    `REMINDER (held work): you still hold ${ids.length} unfinished work-item(s) [${listed}].` +
-      ' Answering or reconciling this message does not finish them — after the mail, continue that work.',
+    `REMINDER (work list snapshot): a recent read found ${ids.length} unfinished work-item(s) [${listed}].` +
+      " This snapshot may be stale by the time you act; recheck each item's current state and assignee with work_items:get before continuing. " +
+      'Answering or reconciling this message does not finish any still-open items.',
   ];
   if (f.autonomyModes.length > 0 && f.loopActive === false) {
     parts.push(

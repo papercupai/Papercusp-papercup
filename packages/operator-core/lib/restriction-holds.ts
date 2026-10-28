@@ -48,6 +48,25 @@ export const HOLD_ACTIONS = [
 ] as const;
 export type HoldAction = (typeof HOLD_ACTIONS)[number];
 
+/**
+ * The tools each forbidden action covers (plan D-014 item 6). P-010 only records
+ * this mapping; refusing these tools at dispatch is P-012/P-014. Every name must
+ * be a registered tool — restriction-holds.test.ts checks them against the
+ * generated tool catalog.
+ */
+export const HOLD_ACTION_TOOLS: Readonly<Record<HoldAction, readonly string[]>> = {
+  reinstall: ['provisioner:install', 'provisioner:plan_install'],
+  reset: ['config:reset-overrides', 'accounts:reset-rate'],
+  'rerun-test': ['testing:run', 'release:checkpoint-run'],
+  'physical-run': ['blender:run-drill', 'session:carry-drill'],
+  'release-recut': ['release:cut', 'release:checkpoint-run', 'release:repair-queue'],
+  deploy: ['release:deploy', 'deploy:harness', 'deploy:pot'],
+  migrate: ['db:migrate', 'harness:migrate-config-json'],
+  'restart-service': ['dev:restart', 'processes:kill'],
+  delete: ['artifacts:delete', 'rules:delete', 'personal:purge'],
+  mutate: ['dev:pg_mutate', 'capability:edit', 'capability:write'],
+};
+
 /** What a hold can apply to. Each kind has an id shape check. */
 export const HOLD_TARGET_KINDS = [
   'work-item',
@@ -74,6 +93,8 @@ export interface RestrictionHold {
   placedBy: HoldPlacedBy;
   /** Owner id / session id of whoever placed it. */
   placedById: string;
+  /** For an owner hold: the verified owner turn that placed it (D-014 item 5). */
+  ownerTurnRef?: string;
   placedAt: string;
   /** ISO timestamp the placer chose for the next review. */
   reviewAt: string;

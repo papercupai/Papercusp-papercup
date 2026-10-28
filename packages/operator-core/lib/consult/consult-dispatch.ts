@@ -376,6 +376,8 @@ export interface FirstTurnUnjudged {
   agent: 'claude' | 'codex';
   /** The kickoff proof's native transcript (Claude JSONL or Codex rollout). */
   transcriptPath: string;
+  /** The log for this exact successful launch, used when a provider refusal never reaches the native transcript. */
+  launchLogPath?: string;
   /** When the kickoff receipt was seen; bounds how long the sweep re-judges. */
   kickoffAt: string;
 }
@@ -603,6 +605,24 @@ export function firstTurnRejection(analysis: FirstTurnAnalysis): FirstTurnReject
   return null;
 }
 
+/** Map a parsed terminal launch-log failure onto the same rejection categories as the transcript classifier. */
+function firstTurnRejectionFromLaunchLog(reason: string | null): FirstTurnRejection | null {
+  const evidence = reason?.trim();
+  if (!evidence) return null;
+  if (/(?:\b429\b|rate.?limit|(?:session|weekly|usage) limit|quota|credit)/i.test(evidence)) {
+    return { turns: 1, tool: null, accountEvidence: evidence };
+  }
+  if (/Context limit reached|Prompt is too long/i.test(evidence)) {
+    return { turns: 1, tool: null, contextEvidence: evidence };
+  }
+  const missingTool = evidence.match(/Tool reference (\S+) not found/i);
+  if (missingTool) return { turns: 1, tool: missingTool[1] ?? null };
+  if (/^API Error:/i.test(evidence)) {
+    return { turns: 1, tool: null, providerEvidence: evidence };
+  }
+  return null;
+}
+
 /** The attempt reason a {@link FirstTurnRejection} records. */
 export function firstTurnRejectionReason(
   rejection: FirstTurnRejection,
@@ -662,23 +682,44 @@ export type FirstTurnRejudge =
  * `replied` (a reply that is not a rejection) and `unreadable` are never
  * evidence of a rejection.
  */
-export function rejudgeFirstTurn(
-  unjudged: Pick<FirstTurnUnjudged, 'agent' | 'transcriptPath'>,
-  read: Pick<ConsultDispatchDeps, 'analyzeClaudeTranscript' | 'analyzeCodexRollout'> = {
+export async function rejudgeFirstTurn(
+  unjudged: Pick<FirstTurnUnjudged, 'agent' | 'transcriptPath' | 'launchLogPath'>,
+  read: Pick<ConsultDispatchDeps, 'analyzeClaudeTranscript' | 'analyzeCodexRollout' | 'readLaunchLogReason'> = {
     analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
     analyzeCodexRollout: analyzeCodexRolloutFile,
+    readLaunchLogReason: defaultReadLaunchLogReason,
   },
-): FirstTurnRejudge {
+): Promise<FirstTurnRejudge> {
   const analysis = readFirstTurnAnalysis(unjudged.agent, unjudged.transcriptPath, read);
   if (!analysis) return { status: 'unreadable' };
-  if (analysis.assistantTurnsSinceLastPrompt <= 0) return { status: 'pending' };
-  const rejection = firstTurnRejection(analysis);
-  if (!rejection) return { status: 'replied' };
+  if (analysis.assistantTurnsSinceLastPrompt > 0) {
+    const rejection = firstTurnRejection(analysis);
+    if (!rejection) return { status: 'replied' };
+    return {
+      status: 'rejected',
+      rejection,
+      reason: firstTurnRejectionReason(rejection),
+      evidence: `${describeFirstTurnRejection(rejection)} in ${unjudged.transcriptPath}`,
+    };
+  }
+
+  // Preserve a real first-turn reply over any launcher text. Only consult this
+  // exact attempt's log when the native transcript still has no reply.
+  let launchLogReason: string | null = null;
+  if (unjudged.launchLogPath) {
+    try {
+      launchLogReason = await read.readLaunchLogReason(unjudged.launchLogPath);
+    } catch {
+      return { status: 'pending' };
+    }
+  }
+  const rejection = firstTurnRejectionFromLaunchLog(launchLogReason);
+  if (!rejection) return { status: 'pending' };
   return {
     status: 'rejected',
     rejection,
     reason: firstTurnRejectionReason(rejection),
-    evidence: `${describeFirstTurnRejection(rejection)} in ${unjudged.transcriptPath}`,
+    evidence: `the dispatched launch log reported a provider rejection (${launchLogReason})`,
   };
 }
 
@@ -1271,6 +1312,7 @@ const PSU_FAILURE_LINE =
  */
 const MIDLINE_FAILURES: RegExp[] = [
   /You(?:'ve| have) hit your (?:session|weekly|usage) limit(?:\s*·\s*resets[^()\n·]{0,40}(?:\([^()\n]{0,40}\))?)?/gi,
+  /(?:^|⎿)[ \t]*(API Error:[^\n]{0,480})[ \t]*$/gi,
   /Tool reference \S+ not found/g,
 ];
 const LAUNCH_EXIT_LINE = /^\[papercusp\] initial terminal command exited with status \d+/;
@@ -1307,7 +1349,10 @@ export function launchLogFailureReason(logText: string): string | null {
     }
     for (const re of MIDLINE_FAILURES) {
       const hits = [...line.matchAll(re)];
-      if (hits.length) failure = hits[hits.length - 1]![0].trim();
+      if (hits.length) {
+        const hit = hits[hits.length - 1]!;
+        failure = (hit[1] ?? hit[0]).trim();
+      }
     }
   }
   if (!failure && !exit) return null;
@@ -2592,6 +2637,7 @@ async function launchAnsweringSession(
     record: {
       ...base,
       outcome: 'dispatched',
+      ...(spawn.logPath ? { launchLogPath: spawn.logPath } : {}),
       detail: (verify.started
         ? `${operation} of ${opts.sourceOwnerId} → ${rank.agent}/${rank.model} as ${answeringOwnerId}: ` +
           `live host registered after ${verify.waitedMs}ms (log ${spawn.logPath ?? '?'}).`

@@ -30,6 +30,7 @@ import { assemblePresenceSnapshot, matchesOwner, resolvePresenceScope } from './
 import { listSessionsForAgentName, type AdoptionRow } from '../../plan-items/agent-names';
 import type { LegacyFleetScopeDowngradeAdmission } from '../../work-item-fleet-scope-recovery';
 import type { RefusalContract } from '../../capability-envelope/identity-refusal-contract';
+import type { ClaimConcurrencyVerdict } from '../../scheduler/claim-spec-store';
 
 const UNASSIGNED_FRONTIER_STATES = new Set(['open', 'failing', 'todo']);
 const RETAINED_EXECUTION_STATES = new Set([...UNASSIGNED_FRONTIER_STATES, 'wip', 'in_progress', 'validating']);
@@ -44,6 +45,7 @@ export type WorkItemDispatchSkipCode =
   | 'claim_hold'
   | 'authority_denied'
   | 'admission_gated'
+  | 'concurrency_limited'
   | 'held_by_other';
 
 export interface WorkItemDispatchSkip {
@@ -60,6 +62,14 @@ export interface WorkItemDispatchSkip {
    * release { claimHold:true } park. Keep both because either can coexist.
    */
   claimHold?: ClaimHoldDispatchDetails;
+  /** Capacity snapshot from the scheduler's shared claim-concurrency oracle. */
+  capacity?: {
+    activeClaims: number;
+    maxConcurrentClaims: number;
+    availableSlots: number;
+    heldIds: string[];
+    blockerParkedIds: string[];
+  };
   /**
    * WI-10005197: what would LIFT this skip. Present on the blocked/denied skips whose
    * cause is a condition another agent or the owner can clear (dependency_blocked,
@@ -177,6 +187,8 @@ export interface ActionableWorkItemDispatchDeps {
   ) => Promise<WorkItem | null>;
   /** The same named-id claim-floor oracle used by work_items:claim. */
   explainClaimFloors: typeof explainIssueClaimFloors;
+  /** The scheduler's shared capacity oracle, with the target's effective claim-spec limit. */
+  readClaimConcurrency: (args: { cupId: string; workspaceId?: string }) => Promise<ClaimConcurrencyVerdict>;
   blockers: (id: string, harness?: string) => Promise<UnresolvedDepBlocker[]>;
   planBlock: (workItem: WorkItem) => Promise<PlanItemLaneBlock | null>;
   planClaim: (workItem: WorkItem) => Promise<PlanItemLiveClaimBlock | null>;
@@ -193,6 +205,15 @@ const defaultDeps: ActionableWorkItemDispatchDeps = {
   authorize: authorizeWorkItemDispatch,
   claim: (id, assignee, opts) => claimWorkItem(id, assignee, opts),
   explainClaimFloors: explainIssueClaimFloors,
+  readClaimConcurrency: async ({ cupId, workspaceId }) => {
+    const { getClaimSpecRecord, readClaimConcurrency } = await import('../../scheduler/claim-spec-store');
+    const spec = await getClaimSpecRecord({ cupId, workspaceId });
+    return readClaimConcurrency({
+      cupId,
+      workspaceId,
+      maxConcurrentClaims: spec.spec.limits?.maxConcurrentClaims,
+    });
+  },
   blockers: (id, harness) => readUnresolvedDepBlockers(id, harness),
   planBlock: (workItem) => planItemLaneBlockReason(workItem),
   planClaim: (workItem) => planItemLiveClaimReason(workItem),
@@ -575,8 +596,60 @@ export async function assignActionableWorkItems(
     .filter((r): r is { kind: 'skip'; skipped: WorkItemDispatchSkip } => r.kind === 'skip')
     .map((r) => r.skipped);
 
+  // A multi-id dispatch is one target lane. Read the same effective spec and held-row
+  // census as scheduler:get_next before assigning any new rows; otherwise Promise.all
+  // below can overfill a cap-one target with a single dispatch. The shared oracle
+  // already excludes terminal rows, governor receipts, and rows parked on a typed
+  // external blocker, so dispatch must use its activeClaims count verbatim.
+  let claimCandidates = toClaim;
+  if (toClaim.length > 0) {
+    let capacity: ClaimConcurrencyVerdict;
+    try {
+      capacity = await deps.readClaimConcurrency({
+        cupId: args.targetAgent,
+        ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+      });
+    } catch (error) {
+      claimCandidates = [];
+      skipped.push(...toClaim.map(({ workItemId }) => ({
+        workItemId,
+        code: 'read_failed' as const,
+        reason: `target claim capacity could not be read; refusing assignment: ${error instanceof Error ? error.message : String(error)}`,
+      })));
+    }
+    if (claimCandidates.length > 0) {
+      const availableSlots = Math.max(0, capacity!.maxConcurrentClaims - capacity!.activeClaims);
+      claimCandidates = toClaim.slice(0, availableSlots);
+      skipped.push(...toClaim.slice(availableSlots).map(({ workItemId }) => ({
+        workItemId,
+        code: 'concurrency_limited' as const,
+        reason:
+          `target ${args.targetAgent} has ${capacity!.activeClaims}/${capacity!.maxConcurrentClaims} active claim slots ` +
+          `(${availableSlots} available); left unassigned for a later dispatch`,
+        capacity: {
+          activeClaims: capacity!.activeClaims,
+          maxConcurrentClaims: capacity!.maxConcurrentClaims,
+          availableSlots,
+          heldIds: capacity!.heldIds,
+          blockerParkedIds: capacity!.blockerParkedIds,
+        },
+        refusal: {
+          observed: {
+            targetAgent: args.targetAgent,
+            activeClaims: capacity!.activeClaims,
+            maxConcurrentClaims: capacity!.maxConcurrentClaims,
+            heldIds: capacity!.heldIds.join(','),
+            blockerParkedIds: capacity!.blockerParkedIds.join(','),
+          },
+          liftsWhen: 'the target has an available slot under its effective maxConcurrentClaims limit',
+          whoCanMakeItTrue: ['target-agent'],
+        },
+      })));
+    }
+  }
+
   const claimResults = await Promise.all(
-    toClaim.map(async ({ workItemId, fromHolder, legacyFleetScopeDowngradeAdmission }) => {
+    claimCandidates.map(async ({ workItemId, fromHolder, legacyFleetScopeDowngradeAdmission }) => {
       // Authorization/read failures propagate to the durable caller, rather than
       // being misclassified as an ordinary atomic claim refusal.
       await args.beforeMutate?.('claim');
@@ -616,7 +689,7 @@ export async function assignActionableWorkItems(
     ok: failed.length === 0 && !skipped.some((row) => hardSkips.has(row.code)),
     targetAgent: args.targetAgent,
     requested,
-    actionable: [...toClaim.map((r) => r.workItemId), ...retained],
+    actionable: [...claimCandidates.map((r) => r.workItemId), ...retained],
     assigned,
     retained,
     skipped,

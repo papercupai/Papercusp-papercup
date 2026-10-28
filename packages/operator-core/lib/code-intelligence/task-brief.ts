@@ -1,11 +1,12 @@
 /** P-012: one bounded task brief at the existing claim/resume seam; no cache or store. */
 import { createHash } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
-import { isAbsolute, join, relative } from 'node:path';
+import { isAbsolute, join, posix, relative } from 'node:path';
 import * as ts from 'typescript';
 import { loadHarnessRegistry } from '../harness-registry';
 import { activeWorkspaceId } from '../workspace-registry';
 import type { ClaimTimeEnrichmentSubject } from '../claim-time-enrichment';
+import { deriveRepoPathsFromText } from '../agent-tools/work_items/_derive-paths';
 import { DEFAULT_PACKER_EFFECTS, nativeChangeReport, packerFacade, type ChangeReportEffects, type ChangeReportRequest,
   type PackerEffects, type PackerResult } from './packer-facade';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
@@ -16,7 +17,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { composeReuseBrief, encodeClaimReuseContribution, registeredReuseBriefProviders, type ReuseBriefDestination, type ReuseBriefProvider,
   type ReuseContribution, type ReuseProviderContext, type ReuseProviderObservation } from './reuse-brief-providers';
 import { recordReuseBriefIssued, type ReuseIssuedRecord } from './reuse-brief-ledger';
-import { boundChangeHistoryProviders, changeHistoryProviders, readCoChange, type PriorWorkReader } from './change-history';
+import { boundChangeHistoryProviders, changeHistoryProviders, readWarmCoChange, type PriorWorkReader } from './change-history';
 import { readTaskEngineeringEvidence, type TaskEngineeringEvidence } from './task-brief-engineering';
 import type { EngineeringQuery, readEngineeringEvidence } from './engineering-evidence';
 import { withBoundedTimeout } from '../bounded-timeout';
@@ -95,7 +96,9 @@ export interface TaskBriefDeps {
   graph: (root: string, name: string, file: string, paths: string[], budgetMs: number) => Promise<CodeIntelAnswer>;
   decisions?: (ref: Ref) => Promise<ClaimTimePlanDecisionsBrief | null>;
   failures?: (scope: { workspaceId: string; harness: string; root: string; paths: string[] }) => Promise<TaskFailureSignal[]>;
-  hasClaim?: (workspaceId: string, owner: string) => Promise<boolean>;
+  /** WI-6554700010030367: the repository paths the owner's held, non-terminal claims
+   * already cover (see claimedScopePaths). Throws when ownership is unreadable. */
+  claimedPaths?: (workspaceId: string, owner: string) => Promise<readonly string[]>;
   engineering?: typeof readEngineeringEvidence;
   reuse?: {
     providers?: readonly ReuseBriefProvider[];
@@ -110,14 +113,15 @@ export interface TaskBriefDeps {
 const defaults: TaskBriefDeps = {
   toolset: readRecipientToolset,
   engineering: async (query, scope) => (await import('./engineering-evidence')).readEngineeringEvidence(query, scope),
-  hasClaim: async (workspaceId, owner) => {
+  claimedPaths: async (workspaceId, owner) => {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { ANY_FAMILY_TERMINAL_STATES } = await import('../work-item-dispatch-states');
-    const [row] = await getOrgPg().sql<{ held: boolean }[]>`SELECT EXISTS (
-      SELECT 1 FROM harness_shared.work_items WHERE workspace_id = ${workspaceId}
-        AND taken_by = ${owner} AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
-    ) AS held`;
-    return row?.held !== false;
+    const rows = await getOrgPg().sql<{ title: string | null; summary: string | null; payload: unknown }[]>`
+      SELECT title, summary, jsonb_build_object('paths', payload->'paths') AS payload
+        FROM harness_shared.work_items WHERE workspace_id = ${workspaceId}
+         AND taken_by = ${owner} AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+       LIMIT 100`;
+    return claimedScopePaths(rows);
   },
   root: async (workspaceId, harness) =>
     (await loadHarnessRegistry(workspaceId)).projects.find(project => project.slug === harness)?.path ?? null,
@@ -263,6 +267,29 @@ async function taskEngineering(ref: Ref, root: string, paths: readonly string[],
     harness: ref.workItem?.harness ?? ref.harness!, root }, deps.engineering, Math.max(0, Math.min(1_000, deadline - Date.now())));
 }
 
+/** Repository paths named in a work item's own text (title + summary, which holds
+ * the plan-item text for promoted items). With `root`, only paths that exist
+ * inside that registered repository survive. */
+export function itemTextPaths(wi: ClaimTimeEnrichmentSubject | null | undefined, root?: string): string[] {
+  const text = [wi?.title, wi?.summary].filter((part): part is string => typeof part === 'string' && part.length > 0).join('\n');
+  return deriveRepoPathsFromText(text, { max: 8, ...(root ? { repoRoot: root } : {}) });
+}
+
+const normalizeScopePath = (path: string) => posix.normalize(path.replace(/\\/g, '/')).replace(/^\.\//, '');
+
+/** WI-6554700010030367: the scope a set of held items covers, resolved the way
+ * buildTaskBrief scopes each one: stored payload.paths, else the repository paths
+ * the item's own text names. */
+export function claimedScopePaths(items: readonly Pick<ClaimTimeEnrichmentSubject, 'title' | 'summary' | 'payload'>[]): string[] {
+  const out = new Set<string>();
+  for (const item of items) {
+    const payload = item.payload as { paths?: unknown } | null | undefined;
+    const stored = Array.isArray(payload?.paths) ? payload.paths.filter((path): path is string => typeof path === 'string') : [];
+    for (const path of stored.length ? stored : itemTextPaths(item)) out.add(normalizeScopePath(path));
+  }
+  return [...out];
+}
+
 /** The capture phase in flight; a deadline fallback reports it so a timeout is diagnosable. */
 export type TaskBriefPhase = 'setup' | 'repository-root' | 'plan-decisions' | 'scope-read' | 'safe-pack'
   | 'compiler-wait' | 'incident' | 'source-recheck';
@@ -274,7 +301,12 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
   const wi = ref.workItem;
   const harness = wi?.harness ?? ref.harness ?? null;
   const payload = wi?.payload as { paths?: unknown } | null;
-  const requested = Array.isArray(payload?.paths) ? payload.paths.filter((path): path is string => typeof path === 'string') : [...(ref.paths ?? [])];
+  const stored = Array.isArray(payload?.paths) ? payload.paths.filter((path): path is string => typeof path === 'string') : [...(ref.paths ?? [])];
+  // WI-6554700010030367: most plan-created items never carry payload.paths, so
+  // fall back to the repository paths their own text names (re-checked against
+  // the registered root below, so a not-yet-created file is dropped, never read).
+  const scopeFromText = stored.length === 0 && Boolean(wi?.id);
+  let requested = scopeFromText ? itemTextPaths(wi) : stored;
   const recover: TaskBrief['recover'] = wi?.id
     ? { tool: 'work_items:get', args: { id: wi.id, ...(harness ? { harness } : {}) } }
     : { tool: 'coord:declare-intent', args: { intent: ref.intent?.slice(0, 500) ?? '', current_files: requested.slice(0, 8),
@@ -320,6 +352,13 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
     if (!registered) throw new Error('harness is not registered in the task workspace');
     const root = await realpath(registered);
     brief.repository = { workspaceId, rootPath: root };
+    if (scopeFromText) {
+      requested = itemTextPaths(wi, root);
+      brief.exclusions.push(requested.length > 0
+        ? 'Task scope was inferred from repository paths named in the work item text; store payload.paths for an exact scope.'
+        : 'The work item text names no existing repository path; no repository scope was inferred.');
+      if (requested.length === 0) return finish();
+    }
     const planPayload = wi?.payload as { plan_item?: { plan_slug?: string } } | null;
     const planSlug = wi?.sourcePlanSlug ?? planPayload?.plan_item?.plan_slug;
     if (planSlug) {
@@ -467,6 +506,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
 export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): Promise<{ taskBrief: TaskBrief } | null> {
   const payload = ref.workItem?.payload as { paths?: unknown } | null;
   if (ref.workItem?.id ? (!Array.isArray(payload?.paths) || payload.paths.length === 0) && !taskItemQuery(ref.workItem)
+    && itemTextPaths(ref.workItem).length === 0
     : !ref.intent || !ref.paths?.length) return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   // Each phase transition is timed so a deadline fallback says how the window
@@ -588,13 +628,18 @@ export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: 
 }
 
 /** P-039: explicit transient scope uses the same safe capture as claims. A failed
- * ownership read cannot be interpreted as a measured absence of a claim. */
+ * ownership read cannot be interpreted as a measured absence of a claim.
+ * WI-6554700010030367: a held claim suppresses only the declared paths its own
+ * scope covers (its claim brief carries those); a declared path outside every
+ * held claim still gets an intent brief, scoped to just those paths. */
 export async function getIntentTimeTaskBrief(ref: { owner: string; workspaceId: string; harness: string;
   intent: string; paths: readonly string[]; maxChars?: number }, deps: TaskBriefDeps = defaults): Promise<{ taskBrief: TaskBrief } | null> {
-  if (!ref.intent.trim() || !ref.paths.length || !deps.hasClaim) return null;
+  if (!ref.intent.trim() || !ref.paths.length || !deps.claimedPaths) return null;
   try {
-    if (await deps.hasClaim(ref.workspaceId, ref.owner)) return null;
-    return await getClaimTimeTaskBrief(ref, deps);
+    const claimed = new Set(await deps.claimedPaths(ref.workspaceId, ref.owner));
+    const paths = ref.paths.filter(path => !claimed.has(normalizeScopePath(path)));
+    if (!paths.length) return null;
+    return await getClaimTimeTaskBrief({ ...ref, paths }, deps);
   } catch { return null; }
 }
 
@@ -607,7 +652,7 @@ export interface CompletionBriefDeps {
   graph?: (request: ChangeReportRequest, root: string, budgetMs: number) => Promise<CodeIntelAnswer>;
   /** The default report's non-graph effects (git, artifact writes). */
   effects?: Omit<ChangeReportEffects, 'graph'>;
-  cochange?: typeof readCoChange;
+  cochange?: typeof readWarmCoChange;
   /** One source-qualified, close-bound test run batch, shared by SQL/coverage. */
   coverage?: (context: Readonly<ReuseProviderContext>, signal: AbortSignal) => Promise<CoverageScopeData | null>;
   reuse?: TaskBriefDeps['reuse'];
@@ -640,10 +685,14 @@ function completionChangedLines(patch: string): number[] | null {
  * treating a declared test command or a static edge as execution evidence. */
 export async function getCompletionTimeBrief(ref: { workspaceId: string; harness: string; paths: readonly string[];
   reuse?: ClaimBriefReuseIdentity; workItem?: string; subject?: ClaimTimeEnrichmentSubject; maxChars?: number;
-  owner?: string },
+  owner?: string;
+  /** WI-6554700010030397: the caller's absolute deadline (epoch ms). A caller that bounds this
+   * brief from outside passes a deadline inside its own bound, so a slow leg returns this
+   * brief's named limitation instead of losing the whole brief to the caller's fallback. */
+  deadlineMs?: number },
   deps: Partial<CompletionBriefDeps> = {}) {
   const rootResolver = deps.root ?? defaults.root;
-  const deadline = Date.now() + TASK_BRIEF_BUDGET_MS;
+  const deadline = Math.min(ref.deadlineMs ?? Number.POSITIVE_INFINITY, Date.now() + TASK_BRIEF_BUDGET_MS);
   const toolset = readBriefToolset(deps.toolset, ref.workspaceId, ref.reuse?.owner ?? ref.owner);
   const graphSource = deps.graph ?? ((request, root, budgetMs) => firstPartyCallersOffthread({ vendorDir: LSP_VENDOR_DIR, root,
     op: 'impact', name: request.symbol, filePath: request.file, paths: request.paths ?? ['.'],
@@ -701,7 +750,7 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
       root, brief.scope.paths, { engineering: deps.engineering ?? (!deps.root && !deps.report ? defaults.engineering : undefined) }, deadline);
     const historyController = new AbortController();
     const historyTimer = setTimeout(() => historyController.abort(), Math.min(750, Math.max(0, deadline - Date.now())));
-    const history = (ref.reuse ? (deps.cochange ?? readCoChange)(root, brief.scope.paths, undefined, historyController.signal)
+    const history = (ref.reuse ? (deps.cochange ?? readWarmCoChange)(root, brief.scope.paths, undefined, historyController.signal)
       .catch(() => null) : Promise.resolve(null)).finally(() => clearTimeout(historyTimer));
     const captured = new Map<string, string>();
     const tests = new Set<string>();
@@ -821,7 +870,7 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
   try {
     result = finish(await Promise.race([work(), new Promise<typeof brief>(resolve => {
       timer = setTimeout(() => resolve(finish({ ...brief, status: 'unknown', changes: [], tests: [], testsWithoutRunEvidence: null,
-        limitations: [...brief.limitations, 'Completion brief exceeded its read deadline.'] })), TASK_BRIEF_BUDGET_MS);
+        limitations: [...brief.limitations, 'Completion brief exceeded its read deadline.'] })), Math.max(1, deadline - Date.now()));
     })]));
   } catch {
     result = finish({ ...brief, status: 'unknown' as const, changes: [], tests: [], testsWithoutRunEvidence: null,

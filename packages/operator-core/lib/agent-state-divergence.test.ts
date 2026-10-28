@@ -77,6 +77,22 @@ describe('the stamped leg — goal drift inside one intent declaration', () => {
     expect(out.divergences[0].kind).toBe('goal-drift-within-intent');
   });
 
+  it('does not report a covered pair just because a third observed goal is undeclared', () => {
+    const declaredGoalRefs = ['WI-1', 'WI-2'];
+    const out = detectIntentActionDivergence([
+      call({ id: 1, intentEventId: 100, goalRef: 'WI-1', declaredGoalRefs }),
+      call({ id: 2, intentEventId: 100, goalRef: 'WI-2', declaredGoalRefs }),
+      call({ id: 3, intentEventId: 100, goalRef: 'WI-3', declaredGoalRefs }),
+    ]);
+
+    expect(out.divergences).toHaveLength(1);
+    expect(out.divergences[0]).toMatchObject({
+      kind: 'goal-drift-within-intent',
+      a: { goalRef: 'WI-1' },
+      b: { goalRef: 'WI-3' },
+    });
+  });
+
   it('suppresses shared-goal drift when every declaration copy proves one plan lane', () => {
     const declaredPlanItems = ['P-016'];
     const out = detectIntentActionDivergence([

@@ -131,7 +131,7 @@ describe('router native custody population (P002)', () => {
     return { producer, session };
   }
   function produce(session: ReturnType<typeof createRouterProofCustody>, id: string) {
-    const group = session.expected.find(row => row.id === id);
+    const group = session.expected.find((row: { id: string; out: string }) => row.id === id);
     writeFileSync(group.out, '{"rows":[],"diagnostics":[]}');
     for (const suffix of ['.modules', '.native-processes', '.processes']) mkdirSync(group.out + suffix);
     session.declare(id, session.childEvidence(id));
@@ -163,7 +163,7 @@ describe('router native custody population (P002)', () => {
     try {
       const result = session.finish();
       expect(result.status).toBe('partial');
-      expect(result.manifest.groups.map(group => group.id)).toEqual(['group-0', 'group-1']);
+      expect(result.manifest.groups.map((group: { id: string }) => group.id)).toEqual(['group-0', 'group-1']);
       expect(result.manifest.gaps).toContain('group-population-mismatch');
       expect(JSON.parse(readFileSync(join(session.directory, 'expected.json'), 'utf8')).expected).toHaveLength(2);
     } finally { log.mockRestore(); }
@@ -325,7 +325,8 @@ describe('test-files router', () => {
       writeFileSync(join(root, 'guard.test.ts'), "import { captureIsolatedWorker } from './isolated-integration-proof';");
       expect(privateIntegrationVerifierInputs(root, ['private.test.ts'], env)).toEqual([
         'packages/operator-core/test/isolated-integration-proof.ts',
-        'packages/operator-core/test/private-http-workspace-preflight.ts', 'private.test.ts', 'scripts/test-files.mjs',
+        'packages/operator-core/test/private-http-workspace-preflight.ts', 'private.test.ts',
+        'scripts/lib/with-test-pg-cleanup.mjs', 'scripts/test-files.mjs',
       ]);
       expect(privateIntegrationVerifierInputs(root, ['private.test.ts'], {})).toBeNull();
       expect(privateIntegrationVerifierInputs(root, ['private.test.ts'], {},
@@ -342,6 +343,7 @@ describe('test-files router', () => {
     const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
     const oldOptions = process.env.NODE_OPTIONS;
     const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+    const oldPrivatePgReleaseToken = process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN;
     const list = vi.fn(), run = vi.fn(); let receiptDir: string | undefined;
     const stages: string[] = [];
     const preflight = vi.fn(async () => {
@@ -352,6 +354,7 @@ describe('test-files router', () => {
     const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+      process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN = 'parent-release-token';
       delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
       const frozen = vi.fn(async options => {
         stages.push('source-freeze'); receiptDir = join(options.receiptPath, '..'); return 7;
@@ -366,6 +369,7 @@ describe('test-files router', () => {
       expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
       expect(frozen).toHaveBeenCalledWith(expect.objectContaining({ repo: REPO_ROOT,
         ref: expect.stringMatching(/^[a-f0-9]{40}$/), inputs: expect.arrayContaining([file]),
+        releaseParentPrivatePg: true,
         command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs', file,
           '--', '--testNamePattern=private Create'],
         env: expect.objectContaining({ PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: 'admitted-by-test-router' }),
@@ -377,6 +381,8 @@ describe('test-files router', () => {
       if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
       if (oldAdmission === undefined) delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
       else process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT = oldAdmission;
+      if (oldPrivatePgReleaseToken === undefined) delete process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN;
+      else process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN = oldPrivatePgReleaseToken;
       warning.mockRestore(); if (receiptDir) rmSync(receiptDir, { recursive: true, force: true });
     }
   });
@@ -3419,7 +3425,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     for (const key of keys) delete process.env[key];
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const finish = vi.fn(() => {
-      expect(logSpy.mock.calls.some(([line]) => String(line).startsWith('TEST_FILE_RESULT'))).toBe(false);
+      expect(logSpy.mock.calls.some(([line]: unknown[]) => String(line).startsWith('TEST_FILE_RESULT'))).toBe(false);
       throw new Error('custody fixture budget exceeded');
     });
     try {
@@ -3433,8 +3439,8 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
       });
       expect(code).toBe(3);
       expect(finish).toHaveBeenCalledOnce();
-      const output = logSpy.mock.calls.map(([line]) => String(line)).join('\n');
-      const errors = errSpy.mock.calls.map(([line]) => String(line)).join('\n');
+      const output = logSpy.mock.calls.map(([line]: unknown[]) => String(line)).join('\n');
+      const errors = errSpy.mock.calls.map(([line]: unknown[]) => String(line)).join('\n');
       expect(output).toContain('status=passed');
       expect(output).toContain('finalizationError=true');
       expect(errors).toContain('phase=native-proof-custody');
@@ -3891,6 +3897,21 @@ describe('TEST_FILE_RESULT presence is a verdict, so a run that executed nothing
     );
     expect(code).toBe(0);
     expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
+  });
+
+  it('assigns one stable native evidence group and preserves a caller-owned group', async () => {
+    vi.stubEnv('PAPERCUSP_TEST_RUN_WORK_ITEM', 'EI-123');
+    vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', '');
+    const args = ['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts'];
+    await main(args, dryRunListOptions());
+    const group = process.env.PAPERCUSP_TEST_RUN_GROUP;
+    expect(group).toMatch(/^[a-f0-9-]{36}$/);
+    await main(args, dryRunListOptions());
+    expect(process.env.PAPERCUSP_TEST_RUN_GROUP).toBe(group);
+    vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'ci-owned');
+    await main(args, dryRunListOptions());
+    expect(process.env.PAPERCUSP_TEST_RUN_GROUP).toBe('ci-owned');
+    vi.unstubAllEnvs();
   });
 
   it('a dry run still reports machine-readably, under its own marker', async () => {

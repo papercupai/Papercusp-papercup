@@ -12,6 +12,7 @@ const policy = join(checkoutRoot, 'apps/operator/bin/release/dependency-generati
 
 export async function brokerSourceFixture(roots: string[], options: {
   gitCheckout?: boolean; omitAssets?: boolean; native?: boolean; nativeStorageRefused?: boolean;
+  pinnedRuntimeAssets?: boolean; trackedGeneratedInput?: boolean;
 } = {}) {
   const custodyRoot = mkdtempSync(join(tmpdir(), 'broker-generated-')); roots.push(custodyRoot);
   const repositoryRoot = join(custodyRoot, 'repo'), root = join(custodyRoot, 'source'); mkdirSync(repositoryRoot);
@@ -34,7 +35,10 @@ if(process.argv[2]==='prebuild') {
  if (${!options.omitAssets}) fs.writeFileSync(path.join(output,'assets/main.js'),'measured browser code');
 } else put('apps/operator/dist-verify/hono-host.mjs','export const marker="measured host";');
 `);
-  write(repositoryRoot, 'apps/operator/scripts/setup-porcupine-runtime.sh', '#!/bin/bash\nset -eu\nmkdir -p apps/operator/public/porcupine\nprintf "measured model" > apps/operator/public/porcupine/porcupine_params.pv\n');
+  write(repositoryRoot, 'apps/operator/scripts/setup-porcupine-runtime.sh', options.pinnedRuntimeAssets
+    ? readFileSync(join(checkoutRoot, 'apps/operator/scripts/setup-porcupine-runtime.sh'), 'utf8')
+    : '#!/bin/bash\nset -eu\nmkdir -p apps/operator/public/porcupine\nprintf "measured model" > apps/operator/public/porcupine/porcupine_params.pv\n');
+  if (options.trackedGeneratedInput) write(repositoryRoot, 'apps/operator/public/wake-runtime/source.txt', 'committed input');
   write(repositoryRoot, 'apps/operator/bin/bundle-host.sh', '#!/bin/bash\nset -eu\nnode apps/operator/bin/build.cjs host\n');
   write(repositoryRoot, 'scripts/pc-heavy.sh', '#!/bin/bash\nset -eu\n[ "$1" != -- ] || shift\nexec "$@"\n');
   // Exercise the production tree population: a hard-coded root-only stub hid

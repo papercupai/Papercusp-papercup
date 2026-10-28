@@ -1,0 +1,152 @@
+{
+  "schemaVersion": "r2gcs-p004-production-worker-v1",
+  "workItem": "WI-6554700010025563",
+  "startedAt": "2026-10-28T18:40:24.101Z",
+  "workerVersion": "968092d7-beeb-4bdb-a1b3-3953d4b9fefc",
+  "workerScriptEtag": "f0f5bb5e132a6b85843da0ee066fb62794f96e4f9307257e4568176048a6de20",
+  "origin": "https://papercusp-cupboard.aviynw.workers.dev",
+  "bucket": "pc-p317-host-bundle-20260917",
+  "operationId": "ac0a60e5-2fde-4e61-8142-40de6c87e2c9",
+  "bundleSha256": "291c8e263766d776aa3b9f912f2e399e671f64116e34c839a513a3496c5fdc68",
+  "sizeBytes": 92,
+  "checks": [
+    {
+      "name": "unique-destination-absent",
+      "ok": true,
+      "status": 404
+    },
+    {
+      "name": "anonymous-write-denied",
+      "ok": true,
+      "status": 401
+    },
+    {
+      "name": "production-multipart-created",
+      "ok": true,
+      "status": 201,
+      "uploadId": "ac0a60e5-2fde-4e61-8142-40de6c87e2c9"
+    },
+    {
+      "name": "operation-state-durable",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "name": "reconnect-resumes-original-operation",
+      "ok": true,
+      "status": 200,
+      "uploadId": "ac0a60e5-2fde-4e61-8142-40de6c87e2c9"
+    },
+    {
+      "name": "unfinalized-public-read-before-upload-denied",
+      "ok": true,
+      "status": 404
+    },
+    {
+      "name": "declared-part-uploaded",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "name": "multipart-complete",
+      "ok": true,
+      "status": 201
+    },
+    {
+      "name": "completed-object-metadata-readable",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "name": "generation-pinned-exact-bytes",
+      "ok": true,
+      "status": 200,
+      "generation": "1793212847668029",
+      "sha256": "291c8e263766d776aa3b9f912f2e399e671f64116e34c839a513a3496c5fdc68",
+      "sizeBytes": 92
+    },
+    {
+      "name": "completion-replay-retains-generation",
+      "ok": true,
+      "status": 200,
+      "generation": "1793212847668029"
+    },
+    {
+      "name": "unfinalized-public-read-after-completion-denied",
+      "ok": true,
+      "status": 404
+    },
+    {
+      "name": "raw-private-bucket-anonymous-denied",
+      "ok": true,
+      "status": 403
+    },
+    {
+      "name": "existing-finalized-public-positive-control",
+      "ok": true,
+      "status": 200,
+      "sizeBytes": 295
+    }
+  ],
+  "cleanup": {
+    "deleted": [
+      {
+        "key": "__artifact_uploads/c637ae94-ad41-4e5b-9e87-000089218432/part-1",
+        "generation": "1793212844234340",
+        "status": 204
+      },
+      {
+        "key": "__artifact_uploads/c637ae94-ad41-4e5b-9e87-000089218432/session",
+        "generation": "1793212837840865",
+        "status": 204
+      },
+      {
+        "key": "artifacts/workspace-host/sha256/291c8e263766d776aa3b9f912f2e399e671f64116e34c839a513a3496c5fdc68/.multipart/ac0a60e5-2fde-4e61-8142-40de6c87e2c9/parts/1.json",
+        "generation": "1793212845371380",
+        "status": 204
+      },
+      {
+        "key": "artifacts/workspace-host/sha256/291c8e263766d776aa3b9f912f2e399e671f64116e34c839a513a3496c5fdc68/server.tgz",
+        "generation": "1793212847668029",
+        "status": 204
+      }
+    ],
+    "complete": true,
+    "remaining": [],
+    "providerRemaining": []
+  },
+  "result": "pass",
+  "scope": "Exact deployed Cupboard private workspace-host multipart and finalization boundary only; no historical source census, publish-worker deployment, trusted finalization, integrated P544 trial or full migration acceptance.",
+  "objectIdentity": {
+    "generation": "1793212847668029",
+    "metageneration": "1",
+    "crc32c": "RUl9rw==",
+    "sizeBytes": 92
+  },
+  "finishedAt": "2026-10-28T18:40:51.811Z",
+  "servingDeploymentBefore": {
+    "deploymentId": "89fff309-507b-4223-95c8-66035153f461",
+    "versions": [
+      {
+        "version_id": "968092d7-beeb-4bdb-a1b3-3953d4b9fefc",
+        "percentage": 100
+      }
+    ]
+  },
+  "servingDeploymentAfter": {
+    "deploymentId": "89fff309-507b-4223-95c8-66035153f461",
+    "createdOn": "2026-10-26T19:27:30.238526Z",
+    "versions": [
+      {
+        "version_id": "968092d7-beeb-4bdb-a1b3-3953d4b9fefc",
+        "percentage": 100
+      }
+    ]
+  },
+  "servingVersionStable": true,
+  "transportFailureRef": "EI-27249567438699105",
+  "provenance": {
+    "method": "Direct HTTP operational observation; canonical reusable instrument not yet bound",
+    "bindingStatus": "unbound"
+  }
+}

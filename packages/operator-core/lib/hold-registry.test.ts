@@ -79,7 +79,12 @@ describe('hold registry: each domain is total over the code vocabulary it covers
       const e = resolveHold('blocker', capability);
       expect(e?.clearer.ref, capability).toBe(policy.resolutionOwner);
       expect(e?.clearer.kind === 'owner', capability).toBe(policy.requiresOwnerCapability);
-      expect(e?.class === 'structural', capability).toBe(policy.requiresOwnerCapability);
+      // Structural = nothing changes until someone writes to the row. Owner-required blockers
+      // are structural; so is a restriction hold (one-work-graph-structured-holds-2026-10-26#D-014),
+      // which its placer reviews and time never lifts. Only a live dependency clears on its own.
+      expect(e?.class === 'structural', capability).toBe(
+        policy.requiresOwnerCapability || capability === 'restriction-hold',
+      );
     }
     expect(sorted(OWNER_CAPABILITIES)).toEqual(
       sorted(EXTERNAL_BLOCKER_CAPABILITIES.filter((c) => externalBlockerCapabilityPolicy(c).requiresOwnerCapability)),

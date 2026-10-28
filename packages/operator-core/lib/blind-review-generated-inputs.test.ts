@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, readFileSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -9,6 +9,7 @@ import { packRuntimeSourceImage, prepareRuntimeSourceImage } from './blind-revie
 import { admitRuntimeSourceImage } from './blind-review-source-admission';
 import { write } from './source-preview.fixture';
 import { brokerSourceFixture } from './blind-review-source.fixture';
+import { moduleRepoRoot } from './module-repo-root';
 
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -17,6 +18,45 @@ const helper = fileURLToPath(new URL('../../../scripts/lib/blind-review-sealed-s
 const fixture = (options: Parameters<typeof brokerSourceFixture>[1] = {}) => brokerSourceFixture(roots, options);
 
 describe('broker generated build closure', () => {
+  it('revalidates the checksum-pinned model already installed by dependency preparation', async () => {
+    const f = await fixture({ pinnedRuntimeAssets: true });
+    const model = 'apps/operator/public/porcupine/porcupine_params.pv';
+    for (const root of [f.repositoryRoot, f.root]) {
+      mkdirSync(join(root, 'apps/operator/public/porcupine'), { recursive: true });
+      copyFileSync(join(moduleRepoRoot(import.meta.url), model), join(root, model));
+    }
+    const generated = await buildRuntimeGeneratedInputs(f);
+    expect(generated.files).toContainEqual(expect.objectContaining({ path: model }));
+  }, 30_000);
+
+  it('refuses an invalid prepared model when neither destination nor donor meets the committed checksum', async () => {
+    const f = await fixture({ pinnedRuntimeAssets: true });
+    for (const root of [f.repositoryRoot, f.root])
+      write(root, 'apps/operator/public/porcupine/porcupine_params.pv', 'invalid model');
+    await expect(buildRuntimeGeneratedInputs(f)).rejects.toThrow();
+    expect(existsSync(join(f.root, 'apps/operator/dist-verify/hono-host.mjs'))).toBe(false);
+  });
+
+  it.each(['apps/operator/public/porcupine/foreign.bin', 'apps/operator/public/wake-runtime/prior.js',
+    'apps/operator-vite/src/routeTree.gen.ts', 'apps/operator/public/ort-wasm-foreign.wasm'])(
+    'refuses unrecorded output before dependency census even with a committed sibling (%s)', async path => {
+      const f = await fixture({ trackedGeneratedInput: true });
+      write(f.root, path, 'untrusted prior output');
+      const census = vi.spyOn(preview, 'captureVerifierDependencies');
+      await expect(buildRuntimeGeneratedInputs(f)).rejects.toThrow('broker_generated_output_already_exists:' + path);
+      expect(census).not.toHaveBeenCalled();
+      expect(readdirSync(f.custodyRoot).some(name => name.startsWith('broker-build-'))).toBe(false);
+    });
+
+  it('refuses a redirected prepared model before dependency census', async () => {
+    const f = await fixture();
+    mkdirSync(join(f.root, 'apps/operator/public/porcupine'), { recursive: true });
+    symlinkSync('/etc/passwd', join(f.root, 'apps/operator/public/porcupine/porcupine_params.pv'));
+    const census = vi.spyOn(preview, 'captureVerifierDependencies');
+    await expect(buildRuntimeGeneratedInputs(f)).rejects.toThrow('broker_generated_output_already_exists:');
+    expect(census).not.toHaveBeenCalled();
+  });
+
   it('measures fixed build outputs and boots all three output classes from the same sealed image after donor removal', async () => {
     const f = await fixture({ gitCheckout: true }); const generated = await buildRuntimeGeneratedInputs(f);
     expect(Object.isFrozen(generated.files)).toBe(true);

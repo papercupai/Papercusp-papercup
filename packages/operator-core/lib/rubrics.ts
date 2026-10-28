@@ -4215,8 +4215,9 @@ export function collectPlannedRubricPaths(
       criterionKey: item.criterionKey,
       path: item.path,
       kind: item.checkKind === 'cargo' ? 'cargo-check' : 'tests-check',
+      ...(item.testName ? { literal: item.testName } : {}),
     };
-    out.set(`${entry.kind}\u0000${entry.criterionKey}\u0000${entry.path}`, entry);
+    out.set(`${entry.kind}\u0000${entry.criterionKey}\u0000${entry.path}\u0000${entry.literal ?? ''}`, entry);
   }
   for (const item of citations.planned) {
     const entry: PlannedRubricPath = {

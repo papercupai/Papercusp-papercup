@@ -6441,6 +6441,10 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     // EI-25209690807142935: those three exclusions come from ADMISSION_FAIL_OPEN_EXCLUSIONS,
     // the SAME record the claim floor reads to decide whether it may promise this runner's
     // bound — so the promise and the runner cannot drift apart again.
+    // EI-26515695311006297: the record is now bounded. Soft-semantic-only candidates and
+    // degraded rows past ADMISSION_DEGRADED_RESCREEN_ATTEMPTS re-screens are admitted
+    // 'unreviewed' with admissionReview.state='pending', so the promoter still adjudicates them.
+    // Unbounded exclusion parked ~2.4k rows while the promoter admitted ~10/day.
     const pendingEligibility = sql`admission = 'pending'
       AND (status IS NULL OR NOT harness_shared.work_item_status_is_terminal(status))
       AND created_ts < ${cutoffMs}

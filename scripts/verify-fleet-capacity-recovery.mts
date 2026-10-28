@@ -445,9 +445,37 @@ try {
   if (phase === 'continuation') result.violations.push(...validateCapacityContinuationProof(nativeContinuations).violations);
   result.status = result.violations.length ? 'fail' : 'pass';
 } catch (error) { result.violations.push(error instanceof Error ? error.message : String(error)); }
-// This is a one-shot, read-only CLI. Flush its receipt before closing the
-// process, including any idle database pool opened by the canonical reader.
-process.stdout.write(JSON.stringify(result) + '\n', () => process.exit(0));
+return result;
+}
+
+/**
+ * The verification-harness contract (contract-lint R-10): the run is recorded under the shared
+ * evidence root, then the receipt prints exactly as before. A throw still fails the process
+ * instead of being absorbed by the harness.
+ */
+async function runCli(): Promise<void> {
+  const { defaultEvidenceRoot, runHarness } = await import('@papercusp/verification-harness');
+  let result: Awaited<ReturnType<typeof main>> | null = null;
+  let thrown: unknown = null;
+  await runHarness({
+    contract: { name: 'fleet-capacity-recovery', phases: [{ id: 'verify' }] },
+    evidenceRoot: defaultEvidenceRoot('fleet-capacity-recovery'),
+    async runPhase(ctx) {
+      ctx.markStep(`verify-${process.argv[3] ?? 'unscoped'}`);
+      try {
+        const verdict = await main();
+        result = verdict;
+        return verdict.status === 'pass' ? { ok: true } : { ok: false, reasonCode: `status-${verdict.status}` };
+      } catch (error) {
+        thrown = error;
+        throw error;
+      }
+    },
+  });
+  if (thrown) throw thrown;
+  // This is a one-shot, read-only CLI. Flush its receipt before closing the
+  // process, including any idle database pool opened by the canonical reader.
+  process.stdout.write(JSON.stringify(result) + '\n', () => process.exit(0));
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  void main().catch(error => { process.stderr.write(String(error) + '\n'); process.exitCode = 1; });
+  void runCli().catch(error => { process.stderr.write(String(error) + '\n'); process.exitCode = 1; });

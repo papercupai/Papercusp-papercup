@@ -25,8 +25,16 @@ export type McpRequestTraceStage =
   | 'scratch_write_settled'
   | 'tools_list_completed'
   | 'tools_list_pending'
+  | 'http_handler_phase_pending'
+  | 'http_handler_phase_settled'
   | 'proxy_response_finished'
   | 'stale_contract_rejected';
+
+export type McpHttpHandlerPhase =
+  | 'auth_challenge'
+  | 'route_handler_load'
+  | 'request_pipeline'
+  | 'mcp_adapter';
 
 export type McpPreDispatchPhaseName =
   | 'operatorToolsLoad'
@@ -71,6 +79,8 @@ export interface McpRequestTraceEvent {
   elapsedMs: number;
   deadlineMs?: number;
   phase?: 'pre_dispatch' | 'inner_dispatch';
+  /** Bounded phase name for the HTTP adapter before MCP SDK request dispatch. */
+  httpHandlerPhase?: McpHttpHandlerPhase;
   outcome?: 'success' | 'tool_error' | 'rejected';
   /** HTTP status when the proxy has finished flushing the response; not client receipt. */
   httpStatus?: number;
@@ -275,6 +285,47 @@ export async function withMcpToolsListPhaseTrace<T>(
     return await work(phases);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** Trace slow awaited boundaries before the MCP SDK's tools/list callback. */
+export async function withMcpHttpHandlerPhaseTrace<T>(
+  traceId: string,
+  phase: McpHttpHandlerPhase,
+  work: () => Promise<T>,
+  pendingAfterMs = 5_000,
+): Promise<T> {
+  const startedAt = Date.now();
+  let pending = false;
+  const timer = setTimeout(() => {
+    pending = true;
+    logMcpRequestTrace({
+      traceId,
+      toolName: 'mcp-http-handler',
+      stage: 'http_handler_phase_pending',
+      httpHandlerPhase: phase,
+      elapsedMs: Math.max(0, Date.now() - startedAt),
+    });
+  }, pendingAfterMs);
+  timer.unref?.();
+  let outcome: McpRequestTraceEvent['outcome'] = 'success';
+  try {
+    return await work();
+  } catch (error) {
+    outcome = 'tool_error';
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    if (pending) {
+      logMcpRequestTrace({
+        traceId,
+        toolName: 'mcp-http-handler',
+        stage: 'http_handler_phase_settled',
+        httpHandlerPhase: phase,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        outcome,
+      });
+    }
   }
 }
 

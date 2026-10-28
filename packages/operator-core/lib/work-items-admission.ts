@@ -28,6 +28,7 @@ import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { readRoutinePause } from './harness/routines/release-pause-ttl';
 import type { GreenMainSloBreachMetric } from './release/green-main-slo';
+import type { DedupCandidateMethod } from './agent-tools/work_items/dedup-candidates-stamp';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -423,18 +424,20 @@ export function admissionPendingExplanation(
       'independent fail-open runner will not admit it unscreened. That runner re-screens such rows ' +
       `(one attempt per row every ${ADMISSION_FAIL_OPEN_TICKS} ticks of the ${tickMinutes}-minute promoter) ` +
       'and admits the row when the re-screen comes back clean; a re-screen that finds twins hands it to the ' +
-      "promoter's model review, and one that cannot run again leaves it pending. So this wait has NO fixed " +
-      'bound. It is not a permanent refusal — but do not wait on it: check whether an existing row already ' +
+      "promoter's model review. After " + `${ADMISSION_DEGRADED_RESCREEN_ATTEMPTS} re-screens that still cannot run, ` +
+      "the runner admits it as 'unreviewed' and the promoter reviews it afterwards. So this wait has NO fixed " +
+      'bound, but it CLEARS ON ITS OWN. It is not a permanent refusal — but do not wait on it: check whether an existing row already ' +
       'covers the same problem, or use a create-time admission route for genuinely distinct work.'
     );
   }
   if (opts.failOpenExclusion === 'duplicate-candidates') {
     return (
       preamble +
-      'This row carries DUPLICATE CANDIDATES found when it was filed, so only the promoter\'s model ' +
+      'This row carries DUPLICATE CANDIDATES found when it was filed, at least one stronger than a soft ' +
+      'semantic match, so only the promoter\'s model ' +
       `review can admit it (as distinct) or merge it into its twin. The promoter runs on a ${tickMinutes}-minute ` +
       'tick but reviews only a few rows per tick, candidate rows first, so this wait has NO fixed bound; ' +
-      'the independent fail-open runner deliberately never admits a row with unresolved candidates. ' +
+      'the independent fail-open runner deliberately never admits a row with unresolved strong candidates. ' +
       'It still CLEARS ON ITS OWN, and it is not a permanent refusal — but do not wait on it: check ' +
       'whether a named candidate is the same problem and work that row instead, or use a create-time ' +
       'admission route for genuinely distinct work.'
@@ -447,8 +450,9 @@ export function admissionPendingExplanation(
     `admits a row still pending after ${ADMISSION_FAIL_OPEN_TICKS} ticks ` +
     `(${ADMISSION_FAIL_OPEN_TICKS * tickMinutes} min) as 'unreviewed' once its duplicate screen is clean. ` +
     'Two exceptions: a row whose file-time screen could not run is re-screened by that runner (one attempt ' +
-    `per row every ${ADMISSION_FAIL_OPEN_TICKS} ticks) and admitted when the re-screen comes back clean; a ` +
-    'row with duplicate candidates waits for the promoter\'s model review, which has no fixed bound. ' +
+    `per row every ${ADMISSION_FAIL_OPEN_TICKS} ticks) and admitted when the re-screen comes back clean, or as ` +
+    `'unreviewed' after ${ADMISSION_DEGRADED_RESCREEN_ATTEMPTS} re-screens that cannot run; a row with a duplicate ` +
+    'candidate stronger than a soft semantic match waits for the promoter\'s model review, which has no fixed bound. ' +
     'It is a WAIT, not a permanent ' +
     'refusal — but a just-created item is typically unclaimable for most of a tick, which outlives ' +
     'many short-lived agents, so waiting is often the wrong move.'
@@ -583,10 +587,14 @@ export function admissionHoldExclusionSql(
  * them. Each is unresolved duplicate work that only adjudication clears:
  *
  * - `duplicate-verdict` — migration 1534's typed `duplicate_of`: the row already HAS its row.
- * - `duplicate-candidates` — file-time detection found twin(s); only the promoter's model
- *   review admits it as distinct (work-queue-exclusion-alarm-duplicates-2026-10-16 P-002).
+ * - `duplicate-candidates` — file-time detection found twin(s) by a method stronger than
+ *   {@link FAIL_OPEN_ADMISSIBLE_CANDIDATE_METHOD}; only the promoter's model review admits it
+ *   as distinct (work-queue-exclusion-alarm-duplicates-2026-10-16 P-002). Soft-only rows are
+ *   admitted `unreviewed` and reviewed afterwards (EI-26515695311006297).
  * - `degraded-dedup-coverage` — the file-time screen could not run, so admitting it would admit
- *   an unscreened row; the runner re-screens it and admits only on a clean result.
+ *   an unscreened row; the runner re-screens it and admits on a clean result — or, after
+ *   {@link ADMISSION_DEGRADED_RESCREEN_ATTEMPTS} re-screens that still cannot run, admits it
+ *   `unreviewed` so a leg outage cannot park it forever (EI-26515695311006297).
  *
  * ONE record drives BOTH the runner's eligibility ({@link failOpenDedupEligibleWhereSql}) and
  * the claim floor's attribution ({@link failOpenExclusionSql}). Before this, the claim floor
@@ -602,6 +610,29 @@ export const ADMISSION_FAIL_OPEN_EXCLUSIONS = [
 
 export type AdmissionFailOpenExclusion = (typeof ADMISSION_FAIL_OPEN_EXCLUSIONS)[number];
 
+/**
+ * EI-26515695311006297 — the weakest file-time duplicate signal. A row whose EVERY candidate
+ * came from this method alone is NOT a `duplicate-candidates` exclusion: the fail-open runner
+ * admits it as `unreviewed`, and the promoter (whose batch reads `admission IN ('pending',
+ * 'unreviewed')` with `admissionReview.state = 'pending'`) still adjudicates the pair
+ * afterwards. Measured 2026-10-28: ~234 candidate-bearing rows/day were filed while the model
+ * promoter admitted ~10/day, so a candidate row in practice never reached a review window and
+ * the "no fixed bound" wait was unbounded in fact. A candidate with any other method (hard
+ * semantic, lexical, exact-key, containment, or a legacy entry with NO method) still excludes.
+ */
+export const FAIL_OPEN_ADMISSIBLE_CANDIDATE_METHOD = 'semantic-soft' satisfies DedupCandidateMethod;
+
+/**
+ * EI-26515695311006297 — a degraded-coverage row stops being an exclusion once the fail-open
+ * runner's re-screen (work-items-admission-dedup-rescreen.ts) has recorded this many attempts
+ * in `payload.dedupCoverage.rescreen.attempts` and the screen still could not run. Without a
+ * terminal fallback a persistently unavailable leg (lexical, measured 2026-10-28) parked such
+ * rows pending FOREVER — 137 of them. After the last attempt the row is admitted as
+ * `unreviewed`, so the promoter's review still runs; only claimability stops waiting on a leg
+ * that is down. The re-screen cooldown is two promoter ticks, so this is ≥ ~2 hours of retries.
+ */
+export const ADMISSION_DEGRADED_RESCREEN_ATTEMPTS = 3;
+
 /** Per-exclusion "this row IS excluded" predicate. `qualifier` is a closed internal union. */
 function failOpenExclusionPredicates(
   sql: OrgSql,
@@ -610,11 +641,22 @@ function failOpenExclusionPredicates(
   const prefix = qualifier ? `${qualifier}.` : '';
   const duplicateOf = sql.unsafe(`${prefix}duplicate_of`);
   const payload = sql.unsafe(`${prefix}payload`);
+  const candidates = sql`(${payload} -> 'dedupCandidates')`;
+  // Every predicate below is NULL-free, so `NOT (excluded)` is the exact complement.
+  // CASE (not OR) guards jsonb_array_elements: SQL does not promise OR short-circuits, and a
+  // non-array value would raise. A non-array or non-object entry stays excluded (conservative).
+  const strongCandidate = sql`CASE WHEN jsonb_typeof(${candidates}) = 'array'
+      THEN EXISTS (SELECT 1 FROM jsonb_array_elements(${candidates}) AS fo_cand(c)
+                    WHERE fo_cand.c ->> 'method' IS DISTINCT FROM ${FAIL_OPEN_ADMISSIBLE_CANDIDATE_METHOD}::text)
+      ELSE TRUE END`;
+  const rescreenAttempts = sql`(CASE WHEN ${payload} #>> '{dedupCoverage,rescreen,attempts}' ~ '^[0-9]+$'
+      THEN (${payload} #>> '{dedupCoverage,rescreen,attempts}')::numeric ELSE 0 END)`;
   const byReason: Record<AdmissionFailOpenExclusion, ReturnType<OrgSql>> = {
     'duplicate-verdict': sql`${duplicateOf} IS NOT NULL`,
-    'duplicate-candidates': sql`(${payload} -> 'dedupCandidates') IS NOT NULL`,
+    'duplicate-candidates': sql`(${candidates} IS NOT NULL AND ${strongCandidate})`,
     // COALESCE first, so the complement below is exact: a NULL flag reads as not-degraded.
-    'degraded-dedup-coverage': sql`lower(COALESCE(${payload} #>> '{dedupCoverage,degraded}', 'false')) = 'true'`,
+    'degraded-dedup-coverage': sql`(lower(COALESCE(${payload} #>> '{dedupCoverage,degraded}', 'false')) = 'true'
+      AND ${rescreenAttempts} < ${ADMISSION_DEGRADED_RESCREEN_ATTEMPTS}::int)`,
   };
   return ADMISSION_FAIL_OPEN_EXCLUSIONS.map((reason) => [reason, byReason[reason]] as const);
 }

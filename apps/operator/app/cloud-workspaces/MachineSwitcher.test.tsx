@@ -107,26 +107,41 @@ describe("persistent machine selection", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it("navigates the standalone shell once without pushing an intermediate machine target", async () => {
+  it("switches the standalone machine in one history entry without reloading the document", async () => {
     query.mockReturnValue({ data: rows, loading: false, error: null });
+    const actual = await vi.importActual<typeof import("@papercusp/operator-core/lib/client-navigation")>(
+      "@papercusp/operator-core/lib/client-navigation",
+    );
+    navigate.mockImplementationOnce(actual.navigateClient);
+    const hardNavigation = vi.fn();
+    const originalAssign = Object.getOwnPropertyDescriptor(window, "__papercuspOriginalAssign");
+    Object.defineProperty(window, "__papercuspOriginalAssign", { value: hardNavigation, configurable: true });
+    const navigated = vi.fn();
+    window.addEventListener("popstate", navigated);
     const previous = window.location.href;
     const update = vi.fn();
     window.history.replaceState({}, "", "/settings/remote-access?ws=own&desktopHost=a&host=a&desktop=watch:old&desktopPins=old&desktopFilter=old");
+    const historyLength = window.history.length;
     try {
       render(<MachineSwitcher />, { wrapper: withNuqsTestingAdapter({
         searchParams: window.location.search, onUrlUpdate: update,
       }) });
       fireEvent.change(screen.getByRole("combobox"), { target: { value: "b" } });
-      await vi.waitFor(() => expect(navigate).toHaveBeenCalledExactlyOnceWith(expect.any(String), { hard: true }));
+      await vi.waitFor(() => expect(new URL(window.location.href).searchParams.get("desktopHost")).toBe("b"));
+      expect(hardNavigation).not.toHaveBeenCalled();
+      expect(window.history.length).toBe(historyLength + 1);
+      expect(navigated).toHaveBeenCalledOnce();
       expect(update).not.toHaveBeenCalled();
-      const target = new URL(navigate.mock.calls[0]![0]);
+      const target = new URL(window.location.href);
       expect(target.pathname).toBe("/desktops");
       expect(target.searchParams.get("ws")).toBe("own");
       expect(target.searchParams.get("desktopHost")).toBe("b");
       expect(target.searchParams.get("host")).toBe("b");
       for (const key of ["desktop", "desktopPins", "desktopFilter"]) expect(target.searchParams.has(key)).toBe(false);
-      expect(window.location.pathname).toBe("/settings/remote-access");
     } finally {
+      window.removeEventListener("popstate", navigated);
+      if (originalAssign) Object.defineProperty(window, "__papercuspOriginalAssign", originalAssign);
+      else Reflect.deleteProperty(window, "__papercuspOriginalAssign");
       window.history.replaceState({}, "", previous);
     }
   });

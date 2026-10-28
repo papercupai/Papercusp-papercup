@@ -435,8 +435,10 @@ test('P010 owner public session journeys', async ({ page, request }, info) => {
     expect(current.status()).toBe(200);
     expect(currentBody.rows).toMatchObject([{ id: conversationId, workspaceId: workspace }]);
 
-    await page.goto(`${baseURL}/?chat=true`);
+    await page.goto(`${baseURL}/adv?tab=harnesses&chat=true`);
     const sidebar = page.getByRole('complementary', { name: 'Papercup chat' });
+    await expect(page).toHaveURL(/[?&]chat=true(?:&|$)/);
+    await expect(sidebar).toBeVisible();
     await expect(sidebar).toContainText('P010 owner persisted reply');
     await expect(sidebar).toContainText('P010 public session 0 persisted reply');
     await page.reload();

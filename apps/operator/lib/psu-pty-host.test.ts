@@ -8178,17 +8178,28 @@ describe('host-code ADOPTION handshake (WI-38292 increment 2)', () => {
     expect(shouldAdoptHostCode({ ...base, allowInteractive: true })).toBe(true);
   });
 
-  it('keeps adoption in-process while this host owns a pending loop delivery', () => {
-    const pendingTurn = {
+  it('keeps adoption in-process while this host owns a pending warm or cold loop delivery', () => {
+    const base = {
       onReexec: () => {},
       reexecCode: 87,
       bridgeTty: false,
-      pendingTurnDelivery: true,
     };
-    const noPendingTurn = { ...pendingTurn, pendingTurnDelivery: false };
+    const pendingColdCarry = { ...base, pendingWakeDelivery: true };
+    const noPendingWake = { ...base, pendingWakeDelivery: false };
 
-    expect(shouldAdoptHostCode(pendingTurn)).toBe(false);
-    expect(shouldAdoptHostCode(noPendingTurn)).toBe(true);
+    expect(shouldAdoptHostCode(pendingColdCarry)).toBe(false);
+    expect(shouldAdoptHostCode(noPendingWake)).toBe(true);
+
+    const src = nodeFs.readFileSync(
+      new URL('../scripts/psu-pty-host.mjs', import.meta.url),
+      'utf8',
+    );
+    expect(src).toContain(
+      "const pendingWakeDelivery = carryRearm.pendingCount('turn') > 0 || carryRearm.pendingCount('carry-respawn') > 0;",
+    );
+    expect(src).toContain(
+      "pendingWakeDelivery: carryRearm.pendingCount('turn') > 0 || carryRearm.pendingCount('carry-respawn') > 0,",
+    );
   });
 
   it('cannot opt INTO adoption without a re-exec loop (the hard-exit configuration)', () => {

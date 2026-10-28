@@ -96,6 +96,7 @@ import {
   ACTIVITY_DEAD_MS,
   ACTIVITY_LOOKBACK_WINDOW_MS,
 } from './agent-tools/coordination/activity-liveness-constants';
+import { EXPLICIT_PARK_NOTE_MARKER, INBOX_WAKE_KEY_PREFIX } from './events/await/types';
 
 type Db = Sql | TransactionSql;
 
@@ -388,7 +389,29 @@ export function warmDeadHolderFragment(sql: Db, presenceWindowSec: number) {
          AND NOT EXISTS (SELECT 1 FROM harness_shared.routines r
                           WHERE r.active = true
                             AND r.reschedule_interval_sec IS NOT NULL
-                            AND r.target_owner_id = p.owner_id)`;
+                            AND r.target_owner_id = p.owner_id)
+         -- EI-27232210222510304: a holder parked on a BOUNDED wake await is the
+         -- same continuation case as an armed loop — quiet by design, and the
+         -- await re-invokes that SAME owner by its deadline at the latest. The
+         -- predicate is deliberately narrower than "has a live wake await":
+         -- it needs a deadline that WAKES (expires_ts set + timeout_behavior
+         -- 'wake'), so a deadline-less or silently-lapsing await cannot shield a
+         -- wedged owner forever; once the deadline passes with no turn the owner
+         -- is warm-dead again on the very next sweep. The always-armed inbox-wake
+         -- keepalive is excluded (every live agent holds one) unless it is a
+         -- deliberate coord:await-inbox park — the same liveness pair and
+         -- exclusion as listWakeAwaitsForSubscriber (events/await/store.ts).
+         AND NOT EXISTS (SELECT 1 FROM harness_shared.event_awaits ea
+                          WHERE ea.subscriber_id = p.owner_id
+                            AND ea.policy = 'wake'
+                            AND ea.timeout_behavior = 'wake'
+                            AND ea.fired_at IS NULL
+                            AND ea.cancelled_at IS NULL
+                            AND ea.superseded_at IS NULL
+                            AND ea.expires_ts IS NOT NULL
+                            AND ea.expires_ts > now()
+                            AND ( ea.event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+                               OR ea.note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'} ))`;
 }
 
 /**

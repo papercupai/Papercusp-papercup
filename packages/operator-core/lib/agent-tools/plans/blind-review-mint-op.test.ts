@@ -10,6 +10,7 @@ import type { BlindReviewBrief } from '../../blind-review-brief';
 import type { createBlindReviewSessionBinding } from '../../blind-review-session-bindings';
 import { BLIND_GAP_REVIEW_ACTOR } from '../../blind-reviewer-mint';
 import { readLaunchEnvelope, runBlindReviewMintOp } from './blind-review-mint-op';
+import { blindReviewPostedEventKey } from '../../blind-review-post-event';
 
 const SLUG = 'demo-plan-2026-10-11';
 const KEY = Symbol('test-confinement-key');
@@ -119,6 +120,21 @@ describe('runBlindReviewMintOp', () => {
     expect(kickoff).toContain('npm run dev');
     expect(out.payload.kickoffChars).toBe(kickoff.length);
     expect(JSON.stringify(out.payload)).not.toContain(SECRET_TURN);
+  });
+
+  // awaitable-review-post-events-2026-10-27 R-2: the recruiter is handed the exact post key.
+  it('returns the awaitKey the minted binding post fires', async () => {
+    const d = deps(launched({ ok: true, ownerId: 'su-reviewer-1' }));
+    const out = await runBlindReviewMintOp(INPUT, d.deps);
+    expect(out.isError).toBe(false);
+    expect(out.payload).toMatchObject({ bindingId: 7, awaitKey: `plan:blind-review-posted:${SLUG}:7` });
+    expect(out.payload.awaitKey).toBe(blindReviewPostedEventKey(SLUG, 7));
+  });
+
+  it('hands out the bound key on a partial launch too, so the recruiter can await instead of re-minting', async () => {
+    const d = deps(launched({ error: 'startup_not_verified' }, true));
+    const out = await runBlindReviewMintOp(INPUT, d.deps);
+    expect(out.payload).toMatchObject({ error: 'launch_partial', bindingId: 7, awaitKey: blindReviewPostedEventKey(SLUG, 7) });
   });
 
   it('keeps an uncertain launch from claiming that no reviewer is running or advising a fresh mint', async () => {

@@ -5,6 +5,19 @@ import { getBuildInfo } from '../../build-info';
 
 /** Shared by the census and its independent DBOS boundary observations. */
 export const monitoredRuntimeId = `${hostname()}:${process.pid}:${Math.round(Date.now() - process.uptime() * 1000)}`;
+/** Prebind a native verifier before the scheduler starts the census. Only the
+ * canonical due slot participates; no verifier supplies provenance or outcomes. */
+export function scheduledCensusWorkflowId(workspaceId: string, routineId: string, dueAt: Date | null): string {
+  if (!workspaceId || !routineId || !dueAt || !Number.isFinite(dueAt.getTime()))
+    throw new Error('invalid_census_due_slot');
+  return 'sql-intent-census:' + createHash('sha256')
+    .update(JSON.stringify([workspaceId, routineId, dueAt.toISOString()])).digest('hex');
+}
+/** The existing census identity derivation, shared with preflight selection. */
+export function monitoredCensusRunId(workspaceId: string, workflowId: string): string {
+  const hex = createHash('sha256').update(JSON.stringify([workspaceId, workflowId])).digest('hex');
+  return hex.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, '$1-$2-$3-$4-$5');
+}
 interface FireDefinition {
   id: string; workspaceId: string; installSlug: string; targetRole: string;
   triggerConfig: Record<string, unknown>; payloadTemplate: Record<string, unknown> | null;

@@ -144,8 +144,10 @@ test('P010 current-build conformance journey', async ({ page }, info) => {
     expect(currentBody.rows).toMatchObject([{ id: conversationId, workspaceId: workspace }]);
 
     // Exercise persisted history and the real scoped resolver, without route stubs.
-    await page.goto(`${baseURL}/?chat=true`);
+    await page.goto(`${baseURL}/adv?tab=harnesses&chat=true`);
     const sidebar = page.getByRole('complementary', { name: 'Papercup chat' });
+    await expect(page).toHaveURL(/[?&]chat=true(?:&|$)/);
+    await expect(sidebar).toBeVisible();
     const authorized = page.locator('[data-result-id="p010-browser-report"]');
     await expect(authorized).toContainText('P010 current authorized report');
     await expect(page.locator('[data-result-id="p010-browser-foreign"]')).toContainText(/unavailable|not available/i);
@@ -162,13 +164,15 @@ test('P010 current-build conformance journey', async ({ page }, info) => {
     await authorized.locator('[data-action-id="open"]').click();
     await expect(page).toHaveURL(new RegExp(`/reports\\?sel=${report.reportId}`));
     await expect(page.locator('.reports-reader')).toContainText('Current browser resource.');
-    await page.goto(`${baseURL}/?chat=true`);
+    await page.goto(`${baseURL}/adv?tab=harnesses&chat=true`);
+    await expect(page).toHaveURL(/[?&]chat=true(?:&|$)/);
+    await expect(sidebar).toBeVisible();
     await expect(authorized).toContainText('P010 current authorized report');
     await sql.unsafe('DELETE FROM harness_shared.report_library WHERE workspace_id=$1 AND report_id=$2',
       [workspace, report.reportId]);
     await authorized.locator('[data-action-id="open"]').click();
     await expect(sidebar).toContainText(/unavailable/i);
-    expect(new URL(page.url()).pathname).toBe('/');
+    expect(new URL(page.url()).pathname).toBe('/adv');
     const rows = await sql.unsafe(`SELECT id FROM harness_shared.operator_turns
       WHERE workspace_id=$1 AND conversation_id=$2 ORDER BY seq`, [workspace, conversationId]);
     expect(rows.map(row => row.id)).toEqual([turnId]);

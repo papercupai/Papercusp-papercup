@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspectRetentionTrees } from './disk-consumer-census';
-import { inspectDetachedRetentionTrees, withRetentionMutex } from './retention-census-walk';
+import { awaitRetentionCensusCompletion, inspectDetachedRetentionTrees, withRetentionMutex } from './retention-census-walk';
 import type { WalkLauncher } from './disk-census-detached-walk';
 
 const dirs: string[] = [], children: ChildProcess[] = [];
@@ -74,7 +74,9 @@ describe('retention metadata worker real process', () => {
     const slot = join(dir, 'slot');
     const pending = await inspectDetachedRetentionTrees(root, options, { dir: slot, waitMs: 1000, pollMs: 5, launch });
     expect(pending.error).toContain('pending'); expect(pending.entries).toEqual([]);
+    expect(pending.pendingWalk).toEqual(expect.objectContaining({ root, dir: slot }));
     children[children.length - 1]!.kill('SIGCONT');
+    expect(await awaitRetentionCensusCompletion(pending.pendingWalk!, Date.now() + 25_000)).toBe(true);
     const adopted = await inspectDetachedRetentionTrees(root, options, { dir: slot, waitMs: 25_000, pollMs: 5, launch });
     expect(adopted.error).toBeUndefined(); expect(launches).toBe(1);
     expect(adopted.entries).toEqual(expected.entries); expect(adopted.retained).toEqual(expected.retained);

@@ -159,7 +159,7 @@ function run(argv: string[], env: NodeJS.ProcessEnv, auditFile?: string, input?:
     input,
     timeout: 60_000,
   });
-  return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '', error: result.error };
 }
 
 function runViteConfig(configDirectory: string, configLoader: 'bundle' | 'native' = 'bundle', auditFile?: string) {

@@ -112,6 +112,62 @@ describe('acceptance orchestration fail-stop (WI-6554700010012388)', () => {
     expect(f.gate).not.toHaveBeenCalled();
   });
 
+  it('allows paged historical criterion audits without treating a page as a current acceptance result', async () => {
+    const historical = {
+      ok: true,
+      classRef: 'plan-class-bugfix',
+      classRefSource: 'historical-scorecard',
+      count: 1,
+      rows: [{ specId: 'clause-1', verdict: 'fail', wouldBlock: ['traceability'] }],
+      wouldBlock: ['traceability'],
+      historicalAuditOnly: { asOf: '2026-10-24T06:20:09.275Z' },
+    };
+    const f = fixture(async () => historical);
+    f.evaluator
+      .mockResolvedValueOnce(json(historical))
+      .mockResolvedValueOnce(json(historical))
+      .mockResolvedValueOnce(json(passing));
+    const result = await f.run(`
+      const first = await tools.plans.evaluateSpecTestAdequacy({
+        slug: 'plan', scorecardId: 'card', detail: 'full', criteria: ['traceability']
+      });
+      const second = await tools.plans.evaluateSpecTestAdequacy({
+        slug: 'plan', scorecardId: 'card', detail: 'full', criteria: ['verification']
+      });
+      const current = await tools.plans.evaluateSpecTestAdequacy({ slug: 'plan' });
+      await tools.plans.setPlanStatus({ slug: 'plan', status: 'shipped' });
+      return { first, second, current };
+    `);
+
+    expect(result.ok).toBe(true);
+    expect(f.evaluator).toHaveBeenCalledTimes(3);
+    expect(f.gate).toHaveBeenCalledOnce();
+  });
+
+  it('does not let a historical scorecard audit authorize a dependent current gate', async () => {
+    const f = fixture(async () => ({
+      ok: true,
+      classRef: 'plan-class-bugfix',
+      classRefSource: 'historical-scorecard',
+      count: 1,
+      rows: [{ specId: 'clause-1', verdict: 'pass', wouldBlock: [] }],
+      wouldBlock: [],
+      historicalAuditOnly: { asOf: '2026-10-24T06:20:09.275Z' },
+    }));
+    const result = await f.run(`
+      await tools.plans.evaluateSpecTestAdequacy({
+        slug: 'plan', scorecardId: 'card', detail: 'full', criteria: ['traceability']
+      });
+      await tools.plans.setPlanStatus({ slug: 'plan', status: 'shipped' });
+      return { reachedGate: true };
+    `);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('acceptance_orchestration_stopped');
+    expect(f.evaluator).toHaveBeenCalledOnce();
+    expect(f.gate).not.toHaveBeenCalled();
+  });
+
   it('uses the full evaluator receipt before applying a caller projection', async () => {
     const f = fixture(async () => passing);
     const result = await f.run(`

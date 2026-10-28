@@ -142,7 +142,7 @@ describe('version1 durable inbox decision', () => {
   });
 
   it('permits exact committed-winner reconciliation and refuses a competing choice', async () => {
-    const commitResponse = vi.fn(async () => ({ accepted: false,
+    const commitResponse = vi.fn<CommitResponse>(async () => ({ accepted: false,
       response: { action: 'submit', payload: { picks: ['yes'] } } }));
     mockConverseCard(commitResponse);
     await expect(commitLinkedConverseCard(record, 'yes', ctx)).resolves.toBeUndefined();

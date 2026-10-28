@@ -32,7 +32,7 @@ import {
   prepareNestedProjection,
 } from '../../result-projection';
 
-type AcceptanceStep = 'pending' | 'passed' | 'stopped';
+type AcceptanceStep = 'pending' | 'passed' | 'stopped' | 'historical';
 // runToolOrchestration creates a fresh signal for each run, including saved recipes
 // and durable execution. A weak key keeps this barrier local to that run's lifetime.
 const acceptanceRuns = pinModuleState('@papercusp/operator.acceptance-orchestration', () =>
@@ -103,11 +103,16 @@ function acceptanceCall(name: string, input: unknown, ctx: UnifiedToolContext) {
   const dependent = name === 'plans:certify-spec-clauses' ||
     (name === 'plans:set-plan-status' && (args?.status === 'shipped' || args?.status === 'done'));
   if ((!evaluation && !dependent) || !args) return undefined;
+  // Historical scorecard replay is a read-only audit that may be paged one
+  // criterion at a time. It must not be judged by the current-acceptance pass
+  // predicate, but it also must never authorize a dependent current gate.
+  const historicalAudit = evaluation && typeof args.scorecardId === 'string';
   const slugs = typeof args.slug === 'string' ? [args.slug] : Array.isArray(args.slugs) ? args.slugs : [];
   const harnessScope = resolveHarnessScope(typeof args.harness === 'string' ? args.harness : undefined, ctx);
   const harnessIdentity = harnessScope.kind === 'harness' ? `harness:${harnessScope.slug}` : harnessScope.kind;
   return {
     evaluation,
+    historicalAudit,
     keys: slugs.filter((slug): slug is string => typeof slug === 'string').map(slug =>
       JSON.stringify([ctx.workspaceId, harnessIdentity, slug])),
   };
@@ -258,15 +263,22 @@ export const bindCurrentCallerDispatch: WrapDispatch = async (tool, toolName, ar
   if (acceptance && ctx.signal) {
     steps = acceptanceRuns.get(ctx.signal);
     if (!steps) acceptanceRuns.set(ctx.signal, steps = new Map());
-    if (acceptance.keys.some(key => {
+    if (!acceptance.historicalAudit && acceptance.keys.some(key => {
       const step = steps!.get(key);
-      return step !== undefined && step !== 'passed';
+      return step !== undefined && step !== 'passed' &&
+        !(acceptance.evaluation && step === 'historical');
     })) {
       throw new ToolDispatchError(toolName, 'acceptance_orchestration_stopped',
         'A prior evaluation is pending, refused, incomplete or uncertain. Archive the original receipt; ' +
         'do not replay evaluation or dispatch dependent certification/gate/recruitment in this run.');
     }
-    if (acceptance.evaluation) for (const key of acceptance.keys) steps.set(key, 'pending');
+    if (acceptance.evaluation && acceptance.historicalAudit) {
+      for (const key of acceptance.keys) {
+        if (!steps.has(key)) steps.set(key, 'historical');
+      }
+    } else if (acceptance.evaluation) {
+      for (const key of acceptance.keys) steps.set(key, 'pending');
+    }
   }
 
   let complete = false;
@@ -275,7 +287,7 @@ export const bindCurrentCallerDispatch: WrapDispatch = async (tool, toolName, ar
     const materializedCtx = nestedProjectionContext(callCtx, dispatchArgs, prepared.spec);
     const result = await next(materializedCtx, dispatchArgs);
     // Inspect the full receipt BEFORE a caller projection can hide the refusal.
-    if (acceptance?.evaluation && steps) {
+    if (acceptance?.evaluation && !acceptance.historicalAudit && steps) {
       const body = record(result)?.content ? unwrapToolResult(result as ToolResult) : result;
       const step = completePassingEvaluation(body) ? 'passed' : 'stopped';
       for (const key of acceptance.keys) steps.set(key, step);
@@ -291,7 +303,7 @@ export const bindCurrentCallerDispatch: WrapDispatch = async (tool, toolName, ar
   } finally {
     // Includes thrown timeouts and dispatch refusals that never entered projectedNext.
     // Catching one in the script cannot erase the barrier or replay the original call.
-    if (acceptance?.evaluation && steps && !complete) {
+    if (acceptance?.evaluation && !acceptance.historicalAudit && steps && !complete) {
       for (const key of acceptance.keys) steps.set(key, 'stopped');
     }
   }

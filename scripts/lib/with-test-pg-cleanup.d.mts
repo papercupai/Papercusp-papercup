@@ -4,6 +4,24 @@ export function unhookRegisteredExitSignals(exitHook: {
   unhookEvent(event: string): void;
 }): void;
 
+export const PRIVATE_TEST_PG_RELEASE_TOKEN_ENV: 'PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN';
+
+/** Cache a single owned-resource stop so early release and final cleanup share one result. */
+export function createSingleFlightStop(stop: () => Promise<unknown>): () => Promise<unknown>;
+
+/** Authenticate a direct child request, stop the owned private PG, and return its correlated receipt. */
+export function createPrivateTestPgReleaseHandler(options: {
+  token: string;
+  stop: () => Promise<unknown>;
+  respond(message: { kind: string; token: string; requestId: string; ok: boolean; error?: string }): Promise<void>;
+}): (message: unknown) => Promise<boolean>;
+
+/** Ask the owning with-test-pg parent to stop its cluster and await the matching acknowledgement. */
+export function requestPrivateTestPgRelease(token: string, options?: {
+  processRef?: NodeJS.Process;
+  timeoutMs?: number;
+}): Promise<true>;
+
 export interface CleanupOwnedTestStateOptions {
   child?: { pid?: number } | null;
   childLifetime?: { terminate(): Promise<void> } | null;

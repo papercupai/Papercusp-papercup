@@ -6,6 +6,11 @@ import { withMcpAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
 import { mcpAuthChallenge, type McpAuthChallengeDependencies } from './mcp-auth-challenge';
 import { isLoopbackRequest } from '../../../superuser-token';
 import { isAppKeyShaped } from '../../../connected-apps/key';
+import {
+  MCP_REQUEST_TRACE_HEADER,
+  resolveMcpRequestTraceId,
+  withMcpHttpHandlerPhaseTrace,
+} from '../../../mcp-request-trace';
 
 const mcpAuthChallengeDependencies: McpAuthChallengeDependencies = {
   isLocal: isLoopbackRequest,
@@ -203,13 +208,27 @@ export function primeSseResponse(res: Response, keepaliveMs: number = DEFAULT_KE
 // rationale live in ./mcp-admission (kept out of this heavy side-effect module so it's
 // unit-testable). Fail-open when no lag monitor is running (loopPressure() → 'ok').
 const mcpHandler = async (req: Request): Promise<Response> => {
+  // The proxy replaces this header with its request UUID before forwarding. Keep
+  // only that bounded identifier for phase tracing; never log the request URL,
+  // headers, credentials, or body.
+  const traceId = resolveMcpRequestTraceId({
+    requestInfo: { headers: {
+      [MCP_REQUEST_TRACE_HEADER]: req.headers.get(MCP_REQUEST_TRACE_HEADER) ?? '',
+    } },
+  });
   // external-app-access P-006: an outside client with no (or a bad) credential gets the HTTP 401
   // that starts MCP OAuth discovery, before the transport — see ./mcp-auth-challenge.
-  const refused = await mcpAuthChallenge(req, mcpAuthChallengeDependencies);
+  const refused = await withMcpHttpHandlerPhaseTrace(traceId, 'auth_challenge', () =>
+    mcpAuthChallenge(req, mcpAuthChallengeDependencies));
   if (refused) return refused;
-  const handler = await getMcpRouteHandler();
-  return withMcpAdmission(req, loopPressure(), ADMISSION_CONTROL_ENABLED, async () =>
-    primeSseResponse(await handler(req)),
+  const handler = await withMcpHttpHandlerPhaseTrace(traceId, 'route_handler_load', () =>
+    getMcpRouteHandler());
+  return withMcpHttpHandlerPhaseTrace(traceId, 'request_pipeline', () =>
+    withMcpAdmission(req, loopPressure(), ADMISSION_CONTROL_ENABLED, async () =>
+      withMcpHttpHandlerPhaseTrace(traceId, 'mcp_adapter', async () =>
+        primeSseResponse(await handler(req))),
+    ),
+    30_000,
   );
 };
 

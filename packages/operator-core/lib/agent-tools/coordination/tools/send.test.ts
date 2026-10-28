@@ -4240,6 +4240,22 @@ describe('basedOn — the sender’s read trace, derived (never authored)', () =
     });
   });
 
+  it('uses the exact structured goal read for an abbreviated completion reference', async () => {
+    const goalRef = 'EI-26250875597402287';
+    mockResolvedTyped(basedOnM, [
+      { ref: `work-item:${goalRef}`, via: 'work_items:get', readAt: '2026-10-24T08:26:46.895Z' },
+    ]);
+    await body({
+      to: ['bee-1'],
+      summary: 'EI-262 source fix and regression verified; R-4 and deferred wake item remain open (part 2/2)',
+      why: { goalRef },
+      expects: 'none',
+    });
+
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).not.toHaveProperty('completionClaimMismatch');
+  });
+
   it('does not persist an unread-artifact stamp for an issue id embedded in a prerequisite log filename', async () => {
     mockResolvedTyped(basedOnM, [
       { ref: 'work-item:EI-25161673334137018', via: 'work_items:get', readAt: '2026-10-05T19:57:57.764Z' },

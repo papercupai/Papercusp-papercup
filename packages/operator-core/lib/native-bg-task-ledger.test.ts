@@ -20,7 +20,7 @@
  * /proc is touched only for the fail-soft contract, never a live pid.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readdirSync, readlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readdirSync, readlinkSync, readFileSync } from 'node:fs';
 import { readdir, readlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

@@ -27,6 +27,13 @@ export type AwaitPolicy = 'wake' | 'notify' | 'announce';
  */
 export const EXPLICIT_PARK_NOTE_MARKER = '[coord:await-inbox:explicit-park]';
 
+/** The always-armed per-agent self-wake key prefix (turn-lifecycle-control) —
+ *  every live agent holds one, so it signals liveness, NOT a deliberate bench.
+ *  Defined here (dependency-free) so liveness readers outside the await store —
+ *  e.g. the claim reaper's warm-dead leg — share the byte-level prefix without
+ *  importing the store; `store.ts` re-exports it under the same name. */
+export const INBOX_WAKE_KEY_PREFIX = 'coord:inbox-wake:';
+
 export function isExplicitParkNote(note: string | null | undefined): boolean {
   return note?.startsWith(EXPLICIT_PARK_NOTE_MARKER) === true;
 }

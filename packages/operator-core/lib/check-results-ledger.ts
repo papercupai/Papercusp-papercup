@@ -51,7 +51,14 @@ import {
 
 export { RUBRIC_CHECK_FRAMEWORK };
 
-type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown>;
+/**
+ * A tagged-template SQL client. It is declared through a METHOD signature so that TypeScript
+ * checks its parameters bivariantly. The real postgres `Sql` takes `ParameterOrFragment<…>`
+ * values, which are narrower than `unknown`, and a hand-rolled test fake takes `unknown[]`.
+ * Both are therefore assignable without a cast. With a plain function type, the real client
+ * was refused and every caller needed `as unknown as SqlLike`.
+ */
+type SqlLike = { query(strings: TemplateStringsArray, ...values: unknown[]): PromiseLike<unknown> }['query'];
 
 export type RubricCheckVerdict = 'pass' | 'fail' | 'error';
 
@@ -391,7 +398,7 @@ export function buildRubricCheckLedgerRow(result: RubricCheckResult, scope: Rubr
 export async function recordRubricCheckResults(
   results: ReadonlyArray<RubricCheckResult>,
   scope: RubricCheckLedgerScope,
-  sql: SqlLike = getOrgPg().sql as unknown as SqlLike,
+  sql: SqlLike = getOrgPg().sql,
 ): Promise<number[]> {
   const rows = results.map((result) => buildRubricCheckLedgerRow(result, scope));
   const ids: number[] = [];
@@ -460,7 +467,7 @@ export interface LatestRubricCheckResult {
  */
 export async function readLatestRubricCheckResults(
   input: { rubricRef: string; workspaceId: string | null; subject?: RecordedRubricCheckSubject },
-  sql: SqlLike = getOrgPg().sql as unknown as SqlLike,
+  sql: SqlLike = getOrgPg().sql,
 ): Promise<Map<string, LatestRubricCheckResult>> {
   const prefix = `rubric-check/${input.rubricRef}/`;
   const rows = (await sql`

@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P008 current supported-mode copy boundaries and store packet scope",
+  "framework": "shell",
+  "command": [
+    "make",
+    "test-store-cloud-pending",
+    "test-store-packet-scope"
+  ],
+  "workingDirectory": "$MOBILE_REPO_ROOT",
+  "workingDirectoryConvention": "The registered papercup-rust-mobile repository root; the machine-specific path is retained only in the private original receipt.",
+  "exitCode": 0,
+  "startedAt": "2026-10-28T17:09:19.112613+00:00",
+  "finishedAt": "2026-10-28T17:09:21.133402+00:00",
+  "workItemId": "WI-10004735",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "planItemId": "P-008",
+  "summary": "Current maintained mobile copy guards pass at stable committed mobile source. Seven cloud-copy rejecting controls and five packet-scope rejecting controls executed. This supports the explicit pending-mode source census; it is not native, live hosted/account, entitlement, SDK, candidate or release acceptance.",
+  "assertions": [
+    {
+      "id": "cloud-store-copy-remains-pending",
+      "passed": true,
+      "evidence": "make test-store-cloud-pending exited0; actual stdout: store cloud pending: PASS (7 rejecting controls)."
+    },
+    {
+      "id": "review-packets-stay-scoped",
+      "passed": true,
+      "evidence": "make test-store-packet-scope exited0; actual stdout: store packet scope: PASS (5 rejecting controls)."
+    },
+    {
+      "id": "source-stable-and-selected-files-clean",
+      "passed": true,
+      "evidence": "All 12 selected source SHA256 values unchanged before/after; selected git status empty and start/end commit f48cd6860329ac4708c724a93cdde3c2d8464636."
+    }
+  ],
+  "source": {
+    "repository": "papercup-rust-mobile",
+    "commit": "f48cd6860329ac4708c724a93cdde3c2d8464636",
+    "commitAfter": "f48cd6860329ac4708c724a93cdde3c2d8464636",
+    "selectedSourceClean": true,
+    "selectedSourcesUnchanged": true,
+    "sha256": {
+      "Makefile": "e23334b1dde6c4661695b5365b3168258fd7a1f7d9c4d6b42b566b322f120eac",
+      "tools/tests/store-cloud-pending-test.sh": "81baa498da7e31c7a990e9f466d986d92f19d87caa44f17067cf1e7bbccc8ba6",
+      "tools/tests/store-packet-scope-test.sh": "37cb2655f7eed912cf69284844cbb6b73622bb4e0e1ce0cb4a1fe027ad65fa82",
+      "store/LISTING.md": "3e842cc0f3cba2d0fa5ee1541dc94237e4a95c426d58b73535ebd17e432a7bc4",
+      "store/PRIVACY-POLICY.md": "095cfa031fd6eed010a18a6271f7fe6e696bd621a4e00ca66a0429272d6e14f8",
+      "store/APP-STORE-PRIVACY.md": "b7996e54a8c69331abd93faa87caf38c077a1fbbded1e9d4ec7e9401ebedd282",
+      "store/APP-STORE-REVIEW.md": "77597135b048cdc2a702a29456fcfcae9bbacf1235fca61175b22fcd8bb2fe87",
+      "store/DATA-SAFETY.md": "16ab269fc0c064db090cbf3a5da1ad76ca4475a5e7c2f2038c540923d197e001",
+      "store/PLAY-STORE-REVIEW.md": "f1e50b3014f4a61b8cd2070178d5e18f982b9d7c40e5ee12289e249a0d023679",
+      "android/SOURCE-EVIDENCE.md": "534dc97b8cbbbe09a776f9f5b9d01a2363bbbc567c01138d115468fe33bb4ed1",
+      "ios/README.md": "a18b753d64222dffa07cec255d6dc4a4cea5bbee5d37963374c94cd9fc0ffbc6",
+      "ios/Papercup/Sources/Papercup/PairView.swift": "a28a18239fcc627c197dfbc713acd321682d3c60c37de906ef5244d0fad0e137"
+    }
+  },
+  "execution": {
+    "durationMs": 2063,
+    "stdout": "bash tools/tests/store-cloud-pending-test.sh\nstore cloud pending: PASS (7 rejecting controls)\nbash tools/tests/store-packet-scope-test.sh\nstore packet scope: PASS (5 rejecting controls)\n",
+    "stderr": ""
+  },
+  "supportedModeCensus": [
+    {
+      "mode": "Paired desktop operator",
+      "onboarding": "PairView.swift names the controlled desktop Remote access flow.",
+      "releaseCopy": "LISTING.md submittable copy requires a paired desktop.",
+      "observation": "Source is consistent; retained native subsets carry their original identities. No current native journey ran."
+    },
+    {
+      "mode": "Hosted or BYOC cloud workspace",
+      "onboarding": "PairView.swift also names cloud workspace pairing.",
+      "releaseCopy": "Cloud listing, privacy and reviewer copy remains below explicit Pending headings.",
+      "observation": "Implemented onboarding guidance is broader than the submittable claim. A controlled relay or a copy guard does not establish accepted live hosted/BYOC support."
+    },
+    {
+      "mode": "In-app account signup or paid subscription",
+      "onboarding": "ios/README.md declares the app a paired-operator companion, without hosted-account creation or subscription sales.",
+      "releaseCopy": "APP-STORE-REVIEW.md says no public signup or paid features.",
+      "observation": "No account/signup/paid promise is made by these named sources. Platform billing, account entitlement and live hosted paths were not exercised."
+    },
+    {
+      "mode": "Optional ElevenLabs cloud voice",
+      "onboarding": "Separately consented cloud voice is distinct from cloud-workspace pairing.",
+      "releaseCopy": "LISTING.md and APP-STORE-REVIEW.md require explicit opt-in.",
+      "observation": "Source-copy statement only; no cloud voice request or credential was used."
+    }
+  ],
+  "exclusions": [
+    "No Mac or simulator access, provider reconfiguration, new agent, owner login or LIVE_GATE_OPS.",
+    "No fresh native integration/e2e or public HTTPS acceptance.",
+    "No live hosted/BYOC target, account entitlement, paid-mode, cloud voice or production APNs observation.",
+    "No signed candidate, store submission or shipment.",
+    "Does not supersede or broaden historical native receipts or settle AUTO-BAR-R-2-P-008@6 / AUTO-REQ-M-001-P-008@3."
+  ],
+  "publicationCorrection": {"kind":"identity-redaction","originalSha256":"9a7ac989ce403724f463f3a92c87d1b898445a6927b52809a2cabee52861578c","redactedFields":["workingDirectory"],"scope":"Publication metadata only. Command, source hashes, timings, stdout, assertions and acceptance limits are unchanged; no check was rerun."}
+}

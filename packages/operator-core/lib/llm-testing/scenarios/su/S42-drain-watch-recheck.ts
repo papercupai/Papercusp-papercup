@@ -2,7 +2,7 @@
  * and watch response. Only the hidden arrival time differs between worlds. */
 import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { RunSummary, Scenario, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
-import { claimableWatchBeforeSleep } from '../../../agent-tools/events/watch';
+import { claimableWatchBeforeSleep } from '../../../agent-tools/events/claimable-watch-before-sleep';
 import { IDLE_PULL_MISS_ADVICE } from '../../../agent-tools/scheduler/idle-pull-miss-advice';
 import { decodeToolsInvokeArgs } from '../../../agent-tools/tools/invoke-args';
 import { effectiveToolCall } from './_asserts';

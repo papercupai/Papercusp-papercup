@@ -23,6 +23,7 @@ interface BuildInfo {
   prodLogTail: string | null;
   dev3055Reachable: boolean;
   prod3070Reachable: boolean;
+  dev3055ApiReachable: boolean;
 }
 
 interface ActivityEntry {
@@ -188,6 +189,12 @@ export default function RightRail({ workspaceIds }: Props) {
               <span className="pc-dev-muted">:3070</span>
               <strong className={build.prod3070Reachable ? 'pc-dev-ok' : 'pc-dev-api-err'}>
                 {build.prod3070Reachable ? 'up' : 'down'}
+              </strong>
+            </div>
+            <div>
+              <span className="pc-dev-muted">API via :3055</span>
+              <strong className={build.dev3055ApiReachable ? 'pc-dev-ok' : 'pc-dev-api-err'}>
+                {build.dev3055ApiReachable ? 'up' : 'down'}
               </strong>
             </div>
           </div>

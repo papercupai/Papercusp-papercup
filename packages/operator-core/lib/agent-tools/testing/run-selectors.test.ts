@@ -72,7 +72,7 @@ describe('testing:run selector arbitration', () => {
       'TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed'].join('\n');
     try {
       const args = { output, dir, root: '/repo', runId: 'preserved-node-run',
-        files: ['packages/x/real.test.ts'], timeoutMs: 1000 };
+        files: ['packages/x/real.test.ts'], timeoutMs: 1000, environment: {} };
       expect(await recoverCompletedRunAfterBudget(args)).toMatchObject({
         ok: true, runId: 'preserved-node-run', passed: 1, failed: 0, skipped: 1, budgetExceeded: true,
       });

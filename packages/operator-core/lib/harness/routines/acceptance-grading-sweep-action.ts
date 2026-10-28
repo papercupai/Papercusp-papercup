@@ -89,8 +89,38 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
   const boundedObservation = async <T>(workspaceId: string, key: string, work: () => Promise<T>): Promise<T> => {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error('grading sweep wall-time budget exhausted');
-    const result = await getOrSetBounded(scanCache, workspaceId, key, work, {
-      deadlineMs: Math.min(5_000, remaining),
+    const deadlineMs = Math.min(5_000, remaining);
+    const result = await getOrSetBounded(scanCache, workspaceId, key, () => {
+      const startedAt = Date.now();
+      let settled = false;
+      const pendingTimer = setTimeout(() => {
+        if (!settled) {
+          console.warn(`[acceptance-grading-sweep] observation-over-deadline key=${key} state=pending elapsedMs=${Date.now() - startedAt}`);
+        }
+      }, deadlineMs + 1);
+      const build = Promise.resolve().then(work);
+      void build.then(
+        () => {
+          settled = true;
+          clearTimeout(pendingTimer);
+          const elapsedMs = Date.now() - startedAt;
+          if (elapsedMs > deadlineMs) {
+            console.warn(`[acceptance-grading-sweep] observation-late-settled key=${key} outcome=completed elapsedMs=${elapsedMs}`);
+          }
+        },
+        (error: unknown) => {
+          settled = true;
+          clearTimeout(pendingTimer);
+          const elapsedMs = Date.now() - startedAt;
+          if (elapsedMs > deadlineMs) {
+            const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 300);
+            console.warn(`[acceptance-grading-sweep] observation-late-settled key=${key} outcome=failed elapsedMs=${elapsedMs} error=${message}`);
+          }
+        },
+      );
+      return build;
+    }, {
+      deadlineMs,
     });
     if (!result.ok) throw result.reason === 'error' ? result.error : new Error(`grading sweep ${key} observation remains in flight`);
     return result.value;

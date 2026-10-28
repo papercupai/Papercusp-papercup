@@ -329,6 +329,41 @@ describe('EI-25209690807142935 — admission-pending publishes the fail-open bou
     { id: 'WI-FO-VERDICT', exclusion: 'duplicate-verdict', duplicateOf: 'WI-FO-CLEAN', admission: 'admitted' },
     // degraded:false is NOT an exclusion — the complement must be exact.
     { id: 'WI-FO-NOT-DEGRADED', exclusion: undefined, payload: { dedupCoverage: { degraded: false } } },
+    // EI-26515695311006297: candidates ALL from the weakest method are admitted 'unreviewed'.
+    {
+      id: 'WI-FO-SOFT-ONLY',
+      exclusion: undefined,
+      payload: { dedupCandidates: [{ id: 'WI-FO-CLEAN', method: 'semantic-soft' }, { id: 'WI-FO-NOT-DEGRADED', method: 'semantic-soft' }] },
+    },
+    // ...but ONE stronger candidate keeps the row excluded.
+    {
+      id: 'WI-FO-SOFT-AND-HARD',
+      exclusion: 'duplicate-candidates',
+      payload: { dedupCandidates: [{ id: 'WI-FO-CLEAN', method: 'semantic-soft' }, { id: 'WI-FO-NOT-DEGRADED', method: 'semantic-hard' }] },
+    },
+    // A non-array candidates value cannot be proven soft-only: still excluded, and no SQL error.
+    { id: 'WI-FO-CANDIDATES-SCALAR', exclusion: 'duplicate-candidates', payload: { dedupCandidates: 'WI-FO-CLEAN' } },
+    // Soft-only candidates no longer mask degraded coverage: the re-screen still owns the row.
+    {
+      id: 'WI-FO-SOFT-DEGRADED',
+      exclusion: 'degraded-dedup-coverage',
+      payload: { dedupCandidates: [{ id: 'WI-FO-CLEAN', method: 'semantic-soft' }], dedupCoverage: { degraded: true } },
+    },
+    // EI-26515695311006297: degraded rows stay excluded only until the re-screen budget is spent.
+    // The boundary is LITERAL (2 retrying, 3 exhausted) to pin D-017's budget of 3. Deriving it
+    // from ADMISSION_DEGRADED_RESCREEN_ATTEMPTS let a mutant budget of 9999 survive this test.
+    {
+      id: 'WI-FO-DEGRADED-RETRYING',
+      exclusion: 'degraded-dedup-coverage',
+      payload: { dedupCoverage: { degraded: true, rescreen: { attempts: 2 } } },
+    },
+    {
+      id: 'WI-FO-DEGRADED-EXHAUSTED',
+      exclusion: undefined,
+      payload: { dedupCoverage: { degraded: true, rescreen: { attempts: 3 } } },
+    },
+    // A garbage attempts value reads as zero attempts, never as an exhausted budget.
+    { id: 'WI-FO-DEGRADED-JUNK-ATTEMPTS', exclusion: 'degraded-dedup-coverage', payload: { dedupCoverage: { degraded: true, rescreen: { attempts: 'many' } } } },
   ];
 
   it('every case is refused by admission-pending, with a bound IFF the runner would admit it', async () => {
@@ -342,7 +377,7 @@ describe('EI-25209690807142935 — admission-pending publishes the fail-open bou
        WHERE feature_id = ANY(${ids}::text[]) AND ${adm.failOpenDedupEligibleWhereSql(sql)}`;
     const runnerAdmits = new Set(eligibleRows.map((r) => r.feature_id));
     // Positive controls: the agreement below is vacuous unless both populations are present.
-    expect([...runnerAdmits].sort()).toEqual(['WI-FO-CLEAN', 'WI-FO-NOT-DEGRADED']);
+    expect([...runnerAdmits].sort()).toEqual(['WI-FO-CLEAN', 'WI-FO-DEGRADED-EXHAUSTED', 'WI-FO-NOT-DEGRADED', 'WI-FO-SOFT-ONLY']);
 
     for (const c of CASES) {
       const v = verdicts.find((x) => x.id === c.id)!;

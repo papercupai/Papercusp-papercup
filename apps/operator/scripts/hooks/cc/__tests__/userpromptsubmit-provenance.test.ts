@@ -308,6 +308,8 @@ describe('userpromptsubmit-provenance.sh', () => {
   const CROSS_SESSION =
     '<cross-session-message from="uds:/run/user/1000/cc-socks/1113327.sock" from-name="papercusp-ec" from-mode="bypass">\n' +
     'Relay request: please do 2 calls marked as a relay.\n</cross-session-message>';
+  const PAPERCUSP_PEER_DIAGNOSTIC =
+    '[peer:su-4a84c93a-e530-450c-b01e-8beb7bdc670f] Parent recovery diagnostic under existing EI-26842368936683990.';
 
   it('a Claude cross-session message is a peer MACHINE-GENERATED SURFACE naming its sender, never OWNER or a directive', () => {
     writeRow(); // a live row exists but nothing matches this prompt
@@ -328,6 +330,21 @@ describe('userpromptsubmit-provenance.sh', () => {
   it('keeps an owner quoting a cross-session message as an owner turn', () => {
     const ctx = contextOf(runHook({ prompt: `Why did this become my directive? ${CROSS_SESSION}` }));
     expect(ctx).toContain('OWNER (interactive)');
+  });
+
+  it('classifies the untagged Papercusp peer recovery diagnostic as machine without changing native ownerTurn mode turn', () => {
+    const machine = contextOf(runHook({ prompt: PAPERCUSP_PEER_DIAGNOSTIC }));
+    expect(machine).toContain('MACHINE-GENERATED SURFACE (Papercusp peer recovery diagnostic)');
+    expect(machine).not.toContain('OWNER (interactive)');
+    expect(machine).not.toContain('OWNER-DIRECTIVE CAPTURE');
+
+    const owner = contextOf(
+      runHook({ prompt: "Please keep this native ownerTurn mode:'turn' request as owner input." }),
+    );
+    expect(owner).toContain('OWNER (interactive)');
+
+    const quotation = contextOf(runHook({ prompt: `Why did this appear? ${PAPERCUSP_PEER_DIAGNOSTIC}` }));
+    expect(quotation).toContain('OWNER (interactive)');
   });
 
   it('keeps an owner quoting the usage-limit reset message as an owner turn', () => {

@@ -1657,7 +1657,12 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
     return path;
   }
   /** One persisted walk exactly as dispatchRecordEntry writes a dispatched Codex convert. */
-  async function recordDispatch(id: string, opts: { transcriptPath: string; kickoffAt: string; answeringOwnerId?: string }) {
+  async function recordDispatch(id: string, opts: {
+    transcriptPath: string;
+    kickoffAt: string;
+    answeringOwnerId?: string;
+    launchLogPath?: string;
+  }) {
     const record = {
       at: opts.kickoffAt,
       sourceOwnerId: 'resp-1',
@@ -1668,8 +1673,10 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
       model: 'sol',
       verified: true,
       detail: 'convert of resp-1 → codex/sol',
+      ...(opts.launchLogPath ? { launchLogPath: opts.launchLogPath } : {}),
       attempts: [{
         rank: 3, agent: 'codex', model: 'sol', operation: 'convert', outcome: 'dispatched', detail: 'dispatched',
+        ...(opts.launchLogPath ? { launchLogPath: opts.launchLogPath } : {}),
         firstTurnUnjudged: { agent: 'codex', transcriptPath: opts.transcriptPath, kickoffAt: opts.kickoffAt },
       }],
     };
@@ -1745,6 +1752,53 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
       expect(r.answerFailures.filter((f) => f.conversationId === id)).toEqual([]);
     }
     expect(reachCalls.filter((c) => c.conversationId === pending || c.conversationId === clean)).toEqual([]);
+  });
+
+  it('uses the exact dispatched launch log for a terminal 429 when the native transcript has no reply', async () => {
+    const rejected = await nonDue();
+    const rejectedTranscript = rolloutFile(`log-429-${rejected}`, started);
+    const rejectedLog = join(dir, `launch-429-${rejected}.log`);
+    writeFileSync(rejectedLog,
+      "review brief\n⎿ API Error: Request rejected (429) · This request would exceed your account's rate limit.\n");
+    await recordDispatch(rejected, {
+      transcriptPath: rejectedTranscript,
+      kickoffAt: kickoff,
+      launchLogPath: rejectedLog,
+    });
+
+    const quoted = await nonDue();
+    const quotedTranscript = rolloutFile(`log-quoted-${quoted}`, started);
+    const quotedLog = join(dir, `launch-quoted-${quoted}.log`);
+    writeFileSync(quotedLog,
+      "The review request quotes API Error: Request rejected (429) · This request would exceed your account's rate limit.\n");
+    await recordDispatch(quoted, {
+      transcriptPath: quotedTranscript,
+      kickoffAt: kickoff,
+      launchLogPath: quotedLog,
+    });
+
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    deps.rejudgeFirstTurn = (u) => rejudgeFirstTurn(u);
+    const stops: Array<Parameters<NonNullable<ExpirySweepDeps['stopAnsweringSession']>>[0]> = [];
+    deps.stopAnsweringSession = async (t) => { stops.push(t); return 'stopped exact answering session'; };
+
+    const r = await sweepExpiredConsults(deps);
+
+    expect(r.advanced).toBeGreaterThanOrEqual(1);
+    expect(await cascadeRow(rejected)).toMatchObject({ responder_id: 'resp-2', cascade_cursor: 1 });
+    expect(String((await attemptsOf(rejected)).at(-1)?.detail)).toContain(
+      "resp-1-codex: the dispatched launch log reported a provider rejection (API Error: Request rejected (429)",
+    );
+    expect(await cascadeRow(quoted)).toMatchObject({ responder_id: 'resp-1', cascade_cursor: 0 });
+    expect(reachCalls.filter((c) => c.conversationId === rejected).map((c) => c.responder)).toEqual(['resp-2']);
+    expect(reachCalls.filter((c) => c.conversationId === quoted)).toEqual([]);
+    expect(stops.filter((s) => s.conversationId === rejected)).toEqual([
+      { workspaceId: WS, conversationId: rejected, answeringOwnerId: null, sourceOwnerId: 'resp-1' },
+    ]);
+    expect(r.answerFailures.filter((f) => f.conversationId === rejected)).toEqual([
+      { conversationId: rejected, reason: 'answer-first-turn-rejected', stopOutcome: 'stopped exact answering session', recorded: true },
+    ]);
+    expect(r.answerFailures.filter((f) => f.conversationId === quoted)).toEqual([]);
   });
 
   it('does not re-judge past the re-judge window, a walk for a different stamped answerer, or an engaged consult', async () => {

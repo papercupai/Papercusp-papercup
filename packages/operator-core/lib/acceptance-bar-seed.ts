@@ -9,7 +9,7 @@
 import { createHash } from 'node:crypto';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
-import { selectCriterionCheckRoot, validateCriterionTestCaseCitations,
+import { selectCriterionCheckRoot, subjectPlanAllowsPlannedPaths, validateCriterionTestCaseCitations,
   type CheckedCriterion } from './rubrics-criterion-checks';
 import { parsePlan } from '@papercusp/plan-parser';
 import { isNonAutomatedBehaviorClass } from './plan-verification-profile';
@@ -971,11 +971,12 @@ export function acceptanceBarRubricSlug(planSlug: string): string {
 export function acceptanceBarTestCitationProblems(
   criteria: ReadonlyArray<CheckedCriterion>,
   root: string = resolveAgentWorkspaceRoot({}),
+  opts: { allowPlannedPaths?: boolean } = {},
 ): AcceptanceBarSeedProblem[] {
   const named = criteria.filter(c => c.check?.kind === 'tests' && (c.check.testName || c.check.cases));
   if (named.length === 0) return [];
   const validation = selectCriterionCheckRoot(named, root, REPO_ROOT, { allowPlannedPaths: true }).validation;
-  return [...validation.failures, ...validateCriterionTestCaseCitations(named, validation)].map(failure => ({
+  return [...validation.failures, ...validateCriterionTestCaseCitations(named, validation, opts)].map(failure => ({
     code: 'bar_contract_check_invalid',
     barKey: failure.criterionKey,
     detail: `${failure.path}: ${failure.reason}`,
@@ -1327,7 +1328,9 @@ export async function seedAcceptanceBarsInTransaction(
 
   // All seed paths (including previews) share this pre-write guard. Do not run
   // source validation in the pure builder or after the first persisted mutation.
-  const citationProblems = acceptanceBarTestCitationProblems(built.criteria);
+  const citationProblems = acceptanceBarTestCitationProblems(built.criteria, undefined, {
+    allowPlannedPaths: subjectPlanAllowsPlannedPaths(input.planStatus),
+  });
   if (citationProblems.length > 0) return refusal(citationProblems) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>;
 
   const date = input.now.toISOString().slice(0, 10);

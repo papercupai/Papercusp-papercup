@@ -15,7 +15,8 @@ import { isDeepStrictEqual } from 'node:util';
 import type { ChildProcess } from 'node:child_process';
 import type { ManagedSpawnResult } from '../task-manager/managed-spawn';
 import type { ReclaimPhaseTiming } from '../release-cut-reclaim';
-import { withRetentionMutex, type RetentionMutexContext } from './retention-census-walk';
+import { RETENTION_CENSUS_PENDING_ERROR, withRetentionMutex, type DetachedRetentionCensus,
+  type PendingRetentionCensus, type RetentionMutexContext } from './retention-census-walk';
 import { openWriterPidsMany, type OpenWriterScan } from '../native-bg-task-ledger';
 import { readRegistry } from '../workspace-registry';
 import { mapWithConcurrency } from '../gym/concurrency';
@@ -111,7 +112,7 @@ export interface DiskReclaimReceipt {
   scan?: { inspectedNodes: number; retainedRecentTrees: number; stoppedAtRoot: string | null; incompleteRoots?: string[] };
   /** One scalar observation per initial root census; never persist its inventory. */
   censuses?: Array<{ root: string; classId: string; elapsedMs: number; inspectedNodes: number;
-    timing?: RetentionCensusTiming; error?: string }>;
+    timing?: RetentionCensusTiming; error?: string; pendingWalk?: PendingRetentionCensus }>;
   effects?: Array<{
     root: string; selected: number; processed: number; remaining: number;
     nextPath: string | null; elapsedMs: number; stopped: boolean;
@@ -139,6 +140,8 @@ export interface DiskReclaimOptions {
   /** Scheduled drains checkpoint productive partial roots before inspecting
    * another root. Standalone passes retain their independent-root fairness. */
   yieldAfterProductiveEffects?: boolean;
+  /** Checkpoint a detached wait before later roots spend its freshness window. */
+  yieldAfterPendingCensus?: boolean;
   sample?: () => Promise<DiskSnapshot[]>;
   scanHolders?: (paths: readonly string[]) => Promise<OpenWriterScan>;
   registeredWorkspaces?: () => string[];
@@ -158,7 +161,7 @@ export interface DiskReclaimOptions {
    * Fresh per-effect inspection always uses inspectTrees instead. */
   inspectInitialCappedTrees?: (root: string,
     options: Parameters<typeof import('./disk-consumer-census').inspectRetentionTrees>[1],
-    mutex?: RetentionMutexContext) => ReturnType<typeof import('./disk-consumer-census').inspectRetentionTrees>;
+    mutex?: RetentionMutexContext) => Promise<DetachedRetentionCensus>;
   /** Production supplies an enrolled privileged remover. Only policy-selected,
    * remeasured agent children reach it, after fresh host holder evidence. */
   removeEntry?: (entry: RetentionEntry, timeoutMs: number, observeTiming?: (timing: NativeRetentionTiming) => void, dryRun?: boolean) => Promise<void | BuildRemovalResult>;
@@ -168,14 +171,15 @@ export interface DiskReclaimOptions {
   acquireRegularFileLease?: (entry: RetentionEntry, timeoutMs: number) => Promise<RetentionFileLease>;
 }
 
-/** The workflow checkpoints each callback separately. Only safe, productive
- * effect-budget stops continue; another pass rebuilds all eligibility evidence.
+/** The workflow checkpoints each callback separately. Productive effect-budget
+ * stops and an exact completed pending census continue; another pass rebuilds all eligibility evidence.
  * The deadline comes from persisted receipt time, so recovery cannot reset it.
  * A callback must return null before starting a pass whose deadline has elapsed.
  */
 export async function drainScheduledDiskReclaim(
   runBatch: (batch: number, notAfterMs: number | undefined) => Promise<DiskReclaimReceipt | null>,
-  limits: { maxBatches?: number; maxElapsedMs?: number } = {},
+  limits: { maxBatches?: number; maxElapsedMs?: number;
+    awaitPendingCensus?: (pending: PendingRetentionCensus, notAfterMs: number) => Promise<boolean> } = {},
 ): Promise<{ batches: number; lastReceiptId: string | null; stop: 'complete' | 'dry-run' | 'error' | 'no-progress' | 'batch-limit' | 'time-limit' }> {
   const maxBatches = limits.maxBatches ?? 12;
   const maxElapsedMs = limits.maxElapsedMs ?? 15 * 60_000;
@@ -194,6 +198,18 @@ export async function drainScheduledDiskReclaim(
     const started = Date.parse(receipt.startedAt), finished = Date.parse(receipt.finishedAt);
     if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) return { ...result, stop: 'error' };
     notAfterMs ??= started + maxElapsedMs;
+    const pending = receipt.censuses?.find(census => census.error === RETENTION_CENSUS_PENDING_ERROR &&
+      census.pendingWalk?.root === census.root)?.pendingWalk;
+    if (pending && limits.awaitPendingCensus &&
+        receipt.errors.length > 0 && receipt.errors.every(error => error === `inspect:${pending.root}: ${RETENTION_CENSUS_PENDING_ERROR}`) &&
+        receipt.delegates.every(delegate => delegate.ok) && receipt.entries.every(entry => entry.status !== 'failed')) {
+      if (finished >= notAfterMs) return { ...result, stop: 'time-limit' };
+      if (batch + 1 >= maxBatches) return { ...result, stop: 'batch-limit' };
+      // This callback runs after the pass released its retention mutex. A
+      // pending walk alone is progress only when its exact attempt completes.
+      if (!await limits.awaitPendingCensus(pending, notAfterMs)) return { ...result, stop: 'no-progress' };
+      continue;
+    }
     const budgetErrors = new Set(receipt.effects?.filter((effect) => effect.stopped && effect.remaining > 0)
       .map((effect) => effectBudgetError(effect.root)));
     // A budget-stopped capped root reports its measured remaining overage too.
@@ -1121,7 +1137,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             // Cap accounting still requires a successful complete-root census.
             await record('progress', { phase: 'census-start', root: root.path, classId: root.classId, timings: { ...phaseTimings } });
             const censusStarted = performance.now();
-            let census: Awaited<ReturnType<NonNullable<DiskReclaimOptions['inspectTrees']>>> | undefined;
+            let census: DetachedRetentionCensus | undefined;
             let censusError: string | undefined;
             try {
               const inspectOptions = {
@@ -1136,6 +1152,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             finally {
               const measured = { root: root.path, classId: root.classId, elapsedMs: performance.now() - censusStarted,
                 inspectedNodes: census?.inspectedNodes ?? 0, ...(census?.timing ? { timing: census.timing } : {}),
+                ...(census?.pendingWalk ? { pendingWalk: census.pendingWalk } : {}),
                 ...(census?.error || censusError ? { error: census?.error ?? censusError } : {}) };
               (receipt.censuses ??= []).push(measured);
               await record('progress', { phase: 'census-finish', ...measured });
@@ -1149,6 +1166,13 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (census.error) {
               receipt.errors.push(`inspect:${root.path}: ${census.error}`);
               progress.stoppedAtRoot ??= root.path; progress.incompleteRoots.push(root.path);
+              if (options.yieldAfterPendingCensus && census.pendingWalk && census.error === RETENTION_CENSUS_PENDING_ERROR) {
+                progress.stoppedAtRoot = root.path;
+                for (const remaining of roots.slice(roots.indexOf(root) + 1)) {
+                  if (!progress.incompleteRoots.includes(remaining.path)) progress.incompleteRoots.push(remaining.path);
+                }
+                break;
+              }
               continue;
             }
             entries = census.entries.map((entry) => ({ ...entry, root: root.path, classId: root.classId }));
@@ -1799,8 +1823,10 @@ export function createWorkspaceHostCutRetentionDelegate(input: {
     if (!protection || !Number.isFinite(protection.nowMs) || notAfterMs === undefined || !Number.isFinite(notAfterMs)) {
       throw new Error('workspace-host retention protection not admitted');
     }
-    const owner = await (input.loadOwner?.() ?? import(pathToFileURL(join(input.repoRoot,
-      'apps/operator/lib/release/workspace-host-release-cut-cli.ts')).href));
+    // Keep this lazy edge visible to the host bundler. A computed file URL
+    // leaves raw TypeScript for plain Node, which cannot strip parameter
+    // properties in the native owner. repoRoot scopes its data, not its code.
+    const owner = await (input.loadOwner?.() ?? import('../../../../apps/operator/lib/release/workspace-host-release-cut-cli'));
     const detail = await owner.reclaimWorkspaceHostCutIntermediatesWithProtection({ repoRoot: input.repoRoot,
       dryRun, notAfterMs, pins: protection.pins, nowMs: protection.nowMs }, protection.isPinned);
     return { ok: detail.ok, detail };
@@ -1946,7 +1972,8 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
       waitMs: options.timeoutMs ?? DEFAULT_RECLAIM_RUN_BUDGET_MS,
     });
   const holders = createRetentionHolderScanner();
-  try { return await runDiskReclaimOnce({ ...options, yieldAfterProductiveEffects: true, previousReceipt, delegates, readProtection, inspectTrees, inspectInitialCappedTrees,
+  try { return await runDiskReclaimOnce({ ...options, yieldAfterProductiveEffects: true, yieldAfterPendingCensus: true,
+    previousReceipt, delegates, readProtection, inspectTrees, inspectInitialCappedTrees,
     removeEntry: (entry, timeoutMs, observeTiming) => removePrivilegedRetentionEntry(entry, timeoutMs, nativeRetentionCommand, observeTiming),
     scanHolders: holders.scan, acquireRegularFileLease: holders.acquireRegularFileLease,
     record: async (phase, detail) => {

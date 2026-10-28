@@ -1,11 +1,13 @@
 import { spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
-import { cleanupOwnedTestState, removePrivateState } from '../../../scripts/lib/with-test-pg-cleanup.mjs';
+import { cleanupOwnedTestState, createPrivateTestPgReleaseHandler, createSingleFlightStop,
+  removePrivateState, requestPrivateTestPgRelease } from '../../../scripts/lib/with-test-pg-cleanup.mjs';
 
 describe('private PostgreSQL dependency signal ownership', () => {
   it.each([false, true])('handles actual lazy exit-hook registration (registered=%s)', registered => {
@@ -86,6 +88,44 @@ describe('private PostgreSQL independent cleanup', () => {
       expect(existsSync(f.resources.dataDir)).toBe(false);
       expect(existsSync(f.resources.runtimeRoot)).toBe(false);
       expect(f.stages.at(-1)).toEqual({ stage: 'complete', runtimeRemoved: true, pgDataRemoved: true });
+    } finally { f.dispose(); }
+  });
+
+  it('stops only the owner-held PG on an authenticated child request and retains state until final cleanup', async () => {
+    const f = fixture();
+    const token = 'wrapper-issued-private-pg-token';
+    const stop = vi.fn(() => f.resources.pg.stop());
+    const stopOnce = createSingleFlightStop(stop);
+    const channel = new EventEmitter() as EventEmitter & {
+      pid: number; connected: boolean;
+      send: (message: unknown, callback?: (error?: Error) => void) => boolean;
+    };
+    channel.pid = 321;
+    channel.connected = true;
+    const handle = createPrivateTestPgReleaseHandler({
+      token,
+      stop: stopOnce,
+      respond: async message => { channel.emit('message', message); },
+    });
+    channel.send = (message, callback) => {
+      void handle(message).then(() => callback?.(), error => callback?.(error));
+      return true;
+    };
+    try {
+      await expect(handle({ kind: 'papercusp-private-test-pg-release', token: 'wrong', requestId: 'wrong' }))
+        .resolves.toBe(false);
+      expect(stop).not.toHaveBeenCalled();
+      await expect(requestPrivateTestPgRelease(token, { processRef: channel, timeoutMs: 1000 })).resolves.toBe(true);
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(f.calls).toEqual(['pg']);
+      expect(existsSync(f.resources.dataDir)).toBe(true);
+      expect(existsSync(f.resources.runtimeRoot)).toBe(true);
+
+      await cleanupOwnedTestState({ ...f.resources, pg: { ...f.resources.pg, stop: stopOnce } });
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(f.calls).toEqual(['pg', 'child', 'profile', 'observe', 'observation-stopped']);
+      expect(existsSync(f.resources.dataDir)).toBe(false);
+      expect(existsSync(f.resources.runtimeRoot)).toBe(false);
     } finally { f.dispose(); }
   });
 
@@ -275,6 +315,7 @@ describe('private PostgreSQL independent cleanup', () => {
         },
         cleanup: () => launcher.cleanupOwnedState(),
       };
+      scope.stopPrivatePg = createSingleFlightStop(async () => { await scope.pg.stop(); });
       launcher = runInNewContext(stages + '\n' + ownedCleanup + '\n' + finish
         + '\n({ cleanupStage, queueCleanupStage, cleanupOwnedState, finishChildOwned })', scope);
       try {

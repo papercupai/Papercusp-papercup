@@ -249,7 +249,7 @@ describe('targeted grading runtime cleanup (EI-26838521482108819)', () => {
     const runtimeCleanupGate = new Promise<void>(resolve => { releaseRuntimeCleanup = resolve; });
     const settledScanStarted = vi.fn();
     d.listTasks.mockImplementation(async filter => {
-      if (filter.launchedBy === GRADING_AUDIT_DISPATCH_ACTOR && filter.limit === 2_000) {
+      if (filter?.launchedBy === GRADING_AUDIT_DISPATCH_ACTOR && filter.limit === 2_000) {
         settledScanStarted();
         await settledScanGate;
       }

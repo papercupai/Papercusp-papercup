@@ -122,8 +122,8 @@ describe('spawner sidecar health', () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
         ticket.acquired();
         ticket.release();
-        deps.onAdmissionPhase?.({ phase: 'enqueue', state: 'pending', elapsedMs: 0 });
-        deps.onAdmissionPhase?.({ phase: 'enqueue', state: 'fulfilled', elapsedMs: 5 });
+        deps?.onAdmissionPhase?.({ phase: 'enqueue', state: 'pending', elapsedMs: 0 });
+        deps?.onAdmissionPhase?.({ phase: 'enqueue', state: 'fulfilled', elapsedMs: 5 });
         await new Promise((resolve) => setTimeout(resolve, 10));
         return { code: 0, stdout: '', stderr: '' };
       },

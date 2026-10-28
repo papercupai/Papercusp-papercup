@@ -22,6 +22,156 @@ export async function verifyGcsPublicBytes(url, expected, fetchImpl = fetch) {
   return verifyGcsStream(response.body, expected);
 }
 
+/** Bounded operational verification through the serving Worker's real storage port.
+ * The caller must durably journal the exact operation before this function writes.
+ * Cleanup is restricted to this unique fixture and generation-fenced; original
+ * artifacts and trusted finalization markers are never written or removed.
+ * @param {{ baseUrl: string, bucket: string, githubToken: string, accessToken: string,
+ * operationId: string, body: string,
+ * recordOperation: (operation: { operationId: string, sha256: string, sizeBytes: number }) => Promise<void>,
+ * positiveControl: { path: string, sha256: string, sizeBytes: number }, fetchImpl?: typeof fetch }} options
+ */
+export async function verifyGcsWorkspaceHostUpload({ baseUrl, bucket, githubToken, accessToken,
+  operationId, body, recordOperation, positiveControl, fetchImpl = fetch }) {
+  const origin = new URL(baseUrl);
+  if (origin.protocol !== 'https:' || origin.origin !== baseUrl || origin.username || origin.password ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operationId) ||
+    !body.includes(operationId) || Buffer.byteLength(body) > 4096 || !githubToken || !accessToken ||
+    typeof recordOperation !== 'function' || !positiveControl.path.startsWith('/artifacts/workspace-host/sha256/') ||
+    !/^[a-f0-9]{64}$/.test(positiveControl.sha256) || !Number.isSafeInteger(positiveControl.sizeBytes) ||
+    positiveControl.sizeBytes < 1 || positiveControl.sizeBytes > 65536) throw new Error('invalid GCS verification plan');
+  const sha256 = createHash('sha256').update(body).digest('hex');
+  const target = gcsPublicationTarget(bucket, sha256);
+  const prefix = target.prefix;
+  const key = prefix + 'server.tgz';
+  const api = 'https://storage.googleapis.com/storage/v1/b/' + bucket + '/o';
+  const path = '/admin/artifacts/workspace-host/sha256/' + sha256 + '/server.tgz/multipart';
+  const publicPath = '/artifacts/workspace-host/sha256/' + sha256 + '/server.tgz';
+  const operation = { operationId, sha256, sizeBytes: Buffer.byteLength(body) };
+  const result = { ...operation, startedAt: new Date().toISOString(), checks: [], result: 'incomplete',
+    cleanup: { deleted: [], complete: false, remaining: [], providerRemaining: [] } };
+  const check = (name, ok, evidence = {}) => {
+    result.checks.push({ name, ok: Boolean(ok), ...evidence });
+    if (!ok) throw new Error(name);
+  };
+  const request = (url, init = {}) => fetchImpl(url, { ...init, signal: AbortSignal.timeout(20000) });
+  const gcs = (suffix = '', init = {}) => request(api + suffix,
+    { ...init, headers: { authorization: 'Bearer ' + accessToken, ...init.headers } });
+  const object = name => '/' + encodeURIComponent(name);
+  const list = async ownPrefix => {
+    const response = await gcs('?prefix=' + encodeURIComponent(ownPrefix) + '&maxResults=100');
+    if (response.status !== 200) throw new Error('verification cleanup list failed: HTTP ' + response.status);
+    const page = await response.json();
+    if (page.nextPageToken) throw new Error('verification namespace exceeded its bounded population');
+    return page.items ?? [];
+  };
+  let mutated = false;
+  let providerUploadId;
+  try {
+    // An occupied namespace belongs to somebody else: never clean it up.
+    const existing = await list(prefix);
+    check('unique-destination-absent', existing.length === 0);
+    const anonymous = await request(baseUrl + path, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: '{}' });
+    check('anonymous-write-denied', anonymous.status === 401, { status: anonymous.status });
+    await recordOperation(operation);
+    const headers = { authorization: 'Bearer ' + githubToken, 'content-type': 'application/json',
+      'x-artifact-sha256': sha256, 'x-artifact-size': String(operation.sizeBytes), 'x-operation-id': operationId };
+    const plan = JSON.stringify({ parts: [{ partNumber: 1, sha256, sizeBytes: operation.sizeBytes }] });
+    mutated = true; // A lost initiation reply still requires exact-namespace cleanup.
+    const first = await request(baseUrl + path, { method: 'POST', headers, body: plan });
+    const started = await first.json();
+    check('production-multipart-created', first.status === 201 && started.uploadId === operationId, { status: first.status });
+    const stateResponse = await gcs(object(prefix + '.multipart/' + operationId + '.json') + '?alt=media');
+    check('operation-state-durable', stateResponse.status === 200, { status: stateResponse.status });
+    const state = await stateResponse.json();
+    if (!/^[0-9a-f-]{36}$/.test(state.r2UploadId) || state.bundleSha256 !== sha256) throw new Error('unexpected provider upload identity');
+    providerUploadId = state.r2UploadId;
+    const again = await request(baseUrl + path, { method: 'POST', headers, body: plan });
+    const resumed = await again.json();
+    check('reconnect-resumes-original-operation', again.status === 200 && resumed.resumed === true && resumed.uploadId === operationId,
+      { status: again.status });
+    const before = await request(baseUrl + publicPath);
+    check('unfinalized-public-read-before-upload-denied', before.status === 404, { status: before.status });
+    const part = await request(baseUrl + path + '/parts/1?uploadId=' + operationId, { method: 'PUT', body,
+      headers: { authorization: 'Bearer ' + githubToken, 'content-type': 'application/octet-stream',
+        'content-length': String(operation.sizeBytes), 'x-part-sha256': sha256, 'x-part-size': String(operation.sizeBytes) } });
+    const receipt = await part.json();
+    check('declared-part-uploaded', part.status === 200 && typeof receipt.etag === 'string', { status: part.status });
+    const complete = () => request(baseUrl + path + '/complete?uploadId=' + operationId, { method: 'POST',
+      headers: { authorization: 'Bearer ' + githubToken, 'content-type': 'application/json' },
+      body: JSON.stringify({ parts: [{ partNumber: 1, etag: receipt.etag }] }) });
+    const completed = await complete();
+    check('multipart-complete', completed.status === 201, { status: completed.status });
+    const metadataResponse = await gcs(object(key));
+    check('completed-object-metadata-readable', metadataResponse.status === 200, { status: metadataResponse.status });
+    const metadata = await metadataResponse.json();
+    if (!/^[1-9]\d*$/.test(metadata.generation)) throw new Error('invalid completed generation');
+    result.objectIdentity = { generation: metadata.generation, metageneration: metadata.metageneration,
+      crc32c: metadata.crc32c, sizeBytes: Number(metadata.size) };
+    await verifyGcsPublicBytes(api + object(key) + '?alt=media&generation=' + metadata.generation, operation,
+      (url, init) => request(url, { ...init, headers: { authorization: 'Bearer ' + accessToken } }));
+    check('generation-pinned-exact-bytes', true, { generation: metadata.generation, sha256, sizeBytes: operation.sizeBytes });
+    const replay = await complete();
+    const replayed = await replay.json();
+    const replayMetadata = await gcs(object(key));
+    const current = await replayMetadata.json();
+    check('completion-replay-retains-generation', replay.status === 200 && replayed.deduped === true &&
+      replayMetadata.status === 200 && current.generation === metadata.generation, { status: replay.status, generation: current.generation });
+    const denied = await request(baseUrl + publicPath);
+    check('unfinalized-public-read-after-completion-denied', denied.status === 404, { status: denied.status });
+    const raw = await request('https://storage.googleapis.com/' + bucket + '/' + key);
+    check('raw-private-bucket-anonymous-denied', raw.status === 401 || raw.status === 403, { status: raw.status });
+    await verifyGcsPublicBytes(baseUrl + positiveControl.path, positiveControl, request);
+    check('existing-finalized-public-positive-control', true);
+    result.result = 'pass';
+  } catch (error) {
+    result.result = 'fail';
+    result.error = error.message;
+    result.errorCauseCode = error.cause?.code ?? null;
+  } finally {
+    if (mutated) {
+      try {
+        const own = await list(prefix);
+        if (!providerUploadId) {
+          const saved = own.find(item => item.name === prefix + '.multipart/' + operationId + '.json');
+          if (saved) {
+            const response = await gcs(object(saved.name) + '?alt=media&generation=' + saved.generation);
+            if (!response.ok) throw new Error('cannot recover own provider upload identity');
+            const state = await response.json();
+            if (!/^[0-9a-f-]{36}$/.test(state.r2UploadId) || state.bundleSha256 !== sha256) throw new Error('unexpected recovery identity');
+            providerUploadId = state.r2UploadId;
+          }
+        }
+        // A request can still be committing, or have created its provider session
+        // before the HTTP state became readable. An empty destination listing
+        // does not establish that the unknown provider session is absent.
+        if (!providerUploadId) throw new Error('provider upload cleanup is unknown after initiation');
+        const providerPrefix = providerUploadId ? '__artifact_uploads/' + providerUploadId + '/' : null;
+        const provider = providerPrefix ? await list(providerPrefix) : [];
+        const allowed = new Set([key, prefix + '.multipart/' + operationId + '.json', prefix + '.multipart/' + operationId + '/parts/1.json']);
+        if (own.some(item => !allowed.has(item.name)) || provider.some(item =>
+          ![providerPrefix + 'session', providerPrefix + 'part-1'].includes(item.name))) throw new Error('unexpected object in verification namespace');
+        for (const item of [...provider, ...own]) {
+          if (!/^[1-9]\d*$/.test(item.generation)) throw new Error('invalid cleanup generation');
+          const response = await gcs(object(item.name) + '?ifGenerationMatch=' + item.generation, { method: 'DELETE' });
+          if (response.status !== 204 && response.status !== 404) throw new Error('generation-fenced cleanup failed: HTTP ' + response.status);
+          result.cleanup.deleted.push({ key: item.name, generation: item.generation, status: response.status });
+        }
+        result.cleanup.remaining = (await list(prefix)).map(item => item.name);
+        result.cleanup.providerRemaining = providerPrefix ? (await list(providerPrefix)).map(item => item.name) : [];
+        result.cleanup.complete = result.cleanup.remaining.length === 0 && result.cleanup.providerRemaining.length === 0;
+        if (!result.cleanup.complete) throw new Error('verification cleanup left residual objects');
+      } catch (error) {
+        result.cleanup.error = error.message;
+        result.result = 'fail';
+      }
+    } else result.cleanup.complete = true;
+    result.finishedAt = new Date().toISOString();
+  }
+  return result;
+}
+
 async function verifyGcsStream(body, expected) {
   const hash = createHash('sha256');
   let size = 0;
@@ -35,6 +185,12 @@ async function verifyGcsStream(body, expected) {
   return { sha256: digest, sizeBytes: size };
 }
 
+/**
+ * @param {string} uri
+ * @param {{ sha256: string, sizeBytes: number }} expected
+ * @param {(command: string, args: string[], options: any) =>
+ *   import('node:child_process').ChildProcessByStdio<null, import('node:stream').Readable, import('node:stream').Readable>} [spawnImpl]
+ */
 export async function verifyGcsPrivateBytes(uri, expected, spawnImpl = spawn) {
   const child = spawnImpl('gcloud', ['storage', 'cat', uri], {
     stdio: ['ignore', 'pipe', 'pipe'], timeout: 900_000,
@@ -51,7 +207,13 @@ export async function verifyGcsPrivateBytes(uri, expected, spawnImpl = spawn) {
 }
 
 /** Adopt already staged bytes into the Worker's descriptor contract. No upload,
- * finalization or IAM mutation is allowed on this recovery path. */
+ * finalization or IAM mutation is allowed on this recovery path.
+ * `ctx`/`runMutation` (the release journal) are optional only for `planOnly`;
+ * a mutating call without them is refused at runtime.
+ * @param {{ target: any, objects: any, ctx?: any, runMutation?: any, planOnly?: boolean,
+ *   gcloud?: (args: any) => Promise<string>, verifyPrivate?: typeof verifyGcsPrivateBytes,
+ *   log?: typeof console.log }} options
+ */
 export async function adoptGcsWorkspaceHostObjects({ target, objects, ctx, runMutation,
   planOnly = false, gcloud = runGcloud, verifyPrivate = verifyGcsPrivateBytes, log = console.log }) {
   const canonical = gcsPublicationTarget(target.bucket, target.digest);
@@ -116,6 +278,14 @@ export async function adoptGcsWorkspaceHostObjects({ target, objects, ctx, runMu
   return { provider: 'gcs', adoptionOnly: true, adopted };
 }
 
+/**
+ * `ctx`/`runMutation` (the release journal) are optional only for `planOnly`.
+ * `fetchImpl` is accepted and deliberately never invoked: private staging must
+ * not claim an anonymous delivery read (tests pass a throwing one as a tripwire).
+ * @param {{ target: any, objects: any, expiresAt: any, ctx?: any, runMutation?: any,
+ *   planOnly?: boolean, stageOnly?: boolean, gcloud?: (args: any) => Promise<string>,
+ *   verifyPrivate?: typeof verifyGcsPrivateBytes, log?: typeof console.log, fetchImpl?: unknown }} options
+ */
 export async function publishGcsObjects({ target, objects, expiresAt, ctx, runMutation,
   planOnly = false, stageOnly = false, gcloud = runGcloud,
   verifyPrivate = verifyGcsPrivateBytes, log = console.log }) {

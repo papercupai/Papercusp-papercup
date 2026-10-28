@@ -50,6 +50,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { ramTmpRoot } from '@papercusp/orchestrator';
 import { readProcessIdentity } from '../process-identity';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { activeWorkspaceId } from '../workspace-registry';
 
 /** One slow-pass warning, including the last awaited phase; normal passes stay quiet. */
 export function createReconcileStageReporter(
@@ -78,6 +79,30 @@ export function createReconcileStageReporter(
 }
 
 const LIVE_SCOPE_ACTIVE_STATES = new Set(['active', 'activating', 'reloading', 'deactivating']);
+
+// A pending terminal-event delivery is durable in task_ledger. Retry it outside
+// the critical task scan: an old event-engine stall must not stop this tick from
+// closing newly ended task rows. Keep one retry per workspace in flight so a
+// slow emitter cannot accumulate overlapping recovery batches.
+const terminalEventRecoveryByWorkspace = new Map<string, Promise<number>>();
+
+function queuePendingTerminalEventRecovery(workspaceId?: string): void {
+  const scope = workspaceId ?? activeWorkspaceId();
+  if (terminalEventRecoveryByWorkspace.has(scope)) return;
+
+  const recovery = recoverPendingTaskTerminalEvents(scope);
+  terminalEventRecoveryByWorkspace.set(scope, recovery);
+  void recovery
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[task-manager] terminal event recovery failed for ${scope}: ${message}`);
+    })
+    .finally(() => {
+      if (terminalEventRecoveryByWorkspace.get(scope) === recovery) {
+        terminalEventRecoveryByWorkspace.delete(scope);
+      }
+    });
+}
 
 /** Normal SDK cleanup is in the worker; its SIGKILL leaves this durable receipt. */
 export async function cleanupEndedBrowserDirectory(row: TaskRow,
@@ -276,11 +301,6 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     };
   }
 
-  // Terminal-event recovery uses committed ledger truth, independent of scan
-  // health. The read-only path above must never emit or clear pending intent.
-  deps.stage?.('reconcile-terminal-events');
-  await recoverPendingTaskTerminalEvents(deps.workspaceId);
-
   // This confirmation is deliberately computed once per healthy tick and shared
   // by notification plus enforcement. Calling the debounce helper separately for
   // each consumer would make the second consumer observe scan three instead of
@@ -465,6 +485,12 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     deps.stage?.('reconcile-residue-clear');
     residueCleared = await clearVanishedUnaccounted(persisted, { workspaceId: deps.workspaceId });
   }
+
+  // A durable outbox retry can stall in the event engine. Start it only after
+  // this tick has reconciled task state, and do not await it: newly observed
+  // terminal tasks must still be closed and their own events can proceed.
+  deps.stage?.('reconcile-terminal-events-scheduled');
+  queuePendingTerminalEventRecovery(deps.workspaceId);
 
   deps.stage?.('reconcile-notify');
   await maybeNotify(deps, { summary, result, degraded, degradedReason, confirmedUnaccounted });

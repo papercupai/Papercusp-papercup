@@ -3562,20 +3562,22 @@ if [ "$_coalesce_enabled" = 1 ]; then
       # diff do not contain edits to files inside an initialized submodule.
       # Hash each recursive submodule's status, tracked diff, and untracked
       # file contents, sharing the root's count and byte budgets.
-      if _submodule_state="$(
-        git submodule foreach --quiet --recursive '
-          _pc_sub_status="$(git status --porcelain=v2 --branch --untracked-files=all 2>/dev/null)" || exit 1
-          printf "%s\0%s\0" "$displaypath" "$_pc_sub_status"
-          git diff --no-ext-diff --binary HEAD -- || exit 1
-          printf "\0"
-        ' 2>/dev/null | sha1sum
-      )"; then
-        _submodule_state="${_submodule_state%% *}"
-        [ -n "$_submodule_state" ] && _tree_token="$_tree_token|submodules:$_submodule_state"
-      else
-        echo "[pc-heavy] coalescing disabled — submodule source fingerprint incomplete" >&2
-        _coalesce_enabled=0
-        _coalesce_fingerprint_complete=0
+      if [ "$_coalesce_enabled" = 1 ]; then
+        if _submodule_state="$(
+          git submodule foreach --quiet --recursive '
+            _pc_sub_status="$(git status --porcelain=v2 --branch --untracked-files=all 2>/dev/null)" || exit 1
+            printf "%s\0%s\0" "$displaypath" "$_pc_sub_status"
+            git diff --no-ext-diff --binary HEAD -- || exit 1
+            printf "\0"
+          ' 2>/dev/null | sha1sum
+        )"; then
+          _submodule_state="${_submodule_state%% *}"
+          [ -n "$_submodule_state" ] && _tree_token="$_tree_token|submodules:$_submodule_state"
+        else
+          echo "[pc-heavy] coalescing disabled — submodule source fingerprint incomplete" >&2
+          _coalesce_enabled=0
+          _coalesce_fingerprint_complete=0
+        fi
       fi
       if [ "$_coalesce_enabled" = 1 ]; then
         _submodule_paths_file="$(mktemp "$_coalesce_dir/.submodule-paths.XXXXXX" 2>/dev/null)" || _submodule_paths_file=""

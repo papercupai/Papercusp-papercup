@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkpointQualificationBudgetFromEnv, CheckpointQualificationBoundaryError,
+import { checkpointQualificationBudgetFromEnv, CheckpointQualificationBoundaryError, QUALIFICATION_UNBOUNDED_SPAN_MS,
   createCheckpointQualificationExecution, createCheckpointQualificationYieldBoundary, realCheckpointDeps, runCmd } from './green-checkpoint';
 import { releaseConfig } from './release-config';
 import type { CheckpointExec, CheckpointExecResult } from './green-checkpoint';
@@ -95,18 +95,33 @@ describe('qualification production execution', () => {
     }
   });
 
-  it('charges preparation to the original caller clock and preserves an earlier deadline', () => {
+  it('honours only a deadline a caller transports, and preserves it', () => {
     const started = 1_000_000;
     const inherited = started + 400_000;
     const resolved = checkpointQualificationBudgetFromEnv(started + 50_000,
-      { [TASK_DEADLINE_EPOCH_MS_ENV]: String(inherited) }, started);
+      { [TASK_DEADLINE_EPOCH_MS_ENV]: String(inherited) });
     expect(resolved).toMatchObject({ status: 'ready', callerDeadlineEpochMs: inherited,
       cleanupDeadlineEpochMs: inherited, executionCutoffEpochMs: inherited - 135_000,
       yieldDeadlineEpochMs: inherited - 120_000 });
-    const fallback = checkpointQualificationBudgetFromEnv(started + 50_000, {}, started);
-    expect(fallback).toMatchObject({ status: 'ready', cleanupDeadlineEpochMs: started + GREEN_CHECKPOINT_SUITE_TIMEOUT_MS });
     expect(checkpointQualificationBudgetFromEnv(inherited - 10_000,
-      { [TASK_DEADLINE_EPOCH_MS_ENV]: String(inherited) }, started)).toMatchObject({ status: 'refused' });
+      { [TASK_DEADLINE_EPOCH_MS_ENV]: String(inherited) })).toMatchObject({ status: 'refused' });
+  });
+
+  it('has no run-level wall clock without a transported deadline (WI-6554700010042457)', () => {
+    const started = 1_000_000;
+    // Hours of preparation (an early typecheck) no longer consume a suite budget: there is none.
+    const lateStart = started + 3 * 60 * 60_000;
+    const fallback = checkpointQualificationBudgetFromEnv(lateStart, {});
+    expect(fallback).toMatchObject({ status: 'ready', callerDeadlineEpochMs: null,
+      cleanupDeadlineEpochMs: lateStart + QUALIFICATION_UNBOUNDED_SPAN_MS });
+    if (fallback.status !== 'ready') throw new Error('expected a ready budget');
+    // Far beyond the old 115m quantum, and still timer-safe: a Node timer longer than 2^31-1 ms
+    // is clamped to 1ms and would fire immediately.
+    expect(fallback.executionCutoffEpochMs - lateStart).toBeGreaterThan(20 * GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
+    expect(fallback.cleanupDeadlineEpochMs - lateStart).toBeLessThanOrEqual(2 ** 31 - 1);
+    // A garbage deadline is ignored, never read as an immediate one.
+    expect(checkpointQualificationBudgetFromEnv(lateStart, { [TASK_DEADLINE_EPOCH_MS_ENV]: 'nope' }))
+      .toMatchObject({ status: 'ready', callerDeadlineEpochMs: null });
   });
 
   it('confines candidate workers, including nested workspace commands, under the same cleanup deadline', async () => {

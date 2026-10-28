@@ -123,20 +123,40 @@ export async function getPeople(sql: Sql, workspaceId: string, ids: readonly str
 
 /** Collector input only: source observations do not establish verified product
  * identity, communication consent, a fit rating or permission to read telemetry. */
+export type QualificationWindow = { windowStart: string; windowEnd: string };
+
 export type PersonQualificationEvidence = {
   status: 'available'; person: PersonView;
+  window?: QualificationWindow;
   sources: Array<{
     recordId: string; evidenceRef: string; dataSourceId: string | null;
     provider: string | null; observedAt: string | null;
     title: string | null; selfReportedUseCase: string | null;
   }>;
-} | { status: 'unknown'; reason: 'person_unavailable' | 'source_records_unavailable' };
+} | { status: 'unknown'; reason: 'person_unavailable' | 'source_records_unavailable' | 'invalid_window' | 'source_dates_unavailable' };
+
+/** A half-open observation window, never an inference about usage or fit.
+ * Missing dates make the selection unknown rather than silently dropping evidence. */
+export function selectQualificationWindow(evidence: PersonQualificationEvidence, window: QualificationWindow): PersonQualificationEvidence {
+  const start = Date.parse(window.windowStart);
+  const end = Date.parse(window.windowEnd);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) return { status: 'unknown', reason: 'invalid_window' };
+  if (evidence.status === 'unknown') return evidence;
+  if (evidence.sources.some(source => source.observedAt === null || !Number.isFinite(Date.parse(source.observedAt)))) {
+    return { status: 'unknown', reason: 'source_dates_unavailable' };
+  }
+  return { ...evidence, window: { windowStart: new Date(start).toISOString(), windowEnd: new Date(end).toISOString() },
+    sources: evidence.sources.filter(source => {
+      const observed = Date.parse(source.observedAt!);
+      return observed >= start && observed < end;
+    }) };
+}
 
 /** Reuse canonical membership rather than looking up a lead again by email.
  * Bound the read and fail closed on missing/stale membership; never present a
  * partial set as the evidence for a complete assessment. The caller supplies
  * its already-authorized graph workspace, exactly as for getPeople. */
-export async function readPersonQualificationEvidence(sql: Sql, workspaceId: string, id: string): Promise<PersonQualificationEvidence> {
+export async function readPersonQualificationEvidence(sql: Sql, workspaceId: string, id: string, window?: QualificationWindow): Promise<PersonQualificationEvidence> {
   if (!id.startsWith('PER-')) return { status: 'unknown', reason: 'person_unavailable' };
   const entity = await getCanonicalEntity(sql, workspaceId, PERSON_DATATYPE, id);
   if (!entity || entity.payload.canonical !== true) return { status: 'unknown', reason: 'person_unavailable' };
@@ -154,7 +174,7 @@ export async function readPersonQualificationEvidence(sql: Sql, workspaceId: str
   if (rows.length !== members.length || rows.some(row => !members.includes(row.feature_id))) {
     return { status: 'unknown', reason: 'source_records_unavailable' };
   }
-  return { status: 'available', person: personView(entity), sources: rows.map(row => {
+  const evidence: PersonQualificationEvidence = { status: 'available', person: personView(entity), sources: rows.map(row => {
     const payload = row.payload ?? {};
     const extensions = payload.extensions as Record<string, unknown> | undefined;
     const signup = extensions?.['papercusp-signups'] as Record<string, unknown> | undefined;
@@ -166,6 +186,7 @@ export async function readPersonQualificationEvidence(sql: Sql, workspaceId: str
       selfReportedUseCase: payload.provider === 'papercusp-signups' ? str(reported?.useCase)?.slice(0, 500) ?? null : null,
     };
   }) };
+  return window ? selectQualificationWindow(evidence, window) : evidence;
 }
 
 export interface MergePeopleResult {

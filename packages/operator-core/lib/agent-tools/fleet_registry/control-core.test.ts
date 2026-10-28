@@ -662,6 +662,7 @@ describe('applyFleetControl', () => {
           remoteOrigin: 0,
           admissionPending: 0,
           admissionRecovery: 0,
+          admissionHold: 0,
           liveGateOps: 0,
           stopTheLine: 0,
           watchdogRecovery: 0,

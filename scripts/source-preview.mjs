@@ -46,6 +46,7 @@
 import assert from 'node:assert/strict';
 import { committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './lib/task-deadline.mjs';
+import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV, requestPrivateTestPgRelease } from './lib/with-test-pg-cleanup.mjs';
 import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
 import { processGroupLifetime } from '@papercusp/operator-core/lib/fleet/process-group-lifetime';
 import { spawn, spawnSync } from 'node:child_process';
@@ -54,7 +55,7 @@ import { promises as fs, appendFileSync, closeSync, existsSync, fstatSync, ftrun
 import { papercuspHome } from '@papercusp/host-platform/home';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { constants, homedir, tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix as posixPath, relative, resolve, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
@@ -694,7 +695,11 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
  *   reportProgress?: (phase: 'deps.census' | 'deps.postverify', progress: VerifierDependencyProgress) => void
  * }} VerifierPhaseRunner */
 
-/** Keep the verifier's snapshot path selection explicit and independently checkable. */
+/** Keep the verifier's snapshot path selection explicit and independently checkable.
+ * @param {VerifierSnapshotSelection['copyMode']} copyMode
+ * @param {boolean} generationSnapshotSupported
+ * @returns {VerifierSnapshotSelection}
+ */
 export function selectVerifierDependencySnapshot(copyMode, generationSnapshotSupported) {
   assert.ok(['copy', 'hardlink'].includes(copyMode), 'Invalid verifier dependency copy mode');
   assert.equal(typeof generationSnapshotSupported, 'boolean', 'Invalid generation snapshot capability');
@@ -1044,7 +1049,9 @@ export function verifyBgVerifierSource(prepared, boundary) {
  * to esbuild, and retain that same buffer as its contents; never reopen it after
  * validation. Retain original file identities across the whole compile interval
  * as well: resolver metadata can select different original-censused bytes while
- * restoring its content before endpoint hashes run. Absent resolver inputs,
+ * restoring its content before endpoint hashes run. Retain ancestor directory
+ * identities too: originally absent metadata can be created for resolution and
+ * removed before publication without changing any censused file. Compiler
  * invocation/toolchain identity and runtime external imports still require
  * their separate qualification boundaries.
  * @param {{ prepared: BgVerifierPreparation,
@@ -1071,6 +1078,24 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }) {
       mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs };
   };
   const originalIdentities = new Map([...files.keys()].map(local => [local, inputIdentity(local)]));
+  // Derive the protected directory population from retained inputs, never from
+  // later directory discovery. Include physical ancestors of in-root links.
+  // Generated-only output directories are outside this population, so ordinary
+  // compiler output does not invalidate the original input directories.
+  const directories = new Set(['.']);
+  for (const [local, identity] of originalIdentities) {
+    const physical = relative(prepared.root, identity.physical).split(sep).join('/');
+    assert.ok(physical && physical !== '..' && !physical.startsWith('../') && !isAbsolute(physical),
+      'BG compiler original input escaped selected generation');
+    for (const path of [local, physical]) {
+      let directory = dirname(path);
+      while (directory !== '.') {
+        directories.add(directory);
+        directory = dirname(directory);
+      }
+    }
+  }
+  const originalDirectories = new Map([...directories].map(local => [local, inputIdentity(local)]));
   /** @type {Map<string, { path: string, realpath: string, sha256: string }>} */
   const consumed = new Map();
   // This plugin must precede any other onLoad provider. It fails closed for
@@ -1116,6 +1141,8 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }) {
         'BG compiler dependency census changed');
       for (const [local, expected] of originalIdentities)
         assert.deepEqual(inputIdentity(local), expected, `BG compiler original input identity changed: ${local}`);
+      for (const [local, expected] of originalDirectories)
+        assert.deepEqual(inputIdentity(local), expected, `BG compiler original directory identity changed: ${local}`);
       assert.ok(consumed.size > 0, 'BG compiler consumed input proof is UNKNOWN');
       return freezeBgExpectation([...consumed.values()].sort((a, b) => a.path.localeCompare(b.path)));
     } };
@@ -1755,30 +1782,36 @@ export function verifyBgVerifierPublication(publication, args) {
  * complete evidence. Re-entry always refuses the existing stage, including an
  * attempt whose compiler failed. There is no cache/fallback or service effect.
  * This does not establish the production runtime closure or authorize activation.
- * @param {Parameters<typeof beginBgVerifierBuildTransaction>[0]} args
+ * @param {Parameters<typeof beginBgVerifierBuildTransaction>[0] & { runPhase?: VerifierPhaseRunner }} args
  */
 export async function runBgVerifierBuildRecipe(args) {
-  const { transaction } = args;
-  validateBgVerifierBuildTransaction(transaction);
-  assert.ok(transaction.publicationLeaf, 'BG recipe publication destination is UNKNOWN');
-  const destination = join(transaction.bank.path, transaction.publicationLeaf);
-  assert.ok(!existsSync(destination) && !isBgSymlink(destination), 'BG recipe publication already exists');
-  const binding = beginBgVerifierBuildTransaction(args);
-  writeBgVerifierBinding(binding);
+  const { transaction, runPhase = async (_phase, operation) => operation() } = args;
+  await runPhase('bg.recipe.validate', () => {
+    validateBgVerifierBuildTransaction(transaction);
+    assert.ok(transaction.publicationLeaf, 'BG recipe publication destination is UNKNOWN');
+    const destination = join(transaction.bank.path, transaction.publicationLeaf);
+    assert.ok(!existsSync(destination) && !isBgSymlink(destination), 'BG recipe publication already exists');
+  });
+  const binding = await runPhase('bg.recipe.begin', () => {
+    const binding = beginBgVerifierBuildTransaction(args);
+    writeBgVerifierBinding(binding);
+    return binding;
+  });
   const receipts = [];
   // Preserve original command order and record identity. A later compiler
   // failure leaves diagnostic temporary files but cannot publish a partial set.
   for (const entry of binding.contexts.invocations) {
     const record = { ...binding.contexts.record, invocation: entry.original };
-    receipts.push(await compileBgVerifierInvocation({ record, invocation: entry.invocation,
-      argv: entry.invocation.argv, expectedVersion: '0.25.0' }));
+    receipts.push(await runPhase(`bg.recipe.compiler.${receipts.length}`, () =>
+      compileBgVerifierInvocation({ record, invocation: entry.invocation,
+        argv: entry.invocation.argv, expectedVersion: '0.25.0', runPhase })));
   }
-  stageBgVerifierAssetCopies(binding);
-  const output = qualifyBgVerifierBuildOutputSet({ binding, receipts });
-  const logical = qualifyBgVerifierLogicalOutputSet({ binding, receipts, output });
+  await runPhase('bg.recipe.assets', () => stageBgVerifierAssetCopies(binding));
+  const output = await runPhase('bg.recipe.output', () => qualifyBgVerifierBuildOutputSet({ binding, receipts }));
+  const logical = await runPhase('bg.recipe.logical', () => qualifyBgVerifierLogicalOutputSet({ binding, receipts, output }));
   const retained = { binding, receipts, output, logical };
-  const publication = publishBgVerifierLogicalOutputSet(retained);
-  verifyBgVerifierPublication(publication, retained);
+  const publication = await runPhase('bg.recipe.publish', () => publishBgVerifierLogicalOutputSet(retained));
+  await runPhase('bg.recipe.verify', () => verifyBgVerifierPublication(publication, retained));
   return publication;
 }
 
@@ -1795,57 +1828,67 @@ function writeBgVerifierBinding(binding) {
  * This does not qualify resolver metadata, compiler self-consumption, runtime
  * imports, a complete multi-entry host build, or service readiness.
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
- *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string }} args
+ *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string, runPhase?: VerifierPhaseRunner }} args
  */
-export async function compileBgVerifierInvocation({ record, invocation, argv, expectedVersion }) {
-  verifyBgVerifierBuildRecord(record, invocation, 'before-build');
+export async function compileBgVerifierInvocation({ record, invocation, argv, expectedVersion,
+  runPhase = async (_phase, operation) => operation() }) {
+  await runPhase('bg.compiler.before-build', () => verifyBgVerifierBuildRecord(record, invocation, 'before-build'));
   assert.deepEqual(argv, record.invocation.argv, 'BG compiler argv differs from original invocation');
   const { options, metafile } = bgCompilerOptions(argv, record.prepared.root);
-  const actualNode = readBgFileIdentity(process.execPath);
+  const actualNode = await runPhase('bg.compiler.node', () => readBgFileIdentity(process.execPath));
   assert.ok(actualNode.realpath === record.invocation.node.realpath && actualNode.sha256 === record.invocation.node.sha256,
     'BG compiler actual Node differs from original invocation');
   const compilerRoot = dirname(dirname(invocation.compiler));
   assert.equal(invocation.compiler, join(compilerRoot, 'lib/main.js'), 'BG compiler requires its private esbuild API');
   const metadataPath = join(compilerRoot, 'package.json');
-  const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+  const metadata = await runPhase('bg.compiler.metadata', () => JSON.parse(readFileSync(metadataPath, 'utf8')));
   assert.equal(metadata.name, 'esbuild', 'BG compiler package identity mismatch');
   assert.equal(metadata.version, expectedVersion, 'BG compiler package version mismatch');
-  const binary = readBgFileIdentity(join(compilerRoot, 'bin/esbuild'));
-  for (const identity of [readBgFileIdentity(invocation.compiler), readBgFileIdentity(metadataPath), binary]) {
-    const local = relative(record.prepared.root, identity.realpath).split(sep).join('/');
-    const expected = record.dependencies.trees.flatMap(tree => tree.files.map(row =>
-      ({ ...row, path: `${tree.path}/${row.path}` }))).find(row => row.path === local);
-    assert.ok(expected?.kind === 'file' && expected.sha256 === identity.sha256,
-      'BG compiler toolchain file is outside original dependency census');
-  }
+  const binary = await runPhase('bg.compiler.binary', () => readBgFileIdentity(join(compilerRoot, 'bin/esbuild')));
+  await runPhase('bg.compiler.toolchain-files', () => {
+    for (const identity of [readBgFileIdentity(invocation.compiler), readBgFileIdentity(metadataPath), binary]) {
+      const local = relative(record.prepared.root, identity.realpath).split(sep).join('/');
+      const expected = record.dependencies.trees.flatMap(tree => tree.files.map(row =>
+        ({ ...row, path: `${tree.path}/${row.path}` }))).find(row => row.path === local);
+      assert.ok(expected?.kind === 'file' && expected.sha256 === identity.sha256,
+        'BG compiler toolchain file is outside original dependency census');
+    }
+  });
   assert.equal(invocation.environment.ESBUILD_BINARY_PATH, binary.realpath, 'BG compiler binary must be explicitly pinned');
   assert.equal(invocation.environment.ESBUILD_WORKER_THREADS, '0', 'BG compiler requires its owned service process');
-  const custody = createBgVerifierCompilerCustody({ prepared: record.prepared, dependencies: record.dependencies });
+  const custody = await runPhase('bg.compiler.custody', () =>
+    createBgVerifierCompilerCustody({ prepared: record.prepared, dependencies: record.dependencies }));
   const originalEnv = process.env;
   /** @type {typeof import('esbuild') | undefined} */
   let compiler;
   try {
     process.env = { ...invocation.environment };
-    compiler = await import(pathToFileURL(invocation.compiler).href);
+    compiler = await runPhase('bg.compiler.import', () => import(pathToFileURL(invocation.compiler).href));
     assert.equal(compiler.version, expectedVersion, 'BG compiler API version mismatch');
-    const result = await compiler.build({ ...options, plugins: [custody.plugin] });
-    const consumed = custody.verifyBeforePublication();
-    verifyBgVerifierBuildRecord(record, invocation, 'before-publication');
-    // esbuild write:false leaves failed or incoherent attempts unpublished.
-    for (const file of result.outputFiles ?? []) {
-      assert.equal(file.path, options.outfile, 'BG compiler produced an unrecorded output');
-      await fs.mkdir(dirname(file.path), { recursive: true });
-      await fs.writeFile(file.path, file.contents, { flag: 'wx' });
-    }
-    assert.equal(result.outputFiles?.length, 1, 'BG compiler output is UNKNOWN');
-    if (metafile) await fs.writeFile(metafile, JSON.stringify(result.metafile), { flag: 'wx' });
-    return freezeBgExpectation({ schemaVersion: 'bg-compiler-invocation-v1', argv: record.invocation.argv,
-      buildRecordSha256: createHash('sha256').update(JSON.stringify(record)).digest('hex'),
-      originalSourceReceiptSha256: record.originalSourceReceiptSha256, compilerVersion: compiler.version,
-      binary, consumed, output: readBgIndependentOutputIdentity(options.outfile),
-      ...(metafile ? { metafile: readBgIndependentOutputIdentity(metafile) } : {}) });
+    const activeCompiler = compiler;
+    const result = await runPhase('bg.compiler.build', () => activeCompiler.build({ ...options, plugins: [custody.plugin] }));
+    const consumed = await runPhase('bg.compiler.verify', () => {
+      const consumed = custody.verifyBeforePublication();
+      verifyBgVerifierBuildRecord(record, invocation, 'before-publication');
+      return consumed;
+    });
+    return await runPhase('bg.compiler.output', async () => {
+      // esbuild write:false leaves failed or incoherent attempts unpublished.
+      for (const file of result.outputFiles ?? []) {
+        assert.equal(file.path, options.outfile, 'BG compiler produced an unrecorded output');
+        await fs.mkdir(dirname(file.path), { recursive: true });
+        await fs.writeFile(file.path, file.contents, { flag: 'wx' });
+      }
+      assert.equal(result.outputFiles?.length, 1, 'BG compiler output is UNKNOWN');
+      if (metafile) await fs.writeFile(metafile, JSON.stringify(result.metafile), { flag: 'wx' });
+      return freezeBgExpectation({ schemaVersion: 'bg-compiler-invocation-v1', argv: record.invocation.argv,
+        buildRecordSha256: createHash('sha256').update(JSON.stringify(record)).digest('hex'),
+        originalSourceReceiptSha256: record.originalSourceReceiptSha256, compilerVersion: activeCompiler.version,
+        binary, consumed, output: readBgIndependentOutputIdentity(options.outfile),
+        ...(metafile ? { metafile: readBgIndependentOutputIdentity(metafile) } : {}) });
+    });
   } finally {
-    try { await compiler?.stop(); }
+    try { await runPhase('bg.compiler.stop', async () => { await compiler?.stop(); }); }
     finally { process.env = originalEnv; }
   }
 }
@@ -2090,13 +2133,135 @@ export function verifierCommandAdmissionEnv({ repo, env = process.env, preflight
   return childEnv;
 }
 
+/** Collect the exact committed source population needed to validate generated
+ * workspace executable outputs before allocating the verifier snapshot.
+ * @param {string} repo
+ * @param {string} commit
+ * @param {string} prefix
+ * @param {Map<string, { mode: string, repo: string, commit: string, oid: string }>} sourceEntries
+ * @param {Array<{ prefix: string, localPath: string, content: string, packageJson: Record<string, unknown> }>} manifests
+ */
+function collectVerifierWorkspaceBinInputs(repo, commit, prefix, sourceEntries, manifests) {
+  const links = [];
+  for (const entry of git(repo, ['ls-tree', '-r', '-z', commit]).split('\0')) {
+    if (!entry) continue;
+    const tab = entry.indexOf('\t');
+    if (tab < 0) throw new PreviewError('cannot enumerate committed verifier source tree', 2);
+    const [mode, type, oid] = entry.slice(0, tab).split(' ');
+    const localPath = entry.slice(tab + 1);
+    if (mode === '160000' && type === 'commit') {
+      links.push({ path: localPath, sha: oid });
+    } else if (type === 'blob') {
+      const path = prefix ? posixPath.join(prefix, localPath) : localPath;
+      sourceEntries.set(path, { mode, repo, commit, oid });
+    }
+  }
+
+  const grep = spawnSync('git', ['-C', repo, 'grep', '-z', '-l', '-I', '-E',
+    '"bin"[[:space:]]*:', commit, '--', ':(top)package.json', ':(glob)**/package.json'],
+  { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  if (grep.error || (grep.status !== 0 && grep.status !== 1))
+    throw new PreviewError('cannot inspect committed workspace package manifests for verifier bins: ' +
+      (grep.error?.message || grep.stderr || grep.status), 2);
+  for (const hit of (grep.stdout || '').split('\0').filter(Boolean)) {
+    const colon = hit.indexOf(':');
+    const localPath = colon < 0 ? hit : hit.slice(colon + 1);
+    if (posixPath.basename(localPath) !== 'package.json') continue;
+    const content = git(repo, ['show', commit + ':' + localPath]);
+    let packageJson;
+    try { packageJson = JSON.parse(content); }
+    catch (error) {
+      throw new PreviewError('invalid committed workspace package manifest ' +
+        (prefix ? prefix + '/' : '') + localPath + ': ' + error.message, 2);
+    }
+    manifests.push({ prefix, localPath, content, packageJson });
+  }
+
+  for (const link of links) {
+    const fullPath = prefix ? prefix + '/' + link.path : link.path;
+    const submodule = materializedSubmodule(repo, link, fullPath);
+    collectVerifierWorkspaceBinInputs(submodule, link.sha, fullPath, sourceEntries, manifests);
+  }
+}
+
+function committedVerifierPathExists(sourceEntries, path, seen = new Set()) {
+  if (seen.has(path)) return false;
+  seen.add(path);
+  const entry = sourceEntries.get(path);
+  if (entry) {
+    if (entry.mode !== '120000') return true;
+    const target = git(entry.repo, ['cat-file', 'blob', entry.oid]);
+    const resolved = posixPath.normalize(posixPath.join(posixPath.dirname(path), target));
+    if (posixPath.isAbsolute(target) || resolved === '..' || resolved.startsWith('../')) return false;
+    return committedVerifierPathExists(sourceEntries, resolved, seen);
+  }
+  for (const sourcePath of sourceEntries.keys())
+    if (sourcePath.startsWith(path + '/')) return true;
+  return false;
+}
+
+/** Mirror the pinned-deps workspace-bin requirements without copying anything.
+ * The pinned helper remains authoritative for the eventual immutable copy.
+ * @param {{ repo: string, commit: string, donor: string }} options
+ */
+function preflightVerifierWorkspaceBinDonor({ repo, commit, donor }) {
+  const sourceEntries = new Map();
+  const manifests = [];
+  collectVerifierWorkspaceBinInputs(repo, commit, '', sourceEntries, manifests);
+  const donorRoot = realpathSync(donor);
+  for (const manifest of manifests) {
+    const bin = manifest.packageJson.bin;
+    const bins = typeof bin === 'string' ? [bin] : Object.values(bin || {});
+    const packageDir = posixPath.dirname(manifest.localPath);
+    const packageRoot = packageDir === '.' ? '' : packageDir;
+    const globalPackageRoot = manifest.prefix
+      ? (packageRoot ? manifest.prefix + '/' + packageRoot : manifest.prefix)
+      : packageRoot;
+    const manifestPath = manifest.prefix ? manifest.prefix + '/' + manifest.localPath : manifest.localPath;
+    for (const target of bins) {
+      if (typeof target !== 'string' || !/^(\.\/)?dist\//.test(target)) continue;
+      const localTarget = posixPath.normalize(posixPath.join(packageDir, target));
+      if (posixPath.isAbsolute(localTarget) ||
+          (packageRoot && localTarget !== packageRoot && !localTarget.startsWith(packageRoot + '/')) ||
+          (!packageRoot && (localTarget === '..' || localTarget.startsWith('../'))))
+        throw new PreviewError('escaping-workspace-bin:' + manifestPath, 2);
+      const targetPath = manifest.prefix ? manifest.prefix + '/' + localTarget : localTarget;
+      if (committedVerifierPathExists(sourceEntries, targetPath)) continue;
+      const outputPath = posixPath.join(globalPackageRoot, 'dist');
+      if (committedVerifierPathExists(sourceEntries, outputPath))
+        throw new PreviewError('recorded-workspace-bin-output:' + outputPath, 2);
+
+      const donorManifest = join(donorRoot, ...manifestPath.split('/'));
+      let donorManifestBytes;
+      try { donorManifestBytes = readFileSync(donorManifest); }
+      catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        throw new PreviewError('workspace-bin-manifest-missing:' + manifestPath, 2);
+      }
+      if (!donorManifestBytes.equals(Buffer.from(manifest.content)))
+        throw new PreviewError('workspace-bin-manifest-mismatch:' + manifestPath, 2);
+      const donorTarget = join(donorRoot, ...targetPath.split('/'));
+      if (!existsSync(donorTarget))
+        throw new PreviewError('missing-workspace-bin-output:' + manifestPath, 2);
+      const donorOutput = join(donorRoot, ...outputPath.split('/'));
+      const outputStat = lstatSync(donorOutput, { throwIfNoEntry: false });
+      const physicalOutput = outputStat?.isDirectory() ? realpathSync(donorOutput) : '';
+      const outputRelative = physicalOutput ? relative(donorRoot, physicalOutput) : '';
+      if (!outputStat?.isDirectory() || outputRelative === '..' ||
+          outputRelative.startsWith('..' + sep) || isAbsolute(outputRelative))
+        throw new PreviewError('unsafe-workspace-bin-output:' + outputPath, 2);
+    }
+  }
+}
+
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number,
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
  *   clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
 export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs,
+  releaseParentPrivatePg = false, requestParentPgReleaseImpl = requestPrivateTestPgRelease,
   clock = { now: Date.now, setTimeout, clearTimeout } }) {
   if (!ref?.trim() || !receiptPath || !command?.length || !command[0])
     throw new PreviewError('verifier command needs an explicit ref, external receipt and command', 2);
@@ -2104,9 +2269,15 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     throw new PreviewError('verifier child estimate must be a nonnegative integer', 2);
   const sourceRepo = realpathSync(repo);
   env = verifierCommandAdmissionEnv({ repo: sourceRepo, env });
+  const parentPgReleaseToken = env[PRIVATE_TEST_PG_RELEASE_TOKEN_ENV];
+  if (releaseParentPrivatePg && !parentPgReleaseToken)
+    throw new PreviewError('parent private test-PG release requires the wrapper-issued token', 2);
+  const parentPgReleaseEnabled = releaseParentPrivatePg === true && Boolean(parentPgReleaseToken);
   if (preparationMaxMs !== undefined && (!Number.isSafeInteger(preparationMaxMs) || preparationMaxMs <= 0 || readTaskDeadlineEpochMs(env) === null))
     throw new PreviewError('explicit verifier preparation allowance needs positive integer milliseconds and a finite caller task deadline', 2);
+  const sourceCommit = resolveCommit(sourceRepo, ref);
   const donor = committedWorkRootDependencyDonor(sourceRepo);
+  preflightVerifierWorkspaceBinDonor({ repo: sourceRepo, commit: sourceCommit, donor });
   // Keep hardlinks beside a donor on a data device. A donor on the root device
   // must use the admitted data scratch instead; pinned-deps already supports
   // independent cross-device copies and checks their headroom before copying.
@@ -2168,14 +2339,15 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     const executePhase = async (phase, operation, metadata) => {
       // Synchronous archive/census work delays JS signal delivery. Yield before
       // admitting the next phase, so a pending cancellation cannot start tests.
-      if (phase !== 'cleanup') {
+      const mustFinishAfterCancellation = phase === 'cleanup' || phase === 'private-pg.release';
+      if (!mustFinishAfterCancellation) {
         await new Promise(resolve => setImmediate(resolve));
         checkCancellation();
       }
       const before = performance.now();
       const result = await tracedPhase(phase, operation, metadata);
       measurements[phase] = Math.ceil(performance.now() - before);
-      if (phase !== 'cleanup') {
+      if (!mustFinishAfterCancellation) {
         await new Promise(resolve => setImmediate(resolve));
         checkCancellation();
       }
@@ -2188,23 +2360,27 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     await runPhase('source.admission', () => {
       previousMeasurements = budgetFrom ? readVerifierPhaseMeasurements(budgetFrom) : null;
       const estimate = previousMeasurements
-        ? estimateVerifierCommandBudget(previousMeasurements, childEstimateMs)
+        ? estimateVerifierCommandBudget(previousMeasurements, childEstimateMs,
+          { parentPgRelease: parentPgReleaseEnabled })
         : null;
       return admitBudget(estimate, true);
     });
-    const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref, dest: root,
+    const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref: sourceCommit, dest: root,
       inputs, inputsFile, tauriInputs, gitCheckout: true }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
     const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase,
       signal: cancellation.signal, env, maxMs: preparationMaxMs, cutoffEpochMs: budget.childCutoffEpochMs, now: clock.now });
     await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,
       `${JSON.stringify(dependencies)}\n`, { flag: 'wx', mode: 0o600 }));
-    const childEstimate = estimateVerifierCommandBudget({ ...previousMeasurements, ...measurements }, childEstimateMs);
+    const childEstimate = estimateVerifierCommandBudget({ ...previousMeasurements, ...measurements }, childEstimateMs,
+      { parentPgRelease: parentPgReleaseEnabled });
     await runPhase('child.admission', () => admitBudget(childEstimate));
     const childEnv = await runPhase('child.preflight', () => verifierSourceChildEnv({ root, receiptPath,
         env: { ...env, PAPERCUSP_REPO_DIR: root, NODE_OPTIONS: '', NODE_PATH: '',
           VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } }));
-    const exitCode = await runPhase('child.run', async () => {
+    let exitCode;
+    let childRunError;
+    try { exitCode = await runPhase('child.run', async () => {
       // Preflight can consume the admitted clock. Check again at the actual
       // spawn boundary, then keep the absolute cutoff until the WHOLE group exits.
       admitBudget(childEstimate);
@@ -2284,6 +2460,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
           throw new AggregateError([error, exitError], `${error.message}; ${exitError.message}`,
             { cause: Object.assign(exitError, { retainVerifierTree: true }) });
         }
+        budget.childExitVerifiedAtMs = clock.now();
         throw error;
       } finally {
         finished = true;
@@ -2293,7 +2470,21 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         if (onClose) child.removeListener('close', onClose);
         diagnostics?.finish(outcome);
       }
-    });
+    }); } catch (error) { childRunError = error; }
+    let privatePgReleaseError;
+    if (parentPgReleaseEnabled && budget && budget.childExitVerifiedAtMs !== null) {
+      try {
+        await runPhase('private-pg.release', () => requestParentPgReleaseImpl(parentPgReleaseToken));
+      } catch (error) { privatePgReleaseError = error; }
+    }
+    if (childRunError && privatePgReleaseError) {
+      const message = error => String(error?.message ?? error);
+      throw new AggregateError([childRunError, privatePgReleaseError],
+        `verifier child failed: ${message(childRunError)}; parent private PG release failed: ${message(privatePgReleaseError)}`,
+        { cause: childRunError });
+    }
+    if (childRunError) throw childRunError;
+    if (privatePgReleaseError) throw privatePgReleaseError;
     await runPhase('deps.postverify', async () => {
       const after = captureVerifierDependencies({ dest: root, receipt, env,
         onProgress: progress => runPhase.reportProgress?.('deps.postverify', progress) });
@@ -2515,7 +2706,9 @@ export function verifierSourceChildEnv({ root, receiptPath, env = process.env })
   }
   const expected = JSON.parse(readFileSync(receipt, 'utf8'));
   verifyVerifierSourceSync(sourceRoot, expected, { runtimeArtifacts: true });
-  return { ...env, VERIFY_TAURI_SOURCE_RECEIPT: receipt, VERIFY_TAURI_SOURCE_REF: expected.sourceCommit };
+  const childEnv = { ...env, VERIFY_TAURI_SOURCE_RECEIPT: receipt, VERIFY_TAURI_SOURCE_REF: expected.sourceCommit };
+  delete childEnv[PRIVATE_TEST_PG_RELEASE_TOKEN_ENV];
+  return childEnv;
 }
 
 const VERIFIER_PREPARATION_PHASES = ['source.freeze', 'receipt.write', 'deps.source.before',
@@ -2571,10 +2764,10 @@ export function readVerifierPhaseMeasurements(path) {
  * Reserve at least 30s, or 125% of an explicitly measured launch delay. This is
  * a forecast; admission still checks the actual remaining clock independently.
  * @param {Record<string, number>} measurements @param {number} [childEstimateMs]
- * @param {{ observedLaunchMs?: number, maxTimeoutMs?: number }} [options]
+ * @param {{ observedLaunchMs?: number, maxTimeoutMs?: number, parentPgRelease?: boolean }} [options]
  */
 export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0,
-  { observedLaunchMs, maxTimeoutMs } = {}) {
+  { observedLaunchMs, maxTimeoutMs, parentPgRelease = false } = {}) {
   for (const phase of VERIFIER_PREPARATION_PHASES)
     assert.ok(Number.isSafeInteger(measurements[phase]) && measurements[phase] >= 0,
       `Verifier budget requires completed phase: ${phase}`);
@@ -2590,7 +2783,8 @@ export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0,
   // With no completed cleanup receipt, reserve at least the observed snapshot/freezing
   // work: deletion must still walk the whole population. This is a conservative proxy.
   const cleanupMs = Math.max(120_000, measurements.cleanup ?? 0, measurements['source.freeze'], measurements['deps.snapshot']);
-  const remainingMs = sourceCheckMs * 2 + dependencyCheckMs + cleanupMs + childEstimateMs;
+  const privatePgReleaseMs = parentPgRelease ? 10_000 : 0;
+  const remainingMs = sourceCheckMs * 2 + dependencyCheckMs + cleanupMs + privatePgReleaseMs + childEstimateMs;
   const remainingBudgetMs = Math.ceil(remainingMs * 1.25);
   // Preparation consumes its margin before child admission reforecasts the
   // remaining work. Reserve that child margin at launch too: a slower snapshot
@@ -2612,7 +2806,8 @@ export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0,
 
 /** Reuse the launcher's absolute deadline and the scheduler's attributable refusal. */
 export function admitVerifierCommandBudget(estimate, { env = process.env, nowMs = Date.now(), preparation = false } = {}) {
-  const cleanupReserveMs = Math.max(120_000, estimate?.cleanupMs ?? 0);
+  const privatePgReleaseMs = env[PRIVATE_TEST_PG_RELEASE_TOKEN_ENV] ? 10_000 : 0;
+  const cleanupReserveMs = Math.max(120_000, estimate?.cleanupMs ?? 0) + privatePgReleaseMs;
   const knownEstimateMs = Math.max(cleanupReserveMs, estimate ? (preparation ? estimate.totalMs : estimate.remainingMs) : 0);
   try {
     return { ...admitTaskDeadline({ env, nowMs, cleanupReserveMs, knownEstimateMs,
@@ -3546,7 +3741,10 @@ async function main(argv) {
     assert.ok(actualNode.realpath === record.invocation.node.realpath && actualNode.sha256 === record.invocation.node.sha256,
       'BG recipe actual Node differs from original transaction');
     if (argv[0] === 'bg-build-run') {
-      const publication = await runBgVerifierBuildRecipe({ transaction, ownerPid: Number(pidText) });
+      const phasePath = `${contextPath}.phases.${pidText}.jsonl`;
+      assertOutsideArchive(record.prepared.root, resolve(phasePath));
+      const runPhase = verifierPhaseRunner(phasePath, process.env, `${phasePath}.child.json`);
+      const publication = await runBgVerifierBuildRecipe({ transaction, ownerPid: Number(pidText), runPhase });
       console.log(JSON.stringify(publication));
       return 0;
     }

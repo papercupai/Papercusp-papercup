@@ -556,6 +556,11 @@ export const WORK_SELECTION_SCAN_EXCLUSIONS: readonly WorkSelectionScanExclusion
   ex('coordination/tools/roster-audit-store.ts', 'holder', "reads the audited agents' held items (taken_by)"),
   ex('rubrics/amend-receipts.ts', 'holder', "reads one owner's held items on the subject plan"),
   ex('work_items/frozen-tests-gate.ts', 'by-id', 'reads or updates the frozen-tests manifest of the id it is given'),
+  ex('coordination/repeat-report-reads.ts', 'by-id', 'reads the blocker state of the item ids a repeated report cites'),
+  ex('sessions/continue-released-operation.ts', 'by-id', 're-checks the claim on the one item a released operation is bound to'),
+  ex('work_items/set-blocker-hold.ts', 'by-id', 'checks that the blocker target id it is given exists'),
+  ex('fleet/fleet-claim-history-reader.ts', 'holder', "reads named owners' past holds from worked_by_history"),
+  ex('locks/attribution-nudge.ts', 'holder', 'checks whether one owner holds any non-terminal item'),
   {
     leg: 'sql-view',
     target: 'fleet_assignment',

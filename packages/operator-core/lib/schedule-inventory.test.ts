@@ -303,9 +303,9 @@ describe('collectScheduleInventory', () => {
           armedAt: 10,
           lastFireAt: 1_700_000_000_000,
           lastError: null,
-          running: false,
-          runningSince: null,
-          skippedWhileRunning: 0,
+          running: true,
+          runningSince: 1_700_000_000_000,
+          skippedWhileRunning: 4,
           instanced: false,
           instances: 1,
           fires: 5,
@@ -343,6 +343,11 @@ describe('collectScheduleInventory', () => {
     expect(sh).toHaveLength(1);
     expect(sh[0]).toMatchObject({ source: 'managed', tier: 'ephemeral', category: 'global-sweep', armed: true });
     expect(sh[0].lastFire).toBe(new Date(1_700_000_000_000).toISOString());
+    expect(sh[0].detail).toMatchObject({
+      running: true,
+      runningSince: 1_700_000_000_000,
+      skippedWhileRunning: 4,
+    });
 
     // a watchdog managed timer is VISIBLE (source managed) but stays its own category — visibility != control
     const wd = rows.find((r) => r.name === 'engine-death-sentinel')!;
@@ -546,9 +551,9 @@ describe('collectScheduleInventory — sibling-process federation', () => {
         armedAt: 1,
         lastFireAt: 1_785_770_413_000,
         lastError: 'invalid input syntax for type bigint',
-        running: false,
-        runningSince: null,
-        skippedWhileRunning: 0,
+        running: true,
+        runningSince: 1_785_770_413_000,
+        skippedWhileRunning: 3,
         instanced: false,
         instances: 1,
         fires: 7,
@@ -595,7 +600,14 @@ describe('collectScheduleInventory — sibling-process federation', () => {
       lastError: 'invalid input syntax for type bigint',
     });
     expect(rows[0].lastFire).toBe(new Date(1_785_770_413_000).toISOString());
-    expect(rows[0].detail).toMatchObject({ process: 'bg-host:3271', federated: true, reachable: true });
+    expect(rows[0].detail).toMatchObject({
+      process: 'bg-host:3271',
+      federated: true,
+      reachable: true,
+      running: true,
+      runningSince: 1_785_770_413_000,
+      skippedWhileRunning: 3,
+    });
   });
 
   it('emits an explicit UNKNOWN row for a sibling that did not answer', async () => {

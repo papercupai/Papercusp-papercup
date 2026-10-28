@@ -108,13 +108,14 @@ describe('<RightRail /> polled blocks', () => {
       if (url.includes('/api/plugins/host/refresh')) return { ok: true, body: { status: { loaded: 4, errors: 0 } } };
       if (url.includes('/activity')) return { ok: true, body: { entries: [] } };
       if (url.includes('/pg_health')) return { ok: true, body: { totalConnections: 9, activeConnections: 3, idleConnections: 6 } };
-      if (url.includes('/build_status')) return { ok: true, body: { prodBuild: { exists: true, mtimeMs: NOW - 60_000 }, prodLogTail: null, dev3055Reachable: true, prod3070Reachable: true } };
+      if (url.includes('/build_status')) return { ok: true, body: { prodBuild: { exists: true, mtimeMs: NOW - 60_000 }, prodLogTail: null, dev3055Reachable: true, prod3070Reachable: true, dev3055ApiReachable: true } };
       return { ok: true, body: {} };
     });
     render(<RightRail workspaceIds={null} />);
     await waitFor(() => expect(screen.getByText('9')).toBeTruthy()); // pg total connections
     expect(screen.getByText('4')).toBeTruthy(); // plugin host loaded
-    expect(screen.getByText('up')).toBeTruthy(); // :3070 reachable
+    expect(screen.getByText('API via :3055')).toBeTruthy();
+    expect(screen.getAllByText('up')).toHaveLength(2); // :3070 and API proxy reachable
   });
 
   it('renders the build failure state (missing build + :3070 down)', async () => {
@@ -122,12 +123,12 @@ describe('<RightRail /> polled blocks', () => {
       if (url.includes('/api/plugins/host/refresh')) return { ok: true, body: { status: { loaded: 0, errors: 2 } } };
       if (url.includes('/activity')) return { ok: true, body: { entries: [] } };
       if (url.includes('/pg_health')) return { ok: true, body: { totalConnections: 1, activeConnections: 0, idleConnections: 1 } };
-      if (url.includes('/build_status')) return { ok: true, body: { prodBuild: { exists: false, mtimeMs: null }, prodLogTail: null, dev3055Reachable: false, prod3070Reachable: false } };
+      if (url.includes('/build_status')) return { ok: true, body: { prodBuild: { exists: false, mtimeMs: null }, prodLogTail: null, dev3055Reachable: false, prod3070Reachable: false, dev3055ApiReachable: false } };
       return { ok: true, body: {} };
     });
     render(<RightRail workspaceIds={null} />);
     await waitFor(() => expect(screen.getByText('missing')).toBeTruthy());
-    expect(screen.getByText('down')).toBeTruthy();
+    expect(screen.getAllByText('down')).toHaveLength(2);
     expect(screen.getByText('2')).toBeTruthy(); // plugin host errors
   });
 
@@ -139,7 +140,7 @@ describe('<RightRail /> polled blocks', () => {
         { id: 'a2', workspace_id: 'w', harness_slug: null, tool_name: 'tool.fail', role: null, invoked_at: new Date(NOW - 5000).toISOString(), duration_ms: null, status: 'error' },
       ] } };
       if (url.includes('/pg_health')) return { ok: true, body: { totalConnections: 1, activeConnections: 0, idleConnections: 1 } };
-      if (url.includes('/build_status')) return { ok: true, body: { prodBuild: { exists: true, mtimeMs: NOW }, prodLogTail: null, dev3055Reachable: true, prod3070Reachable: true } };
+      if (url.includes('/build_status')) return { ok: true, body: { prodBuild: { exists: true, mtimeMs: NOW }, prodLogTail: null, dev3055Reachable: true, prod3070Reachable: true, dev3055ApiReachable: true } };
       return { ok: true, body: {} };
     });
     render(<RightRail workspaceIds={null} />);
@@ -155,7 +156,7 @@ describe('<RightRail /> polled blocks', () => {
       if (url.includes('/api/plugins/host/refresh')) return { ok: false };
       if (url.includes('/activity')) return { ok: true, body: { entries: [] } };
       if (url.includes('/pg_health')) return { ok: true, body: { totalConnections: 2, activeConnections: 1, idleConnections: 1 } };
-      if (url.includes('/build_status')) return { ok: true, body: { prodBuild: { exists: true, mtimeMs: NOW }, prodLogTail: null, dev3055Reachable: true, prod3070Reachable: true } };
+      if (url.includes('/build_status')) return { ok: true, body: { prodBuild: { exists: true, mtimeMs: NOW }, prodLogTail: null, dev3055Reachable: true, prod3070Reachable: true, dev3055ApiReachable: true } };
       return { ok: true, body: {} };
     });
     render(<RightRail workspaceIds={null} />);

@@ -3783,7 +3783,8 @@ export function checkpointRunLockDir(
  *  (stale-red re-triage, auto-refire, prefix salvage). That phase is seconds-to-minutes
  *  from either greening or RE-FIRING the gate onto a newer tip, so it is the single worst
  *  moment to kill the run — and it is exactly the moment the old age-only replace guard
- *  selected for (REPLACE_STALE_MIN_AGE_SEC=1200s vs an observed 1180s suite: run e4a93f8b
+ *  selected for (the former REPLACE_STALE_MIN_AGE_SEC=1200s vs an observed 1180s suite — now a
+ *  silence test, REPLACE_STALE_MIN_SILENCE_SEC, WI-6554700010042457: run e4a93f8b
  *  became "replaceable" ~20s after its suite ended and was SIGTERMed 85s into re-triage).
  *
  *  Deliberately a SEPARATE file from owner.json: that one is written once at acquire and
@@ -3991,7 +3992,8 @@ export function writeSelfWatchdogArmMarker(
   info: {
     armedAtMs: number;
     ms: number;
-    hardCeilingMs: number;
+    /** `null` = no absolute ceiling (WI-6554700010042457): recorded as `hardDeadlineAt: null`. */
+    hardCeilingMs: number | null;
     pid: number;
   },
 ): void {
@@ -4002,9 +4004,10 @@ export function writeSelfWatchdogArmMarker(
         armedAt: new Date(info.armedAtMs).toISOString(),
         deadlineAt: new Date(info.armedAtMs + info.ms).toISOString(),
         idleDeadlineAt: new Date(info.armedAtMs + info.ms).toISOString(),
-        hardDeadlineAt: new Date(
-          info.armedAtMs + info.hardCeilingMs,
-        ).toISOString(),
+        hardDeadlineAt:
+          info.hardCeilingMs === null
+            ? null
+            : new Date(info.armedAtMs + info.hardCeilingMs).toISOString(),
         ms: info.ms,
         idleMs: info.ms,
         hardCeilingMs: info.hardCeilingMs,
@@ -4648,17 +4651,27 @@ export class CheckpointQualificationBoundaryError extends Error {
   }
 }
 
-/** Derive every bound from the original invocation clock. Preparation consumes
- * that budget; a later suite, retry, or scope launch cannot refresh it. */
+/** The longest span a Node timer can arm. A setTimeout delay above 2^31-1 ms is not
+ * honoured: Node clamps it to 1ms, so an "unbounded" deadline expressed as a larger number
+ * (or Infinity) would fire IMMEDIATELY. The qualification boundary arms real timers at its
+ * deadlines, so "no wall-clock limit" is represented by this span (~24.8 days), not by a
+ * larger value. */
+export const QUALIFICATION_UNBOUNDED_SPAN_MS = 2 ** 31 - 1;
+
+/** WI-6554700010042457 (Avi #2574): a main-greening qualification has NO run-level wall
+ * clock of its own. The only absolute bound it honours is a deadline a CALLER genuinely
+ * holds and transports (TASK_DEADLINE_EPOCH_MS, e.g. an outer systemd RuntimeMax). Absent
+ * one, the quantum and the orphan fuse are the timer-safe unbounded span, so a run that
+ * keeps progressing qualifies to completion; wedges are the idle self-watchdog's job.
+ * Before this, the 115m suite budget was the quantum and the fallback caller deadline,
+ * anchored at PROCESS start, so a long preparation (a 50m early typecheck) left the
+ * suite too little budget and the run refused before executing anything. */
 export function checkpointQualificationBudgetFromEnv(startedAtMs: number,
-  environment: NodeJS.ProcessEnv = process.env,
-  processStartedAtMs = Math.floor(Date.now() - process.uptime() * 1000)) {
+  environment: NodeJS.ProcessEnv = process.env) {
   const inherited = Number(environment[TASK_DEADLINE_EPOCH_MS_ENV]);
-  const watchdog = selfWatchdogConfigFromEnv(environment);
-  const callerDeadline = Number.isSafeInteger(inherited) && inherited > 0 ? inherited :
-    processStartedAtMs + (watchdog.trigger === 'manual-run-deadline' ? watchdog.ms : GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
-  return resolveQualificationYieldBudget({ startedAtMs, quantumMs: GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
-    deadlineEpochMs: callerDeadline, orphanDeadlineEpochMs: processStartedAtMs + watchdog.ms });
+  const callerDeadline = Number.isSafeInteger(inherited) && inherited > 0 ? inherited : null;
+  return resolveQualificationYieldBudget({ startedAtMs, quantumMs: QUALIFICATION_UNBOUNDED_SPAN_MS,
+    deadlineEpochMs: callerDeadline, orphanDeadlineEpochMs: startedAtMs + QUALIFICATION_UNBOUNDED_SPAN_MS });
 }
 
 /** One quantum owns the suite and its post-suite workers. Stop publication first,
@@ -6281,11 +6294,13 @@ export function refireAbsoluteCeiling(maxRefires: number): number {
 }
 
 /** Wall-clock budget for the WHOLE run (all passes) beyond which no further refire is started.
- *  Deliberately BELOW `GREEN_CHECKPOINT_SUITE_TIMEOUT_MS` (120m, release-actions.ts): a refire
- *  begun near the timeout is killed mid-suite and the run dies having recorded NO verdict at all,
- *  which is strictly worse than recording the red it already has. `release-timing-invariants.test.ts`
- *  enforces the ordering. */
-export const DEFAULT_REFIRE_RUN_BUDGET_MS = 110 * 60_000;
+ *  WI-6554700010042457 (Avi #2574): UNBOUNDED by default. It used to sit just below the 120m
+ *  suite-timeout kill so a refire never started into that kill; that kill no longer exists on
+ *  the main-greening path, so a time budget would only stop a healthy run from finishing.
+ *  `refireAbsoluteCeiling` still bounds the recursion by COUNT (refireDeadlineExceeded is
+ *  fail-open on a non-finite budget by design). `PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS` still
+ *  sets an explicit finite budget for an operator who wants one. */
+export const DEFAULT_REFIRE_RUN_BUDGET_MS = Number.POSITIVE_INFINITY;
 
 export function refireRunBudgetMsFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -9974,17 +9989,6 @@ export const ISOLATION_RETRY_DELAY_MS = 5_000;
  *  attempt), the worst case never regresses below what the gate did before this fix. */
 export const ISOLATION_RETRY_BUDGET_MS = 20 * 60_000;
 
-/** EI-20669541349219660: the SCHEDULED parent SIGTERMs this process's group at
- *  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS, so that is the effective kill deadline for a
- *  scheduled run (the 180m SELF_WATCHDOG_MS only matters parent-dead).
- *
- *  This was a hand-typed MIRROR, because its old home (release-actions.ts) registers
- *  routine actions as a module-load side effect and this script runs standalone under tsx
- *  in an isolated checkout. The budget now lives in a leaf with no imports, so the mirror
- *  is gone: the name is kept because it reads correctly at the use sites below, but it is
- *  the SAME constant, not a copy of it, and can no longer drift. */
-export const SUITE_KILL_BUDGET_MIRROR_MS = GREEN_CHECKPOINT_SUITE_TIMEOUT_MS;
-
 /** EI-20669541349219660: headroom the isolation phase must leave before the run's kill
  *  deadline. The phase deadline is "stop STARTING new absorption work" (an isolation
  *  attempt, a retry, a co-execution confirm run), so the worst case still in flight when it
@@ -9996,12 +10000,15 @@ export const ISOLATION_PHASE_RESERVE_MS = 15 * 60_000;
 
 /**
  * EI-20669541349219660: the absolute wall-clock deadline after which the flake-absorption
- * phase must stop STARTING new work, derived from what will actually kill this run:
- *   - manual run: the transported self-watchdog deadline (MANUAL_CHECKPOINT_WATCHDOG_MS,
- *     armed from process start);
- *   - scheduled run: the parent's GREEN_CHECKPOINT_SUITE_TIMEOUT_MS group-kill (mirrored
- *     above), which fires long before the 180m self-watchdog.
- * Both clocks start at PROCESS start, so the deadline is anchored there, minus the reserve.
+ * phase must stop STARTING new work, derived from what will actually kill this run.
+ *
+ * WI-6554700010042457 (Avi #2574): on the main-greening path nothing kills a run from its
+ * start any more — the scheduled parent no longer group-kills at the suite budget, a manual
+ * launch carries no RuntimeMaxSec, and the self-watchdog's budget is an IDLE (no-progress)
+ * budget, not a clock from process start. So the only real killer left is a deadline a
+ * caller transports in TASK_DEADLINE_EPOCH_MS (an older launcher's RuntimeMax scope): with
+ * one the phase stops starting work the reserve before it; without one the phase is
+ * unbounded (+Infinity, which attemptFlakeAbsorption and the salvage gate both accept).
  *
  * WHY: the gate had a positive feedback loop between how red it is and whether it can
  * produce a verdict at all — a wide-but-<=ISOLATION_MAX_FILES red made the SERIAL isolation
@@ -10013,16 +10020,11 @@ export const ISOLATION_PHASE_RESERVE_MS = 15 * 60_000;
  */
 export function isolationPhaseDeadlineMs(
   env: Readonly<Record<string, string | undefined>> = process.env,
-  nowMs: number = Date.now(),
-  processUptimeMs: number = process.uptime() * 1000,
 ): number {
-  const processStartMs = nowMs - processUptimeMs;
-  const watchdog = selfWatchdogConfigFromEnv(env);
-  const killMs =
-    watchdog.trigger === "manual-run-deadline"
-      ? watchdog.ms
-      : SUITE_KILL_BUDGET_MIRROR_MS;
-  return processStartMs + killMs - ISOLATION_PHASE_RESERVE_MS;
+  const inherited = Number(env[TASK_DEADLINE_EPOCH_MS_ENV]);
+  return Number.isSafeInteger(inherited) && inherited > 0
+    ? inherited - ISOLATION_PHASE_RESERVE_MS
+    : Number.POSITIVE_INFINITY;
 }
 
 /**

@@ -19,6 +19,13 @@ export interface PassingTaskRuntimeIdentity {
   nativeDependencyGeneration: string;
   lockfileSha256: string;
   configurationSha256: string;
+  /**
+   * WI-6554700010030941: set by `captureNpmTaskRuntimeIdentity` only for a measured wrapped lane
+   * script (PC_TEST_LANE prefix / scripts/pc-heavy.sh / scripts/run-vitest-pure-lane.mjs).
+   * `script` is the sha256 of the npm script text; every other key is a repo-relative launcher
+   * path -> sha256 of its bytes. Absent for a bare `vitest run` script.
+   */
+  launcherDigests?: Record<string, string>;
 }
 export function validPassingTaskRuntimeIdentity(value: unknown): value is PassingTaskRuntimeIdentity;
 export function capturePassingTaskRuntimeIdentity(args: {

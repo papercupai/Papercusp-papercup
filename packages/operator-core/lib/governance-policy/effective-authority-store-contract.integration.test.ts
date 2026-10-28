@@ -135,6 +135,51 @@ describe('P-024 required store authority contract', () => {
 });
 
 describe('P-024 conservative change with stored authority', () => {
+  // D-024/R-11: exempting a proved non-widening change from the extra
+  // approval never exempts its editor from the stored ordinary authority.
+  // The first write is the authorized preservation control; the second must
+  // leave both the effect table and the current policy snapshot unchanged.
+  it.each([
+    { kind: 'narrowing', level: 'organization', layerId: 'org', parentLayerId: null },
+    { kind: 'neutral', level: 'organization', layerId: 'org', parentLayerId: null },
+    { kind: 'narrowing', level: 'department', layerId: 'dept', parentLayerId: 'org' },
+    { kind: 'neutral', level: 'department', layerId: 'dept', parentLayerId: 'org' },
+    { kind: 'narrowing', level: 'workspace', layerId: 'workspace', parentLayerId: 'dept' },
+    { kind: 'neutral', level: 'workspace', layerId: 'workspace', parentLayerId: 'dept' },
+  ] as const)('a proved $kind change cannot bypass stored $level edit authority', async ({ kind, level, layerId, parentLayerId }) => {
+    const after = kind === 'narrowing' ? { ...proof, allowed: ['read'] } : proof;
+    const fixedFloors = [{ authority: { kind: 'platform' as const, id: 'platform', revision: 'platform:1' }, permissions: proof }];
+    const apply = () => sql.begin(async tx => {
+      const current = await snapshot(tx as unknown as postgres.Sql);
+      // Pin the current revision even when it denies the edit. This isolates
+      // ordinary authorization from the separate stale-before-image guard.
+      const edit = evaluateEffectivePermission(current, request);
+      const result = assessPermissionChange({ current, request, expected: edit.revisions,
+        before: proof, after, fixedFloors });
+      if (result.canApplyWithoutApproval) await tx`INSERT INTO harness_shared.idop_contract_effects VALUES (${request.resource.target})`;
+      return result;
+    });
+
+    expect(await apply()).toMatchObject({ comparison: { kind }, canApplyWithoutApproval: true,
+      requiresOwnerApproval: false, code: 'allowed-without-approval' });
+    const authorizedEffects = await effects();
+    expect(authorizedEffects).toEqual([{ target: request.resource.target }]);
+
+    await upsertLayer({ layerId, level, scopeRef: layerId, parentLayerId,
+      rules: { actions: { deny: [request.action] } }, actor: 'contract-test',
+      reason: 'ordinary edit authority refusal', expectedVersion: 1 }, sql);
+    const deniedSnapshot = await snapshot();
+    expect(await apply()).toMatchObject({ comparison: { kind }, canApplyWithoutApproval: false,
+      requiresOwnerApproval: false, code: 'edit-denied',
+      edit: { code: 'denied', decidingAuthority: { kind: level, id: layerId },
+        trace: expect.arrayContaining([expect.objectContaining({
+          authority: expect.objectContaining({ kind: level, id: layerId }),
+          category: 'actions', value: request.action, outcome: 'deny-rule',
+        })]) } });
+    expect(await effects()).toEqual(authorizedEffects);
+    expect(await snapshot()).toEqual(deniedSnapshot);
+  });
+
   it.each(['narrowing', 'neutral', 'widening', 'unknown'] as const)(
     'a %s comparison controls application in the contract transaction', async kind => {
       const current = await snapshot();

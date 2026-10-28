@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, rm, writeFile, readFile, symlink } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { recordActivity } from '@papercusp/activity-bridge';
+import { createPgTelemetryStore } from '../activity-pg-store';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
 import { canonicalNativeRuntimeSources, reconcileNativeCapture } from './native-capture';
 import { productionOpportunityReaders } from './source-readers';
@@ -12,7 +14,8 @@ import { readProductionMonitoredCandidate, runMonitoredCensus } from './census';
 
 // Delay the real filesystem boundary, never supply a synthetic manifest. Only
 // the final pass is delayed after the fixture has completed its source scans.
-const metadataIO = vi.hoisted(() => ({ delayMs: 0, fastRoot: '', active: 0, peak: 0, roots: [] as string[] }));
+const metadataIO = vi.hoisted(() => ({ delayMs: 0, fastRoot: '', active: 0, peak: 0,
+  barrier: null as (() => Promise<void>) | null, roots: [] as string[] }));
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, realpath: async (...args: Parameters<typeof actual.realpath>) => {
@@ -21,12 +24,14 @@ vi.mock('node:fs/promises', async importOriginal => {
     metadataIO.roots.push(path); metadataIO.active++;
     metadataIO.peak = Math.max(metadataIO.peak, metadataIO.active);
     try {
+      await metadataIO.barrier?.();
       await new Promise(resolve => setTimeout(resolve, path === metadataIO.fastRoot ? 5 : metadataIO.delayMs));
       return await actual.realpath(...args);
     } finally { metadataIO.active--; }
   } };
 });
 afterEach(() => {
+  metadataIO.barrier = null;
   expect(metadataIO.active).toBe(0);
   Object.assign(metadataIO, { delayMs: 0, fastRoot: '', peak: 0, roots: [] });
 });
@@ -146,6 +151,31 @@ it('R13-NATIVE reconciles real canonical carry sources for all providers without
   }
 });
 
+it.each(['codex', 'claude', 'omp'] as const)('R13-NATIVE accepts delayed original hook receipts for %s while preserving canonical event time', async provider => {
+  const s = await seed(provider);
+  const toolName = provider === 'codex' ? 'exec_command' : provider === 'claude' ? 'Bash' : 'bash';
+  const store = createPgTelemetryStore(f.db.adminSql);
+  const hook = await recordActivity(store, { workspaceId, scope: harnessSlug, owner: s.owner,
+    agent: provider, sessionId: s.predecessor, toolName, phase: 'pre',
+    toolUseId: `call-${s.predecessor}`, toolInput: { command: 'rg private-source src' } });
+  const [before] = await f.db.adminSql`SELECT created_at FROM harness_shared.agent_activity WHERE id=${hook.id}`;
+  expect(before!.created_at.getTime()).toBeGreaterThan(f.now);
+  await installed();
+  expect(await reconcileNativeCapture(options())).toBe('complete');
+  expect(await reconcileNativeCapture(options())).toBe('complete');
+  const rows = await f.db.adminSql`SELECT id::text,created_at,summary FROM harness_shared.agent_activity
+    WHERE owner_id=${s.owner} AND session_id=${s.predecessor} ORDER BY created_at`;
+  // Receipt rows keep their ingestion timestamp; the canonical index must still
+  // expose the event in its original window without re-dating the hook receipt.
+  expect(rows.find(row => row.id === hook.id)?.created_at).toEqual(before!.created_at);
+  expect(rows.filter(row => row.summary === 'Canonical native operation')).toHaveLength(1);
+  expect(rows[0]!.created_at.getTime()).toBe(f.now - 100);
+  const reader = productionOpportunityReaders({ ...options(), authorize: async () => true });
+  const hydrated = await reader.readTranscript({ id: rows[0]!.id, actor: s.owner, provider,
+    sessionId: s.predecessor, callId: `call-${s.predecessor}` });
+  expect(hydrated?.sources[0]?.result?.body).toEqual({ exit_code: 0 });
+});
+
 it('R13-NATIVE census composes canonical capture across all six cells and revokes eligibility after predecessor loss', async () => {
   const seeds = [];
   for (const provider of ['codex', 'claude', 'omp'] as const) seeds.push(await seed(provider, true));
@@ -225,6 +255,102 @@ it('R13-NATIVE refuses ambiguous attribution, wrong same-ID index copies and rev
   expect(await reconcileNativeCapture(options())).toBe('unknown');
 });
 
+it('R13-NATIVE refuses a conflicting hook tool even beside a matching canonical event row', async () => {
+  const s = await seed(); await installed();
+  await f.db.adminSql`INSERT INTO harness_shared.agent_activity
+    (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,tool_use_id,created_at)
+    VALUES (${workspaceId},${harnessSlug},${s.owner},'codex',${s.predecessor},'tool','exec_command',
+      ${`call-${s.predecessor}`},${new Date(f.now - 100).toISOString()}::timestamptz)`;
+  await recordActivity(createPgTelemetryStore(f.db.adminSql), { workspaceId, scope: harnessSlug,
+    owner: s.owner, agent: 'codex', sessionId: s.predecessor,
+    toolName: 'wrong-tool', phase: 'post', toolUseId: `call-${s.predecessor}` });
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  const [receipt] = await f.db.adminSql`SELECT native_capture_receipt
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`;
+  expect(receipt!.native_capture_receipt).toMatchObject({ baseline: true });
+});
+
+it('R13-NATIVE invalidates cached scans after a conflicting hook append without resetting the prospective floor', async () => {
+  const s = await seed(); await installed();
+  expect(await reconcileNativeCapture(options())).toBe('complete');
+  const [before] = await f.db.adminSql`SELECT native_capture_from FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`;
+  await recordActivity(createPgTelemetryStore(f.db.adminSql), { workspaceId, scope: harnessSlug,
+    owner: s.owner, agent: 'codex', sessionId: s.predecessor,
+    toolName: 'wrong-tool', phase: 'post', toolUseId: `call-${s.predecessor}` });
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  const [after] = await f.db.adminSql`SELECT native_capture_from,native_capture_receipt
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`;
+  expect(after!.native_capture_from).toEqual(before!.native_capture_from);
+  expect(after!.native_capture_receipt).toMatchObject({ reconciling: true });
+});
+
+it('R13-NATIVE refreshes valid hook appends and reuses its own canonical index without moving the floor', async () => {
+  const s = await seed(); await installed();
+  expect(await reconcileNativeCapture(options())).toBe('complete');
+  const receipt = async () => (await f.db.adminSql`SELECT native_capture_from,native_capture_receipt
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!;
+  const before = await receipt();
+  await recordActivity(createPgTelemetryStore(f.db.adminSql), { workspaceId, scope: harnessSlug,
+    owner: s.owner, agent: 'codex', sessionId: s.predecessor,
+    toolName: 'exec_command', phase: 'post', toolUseId: `call-${s.predecessor}` });
+  expect(await reconcileNativeCapture(options())).toBe('complete');
+  const refreshed = await receipt();
+  expect(refreshed.native_capture_from).toEqual(before.native_capture_from);
+  expect(refreshed.native_capture_receipt.scans).not.toEqual(before.native_capture_receipt.scans);
+  expect(await reconcileNativeCapture(options())).toBe('complete');
+  expect(await receipt()).toEqual(refreshed);
+  const [index] = await f.db.adminSql`SELECT count(*)::int AS count FROM harness_shared.agent_activity`;
+  expect(index!.count).toBe(3); // Two event copies plus the original hook, no cache churn.
+});
+
+it('R13-NATIVE detects a late committed index row below the cached maximum ID', async () => {
+  const s = await seed(); await installed();
+  const held = await f.db.adminSql.reserve();
+  try {
+    await held`BEGIN`;
+    const [hidden] = await held`INSERT INTO harness_shared.agent_activity
+      (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,tool_use_id)
+      VALUES (${workspaceId},${harnessSlug},${s.owner},'codex',${s.predecessor},'tool','wrong-tool',
+        ${`call-${s.predecessor}`}) RETURNING id::text`;
+    expect(await reconcileNativeCapture(options())).toBe('complete');
+    const [before] = await f.db.adminSql`SELECT count(*)::text AS count,max(id)::text AS maximum
+      FROM harness_shared.agent_activity WHERE workspace_id=${workspaceId}`;
+    expect(BigInt(hidden!.id)).toBeLessThan(BigInt(before!.maximum));
+    await held`COMMIT`;
+    const [after] = await f.db.adminSql`SELECT count(*)::text AS count,max(id)::text AS maximum
+      FROM harness_shared.agent_activity WHERE workspace_id=${workspaceId}`;
+    expect(after!.maximum).toBe(before!.maximum);
+    expect(Number(after!.count)).toBe(Number(before!.count) + 1);
+    expect(await reconcileNativeCapture(options())).toBe('unknown');
+  } finally {
+    await held`ROLLBACK`;
+    held.release();
+  }
+});
+
+it('R13-NATIVE rechecks the cached index after final metadata validation', async () => {
+  const s = await seed(); await installed();
+  expect(await reconcileNativeCapture(options())).toBe('complete');
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  metadataIO.delayMs = 1;
+  metadataIO.barrier = () => barrier;
+  const running = reconcileNativeCapture(options());
+  try {
+    await vi.waitFor(() => expect(metadataIO.active).toBeGreaterThan(0));
+    await recordActivity(createPgTelemetryStore(f.db.adminSql), { workspaceId, scope: harnessSlug,
+      owner: s.owner, agent: 'codex', sessionId: s.predecessor,
+      toolName: 'wrong-tool', phase: 'post', toolUseId: `call-${s.predecessor}` });
+    metadataIO.barrier = null;
+    release();
+    expect(await running).toBe('unknown');
+  } finally {
+    metadataIO.barrier = null;
+    release();
+    await running;
+  }
+});
+
 it('R13-NATIVE pages a roster above 500 and resumes prospective enrollment without certifying partial coverage', async () => {
   const seeds = [];
   for (let i = 0; i < 33; i++) seeds.push(await seed());
@@ -265,8 +391,14 @@ it('R13-NATIVE resumes bounded postbaseline scans across all providers and keeps
   await installed();
   const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
     FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!.receipt;
-  expect(await reconcileNativeCapture(options())).toBe('unknown');
-  const partial = await receipt();
+  // A bounded turn may exhaust its budget before earning a source scan. Wait
+  // for durable progress, keeping the same finite bound as finishRuntimeBatches;
+  // every pre-progress turn must still refuse complete coverage.
+  let partial = await receipt();
+  for (let attempt = 0; attempt < 40 && !Object.keys(partial.scans ?? {}).length; attempt++) {
+    expect(await reconcileNativeCapture(options())).toBe('unknown');
+    partial = await receipt();
+  }
   expect(partial).toMatchObject({ reconciling: true });
   expect(Object.keys(partial.scans).length).toBeGreaterThan(0);
   expect(Object.keys(partial.scans).length).toBeLessThanOrEqual(32);

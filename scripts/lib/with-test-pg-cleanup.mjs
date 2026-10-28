@@ -5,6 +5,81 @@ const PRIVATE_STATE_REMOVE_RETRIES = 3;
 const PRIVATE_STATE_REMOVE_RETRY_DELAY_MS = 100;
 const RETRYABLE_REMOVE_ERRORS = new Set(['EBUSY', 'EMFILE', 'ENFILE', 'ENOTEMPTY', 'EPERM']);
 
+export const PRIVATE_TEST_PG_RELEASE_TOKEN_ENV = 'PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN';
+const PRIVATE_TEST_PG_RELEASE_REQUEST = 'papercusp-private-test-pg-release';
+const PRIVATE_TEST_PG_RELEASE_RESULT = 'papercusp-private-test-pg-release-result';
+let privatePgReleaseRequestSequence = 0;
+
+/** Cache one owned-resource stop across an early request and final cleanup. */
+export function createSingleFlightStop(stop) {
+  let pending;
+  return () => {
+    if (!pending) {
+      pending = Promise.resolve().then(stop).catch(error => {
+        pending = undefined;
+        throw error;
+      });
+    }
+    return pending;
+  };
+}
+
+/** Respond only to an authenticated request from the wrapper's direct child. */
+export function createPrivateTestPgReleaseHandler({ token, stop, respond }) {
+  if (typeof token !== 'string' || token.length === 0 || typeof stop !== 'function' || typeof respond !== 'function')
+    throw new TypeError('private test-PG release handler needs a token, stop function and responder');
+  return async message => {
+    if (message?.kind !== PRIVATE_TEST_PG_RELEASE_REQUEST || message.token !== token ||
+        typeof message.requestId !== 'string' || message.requestId.length === 0) return false;
+    const result = { kind: PRIVATE_TEST_PG_RELEASE_RESULT, token, requestId: message.requestId, ok: false };
+    try {
+      await stop();
+      result.ok = true;
+    } catch (error) {
+      result.error = String(error?.message ?? error).slice(0, 2000);
+    }
+    await respond(result);
+    return true;
+  };
+}
+
+/** Ask the direct with-test-pg parent to stop its owned cluster and await its receipt. */
+export function requestPrivateTestPgRelease(token, { processRef = process, timeoutMs = 10_000 } = {}) {
+  if (typeof token !== 'string' || token.length === 0)
+    return Promise.reject(new TypeError('private test-PG release needs the parent-issued token'));
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
+    return Promise.reject(new TypeError('private test-PG release timeout must be positive integer milliseconds'));
+  if (processRef.connected !== true || typeof processRef.send !== 'function' ||
+      typeof processRef.on !== 'function' || typeof processRef.off !== 'function')
+    return Promise.reject(new Error('private test-PG release parent IPC channel is unavailable'));
+  const pid = Number.isSafeInteger(processRef.pid) ? processRef.pid : 'unknown';
+  const requestId = `${pid}:${Date.now()}:${++privatePgReleaseRequestSequence}`;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      processRef.off('message', onMessage);
+      if (error) reject(error); else resolve(value);
+    };
+    const onMessage = message => {
+      if (message?.kind !== PRIVATE_TEST_PG_RELEASE_RESULT || message.token !== token || message.requestId !== requestId) return;
+      if (message.ok === true) finish(null, true);
+      else finish(new Error('private test-PG release failed: ' + String(message.error ?? 'parent did not stop its owned cluster')));
+    };
+    const timer = setTimeout(() => finish(new Error('private test-PG release acknowledgement timed out')), timeoutMs);
+    processRef.on('message', onMessage);
+    try {
+      processRef.send({ kind: PRIVATE_TEST_PG_RELEASE_REQUEST, token, requestId }, error => {
+        if (error) finish(error);
+      });
+    } catch (error) {
+      finish(error);
+    }
+  });
+}
+
 /** async-exit-hook registers lazily; unhookEvent throws for an absent event. */
 export function unhookRegisteredExitSignals(exitHook) {
   const registered = new Set(exitHook.hookedEvents());

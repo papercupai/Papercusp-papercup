@@ -71,7 +71,7 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       const sourceRoot = root;
       const receiptPath = process.env.VERIFY_TAURI_SOURCE_RECEIPT?.trim();
       expect(Boolean(receiptPath), 'Documenso wrapper must pass its frozen source receipt before provider allocation').toBe(true);
-      const receipt = JSON.parse(readFileSync(receiptPath!, 'utf8'));
+      const receipt: Parameters<typeof verifyVerifierSource>[1] = JSON.parse(readFileSync(receiptPath!, 'utf8'));
       Object.assign(env, verifierSourceChildEnv({ root: sourceRoot, receiptPath: receiptPath!, env }));
       expect(receipt.sourceCommit).toBe(sourceRef);
       for (const input of NATIVE_SOURCE_INPUTS)

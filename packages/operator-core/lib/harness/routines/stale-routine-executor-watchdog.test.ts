@@ -470,9 +470,9 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
         now: () => nowMs,
         run,
         ptoolScript: '/tmp/ptool.mjs',
-        retentionMutex: async () => {
+        retentionMutex: async <T,>(action: () => Promise<T>): Promise<T> => {
           retentionGateCalls += 1;
-          return { stdout: '' };
+          return action();
         },
       }),
     ).resolves.toMatchObject({ attempted: false, code: 'restart_cooldown' });

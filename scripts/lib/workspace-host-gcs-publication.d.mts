@@ -11,24 +11,77 @@ export function verifyGcsPublicBytes(url: any, expected: any, fetchImpl?: typeof
     sha256: string;
     sizeBytes: number;
 }>;
-export function verifyGcsPrivateBytes(uri: any, expected: any, spawnImpl?: typeof spawn): Promise<{
+/** Bounded operational verification through the serving Worker's real storage port.
+ * The caller must durably journal the exact operation before this function writes.
+ * Cleanup is restricted to this unique fixture and generation-fenced; original
+ * artifacts and trusted finalization markers are never written or removed.
+ * @param {{ baseUrl: string, bucket: string, githubToken: string, accessToken: string,
+ * operationId: string, body: string,
+ * recordOperation: (operation: { operationId: string, sha256: string, sizeBytes: number }) => Promise<void>,
+ * positiveControl: { path: string, sha256: string, sizeBytes: number }, fetchImpl?: typeof fetch }} options
+ */
+export function verifyGcsWorkspaceHostUpload({ baseUrl, bucket, githubToken, accessToken, operationId, body, recordOperation, positiveControl, fetchImpl }: {
+    baseUrl: string;
+    bucket: string;
+    githubToken: string;
+    accessToken: string;
+    operationId: string;
+    body: string;
+    recordOperation: (operation: {
+        operationId: string;
+        sha256: string;
+        sizeBytes: number;
+    }) => Promise<void>;
+    positiveControl: {
+        path: string;
+        sha256: string;
+        sizeBytes: number;
+    };
+    fetchImpl?: typeof fetch;
+}): Promise<{
+    startedAt: string;
+    checks: never[];
+    result: string;
+    cleanup: {
+        deleted: never[];
+        complete: boolean;
+        remaining: never[];
+        providerRemaining: never[];
+    };
+    operationId: string;
+    sha256: string;
+    sizeBytes: number;
+}>;
+/**
+ * @param {string} uri
+ * @param {{ sha256: string, sizeBytes: number }} expected
+ * @param {(command: string, args: string[], options: any) =>
+ *   import('node:child_process').ChildProcessByStdio<null, import('node:stream').Readable, import('node:stream').Readable>} [spawnImpl]
+ */
+export function verifyGcsPrivateBytes(uri: string, expected: {
+    sha256: string;
+    sizeBytes: number;
+}, spawnImpl?: (command: string, args: string[], options: any) => import("node:child_process").ChildProcessByStdio<null, import("node:stream").Readable, import("node:stream").Readable>): Promise<{
     sha256: string;
     sizeBytes: number;
 }>;
 /** Adopt already staged bytes into the Worker's descriptor contract. No upload,
- * finalization or IAM mutation is allowed on this recovery path. */
+ * finalization or IAM mutation is allowed on this recovery path.
+ * `ctx`/`runMutation` (the release journal) are optional only for `planOnly`;
+ * a mutating call without them is refused at runtime.
+ * @param {{ target: any, objects: any, ctx?: any, runMutation?: any, planOnly?: boolean,
+ *   gcloud?: (args: any) => Promise<string>, verifyPrivate?: typeof verifyGcsPrivateBytes,
+ *   log?: typeof console.log }} options
+ */
 export function adoptGcsWorkspaceHostObjects({ target, objects, ctx, runMutation, planOnly, gcloud, verifyPrivate, log }: {
     target: any;
     objects: any;
-    ctx: any;
-    runMutation: any;
-    planOnly?: boolean | undefined;
-    gcloud?: ((args: any) => Promise<string>) | undefined;
-    verifyPrivate?: typeof verifyGcsPrivateBytes | undefined;
-    log?: {
-        (...data: any[]): void;
-        (message?: any, ...optionalParams: any[]): void;
-    } | undefined;
+    ctx?: any;
+    runMutation?: any;
+    planOnly?: boolean;
+    gcloud?: (args: any) => Promise<string>;
+    verifyPrivate?: typeof verifyGcsPrivateBytes;
+    log?: typeof console.log;
 }): Promise<{
     planOnly: boolean;
     provider: string;
@@ -44,20 +97,26 @@ export function adoptGcsWorkspaceHostObjects({ target, objects, ctx, runMutation
     target?: undefined;
     objects?: undefined;
 }>;
+/**
+ * `ctx`/`runMutation` (the release journal) are optional only for `planOnly`.
+ * `fetchImpl` is accepted and deliberately never invoked: private staging must
+ * not claim an anonymous delivery read (tests pass a throwing one as a tripwire).
+ * @param {{ target: any, objects: any, expiresAt: any, ctx?: any, runMutation?: any,
+ *   planOnly?: boolean, stageOnly?: boolean, gcloud?: (args: any) => Promise<string>,
+ *   verifyPrivate?: typeof verifyGcsPrivateBytes, log?: typeof console.log, fetchImpl?: unknown }} options
+ */
 export function publishGcsObjects({ target, objects, expiresAt, ctx, runMutation, planOnly, stageOnly, gcloud, verifyPrivate, log }: {
     target: any;
     objects: any;
     expiresAt: any;
-    ctx: any;
-    runMutation: any;
-    planOnly?: boolean | undefined;
-    stageOnly?: boolean | undefined;
-    gcloud?: ((args: any) => Promise<string>) | undefined;
-    verifyPrivate?: typeof verifyGcsPrivateBytes | undefined;
-    log?: {
-        (...data: any[]): void;
-        (message?: any, ...optionalParams: any[]): void;
-    } | undefined;
+    ctx?: any;
+    runMutation?: any;
+    planOnly?: boolean;
+    stageOnly?: boolean;
+    gcloud?: (args: any) => Promise<string>;
+    verifyPrivate?: typeof verifyGcsPrivateBytes;
+    log?: typeof console.log;
+    fetchImpl?: unknown;
 }): Promise<{
     planOnly: boolean;
     stageOnly: true;
@@ -88,4 +147,3 @@ export function publishGcsObjects({ target, objects, expiresAt, ctx, runMutation
     target?: undefined;
     objects?: undefined;
 }>;
-import { spawn } from 'node:child_process';

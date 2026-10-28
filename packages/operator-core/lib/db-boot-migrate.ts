@@ -52,9 +52,12 @@ import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
+  MigrationReservationConflictError,
   RESERVATION_ENFORCED_FROM,
   assertMigrationReservation,
+  isUnpublishedMigrationDraft,
   migrationNumberOf,
+  readTrackedMigrationFilenames,
   reservationFilenameConflicts,
 } from './migration-reservation';
 import { BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
@@ -404,6 +407,14 @@ async function writeMigrationCooldownState(path: string, state: MigrationCooldow
 export interface BootMigrateResult {
   applied: number;
   failed: { file: string; error: string }[];
+  /**
+   * WI-6554700010042536 — pending files skipped because git reports them
+   * UNTRACKED in a version-controlled sql dir AND they fail the reservation
+   * check: unpublished drafts that git-sync will never commit. They are not
+   * applied and not in `failed`, so they do not withhold the boot migration
+   * gate. Present only when non-empty.
+   */
+  skippedUnpublished?: { file: string; reason: string }[];
 }
 
 export interface ApplyPendingMigrationsNowOptions {
@@ -482,8 +493,29 @@ export async function applyPendingMigrationsNow(
   // only for files absent from schema_migrations, so an already-applied file
   // is never re-blocked merely because its companion later moved on.
   const deployedReleaseRoot = resolveDeployedReleaseRoot(sqlDir);
+  // WI-6554700010042536: an UNTRACKED file that fails the reservation check is
+  // an unpublished draft. git-sync's commit-stage reservation checker refuses to
+  // commit it, so it never reaches any committed tree, yet on a mutable dev tree
+  // it used to land in `failed` and withhold bg-host's whole background plane
+  // (routines + P2P) until a human found it: 2089s on 2026-10-28 for one stray
+  // 1606 draft (WI-6554700010042532). Such files are recorded here, removed from
+  // `failed`, skipped by later passes, and announced. The git probe runs only
+  // after a reservation conflict, once per preflight.
+  const unpublishedDrafts = new Map<string, string>();
+  let trackedMigrationFilenames: Promise<ReadonlySet<string> | null> | undefined;
   const guardPendingMigration = async (file: string, sqlText: string): Promise<void> => {
     throwIfAborted(signal);
+    try {
+      await assertMigrationReservation(client, file);
+    } catch (error) {
+      if (!(error instanceof MigrationReservationConflictError)) throw error;
+      trackedMigrationFilenames ??= readTrackedMigrationFilenames(sqlDir);
+      if (isUnpublishedMigrationDraft(file, await trackedMigrationFilenames)) {
+        unpublishedDrafts.set(file, error.message);
+      }
+      // Never applied either way; the draft is partitioned out of `failed` below.
+      throw error;
+    }
     assertMigrationPassesPreApplyLints({ filename: file, sqlText, sqlDir });
     const verdict = verifyPendingCodeDeployMigration({
       filename: file,
@@ -491,7 +523,6 @@ export async function applyPendingMigrationsNow(
       releaseRoot: deployedReleaseRoot,
     });
     if (!verdict.ok) throw new Error(`[migration-deploy-guard] ${verdict.error}`);
-    await assertMigrationReservation(client, file);
     if (requiresPreDestructiveSnapshotAdmission(file)) {
       await client.unsafe(preDestructiveSnapshotAdmissionGuardSql(activeWorkspaceId()));
     }
@@ -597,6 +628,7 @@ export async function applyPendingMigrationsNow(
   const skipFile = (f: string): boolean =>
     defaultSkipFile(f) ||
     coolingDown.has(f) ||
+    unpublishedDrafts.has(f) ||
     (noPendingUnlockedSnapshot !== null && !noPendingUnlockedSnapshot.has(f));
   try {
     tracePreflight('backup rendezvous');
@@ -695,7 +727,9 @@ export async function applyPendingMigrationsNow(
       throwIfAborted(signal);
       appliedCount += pass.appliedCount;
       totalKnown = pass.totalKnown;
-      failed = pass.failed;
+      // Unpublished drafts are reported separately, never as a gate failure,
+      // and never enter the cross-boot cooldown below.
+      failed = pass.failed.filter((f) => !unpublishedDrafts.has(f.file));
       if (failed.length === 0) break;
       const contentionOnly = failed.every((f) => isRetryableLockFailure(f.error ?? ''));
       if (!contentionOnly || attempt >= CONTENTION_RETRY_MAX_ATTEMPTS) break;
@@ -771,6 +805,27 @@ export async function applyPendingMigrationsNow(
     }
     tracePreflight('reconcile reservations');
     await reconcileMigrationReservations(client, undefined, activeFilenames);
+    const skippedUnpublished = [...unpublishedDrafts].map(([file, reason]) => ({ file, reason }));
+    if (skippedUnpublished.length > 0) {
+      const files = skippedUnpublished.map((s) => s.file).join(', ');
+      const fix =
+        'git-sync will not commit it while it fails the reservation check, so it can never ship as-is. ' +
+        'Its author should reserve the number with `node scripts/next-migration.mjs --name <slug> --intent "..."` ' +
+        'and arm the draft with the printed `--arm` command, or rename it to `.sql.DRAFT` while it is still being written.';
+      console.error(
+        `[boot-migrate] ⚠ skipped ${skippedUnpublished.length} UNPUBLISHED migration draft(s) — untracked in git and ` +
+          `failing the reservation check, so NOT applied and NOT withholding the boot gate: ${files}\n` +
+          skippedUnpublished.map((s) => `    ${s.file}: ${s.reason}`).join('\n') +
+          `\n  ${fix}`,
+      );
+      if (broadcast) await sendMessage(BOOT_MIGRATE_IDENTITY, {
+        to: ['*'],
+        summary: `⚠ ${skippedUnpublished.length} unpublished migration draft(s) skipped on operator boot (untracked + unreserved): ${files}`,
+        body: `${fix}\n${skippedUnpublished.map((s) => `- ${s.file}: ${s.reason}`).join('\n')}`,
+        category: 'service-health',
+        extra: { auto: true },
+      }).catch(() => {});
+    }
     if (failed.length > 0) {
       const files = failed.map((f) => f.file).join(', ');
       console.error(
@@ -822,7 +877,9 @@ export async function applyPendingMigrationsNow(
       /* detection is best-effort — never blocks boot */
     }
     tracePreflight('complete');
-    return { applied: appliedCount, failed };
+    return skippedUnpublished.length > 0
+      ? { applied: appliedCount, failed, skippedUnpublished }
+      : { applied: appliedCount, failed };
   } catch (err) {
     if (!signal?.aborted) {
       console.error('[boot-migrate] boot apply failed (non-fatal):', err instanceof Error ? err.message : err);

@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerPendingStage, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
 import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -63,7 +63,8 @@ async function withCapturedRouter(options: Parameters<typeof captureIsolatedWork
   const result = captureIsolatedWorker(child, evidenceDir, options);
   try { await check(child, result); }
   finally {
-    child.exitCode = 0;
+    // ChildProcess.exitCode is readonly in @types/node; the fake's own field is writable.
+    Object.assign(child, { exitCode: 0 });
     child.emit('exit', 0, null);
     child.emit('close', 0, null);
     await result;
@@ -521,6 +522,19 @@ env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }
     }] });
     expect(isolatedIntegrationDiagnosticArtifacts(root)).toContain('phases/execute/native-task-config.json');
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it('reports the last unmatched worker phase as the timeout pending stage', () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-progress-stage-'));
+  try {
+    retainIsolatedWorkerProgress(evidenceDir, 'private-database-connect-start', { phase: 'execute' });
+    retainIsolatedWorkerProgress(evidenceDir, 'private-database-connect-complete', { port: 54321 });
+    retainIsolatedWorkerProgress(evidenceDir, 'agent-tools-bootstrap-start', { phase: 'execute' });
+    expect(isolatedWorkerPendingStage(evidenceDir)).toMatchObject({
+      stage: 'agent-tools-bootstrap-start',
+      phase: 'execute',
+    });
+  } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
 });
 
 it('preserves failure progress and verifies a real reaped signal without certifying success', async () => {

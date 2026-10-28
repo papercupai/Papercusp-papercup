@@ -10,6 +10,65 @@ import type { RankedHit } from './labelled-relevance';
 /** Freeze this framing in the judge pilot as well as the eventual study. */
 export const DOCS_FINAL_INPUT_CONTRACT = 'docs-search-final-row-json-v1';
 
+export const TYPESENSE_FINAL_INPUT_CONTRACT = 'restart-typesense-final-row-json-v1';
+
+/** Decode the library's returned documents, not raw engine hits or Scout cards.
+ * Branch observations must come from the runner; answer:null and hits:[] alone
+ * cannot distinguish fallback, missing usage, or genuinely empty retrieval. */
+export function decodeTypesenseCapture(capture: unknown, expected: {
+  id: string;
+  adapter: 'restart:typesense.search' | 'restart:typesense.searchWithConversation';
+  args: Readonly<Record<string, unknown>>;
+}) {
+  const saved = object(capture, 'capture');
+  if (saved.schemaVersion !== 1 || saved.adapter !== expected.adapter || saved.attemptId !== expected.id) {
+    throw new Error('capture adapter or attempt differs from frozen request');
+  }
+  const request = object(saved.request, 'request');
+  if (adapterFingerprint(request as Parameters<typeof adapterFingerprint>[0]) !==
+      adapterFingerprint(expected.args as Parameters<typeof adapterFingerprint>[0])) {
+    throw new Error('capture request differs from frozen request');
+  }
+  if (typeof request.q !== 'string' || !request.q.trim() || !Number.isInteger(request.limit) ||
+      (request.limit as number) < 1 || typeof request.region !== 'string' || !request.region.trim()) {
+    throw new Error('requires frozen query, region and positive cutoff');
+  }
+  if (saved.exitCode !== 0 || typeof saved.stdout !== 'string' || !saved.stdout.trim() ||
+      typeof saved.deliveryWallMs !== 'number' || !Number.isFinite(saved.deliveryWallMs) || saved.deliveryWallMs < 0) {
+    throw new Error('missing successful complete capture or measured duration');
+  }
+  const observation = object(saved.observation, 'observation');
+  if (!['hybrid', 'keyword-only', 'conversation', 'conversation-fallback'].includes(String(observation.path)) ||
+      typeof observation.degraded !== 'boolean' || typeof observation.evidenceRef !== 'string' ||
+      !observation.evidenceRef.trim()) throw new Error('missing observed runtime branch');
+  const conversational = expected.adapter === 'restart:typesense.searchWithConversation';
+  if (conversational !== String(observation.path).startsWith('conversation') ||
+      (observation.path === 'conversation-fallback' && observation.degraded !== true)) {
+    throw new Error('runtime branch differs from adapter or hides fallback');
+  }
+  const response = object(JSON.parse(saved.stdout), 'response');
+  complete(response);
+  if (!Array.isArray(response.hits) || !Number.isInteger(response.found) || (response.found as number) < 0 ||
+      response.hits.length > (observation.path === 'conversation' ? Math.min(request.limit as number, 20) : request.limit as number)) {
+    throw new Error('invalid delivered ranking or cutoff');
+  }
+  if (conversational && ((response.answer !== null && typeof response.answer !== 'string') ||
+      (response.conversationId !== null && typeof response.conversationId !== 'string') ||
+      (observation.path === 'conversation-fallback' && (response.answer !== null || response.conversationId !== null)))) {
+    throw new Error('invalid conversational response');
+  }
+  const ids = new Set<string>();
+  const hits: RankedHit[] = response.hits.map((value, index) => {
+    const hit = object(value, 'hit');
+    if (typeof hit.id !== 'string' || !hit.id.trim() || ids.has(hit.id)) throw new Error('invalid or duplicate delivered hit');
+    ids.add(hit.id);
+    return { docId: hit.id, rank: index + 1, source: expected.adapter, docText: JSON.stringify(hit) };
+  });
+  return { inputContract: TYPESENSE_FINAL_INPUT_CONTRACT,
+    rawStdoutSha256: createHash('sha256').update(saved.stdout).digest('hex'),
+    clientDeliveryWallMs: saved.deliveryWallMs, degraded: observation.degraded, observation, hits, response };
+}
+
 function object(value: unknown, name: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${name}: expected object`);
   return value as Record<string, unknown>;

@@ -4007,15 +4007,30 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       const repo = gitRepo();
       writeFileSync(join(repo, 'src.ts'), 'baseline');
       commitAll(repo);
+
+      const submoduleRepo = join(dir, 'timeout-submodule-source');
+      mkdirSync(submoduleRepo, { recursive: true });
+      execSync('git init -q', { cwd: submoduleRepo });
+      execSync('git config user.email t@example.com && git config user.name test', { cwd: submoduleRepo });
+      writeFileSync(join(submoduleRepo, 'src.txt'), 'committed');
+      commitAll(submoduleRepo);
+      execFileSync('git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', submoduleRepo, 'nested-source'], {
+        cwd: repo,
+        stdio: 'ignore',
+      });
+      commitAll(repo);
       writeFileSync(join(repo, 'generated.d.mts'), 'untracked source');
 
       const slowBin = join(dir, 'slow-hasher-bin');
       mkdirSync(slowBin, { recursive: true });
       const slowHasher = join(slowBin, 'sha1sum');
+      const gitWrapper = join(slowBin, 'git');
       const hashStarted = join(dir, 'slow-hash-started');
       const hashCompleted = join(dir, 'slow-hash-completed');
+      const submoduleForeachCalled = join(dir, 'submodule-foreach-called');
       const childRuns = join(dir, 'fresh-child-runs');
       const realSha1sum = execSync('command -v sha1sum', { encoding: 'utf8' }).trim();
+      const realGit = execSync('command -v git', { encoding: 'utf8' }).trim();
       writeFileSync(
         slowHasher,
         [
@@ -4030,19 +4045,55 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
         ].join('\n'),
         { mode: 0o755 },
       );
+      writeFileSync(
+        gitWrapper,
+        [
+          '#!/usr/bin/env bash',
+          'if [ "$1" = "submodule" ] && [ "$2" = "foreach" ]; then',
+          '  : > "$PC_HEAVY_TEST_SUBMODULE_FOREACH"',
+          'fi',
+          'exec ' + JSON.stringify(realGit) + ' "$@"',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
 
       const args = ['bash', '-c', 'printf x >> "$PC_HEAVY_TEST_CHILD_RUNS"; printf fresh-run'];
       const env = {
         PATH: [slowBin, process.env.PATH ?? ''].join(':'),
         PC_HEAVY_TEST_HASH_STARTED: hashStarted,
         PC_HEAVY_TEST_HASH_COMPLETED: hashCompleted,
+        PC_HEAVY_TEST_SUBMODULE_FOREACH: submoduleForeachCalled,
         PC_HEAVY_TEST_CHILD_RUNS: childRuns,
         PC_HEAVY_SLOTS: '2',
         PC_HEAVY_COALESCE_SEC: '30',
         PC_HEAVY_UNTRACKED_MAX_SEC: '1',
       };
 
-      const first = runSync(args, env, repo);
+      const wrapperProbe = spawnSync(gitWrapper, ['submodule', 'foreach', '--quiet', '--recursive', 'true'], {
+        encoding: 'utf8',
+        env: baseEnv(env),
+        cwd: repo,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 30_000,
+      });
+      expect(wrapperProbe.error).toBeUndefined();
+      expect(wrapperProbe.status, wrapperProbe.stderr).toBe(0);
+      expect(existsSync(submoduleForeachCalled)).toBe(true);
+      rmSync(submoduleForeachCalled, { force: true });
+
+      // Coalescing is deliberately disabled unless stdin is provably /dev/null.
+      // spawnSync's default pipe means this regression would otherwise never
+      // reach the slow hasher or exercise the timeout path.
+      const runWithNullStdin = () => spawnSync('bash', [PC_HEAVY, ...args], {
+        encoding: 'utf8',
+        env: baseEnv(env),
+        cwd: repo,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 30_000,
+      });
+
+      const first = runWithNullStdin();
       expect(first.error).toBeUndefined();
       expect(first.status, first.stderr).toBe(0);
       expect(first.stdout).toBe('fresh-run');
@@ -4050,8 +4101,9 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       expect(first.stderr).not.toContain('coalesced:');
       expect(existsSync(hashStarted)).toBe(true);
       expect(existsSync(hashCompleted)).toBe(false);
+      expect(existsSync(submoduleForeachCalled)).toBe(false);
 
-      const second = runSync(args, env, repo);
+      const second = runWithNullStdin();
       expect(second.error).toBeUndefined();
       expect(second.status, second.stderr).toBe(0);
       expect(second.stdout).toBe('fresh-run');

@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  HOLD_ACTIONS,
+  HOLD_ACTION_TOOLS,
   HOLD_AGENT_MAX_REVIEW_DAYS,
   canLiftHold,
   holdReviewState,
@@ -86,6 +89,40 @@ describe('parseHoldSpec', () => {
 
   it('requires a reason', () => {
     expect(parseHoldSpec({ ...validSpec, reason: '   ' }, agent).ok).toBe(false);
+  });
+
+  it('accepts an agent reviewAt exactly at the cap and refuses one millisecond past it', () => {
+    const capMs = NOW.getTime() + HOLD_AGENT_MAX_REVIEW_DAYS * 24 * 60 * 60 * 1000;
+    expect(parseHoldSpec({ ...validSpec, reviewAt: new Date(capMs).toISOString() }, agent).ok).toBe(true);
+    expect(parseHoldSpec({ ...validSpec, reviewAt: new Date(capMs + 1).toISOString() }, agent).ok).toBe(false);
+  });
+
+  it('refuses a hold with no placer identity', () => {
+    const r = parseHoldSpec(validSpec, { ...agent, placedById: '  ' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.join(' ')).toMatch(/placedById/);
+  });
+
+  it('refuses a missing target and a missing forbidden action', () => {
+    expect(parseHoldSpec({ ...validSpec, target: null }, agent).ok).toBe(false);
+    expect(parseHoldSpec({ ...validSpec, forbids: undefined }, agent).ok).toBe(false);
+  });
+});
+
+describe('HOLD_ACTION_TOOLS (D-014 item 6)', () => {
+  const catalogPath = new URL('../../../.papercusp/tool-catalog.json', import.meta.url).pathname;
+  const registered = new Set(
+    (JSON.parse(readFileSync(catalogPath, 'utf8')) as { tools: Array<{ name: string }> }).tools.map((t) => t.name),
+  );
+
+  it('maps every action in the vocabulary, and nothing else', () => {
+    expect(Object.keys(HOLD_ACTION_TOOLS).sort()).toEqual([...HOLD_ACTIONS].sort());
+  });
+
+  it.each(HOLD_ACTIONS.map((action) => [action]))('%s names only registered tools', (action) => {
+    const tools = HOLD_ACTION_TOOLS[action];
+    expect(tools.length).toBeGreaterThan(0);
+    expect(tools.filter((name) => !registered.has(name))).toEqual([]);
   });
 });
 

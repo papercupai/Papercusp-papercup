@@ -281,10 +281,13 @@ describe('HTTP /api/agent-tools — app key scope (R-5, R-6)', () => {
 
 // ── MCP ─────────────────────────────────────────────────────────────────────────
 
-async function withMcpClient<T>(run: (client: InstanceType<typeof Client>) => Promise<T>): Promise<T> {
+async function withMcpClient<T>(
+  run: (client: InstanceType<typeof Client>) => Promise<T>,
+  query = '',
+): Promise<T> {
   const extra = {
     requestInfo: {
-      url: 'http://127.0.0.1:3070/api/mcp',
+      url: `http://127.0.0.1:3070/api/mcp${query}`,
       headers: { host: '127.0.0.1:3070', authorization: `Bearer ${minted.key}` },
     },
   } as unknown as MessageExtraInfo;
@@ -334,6 +337,23 @@ describe('MCP /api/mcp — app key scope (R-5, R-6)', () => {
     expect(() => resolveAgentIdentity(spawn.ctx)).toThrow(/cannot.*attributed/);
     expect(resolveAgentIdentity({ ...spawn.ctx, principal: synthesizeTransportPrincipal(spawn.ctx) }).ownerId)
       .toBe(`app:${minted.id}`);
+  });
+
+  // WI-6554700010030456: a seeded (`?tools=`) session with a stable key restores its grown
+  // surface under the transport owner. Resolving that owner bare threw for an app key and
+  // failed the whole listing; the precondition pins that this case really takes that branch.
+  it('a seeded app-key session with a session key lists its tools instead of throwing', async () => {
+    const query = `?tools=${encodeURIComponent(IN_SCOPE)}&client=app-seeded-session`;
+    const spawn = await tryBuildSpawnContext({ requestInfo: {
+      url: `http://127.0.0.1:3070/api/mcp${query}`,
+      headers: { host: '127.0.0.1:3070', authorization: `Bearer ${minted.key}` },
+    } });
+    if (spawn.kind !== 'ok') throw new Error('fixture app did not authenticate');
+    expect(spawn.ctx.uiClientId).toBeTruthy();
+    expect(() => resolveAgentIdentity(spawn.ctx)).toThrow(/cannot.*attributed/);
+    const names = await withMcpClient(async (client) => (await client.listTools()).tools.map((t) => t.name), query);
+    expect(names).toContain(IN_SCOPE);
+    expect(names).not.toContain(OUT_OF_SCOPE);
   });
 
   it('reads and enforces the authenticated app owner confinement on listing', async () => {

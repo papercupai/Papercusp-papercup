@@ -32,8 +32,10 @@
  * defect. If every selected input is unparsed, coverage is inconclusive and cannot be
  * reported as clean.
  */
-import { readFileSync, statSync } from 'node:fs';
-import { extname, isAbsolute, resolve, sep } from 'node:path';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { parse } from '@typescript-eslint/typescript-estree';
 import { analyze } from '@typescript-eslint/scope-manager';
 import { visitorKeys } from '@typescript-eslint/visitor-keys';
@@ -178,12 +180,72 @@ export function repoOwnedInputs(metafile, baseDir) {
   return out.sort();
 }
 
+const digest = (value) => createHash('sha256').update(value).digest('hex');
+
+/** Reuse only a successful analysis of the SAME bytes, grammar and globals.
+ * EI-27247628229290204: a first private build reparsed 7,439 unchanged inputs
+ * for 107s. Unlike an mtime baseline, this also works across isolated checkouts.
+ * The scanner and lockfile bytes invalidate prior parser/analysis semantics;
+ * Node's version invalidates the runtime globals. Storage failure is a miss.
+ * This is analysis reuse, not test evidence or permission to skip an input read.
+ * @param {{ directory?: string, implementation?: string, maxEntries?: number }} [options]
+ */
+export function createCleanInputCache({ directory = join(homedir(), '.papercusp', 'cache', 'bundle-free-refs'),
+  implementation, maxEntries = 20_000 } = {}) {
+  let file;
+  let entries = new Map();
+  try {
+    const identity = implementation ?? digest(Buffer.concat([
+      readFileSync(new URL(import.meta.url)),
+      readFileSync(new URL('../package-lock.json', import.meta.url)),
+      Buffer.from(process.version),
+    ]));
+    file = join(directory, `${digest(identity)}.json`);
+    const saved = JSON.parse(readFileSync(file, 'utf8'));
+    if (saved.version === 1 && Array.isArray(saved.clean)
+      && saved.clean.length <= maxEntries && saved.clean.every(key => typeof key === 'string' && /^[a-f0-9]{64}$/.test(key))
+      && saved.sha256 === digest(JSON.stringify(saved.clean))) entries = new Map(saved.clean.map(key => [key, true]));
+  } catch { /* absent, corrupt or unavailable cache: analyse the input */ }
+  const stats = { hits: 0, analyzed: 0 };
+  return {
+    stats,
+    /** @param {string} code @param {boolean} jsx @param {Set<string>} known */
+    key(code, jsx, known) { return digest(JSON.stringify([jsx, [...known].sort(), code])); },
+    /** @param {string} key */
+    has(key) {
+      if (!entries.has(key)) return false;
+      stats.hits++;
+      entries.delete(key); entries.set(key, true);
+      return true;
+    },
+    /** @param {string} key */
+    remember(key) { entries.delete(key); entries.set(key, true); },
+    flush() {
+      if (!file) return;
+      const temporary = `${file}.${process.pid}.tmp`;
+      try {
+        mkdirSync(directory, { recursive: true });
+        const clean = [...entries.keys()].slice(-maxEntries);
+        writeFileSync(temporary, JSON.stringify({ version: 1, clean, sha256: digest(JSON.stringify(clean)) }), { mode: 0o600 });
+        renameSync(temporary, file);
+        // Keep concurrently active scanner versions; bound old namespaces as
+        // lockfile/scanner revisions accumulate. Eviction only loses reuse.
+        const versions = readdirSync(directory).filter(name => /^[a-f0-9]{64}\.json$/.test(name))
+          .map(name => ({ path: join(directory, name), at: statSync(join(directory, name)).mtimeMs }))
+          .sort((a, b) => b.at - a.at);
+        for (const retired of versions.slice(32)) unlinkSync(retired.path);
+      } catch { /* losing reuse cannot turn a failed scan into a pass */ }
+      finally { try { unlinkSync(temporary); } catch { /* renamed or never written */ } }
+    },
+  };
+}
+
 /**
  * @param {string[]} files
- * @param {{ known?: Set<string>, readFile?: (file: string) => string }} [options]
+ * @param {{ known?: Set<string>, readFile?: (file: string) => string, cache?: ReturnType<typeof createCleanInputCache> }} [options]
  * @returns {{ findings: Array<{ file: string, name: string, line: number, column: number }>, unreadable: Array<{ file: string, error: string }>, unparsed: Array<{ file: string, error: string }> }}
  */
-export function checkInputs(files, { known, readFile = (f) => readFileSync(f, 'utf8') } = {}) {
+export function checkInputs(files, { known = knownGlobalNames(), readFile = (f) => readFileSync(f, 'utf8'), cache } = {}) {
   const findings = [];
   const unreadable = [];
   const unparsed = [];
@@ -196,10 +258,16 @@ export function checkInputs(files, { known, readFile = (f) => readFileSync(f, 'u
       continue;
     }
     const ext = extname(file);
+    const jsx = ext === '.tsx' || ext === '.jsx';
+    const key = cache?.key(code, jsx, known);
+    if (key && cache.has(key)) continue;
+    if (cache) cache.stats.analyzed++;
     try {
-      for (const f of findFreeValueReferences(code, { jsx: ext === '.tsx' || ext === '.jsx', known })) {
+      const references = findFreeValueReferences(code, { jsx, known });
+      for (const f of references) {
         findings.push({ file, ...f });
       }
+      if (key && references.length === 0) cache.remember(key);
     } catch (err) {
       unparsed.push({ file, error: String(err?.message ?? err).split('\n')[0] });
     }
@@ -283,14 +351,17 @@ export function main(argv = process.argv.slice(2), io = { log: console.log, erro
   }
   const t0 = Date.now();
   const known = knownGlobalNames(opts.allow);
-  const { findings, unreadable, unparsed } = checkInputs(files, { known });
+  const cache = createCleanInputCache();
+  const { findings, unreadable, unparsed } = checkInputs(files, { known, cache });
+  cache.flush();
   const ms = Date.now() - t0;
   const allSelectedInputsUnparsed = files.length > 0 && unparsed.length === files.length;
   let status = 'clean';
   if (findings.length > 0 || unreadable.length > 0) status = 'refused';
   else if (allSelectedInputsUnparsed) status = 'inconclusive';
   if (opts.json) {
-    io.log(JSON.stringify({ status, selection, inputs: inputs.length, checked: files.length, ms, findings, unreadable, unparsed }));
+    io.log(JSON.stringify({ status, selection, inputs: inputs.length, checked: files.length,
+      analyzed: cache.stats.analyzed, cached: cache.stats.hits, ms, findings, unreadable, unparsed }));
   } else {
     for (const f of findings) {
       io.error(`🚨 free reference \`${f.name}\` at ${f.file}:${f.line}:${f.column} — no binding in scope and not a host global; the bundle would throw ReferenceError when this runs`);
@@ -301,7 +372,7 @@ export function main(argv = process.argv.slice(2), io = { log: console.log, erro
       io.error('🚨 no selected inputs could be analysed; refusing to publish an inconclusive bundle scan');
     }
   }
-  io.log(`BUNDLE_FREE_REFS_RESULT status=${status} selection=${selection} inputs=${inputs.length} checked=${files.length} findings=${findings.length} unreadable=${unreadable.length} unparsed=${unparsed.length} ms=${ms}`);
+  io.log(`BUNDLE_FREE_REFS_RESULT status=${status} selection=${selection} inputs=${inputs.length} checked=${files.length} findings=${findings.length} unreadable=${unreadable.length} unparsed=${unparsed.length} ms=${ms} analyzed=${cache.stats.analyzed} cached=${cache.stats.hits}`);
   return findings.length > 0 || unreadable.length > 0 || allSelectedInputsUnparsed ? 1 : 0;
 }
 

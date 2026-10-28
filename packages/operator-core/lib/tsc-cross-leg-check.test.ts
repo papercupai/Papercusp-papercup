@@ -274,6 +274,7 @@ describe('runCrossLegConsumer', () => {
           namedNotInProgram: [],
           snapshotAgeMs: 0,
           queuedMs: 0,
+          refreshMs: 0,
           checkMs: 1,
         };
       },

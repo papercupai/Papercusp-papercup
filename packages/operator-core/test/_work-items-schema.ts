@@ -737,6 +737,28 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
  * additive columns, while these integration tests do not exercise the collector
  * writer or its unrelated diagnostics.
  */
+/**
+ * EI-27232210222510304: a deliberately minimal projection of
+ * harness_shared.event_awaits — exactly the columns the claim reapers'
+ * warm-dead leg (`warmDeadHolderFragment`) reads to exempt an owner parked on a
+ * bounded wake await. Every fresh-PG fixture that runs a reaper must create it,
+ * because Postgres resolves the relation even inside the NOT EXISTS.
+ */
+export const EVENT_AWAITS_LIVENESS_MIN_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.event_awaits (
+    id BIGSERIAL PRIMARY KEY,
+    subscriber_id text NOT NULL,
+    event_key text NOT NULL,
+    policy text NOT NULL DEFAULT 'wake',
+    note text,
+    timeout_behavior text NOT NULL DEFAULT 'wake',
+    expires_ts timestamptz,
+    fired_at timestamptz,
+    cancelled_at timestamptz,
+    superseded_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`;
+
 export const WATCHDOG_TICKS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.watchdog_ticks (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

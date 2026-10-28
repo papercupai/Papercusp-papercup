@@ -11,6 +11,7 @@ import {
   recordMcpRequestTraceOperation,
   runWithMcpRequestTraceExecution,
   resolveMcpRequestTraceId,
+  withMcpHttpHandlerPhaseTrace,
   withMcpToolsListPhaseTrace,
 } from './mcp-request-trace';
 
@@ -60,6 +61,50 @@ describe('tools/list discovery phase evidence', () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(info).not.toHaveBeenCalled();
     } finally {
+      info.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('HTTP MCP handler phase evidence', () => {
+  it('logs a bounded correlated phase only after it crosses the pending threshold', async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4';
+    let release!: (value: string) => void;
+    const wait = new Promise<string>(resolve => { release = resolve; });
+    try {
+      await expect(withMcpHttpHandlerPhaseTrace(traceId, 'auth_challenge', async () => 'fast', 50))
+        .resolves.toBe('fast');
+      expect(info).not.toHaveBeenCalled();
+
+      const pending = withMcpHttpHandlerPhaseTrace(traceId, 'mcp_adapter', () => wait, 50);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(info).toHaveBeenCalledTimes(1);
+      const pendingEvent = JSON.parse(String(info.mock.calls[0][0]).replace('[mcp-request-trace] ', ''));
+      expect(pendingEvent).toMatchObject({
+        traceId,
+        toolName: 'mcp-http-handler',
+        stage: 'http_handler_phase_pending',
+        httpHandlerPhase: 'mcp_adapter',
+        elapsedMs: 50,
+      });
+
+      release('response');
+      await expect(pending).resolves.toBe('response');
+      expect(info).toHaveBeenCalledTimes(2);
+      const settledEvent = JSON.parse(String(info.mock.calls[1][0]).replace('[mcp-request-trace] ', ''));
+      expect(settledEvent).toMatchObject({
+        traceId,
+        toolName: 'mcp-http-handler',
+        stage: 'http_handler_phase_settled',
+        httpHandlerPhase: 'mcp_adapter',
+        outcome: 'success',
+        elapsedMs: 50,
+      });
+    } finally {
+      release('cleanup');
       info.mockRestore();
       vi.useRealTimers();
     }

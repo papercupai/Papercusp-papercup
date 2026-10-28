@@ -111,13 +111,30 @@ function syntaxTokens(text, file) {
 }
 
 /**
+ * @typedef {{ section: string, key: string, value: string, firstLine: number, lastLine: number }} SystemdDirective
+ * @typedef {{ firstLine: number, lastLine: number, reason: string, text: string }} SystemdGap
+ * @typedef {{ format: 'systemd', directives: SystemdDirective[], unresolved: SystemdGap[],
+ *   effectiveConfigurationVerified: boolean }} LaunchControl
+ * @typedef {{ path: string, repository: any, commit: any, blobOid: any, sourceSha256: string,
+ *   sourceKind: string, imports: any[], launchControl?: LaunchControl }} InventoryFile
+ * @typedef {{ id: string, sourceSha256: string, classification: string, evidenceKind: string,
+ *   signals: any[] }} InventoryLead
+ */
+
+/**
  * Preserve unit assignments for launch review, including empty list resets.
  * This is source evidence, not an effective-unit evaluator: installation paths,
  * prefix drop-ins, environment files and manager expansion still need proof.
+ * @param {string} path
+ * @param {string} text
+ * @returns {LaunchControl | null}
  */
 export function collectSystemdDirectives(path, text) {
   if (!SYSTEMD_UNIT.test(path) && !(CONTROL_DIRECTORY.test(path) && path.endsWith('.conf'))) return null;
-  const directives = [], unresolved = [];
+  /** @type {SystemdDirective[]} */
+  const directives = [];
+  /** @type {SystemdGap[]} */
+  const unresolved = [];
   let section = null, pending = null;
   const lines = text.split(/\r?\n/);
   for (let index = 0; index < lines.length; index++) {
@@ -148,10 +165,14 @@ export function collectSystemdDirectives(path, text) {
 
 /** Candidate leads require explicit reachability classification before the population is frozen. */
 export function inventorySources(snapshot) {
+  /** @type {Record<string, InventoryLead[]>} */
   const groups = Object.fromEntries(INVENTORY_GROUPS.map((name) => [name, []]));
-  const files = [], unresolved = [...(snapshot.unresolved ?? [])];
+  /** @type {InventoryFile[]} */
+  const files = [];
+  const unresolved = [...(snapshot.unresolved ?? [])];
   for (const source of [...snapshot.sources].sort((a, b) => a.path.localeCompare(b.path))) {
     const text = source.bytes.toString('utf8'), sourceSha256 = hash(source.bytes);
+    /** @type {InventoryFile} */
     const file = { path: source.path, repository: source.repository, commit: source.commit, blobOid: source.blobOid, sourceSha256,
       sourceKind: /(?:^|\/)(?:test|tests|__tests__|fixtures)\/|\.(?:test|spec)\./.test(source.path) ? 'test-or-fixture' : 'source', imports: [] };
     files.push(file);

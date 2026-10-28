@@ -162,14 +162,14 @@ export function warnMissingReexecLoop({ diagnosis, interactive, write, }?: {
  * configuration that `warnMissingReexecLoop` exists to warn about.
  *
  * @param {{ onReexec?: unknown, reexecCode?: unknown, bridgeTty?: unknown,
- *           allowInteractive?: boolean, pendingTurnDelivery?: boolean }} args
+ *           allowInteractive?: boolean, pendingWakeDelivery?: boolean }} args
  */
-export function shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive, pendingTurnDelivery, }: {
+export function shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive, pendingWakeDelivery, }: {
     onReexec?: unknown;
     reexecCode?: unknown;
     bridgeTty?: unknown;
     allowInteractive?: boolean;
-    pendingTurnDelivery?: boolean;
+    pendingWakeDelivery?: boolean;
 }): boolean;
 /**
  * The operator opt-in behind {@link shouldAdoptHostCode}'s `allowInteractive`.
@@ -2083,17 +2083,20 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExe
         reason?: undefined;
         maxQuietForMs?: undefined;
         quietMs?: undefined;
+        nativeBusy?: undefined;
     } | {
         deferred: boolean;
         boundary?: undefined;
         reason?: undefined;
         maxQuietForMs?: undefined;
         quietMs?: undefined;
+        nativeBusy?: undefined;
     } | {
         deferred: boolean;
         reason: string;
         maxQuietForMs: number;
         quietMs: number;
+        nativeBusy: boolean;
         boundary?: undefined;
     }>;
     /** WI-1872 (2): the START-RACE fix. Resolves as soon as output goes BUSY
@@ -2108,7 +2111,7 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExe
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, getRearmExpiryReason, isSuperseded, isCancelled, readWakeMode, wakeModeRetryMs, nativeBindingRetryMs, waitWakeModeRetry, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, getRearmExpiryReason, isSuperseded, isCancelled, readWakeMode, wakeModeRetryMs, nativeBindingRetryMs, waitWakeModeRetry, stallReportEveryMs, now, }: {
     acquireInject: any;
     waitIdle?: (() => Promise<{
         deferred: boolean;
@@ -2144,6 +2147,8 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     wakeModeRetryMs?: number | undefined;
     nativeBindingRetryMs?: number | undefined;
     waitWakeModeRetry?: ((delayMs: any) => Promise<any>) | undefined;
+    stallReportEveryMs?: number | undefined;
+    now?: (() => number) | undefined;
 }): {
     /** Live count of accepted first attempts and re-armed retries.
      *  Filter carry-respawn for wake arbitration: the controller also owns

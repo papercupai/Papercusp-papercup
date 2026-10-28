@@ -170,6 +170,9 @@
     "scripts/lib/sync-write.mjs",
     "scripts/lib/vitest-summary.mjs",
     "scripts/lib/test-runner-classes.mjs",
+    // Imported by packages/operator-core/lib/__tests__/affected-tests-run-group.test.ts
+    // (TS7016 without a declaration on the operator-core lint:tsc leg).
+    "scripts/lib/test-run-group-guard.mjs",
     "scripts/proc-guard.mjs",
     // EI-22066972653982768 — the pc-heavy admission-record reader + identity-verified
     // kill, sibling of proc-guard.mjs above. Registered for this list's FIRST reason:

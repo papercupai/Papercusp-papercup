@@ -449,21 +449,31 @@ describe('declared completion receipt retention', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('retains a terminal failure without declared artifacts after its run directory is pruned', async () => {
-    const root = tmp(), runId = '20261010T000001Z-1';
+  it.each([true, false])('publishes an archived result readable after pruning a terminal run (pass=%s)', async passes => {
+    const fixture = tmp(), root = path.join(fixture, 'evidence "quoted" space');
+    const runId = '20261010T000001Z-1';
+    mkdirSync(root);
     try {
       const original = await runHarness({
         contract: { name: 'failure-proof', phases: [{ id: 'boot' }] },
         evidenceRoot: root, runId,
-        runPhase: async () => ({ ok: false, step: 'load-config', reasonCode: 'invalid-config' }),
+        runPhase: async () => passes ? { ok: true } : { ok: false, step: 'load-config', reasonCode: 'invalid-config' },
       });
-      expect(original.verdict).toBe('fail');
+      const summary = formatSummaryLine(original);
+      expect(original.verdict).toBe(passes ? 'pass' : 'fail');
       await complete(root, '20261010T000002Z-2');
       expect(await pruneRuns(root, 1)).toContain(runId);
       expect(existsSync(original.evidenceDir)).toBe(false);
-      expect(readFileSync(path.join(root, 'retained', runId, 'result.json')))
+      const parsed = parseSummaryLine(summary);
+      const archived = path.join(root, 'retained', runId, 'result.json');
+      expect(parsed?.retainedResult).toBe(archived);
+      expect(await loadRunResult(path.dirname(parsed!.retainedResult!))).toEqual(original);
+      expect(readFileSync(archived))
         .toEqual(Buffer.from(JSON.stringify(original, null, 2) + '\n'));
-    } finally { rmSync(root, { recursive: true, force: true }); }
+      // Compact diagnosis must not rewrite the original phase locations or advertise
+      // a snapshot with no terminal verdict as an archived completion.
+      expect(formatSummaryLine({ ...original, endedAt: null })).not.toContain('retained_result=');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
   });
 
   it('refuses missing declared phase receipts before publishing retained completion', async () => {
@@ -569,6 +579,7 @@ describe('runHarness', () => {
       verdict: 'fail',
       runId: 'r1',
       firstFailure: { phase: 'leg-a', step: 'clone', reasonCode: 'clone-timeout' },
+      retainedResult: path.join(root, 'retained', 'r1', 'result.json'),
     });
     expect((await loadRunResult(path.join(root, 'r1'))).verdict).toBe('fail');
     expect(readlinkSync(path.join(root, 'latest'))).toBe('r1');
@@ -672,6 +683,19 @@ describe('parseSummaryLine', () => {
   it('returns null for any other line', () => {
     expect(parseSummaryLine('VH_RUN harness=h run=r evidence=/x')).toBeNull();
     expect(parseSummaryLine('')).toBeNull();
+  });
+
+  it('keeps legacy completion lines readable without an archive claim', () => {
+    expect(parseSummaryLine(line('none'))).toEqual({
+      harness: 'h', verdict: 'fail', runId: '20260930T000000Z-42', firstFailure: null,
+    });
+  });
+
+  it('preserves the failure fingerprint when the optional archive field is damaged', () => {
+    expect(parseSummaryLine(line('build/-/exit-1') + ' retained_result="bad\\q"')).toEqual({
+      harness: 'h', verdict: 'fail', runId: '20260930T000000Z-42',
+      firstFailure: { phase: 'build', step: null, reasonCode: 'exit-1' },
+    });
   });
 });
 

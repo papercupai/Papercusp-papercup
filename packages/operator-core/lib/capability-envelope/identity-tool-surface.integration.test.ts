@@ -86,13 +86,16 @@ it('measures the production identity policy read in a private background runtime
       'scripts/lib/with-test-pg-cleanup.mjs',
       'libs/papercusp/packages/orchestrator/src/blueprint/loader.ts',
     ],
-    retainedArtifacts: ['phases/execute/identity-surface-receipt.json'],
+    retainedArtifacts: [
+      'phases/execute/identity-surface-receipt.json',
+      'phases/execute/worker-progress.ndjson',
+    ],
     execute: async (observe, evidenceDir) => {
       const probe = String.raw`
         import assert from 'node:assert/strict';
         import { execFileSync } from 'node:child_process';
         import { createHash } from 'node:crypto';
-        import { mkdir, writeFile } from 'node:fs/promises';
+        import { appendFile, mkdir, writeFile } from 'node:fs/promises';
         import { readFileSync } from 'node:fs';
         import { dirname, join } from 'node:path';
         import { tmpdir } from 'node:os';
@@ -100,6 +103,14 @@ it('measures the production identity policy read in a private background runtime
 
         const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID;
         const home = process.env.HOME;
+        const progress = async (stage, evidence = {}) => {
+          const path = process.env.PAPERCUSP_ISOLATED_PROGRESS_FILE;
+          if (!path) return;
+          await appendFile(path, JSON.stringify({ stage, observedAt: new Date().toISOString(), ...evidence }) + '\n');
+        };
+        const { _resetForTests } = await import('@papercusp/db-org');
+        try {
+        await progress('runtime-env-validation-start');
         assert.ok(workspaceId && workspaceId.startsWith('test-runtime-'));
         assert.equal(process.env.PAPERCUSP_WORKSPACE, workspaceId);
         assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '1');
@@ -107,7 +118,9 @@ it('measures the production identity policy read in a private background runtime
         assert.equal(tmpdir(), join(dirname(home), 'tmp'));
         assert.equal(process.env.PAPERCUSP_SID, undefined);
         assert.equal(process.env.PAPERCUSP_SKIP_PG_DISCOVERY, '1');
+        await progress('runtime-env-validation-complete');
 
+        await progress('private-database-connect-start');
         const postgres = (await import('postgres')).default;
         const databaseUrl = new URL(process.env.HARNESS_ADMIN_DATABASE_URL);
         assert.equal(databaseUrl.port, process.env.PAPERCUSP_PG_PORT);
@@ -120,8 +133,12 @@ it('measures the production identity policy read in a private background runtime
         } finally {
           await sql.end();
         }
+        await progress('private-database-connect-complete', { port: privateDatabase.port });
 
+        await progress('agent-tools-bootstrap-start');
         await import('./packages/operator-core/lib/agent-tools/index.ts');
+        await progress('agent-tools-bootstrap-complete');
+        await progress('identity-modules-import-start');
         const [{ compileAgentSpecification }, { listAllProjectedTools },
           { readOperatorState, writeOperatorState },
           { checkIdentityGrantKernel, readIdentityGrantPolicy },
@@ -132,6 +149,7 @@ it('measures the production identity policy read in a private background runtime
           import('./packages/operator-core/lib/capability-envelope/identity-grants-port.ts'),
           import('./packages/operator-core/lib/capability-envelope/identity-tool-surface.ts'),
         ]);
+        await progress('identity-modules-import-complete');
 
         const potPath = join(home, 'identity-policy-pot');
         const sourceDir = join(potPath, '.papercusp');
@@ -148,19 +166,25 @@ it('measures the production identity policy read in a private background runtime
           { slug: 'sales-pot', path: potPath, harness_kind: 'hive' },
         ] };
         await writeOperatorState('harness_registry', registry, workspaceId);
+        await progress('private-state-readback-start');
         assert.deepEqual(await readOperatorState('harness_registry', workspaceId, { fresh: true }), registry);
+        await progress('private-state-readback-complete');
 
         const input = { workspaceId, harnessSlug: 'sales', role: 'su', classRefs: [] };
+        await progress('inherited-role-rejection-start');
         await assert.rejects(
           () => readIdentityGrantPolicy(input),
           /no explicit role capability ceiling/,
           'an inherited worker role must not count as administrator authorization',
         );
+        await progress('inherited-role-rejection-complete');
 
         await writeFile(blueprintPath, ${JSON.stringify(governedBlueprintYaml)});
 
+        await progress('projected-tool-catalog-start');
         const projected = listAllProjectedTools();
         assert.ok(projected.length > 100, 'expected the production tool registry, got ' + projected.length);
+        await progress('projected-tool-catalog-complete', { candidateCount: projected.length });
         const candidate = (name) => {
           const tool = projected.find((entry) => entry.expose.mcp?.name === name);
           assert.ok(tool, 'missing projected tool ' + name);
@@ -233,12 +257,14 @@ it('measures the production identity policy read in a private background runtime
         await new Promise((resolve) => setTimeout(resolve, 20));
         eventLoop.reset();
         const startedAt = performance.now();
+        await progress('identity-policy-resolution-start');
         const surface = await resolveIdentityToolSurface(ctx, candidates, {
           readState: async () => state,
           readPolicy,
           check: checkIdentityGrantKernel,
         });
         const elapsedMs = performance.now() - startedAt;
+        await progress('identity-policy-resolution-complete', { policyReadCount, policyReadMs, elapsedMs });
         await new Promise((resolve) => setTimeout(resolve, 20));
         const eventLoopMaxMs = eventLoop.max / 1e6;
         eventLoop.disable();
@@ -280,9 +306,16 @@ it('measures the production identity policy read in a private background runtime
             admitted: [...surface.admitted].sort(),
           },
         };
+        await progress('identity-policy-receipt-created', { policyReadMs, elapsedMs, eventLoopMaxMs });
         console.log('IDENTITY_POLICY_BACKGROUND_RECEIPT ' + JSON.stringify(receipt));
+        } finally {
+          await progress('operator-pg-pool-reset-start');
+          await _resetForTests();
+          await progress('operator-pg-pool-reset-complete');
+        }
       `;
-      const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0' };
+      const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+        PAPERCUSP_ISOLATED_PROGRESS_FILE: join(evidenceDir, 'worker-progress.ndjson') };
       for (const key of ['PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
         'PC_EXECUTED_SOURCE_MAP_OUT', 'PC_EXECUTED_SOURCE_MAP_RESULT', 'PC_EXECUTED_SOURCE_MAP_WORKSPACE']) delete env[key];
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime', '--',

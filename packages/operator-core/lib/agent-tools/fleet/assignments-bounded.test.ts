@@ -256,6 +256,7 @@ describe('fleet:assignments bounded handler reads', () => {
   });
 
   it('caps cumulative sequential phases at the shared handler budget', async () => {
+    expect(FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS).toBeLessThanOrEqual(20_000);
     vi.useFakeTimers();
     const warnings: string[] = [];
     vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {

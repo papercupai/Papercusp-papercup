@@ -71,6 +71,19 @@ function testResultContradictedByRun(
 }
 
 describe('testResultContradictedByRun — the finding', () => {
+  it('uses exact native green despite an older red and concurrent peer red', async () => {
+    expect(await testResultContradictedByRun(CLAIMS_PASSED, probe({
+      latest: run({ runGroupId: 'native-green' }),
+      rows: [row({ status: 'fail', runGroupId: 'old-tool-red' }),
+        row({ runGroupId: 'native-green' }), row({ status: 'fail', runGroupId: 'peer' })],
+    }))).toBeUndefined();
+  });
+  it('still contradicts a native red beside a peer green', async () => {
+    expect(await testResultContradictedByRun(CLAIMS_PASSED, probe({
+      latest: run({ runGroupId: 'native-red' }),
+      rows: [row({ status: 'fail', runGroupId: 'native-red' }), row({ runGroupId: 'peer' })],
+    }))).toEqual({ runGroupId: 'native-red', failingFiles: ['a.test.ts'], filesInRun: 1 });
+  });
   it('reports a contradiction when the latest run has a failing row', async () => {
     const found = await testResultContradictedByRun(
       CLAIMS_PASSED,

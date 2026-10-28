@@ -55,6 +55,7 @@ vi.mock('../../blind-review-scratch-plans', () => ({
 }));
 
 import tool from './blind-review';
+import { blindReviewPostedEventKey } from '../../blind-review-post-event';
 
 describe('plans:blind-review typed recruiter replacement', () => {
   const args = { slug: 'replacement-plan', op: 'replace', activationAuditSeq: 5, sourceReviewId: 60,
@@ -117,20 +118,45 @@ describe('blind review posted event', () => {
     archiveBlindReviewScratchPlans.mockResolvedValue(null);
   });
 
-  it('emits the scoped post only after the review and session receipt persist', async () => {
-    findLatestBlindReviewSessionBindingByReviewer.mockResolvedValue({ activationAuditSeq: 3, status: 'ready' });
+  // awaitable-review-post-events-2026-10-27 R-1: the key is the poster's own binding, never the plan.
+  it('emits the binding-scoped post only after the review and session receipt persist', async () => {
+    findLatestBlindReviewSessionBindingByReviewer.mockResolvedValue({ id: 17, activationAuditSeq: 3, status: 'ready' });
     await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX);
     expect(emitAwaitedEvent).toHaveBeenCalledExactlyOnceWith({
-      key: `plan:blind-review-posted:${SLUG}`, workspaceId: 'ws-resolved', source: 'su-reviewer',
+      key: `plan:blind-review-posted:${SLUG}:17`, workspaceId: 'ws-resolved', source: 'su-reviewer',
       summary: expect.any(String),
-      payload: { slug: SLUG, harness: 'papercusp', reviewId: 9, activationAuditSeq: 3,
+      payload: { slug: SLUG, harness: 'papercusp', bindingId: 17, reviewId: 9, activationAuditSeq: 3,
         reviewerOwnerId: 'su-reviewer', outcome: 'conclusive' },
     });
     expect(recordBlindReview.mock.invocationCallOrder[0]).toBeLessThan(emitAwaitedEvent.mock.invocationCallOrder[0]!);
     expect(recordBlindReviewSessionPost.mock.invocationCallOrder[0]).toBeLessThan(emitAwaitedEvent.mock.invocationCallOrder[0]!);
   });
 
+  it("fires only the posting binding's key, never another binding's on the same plan", async () => {
+    findLatestBlindReviewSessionBindingByReviewer.mockResolvedValue({ id: 18, activationAuditSeq: 3, status: 'ready' });
+    await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX);
+    const keys = emitAwaitedEvent.mock.calls.map(([event]) => (event as { key: string }).key);
+    expect(keys).toEqual([`plan:blind-review-posted:${SLUG}:18`]);
+    expect(keys).not.toContain(`plan:blind-review-posted:${SLUG}:17`);
+    expect(keys).not.toContain(`plan:blind-review-posted:${SLUG}`);
+  });
+
+  it('emits nothing for an unbound post, which no recruiter holds a key for', async () => {
+    const { body } = await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX);
+    expect(body).toMatchObject({ ok: true, id: 9 });
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+  });
+
+  it('keeps the recorded review when the emit fails', async () => {
+    findLatestBlindReviewSessionBindingByReviewer.mockResolvedValue({ id: 17, activationAuditSeq: 3, status: 'ready' });
+    emitAwaitedEvent.mockRejectedValue(new Error('pg down'));
+    const { body, isError } = await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX);
+    expect(isError).toBe(false);
+    expect(body).toMatchObject({ ok: true, id: 9 });
+  });
+
   it('also signals an inconclusive post without claiming acceptance', async () => {
+    findLatestBlindReviewSessionBindingByReviewer.mockResolvedValue({ id: 17, activationAuditSeq: 3, status: 'ready' });
     evaluateBlindReviewGate.mockResolvedValue({ satisfied: false, acceptedReviewIds: [], rejectedReviews: [] });
     const { body } = await call({ slug: SLUG, op: 'post', gaps: [], outcome: 'inconclusive' }, REVIEWER_CTX);
     expect(body).toMatchObject({ ok: true, counts: false });
@@ -253,10 +279,14 @@ describe('plans:blind-review op mint', () => {
   it('routes resume through the recruiter helper with the resolved workspace and caller identity', async () => {
     resumeBlindGapReviewer.mockResolvedValue({
       ok: true, activationAuditSeq: 3, reviewerOwnerId: 'su-reviewer', leaseReleased: true, launch: { mode: 'resume' },
+      bindingId: 17,
     });
     const { body, isError } = await call({ slug: SLUG, op: 'resume' }, REVIEWER_CTX);
     expect(isError).toBe(false);
-    expect(body).toMatchObject({ ok: true, op: 'resume', activationAuditSeq: 3, reviewerOwnerId: 'su-reviewer' });
+    // awaitable-review-post-events-2026-10-27 R-2: the exact key the recovered binding's post fires.
+    expect(body).toMatchObject({ ok: true, op: 'resume', activationAuditSeq: 3, reviewerOwnerId: 'su-reviewer',
+      bindingId: 17, awaitKey: `plan:blind-review-posted:${SLUG}:17` });
+    expect(body.awaitKey).toBe(blindReviewPostedEventKey(SLUG, 17));
     expect(resumeBlindGapReviewer).toHaveBeenCalledWith(expect.objectContaining({
       slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-reviewer',
       ctx: expect.objectContaining({ workspaceId: 'ws-resolved' }),

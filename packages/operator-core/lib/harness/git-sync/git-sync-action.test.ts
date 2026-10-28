@@ -1204,6 +1204,34 @@ describe('registry population', () => {
 });
 
 describe('WI-1416 durable-fire breadcrumbs', () => {
+  it('stores a timing breakdown in the eligibility DBOS checkpoint result', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    let eligibilityOutput: unknown;
+    const originalStep = checkpointedSteps.runCheckpointedStep;
+    const step = vi.spyOn(checkpointedSteps, 'runCheckpointedStep').mockImplementation(async (name, fn) => {
+      const output = await originalStep(name, fn);
+      if (name === 'git-sync:eligibility') eligibilityOutput = output;
+      return output;
+    });
+    try {
+      await action(ctx);
+    } finally {
+      step.mockRestore();
+    }
+
+    expect(eligibilityOutput).toMatchObject({
+      eligible: true,
+      timing: {
+        bodyStartedAtEpochMs: expect.any(Number),
+        bodyCompletedAtEpochMs: expect.any(Number),
+        bodyElapsedMs: expect.any(Number),
+        routineMetadataPatchMs: expect.any(Number),
+        registryReadMs: expect.any(Number),
+        pathEligibilityMs: expect.any(Number),
+      },
+    });
+  });
+
   it('stamps fire_started_at as the FIRST metadata write of every fire (before locks/gate)', async () => {
     runGitSyncMock.mockResolvedValue({
       status: 'nothing',

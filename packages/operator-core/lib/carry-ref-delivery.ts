@@ -146,7 +146,7 @@ export async function carryRefChangesForRecovery(input: {
         stamps: [] as DepStamp[],
       }));
       const cited = stampsCitedBy(note, stamps);
-      if (cited.length > 0) sources.push({ label: 'loop note', stamps: cited });
+      if (cited.length > 0) sources.push({ label: 'loop note', stamps: cited, harness: loop.harnessSlug });
     }
     const citing = held.filter((item) => extractCarryRefDeps(item.checkpoint, { max: 1 }).length > 0);
     if (citing.length > 0) {
@@ -158,7 +158,13 @@ export async function carryRefChangesForRecovery(input: {
         const stored = byId.get(item.id);
         // The successor is shown `item.checkpoint`; re-check only what THAT text cites.
         const cited = stored ? stampsCitedBy(item.checkpoint, stored.stamps) : [];
-        if (cited.length > 0) sources.push({ label: `${item.id} checkpoint`, stamps: cited });
+        if (cited.length > 0) {
+          sources.push({
+            label: `${item.id} checkpoint`,
+            stamps: cited,
+            harness: item.harness ?? input.sessionHarness,
+          });
+        }
       }
     }
     if (sources.length === 0) return null;

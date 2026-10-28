@@ -96,6 +96,11 @@ const ESBUILD_WORKERS: { source: string; output: string }[] = [
     source: 'packages/operator-core/lib/role-codex-home.worker.ts',
     output: 'role-codex-home.worker.mjs',
   },
+  {
+    // WI-6554700010030353: the resident full-window co-change index, one child per repository.
+    source: 'packages/operator-core/lib/code-intelligence/warm-cochange-index.worker.ts',
+    output: 'warm-cochange-index.worker.mjs',
+  },
 ];
 
 /**
@@ -248,17 +253,26 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     if (output) rmSync(output, { recursive: true, force: true });
   });
 
+  // WI-6554700010020817 made cpu-task-worker.script.mjs an esbuild compile (its own branch in
+  // bundle_host_workers), so a `.script.mjs` source can be compiled too. Derive those from the
+  // recipe rather than hand-count them: a hand count went stale the day that branch landed.
+  const esbuiltScriptWorkers = () => [...readFileSync(recipe, 'utf8')
+    .matchAll(/if \[ "\$output" = "([^"]+\.script\.mjs)" \]; then\n(?:.*\n){0,6}?.*bundle_host_esbuild "\$repo_root" "\$source"/g)]
+    .map(match => match[1]!);
+
   it('holds the shared package-cache reader for every actual worker compiler invocation', () => {
+    expect(esbuiltScriptWorkers()).toEqual(['cpu-task-worker.script.mjs']);
     expect((buildOutput.match(/NPM_INSTALL_SAFE guarding package-cache reader:/g) ?? []).length)
-      .toBe(ESBUILD_WORKERS.length + 1); // one pin resolution, then every compile
+      .toBe(ESBUILD_WORKERS.length + esbuiltScriptWorkers().length + 1); // one pin resolution, then every compile
   });
 
   it('control: successful compilation without the package-cache lease is detected', () => {
     const original = readFileSync(recipe, 'utf8');
     const guarded = 'bundle_host_esbuild "$repo_root" "$source"';
-    expect(original.split(guarded)).toHaveLength(2);
+    // One guarded call for the TypeScript loop, one per esbuilt `.script.mjs` branch.
+    expect(original.split(guarded)).toHaveLength(2 + esbuiltScriptWorkers().length);
     const subject = join(output, 'recipe-without-cache-lease.sh');
-    writeFileSync(subject, original.replace(guarded, 'npx --yes esbuild@0.25.0 "$source"'));
+    writeFileSync(subject, original.replaceAll(guarded, 'npx --yes esbuild@0.25.0 "$source"'));
     const result = build({}, subject, join(output, 'cache-lease-control'));
     expect(result.error, `worker control signal=${result.signal}; ${result.stdout + result.stderr}`).toBeUndefined();
     expect(result.status, result.stdout + result.stderr).toBe(0);
@@ -278,7 +292,10 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     expect(bundled.length).toBeGreaterThan(0);
     expect(readFileSync(join(gateMeta, 'copied-sources.txt'), 'utf8').trim().split('\n')).toEqual(copied);
     const metafiles = readdirSync(gateMeta).filter(name => name.endsWith('.meta.json'));
-    expect(metafiles).toHaveLength(bundled.length);
+    // Every esbuild compile writes a metafile: the TypeScript workers and the esbuilt scripts.
+    expect(metafiles.sort()).toEqual([...ESBUILD_WORKERS.map(worker => worker.output), ...esbuiltScriptWorkers()]
+      .map(name => `${name}.meta.json`).sort());
+    expect(bundled.map(source => relative(REPO_ROOT, source)).sort()).toEqual(ESBUILD_WORKERS.map(worker => worker.source).sort());
     const inputs = metafiles.flatMap(name => Object.keys(JSON.parse(readFileSync(join(gateMeta, name), 'utf8')).inputs))
       .map(path => resolve(REPO_ROOT, path));
     for (const source of bundled) expect(inputs).toContain(source);

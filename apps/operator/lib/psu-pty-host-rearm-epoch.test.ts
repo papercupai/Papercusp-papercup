@@ -267,3 +267,64 @@ describe('native rearm preserves loop-instance delivery provenance', () => {
     expect(h.settled.map(row => row.ids)).toEqual([[loop.deliveryId], [inbox.deliveryId]]);
   });
 });
+
+describe('EI-27244198558252718 — a long production re-poll is never silent', () => {
+  it('reports still-pending with the defer reason and native veto, then stays must-deliver', async () => {
+    let clock = 0;
+    const events: Record<string, unknown>[] = [];
+    const recycle = vi.fn(async () => {});
+    const mutex = makeInjectMutex();
+    let refusals = 4;
+    // Each prompt wait burns 6 simulated minutes and refuses on the native veto,
+    // the su-f9f01e3c shape (quiet pty, retained gate), until the gate clears.
+    const waitAtPrompt = vi.fn(async () => {
+      clock += 6 * 60_000;
+      if (refusals > 0) {
+        refusals -= 1;
+        return { deferred: true, reason: 'agent-busy', maxQuietForMs: 360_000, quietMs: 1500, nativeBusy: true };
+      }
+      return { deferred: false };
+    });
+    const controller = makeCarryRearmController({
+      acquireInject: () => mutex.acquire(),
+      waitAtPrompt,
+      recycle,
+      emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
+      now: () => clock,
+      stallReportEveryMs: 15 * 60_000,
+    });
+    expect(controller.schedule(carry())).toBe('queued');
+    for (let i = 0; i < 40 && recycle.mock.calls.length === 0; i += 1) await drain();
+    expect(recycle).toHaveBeenCalledTimes(1);
+    const stalls = events.filter((e) => e.kind === 'respawn-rearm-still-pending');
+    // Refusals at 6/12/18/24 min; the 15-min report fires before attempt 4 (18 min).
+    expect(stalls).toHaveLength(1);
+    expect(stalls[0]).toMatchObject({
+      mode: 'carry-respawn', reason: 'busy-gate-expired', nativeBusy: true,
+      pendingForMs: 18 * 60_000, attempts: 3, observedMaxQuietMs: 360_000,
+    });
+    expect(events.some((e) => e.kind === 'respawn-carry-dropped')).toBe(false);
+    expect(shouldDeferWakeForPendingRespawn('turn', controller.pendingCount())).toBe(false);
+  });
+
+  it('can be disabled and never reports drills', async () => {
+    let clock = 0;
+    const events: { kind: string }[] = [];
+    const mutex = makeInjectMutex();
+    const make = (stallReportEveryMs: number) => makeCarryRearmController({
+      acquireInject: () => mutex.acquire(),
+      waitAtPrompt: vi.fn(async () => { clock += 60 * 60_000; return { deferred: true }; }),
+      recycle: vi.fn(async () => {}),
+      emitEvent: (kind: string) => events.push({ kind }),
+      now: () => clock,
+      stallReportEveryMs,
+      maxProductionAttempts: 3,
+      maxDrillAttempts: 3,
+    });
+    make(0).schedule(carry());
+    make(60_000).schedule({ ...carry(), drillId: 'drill-1' } as Carry & { drillId: string });
+    for (let i = 0; i < 20; i += 1) await drain();
+    expect(events.filter((e) => e.kind.endsWith('still-pending'))).toEqual([]);
+    expect(events.filter((e) => e.kind.endsWith('dropped'))).toHaveLength(2);
+  });
+});

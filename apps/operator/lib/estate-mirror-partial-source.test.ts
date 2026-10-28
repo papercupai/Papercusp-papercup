@@ -205,4 +205,44 @@ describe('pc-estate-mirror-alert.sh --partial-source (WI-10006330)', () => {
     expect(msg.summary).toContain(`${HOST}/20261005T033115Z`);
     expect(msg.summary).not.toContain('MIRROR FAILING');
   });
+
+  it('suppresses a generic systemd OnFailure duplicate after a detailed alarm, while retaining the fallback', () => {
+    function makeHarness() {
+      const root = newRoot('estate-alert-dedup-');
+      const bin = join(root, 'bin');
+      const repo = join(root, 'repo');
+      mkdirSync(bin);
+      mkdirSync(join(repo, 'scripts'), { recursive: true });
+      writeFileSync(join(repo, 'scripts', 'mcp-call.mjs'), '// presence only; node is shimmed\n');
+      const nodeCalls = join(root, 'node-calls.log');
+      const notifications = join(root, 'notifications.log');
+      shim(bin, 'node', `echo call >>'${nodeCalls}'; exit 0`);
+      shim(bin, 'notify-send', `echo call >>'${notifications}'; exit 0`);
+      const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: root, PC_ESTATE_MIRROR_ROOT: root, PC_REPO: repo };
+      return {
+        root,
+        run: (reason: string) => spawnSync('bash', [ALERT_SCRIPT, reason], { encoding: 'utf8', timeout: 30_000, env }),
+        calls: (path: string) => (existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n').filter(Boolean) : []),
+      };
+    }
+
+    const latched = makeHarness();
+    const detailed = latched.run('estate mirror health: mesh snapshot is stale');
+    const markerPath = join(latched.root, 'ALERT-MIRROR-FAILING');
+    const markerBefore = readFileSync(markerPath, 'utf8');
+    const generic = latched.run('pc-estate-mirror unit failed');
+    expect(detailed.status).toBe(0);
+    expect(generic.status).toBe(0);
+    expect(generic.stderr).toContain('suppressing duplicate generic OnFailure notification');
+    expect(readFileSync(markerPath, 'utf8')).toBe(markerBefore);
+    expect(latched.calls(join(latched.root, 'node-calls.log'))).toHaveLength(1);
+    expect(latched.calls(join(latched.root, 'notifications.log'))).toHaveLength(1);
+
+    const fallback = makeHarness();
+    const fallbackResult = fallback.run('pc-estate-mirror unit failed');
+    expect(fallbackResult.status).toBe(0);
+    expect(existsSync(join(fallback.root, 'ALERT-MIRROR-FAILING'))).toBe(true);
+    expect(fallback.calls(join(fallback.root, 'node-calls.log'))).toHaveLength(1);
+    expect(fallback.calls(join(fallback.root, 'notifications.log'))).toHaveLength(1);
+  });
 });

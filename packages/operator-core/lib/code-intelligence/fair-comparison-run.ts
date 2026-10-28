@@ -342,7 +342,7 @@ function nativeReplayMatchesKey(replay: NativeGraphReplay, kase: FairCase, key: 
   const observedSites = new Set<SiteKey>();
   for (const site of response.sites) {
     if (!site || typeof site.path !== 'string' || !site.path.trim() ||
-      !Number.isSafeInteger(site.line1) || site.line1 < 1) return false;
+      site.line1 === null || !Number.isSafeInteger(site.line1) || site.line1 < 1) return false;
     const reported = siteKey(site);
     if (rejectedSites.has(reported)) return false;
     if (expectedSites.has(reported)) {

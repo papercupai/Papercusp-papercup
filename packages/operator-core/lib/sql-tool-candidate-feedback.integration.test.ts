@@ -47,7 +47,7 @@ it('persists repeatable scoped checks with build baseline windows and denominato
   expect([...latest.values()].map(row => row.testRunId).sort()).toEqual([...repeat.testRunIds].sort());
   const criteria = ['proposal-quality', 'repair-outcome'].map(key => ({ key: `${sqlFeedbackIdentity(value)}:${key}`,
     check: { kind: 'probe', probe: { expect: { op: 'eq', path: '$', value: true } } } }));
-  expect(fillRatingsFromLedger({ criteria, latest, rubricRatingScale: ['healthy', 'broken'] }))
+  expect(fillRatingsFromLedger({ criteria, latest, rubricRatingScale: ['healthy', 'broken'], callerRatings: undefined }))
     .toMatchObject({ ok: true, ledgerFilled: criteria.map(c => c.key) });
   expect(await readLatestRubricCheckResults({ rubricRef: SQL_FEEDBACK_RUBRIC, workspaceId: 'other' }, db.adminSql)).toHaveProperty('size', 0);
 });
@@ -149,7 +149,7 @@ it('registered workspace rubric rescores the real ledger without masking another
     });
     expect(rescore.probeError).toBeUndefined(); expect(rescore.executed).toBe(2);
     const latest = await readLatestRubricCheckResults({ rubricRef: definition.rubricRef, workspaceId }, db.adminSql);
-    const filled = fillRatingsFromLedger({ criteria: definition.criteria, latest, rubricRatingScale: definition.ratingScale,
+    const filled = fillRatingsFromLedger({ criteria: definition.criteria, latest, rubricRatingScale: definition.ratingScale, callerRatings: undefined,
       dispositions: { 'proposal-quality': { remediation: 'review failing proposal' }, 'repair-outcome': { remediation: 'repair adoption or coverage' } } });
     expect(filled.ok).toBe(true);
     return filled.ok ? Object.fromEntries(Object.entries(filled.ratings).map(([key, value]) => [key, value.rating])) : {};

@@ -25,6 +25,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import postgres from 'postgres';
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
@@ -56,7 +57,20 @@ vi.mock('./embedded-pg-discovery', async () => {
 });
 vi.mock('./migration-drift', async () => {
   const actual = await vi.importActual<typeof import('./migration-drift')>('./migration-drift');
-  return { ...actual, resolveSqlDir: () => h.bootSqlDir };
+  return {
+    ...actual,
+    resolveSqlDir: () => h.bootSqlDir,
+    // The real drift diagnostic reads through getOrgPg(), i.e. the LIVE
+    // org-admin pool, not this file's throwaway database. The integration guard
+    // refuses that open and defers a console.warn that a later timer flushes
+    // into whichever test is running, which failed the backup-rendezvous case
+    // under vitest-fail-on-console (WI-6554700010042536). The boot path treats
+    // this diagnostic as best-effort, so a throwing stub keeps every case
+    // hermetic without faking a MigrationDrift result.
+    checkMigrationDrift: async () => {
+      throw new Error('db-boot-migrate.integration.test: drift diagnostic is not hermetic here');
+    },
+  };
 });
 // The failure broadcast must not actually touch coord tables (absent in the
 // throwaway DB) — capture the call instead.
@@ -467,6 +481,97 @@ describe('applyPendingMigrationsAtBoot wired entry (§A1)', () => {
     expect(result).not.toBeNull();
     expect(result!.failed.map((f) => f.file)).toEqual(['956-quiet-bad.sql']);
     expect(h.sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WI-6554700010042536 — on 2026-10-28 one untracked, unreserved draft
+ * (1606-…sql) in the shared tree withheld bg-host's whole background plane for
+ * 2089s: the reservation guard refused it, so it sat in `failed`, and the boot
+ * gate waits for `failed` to empty. git-sync never commits such a file, so it
+ * can never ship; it must be skipped and announced, while a TRACKED file with
+ * the same defect keeps failing closed.
+ */
+describe('unpublished migration drafts (WI-6554700010042536)', () => {
+  /** A sql dir that is its own git repo: `tracked` files are in the index. */
+  function makeGitSqlDir(tracked: Record<string, string>, untracked: Record<string, string>): string {
+    const dir = makeSqlDir({ ...tracked, ...untracked });
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: dir, stdio: 'ignore' });
+    git('init', '-q');
+    git('add', '--', ...Object.keys(tracked));
+    return dir;
+  }
+
+  it('skips an untracked unreserved draft without failing the gate, applies the rest, and announces it', async () => {
+    const dir = makeGitSqlDir(
+      { '960-published.sql': 'CREATE TABLE harness_shared.boot_draft_published (id int);' },
+      { '961-unreserved-draft.sql': 'CREATE TABLE harness_shared.boot_draft_must_not_apply (id int);' },
+    );
+    await seedMigrationReservations(['960-published.sql']);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let result: Awaited<ReturnType<typeof applyPendingMigrationsNow>>;
+    try {
+      result = await applyPendingMigrationsNow({ sqlDir: dir });
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    expect(result).toMatchObject({
+      applied: 1,
+      failed: [],
+      skippedUnpublished: [
+        { file: '961-unreserved-draft.sql', reason: expect.stringContaining('has no reservation row') },
+      ],
+    });
+    const ledger = await rootSql<{ filename: string }[]>`
+      SELECT filename FROM harness_shared.schema_migrations
+       WHERE filename IN ('960-published.sql', '961-unreserved-draft.sql') ORDER BY filename`;
+    expect(ledger.map((r) => r.filename)).toEqual(['960-published.sql']);
+    const relation = await rootSql<{ name: string | null }[]>`
+      SELECT to_regclass('harness_shared.boot_draft_must_not_apply')::text AS name`;
+    expect(relation[0]?.name).toBeNull();
+    expect(h.sendMessage).toHaveBeenCalledTimes(1);
+    const [, payload] = h.sendMessage.mock.calls[0] as [unknown, { summary: string }];
+    expect(payload.summary).toMatch(/unpublished migration draft.*961-unreserved-draft\.sql/);
+  });
+
+  it('keeps a TRACKED unreserved migration fail-closed', async () => {
+    const dir = makeGitSqlDir(
+      {
+        '962-published.sql': 'CREATE TABLE harness_shared.boot_tracked_published (id int);',
+        '963-tracked-unreserved.sql': 'CREATE TABLE harness_shared.boot_tracked_must_not_apply (id int);',
+      },
+      {},
+    );
+    await seedMigrationReservations(['962-published.sql']);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let result: Awaited<ReturnType<typeof applyPendingMigrationsNow>>;
+    try {
+      result = await applyPendingMigrationsNow({ sqlDir: dir, broadcast: false });
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    expect(result?.applied).toBe(1);
+    expect(result?.failed).toEqual([
+      { file: '963-tracked-unreserved.sql', error: expect.stringContaining('has no reservation row') },
+    ]);
+    expect(result).not.toHaveProperty('skippedUnpublished');
+  });
+
+  it('keeps an unreserved migration fail-closed when the sql dir is not under version control', async () => {
+    const dir = makeSqlDir({ '964-no-repo-unreserved.sql': 'CREATE TABLE harness_shared.boot_no_repo (id int);' });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let result: Awaited<ReturnType<typeof applyPendingMigrationsNow>>;
+    try {
+      result = await applyPendingMigrationsNow({ sqlDir: dir, broadcast: false });
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    expect(result?.failed.map((f) => f.file)).toEqual(['964-no-repo-unreserved.sql']);
+    expect(result).not.toHaveProperty('skippedUnpublished');
   });
 });
 

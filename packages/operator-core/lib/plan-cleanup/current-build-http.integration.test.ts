@@ -12,7 +12,7 @@ const root = resolve(import.meta.dirname, '../../../..');
 const options = isolatedWorkerOptions(480_000);
 
 it('automatically archives a supported recommendation through current-build HTTP with matching persisted outcome', async context => {
-  let prepared: ReturnType<typeof preparePrivateOperatorApiBundle> | undefined;
+  let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
   const runId = await recordIsolatedIntegrationProof({
     root,
     filePath: 'packages/operator-core/lib/plan-cleanup/current-build-http.integration.test.ts',
@@ -32,7 +32,11 @@ it('automatically archives a supported recommendation through current-build HTTP
       'apps/operator/bin/bundle-host.sh',
       'apps/operator/bin/hono-host.ts',
     ],
-    prepare: evidenceDir => { prepared = preparePrivateOperatorApiBundle(root, evidenceDir); },
+    prepare: async evidenceDir => {
+      prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
+        builder: { timeoutMs: 240_000, maxMs: 420_000 },
+      });
+    },
     execute: async (observe, evidenceDir) => {
       expect(prepared).toBeTruthy();
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');

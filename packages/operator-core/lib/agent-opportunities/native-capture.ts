@@ -19,9 +19,9 @@ type SourceContinuation = { snapshot: string; files: Record<string, {
 }> };
 type CaptureReceipt = { manifest?: Record<string, string[]>; enrolling?: boolean;
   population?: string; cursor?: string; scanWindow?: string;
-  pendingSources?: Record<string, { continuation: SourceContinuation; calls: CallEvidence }>;
+  pendingSources?: Record<string, { continuation: SourceContinuation; calls: CallEvidence; indexFingerprint?: string }>;
   scans?: Record<string, { snapshot: string; fingerprint: string;
-    calls: CallEvidence }> };
+    calls: CallEvidence; indexFingerprint?: string }> };
 const ENROLLMENT_BATCH = 32;
 const SOURCE_CHUNK_BYTES = 4 * 1024 * 1024;
 export interface NativeCaptureOptions {
@@ -296,17 +296,53 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     const pendingSources: NonNullable<CaptureReceipt['pendingSources']> = progress.receipt.scanWindow === scanWindow
       ? Object.fromEntries(Object.entries(progress.receipt.pendingSources ?? {}).filter(([key]) => runtimes.has(key))) : {};
     const manifest = { ...progress.receipt.manifest };
+    // ALWAYS UPDATE/DELETE/TRUNCATE detectors cover destructive changes. INSERT
+    // must also invalidate source scans: sequence IDs are allocated before
+    // commit, so MAX(id) alone misses a late commit below the visible maximum.
+    // Keep only this population digest in the existing receipt, never row IDs.
+    const indexSnapshot = async (wave: Binding[]) => {
+      const keys = wave.map(b => ({ runtime: digest([b.id, b.owner, b.provider]), owner: b.owner, provider: b.provider }));
+      const rows = await sql<{ runtime: string; count: string; maximum: string }[]>`
+        SELECT b.runtime,i.count,i.maximum
+        FROM jsonb_to_recordset(${sql.json(keys)}::jsonb) AS b(runtime text,owner text,provider text)
+        CROSS JOIN LATERAL (SELECT count(*)::text AS count,COALESCE(max(a.id)::text,'0') AS maximum
+          FROM harness_shared.agent_activity a WHERE a.workspace_id=${opts.workspaceId}
+            AND a.harness_slug=${opts.harnessSlug} AND a.owner_id=b.owner AND a.agent=b.provider AND a.kind='tool') i`;
+      return new Map(rows.map(row => [row.runtime, { ...row, fingerprint: digest([row.count, row.maximum]) }] as const));
+    };
     const inWindow = (at: string) => micros(at) >= micros(progress.since) && micros(at) < micros(opts.until);
     const savePartial = async () => {
       if (Date.now() >= deadline || !await opts.authorize()
         || JSON.stringify(await population()) !== JSON.stringify(roster)) return;
-      await sql`UPDATE harness_shared.sql_intent_progress SET native_capture_receipt=${sql.json({
+      const receipt = {
         version: 1, reconciling: true, manifest, population: populationHash, scanWindow, scans, pendingSources,
-        revision: progress.revision })}
+        revision: progress.revision };
+      const written = await sql`UPDATE harness_shared.sql_intent_progress SET native_capture_receipt=${sql.json(receipt)}
         WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope}
           AND native_capture_revision=${progress.revision}::bigint
-          AND native_capture_receipt IS NOT DISTINCT FROM ${sql.json(progress.receipt)}::jsonb`;
+          AND native_capture_receipt IS NOT DISTINCT FROM ${sql.json(progress.receipt)}::jsonb RETURNING 1`;
+      if (!written.length) throw new Error('native_capture_receipt_changed');
+      progress.receipt = structuredClone(receipt);
     };
+    let indexChanged = false;
+    const cached = bindings.filter(b => {
+      const runtime = digest([b.id, b.owner, b.provider]);
+      return scans[runtime] || pendingSources[runtime];
+    });
+    for (let offset = 0; offset < cached.length; offset += ENROLLMENT_BATCH) {
+      if (Date.now() >= deadline) return 'unknown';
+      const wave = cached.slice(offset, offset + ENROLLMENT_BATCH), current = await indexSnapshot(wave);
+      for (const binding of wave) {
+        const runtime = digest([binding.id, binding.owner, binding.provider]);
+        const saved = scans[runtime] ?? pendingSources[runtime];
+        if (!saved?.indexFingerprint || saved.indexFingerprint !== current.get(runtime)?.fingerprint) {
+          delete scans[runtime]; delete pendingSources[runtime]; indexChanged = true;
+        }
+      }
+    }
+    // Revoke cached completeness before a conflicting row can abort the parse.
+    // Do not reset native_capture_from: a new index row is not a new install.
+    if (indexChanged) await savePartial();
     const remaining = bindings.filter(b => !scans[digest([b.id, b.owner, b.provider])]);
     for (const binding of remaining.slice(0, ENROLLMENT_BATCH)) {
       if (Date.now() >= deadline - 100) { await savePartial(); return 'unknown'; }
@@ -347,9 +383,14 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
       if (Date.now() >= deadline || !await opts.authorize()) return 'unknown';
       const expected = [...unique.values()].map(s => ({ actor: s.actor, provider: s.provider,
         session: s.namespace, call: s.callId, tool: s.tool, at: s.at }));
+      let indexFingerprint: string | undefined;
       if (expected.length) {
         // Two set operations, not two round trips per call. The bounded census
         // must remain practical for a real native window containing many calls.
+        // Hook created_at is receipt time, while this index copy uses canonical
+        // event time for window pagination. Preserve the receipt and add the
+        // event copy when needed; a same-ID tool conflict must never be repaired
+        // by adding a matching copy beside it.
         await sql`INSERT INTO harness_shared.agent_activity
           (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,summary,detail,created_at)
           SELECT ${opts.workspaceId},${opts.harnessSlug},s.actor,s.provider,s.session,'tool',s.tool,'pre',
@@ -358,28 +399,43 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
             AS s(actor text,provider text,session text,call text,tool text,at text)
           WHERE NOT EXISTS (SELECT 1 FROM harness_shared.agent_activity a WHERE a.workspace_id=${opts.workspaceId}
             AND a.harness_slug=${opts.harnessSlug} AND a.owner_id=s.actor AND a.agent=s.provider
-            AND a.session_id=s.session AND a.tool_use_id=s.call AND a.kind='tool')`;
+            AND a.session_id=s.session AND a.tool_use_id=s.call AND a.kind='tool'
+            AND (a.tool_name IS DISTINCT FROM s.tool OR a.created_at=s.at::timestamptz))`;
         // Compare again rather than inferring that successful INSERTs covered calls.
-        const [row] = await sql<{ complete: boolean }[]>`SELECT NOT EXISTS(
+        const [row] = await sql<{ complete: boolean; count: string; maximum: string }[]>`SELECT NOT EXISTS(
           SELECT 1 FROM jsonb_to_recordset(${sql.json(expected)}::jsonb)
             AS s(actor text,provider text,session text,call text,tool text,at text)
           WHERE NOT EXISTS (SELECT 1 FROM harness_shared.agent_activity a WHERE a.workspace_id=${opts.workspaceId}
             AND a.harness_slug=${opts.harnessSlug} AND a.owner_id=s.actor AND a.agent=s.provider
             AND a.session_id=s.session AND a.tool_use_id=s.call AND a.tool_name=s.tool AND a.kind='tool'
-            AND a.created_at=s.at::timestamptz)) AS complete`;
+            AND a.created_at=s.at::timestamptz)
+          OR EXISTS (SELECT 1 FROM harness_shared.agent_activity a WHERE a.workspace_id=${opts.workspaceId}
+            AND a.harness_slug=${opts.harnessSlug} AND a.owner_id=s.actor AND a.agent=s.provider
+            AND a.session_id=s.session AND a.tool_use_id=s.call AND a.kind='tool'
+            AND a.tool_name IS DISTINCT FROM s.tool)) AS complete,i.count,i.maximum
+          FROM (SELECT count(*)::text AS count,COALESCE(max(a.id)::text,'0') AS maximum
+            FROM harness_shared.agent_activity a WHERE a.workspace_id=${opts.workspaceId}
+              AND a.harness_slug=${opts.harnessSlug} AND a.owner_id=${binding.owner}
+              AND a.agent=${binding.provider} AND a.kind='tool') i`;
         if (!row?.complete) return 'unknown';
+        // Same statement snapshot as the identity/tool checks, after our own
+        // event INSERTs. A concurrent hook cannot be silently incorporated.
+        indexFingerprint = digest([row.count, row.maximum]);
       }
+      indexFingerprint ??= (await indexSnapshot([binding])).get(runtime)?.fingerprint;
+      if (!indexFingerprint) return 'unknown';
       manifest[runtime] = read.identities;
       if (!read.complete) {
-        pendingSources[runtime] = { continuation: read.continuation!, calls: callDigests };
+        pendingSources[runtime] = { continuation: read.continuation!, calls: callDigests, indexFingerprint };
         await savePartial(); return 'unknown';
       }
       delete pendingSources[runtime];
-      scans[runtime] = { snapshot: read.snapshot, fingerprint: read.fingerprint, calls: callDigests };
+      scans[runtime] = { snapshot: read.snapshot, fingerprint: read.fingerprint, calls: callDigests, indexFingerprint };
     }
     if (remaining.length > ENROLLMENT_BATCH) { await savePartial(); return 'unknown'; }
     const calls = new Map<string, string>(), fingerprints: string[] = [];
     let sourceCount = 0;
+    const indexChecks: { owner: string; provider: NativeProvider; count: string; maximum: string }[] = [];
     // Re-census every root before using earlier batches. A stat change forces a
     // fresh parse; a missing predecessor can never vanish from the manifest.
     // This final metadata pass retains the original deadline and fails closed.
@@ -389,14 +445,18 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
       // Bound outstanding filesystem work and drain the entire wave even when
       // one root fails. Never certify a saved snapshot without a fresh read.
       const results = await Promise.allSettled(wave.map(binding => canonicalNativeRuntimeManifest(binding, deadline)));
+      const currentIndex = await indexSnapshot(wave);
       let changed = false;
       for (const [index, result] of results.entries()) {
         const binding = wave[index]!;
         const runtime = digest([binding.id, binding.owner, binding.provider]);
         const scan = scans[runtime];
-        if (result.status === 'rejected' || !scan || result.value.snapshot !== scan.snapshot) {
+        const indexState = currentIndex.get(runtime);
+        if (result.status === 'rejected' || !scan || result.value.snapshot !== scan.snapshot
+          || !indexState || scan.indexFingerprint !== indexState.fingerprint) {
           delete scans[runtime]; changed = true; continue;
         }
+        indexChecks.push({ owner: binding.owner, provider: binding.provider, count: indexState.count, maximum: indexState.maximum });
         sourceCount += result.value.identities.length;
         fingerprints.push(scan.fingerprint);
         for (const [key, value] of Object.entries(scan.calls)) {
@@ -417,7 +477,18 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     const written = await sql`UPDATE harness_shared.sql_intent_progress SET native_capture_receipt=${sql.json(receipt)}
       WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope} AND native_capture_revision=${progress.revision}::bigint
         AND native_capture_receipt IS NOT DISTINCT FROM ${sql.json(progress.receipt)}::jsonb
+        AND NOT EXISTS (SELECT 1
+          FROM jsonb_to_recordset(${sql.json(indexChecks)}::jsonb)
+            AS b(owner text,provider text,count text,maximum text)
+          CROSS JOIN LATERAL (SELECT count(*)::text AS count,COALESCE(max(a.id)::text,'0') AS maximum
+            FROM harness_shared.agent_activity a WHERE a.workspace_id=${opts.workspaceId}
+              AND a.harness_slug=${opts.harnessSlug} AND a.owner_id=b.owner AND a.agent=b.provider AND a.kind='tool') i
+          WHERE i.count IS DISTINCT FROM b.count OR i.maximum IS DISTINCT FROM b.maximum)
       RETURNING 1`;
+    if (!written.length) {
+      for (const key of Object.keys(scans)) delete scans[key];
+      await savePartial();
+    }
     return written.length ? progress.historical ? 'gap' : 'complete' : 'unknown';
   } catch { return 'unknown'; }
 }

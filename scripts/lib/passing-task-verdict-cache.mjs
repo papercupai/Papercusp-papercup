@@ -1103,24 +1103,27 @@ export function capturePassingTaskRuntimeIdentity({ root, cwd = root, environmen
  * scripts, lifecycle hooks and unrecognized launchers run fresh until their actual runtime
  * topology has a measured binding; stamping npm's own Node identity would mislabel their proof.
  *
- * Measured bindings (WI-6554700010030941): leading `NAME=value` assignments, the repo's
- * scripts/pc-heavy.sh admission wrapper (it exports only PC_HEAVY_* and `exec "$@"`), and
+ * Measured bindings (WI-6554700010030941): a leading `PC_TEST_LANE=<lane>` assignment (read
+ * only by the vitest config to pick the lane's file set), the repo's scripts/pc-heavy.sh
+ * admission wrapper (it exports only PC_HEAVY_* and `exec "$@"`), and
  * `node <repo>/scripts/run-vitest-pure-lane.mjs` (it spawns the same PATH-resolved `vitest`)
  * leave the test interpreter unchanged. Their bytes and the script text join the identity as
- * `launcherDigests`, so editing a wrapper or the env prefix invalidates verdicts proved under it.
- * A bare `vitest run` script keeps its pre-existing identity byte for byte.
+ * `launcherDigests`, so editing a wrapper or the lane prefix invalidates verdicts proved under it.
+ * Any OTHER assignment stays opaque: `NODE_OPTIONS=--require=x` changes the runtime, and x's
+ * bytes are in no identity field. A bare `vitest run` script keeps its pre-existing identity
+ * byte for byte.
  */
 const PLAIN_SCRIPT_ARGS = "(?:\\s+[^'\"`$;&|<>()\\r\\n\\\\]+)*";
 const VITEST_RUN_SCRIPT = new RegExp(`^vitest\\s+run${PLAIN_SCRIPT_ARGS}$`);
 const PURE_LANE_SCRIPT = new RegExp(`^node\\s+(\\S+)${PLAIN_SCRIPT_ARGS}$`);
+const MEASURED_LANE_ASSIGNMENT = /^PC_TEST_LANE=[A-Za-z0-9_.-]*\s+/;
 
 function unwrapNpmTestScript({ root, workspaceRoot, scriptText }) {
   const original = scriptText ?? "";
   if (VITEST_RUN_SCRIPT.test(original)) return { launcherDigests: null };
   let rest = original.trim();
-  for (let env; (env = /^[A-Za-z_][A-Za-z0-9_]*=[^\s'"`$;&|<>()\\]*\s+/.exec(rest));) {
-    rest = rest.slice(env[0].length);
-  }
+  const lane = MEASURED_LANE_ASSIGNMENT.exec(rest);
+  if (lane) rest = rest.slice(lane[0].length);
   const repoFile = (operand, relPath) => resolve(workspaceRoot, operand) === join(resolve(root), relPath);
   const launcherDigests = { script: sha256(original) };
   const digest = (relPath) => { launcherDigests[relPath] = sha256(readFileSync(join(resolve(root), relPath))); };

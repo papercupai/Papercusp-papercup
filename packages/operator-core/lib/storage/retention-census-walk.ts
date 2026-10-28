@@ -9,10 +9,42 @@ import { moduleRepoRoot } from '../module-repo-root';
 import { z } from 'zod';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { inspectRetentionTrees, type RetentionTreeCensus } from './disk-consumer-census';
-import { DetachedWalkAbandoned, readWalkState, runDetachedWalk, walkAttemptFiles,
+import { DetachedWalkAbandoned, readWalkState, runDetachedWalk, waitForWalk, walkAttemptFiles,
   walkProcessAlive, type DetachedWalkOptions } from './disk-census-detached-walk';
 
 export const RETENTION_CENSUS_LIFETIME_MS = 15 * 60_000;
+export const RETENTION_CENSUS_PENDING_ERROR = 'retention census pending; managed walk continues for adoption';
+/** A wake hint in the existing reclaim receipt, never selection evidence. */
+export interface PendingRetentionCensus {
+  root: string; dir: string; attempt: number; requestKey: string; launchedAt: number;
+}
+export type DetachedRetentionCensus = RetentionTreeCensus & { pendingWalk?: PendingRetentionCensus };
+
+/** A recovered workflow waits for the same native attempt without holding the
+ * retention mutex. The next reclaim pass still consumes and validates output
+ * under fresh admission, policy, pin, lease and holder evidence. */
+export async function awaitRetentionCensusCompletion(pending: PendingRetentionCensus, notAfterMs: number,
+  deps: Pick<DetachedWalkOptions, 'isAlive' | 'sleep'> = {}): Promise<boolean> {
+  if (!Number.isFinite(notAfterMs) || Date.now() >= notAfterMs) return false;
+  const matches = (state: Awaited<ReturnType<typeof readWalkState>>) => !!state && state.root === pending.root &&
+    state.attempt === pending.attempt && state.requestKey === pending.requestKey && state.launchedAt === pending.launchedAt;
+  const available = async () => matches(await readWalkState(pending.dir)) &&
+    !await fs.access(join(pending.dir, 'consumed')).then(() => true, () => false);
+  const state = await readWalkState(pending.dir);
+  if (!state || !matches(state) || !await available()) return false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, notAfterMs - Date.now()));
+  try {
+    const status = await waitForWalk(state, walkAttemptFiles(pending.dir, pending.attempt).exit, {
+      now: Date.now, sleep: deps.sleep ?? (ms => new Promise(resolveSleep => setTimeout(resolveSleep, ms))),
+      isAlive: deps.isAlive ?? walkProcessAlive, pollMs: 250, graceMs: 0, signal: controller.signal,
+    });
+    return status === 'exited' && Date.now() < notAfterMs && await available();
+  } catch (error) {
+    if (error instanceof DetachedWalkAbandoned) return false;
+    throw error;
+  } finally { clearTimeout(timer); }
+}
 const retentionMutexBrand = Symbol('retention-mutex');
 export type RetentionMutexContext = {
   readonly [retentionMutexBrand]: true;
@@ -85,7 +117,7 @@ export type RetentionCensusWalkOptions = Omit<DetachedWalkOptions, 'command' | '
 };
 
 export async function inspectDetachedRetentionTrees(root: string,
-  options: Parameters<typeof inspectRetentionTrees>[1], walk: RetentionCensusWalkOptions): Promise<RetentionTreeCensus> {
+  options: Parameters<typeof inspectRetentionTrees>[1], walk: RetentionCensusWalkOptions): Promise<DetachedRetentionCensus> {
   // Only the initial complete capped-root census uses this route. Fresh effect
   // inspections, expiry compaction and exact-pin predicates remain inline.
   if (!options.includeRecent || options.paths || options.coversPinnedPath || options.spawn) throw new Error('unsupported detached retention census input');
@@ -174,7 +206,14 @@ export async function inspectDetachedRetentionTrees(root: string,
         return value.result.error ? { ...value.result, entries: [], retained: [] } : value.result;
       }, requestKey);
     } catch (error) {
-      return incomplete(error instanceof DetachedWalkAbandoned ? 'retention census pending; managed walk continues for adoption' : `retention census: ${String(error)}`);
+      if (error instanceof DetachedWalkAbandoned) {
+        const pending = await readWalkState(walk.dir);
+        return { ...incomplete(RETENTION_CENSUS_PENDING_ERROR),
+          ...(pending?.root === root && pending.requestKey === requestKey ? { pendingWalk: {
+            root, dir: walk.dir, attempt: pending.attempt, requestKey, launchedAt: pending.launchedAt,
+          } } : {}) };
+      }
+      return incomplete(`retention census: ${String(error)}`);
     } finally { watching = false; clearTimeout(timer); await watchWaiters; }
   };
   const underLease = async (held: RetentionMutexContext) => {

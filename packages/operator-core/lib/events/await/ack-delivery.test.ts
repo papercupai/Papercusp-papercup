@@ -87,6 +87,15 @@ function configureAcceptedParkedDb() {
       if (text.includes("channel = 'suppressed-redundant'")) {
         if (!text.includes("status IN ('pending', 'parked', 'delivering', 'delivered')")) return [];
         row.status = 'delivered';
+        row.channel = 'suppressed-redundant';
+        row.turnProof = 'superseded';
+        row.lastError = 'host confirmed cancelled-before-write during handled-message settlement';
+        return [{ id: 7 }];
+      }
+      if (text.includes("SET status = 'parked'")) {
+        if (text.includes("AND status IN ('pending', 'parked', 'delivering')") && row.status === 'delivered') return [];
+        row.status = 'parked';
+        row.lastError = 'stale pump park result';
         return [{ id: 7 }];
       }
       if (row.status === 'parked' && row.lastError.startsWith('psu-host accepted:')) {
@@ -186,6 +195,12 @@ describe('ackDelivery for a pump-claimed row', () => {
     expect(hostIndex).toBeGreaterThan(-1);
     expect(suppressionIndex).toBeGreaterThan(hostIndex);
     expect(row.status).toBe('delivered');
+
+    // A pump attempt that started before this ACK can finish afterward. Its stale
+    // park result must not reopen the terminally suppressed delivery.
+    await store.markDeliveryParked(7, 'stale pump park result', 60_000);
+    expect(row).toMatchObject({ status: 'delivered', channel: 'suppressed-redundant' });
+    expect(sqlState.calls.at(-1)?.text).toContain("AND status IN ('pending', 'parked', 'delivering')");
   });
 
   it('keeps a parked host-owned delivery active when the host only accepts cancellation request', async () => {

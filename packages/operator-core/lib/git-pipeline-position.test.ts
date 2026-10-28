@@ -454,12 +454,25 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
     unknownFormat?: boolean;
     startedAtMs?: number;
     path?: string;
+    /** EI-27242252657062361 — marker plus each build sha's file text (null = path absent). */
+    marker?: string;
+    markerFiles?: Record<string, string | null>;
   } = {}) {
     const fallback = fakeGit({ pathCommit: target, dirty: true, contains: {
       HEAD: [target], 'origin/staging': [target], 'origin/main': [target], [laterArtifact]: [target],
     } });
     let runtimeProbed = false;
     const git: GitRunner = async (repo, args) => {
+      const files = options.markerFiles;
+      if (files) {
+        const verified = args[0] === 'rev-parse' && args[1] === '--verify' ? args[2]?.replace(/\^\{commit\}$/, '') : null;
+        if (verified && verified in files) return verified;
+        if (args[0] === 'ls-tree' && args[1] in files) {
+          return files[args[1]] === null ? '' : `100644 blob ${'f'.repeat(40)}\t${args.at(-1)}`;
+        }
+        const shown = args[0] === 'show' && args[1]?.includes(':') ? args[1].split(':')[0] : null;
+        if (shown && shown in files) return files[shown];
+      }
       if (args[0] === 'rev-parse' && args[1] === '--show-object-format') return options.unknownFormat ? null : 'sha1';
       if (args[0] === 'rev-parse' && args.at(-1)?.includes(':')) {
         const ref = args.at(-1)!.split(':')[0];
@@ -472,7 +485,7 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
       if (args[0] === 'hash-object') return 'd'.repeat(40);
       return fallback(repo, args);
     };
-    return gitPipelinePosition({ path: options.path ?? sourcePath, expectedSourceSha256 }, {
+    return gitPipelinePosition({ path: options.path ?? sourcePath, expectedSourceSha256, marker: options.marker }, {
       git,
       loadDeploy: async () => deploy({ deployed: { sha: laterArtifact } as DevDeployState['deployed'] }),
       loadSnapshot: async () => snap(),
@@ -500,6 +513,48 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
         : options.bytes === undefined ? acceptedBytes : options.bytes,
     });
   }
+
+  describe('positionsMarker.runtimes (EI-27242252657062361)', () => {
+    const marker = 'EI-27242252657062361-unique-marker';
+
+    it('counts the marker in each runtime build, independent of later byte edits', async () => {
+      const result = await readAccepted({
+        marker,
+        markerFiles: {
+          [target]: `a\n${marker}\n`,
+          [laterArtifact]: `a\n${marker}\nunrelated later edit\n`,
+          [otherRuntimeBuild]: 'a\nold build without the change\n',
+        },
+      });
+      const runtimes = result.positionsMarker?.runtimes ?? {};
+      expect(runtimes['release-operator']).toMatchObject({ sha: laterArtifact, present: true, count: 1, pathPresent: true });
+      expect(runtimes['bg-host']).toMatchObject({ sha: otherRuntimeBuild, present: false, count: 0, pathPresent: true });
+      // Every serving runtime gets a key; a runtime with no build sha has nothing to read.
+      for (const rt of result.servingRuntimes) {
+        expect(rt.runtime in runtimes).toBe(true);
+        if (!rt.buildSha) expect(runtimes[rt.runtime]).toBeNull();
+      }
+      // A separate measurement: the accepted-source containment is left as measured.
+      expect(result.servingRuntimes.find((rt) => rt.runtime === 'bg-host')?.containsChange).toBe(true);
+    });
+
+    it('reports an absent path as a definitive false and an unresolvable build as unknown', async () => {
+      const result = await readAccepted({
+        marker,
+        markerFiles: { [target]: `${marker}\n`, [laterArtifact]: null },
+      });
+      const runtimes = result.positionsMarker?.runtimes ?? {};
+      expect(runtimes['release-operator']).toMatchObject({ present: false, pathPresent: false, unknownReason: null });
+      // otherRuntimeBuild is not a known commit here: UNKNOWN, never a negative.
+      expect(runtimes['bg-host']).toMatchObject({ present: null, count: null });
+      expect(runtimes['bg-host']?.unknownReason).not.toBeNull();
+    });
+
+    it('leaves positionsMarker null when no marker is given', async () => {
+      const result = await readAccepted();
+      expect(result.positionsMarker).toBeNull();
+    });
+  });
 
   it('binds accepted bytes to a later deployed artifact and differently pinned named runtimes', async () => {
     const result = await readAccepted();

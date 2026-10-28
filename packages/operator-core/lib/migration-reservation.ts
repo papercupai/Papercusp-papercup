@@ -1,5 +1,6 @@
 /** Shared runtime guard for the migration-number reservation contract. */
 
+import { execFile } from 'node:child_process';
 import type postgres from 'postgres';
 
 /** Mirrors scripts/lint-migrations.mjs's reservation-enforcement epoch. */
@@ -149,4 +150,53 @@ export async function assertDirtyMigrationReservations(
     ...new Set(dirtyPaths.map(armedMigrationFilename).filter((filename): filename is string => filename !== null)),
   ];
   for (const filename of filenames) await assertMigrationReservation(client, filename);
+}
+
+/**
+ * WI-6554700010042536 — the migration basenames git tracks directly in `sqlDir`,
+ * or `null` when that cannot be established (git missing or failing, not a
+ * working tree, or a directory with no tracked migration at all, such as a
+ * packaged bundle that happens to sit inside an unrelated repository).
+ *
+ * `null` means "unknown" and every caller must treat it as fail-closed.
+ */
+export function readTrackedMigrationFilenames(
+  sqlDir: string,
+  timeoutMs = 10_000,
+): Promise<ReadonlySet<string> | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      ['ls-files', '-z', '--', '.'],
+      { cwd: sqlDir, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' },
+      (error, stdout) => {
+        if (error) {
+          resolve(null);
+          return;
+        }
+        // Paths are relative to `sqlDir`; a migration lives directly in it.
+        const tracked = new Set(
+          stdout.split('\0').filter((path) => path.endsWith('.sql') && !path.includes('/')),
+        );
+        resolve(tracked.size > 0 ? tracked : null);
+      },
+    );
+  });
+}
+
+/**
+ * WI-6554700010042536 — true only for a file that git POSITIVELY reports as
+ * untracked in a version-controlled migration directory.
+ *
+ * Such a file failed the reservation check, and git-sync's commit-stage
+ * reservation checker defers committing it for the same reason, so it can never
+ * reach any committed tree: it is somebody's unpublished draft. Boot skips it
+ * (with an alarm) instead of withholding the whole background plane on it. A
+ * TRACKED file, or one whose state is unknown, still fails closed.
+ */
+export function isUnpublishedMigrationDraft(
+  filename: string,
+  trackedFilenames: ReadonlySet<string> | null,
+): boolean {
+  return trackedFilenames !== null && trackedFilenames.size > 0 && !trackedFilenames.has(filename);
 }

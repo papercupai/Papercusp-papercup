@@ -1,4 +1,5 @@
 import { papercuspPath } from '@papercusp/host-platform/home';
+import { LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY, leadSourceObservationsRescore } from './relationship-graph/qualification-instrument';
 import type { RecordedRubricCheckSubject } from '@papercusp/test-config/execution-details';
 import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
@@ -283,6 +284,9 @@ export interface PlatformInstrument {
        * stored as if it were a measured `unit` (WI-6554700010018719).
        */
       value?: number;
+      /** Cited source records retained individually by measurement provenance,
+       * rather than packed into the bounded human-readable detail string. */
+      evidenceRefs?: string[];
     }>;
   };
 }
@@ -787,6 +791,7 @@ const COMMAND_INSTRUMENTS: readonly CommandInstrument[] = Object.freeze([
  */
 export function platformComputedInstrumentKeys(): string[] {
   return [
+    LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY,
     CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY,
     DREAM_CONTROL_LIVE_INSTRUMENT_KEY,
     ...Object.values(OBSERVABILITY_INSTRUMENT_KEYS),
@@ -853,7 +858,8 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
       evaluator: 'platform',
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
-      ...(key === CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY ? { rescore: codeIntelUnknownRateRescore() }
+      ...(key === LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY ? { rescore: leadSourceObservationsRescore() }
+        : key === CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY ? { rescore: codeIntelUnknownRateRescore() }
         : key === CODE_INTEL_LIVENESS_INSTRUMENT_KEY ? { rescore: codeIntelLivenessRescore() }
         : key === LEG_OUTCOMES_INSTRUMENT_KEY ? { rescore: codeIntelLegOutcomesRescore() }
         : key === COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY ? { rescore: codeIntelCouplingShadowRescore() }

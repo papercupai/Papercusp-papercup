@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assessAdapterBaselineArtifact, runAdapterBaselineCli } from './adapter-baseline-cli';
+import { assessAdapterBaselineArtifact, freezeAdapterStudyArtifact, runAdapterBaselineCli } from './adapter-baseline-cli';
 import {
   adapterFingerprint, adapterLabelInputFingerprint, adapterQuerySetFingerprint, adapterStudyFingerprint, evaluateAdapterBaseline,
   type AdapterInvocationReceipt, type FrozenAdapterStudy,
@@ -223,6 +223,36 @@ describe('retained adapter assessment entrypoint', () => {
     expect(() => assessAdapterBaselineArtifact(p.input, p.output)).toThrow(/EEXIST/);
     expect(() => assessAdapterBaselineArtifact(p.input, p.input)).toThrow(/overwrite/);
     expect(readFileSync(p.input, 'utf8')).toBe(bytes);
+  });
+
+  it('seals the study at the actual boundary without claiming pin authenticity or running retrieval', () => {
+    const p = paths(), study = fixture().study;
+    const original = JSON.stringify(study);
+    writeFileSync(p.input, original);
+    vi.spyOn(Date, 'now').mockReturnValue(1000);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect(runAdapterBaselineCli(['--freeze', '--input', p.input, '--out', p.output])).toBe(0);
+    const saved = JSON.parse(readFileSync(p.output, 'utf8'));
+    expect(saved).toMatchObject({ kind: 'frozen-adapter-study', sealedAtMs: 1000,
+      pinAuthenticity: 'unverified', planAcceptance: false, study: { declaration: { declaredAtMs: 1000 } } });
+    expect(saved.studyFingerprint).toBe(adapterStudyFingerprint(saved.study));
+    expect(saved).not.toHaveProperty('run');
+    expect(readFileSync(p.input, 'utf8')).toBe(original);
+    expect(() => freezeAdapterStudyArtifact(p.input, p.output)).toThrow(/EEXIST/);
+    expect(() => freezeAdapterStudyArtifact(p.input, p.input)).toThrow(/overwrite/);
+  });
+
+  it.each(['pin', 'query', 'budget', 'cost', 'population', 'empty'] as const)('refuses an incomplete prospective %s before sealing', kind => {
+    const p = paths(), study = fixture().study;
+    if (kind === 'pin') study.declaration.pins.corpus = '';
+    if (kind === 'query') study.queries[0]!.args.query = 'changed';
+    if (kind === 'budget') study.declaration.cells[0]!.maxP95LatencyMs = -1;
+    if (kind === 'cost') delete study.costContracts.cold;
+    if (kind === 'population') study.declaration.cells[0]!.minExecuted = 2;
+    if (kind === 'empty') study.declaration.cells = [];
+    writeFileSync(p.input, JSON.stringify(study));
+    expect(() => freezeAdapterStudyArtifact(p.input, p.output)).toThrow(/invalid prospective study/);
+    expect(() => readFileSync(p.output)).toThrow(/ENOENT/);
   });
 
   it('returns a distinct unknown exit while preserving the entire attempt population', () => {

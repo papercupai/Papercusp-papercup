@@ -78,7 +78,8 @@ import {
   GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER,
   CHECKPOINT_RUN_LOCK_STALE_MS,
   CANDIDATE_RERESOLVE_WINDOW_SEC,
-  REPLACE_STALE_MIN_AGE_SEC,
+  REPLACE_STALE_MIN_SILENCE_SEC,
+  checkpointSilenceSec,
   classifyReplaceRequest,
   checkpointCandidateContainsAncestor,
   checkpointCandidateContainment,
@@ -2447,14 +2448,18 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
    *  `systemctl --user kill` call this describe block exercises. Defaults to a run OLD
    *  enough to pass the EI-11667 min-age guard — the wedged-salvage case.
    *
-   *  ⚠ DERIVED from REPLACE_STALE_MIN_AGE_SEC, never a literal. This was hardcoded `45`
+   *  WI-6554700010042457: the unlock is now SILENCE (REPLACE_STALE_MIN_SILENCE_SEC). These
+   *  fakes publish no log timestamp, phase marker or log file, so progress_at = the unit start
+   *  and silence = age — `ageMinutes` therefore still drives the decision here.
+   *
+   *  ⚠ DERIVED from the replace threshold, never a literal. This was hardcoded `45`
    *  (minutes), which silently encoded the old 20-min threshold: when WI-38026 raised the
    *  threshold to the suite budget, 45 min became YOUNG and three tests here failed by
    *  asserting a `systemctl stop` that correctly no longer happens. The intent of these
    *  cases is "comfortably past the replace threshold", so say exactly that — otherwise the
    *  next retune breaks them again and the failure looks like a regression in the guard
    *  rather than a stale number in its test. */
-  const WEDGED_AGE_MIN = REPLACE_STALE_MIN_AGE_SEC / 60 + 25;
+  const WEDGED_AGE_MIN = Math.ceil(REPLACE_STALE_MIN_SILENCE_SEC / 60) + 25;
 
   function staleActiveExecFn(stopStatus = 0, ageMinutes = WEDGED_AGE_MIN) {
     const startedAt = new Date(Date.now() - ageMinutes * 60_000).toISOString();
@@ -2509,9 +2514,9 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     expect(recordDisplacement).toHaveBeenCalledTimes(1);
   });
 
-  it('a YOUNG stale run is REFUSED, not stopped — the EI-11667 replace-storm guard (stale is normal for a healthy young run on a busy tree)', async () => {
+  it('a PROGRESSING stale run is REFUSED, not stopped — the EI-11667 replace-storm guard (stale is normal for a healthy run on a busy tree)', async () => {
     const spawnFn = vi.fn();
-    const execFn = staleActiveExecFn(0, 5); // 5 min old — well under REPLACE_STALE_MIN_AGE_SEC
+    const execFn = staleActiveExecFn(0, 5); // 5 min since start (= last progress) — well under REPLACE_STALE_MIN_SILENCE_SEC
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
 
     const r = await launchDetachedCheckpoint(
@@ -2530,9 +2535,9 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     expect(spawnFn).not.toHaveBeenCalled();
     expect(r.launched).toBe(false);
     expect(r.reason).toBe('already_running');
-    expect(r.alreadyRunning).toMatchObject({ candidate_stale: true, replace_refused_young: true });
+    expect(r.alreadyRunning).toMatchObject({ candidate_stale: true, replace_refused_progressing: true });
     expect(typeof r.alreadyRunning?.elapsed_sec).toBe('number');
-    expect(r.alreadyRunning?.elapsed_sec).toBeLessThan(REPLACE_STALE_MIN_AGE_SEC);
+    expect(r.alreadyRunning?.elapsed_sec).toBeLessThan(REPLACE_STALE_MIN_SILENCE_SEC);
   });
 
   it('a stale run with UNKNOWN age is refused too (cannot prove it is wedged — never kill a possibly-healthy verdict)', async () => {
@@ -2570,7 +2575,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     expect(stopCall).not.toHaveBeenCalled();
     expect(spawnFn).not.toHaveBeenCalled();
     expect(r.launched).toBe(false);
-    expect(r.alreadyRunning).toMatchObject({ replace_refused_young: true });
+    expect(r.alreadyRunning).toMatchObject({ replace_refused_progressing: true });
   });
 
   it('a NOT-stale active run is never stopped, even with replaceStale:true (the critical-danger guard)', async () => {
@@ -2910,57 +2915,83 @@ describe('checkpointUnitForRoot (per-root manual gates, 2026-07-01)', () => {
  * The invariant pinned here: a run that has published `delivering` is NEVER replaceable, at
  * ANY age. If an age-only decision is reintroduced, the `delivering` cases below go red —
  * instead of the gate silently failing to converge again hours later.
+ *
+ * WI-6554700010042457: the fallback test is SILENCE (now − progress_at), not age. With the
+ * run-level wall clock removed, a healthy run routinely passes 120m; it must stay
+ * unreplaceable for as long as it keeps publishing progress.
  */
 describe('classifyReplaceRequest (EI-18757156963245979: never kill a run that is about to deliver)', () => {
-  const OLD = REPLACE_STALE_MIN_AGE_SEC + 60;
+  const NOW = Date.parse('2026-10-28T18:00:00.000Z');
+  const SILENT = REPLACE_STALE_MIN_SILENCE_SEC + 60;
+  const agoIso = (sec: number) => new Date(NOW - sec * 1000).toISOString();
 
-  it('refuses a run in its VERDICT path even when it is old enough to look wedged', () => {
-    // The exact e4a93f8b shape: stale candidate, past the age line, mid re-triage.
-    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: OLD, delivering: true })).toEqual({
+  it('refuses a run in its VERDICT path even when it is silent long enough to look wedged', () => {
+    // The exact e4a93f8b shape: stale candidate, past the line, mid re-triage.
+    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: SILENT, delivering: true }, NOW)).toEqual({
       replace: false,
       reason: 'delivering',
     });
   });
 
-  it('phase beats age no matter how old the run gets (an age-only rule cannot pass this)', () => {
-    for (const elapsed_sec of [OLD, OLD * 2, OLD * 10]) {
-      expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec, delivering: true }).replace).toBe(false);
+  it('phase beats silence no matter how long the run is quiet', () => {
+    for (const elapsed_sec of [SILENT, SILENT * 2, SILENT * 10]) {
+      expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec, delivering: true }, NOW).replace).toBe(false);
     }
   });
 
-  it('still replaces a genuinely wedged run — old, stale, and NOT delivering (the EI-9672 case)', () => {
-    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: OLD, delivering: false })).toEqual({
-      replace: true,
-    });
+  it('still replaces a genuinely wedged run — silent, stale, and NOT delivering (the EI-9672 case)', () => {
+    expect(
+      classifyReplaceRequest(
+        { candidate_stale: true, elapsed_sec: SILENT * 3, progress_at: agoIso(SILENT), delivering: false },
+        NOW,
+      ),
+    ).toEqual({ replace: true });
   });
 
-  it('degrades to the age test when the run published no phase (older build / wedged early)', () => {
+  it('an OLD run that is still PROGRESSING is refused — age alone never unlocks replacement (WI-6554700010042457)', () => {
+    // 6h old, last progress 30s ago: the healthy long main-greening run the age rule would have killed.
+    expect(
+      classifyReplaceRequest(
+        { candidate_stale: true, elapsed_sec: 6 * 60 * 60, progress_at: agoIso(30), delivering: false },
+        NOW,
+      ),
+    ).toEqual({ replace: false, reason: 'progressing' });
+  });
+
+  it('progress_at wins over elapsed_sec when both are present', () => {
+    // Young by elapsed, but progress_at is the measured signal and it says silent: replace.
+    expect(
+      classifyReplaceRequest({ candidate_stale: true, elapsed_sec: 60, progress_at: agoIso(SILENT) }, NOW),
+    ).toEqual({ replace: true });
+  });
+
+  it('degrades to elapsed_sec when the run published no progress_at and no phase', () => {
     // `delivering` undefined must not be read as "delivering" — that would make the flag inert.
-    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: OLD })).toEqual({ replace: true });
-    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: 60 })).toEqual({
+    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: SILENT }, NOW)).toEqual({ replace: true });
+    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: 60 }, NOW)).toEqual({
       replace: false,
-      reason: 'young',
+      reason: 'progressing',
     });
   });
 
-  it('keeps the EI-11667 young-run guard: a young stale run is healthy-in-progress, not wedged', () => {
-    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: 5 * 60, delivering: false })).toEqual({
-      replace: false,
-      reason: 'young',
-    });
+  it('pins the threshold to the run\'s own idle budget, not a literal', () => {
+    expect(REPLACE_STALE_MIN_SILENCE_SEC).toBe(Math.ceil(MANUAL_CHECKPOINT_WATCHDOG_MS / 1000));
+    expect(checkpointSilenceSec({ elapsed_sec: 5, progress_at: agoIso(42) }, NOW)).toBe(42);
+    expect(checkpointSilenceSec({ elapsed_sec: 7, progress_at: 'not-a-date' }, NOW)).toBe(7);
+    expect(checkpointSilenceSec({ elapsed_sec: null, progress_at: null }, NOW)).toBeNull();
   });
 
-  it('never touches a run judging the CURRENT candidate, regardless of age or phase', () => {
-    expect(classifyReplaceRequest({ candidate_stale: false, elapsed_sec: OLD, delivering: false })).toEqual({
+  it('never touches a run judging the CURRENT candidate, regardless of silence or phase', () => {
+    expect(classifyReplaceRequest({ candidate_stale: false, elapsed_sec: SILENT, delivering: false }, NOW)).toEqual({
       replace: false,
       reason: 'not_stale',
     });
   });
 
-  it('treats an unknown elapsed_sec as not-old-enough (systemd reported no start time)', () => {
-    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: null })).toEqual({
+  it('treats unmeasurable silence as progressing (no start time, no progress signal)', () => {
+    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: null }, NOW)).toEqual({
       replace: false,
-      reason: 'young',
+      reason: 'progressing',
     });
   });
 });

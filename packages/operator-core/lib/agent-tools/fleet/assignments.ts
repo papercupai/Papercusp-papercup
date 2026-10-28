@@ -128,8 +128,11 @@ export const COVERAGE_ACTIVE_WINDOW_MS = 7 * 24 * 3600 * 1000;
  */
 export const FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS = 8_000;
 
-/** Leave transport/serialization headroom below the MCP read-only deadline. */
-export const FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS = 40_000;
+/**
+ * Bound the full handler below the 30s MCP call window. Individual 8s reads
+ * may run in sequential groups, so keep 10s for dispatch and result shaping.
+ */
+export const FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS = 20_000;
 
 const FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER = [
   'fleetLookup',

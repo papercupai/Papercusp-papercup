@@ -35,7 +35,7 @@ import {
 import { checkoutRootForPath, selectTestFileRoot } from './agent-tools/testing/run';
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import { rubricCriterionSchema, rubricTemplateDataSchema, rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
-import { effectiveCriterionInstrumentKey, planRowToRubric } from './rubrics';
+import { collectPlannedRubricPaths, effectiveCriterionInstrumentKey, planRowToRubric } from './rubrics';
 // The ROUTER's own admission predicate, imported so WI-369566's restated pattern is
 // pinned to it. A test may import this plain-Node CLI freely; the validator may not
 // (the operator host spawns it and must not bundle it).
@@ -125,6 +125,37 @@ describe('named test citation preflight (EI-26971745324820138)', () => {
     expect(() => assertCriterionCheckPathsResolve([{ key: 'future', check: {
       ...testsCheck(['packages/x/future-case.test.ts']), testName: 'future case',
     } }], { root, allowPlannedPaths: true })).not.toThrow();
+  });
+
+  it('accepts an explicit planned case in an existing suite only through the pre-start allowance and names it', () => {
+    const testName = 'new contract behavior to implement';
+    const criteria = [{ key: 'future', check: { ...testsCheck([file]), cases: [
+      { file, testName, plannedReason: 'The implementing item adds this behavior to the maintained suite.' },
+    ] } }];
+    const validation = assertCriterionCheckPathsResolve(criteria, { root, allowPlannedPaths: true });
+    expect(validation.planned).toEqual([expect.objectContaining({ criterionKey: 'future', path: file, testName })]);
+    expect(collectPlannedRubricPaths({ planned: [] }, validation)).toEqual([
+      { criterionKey: 'future', path: file, kind: 'tests-check', literal: testName },
+    ]);
+    expect(() => assertCriterionCheckPathsResolve(criteria, { root })).toThrow(/matches no maintained case/);
+    expect(() => assertCriterionCheckPathsResolve([{ key: 'unmarked', check: {
+      ...testsCheck([file]), cases: [{ file, testName }],
+    } }], { root, allowPlannedPaths: true })).toThrow(/matches no maintained case/);
+  });
+
+  it('a planned case never exempts another selector in the same existing suite', () => {
+    const planned = { file, testName: 'first future behavior', plannedReason: 'Implement this case.' };
+    const second = { file, testName: 'second future behavior', plannedReason: 'Implement this other case.' };
+    const criteria = [{ key: 'future', check: { ...testsCheck([file]), cases: [planned, second] } }];
+    const validation = assertCriterionCheckPathsResolve(criteria, { root, allowPlannedPaths: true });
+    expect(validation.planned.map(row => row.testName)).toEqual([planned.testName, second.testName]);
+    expect(collectPlannedRubricPaths({ planned: [] }, validation)).toHaveLength(2);
+    expect(() => assertCriterionCheckPathsResolve([{ key: 'mixed', check: {
+      ...testsCheck([file]), cases: [planned, { file, testName: 'R5-CONTRACT' }],
+    } }], { root, allowPlannedPaths: true })).toThrow(/case.*R5-CONTRACT/);
+    for (const plannedReason of ['', '   ', true]) {
+      expect(rubricCriterionCheckSchema.safeParse({ ...testsCheck([file]), cases: [{ ...planned, plannedReason }] }).success).toBe(false);
+    }
   });
 
   it('bounds dynamic uncertainty per declaration instead of exempting a mixed file', () => {
@@ -1786,6 +1817,21 @@ describe('tests check with a testName filter', () => {
       testName: 'probe sql > renamed away',
     });
     if (res.error === 'check_test_case_unresolved') expect(res.recordedSample).toContain('probe sql > refuses a write');
+  });
+
+  it.each(['missing', 'skipped', 'failed', 'passed'] as const)('a planned case still requires exact passing execution at grading: %s', async mode => {
+    const testName = 'new behavior in the existing suite';
+    const res = await evaluateCriterionTestChecks({
+      criteria: [{ key: 'det', check: { ...testsCheck([FILE]), cases: [
+        { file: FILE, testName, plannedReason: 'The plan will implement this case.' },
+      ] } }],
+      ratings: { det: { rating: 'healthy' } }, root, runner,
+      caseLoader: async () => mode === 'missing' ? CASES : [{ caseKey: testName, occurrence: 1,
+        status: mode === 'passed' ? 'pass' : mode === 'failed' ? 'fail' : 'skip', durationMs: 4 }],
+    });
+    expect(res.ok).toBe(mode === 'passed');
+    if (!res.ok) expect(res.error).toBe(mode === 'failed' ? 'check_contradicted' : 'check_test_case_unresolved');
+    else expect(res.checkRuns.det).toMatchObject({ verdict: 'pass', matchedCases: 1, passed: 1 });
   });
 
   it('judges only the matched cases: a passing case passes even when a sibling case in the file failed', async () => {

@@ -112,7 +112,7 @@ describe('native engineering evidence contract', () => {
       cases: vi.fn(async (_, runId) => Array.from({ length: runId === currentRun ? 1 : 20 }, (_, i) => ({
         runId, key: `ee.case-${i}`, occurrence: 1, status: 'passed',
       }))),
-      execution: vi.fn(async (_, runId) => ({ status: runId === currentRun ? 'observed' : 'unobserved',
+      execution: vi.fn<NonNullable<EngineeringEvidenceDeps['execution']>>(async (_, runId) => ({ status: runId === currentRun ? 'observed' : 'unobserved',
         scope: 'instrumented-boundaries-only', observations: runId === currentRun ? [observation] : [], gaps: [] })),
     });
     const graph = await readEngineeringEvidence({ ...query, limit: 24 }, scope, deps);

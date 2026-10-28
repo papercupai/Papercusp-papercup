@@ -189,7 +189,7 @@ describe('integration PG preflight before shared admission (EI-26822117967607948
       script: 'test:integration',
       preflight: async () => { throw refusal; },
       run: () => { admitted = true; },
-    }).catch(error => error);
+    }).catch((error: Error & { code?: string; cause?: unknown }) => error);
     expect(failure.message).toBe(refusal.message);
     expect(failure.code).toBe('AFFECTED_TEST_PG_PREFLIGHT_FAILED');
     expect(failure.cause).toBe(refusal);

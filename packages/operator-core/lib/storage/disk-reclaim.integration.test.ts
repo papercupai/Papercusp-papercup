@@ -17,6 +17,8 @@ import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { drainScheduledDiskReclaim, nativeRetentionCommand, readReclaimReceipt, removePrivilegedRetentionEntry, runDiskReclaimOnce, writeReclaimAudit, type DiskReclaimReceipt, type NativeRetentionTiming, type ReclaimSql, type RetentionEntry } from './disk-reclaim';
 import { CACHEDIR_TAG_SIGNATURE, type RetentionClass } from './retention-policy';
 import { inspectRetentionTrees } from './disk-consumer-census';
+import { awaitRetentionCensusCompletion, inspectDetachedRetentionTrees, withRetentionMutex } from './retention-census-walk';
+import { DetachedWalkAbandoned, readWalkState, walkAttemptFiles } from './disk-census-detached-walk';
 import { readDiskHeadroomSoakEvidence } from './retention-interval-evidence';
 import { scanProcHolders } from '../release-cut-reclaim';
 import { readOpenWorkItemEvidenceReferences, readRetentionPins, renewWorkItemEvidencePins } from './retention-pins';
@@ -696,6 +698,69 @@ describe('retention on a real fixture tree', () => {
       inspectInitialCappedTrees: inspectRetentionTrees });
     expect(complete.entries).toContainEqual(expect.objectContaining({ path: source, status: 'removed' }));
     expect(fresh).toHaveBeenCalledWith(root, expect.objectContaining({ paths: [source] }));
+  });
+
+  it.each(['remove', 'new-pin', 'changed-entry'] as const)('continues a pending census outside admission and rechecks %s before effects', async mode => {
+    const { root, options } = await setup();
+    const source = join(root, 'expired'); await mkdir(source); await writeFile(join(source, 'data'), 'old');
+    const later = join(fixture!, 'later'); await mkdir(later);
+    const slot = join(fixture!, 'slot');
+    const selected = await inspectRetentionTrees(root, { retainAfterMs: Infinity, includeRecent: true });
+    let clock = options.nowMs, pinned = false;
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(clock);
+    const launcher = vi.fn(async () => ({ pid: 999_999_999, taskId: 'fixture-pending', confined: true }));
+    const receipts: DiskReclaimReceipt[] = [];
+    const inspections: string[] = [];
+    const protections: boolean[] = [];
+    try {
+      const summary = await drainScheduledDiskReclaim(async () => {
+        const receipt = await runDiskReclaimOnce({ ...options, nowMs: clock,
+          policy: options.policy.map(cls => ({ ...cls, roots: [root, later], maxBytes: 1 })),
+          roots: [...options.roots, { path: later, classId: 'fixture' }],
+          previousReceipt: receipts.at(-1), yieldAfterPendingCensus: true, inspectTrees: inspectRetentionTrees,
+          readProtection: async () => { protections.push(pinned); return { paths: pinned ? [source] : [] }; },
+          inspectInitialCappedTrees: async (path, input, retentionMutex) => {
+            inspections.push(path);
+            return path === root ? inspectDetachedRetentionTrees(path, input, { retentionMutex, dir: slot,
+              waitMs: 60_000, pollMs: 2, launch: launcher, isAlive: () => receipts.length === 0,
+              // Abandon after enrollment reaches its wait, independently of
+              // filesystem setup latency. The real FIFO case has its own test.
+              sleep: async () => { throw new DetachedWalkAbandoned(); },
+            }) : inspectRetentionTrees(path, input);
+          },
+        });
+        receipts.push(receipt); return receipt;
+      }, { awaitPendingCensus: async (pending, deadline) => {
+        expect(inspections).toEqual([root]);
+        expect(receipts[0]!.errors).toEqual([`inspect:${root}: retention census pending; managed walk continues for adoption`]);
+        expect(receipts[0]!.entries).toEqual([]);
+        expect(receipts[0]!.censuses?.[0]?.pendingWalk).toEqual(pending);
+        // A pin writer obtains the actual mutex while the workflow is paused.
+        await withRetentionMutex(async () => {
+          pinned = mode === 'new-pin';
+          if (mode === 'changed-entry') await writeFile(join(source, 'data'), 'new'.repeat(8192));
+        });
+        clock += 16_000; vi.setSystemTime(clock);
+        const state = (await readWalkState(slot))!;
+        const files = walkAttemptFiles(slot, state.attempt);
+        await writeFile(files.out, JSON.stringify({ version: 1, requestKey: state.requestKey,
+          startedAt: state.launchedAt, finishedAt: clock, result: selected }));
+        await writeFile(files.exit, '0');
+        return awaitRetentionCensusCompletion(pending, deadline);
+      } });
+      expect(receipts).toHaveLength(2);
+      expect(launcher).toHaveBeenCalledOnce();
+      expect(protections).toEqual([false, mode === 'new-pin']);
+      expect(await readFile(join(slot, 'consumed'), 'utf8')).toBe('consumed\n');
+      if (mode === 'remove') {
+        expect(summary.stop).toBe('complete');
+        expect(receipts[1]!.entries).toContainEqual(expect.objectContaining({ path: source, status: 'removed' }));
+        await expect(stat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+      } else {
+        expect(receipts[1]!.entries.some(entry => entry.status === 'removed')).toBe(false);
+        expect((await stat(source)).isDirectory()).toBe(true);
+      }
+    } finally { vi.useRealTimers(); }
   });
 
   it('adopts a pending continuous census before later roots can spend the next deadline', async () => {

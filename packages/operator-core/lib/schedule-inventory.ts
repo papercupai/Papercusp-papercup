@@ -80,7 +80,7 @@ export interface ScheduleInventoryRow {
   lastError: string | null;
   /** WI-5018 routines grouping — the routine's group_slug (source 'routines' only; null otherwise/ungrouped). A first-class field (not buried in detail) since grouping is a primary render/filter axis once the routines table passes a few hundred rows. */
   groupSlug: string | null;
-  /** source-specific extras (mode, queue, targetRole, intervalMs, shed, …). */
+  /** source-specific extras (mode, queue, targetRole, intervalMs, runningSince, skippedWhileRunning, …). */
   detail: Record<string, unknown>;
 }
 
@@ -441,6 +441,8 @@ export async function collectScheduleInventory(
         fires: m.fires,
         armedAt: m.armedAt,
         running: m.running,
+        runningSince: m.runningSince,
+        skippedWhileRunning: m.skippedWhileRunning,
         instances: m.instances ?? 1,
         instanced: m.instanced ?? false,
         classification: m.classification ?? null,
@@ -562,6 +564,8 @@ export async function collectScheduleInventory(
           fires: m.fires,
           armedAt: m.armedAt,
           running: m.running,
+          runningSince: m.runningSince,
+          skippedWhileRunning: m.skippedWhileRunning,
           instances: m.instances ?? 1,
           instanced: m.instanced ?? false,
           classification: m.classification ?? null,

@@ -1,0 +1,265 @@
+{
+  "rubricRef": "acceptance-quick-access-search-launcher-2026-10-26",
+  "criteria": [
+    {
+      "key": "r-1",
+      "title": "Independent entry",
+      "intent": {
+        "request": "Native Quick Panel defaults to the A search launcher outside regular app chrome while retaining existing tools and the configured opt-in shortcut.",
+        "sourceRefs": [
+          "quick-access-search-launcher-2026-10-26#D-003"
+        ]
+      },
+      "model": "Native Quick Panel defaults to the A search launcher outside regular app chrome while retaining existing tools and the configured opt-in shortcut.",
+      "bar": "Native Quick Panel defaults to the A search launcher outside regular app chrome while retaining existing tools and the configured opt-in shortcut.",
+      "barKey": "R-1",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "e2e",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Execute the registered isolated native suite and the named unit checks; bind both unit and e2e evidence to the clause. The read-only results-ledger probe verifies the frozen native acceptance run passed; it never substitutes for running the tests. Do not dispatch native Playwright through the Vitest-only tests check router. Required unit check: apps/operator/lib/quick-panel-escape.test.tsx. The latest recorded native run at the pinned commit must pass and have worktree_dirty=false; a later failure or dirty run invalidates an earlier pass. Governing scope and reuse decision: quick-access-search-launcher-2026-10-26#D-003. Required shortcut proof: run the existing docs_search::tests:: Cargo cases in papercusp-desktop/src-tauri/src/docs_search.rs, including OFF/default/preset roundtrip and failed/successful rebind, and the private PAPERCUSP_HOME regression; bind the resulting Cargo ledger evidence alongside unit and e2e proof. The native spec's first entry must be a real Ctrl+Shift+K from the isolated external xterm through the native startup shortcut registrar. Native proof is frozen at commit 49ef70dc63ab1160ee301add40377c92e431ee0a and managed task 0mvsdhlyyv68behc202. The latest clean local Playwright result and the exact task's exited/exit0/ended-at receipt must both pass; an assertion pass followed by failed cleanup is insufficient. R-1, R-3 and R-5 share this native row but assess distinct assertion sections, not independent executions. R-1 observes the first real OS shortcut from the external xterm, native /quick-panel route/default Search, singleton and retained tools. Named existing clean Cargo evidence: runs22293335,22293336,22293337,22293340,22293346,22293352,22293363,22293367,22293372,22293382, bound71979-71988; preserve only while source/test/fixture fingerprints remain current.",
+      "driftMarkers": "The native shortcut opens a regular app route, duplicates the popup, or defaults to Prompts.",
+      "check": {
+        "kind": "probe",
+        "probe": {
+          "sql": "SELECT (COALESCE((SELECT status = 'pass' AND worktree_dirty = FALSE FROM harness_shared.test_runs WHERE harness_slug = 'papercusp' AND framework = 'playwright' AND source = 'local' AND file_path LIKE '%quick-access.native.spec.mts' AND commit_sha = '49ef70dc63ab1160ee301add40377c92e431ee0a' AND started_at > TIMESTAMPTZ '2026-10-28T17:00:00Z' ORDER BY finished_at DESC, id DESC LIMIT 1), FALSE) AND EXISTS (SELECT 1 FROM harness_shared.task_ledger WHERE workspace_id = 'papercusp-workspace' AND task_id = '0mvsdhlyyv68behc202' AND work_item_id = 'WI-6554700010029574' AND state = 'exited' AND exit_code = 0 AND ended_at IS NOT NULL)) AS passed",
+          "kind": "sql",
+          "expect": {
+            "op": "eq",
+            "path": "$.rows[0].passed",
+            "value": true
+          },
+          "maxRows": 1,
+          "schemaRevision": "live"
+        }
+      }
+    },
+    {
+      "key": "r-2",
+      "title": "Discovery",
+      "intent": {
+        "request": "Plans, agents and reports remain independently searchable by scope with canonical selection, errors and keyboard navigation.",
+        "sourceRefs": [
+          "quick-access-search-launcher-2026-10-26#D-003"
+        ]
+      },
+      "model": "Plans, agents and reports remain independently searchable by scope with canonical selection, errors and keyboard navigation.",
+      "bar": "Plans, agents and reports remain independently searchable by scope with canonical selection, errors and keyboard navigation.",
+      "barKey": "R-2",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Governing scope and reuse decision: quick-access-search-launcher-2026-10-26#D-003.",
+      "driftMarkers": "A large plan list hides people or reports, selection targets the wrong identity, or errors appear as empty success.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "apps/operator/app/quick-panel/quick-access-model.test.ts",
+          "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx"
+        ],
+        "cases": [
+          {
+            "file": "apps/operator/app/quick-panel/quick-access-model.test.ts",
+            "testName": "keeps identically named plans and agents distinct by canonical identity"
+          },
+          {
+            "file": "apps/operator/app/quick-panel/quick-access-model.test.ts",
+            "testName": "searches across types and honors scope without matching unrelated results"
+          },
+          {
+            "file": "apps/operator/app/quick-panel/quick-access-model.test.ts",
+            "testName": "drops stale selection when a query or live update removes the target"
+          },
+          {
+            "file": "apps/operator/app/quick-panel/quick-access-model.test.ts",
+            "testName": "keeps people and reports reachable when plans exceed the visible result budget"
+          },
+          {
+            "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+            "testName": "supports scope, search, empty results and Escape clearing without changing host state"
+          },
+          {
+            "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+            "testName": "navigates results with arrows and Enter using selected identity"
+          },
+          {
+            "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+            "testName": "shows partial-source errors and reports-disabled state instead of false empty success"
+          }
+        ]
+      }
+    },
+    {
+      "key": "r-3",
+      "title": "Preview and access",
+      "intent": {
+        "request": "The popup displays selected plan progress and people, reads an authorized report and opens the exact owner conversation in place.",
+        "sourceRefs": [
+          "quick-access-search-launcher-2026-10-26#D-003"
+        ]
+      },
+      "model": "The popup displays selected plan progress and people, reads an authorized report and opens the exact owner conversation in place.",
+      "bar": "The popup displays selected plan progress and people, reads an authorized report and opens the exact owner conversation in place.",
+      "barKey": "R-3",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "e2e",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Execute the registered isolated native suite and the named unit checks; bind both unit and e2e evidence to the clause. The read-only results-ledger probe verifies the frozen native acceptance run passed; it never substitutes for running the tests. Do not dispatch native Playwright through the Vitest-only tests check router. Required unit check: apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx. The latest recorded native run at the pinned commit must pass and have worktree_dirty=false; a later failure or dirty run invalidates an earlier pass. Governing scope and reuse decision: quick-access-search-launcher-2026-10-26#D-003. Required report authorization negative checks: packages/operator-core/lib/report-library.integration.test.ts cases 'SPEC-P-002-visible-to-matrix: visibleTo grants exactly workspace + own-pot + authored' and 'REPORT-CITED-READ-SCOPE-P001: a citation scope opens one exact private report only'. Bind their passing integration evidence; the human-owner positive read alone does not establish denial for unauthorized viewers. Native proof is frozen at commit 49ef70dc63ab1160ee301add40377c92e431ee0a and managed task 0mvsdhlyyv68behc202. The latest clean local Playwright result and the exact task's exited/exit0/ended-at receipt must both pass; an assertion pass followed by failed cleanup is insufficient. R-1, R-3 and R-5 share this native row but assess distinct assertion sections, not independent executions. R-3 observes selected plan/people, exact owner conversation objective and actual conversation UI, authorized report body and in-popup report view. Existing clean report authorization negative proof run22259678, binding71969, remains required subject to current fingerprints.",
+      "driftMarkers": "Report content or conversation belongs to a different result, or reading requires leaving the popup.",
+      "check": {
+        "kind": "probe",
+        "probe": {
+          "sql": "SELECT (COALESCE((SELECT status = 'pass' AND worktree_dirty = FALSE FROM harness_shared.test_runs WHERE harness_slug = 'papercusp' AND framework = 'playwright' AND source = 'local' AND file_path LIKE '%quick-access.native.spec.mts' AND commit_sha = '49ef70dc63ab1160ee301add40377c92e431ee0a' AND started_at > TIMESTAMPTZ '2026-10-28T17:00:00Z' ORDER BY finished_at DESC, id DESC LIMIT 1), FALSE) AND EXISTS (SELECT 1 FROM harness_shared.task_ledger WHERE workspace_id = 'papercusp-workspace' AND task_id = '0mvsdhlyyv68behc202' AND work_item_id = 'WI-6554700010029574' AND state = 'exited' AND exit_code = 0 AND ended_at IS NOT NULL)) AS passed",
+          "kind": "sql",
+          "expect": {
+            "op": "eq",
+            "path": "$.rows[0].passed",
+            "value": true
+          },
+          "maxRows": 1,
+          "schemaRevision": "live"
+        }
+      }
+    },
+    {
+      "key": "r-4",
+      "title": "Exact window",
+      "intent": {
+        "request": "Focus targets the selected live local agent through canonical native or launch-record actions and explains unavailable targets.",
+        "sourceRefs": [
+          "quick-access-search-launcher-2026-10-26#D-003"
+        ]
+      },
+      "model": "Focus targets the selected live local agent through canonical native or launch-record actions and explains unavailable targets.",
+      "bar": "Focus targets the selected live local agent through canonical native or launch-record actions and explains unavailable targets.",
+      "barKey": "R-4",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Governing scope and reuse decision: quick-access-search-launcher-2026-10-26#D-003.",
+      "driftMarkers": "Focus uses a guessed/shared PID, targets a different owner or claims success after an unavailable window.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+          "apps/operator/app/quick-panel/quick-access-model.test.ts"
+        ],
+        "cases": [
+          {
+            "file": "apps/operator/app/quick-panel/quick-access-model.test.ts",
+            "testName": "permits launch-record resolution without guessing from a shared process pid"
+          },
+          {
+            "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+            "testName": "uses observed native success without a second focus or guessed window"
+          },
+          {
+            "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+            "testName": "resolves local launch records through the canonical focus action"
+          },
+          {
+            "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+            "testName": "uses the launch identity when a shared terminal PID has no recorded window"
+          },
+          {
+            "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+            "testName": "refuses browser, remote, ended and unrelated content-origin targets"
+          },
+          {
+            "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+            "testName": "surfaces focus failure to the person who clicked"
+          }
+        ]
+      }
+    },
+    {
+      "key": "r-5",
+      "title": "Verified UX",
+      "intent": {
+        "request": "The current-build native popup supports keyboard dismissal and keeps its search, preview and conversation usable at its default size.",
+        "sourceRefs": [
+          "quick-access-search-launcher-2026-10-26#D-003"
+        ]
+      },
+      "model": "The current-build native popup supports keyboard dismissal and keeps its search, preview and conversation usable at its default size.",
+      "bar": "The current-build native popup supports keyboard dismissal and keeps its search, preview and conversation usable at its default size.",
+      "barKey": "R-5",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "live"
+      ],
+      "evidencePlane": "live",
+      "evidenceRuntime": "desktop-shell",
+      "requiredTestLayers": [
+        "e2e",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Execute the registered isolated native suite and the named unit checks; bind both unit and e2e evidence to the clause. The read-only results-ledger probe verifies the frozen native acceptance run passed; it never substitutes for running the tests. Do not dispatch native Playwright through the Vitest-only tests check router. Required unit check: apps/operator/lib/quick-panel-escape.test.tsx. The latest recorded native run at the pinned commit must pass and have worktree_dirty=false; a later failure or dirty run invalidates an earlier pass. Evidence runtime: desktop-shell, exercised by the isolated current-build native harness. Governing scope and reuse decision: quick-access-search-launcher-2026-10-26#D-003. Native proof is frozen at commit 49ef70dc63ab1160ee301add40377c92e431ee0a and managed task 0mvsdhlyyv68behc202. The latest clean local Playwright result and the exact task's exited/exit0/ended-at receipt must both pass; an assertion pass followed by failed cleanup is insufficient. R-1, R-3 and R-5 share this native row but assess distinct assertion sections, not independent executions. R-5 observes native hit-testing at default size, conversation/report Escape preserving the popup, query Escape, final OS Escape and exact selected focus. Required nested-report unit case: Quick Access launcher > dismisses the nested report with Escape before dismissing the native popup, in apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx; keep quick-panel-escape.test.tsx and client-navigation.test.ts lifecycle guards. Owner entry instructions: .papercusp/evidence/quick-access-20261026/entry-instructions.md.",
+      "driftMarkers": "Escape closes the parent before a nested dialog or the default native layout obscures its primary controls.",
+      "check": {
+        "kind": "probe",
+        "probe": {
+          "sql": "SELECT (COALESCE((SELECT status = 'pass' AND worktree_dirty = FALSE FROM harness_shared.test_runs WHERE harness_slug = 'papercusp' AND framework = 'playwright' AND source = 'local' AND file_path LIKE '%quick-access.native.spec.mts' AND commit_sha = '49ef70dc63ab1160ee301add40377c92e431ee0a' AND started_at > TIMESTAMPTZ '2026-10-28T17:00:00Z' ORDER BY finished_at DESC, id DESC LIMIT 1), FALSE) AND EXISTS (SELECT 1 FROM harness_shared.task_ledger WHERE workspace_id = 'papercusp-workspace' AND task_id = '0mvsdhlyyv68behc202' AND work_item_id = 'WI-6554700010029574' AND state = 'exited' AND exit_code = 0 AND ended_at IS NOT NULL)) AS passed",
+          "kind": "sql",
+          "expect": {
+            "op": "eq",
+            "path": "$.rows[0].passed",
+            "value": true
+          },
+          "maxRows": 1,
+          "schemaRevision": "live"
+        }
+      }
+    }
+  ],
+  "dryRun": true,
+  "requestReview": {
+    "workItemId": "WI-6554700010029565",
+    "harness": "papercusp"
+  },
+  "reason": "Final v8 native acceptance re-pin after committed cleanup race/census repairs and reviewed startup/ref/hermetic-test changes. Clean49ef snapshot passed119 checks (local runs22556972/22556971, dirty=false) and native discovery collected the registered case. Native task 0mvsdhlyyv68behc202 is running; no native pass is claimed. Require BOTH latest clean-local native row at 49ef70dc63ab1160ee301add40377c92e431ee0a and exact whole task terminal exit0, since historical51dc passed assertions but failed teardown. Attribute distinct R1/R3/R5 sections, name nested-report Escape, existing Cargo/ACL proof and entry instructions. Preserve approved D-003 scope, outcomes, evidence planes and unit/e2e requirements.",
+  "expectedRubricRevision": 4,
+  "expectedSubjectPlanRevision": 9,
+  "idempotencyKey": "quick-access-native-ledger-check-v8-20261028"
+}

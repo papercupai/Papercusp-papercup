@@ -63,6 +63,20 @@ export interface ActionableCondition {
    * the gate owner would re-serialize exactly the labour that entry exists to spread).
    */
   assignTo?: 'live-gate-owner';
+  /**
+   * The family's open/resolve lifecycle is owned by a RECOMPUTING source that re-reads the
+   * condition fold and broadcasts an explicit resolution, not by the one process that last
+   * emitted (EI-27231825178306204). The one-shot emitter-death reconciler
+   * (WI-6554700010016120, `selectDeadOneShotConditions`) then leaves the family open: its
+   * premise — a dead emitter can never send the RECOVERED broadcast — is false here, because
+   * whichever process runs the source's next tick sends it.
+   *
+   * Measured 2026-10-28: `frozen-repair-leg:` items are opened by the gate's per-RUN process,
+   * so every run's exit made the reconciler close 8–13 still-failing legs (11:06, 11:39, 13:52,
+   * 16:02Z). The bridge closed their items, the holders lost their claims, and the next run
+   * re-opened them.
+   */
+  lifecycleOwnedBySource?: true;
 }
 
 /** Stable condition namespace for bridge residues with a known agent remedy. */
@@ -139,7 +153,14 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   // ownership). Durable: opened when a leg enters the queue's failing set, resolved when
   // it leaves, never per-tick. Major, not critical: the convergence and red-streak items
   // above already carry the stop-the-line severity for the queue as a whole.
-  { prefix: FROZEN_REPAIR_LEG_CONDITION_PREFIX, harnessFrom: 'leading-segment', severity: 'major' },
+  // `lifecycleOwnedBySource`: the router resolves departed legs (and every leg on a cleared
+  // queue) itself on the next tick, from whichever gate process runs it.
+  {
+    prefix: FROZEN_REPAIR_LEG_CONDITION_PREFIX,
+    harnessFrom: 'leading-segment',
+    severity: 'major',
+    lifecycleOwnedBySource: true,
+  },
   // `main` lagging `staging` is the gate not promoting, so it is the gate owner's too.
   { prefix: 'main-behind-staging:', harnessFrom: 'suffix', severity: 'major', assignTo: 'live-gate-owner' },
   { prefix: 'release-trigger-freeze:', harnessFrom: 'suffix', severity: 'major' },
@@ -156,7 +177,10 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   // eligible tasks (run 762a13a6) with nothing alarmed. Durable by construction: the
   // watchdog only opens after a minimum eligible count and resolves with hysteresis, so it
   // cannot flap per tick. 'ambient' because the key carries a mechanism, never a harness.
-  { prefix: DEGRADATION_CONDITION_PREFIX, harnessFrom: 'ambient', severity: 'major' },
+  // `lifecycleOwnedBySource`: only the watchdog's metric-backed window can establish recovery;
+  // the 2026-10-17 retrieval incident closed `degraded:retrieval:mixed` at 65–69% recovery
+  // solely because its old emitter exited.
+  { prefix: DEGRADATION_CONDITION_PREFIX, harnessFrom: 'ambient', severity: 'major', lifecycleOwnedBySource: true },
 ];
 
 /** The bare prefixes — derived, so the catalog stays the single source of truth. */
@@ -167,6 +191,14 @@ export function actionableConditionFor(conditionKey: string): ActionableConditio
   const key = conditionKey.trim();
   if (!key) return null;
   return ACTIONABLE_CONDITIONS.find((c) => key.startsWith(c.prefix)) ?? null;
+}
+
+/**
+ * Is this key's lifecycle owned by a recomputing source, so the death of its last emitter is
+ * NOT evidence of recovery? Derived from the catalog — never a second hand-typed prefix list.
+ */
+export function isLifecycleOwnedBySource(conditionKey: string): boolean {
+  return actionableConditionFor(conditionKey)?.lifecycleOwnedBySource === true;
 }
 
 /** Should this condition key mint an owning work-item? */

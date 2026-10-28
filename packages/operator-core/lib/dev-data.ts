@@ -1323,6 +1323,8 @@ export interface BuildStatus {
   /** Whether the dev server (3055) and prod server (3070) are reachable. */
   dev3055Reachable: boolean | null;
   prod3070Reachable: boolean | null;
+  /** Whether :3055 can proxy a JSON API response from the operator. */
+  dev3055ApiReachable: boolean;
 }
 
 export async function buildStatus(): Promise<BuildStatus> {
@@ -1393,16 +1395,28 @@ export async function buildStatus(): Promise<BuildStatus> {
       // "unreachable" for a server that was actually serving 200s. 15s
       // comfortably covers the observed tail with margin, without making a
       // genuinely-down server hang the whole buildStatus() call forever (the
-      // two probes still run in parallel via Promise.all).
+      // all probes still run in parallel via Promise.all).
       const r = await fetch(url, { signal: AbortSignal.timeout(15_000) });
       return r.status < 500;
     } catch {
       return false;
     }
   }
-  const [dev3055, prod3070] = await Promise.all([
+  async function apiReachable(url: string): Promise<boolean> {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+      // A Vite SPA fallback can return a successful HTML page for an unknown
+      // /api path. Require JSON so this specifically proves the /api proxy
+      // reached the operator API, including JSON auth/client errors.
+      return r.status < 500 && (r.headers.get('content-type') ?? '').includes('application/json');
+    } catch {
+      return false;
+    }
+  }
+  const [dev3055, prod3070, dev3055Api] = await Promise.all([
     reachable('http://127.0.0.1:3055/'),
     reachable('http://127.0.0.1:3070/'),
+    apiReachable('http://127.0.0.1:3055/api/flags/bootstrap'),
   ]);
 
   return {
@@ -1411,6 +1425,7 @@ export async function buildStatus(): Promise<BuildStatus> {
     prodLogTail,
     dev3055Reachable: dev3055,
     prod3070Reachable: prod3070,
+    dev3055ApiReachable: dev3055Api,
   };
 }
 

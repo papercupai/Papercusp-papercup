@@ -21,10 +21,19 @@
  * must pass — without it, a property broken in the same direction as the
  * controls would report every control as "caught" while testing nothing.
  */
-import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
 import { ENFORCED_FROM } from '../../../scripts/lint-migrations.mjs';
 import { RESERVATION_ENFORCED_FROM, migrationNumberOf, missingReservationRows } from './db-boot-migrate';
-import { migrationReservationGuardSql, reservationFilenameConflicts } from './migration-reservation';
+import {
+  isUnpublishedMigrationDraft,
+  migrationReservationGuardSql,
+  readTrackedMigrationFilenames,
+  reservationFilenameConflicts,
+} from './migration-reservation';
 
 describe('RESERVATION_ENFORCED_FROM', () => {
   it('equals the linter it mirrors — the two cannot drift apart silently', () => {
@@ -207,5 +216,68 @@ describe('falsifiability', () => {
     ['does not dedupe a collided number', doesNotDedupe],
   ])('rejects a control that %s', (_label, impl) => {
     expect(() => assertReconcileProperty(impl)).toThrow();
+  });
+});
+
+/**
+ * WI-6554700010042536 — an untracked, unreserved migration draft in the shared
+ * tree must not withhold bg-host's background plane. The discriminator has to
+ * be POSITIVE evidence of "untracked": anything git cannot vouch for (no repo,
+ * no tracked migration, git failing) stays fail-closed.
+ */
+describe('unpublished migration draft discriminator', () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+  const git = (cwd: string, ...args: string[]): void => {
+    execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, stdio: 'ignore' });
+  };
+  /** A repo whose sql dir tracks `tracked` and also holds untracked `untracked`. */
+  function sqlRepo(tracked: string[], untracked: string[]): string {
+    const root = mkdtempSync(join(tmpdir(), 'unpublished-draft-'));
+    dirs.push(root);
+    const sqlDir = join(root, 'libs', 'db', 'sql');
+    mkdirSync(sqlDir, { recursive: true });
+    git(root, 'init', '-q');
+    for (const name of tracked) writeFileSync(join(sqlDir, name), 'SELECT 1;');
+    if (tracked.length > 0) git(root, 'add', '--', ...tracked.map((name) => join('libs', 'db', 'sql', name)));
+    for (const name of untracked) writeFileSync(join(sqlDir, name), 'SELECT 1;');
+    return sqlDir;
+  }
+
+  it('reads exactly the tracked migration basenames of the sql dir', async () => {
+    const sqlDir = sqlRepo(['1600-published.sql', '1601-also-published.sql'], ['1606-draft.sql']);
+    mkdirSync(join(sqlDir, 'nested'));
+    writeFileSync(join(sqlDir, 'nested', '1700-nested.sql'), 'SELECT 1;');
+    git(sqlDir, 'add', '--', 'nested/1700-nested.sql');
+    const tracked = await readTrackedMigrationFilenames(sqlDir);
+    expect(tracked && [...tracked].sort()).toEqual(['1600-published.sql', '1601-also-published.sql']);
+  });
+
+  it('returns null (unknown) outside a git working tree', async () => {
+    const plain = mkdtempSync(join(tmpdir(), 'unpublished-draft-plain-'));
+    dirs.push(plain);
+    writeFileSync(join(plain, '1606-draft.sql'), 'SELECT 1;');
+    // tmpdir() must not itself sit inside a repo, or this case proves nothing.
+    expect(() => execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: plain, stdio: 'ignore' })).toThrow();
+    expect(await readTrackedMigrationFilenames(plain)).toBeNull();
+  });
+
+  it('returns null (unknown) for a repo directory that tracks no migration at all', async () => {
+    const sqlDir = sqlRepo([], ['1606-draft.sql']);
+    expect(await readTrackedMigrationFilenames(sqlDir)).toBeNull();
+  });
+
+  it('flags only a file git positively reports as untracked', async () => {
+    const sqlDir = sqlRepo(['1600-published.sql'], ['1606-draft.sql']);
+    const tracked = await readTrackedMigrationFilenames(sqlDir);
+    expect(isUnpublishedMigrationDraft('1606-draft.sql', tracked)).toBe(true);
+    expect(isUnpublishedMigrationDraft('1600-published.sql', tracked)).toBe(false);
+  });
+
+  it('fails closed when tracking is unknown', () => {
+    expect(isUnpublishedMigrationDraft('1606-draft.sql', null)).toBe(false);
+    expect(isUnpublishedMigrationDraft('1606-draft.sql', new Set())).toBe(false);
   });
 });

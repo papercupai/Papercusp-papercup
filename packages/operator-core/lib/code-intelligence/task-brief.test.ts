@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
-import { buildTaskBrief, enrichTaskBriefWithReuse, gateTaskBriefRecover, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
+import { buildTaskBrief, claimedScopePaths, enrichTaskBriefWithReuse, gateTaskBriefRecover, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
 import { nativeChangeReport, type ChangeReportRequest } from './packer-facade';
 import { firstPartyCallers } from './first-party-callers';
 import type { CodeIntelAnswer } from './contracts';
@@ -191,6 +191,19 @@ describe('P039 completion pre-review briefs', () => {
     expect(brief.scope.processed).toEqual(['target.ts']);
     expect(brief.limitations).toContainEqual(expect.stringContaining(`Compiler evidence was unmeasured for target.ts#target: ${expired}`));
   });
+  it('spends only the caller deadline, so an outer bound never discards the named reason (WI-6554700010030397)', async () => {
+    const { rootResolver } = setup();
+    const graph = vi.fn(async (request: ChangeReportRequest, graphRoot: string, budgetMs: number) => ({
+      ...firstPartyCallers({ ts, root: graphRoot, name: request.symbol, filePath: request.file, op: 'impact',
+        direction: 'downstream', paths: ['.'], includeInterfaces: true }),
+      error: `the callers worker exceeded its ${budgetMs} ms deadline and was killed`, evidence: undefined }));
+    const deadlineMs = Date.now() + 1_500;
+    const brief = await getCompletionTimeBrief({ ...ref(), deadlineMs }, { root: rootResolver, graph, runs: async () => [],
+      effects: { exec: async () => ({ stdout: '', stderr: '' }), writeArtifact: async () => 'fixture-artifact' } });
+    expect(graph.mock.calls[0]![2]).toBeLessThanOrEqual(1_250);
+    expect(brief).toMatchObject({ status: 'unknown', changes: [] });
+    expect(brief.limitations).toContainEqual(expect.stringContaining('Compiler evidence was unmeasured for target.ts#target'));
+  });
   it('never analyzes an escaping source or an unbounded path population', async () => {
     const { root, report, rootResolver } = setup(); const outside = fixture();
     writeFileSync(join(outside, 'private.ts'), 'export function privateSource() {}');
@@ -244,8 +257,25 @@ describe('P018 scoped incident hypotheses', () => {
     expect(brief).toMatchObject({ status: 'unknown', sourceFingerprint: null, files: [] });
     expect(brief.incident).toBeUndefined();
   });
+  it('scopes an item without payload.paths from existing repository paths its text names (WI-6554700010030367)', async () => {
+    const root = fixture(); mkdirSync(join(root, 'packages/x'), { recursive: true });
+    writeFileSync(join(root, 'packages/x/target.ts'), 'export function target() { return "TEXT_SCOPE"; }');
+    const deps = depsFor(root); deps.failures = vi.fn(async () => []);
+    const workItem = { id: 'WI-plan', harness: 'h', title: 'P-004 wire the reader',
+      summary: 'Edit packages/x/target.ts and add packages/x/new-file.ts.', payload: {} };
+    const brief = await buildTaskBrief({ workspaceId: 'w', workItem }, deps);
+    expect(brief.status).toBe('current'); expect(brief.scope.paths).toEqual(['packages/x/target.ts']);
+    expect(brief.exclusions.join(' ')).toContain('inferred from repository paths');
+    expect(await getClaimTimeTaskBrief({ workspaceId: 'w', workItem }, deps)).not.toBeNull();
+    const packCallsBefore = vi.mocked(deps.pack).mock.calls.length;
+    expect(packCallsBefore).toBeGreaterThan(0);
+    const absent = await buildTaskBrief({ workspaceId: 'w', workItem: { ...workItem, summary: 'Create packages/x/new-file.ts.' } }, deps);
+    expect(absent).toMatchObject({ status: 'unknown', files: [] });
+    expect(vi.mocked(deps.pack).mock.calls.length).toBe(packCallsBefore);
+    expect(absent.exclusions.join(' ')).toContain('names no existing repository path');
+  });
 });
-const fixture = () => { const dir = mkdtempSync(join(tmpdir(), 'task-brief-')); dirs.push(dir); return dir; };
+const fixture =() => { const dir = mkdtempSync(join(tmpdir(), 'task-brief-')); dirs.push(dir); return dir; };
 afterEach(() => dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })));
 const answer = (paths: string[]): CodeIntelAnswer => ({ backend: 'repomix', intent: 'pack', query: 'fixture',
   sites: paths.map(path => ({ path, line1: null, kind: 'file', detail: null })),
@@ -290,7 +320,7 @@ describe('native engineering evidence task context', () => {
     const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
     const subject = { id: 'WI-ee', harness: 'h', sourcePlanSlug: 'ee-feature', sourcePlanItemIds: ['P-001'],
       payload: { paths: ['target.ts'] } };
-    return { root, subject, deps: { ...depsFor(root), engineering: reader, hasClaim: async () => false } };
+    return { root, subject, deps: { ...depsFor(root), engineering: reader, claimedPaths: async () => [] } };
   }
   it('ee.brief-four-axes: carries exact canonical references or an explicit execution gap through claim, intent and completion', async () => {
     const { root, subject, deps } = engineeringFixture();
@@ -475,7 +505,7 @@ describe('P-006 SPEC-P-006-B: a brief names a recovery tool only when the recipi
 describe('P012 bounded scoped task briefs', () => {
   it('captures explicit no-claim intent scope without inventing a work-item identity', async () => {
     const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "INTENT_SOURCE"; }');
-    const deps = depsFor(root); deps.hasClaim = vi.fn(async () => false); deps.failures = vi.fn(async () => []);
+    const deps = depsFor(root); deps.claimedPaths = vi.fn(async () => []); deps.failures = vi.fn(async () => []);
     const ref = { owner: 'su-intent', workspaceId: 'w', harness: 'h', intent: 'Inspect target', paths: ['target.ts'] };
     const first = (await getIntentTimeTaskBrief(ref, deps))!.taskBrief;
     expect(first.status).toBe('current'); expect(first.files[0]?.path).toBe('target.ts');
@@ -486,13 +516,25 @@ describe('P012 bounded scoped task briefs', () => {
     expect(next.sourceFingerprint).toBe(first.sourceFingerprint);
     expect(JSON.stringify(first).length).toBeLessThanOrEqual(TASK_BRIEF_MAX_CHARS);
   });
-  it('suppresses no-claim briefs for held or unreadable ownership and refuses unsafe transient paths', async () => {
-    const deps = depsFor(fixture()); deps.hasClaim = vi.fn(async () => true);
+  it('briefs only the declared paths outside every held claim, with claim scope derived like buildTaskBrief (WI-6554700010030367)', async () => {
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "OUTSIDE_CLAIM"; }');
+    writeFileSync(join(root, 'held.ts'), 'export function held() { return 1; }');
+    const deps = depsFor(root); deps.claimedPaths = vi.fn(async () => ['held.ts']); deps.failures = vi.fn(async () => []);
+    const ref = { owner: 'su-intent', workspaceId: 'w', harness: 'h', intent: 'Inspect target', paths: ['held.ts', 'target.ts'] };
+    const brief = (await getIntentTimeTaskBrief(ref, deps))!.taskBrief;
+    expect(brief.status).toBe('current'); expect(brief.files.map(file => file.path)).toEqual(['target.ts']);
+    expect(JSON.stringify(brief.excerpts)).toContain('OUTSIDE_CLAIM');
+    expect(claimedScopePaths([{ payload: { paths: ['./a.ts'] }, title: 'Edit packages/x/ignored.ts' },
+      { payload: {}, title: 'P-004 wire the reader', summary: 'Edit packages/x/target.ts now' }])).toEqual(['a.ts', 'packages/x/target.ts']);
+  });
+  it('suppresses intent briefs for claim-covered paths or unreadable ownership and refuses unsafe transient paths', async () => {
+    const deps = depsFor(fixture()); deps.claimedPaths = vi.fn(async () => ['target.ts']);
     const ref = { owner: 'su-intent', workspaceId: 'w', harness: 'h', intent: 'Inspect target', paths: ['target.ts'] };
     expect(await getIntentTimeTaskBrief(ref, deps)).toBeNull();
-    deps.hasClaim = async () => { throw new Error('unavailable'); };
+    expect(await getIntentTimeTaskBrief({ ...ref, paths: ['./target.ts'] }, deps)).toBeNull();
+    deps.claimedPaths = async () => { throw new Error('unavailable'); };
     expect(await getIntentTimeTaskBrief(ref, deps)).toBeNull(); expect(deps.root).not.toHaveBeenCalled();
-    deps.hasClaim = async () => false;
+    deps.claimedPaths = async () => [];
     const result = await getIntentTimeTaskBrief({ ...ref, paths: ['../private.ts', '.env', '**/*'] }, deps);
     expect(result?.taskBrief.status).toBe('unknown'); expect(deps.pack).not.toHaveBeenCalled();
     expect(result?.taskBrief.recover?.tool).toBe('coord:declare-intent');
@@ -624,8 +666,9 @@ describe('P012 bounded scoped task briefs', () => {
     const deps = depsFor(root);
     deps.decisions = vi.fn(async () => ({ planSlug: 'task-plan', totalDecisions: 2,
       totalLocalDecisions: 1, totalAffectedDecisions: 1, affectedDecisions: 1, authorityReadFailed: false,
-      decisions: [{ id: 'D-003', title: 'local', snippet: 'body' },
-        { id: 'D-004', title: 'inbound', snippet: 'body', sourcePlanSlug: 'governing-plan' }] }));
+      decisions: [{ id: 'D-003', title: 'local', snippet: 'body', provenance: { kind: 'unrecorded' as const } },
+        { id: 'D-004', title: 'inbound', snippet: 'body', sourcePlanSlug: 'governing-plan',
+          provenance: { kind: 'unrecorded' as const } }] }));
     const brief = await buildTaskBrief({ workspaceId: 'task-workspace', workItem: { id: 'WI-task', harness: 'h',
       sourcePlanSlug: 'task-plan', payload: { rootPath: '/untrusted', paths: ['target.ts'] } } }, deps);
     expect(brief.repository).toEqual({ workspaceId: 'task-workspace', rootPath: root });
@@ -652,7 +695,8 @@ describe('P012 bounded scoped task briefs', () => {
     const deps = depsFor(root);
     deps.decisions = async () => ({ planSlug: plan, totalDecisions: 8, totalLocalDecisions: 8,
       totalAffectedDecisions: 0, affectedDecisions: 0, authorityReadFailed: false,
-      decisions: Array.from({ length: 8 }, (_, i) => ({ id: `D-00${i + 1}`, title: 'authority', snippet: 'body' })) });
+      decisions: Array.from({ length: 8 }, (_, i) => ({ id: `D-00${i + 1}`, title: 'authority', snippet: 'body',
+        provenance: { kind: 'unrecorded' as const } })) });
     const brief = await buildTaskBrief({ workspaceId: 'papercusp-workspace', workItem: { id: 'WI-native-task', harness: 'papercusp',
       sourcePlanSlug: plan, payload: { paths } } }, deps);
     expect(brief.status).toBe('current');

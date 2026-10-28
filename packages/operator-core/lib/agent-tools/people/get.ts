@@ -28,7 +28,11 @@ export default defineTool({
       id: z.string().min(1).optional().describe('one PER- id'),
       ids: z.array(z.string().min(1)).min(1).max(100).optional().describe('PER- ids (1-100)'),
       includeQualificationEvidence: z.boolean().optional().describe('Include cited graph source inputs; missing or stale membership remains unknown. Does not authorize telemetry reads.'),
+      qualificationWindow: z.object({ windowStart: z.string().datetime({ offset: true }), windowEnd: z.string().datetime({ offset: true }) })
+        .refine(window => Date.parse(window.windowStart) < Date.parse(window.windowEnd), 'windowStart must precede windowEnd')
+        .optional().describe('Half-open source observation window; missing source dates remain unknown.'),
     })
+    .refine(a => !a.qualificationWindow || a.includeQualificationEvidence === true, { message: 'qualificationWindow requires includeQualificationEvidence' })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, { message: 'pass `id` (one) or `ids` (many)' }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId?.trim() ?? '';
@@ -44,7 +48,7 @@ export default defineTool({
         const person = people.get(id);
         if (!person) return { ok: false as const, id, error: 'not_found' };
         return { ok: true as const, id, person, ...(args.includeQualificationEvidence ? {
-          qualificationEvidence: await readPersonQualificationEvidence(getOrgPg().sql, workspaceId, person.id),
+          qualificationEvidence: await readPersonQualificationEvidence(getOrgPg().sql, workspaceId, person.id, ...(args.qualificationWindow ? [args.qualificationWindow] as const : [])),
         } : {}) };
       },
       { keyOf: (id) => ({ id }) },

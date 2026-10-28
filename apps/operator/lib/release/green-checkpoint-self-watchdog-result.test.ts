@@ -8,7 +8,11 @@ import {
   buildSelfWatchdogCheckpointResult,
   buildTerminalFailureCheckpointResult,
   buildTerminationCheckpointResult,
+  writeSelfWatchdogArmMarker,
 } from './green-checkpoint';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 // The CONSUMER halves of the seams this builder sits on, imported for real rather than restated
 // as literals — exactly as green-checkpoint-crash-result.test.ts does, and for the same reason:
 // the defect being fixed here existed precisely because the producer's vocabulary and the
@@ -58,6 +62,71 @@ describe('P-033: watchdog expiry diagnostics', () => {
     expect(onFire).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     expect(onFire.mock.calls[0]?.[0]).toBe('idle-timeout');
+    expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
+  });
+
+  // WI-6554700010042457 (Avi #2574): the main-greening CLI arms the watchdog with
+  // hardCeilingMs:null. A run that keeps making progress must never be killed for being slow;
+  // only going SILENT for the idle budget stops it. tighten() can still pull a finite ceiling in
+  // (the post-verdict funnel), and remainingMs() reports Infinity until it does — every consumer
+  // treats a non-finite remainder as "no ceiling known" (repairTickLegsDeadline, fork inheritance).
+  it('with hardCeilingMs:null, a progressing run is never killed and only silence fires', () => {
+    const onFire = vi.fn();
+    const kill = vi.fn();
+    const watchdog = armSelfWatchdog({ release: vi.fn() }, {
+      ms: 1000,
+      hardCeilingMs: null,
+      pid: 999,
+      kill,
+      log: () => {},
+      snapshotProcessGroup: () => null,
+      onFire,
+    });
+
+    // 50 progress beats spanning 45s: far past any absolute ceiling the old contract carried.
+    for (let i = 0; i < 50; i += 1) {
+      vi.advanceTimersByTime(900);
+      watchdog.progress();
+    }
+    expect(onFire).not.toHaveBeenCalled();
+    expect(kill).not.toHaveBeenCalled();
+    expect(watchdog.remainingMs()).toBe(Number.POSITIVE_INFINITY);
+
+    // Silence for the idle budget is still a stop.
+    vi.advanceTimersByTime(999);
+    expect(onFire).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onFire.mock.calls[0]?.[0]).toBe('idle-timeout');
+    expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
+  });
+
+  it('with hardCeilingMs:null, tighten() still installs a finite ceiling that progress cannot extend', () => {
+    const onFire = vi.fn();
+    const kill = vi.fn();
+    const watchdog = armSelfWatchdog({ release: vi.fn() }, {
+      ms: 1000,
+      hardCeilingMs: null,
+      pid: 999,
+      kill,
+      log: () => {},
+      snapshotProcessGroup: () => null,
+      onFire,
+    });
+
+    vi.advanceTimersByTime(900); // under the 1000ms idle budget
+    watchdog.progress();
+    expect(watchdog.tighten({ hardCeilingMs: 2000, reason: 'post-verdict return funnel' })).toBe(true);
+    expect(watchdog.remainingMs()).toBe(2000);
+    vi.advanceTimersByTime(900);
+    watchdog.progress();
+    vi.advanceTimersByTime(900);
+    watchdog.progress();
+    vi.advanceTimersByTime(199);
+    expect(onFire).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onFire).toHaveBeenCalledWith('absolute-hard-ceiling', expect.objectContaining({
+      tightenedBecause: 'post-verdict return funnel',
+    }));
     expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
   });
 
@@ -576,5 +645,25 @@ describe('WI-6554700010019444: a kill after the verdict publishes that verdict',
     });
     vi.advanceTimersByTime(100);
     expect(watchdog.remainingMs()).toBe(0);
+  });
+});
+
+// WI-6554700010042457: the arm marker is the forensic record of what the watchdog was told. With
+// no absolute ceiling it must say so (null), not invent one: `new Date(armedAt + null)` used to
+// record a hardDeadlineAt equal to armedAt, which reads as "the ceiling fired at arm time".
+describe('writeSelfWatchdogArmMarker with no absolute ceiling', () => {
+  it('records hardDeadlineAt:null for hardCeilingMs:null and a real deadline otherwise', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wi-42457-arm-marker-'));
+    const read = () => JSON.parse(readFileSync(join(dir, 'watchdog.json'), 'utf8')) as Record<string, unknown>;
+
+    writeSelfWatchdogArmMarker(dir, { armedAtMs: 1_000_000, ms: 60_000, hardCeilingMs: null, pid: 42 });
+    let marker = read();
+    expect(marker.hardDeadlineAt).toBeNull();
+    expect(marker.hardCeilingMs).toBeNull();
+    expect(marker.idleDeadlineAt).toBe(new Date(1_060_000).toISOString());
+
+    writeSelfWatchdogArmMarker(dir, { armedAtMs: 1_000_000, ms: 60_000, hardCeilingMs: 120_000, pid: 42 });
+    marker = read();
+    expect(marker.hardDeadlineAt).toBe(new Date(1_120_000).toISOString());
   });
 });

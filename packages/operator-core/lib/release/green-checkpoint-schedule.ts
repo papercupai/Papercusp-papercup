@@ -25,7 +25,8 @@
  * register two system actions as a side effect. That reason was real and is now gone: a
  * leaf with no imports can be depended on from anywhere, including a gate script running
  * standalone under `tsx` in an isolated checkout. So those three are DERIVED now, not
- * copied, and `release-timing-invariants.test.ts` no longer has to detect a drift that
+ * copied (and WI-6554700010042457 later DELETED `SUITE_KILL_BUDGET_MIRROR_MS` along with
+ * the run-level kill it mirrored), and `release-timing-invariants.test.ts` no longer has to detect a drift that
  * can no longer happen. What it still checks is the part that is a real decision: the
  * ORDERING of the four different numbers in the chain, and the phase relation below.
  */

@@ -651,13 +651,13 @@ describe('gather + execute against a real temporary repo', () => {
     return { dir, launches, usageWalk, finished };
   }
 
-  it('retains exact usage slot and admission phases after real mutex contention', async () => {
+  it('reuses retention admission instead of reacquiring a usage slot mutex', async () => {
     const tree = path.join(tmp, 'contended-usage');
     g(repo, 'worktree', 'add', '-q', '--detach', tree);
     const plan = await gather();
     const slot = usageSlot();
-    // Longer than the human message budget: the structured identity must not
-    // inherit its truncation, or a later investigator will inspect another slot.
+    // A leftover holder of the old, redundant slot mutex must not impose a
+    // second one-second admission deadline after retention admission succeeded.
     slot.usageWalk.dir = path.join(tmp, 'long-slot-'.repeat(20));
     let release!: () => void;
     let acquired!: () => void;
@@ -669,20 +669,45 @@ describe('gather + execute against a real temporary repo', () => {
     });
     await ready;
     try {
-      const result = await reclaimCutWorktrees(plan, { notAfterMs: Date.now() + 300 }, { usageWalk: slot.usageWalk });
-      expect(result.ok).toBe(false);
-      const failure = JSON.parse(result.errors[0]!.split('usage before reclaim: ')[1]!);
-      expect(failure.code).toBe('ETIMEDOUT');
-      expect(failure.usageAdmission.slot).toBe(path.resolve(slot.usageWalk.dir));
-      expect(failure.usageAdmission.timeoutMs).toBeGreaterThan(0);
-      expect(failure.usageAdmission.waitedMs).toBeGreaterThanOrEqual(failure.usageAdmission.timeoutMs);
-      expect(Object.keys(failure.usageAdmission.admissionSubphaseTimingsMs)).not.toHaveLength(0);
-      expect(slot.launches).toHaveLength(0);
+      const result = await reclaimCutWorktrees(plan, { dryRun: true, notAfterMs: Date.now() + 10_000 }, { usageWalk: slot.usageWalk });
+      expect(result.errors).toEqual([]);
+      expect(result.ok).toBe(true);
+      expect(result.cap.beforeBytes).toBeGreaterThan(0);
+      expect(slot.launches).toHaveLength(1);
       expect(fs.existsSync(tree)).toBe(true);
     } finally {
       release();
       await holder;
     }
+  });
+
+  it('keeps usage launch behind the shared retention admission', async () => {
+    const tree = path.join(tmp, 'retention-admission-usage');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather(), slot = usageSlot();
+    let release!: () => void;
+    let acquired!: (hasWaiters: () => Promise<boolean>) => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<() => Promise<boolean>>(resolve => { acquired = resolve; });
+    const holder = withFsMutex('papercusp-disk-retention', async context => {
+      if (!context) throw new Error('fixture retention mutex is disabled');
+      acquired(context.hasWaiters);
+      await held;
+    });
+    const hasWaiters = await ready;
+    const pending = reclaimCutWorktrees(plan, { dryRun: true }, { usageWalk: slot.usageWalk });
+    try {
+      await vi.waitFor(async () => expect(await hasWaiters()).toBe(true));
+      expect(slot.launches).toHaveLength(0);
+    } finally {
+      release();
+      await holder;
+    }
+    const result = await pending;
+    expect(result.errors).toEqual([]);
+    expect(result.cap.beforeBytes).toBeGreaterThan(0);
+    expect(slot.launches).toHaveLength(1);
+    expect(fs.existsSync(tree)).toBe(true);
   });
 
   it('adopts the same scheduled usage worker after a bounded wait and refuses a live changed population', async () => {
@@ -752,6 +777,7 @@ describe('gather + execute against a real temporary repo', () => {
     const second = path.join(tmp, 'terminal-second');
     g(repo, 'worktree', 'add', '-q', '--detach', second);
     const result = await reclaimCutWorktrees(await gather(), {}, { usageWalk: slot.usageWalk });
+    expect(result.errors).toEqual([]);
     expect(result.ok).toBe(true);
     expect(result.cap.retainedPaths).toEqual([first, second]);
     expect(slot.launches).toHaveLength(2);

@@ -43,6 +43,8 @@ export interface NativeCustodyRetainedGroup {
 export interface NativeCustodyManifest {
   schemaVersion: 'native-proof-custody-v1'; identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
   expectedHash: string; groups: NativeCustodyRetainedGroup[]; gaps: string[]; predecessor: NativeCustodyLocator | null;
+  /** Bytes the capture read against the shared IO budget (retained AND rejected objects). */
+  bytesRead: number;
   verdicts: { custody: 'complete' | 'partial'; execution: unknown; protocol: 'unqualified';
     producerRetirement: 'not-performed'; cleanup: unknown; nativeProof: 'unqualified'; acceptance: 'unmeasured' };
 }

@@ -8,10 +8,16 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 // These fresh-PG fixtures own claim state; original-row cases assert diagnostics.
 // Never let their incidental cleanup observations flush to the operator database.
-vi.mock('./degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
+// Partial mock: only observeFallback is stubbed (so nothing is ever buffered). The
+// fresh-PG fixture cleanup (test/_pg-helpers.ts) imports the REAL flush + counters
+// and drains into the fixture's own sql, so those exports must stay real.
+vi.mock('./degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  observeFallback: vi.fn(() => true),
+}));
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import { EVENT_AWAITS_LIVENESS_MIN_DDL, HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { reclaimStaleWorkItemClaims, reclaimStaleIssueClaims, reconcileStrandedWipWorkItems } from './work-items-stale-claims';
 import { SESSION_END_MARKER } from './agent-tools/activity/lifecycle-markers';
 
@@ -91,6 +97,7 @@ beforeAll(async () => {
   await sql.unsafe(AGENT_ACTIVITY_DDL);
   await sql.unsafe(TOOL_INVOCATIONS_DDL);
   await sql.unsafe(ROUTINES_DDL);
+  await sql.unsafe(EVENT_AWAITS_LIVENESS_MIN_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -98,7 +105,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.tool_invocations, harness_shared.routines`;
+  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.tool_invocations, harness_shared.routines, harness_shared.event_awaits`;
 });
 
 async function seedIssue(
@@ -1238,5 +1245,64 @@ describe('WI-6554700010029295: warm-dead holders (heartbeat fresh, no turn past 
 
     expect((await reclaimStaleWorkItemClaims(sql)).released.map((r) => r.feature_id)).not.toContain('F-WARM-LOOPED');
     expect((await statusOf('F-WARM-LOOPED')).taken_by).toBe(owner);
+  });
+
+  // EI-27232210222510304 recurrence guard: su-24b08564 held WI-6554700010025562,
+  // parked on a bounded task:terminal wake await while a multi-hour release cut
+  // ran, and the warm-dead leg freed the claim 6h after its last turn — so
+  // release:cut op:run then refused the item id. A bounded wake await is the
+  // same continuation authority as an armed loop.
+  async function seedAwait(
+    ownerId: string,
+    opts: { eventKey?: string; expiresInMin?: number | null; timeoutBehavior?: string; note?: string | null } = {},
+  ): Promise<void> {
+    const { eventKey = 'task:terminal:0mvexample', expiresInMin = 60, timeoutBehavior = 'wake', note = null } = opts;
+    await sql`
+      INSERT INTO harness_shared.event_awaits (subscriber_id, event_key, policy, note, timeout_behavior, expires_ts)
+      VALUES (${ownerId}, ${eventKey}, 'wake', ${note}, ${timeoutBehavior},
+              ${expiresInMin === null ? null : sql`now() + make_interval(mins => ${expiresInMin})`})`;
+  }
+
+  it('a bounded, unfired wake await protects a warm-dead owner (parked on a long job)', async () => {
+    const owner = 'su-warm-dead-awaiting';
+    await seedItem('F-WARM-AWAIT', owner, 8 * 60);
+    await seedIssue('EI-WARM-AWAIT', 'bug', owner, 8 * 60);
+    await beatNow(owner);
+    await seedActivity(owner, 7 * 60, 'tool', 'Edit');
+    await seedAwait(owner);
+
+    expect((await reclaimStaleIssueClaims(sql)).released.map((r) => r.issue_id)).not.toContain('EI-WARM-AWAIT');
+    expect((await reclaimStaleWorkItemClaims(sql)).released.map((r) => r.feature_id)).not.toContain('F-WARM-AWAIT');
+    expect((await statusOf('F-WARM-AWAIT')).taken_by).toBe(owner);
+  });
+
+  it.each([
+    ['an expired await (deadline passed, no turn followed)', { expiresInMin: -5 }],
+    ['a deadline-less await (could shield a wedged owner forever)', { expiresInMin: null }],
+    ['an await whose timeout lapses silently instead of waking', { timeoutBehavior: 'expire' }],
+    ['only the always-armed inbox-wake keepalive', { eventKey: 'coord:inbox-wake:su-warm-dead-not-parked' }],
+  ])('still reaps a warm-dead owner holding %s', async (_label, opts) => {
+    const owner = 'su-warm-dead-not-parked';
+    await seedItem('F-WARM-NOT-PARKED', owner, 8 * 60);
+    await beatNow(owner);
+    await seedActivity(owner, 7 * 60, 'tool', 'Edit');
+    await seedAwait(owner, opts);
+
+    expect((await reclaimStaleWorkItemClaims(sql)).released.map((r) => r.feature_id)).toContain('F-WARM-NOT-PARKED');
+    expect((await statusOf('F-WARM-NOT-PARKED')).taken_by).toBeNull();
+  });
+
+  it('a deliberate coord:await-inbox park on the inbox-wake key does protect the owner', async () => {
+    const owner = 'su-warm-dead-inbox-park';
+    await seedItem('F-WARM-INBOX-PARK', owner, 8 * 60);
+    await beatNow(owner);
+    await seedActivity(owner, 7 * 60, 'tool', 'Edit');
+    await seedAwait(owner, {
+      eventKey: `coord:inbox-wake:${owner}`,
+      note: '[coord:await-inbox:explicit-park] waiting on leader reply',
+    });
+
+    expect((await reclaimStaleWorkItemClaims(sql)).released.map((r) => r.feature_id)).not.toContain('F-WARM-INBOX-PARK');
+    expect((await statusOf('F-WARM-INBOX-PARK')).taken_by).toBe(owner);
   });
 });

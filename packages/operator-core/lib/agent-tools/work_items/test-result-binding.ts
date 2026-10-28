@@ -88,6 +88,8 @@ export interface TestingRunInvocation {
   workItemId: string | null;
   /** `args_json.files` — the exact paths that run executed. */
   files: readonly string[];
+  /** Native reporter executions already know their exact group. */
+  runGroupId?: string;
 }
 
 export interface TestResultBindingProbe {
@@ -102,6 +104,7 @@ export interface TestResultBindingProbe {
     paths: readonly string[],
     from: Date,
     to: Date,
+    runGroupId?: string,
   ) => Promise<readonly TestRunLedgerRow[] | undefined>;
   /** Injectable clock, so staleness is testable without waiting six hours. */
   now?: () => Date;
@@ -158,7 +161,9 @@ export async function testResultContradictedByRun(
     const durationMs = typeof run.durationMs === 'number' && run.durationMs >= 0 ? run.durationMs : 0;
     const windowEnd = new Date(invokedAt.getTime() + durationMs + TEST_BINDING_WINDOW_SLACK_MS);
 
-    const rows = await probe.ledgerRowsInWindow(files, invokedAt, windowEnd);
+    const candidates = await probe.ledgerRowsInWindow(files, invokedAt, windowEnd, run.runGroupId);
+    const rows = run.runGroupId
+      ? candidates?.filter(row => row.runGroupId === run.runGroupId) : candidates;
     if (!rows || rows.length === 0) return undefined;
 
     // The single-group rule. Two distinct groups in the window means a peer ran one of

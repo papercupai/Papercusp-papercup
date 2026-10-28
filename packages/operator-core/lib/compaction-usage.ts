@@ -604,6 +604,76 @@ function toolUseResultExcessIn(visible: string, skip?: (i: number) => boolean): 
   return excess;
 }
 
+/** Bytes of `region` that enter the model context: whole prompt_snapshot /
+ *  api-request-* lines, oversized image payloads and the toolUseResult double-write
+ *  are discounted. Snapshot lines are excluded from the image/toolUseResult scans so
+ *  no byte is discounted twice — a double discount UNDER-counts, the one direction
+ *  that risks a real context death (EI-23747373965813124, EI-12848, WI-3176). */
+function inContextBytesOf(region: string): number {
+  const { snapshotExcess, imageExcess, tureExcess } = excessesIn(region);
+  return Math.max(0, region.length - imageExcess - tureExcess - snapshotExcess);
+}
+
+const ASSISTANT_RECORD_MARKER = '"type":"assistant"';
+/** Backward-scan bound: assistant lines that fail to yield a billed reading (API-error
+ *  stubs, sidechain records) before the scan gives up and falls back to bytes/4. */
+const BILLED_ANCHOR_MAX_CANDIDATES = 64;
+
+/** Context tokens the API billed for one transcript line, or null when the line is not
+ *  a main-chain assistant record carrying a real usage measurement. The value is
+ *  input + cache_creation + cache_read (what the request sent) + output_tokens (the
+ *  reply, which every later request carries). When the response ran several
+ *  server-side iterations, the LAST iteration is the context the model last saw. */
+export function billedContextTokensOfLine(line: string): number | null {
+  let rec: unknown;
+  try {
+    rec = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!rec || typeof rec !== 'object') return null;
+  const r = rec as { type?: unknown; isSidechain?: unknown; message?: { usage?: unknown } };
+  if (r.type !== 'assistant' || r.isSidechain === true) return null;
+  const usage = r.message?.usage;
+  if (!usage || typeof usage !== 'object') return null;
+  const iterations = (usage as { iterations?: unknown }).iterations;
+  const src = (
+    Array.isArray(iterations) && iterations.length > 1 && iterations[iterations.length - 1]
+      ? iterations[iterations.length - 1]
+      : usage
+  ) as Record<string, unknown>;
+  const n = (k: string): number => {
+    const v = Number(src[k]);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  };
+  const input =
+    n('input_tokens') + n('cache_creation_input_tokens') + n('cache_read_input_tokens');
+  // A zero-input record is an API-error stub or a synthetic message — not a measurement.
+  if (input <= 0) return null;
+  return Math.floor(input + n('output_tokens'));
+}
+
+/** The LAST main-chain billed usage record in `visible` (a since-compaction region of
+ *  a Claude transcript): its billed context tokens and the index of the '\n' ending its
+ *  line. Null when none is found within BILLED_ANCHOR_MAX_CANDIDATES assistant lines. */
+export function lastBilledUsageIn(visible: string): { tokens: number; lineEnd: number } | null {
+  let to = visible.length;
+  for (let tried = 0; tried < BILLED_ANCHOR_MAX_CANDIDATES; tried++) {
+    const hit = visible.lastIndexOf(ASSISTANT_RECORD_MARKER, to);
+    if (hit === -1) return null;
+    const start = visible.lastIndexOf('\n', hit) + 1;
+    const nl = visible.indexOf('\n', hit);
+    // A trailing line with no '\n' may still be mid-write — skip it, use an earlier one.
+    if (nl !== -1) {
+      const tokens = billedContextTokensOfLine(visible.slice(start, nl));
+      if (tokens != null) return { tokens, lineEnd: nl };
+    }
+    if (start === 0) return null;
+    to = start - 1;
+  }
+  return null;
+}
+
 /**
  * tokens ≈ (bytes SINCE THE LAST COMPACTION − base64-image excess −
  * toolUseResult double-write) / 4.
@@ -643,31 +713,22 @@ export async function tokensFromFileSize(
       // growing across a whole day). For a file ≤ BOUNDARY_SCAN_CAP (start===0,
       // the whole file was scanned), buf.length === size, so this is byte-
       // identical to the old behavior in that case — only the >cap case changes.
-      const sinceBytes = idx === -1 ? buf.length : buf.length - idx;
-      // Discount image payloads visible in the since-compaction region. latin1
-      // keeps string length == byte length (base64 is ASCII; surrounding
-      // multibyte content must not skew the byte math). When the marker fell
-      // outside the scan cap, only the buffered tail is discountable — the
-      // unseen head keeps full weight (estimate stays conservative).
+      // The since-compaction region (or the whole capped tail when the marker fell
+      // outside the scan cap — the unseen head keeps full weight, so the estimate
+      // stays conservative). latin1 keeps string length == byte length (base64 is
+      // ASCII; surrounding multibyte content must not skew the byte math).
       const visible = buf.toString('latin1', idx === -1 ? 0 : idx);
-      // EI-23747373965813124: discount whole prompt_snapshot lines, and exclude them
-      // from the image/toolUseResult scans so no byte is discounted twice — a double
-      // discount UNDER-counts, the one direction that risks a real context death.
-      const snapRanges = promptSnapshotRangesIn(visible);
-      let snapshotExcess = 0;
-      for (const [s, e] of snapRanges) snapshotExcess += e - s;
-      const inSnapshot = (i: number) => snapRanges.some(([s, e]) => i >= s && i < e);
-      let imageExcess = 0;
-      for (const m of visible.matchAll(IMAGE_PAYLOAD_RE)) {
-        if (inSnapshot(m.index ?? 0)) continue;
-        imageExcess += m[0].length - IMAGE_TOKEN_COST * 4;
+      // WI-6554700010042484: the transcript already records what the API BILLED for
+      // the latest request. Count that exactly and estimate only what was appended
+      // after it. bytes/4 of the whole region is the fallback for a transcript with
+      // no usage record yet — it broke twice when Claude Code added a new
+      // out-of-context record type (prompt_snapshot; 2.1.312's api-request-*), and
+      // the 2.1.312 break cut su sessions from ~76 API calls to ~18 (owner #2581).
+      const anchor = lastBilledUsageIn(visible);
+      if (anchor) {
+        return anchor.tokens + Math.floor(inContextBytesOf(visible.slice(anchor.lineEnd + 1)) / 4);
       }
-      // EI-12848: also drop the out-of-context toolUseResult double-write.
-      const tureExcess = toolUseResultExcessIn(visible, snapRanges.length ? inSnapshot : undefined);
-      return Math.max(
-        0,
-        Math.floor((sinceBytes - imageExcess - tureExcess - snapshotExcess) / 4),
-      );
+      return Math.floor(inContextBytesOf(visible) / 4);
     } finally {
       await fd.close();
     }
@@ -1252,6 +1313,10 @@ const SYNC_DELTA_CAP = 1024 * 1024;
 
 interface TranscriptAnchor {
   path: string;
+  /** WI-6554700010042484: billed context tokens of the last main-chain usage record
+   *  at or before countStart (0 when none since the last compaction marker). The
+   *  reading is baseTokens + the bytes/4 estimate of what was appended after it. */
+  baseTokens: number;
   /** Absolute offset where token counting starts (last seen marker start, or 0). */
   countStart: number;
   /** Image-payload byte excess accumulated over settled bytes in [countStart, settled). */
@@ -1280,11 +1345,14 @@ const anchors = new Map<string, TranscriptAnchor>();
 const seedInFlight = new Set<string>();
 
 function anchorTokens(a: TranscriptAnchor): number {
-  return Math.max(
-    0,
-    Math.floor(
-      (a.sizeSeen - a.countStart - a.imageExcess - a.tureExcess - a.snapshotExcess) / 4,
-    ),
+  return (
+    a.baseTokens +
+    Math.max(
+      0,
+      Math.floor(
+        (a.sizeSeen - a.countStart - a.imageExcess - a.tureExcess - a.snapshotExcess) / 4,
+      ),
+    )
   );
 }
 
@@ -1386,12 +1454,21 @@ function seedAnchorFromFile(pathStr: string): TranscriptAnchor | null {
       // though a real (unseen, further-back) compaction may already bound real
       // usage near zero. Counting from `start` keeps the same "≥cap bytes ⇒ over
       // every real limit" conservative signal without the unbounded growth.
-      const countStart = idx === -1 ? start : start + idx;
-      const countedView = view.toString('latin1', idx === -1 ? 0 : idx);
+      let countStart = idx === -1 ? start : start + idx;
+      let countedView = view.toString('latin1', idx === -1 ? 0 : idx);
+      // WI-6554700010042484: re-base on the last billed usage record when there is one.
+      let baseTokens = 0;
+      const billed = lastBilledUsageIn(countedView);
+      if (billed) {
+        countStart += billed.lineEnd + 1;
+        baseTokens = billed.tokens;
+        countedView = countedView.slice(billed.lineEnd + 1);
+      }
       const { snapshotExcess, imageExcess, tureExcess } = excessesIn(countedView);
       const now = Date.now();
       return {
         path: pathStr,
+        baseTokens,
         countStart,
         imageExcess,
         tureExcess,
@@ -1430,10 +1507,22 @@ function advanceAnchor(a: TranscriptAnchor, opts: { syncCap?: number } = {}): 'o
       const settledLen = lastNl + 1;
       const view = buf.subarray(0, settledLen);
       const idx = view.lastIndexOf(COMPACT_BOUNDARY_MARKER);
-      if (idx !== -1) {
+      const fromBoundary = idx === -1 ? 0 : idx;
+      const region = view.toString('latin1', fromBoundary);
+      // WI-6554700010042484: a billed usage record in this delta re-bases the count on it.
+      const billed = lastBilledUsageIn(region);
+      if (billed) {
+        a.countStart = a.settled + fromBoundary + billed.lineEnd + 1;
+        a.baseTokens = billed.tokens;
+        const e = excessesIn(region.slice(billed.lineEnd + 1));
+        a.imageExcess = e.imageExcess;
+        a.tureExcess = e.tureExcess;
+        a.snapshotExcess = e.snapshotExcess;
+      } else if (idx !== -1) {
         // A compaction landed in this delta: counting restarts at the marker.
         a.countStart = a.settled + idx;
-        const e = excessesIn(view.toString('latin1', idx));
+        a.baseTokens = 0;
+        const e = excessesIn(region);
         a.imageExcess = e.imageExcess;
         a.tureExcess = e.tureExcess;
         a.snapshotExcess = e.snapshotExcess;

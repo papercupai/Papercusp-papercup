@@ -32,6 +32,8 @@ import { runConnectorSync } from '../providers/connector-runtime';
 import { dataSourceRecordId } from '../data-sources/datatype-destination-sink';
 import { listProvenanceKey } from './merge';
 import { getPeople, mergePeople, searchPeople, readPersonQualificationEvidence } from './people';
+import { LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY } from './qualification-instrument';
+import { runInstrumentChecks, recordRubricCheckResults, readLatestRubricCheckResults } from '../check-results-ledger';
 import {
   acceptEntityField,
   mergeEntities,
@@ -212,6 +214,33 @@ beforeEach(async () => {
 });
 
 describe('platform relationship graph (P-002, R-1)', () => {
+  it('measures canonical signup sources through the registered subject instrument and real results ledger (P-019)', async () => {
+    const source = await connect(SIGNUPS, { person: ['record'] });
+    await sync(source, signupFetch);
+    const [person] = live(await graphRows('PER-', 'person'));
+    const subject = { kind: 'person', ref: person!.feature_id };
+    const rubricRef = 'p019-source-observation-roundtrip';
+    const criteria = [{ key: 'sources', check: { kind: 'instrument' as const,
+      instrumentKey: LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY } }];
+    const measure = (workspaceId: string) => runInstrumentChecks({ workspaceId, rubricRef, subject, criteria,
+      now: () => Date.parse('2026-10-27T00:00:00Z') });
+    const measured = await measure(WS);
+    expect(measured).toHaveLength(1);
+    expect(measured[0]).toMatchObject({ verdict: 'pass', check: { value: 1, unit: 'count', subject } });
+    expect(JSON.stringify(measured[0]!.check.provenance)).toContain(`work-item:${dataSourceRecordId(WS, source, 'person', signupKey)}`);
+    await recordRubricCheckResults(measured, { workspaceId: WS, harnessSlug: HARNESS }, sql);
+    const latest = await readLatestRubricCheckResults({ workspaceId: WS, rubricRef, subject }, sql);
+    const retained = latest.get('sources:instrument')!;
+    expect(retained).toMatchObject({ check: { value: 1, subject }, provenanceStatus: 'retained' });
+    expect(JSON.stringify(retained.check.provenance)).toContain(`work-item:${dataSourceRecordId(WS, source, 'person', signupKey)}`);
+    expect(await readLatestRubricCheckResults({ workspaceId: WS, rubricRef,
+      subject: { kind: 'person', ref: 'PER-unmeasured' } }, sql)).toHaveProperty('size', 0);
+    expect(await readLatestRubricCheckResults({ workspaceId: WS, rubricRef }, sql)).toHaveProperty('size', 0);
+    expect(await measure('foreign-workspace')).toMatchObject([{ verdict: 'error', check: { value: null } }]);
+    await sql`UPDATE harness_shared.work_items SET payload = payload || '{"retiredAt":"2026-10-27T00:00:00Z"}'::jsonb
+      WHERE workspace_id = ${WS} AND feature_id = ${dataSourceRecordId(WS, source, 'person', signupKey)}`;
+    expect(await measure(WS)).toMatchObject([{ verdict: 'error', check: { value: null } }]);
+  });
   it('reads cited signup fit inputs from canonical membership, without promoting attribution or consent (P-019)', async () => {
     const source = await connect(SIGNUPS, { person: ['record'] });
     await sync(source, signupFetch);

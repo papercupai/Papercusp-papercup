@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { EVENT_AWAITS_LIVENESS_MIN_DDL } from '../../test/_work-items-schema';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -64,6 +65,8 @@ beforeAll(async () => {
     coord_owner_id text, invoked_at timestamptz NOT NULL DEFAULT now() )`;
   await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.routines (
     active boolean NOT NULL DEFAULT true, reschedule_interval_sec integer, target_owner_id text )`;
+  // EI-27232210222510304: the warm-dead subtraction also reads event_awaits.
+  await db.sql.unsafe(EVENT_AWAITS_LIVENESS_MIN_DDL);
 }, 90_000);
 
 afterAll(async () => {

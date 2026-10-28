@@ -56,7 +56,7 @@ async function locateReference(options: DefaultReuseResolverOptions, relPath: st
     const deps = options.citationDeps;
     const selected = deps?.locateRepository
       ? deps.locateRepository(relPath)
-      : { repoRoot: options.repoRoot, absolutePath: deps?.locate ? deps.locate(relPath) : insideRoot(options.repoRoot, relPath) };
+      : { repoRoot: options.repoRoot, absolutePath: deps?.locate ? deps.locate(relPath, options.repoRoot) : insideRoot(options.repoRoot, relPath) };
     if (!selected?.absolutePath) return { lookup: unavailable('citation path is not admitted') };
     const root = await realpath(selected.repoRoot);
     let absolutePath: string;

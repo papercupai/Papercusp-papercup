@@ -15,49 +15,31 @@ export function readCommittedSources(root: string, revision?: string, { runGit }
     unresolved: any[];
 };
 /**
+ * @typedef {{ section: string, key: string, value: string, firstLine: number, lastLine: number }} SystemdDirective
+ * @typedef {{ firstLine: number, lastLine: number, reason: string, text: string }} SystemdGap
+ * @typedef {{ format: 'systemd', directives: SystemdDirective[], unresolved: SystemdGap[],
+ *   effectiveConfigurationVerified: boolean }} LaunchControl
+ * @typedef {{ path: string, repository: any, commit: any, blobOid: any, sourceSha256: string,
+ *   sourceKind: string, imports: any[], launchControl?: LaunchControl }} InventoryFile
+ * @typedef {{ id: string, sourceSha256: string, classification: string, evidenceKind: string,
+ *   signals: any[] }} InventoryLead
+ */
+/**
  * Preserve unit assignments for launch review, including empty list resets.
  * This is source evidence, not an effective-unit evaluator: installation paths,
  * prefix drop-ins, environment files and manager expansion still need proof.
+ * @param {string} path
+ * @param {string} text
+ * @returns {LaunchControl | null}
  */
-export function collectSystemdDirectives(path: any, text: any): {
-    format: string;
-    directives: {
-        section: string;
-        key: string;
-        value: string;
-        firstLine: any;
-        lastLine: number;
-    }[];
-    unresolved: ({
-        firstLine: any;
-        lastLine: number;
-        reason: string;
-        text: any;
-    } | {
-        firstLine: any;
-        lastLine: any;
-        reason: string;
-        text: string;
-    })[];
-    effectiveConfigurationVerified: boolean;
-} | null;
+export function collectSystemdDirectives(path: string, text: string): LaunchControl | null;
 /** Candidate leads require explicit reachability classification before the population is frozen. */
 export function inventorySources(snapshot: any): {
     schema: string;
     repositories: any;
     sourceFingerprint: string;
-    files: {
-        path: any;
-        repository: any;
-        commit: any;
-        blobOid: any;
-        sourceSha256: string;
-        sourceKind: string;
-        imports: never[];
-    }[];
-    groups: {
-        [k: string]: never[];
-    };
+    files: InventoryFile[];
+    groups: Record<string, InventoryLead[]>;
     unresolved: any[];
     closureAccepted: boolean;
     limitations: string[];
@@ -170,3 +152,39 @@ export function inventoryElfLibraryCandidates(files: any[], { libraryCache, envi
     limitations: string[];
 }>;
 export const INVENTORY_GROUPS: string[];
+export type SystemdDirective = {
+    section: string;
+    key: string;
+    value: string;
+    firstLine: number;
+    lastLine: number;
+};
+export type SystemdGap = {
+    firstLine: number;
+    lastLine: number;
+    reason: string;
+    text: string;
+};
+export type LaunchControl = {
+    format: "systemd";
+    directives: SystemdDirective[];
+    unresolved: SystemdGap[];
+    effectiveConfigurationVerified: boolean;
+};
+export type InventoryFile = {
+    path: string;
+    repository: any;
+    commit: any;
+    blobOid: any;
+    sourceSha256: string;
+    sourceKind: string;
+    imports: any[];
+    launchControl?: LaunchControl;
+};
+export type InventoryLead = {
+    id: string;
+    sourceSha256: string;
+    classification: string;
+    evidenceKind: string;
+    signals: any[];
+};

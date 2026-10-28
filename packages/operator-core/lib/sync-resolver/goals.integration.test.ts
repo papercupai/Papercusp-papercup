@@ -148,6 +148,7 @@ beforeEach(async () => {
   // moment someone adds another one.
   await sql`TRUNCATE harness_shared.goals, harness_shared.goal_pots,
                      harness_shared.work_items, harness_shared.agent_usage_samples,
+                     harness_shared.agent_usage_harness_spend_totals,
                      harness_shared.harness_plans, harness_shared.agent_modes CASCADE`;
 });
 
@@ -981,6 +982,7 @@ describe('goals.* resolvers against real SQL', () => {
 
     expect(out.goal?.id).toBe(GOAL);
     expect(out.pots).toHaveLength(1);
+    expect((out.pots[0] as { spendUsd?: number }).spendUsd).toBe(61);
     expect(out.waitingOnYou.map((w) => w.id)).toEqual(['WI-wall']);
     expect(out.activity).toHaveLength(2);
     expect(out.spendByDay.map((d) => d.day)).toEqual(['2026-08-01', '2026-08-02']);
@@ -990,6 +992,91 @@ describe('goals.* resolvers against real SQL', () => {
       status: 'unknown',
       unknown: { code: 'no-canonical-goal-holder' },
     });
+  });
+
+  it('backfills and maintains workspace-scoped lifetime pot spend without scanning source samples on detail reads', async () => {
+    const priorSql = sql;
+    const observedQueries: string[] = [];
+    const observedSql = postgres(db.url, {
+      max: 4,
+      onnotice: () => {},
+      prepare: false,
+      debug: (_connection, query) => observedQueries.push(query),
+    });
+    sql = observedSql;
+    try {
+      const { resolveGoalDetail } = await import('./goals');
+      await goal();
+      await pot('alpha');
+
+      const [{ id: sampleId }] = await sql`
+        INSERT INTO harness_shared.agent_usage_samples
+          (workspace_id, ts, harness_slug, cost_usd, bucket_key, provider, model_class, source)
+        VALUES (${WS}, ${Date.parse('2026-08-01T10:00:00Z')}, 'alpha', 5, 'b', 'anthropic', 'sonnet', 'test')
+        RETURNING id
+      `;
+      await sql`
+        INSERT INTO harness_shared.agent_usage_samples
+          (workspace_id, ts, harness_slug, cost_usd, bucket_key, provider, model_class, source)
+        VALUES (${WS}, ${Date.parse('2026-08-02T10:00:00Z')}, 'alpha', NULL, 'b', 'anthropic', 'sonnet', 'test')
+      `;
+      await sql`
+        INSERT INTO harness_shared.agent_usage_samples
+          (workspace_id, ts, harness_slug, cost_usd, bucket_key, provider, model_class, source)
+        VALUES ('other-workspace', ${Date.parse('2026-08-03T10:00:00Z')}, 'alpha', 1000, 'b', 'anthropic', 'sonnet', 'test'),
+               (${WS}, ${Date.parse('2026-08-04T10:00:00Z')}, 'beta', 900, 'b', 'anthropic', 'sonnet', 'test')
+      `;
+
+      // Simulate legacy rows that predate the summary table, then execute the
+      // exact migration backfill against them before checking trigger deltas.
+      await sql`TRUNCATE harness_shared.agent_usage_harness_spend_totals`;
+      const migration = readFileSync(join(SQL_DIR, '1605-agent-usage-harness-spend-totals.sql'), 'utf8');
+      await sql.begin(async (tx) => {
+        await tx.unsafe(migration);
+      });
+
+      const scopedTotals = await sql.begin(async (tx) => {
+        await tx.unsafe('SET LOCAL ROLE harness_app');
+        await tx`SELECT set_config('app.workspace_id', ${WS}, true)`;
+        return tx`
+          SELECT harness_slug, total_cost_usd
+            FROM harness_shared.agent_usage_harness_spend_totals
+           ORDER BY harness_slug
+        `;
+      });
+      expect(scopedTotals).toEqual([
+        { harness_slug: 'alpha', total_cost_usd: 5 },
+        { harness_slug: 'beta', total_cost_usd: 900 },
+      ]);
+
+      const readAlphaSpend = async (): Promise<number> => {
+        const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+          pots: Array<{ spendUsd: number }>;
+        };
+        return detail.pots[0]?.spendUsd ?? NaN;
+      };
+      expect(await readAlphaSpend()).toBe(5);
+
+      await sql`UPDATE harness_shared.agent_usage_samples SET cost_usd = 8 WHERE id = ${sampleId}`;
+      expect(await readAlphaSpend()).toBe(8);
+      await sql`UPDATE harness_shared.agent_usage_samples SET harness_slug = 'beta' WHERE id = ${sampleId}`;
+      expect(await readAlphaSpend()).toBe(0);
+      await sql`DELETE FROM harness_shared.agent_usage_samples WHERE id = ${sampleId}`;
+      const betaAfterDelete = await sql`
+        SELECT total_cost_usd
+          FROM harness_shared.agent_usage_harness_spend_totals
+         WHERE workspace_id = ${WS} AND harness_slug = 'beta'
+      `;
+      expect(betaAfterDelete).toEqual([{ total_cost_usd: 900 }]);
+
+      const potSpendQuery = observedQueries.find((query) => query.includes('FROM harness_shared.goal_pots gp'));
+      expect(potSpendQuery).toBeDefined();
+      expect(potSpendQuery).toContain('agent_usage_harness_spend_totals');
+      expect(potSpendQuery?.toLowerCase()).not.toContain('sum(s.cost_usd)');
+    } finally {
+      await observedSql.end({ timeout: 5 });
+      sql = priorSql;
+    }
   });
 
   it.each(['available', 'pending'] as const)(

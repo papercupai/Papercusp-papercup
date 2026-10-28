@@ -51,6 +51,10 @@ import {
   syncEnrolmentScopePath,
 } from './task-manager/enroll-sync';
 import { isTerminalState, type TaskSpec, type TaskState } from './task-manager/types';
+import { listTasks } from './task-manager/store';
+import { reconcileTick } from './task-manager/reconcile-tick';
+import { defaultForeignSignature } from './task-manager/scan';
+import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import { boundedPgReadTxn } from './pg-read-query';
 import { boundedOrgTxn } from './pg-bounded-txn';
 
@@ -578,17 +582,89 @@ export interface ForegroundRunVerdict {
 
 const FOREGROUND_LIVE_TASK_STATES = new Set(['pending', 'running']);
 
+export type ForegroundKernelVerdict =
+  | { status: 'alive' }
+  | { status: 'terminal'; taskState: string }
+  | { status: 'unknown' };
+
+export interface ForegroundKernelEvidence {
+  degraded: boolean;
+  taskState: string | null | undefined;
+  aliveCount: number;
+  strandedCount: number;
+  endedUnobservedCount: number;
+  unresolved: boolean;
+  tooYoung: boolean;
+}
+
+export function classifyForegroundKernelEvidence(
+  evidence: ForegroundKernelEvidence,
+): ForegroundKernelVerdict {
+  if (evidence.degraded || !evidence.taskState) return { status: 'unknown' };
+  if (isTerminalState(evidence.taskState as TaskState)) {
+    return { status: 'terminal', taskState: evidence.taskState };
+  }
+  const classifications = evidence.aliveCount + evidence.strandedCount + evidence.endedUnobservedCount;
+  if (evidence.unresolved || evidence.tooYoung || classifications !== 1) return { status: 'unknown' };
+  if (evidence.aliveCount === 1) return { status: 'alive' };
+  // A strand does not confirm scope release and may leave escaped children.
+  // Only ended_unobserved carries the reconciler's independent systemd release proof.
+  if (evidence.strandedCount > 0) return { status: 'unknown' };
+  return { status: 'terminal', taskState: 'ended_unobserved' };
+}
+
+type ForegroundKernelReader = (taskId: string, workspaceId: string) => Promise<ForegroundKernelVerdict>;
+
+/** Read fresh kernel truth for just this task through the shared dry-run reconciler. */
+async function readForegroundKernelVerdict(
+  taskId: string,
+  workspaceId: string,
+): Promise<ForegroundKernelVerdict> {
+  let currentTaskState: string | null | undefined;
+  const tick = await reconcileTick({
+    dryRun: true,
+    workspaceId,
+    listLive: async (targetWorkspaceId) => {
+      const rows = await listTasks({
+        workspaceId: targetWorkspaceId ?? workspaceId,
+        taskId,
+        includeEnded: true,
+        limit: 2,
+      });
+      currentTaskState = rows.length === 1 ? rows[0]!.state : null;
+      return rows;
+    },
+    scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
+  });
+
+  // Degraded, ambiguous, or unclassified evidence stays unknown. In particular,
+  // absence from an incomplete scan must never turn a stored running row into LOST.
+  const alive = tick.result.alive.filter((row) => row.taskId === taskId).length;
+  const stranded = tick.result.stranded.filter((row) => row.taskId === taskId).length;
+  const endedUnobserved = tick.result.endedUnobserved.filter((row) => row.taskId === taskId).length;
+  return classifyForegroundKernelEvidence({
+    degraded: tick.degraded,
+    taskState: currentTaskState,
+    aliveCount: alive,
+    strandedCount: stranded,
+    endedUnobservedCount: endedUnobserved,
+    unresolved: tick.result.unresolved.some((row) => row.taskId === taskId),
+    tooYoung: tick.result.tooYoung.includes(taskId),
+  });
+}
+
 export async function getForegroundRunVerdictAsync(
   runId: string,
   sqlOverride?: SqlLike,
+  readKernelVerdict: ForegroundKernelReader = readForegroundKernelVerdict,
 ): Promise<ForegroundRunVerdict | null> {
   const sql = await snapshotSql(sqlOverride);
   if (!sql) return null;
   const tasks = await boundedSnapshotQuery<Array<{
-    task_id: string; state: string; started_at: Date | string | number | null;
+    task_id: string; workspace_id: string; state: string; started_at: Date | string | number | null;
     ended_at: Date | string | number | null; exit_code: number | null;
   }>>(sql`
-    SELECT task_id, state, started_at, ended_at, exit_code
+    SELECT task_id, workspace_id, state, started_at, ended_at, exit_code
       FROM harness_shared.task_ledger
      WHERE class = 'test-run' AND launched_by = ${`testing:run:${runId}`}
        AND detail->>'runGroup' = ${runId} AND detail->>'foreground' = 'true'
@@ -603,11 +679,25 @@ export async function getForegroundRunVerdictAsync(
   `);
   if (counted === null) throw new TestingRunSnapshotUnavailableError();
   const ledgerRows = Number(counted[0]?.n ?? 0);
-  const live = FOREGROUND_LIVE_TASK_STATES.has(task.state);
+  let taskState = task.state;
+  let live = FOREGROUND_LIVE_TASK_STATES.has(task.state);
+  if (ledgerRows === 0 && live) {
+    let kernel: ForegroundKernelVerdict;
+    try {
+      kernel = await readKernelVerdict(task.task_id, task.workspace_id);
+    } catch {
+      throw new TestingRunSnapshotUnavailableError();
+    }
+    if (kernel.status === 'unknown') return null;
+    if (kernel.status === 'terminal') {
+      taskState = kernel.taskState;
+      live = false;
+    }
+  }
   return {
     runId,
     taskId: task.task_id,
-    taskState: task.state,
+    taskState,
     startedAt: epochMs(task.started_at),
     endedAt: epochMs(task.ended_at),
     exitCode: task.exit_code,

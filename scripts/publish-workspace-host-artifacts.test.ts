@@ -16,7 +16,122 @@ import type {
 
 // @ts-expect-error Runtime script is intentionally executable ESM and has no declaration artifact.
 import * as publisher from './publish-workspace-host-artifacts.mjs';
-import { adoptGcsWorkspaceHostObjects, gcsPublicationTarget, publishGcsObjects, verifyGcsPublicBytes, verifyGcsPrivateBytes } from './lib/workspace-host-gcs-publication.mjs';
+import { adoptGcsWorkspaceHostObjects, gcsPublicationTarget, publishGcsObjects, verifyGcsPublicBytes, verifyGcsPrivateBytes, verifyGcsWorkspaceHostUpload } from './lib/workspace-host-gcs-publication.mjs';
+
+function workspaceUploadVerificationFixture(fault?: 'bytes' | 'replay-generation' | 'public' | 'cleanup' | 'occupied' | 'lost-initiation') {
+  const operationId = 'c34f8924-8d92-49a5-94bd-97cfb228ac93';
+  const body = 'private verification ' + operationId;
+  const sha256 = createHash('sha256').update(body).digest('hex');
+  const prefix = 'artifacts/workspace-host/sha256/' + sha256 + '/';
+  const key = prefix + 'server.tgz';
+  const providerId = 'b8800627-5a91-4c16-8acc-1be87227a643';
+  const providerPrefix = '__artifact_uploads/' + providerId + '/';
+  const objects = new Map<string, { name: string; generation: string; bytes: Buffer }>();
+  const put = (name: string, bytes: string, generation = '101') => objects.set(name, { name, generation, bytes: Buffer.from(bytes) });
+  const calls: { url: URL; method: string }[] = [];
+  const journal: unknown[] = [];
+  let starts = 0; let completions = 0;
+  const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
+  if (fault === 'occupied') put(prefix + 'retained-original', 'never delete');
+  const fetchImpl: typeof fetch = async (input, init = {}) => {
+    const url = new URL(String(input)); const method = init.method ?? 'GET'; calls.push({ url, method });
+    if (url.hostname === 'storage.googleapis.com') {
+      if (!url.pathname.startsWith('/storage/v1/')) return new Response(null, { status: 403 });
+      const marker = '/storage/v1/b/test-bucket/o';
+      if (url.pathname === marker) return json({ items: [...objects.values()]
+        .filter(item => item.name.startsWith(url.searchParams.get('prefix') ?? ''))
+        .map(item => ({ name: item.name, generation: item.generation })) });
+      const name = decodeURIComponent(url.pathname.slice(marker.length + 1)); const item = objects.get(name);
+      if (method === 'DELETE') {
+        assert.equal(url.searchParams.get('ifGenerationMatch'), item?.generation);
+        if (fault === 'cleanup') return json({}, 412);
+        objects.delete(name); return new Response(null, { status: 204 });
+      }
+      if (!item) return json({}, 404);
+      if (url.searchParams.get('alt') === 'media') {
+        if (name === key) assert.equal(url.searchParams.get('generation'), item.generation);
+        return new Response(fault === 'bytes' && name === key ? Buffer.from('x'.repeat(body.length)) : item.bytes);
+      }
+      return json({ name, generation: item.generation, size: String(item.bytes.length), metageneration: '1' });
+    }
+    if (url.pathname === '/artifacts/workspace-host/sha256/' + 'a'.repeat(64) + '/server.tgz.minisig') return new Response('signed control');
+    if (url.pathname.startsWith('/artifacts/')) return new Response(null, { status: fault === 'public' ? 200 : 404 });
+    if (!new Headers(init.headers).has('authorization')) return json({}, 401);
+    assert.equal(journal.length, 1, 'the exact operation must be persisted before a write');
+    if (url.pathname.endsWith('/parts/1')) {
+      put(providerPrefix + 'part-1', body); put(prefix + '.multipart/' + operationId + '/parts/1.json', '{}');
+      return json({ etag: '101' });
+    }
+    if (url.pathname.endsWith('/complete')) {
+      completions++;
+      put(key, body, fault === 'replay-generation' && completions > 1 ? '202' : '201');
+      objects.delete(prefix + '.multipart/' + operationId + '.json');
+      return json({ deduped: completions > 1 }, completions > 1 ? 200 : 201);
+    }
+    starts++;
+    if (fault === 'lost-initiation') {
+      put(providerPrefix + 'session', '{}');
+      throw new Error('response lost before operation state became visible');
+    }
+    put(prefix + '.multipart/' + operationId + '.json', JSON.stringify({ bundleSha256: sha256, r2UploadId: providerId }));
+    put(providerPrefix + 'session', '{}');
+    return json({ uploadId: operationId, resumed: starts > 1 }, starts > 1 ? 200 : 201);
+  };
+  return { objects, calls, journal, options: { baseUrl: 'https://worker.example', bucket: 'test-bucket',
+    githubToken: 'operator-token', accessToken: 'storage-token', operationId, body, fetchImpl,
+    recordOperation: async (operation: unknown) => { journal.push(operation); },
+    positiveControl: { path: '/artifacts/workspace-host/sha256/' + 'a'.repeat(64) + '/server.tgz.minisig',
+      sha256: createHash('sha256').update('signed control').digest('hex'), sizeBytes: Buffer.byteLength('signed control') } } };
+}
+
+test('GCS operational verifier journals one upload, proves private recovery and removes only fenced fixture generations', async () => {
+  const fixture = workspaceUploadVerificationFixture();
+  const result = await verifyGcsWorkspaceHostUpload(fixture.options);
+  assert.equal(result.result, 'pass'); assert.equal(result.cleanup.complete, true);
+  assert.equal(result.checks.length, 14); assert.equal(fixture.objects.size, 0);
+  assert.equal(fixture.journal.length, 1);
+  assert.equal(fixture.calls.filter(call => call.method === 'DELETE').length, 4);
+});
+
+for (const [fault, expected] of [
+  ['bytes', 'GCS public bytes differ'], ['replay-generation', 'completion-replay-retains-generation'],
+  ['public', 'unfinalized-public-read-before-upload-denied'],
+] as const) {
+  test('GCS operational verifier rejects ' + fault + ' while cleaning its own fixture', async () => {
+    const fixture = workspaceUploadVerificationFixture(fault);
+    const result = await verifyGcsWorkspaceHostUpload(fixture.options);
+    assert.equal(result.result, 'fail'); assert.match(result.error ?? '', new RegExp(expected));
+    assert.equal(result.cleanup.complete, true); assert.equal(fixture.objects.size, 0);
+  });
+}
+
+test('GCS operational verifier preserves an occupied namespace and refuses writes after journal failure', async () => {
+  const occupied = workspaceUploadVerificationFixture('occupied');
+  assert.equal((await verifyGcsWorkspaceHostUpload(occupied.options)).result, 'fail');
+  assert.equal(occupied.objects.size, 1); assert.equal(occupied.calls.some(call => call.method !== 'GET'), false);
+  const fixture = workspaceUploadVerificationFixture();
+  const result = await verifyGcsWorkspaceHostUpload({ ...fixture.options, recordOperation: async () => { throw new Error('journal unavailable'); } });
+  assert.equal(result.result, 'fail'); assert.equal(result.error, 'journal unavailable');
+  assert.equal(fixture.objects.size, 0); assert.equal(fixture.calls.some(call => call.method === 'DELETE' || call.method === 'PUT'), false);
+});
+
+test('GCS operational verifier reports a cleanup generation conflict without retrying an unconditional delete', async () => {
+  const fixture = workspaceUploadVerificationFixture('cleanup');
+  const result = await verifyGcsWorkspaceHostUpload(fixture.options);
+  assert.equal(result.result, 'fail'); assert.equal(result.cleanup.complete, false);
+  assert.match(result.cleanup.error ?? '', /generation-fenced cleanup failed: HTTP 412/);
+  assert.equal(fixture.calls.filter(call => call.method === 'DELETE').length, 1);
+  assert.ok(fixture.objects.size > 0);
+});
+
+test('GCS operational verifier keeps cleanup unknown when a lost initiation has no readable provider identity', async () => {
+  const fixture = workspaceUploadVerificationFixture('lost-initiation');
+  const result = await verifyGcsWorkspaceHostUpload(fixture.options);
+  assert.equal(result.result, 'fail'); assert.equal(result.cleanup.complete, false);
+  assert.match(result.cleanup.error ?? '', /provider upload cleanup is unknown/);
+  assert.equal(fixture.calls.some(call => call.method === 'DELETE'), false);
+  assert.equal(fixture.objects.size, 1);
+});
 
 const {
   publishWorkspaceHostArtifacts,
@@ -142,7 +257,7 @@ for (const loseReply of [false, true]) {
     const input = { ...fixture, ctx, stageOnly: true, runMutation: runJournaledMutation, log: () => {} };
     const result = await publishGcsObjects(input);
     assert.equal(result.provider, 'gcs');
-    assert.equal(result.verified[0].sha256, fixture.objects[0].sha256);
+    assert.equal(result.verified![0].sha256, fixture.objects[0].sha256);
     await publishGcsObjects(input);
     assert.equal(fixture.calls.filter(a => a[1] === 'cp').length, 1);
     assert.ok(!fixture.calls.some(a => a.includes('add-iam-policy-binding')));

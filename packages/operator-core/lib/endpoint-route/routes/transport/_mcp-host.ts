@@ -109,6 +109,7 @@ import {
   withMcpToolsListPhaseTrace,
 } from '../../../mcp-request-trace';
 import type { ScratchWriteTimings } from '../../../scratch-gc';
+import { newScratchQuotaRecoveryDiagnostics } from '../../../scratch-gc';
 import { acquireSnapshot, DbCallDeadlineError, getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { observeFallback } from '../../../degradation/fallback-observations';
 import { samplePgBouncerPools } from './pgbouncer-pool-sample.mjs';
@@ -3323,6 +3324,19 @@ function mcpInstructionsForServer(): string | undefined {
 }
 
 /**
+ * The transport owner of a built spawn context. A bearer (app-key) session carries its
+ * principal separately, and resolveAgentIdentity throws when handed such a ctx bare, so
+ * synthesize the transport principal for it. Signed-spawn and superuser sessions keep
+ * their existing attribution (WI-6554700010030456, follow-up of EI-27158841329142596).
+ */
+function transportOwnerId(ctx: BuiltSpawnContext): string {
+  return resolveAgentIdentity({
+    ...ctx,
+    principal: ctx.authenticatedPrincipal ? synthesizeTransportPrincipal(ctx) : undefined,
+  }).ownerId;
+}
+
+/**
  * Resolve the MCP tool listings visible to THIS session — the single walk
  * shared by `tools/list` and the dynamic slash projection on `prompts/list`,
  * so the slash surface mirrors the tool surface by construction
@@ -3453,7 +3467,7 @@ async function resolveVisibleToolListings(extra: unknown, phases: PhaseTracker =
     // a read-after-dispatch boundary, just like the existing quota reader.
     await phases.track('telemetryFlush', () => flushPendingTelemetry());
     await phases.track('restoreSessionTools', () => restoreSessionTools({ sessionKey: surfaceKey, seed,
-      ownerId: resolveAgentIdentity(spawnRes.ctx).ownerId,
+      ownerId: transportOwnerId(spawnRes.ctx),
       workspaceId: spawnRes.ctx.workspaceId,
     }));
   }
@@ -3473,13 +3487,7 @@ async function resolveVisibleToolListings(extra: unknown, phases: PhaseTracker =
   // nor a growing discovery seed can widen an exact native launch ceiling.
   if (spawnRes.kind === 'ok') {
     try {
-      const ownerId = resolveAgentIdentity({
-        ...spawnRes.ctx,
-        // Bearer sessions carry their principal separately; signed-spawn and
-        // superuser sessions retain their existing transport owner attribution.
-        principal: spawnRes.ctx.authenticatedPrincipal
-          ? synthesizeTransportPrincipal(spawnRes.ctx) : undefined,
-      }).ownerId;
+      const ownerId = transportOwnerId(spawnRes.ctx);
       const confinement = await phases.track('sessionConfinement', () =>
         readSessionConfinement(ownerId, spawnRes.ctx.workspaceId));
       if (confinement) result = result.filter(listing =>
@@ -3501,12 +3509,12 @@ async function resolveVisibleToolListings(extra: unknown, phases: PhaseTracker =
   if (spawnRes.kind === 'ok') {
     const ctx = spawnRes.ctx;
     const names = listings.flatMap(listing => typeof listing.name === 'string' ? [listing.name] : []);
-    // The owner is resolved inside recordListedTools: resolveAgentIdentity THROWS for a ctx it
-    // cannot attribute (an app-key principal), and evaluated here it failed the whole listing
-    // (EI-27158841329142596).
+    // The owner is resolved inside recordListedTools, so an unattributable ctx can never fail
+    // the whole listing (EI-27158841329142596). transportOwnerId attributes app-key sessions
+    // too, so their listing is recorded instead of reading as an unknown toolset.
     void import('../../../code-intelligence/push-toolset')
       .then(({ recordListedTools }) => recordListedTools({
-        workspace: ctx.workspaceId, resolveOwner: () => resolveAgentIdentity(ctx).ownerId, tools: names }))
+        workspace: ctx.workspaceId, resolveOwner: () => transportOwnerId(ctx), tools: names }))
       .catch(() => { /* advisory: an unrecorded listing reads as an unknown toolset */ });
   }
   return { kind: spawnRes.kind, spawnRes, listings };
@@ -3679,7 +3687,7 @@ async function refreshSeededSessionSurfaceFromLedger(
     const changed = await measure('restoreSessionTools', () => restoreSessionTools({
       sessionKey: sessionToolSurfaceKey(spawn.ctx.uiClientId, spawn.ctx.workspaceId),
       seed,
-      ownerId: resolveAgentIdentity(spawn.ctx).ownerId,
+      ownerId: transportOwnerId(spawn.ctx),
       workspaceId: spawn.ctx.workspaceId,
     }));
     if (changed) await measure('notification', () => sendNotification({ method: 'notifications/tools/list_changed', params: {} }));
@@ -5664,37 +5672,9 @@ export function registerMcpHost(server: McpServer): void {
                     }
                     const recovery = timings.quotaRecoveryDiagnostics;
                     if (recovery) {
-                      const recoveryTotal = total.quotaRecoveryDiagnostics ??= {
-                        sizeWalkMs: 0,
-                        sizeWalkDirectories: 0,
-                        sizeWalkEntries: 0,
-                        sizeWalkFiles: 0,
-                        readdirOperations: 0,
-                        statOperations: 0,
-                        operationTotalMs: 0,
-                        maxOperationMs: 0,
-                        maxOperationKind: null,
-                        currentOperationKind: null,
-                        currentOperationElapsedMs: 0,
-                        directoryReadErrors: 0,
-                        fileStatErrors: 0,
-                        runListingMs: 0,
-                        runsListed: 0,
-                        selectedRunSizingMs: 0,
-                        runsConsidered: 0,
-                        fallbackRunSizes: 0,
-                        deletionMs: 0,
-                        deletePreflightMs: 0,
-                        pinProtectionMs: 0,
-                        rmAsyncMs: 0,
-                        deleteAttempts: 0,
-                        deletePreflightSkips: 0,
-                        lastDeletePreflightErrorCode: null,
-                        deleteErrors: 0,
-                        lastDeleteErrorCode: null,
-                        runsDeleted: 0,
-                        deletedBytes: 0,
-                      };
+                      // The owning module's zero value, not a hand copy: a hand-copied literal
+                      // stranded here when the interface gained four fields (TS2739, 2026-10-28).
+                      const recoveryTotal = total.quotaRecoveryDiagnostics ??= newScratchQuotaRecoveryDiagnostics();
                       for (const field of [
                         'sizeWalkMs',
                         'sizeWalkDirectories',
@@ -6365,11 +6345,7 @@ export function registerMcpHost(server: McpServer): void {
       const spawn = await tryBuildSpawnContext(extra);
       if (spawn.kind === 'failed') return { allowed: false, spawn };
       if (spawn.kind !== 'ok') return { allowed: true, spawn };
-      const ownerId = resolveAgentIdentity({
-        ...spawn.ctx,
-        principal: spawn.ctx.authenticatedPrincipal
-          ? synthesizeTransportPrincipal(spawn.ctx) : undefined,
-      }).ownerId;
+      const ownerId = transportOwnerId(spawn.ctx);
       const confinement = await readSessionConfinement(ownerId, spawn.ctx.workspaceId);
       return { allowed: confinement?.denyAmbientContext === undefined, spawn };
     } catch { return { allowed: false, spawn: null }; }

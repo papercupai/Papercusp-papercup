@@ -13,7 +13,10 @@ const setWorkItemStateWithAliasInfo = vi.fn();
 const getModes = vi.fn();
 const planItemNeedsHumanContradiction = vi.fn();
 const openDecisionReviewPark = vi.fn();
-vi.mock('../../work-items', () => ({
+// Partial mock: set_blocker's transitive imports (the hold path, P-010) read real work-items
+// exports such as ISSUE_FAMILY_KINDS, so only the row accessors are replaced.
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-items')>()),
   getWorkItem: (...args: unknown[]) => getWorkItem(...args),
   mergeWorkItemPayload: (...args: unknown[]) => mergeWorkItemPayload(...args),
   setWorkItemClaimHold: (...args: unknown[]) => setWorkItemClaimHold(...args),

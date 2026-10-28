@@ -13,7 +13,7 @@ import { prepareSuLaunch } from '../../../apps/operator/scripts/psu-launcher.mjs
 
 const mocks = vi.hoisted(() => ({
   link: vi.fn(async () => 'linked'), persist: vi.fn(async () => true),
-  writeOmp: vi.fn((_id: number, _options: Record<string, unknown>) => '.papercusp/su-omp-homes/session-71'),
+  writeOmp: vi.fn((_id: number, _options: Record<string, unknown>): string | null => '.papercusp/su-omp-homes/session-71'),
   receipts: vi.fn(async (_identity: unknown): Promise<Array<{ turnId: string; content: string }>> => []),
   persona: vi.fn(),
   resolveBinary: vi.fn((bin: string) => `/resolved/${bin}`),

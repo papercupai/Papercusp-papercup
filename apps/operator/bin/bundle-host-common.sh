@@ -219,6 +219,7 @@ HOST_WORKER_OUTPUTS=(
   precision-bench-worker.mjs
   first-party-callers.worker.mjs
   role-codex-home.worker.mjs
+  warm-cochange-index.worker.mjs
 )
 
 # Dependency-free on-disk scripts that the bundled host resolves as SIBLINGS of
@@ -314,7 +315,7 @@ bundle_host_launcher() { # <repo root> <output> <source stem> [compaction args..
   bundle_host_run_step "launcher-$stem" bundle_host_esbuild "$repo_root" "$repo_root/apps/operator/scripts/$stem.mjs" \
     --bundle --platform=node --format=esm --target=node22 \
     --outfile="$output" --metafile="$output.meta.json" --banner:js="$HOST_BANNER" \
-    "${HOST_BANNER_DEFINES[@]}" --external:@lydell/* "$@"
+    "${HOST_BANNER_DEFINES[@]}" --external:@lydell/* --external:@iarna/toml "$@"
 }
 
 bundle_host_workers() {
@@ -389,7 +390,8 @@ bundle_host_workers() {
     "$repo_root/packages/operator-core/lib/release/admission-jobs.worker.ts" \
     "$repo_root/packages/operator-core/lib/memory/bench/precision-bench-worker.ts" \
     "$repo_root/packages/operator-core/lib/code-intelligence/first-party-callers.worker.ts" \
-    "$repo_root/packages/operator-core/lib/role-codex-home.worker.ts"; do
+    "$repo_root/packages/operator-core/lib/role-codex-home.worker.ts" \
+    "$repo_root/packages/operator-core/lib/code-intelligence/warm-cochange-index.worker.ts"; do
     output="${HOST_WORKER_OUTPUTS[$index]}"
     BUNDLE_HOST_WORKER_FAILED_SOURCE="$source"
     BUNDLE_HOST_WORKER_FAILED_OUTPUT="$output"

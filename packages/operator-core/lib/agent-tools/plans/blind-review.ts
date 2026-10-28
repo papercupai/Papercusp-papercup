@@ -33,6 +33,7 @@ import {
   recordBlindReviewSessionPost,
   verifyBlindReviewSessionBinding,
 } from '../../blind-review-session-bindings';
+import { blindReviewPostedEventKey } from '../../blind-review-post-event';
 
 const text =(payload: Record<string, unknown>, isError = false) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -178,6 +179,8 @@ export default defineTool({
       return text({
         ok: true, slug: args.slug, op: 'resume', activationAuditSeq: resumed.activationAuditSeq,
         reviewerOwnerId: resumed.reviewerOwnerId, leaseReleased: resumed.leaseReleased, launch: resumed.launch,
+        // R-2: the exact key the recovered reviewer's post fires — await it, never construct it.
+        bindingId: resumed.bindingId, awaitKey: blindReviewPostedEventKey(args.slug, resumed.bindingId),
       });
     }
 
@@ -230,15 +233,20 @@ export default defineTool({
         message: 'The review is saved idempotently, but its session receipt did not persist. Retry the same post; do not mint or repost with a new session.' }, true);
     }
 
-    if (args.op === 'post') {
-      // A post is observable only after both the review and its session receipt
-      // persist. This signals a posted review, not that the acceptance door passed.
+    if (args.op === 'post' && reviewerBinding) {
+      // awaitable-review-post-events-2026-10-27 R-1: a post is observable only after both
+      // the review and its session receipt persist, and only on the poster's OWN binding
+      // key. Events latch, so a per-plan key would wake a later reviewer's waiter on an
+      // earlier review. An unbound post has no recruiter waiting on a key, so it emits
+      // nothing. This signals a posted review, not that the acceptance door passed.
+      // Best-effort: an emit failure never voids the recorded review.
+      const bindingId = reviewerBinding.id;
       await import('../../events/await/engine').then(({ emitAwaitedEvent }) => emitAwaitedEvent({
-        key: `plan:blind-review-posted:${args.slug}`,
+        key: blindReviewPostedEventKey(args.slug, bindingId),
         workspaceId,
         source: createdBy,
         summary: `Blind review ${written.id} posted for ${args.slug} (${args.outcome})`,
-        payload: { slug: args.slug, harness: harnessSlug, reviewId: written.id,
+        payload: { slug: args.slug, harness: harnessSlug, bindingId, reviewId: written.id,
           activationAuditSeq: written.activationAuditSeq, reviewerOwnerId: createdBy, outcome: args.outcome },
       })).catch(() => {});
     }

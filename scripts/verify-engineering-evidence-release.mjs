@@ -120,5 +120,25 @@ if (isCliEntry(import.meta.url)) {
   const inputsPath = process.env.PAPERCUSP_ENGINEERING_JOURNEY_INPUTS
     ?? join(process.env.PAPERCUSP_HOME ?? join(homedir(), '.papercusp'), 'verification',
       plane === 'final-release' ? 'native-engineering-evidence-release-inputs.json' : 'native-engineering-evidence-current-inputs.json');
-  console.log(JSON.stringify(verifyEngineeringRelease({ root, inputsPath, plane })));
+  // The verification-harness contract (contract-lint R-10): the run is recorded under the shared
+  // evidence root. stdout and the exit code are unchanged: the JSON verdict prints exactly as
+  // before, and a throw still fails the process instead of being absorbed by the harness.
+  const { defaultEvidenceRoot, runHarness } = await import('@papercusp/verification-harness');
+  let thrown = null;
+  await runHarness({
+    contract: { name: 'engineering-evidence-release', phases: [{ id: 'verify' }] },
+    evidenceRoot: defaultEvidenceRoot('engineering-evidence-release'),
+    async runPhase(ctx) {
+      ctx.markStep(`verify-${plane}`);
+      try {
+        const verdict = verifyEngineeringRelease({ root, inputsPath, plane });
+        console.log(JSON.stringify(verdict));
+        return verdict?.status === 'pass' ? { ok: true } : { ok: false, reasonCode: `verdict-${verdict?.status ?? 'missing'}` };
+      } catch (error) {
+        thrown = error;
+        throw error;
+      }
+    },
+  });
+  if (thrown) throw thrown;
 }

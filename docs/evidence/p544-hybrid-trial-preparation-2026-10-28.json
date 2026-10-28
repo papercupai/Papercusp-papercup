@@ -1,0 +1,122 @@
+{
+  "schemaVersion": "p544-hybrid-trial-preparation-v1",
+  "preparedAt": "2026-10-28T17:04:50Z",
+  "workItem": "WI-6554700010016277",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "status": "preparation-only-awaiting-migration-and-admission",
+  "scope": "Source inspection and execution-input preparation for the maintained qualification path. No provider experiment, model request, build, publication, billing observation, qualification or shipment was performed.",
+  "authority": {
+    "decisions": ["D-086", "D-090", "D-091"],
+    "decisionPlanRevisionRead": 245,
+    "decisionPlanContentHashRead": "b1622c668a930e70921d504385ab281f8371c6da584a7288de993f7bc40436c3",
+    "approach": "Existing hybrid pool plus swap; a standalone VM or swap benchmark does not qualify the integrated trial.",
+    "ordering": "Complete R2-to-GCS migration and acceptance before new P544 cloud qualification or experiments. Independent cost and source preparation can continue.",
+    "migrationPlan": "r2-to-gcs-storage-migration-2026-10-23",
+    "migrationAcceptanceVerified": false,
+    "sourceExceptionGrantedByThisPreparation": false
+  },
+  "candidate": {
+    "sourceSha": null,
+    "artifactSha256": null,
+    "signedPackagePair": null,
+    "requiredBeforeAdmission": [
+      "Eligible source under the existing release source policy",
+      "Original signed candidate artifact and provenance",
+      "Current hosted-pool entitlement and idle-work protections in source and bundled candidate; marker presence alone is not behavior proof",
+      "Exact installed candidate identity observed through the operator API"
+    ]
+  },
+  "maintainedSources": {
+    "scripts/agent-capacity/cost-model.ts": "053c00df0273f9fc8f6d4e1016632856cb60499c1504439f2df2eedf6c07a679",
+    "scripts/agent-capacity/vm/swap-tier.py": "571de870f07edac826021bac7b4eb13cbfe19694e13d0787f0c4b7d796a0f708",
+    "scripts/agent-capacity/vm/swap-tier-bootstrap.sh": "f921a6cf14d3d48eb885d8df9621059d03f60cb7e2af24f3cefe848640891e19",
+    "scripts/agent-capacity/vm/stage-driver.sh": "303cbcfd8d73c5e85a40ca06d6a099f454f055d544c296d17e03541758282673",
+    "scripts/agent-capacity/vm/p544-current.markers": "2391e09e10a9a84c91fccac464427c37dd55bbcc7f8b6990ba93f9b0924d3b69"
+  },
+  "providerAdmission": {
+    "projectOrAccount": null,
+    "instanceId": null,
+    "modelAndEffort": null,
+    "reservedSpend": null,
+    "providerEnforcedDeleteDeadline": null,
+    "requiredBeforeMutation": [
+      "Refresh credentials, runtime route, provider inventory and total-programme budget headroom",
+      "Use maintained finite provider admission and teardown controls; old October 16 admissions and deadlines do not authorize a new run",
+      "Start at the accepted economical minimum-resource profile, preserving the declared fallback order and small 4/8/16 GiB DB growth ladder",
+      "Keep lifecycle changes under the existing single writer and preserve signed artifact trust"
+    ]
+  },
+  "nativeQualification": {
+    "driver": "scripts/agent-capacity/vm/swap-tier.py",
+    "dossierSchema": "swap-tier-qualification-v1",
+    "identityFields": [
+      "runId", "provider", "projectOrAccount", "zone", "instanceId", "profile",
+      "customerWorkspaceId", "candidateSha", "artifactSha256", "model", "effort"
+    ],
+    "workload": {
+      "assignedAgents": 50,
+      "moderateActiveCohorts": [1, 5, 10],
+      "separateWakeAndCommandBurstAgents": 50,
+      "serverProcesses": 1,
+      "includesServerDatabaseAndRepository": true,
+      "requiresRawNativeSessionArchive": true,
+      "requiresSwapBeforeAndAfterNativeShutdown": true,
+      "predeclareUxAndFailureThresholds": true
+    },
+    "requiredHashedSources": [
+      "provider-inventory", "footprint", "cold-wake", "grow", "resize", "reconnect", "teardown"
+    ],
+    "lifecycleOperations": ["cold-wake", "grow", "resize", "reconnect"],
+    "lifecycleWitness": "Retain acknowledged file and read-only SQL witnesses before each operation and verify the same manifest afterward; validate application-ready API identity rather than a SPA/HTTP-only response.",
+    "coldWakeApplicationReadyLimitSeconds": 120,
+    "teardown": "Retain exact project/account and admitted VM identity, provider-confirmed deletion and the required complete residual-resource census. A same-named resource in another project is not cleanup.",
+    "evaluationArgvTemplate": [
+      "python3", "scripts/agent-capacity/vm/swap-tier.py", "evaluate-workload",
+      "--out", "<retained-native-run-directory>",
+      "--qualification", "<hashed-lifecycle-dossier.json>",
+      "--expected-sha", "<independently-admitted-candidate-sha>",
+      "--expected-artifact-sha256", "<independently-admitted-artifact-sha256>"
+    ],
+    "evaluationTemplateExecuted": false
+  },
+  "economicsQualification": {
+    "driver": "scripts/agent-capacity/cost-model.ts",
+    "dossierSchema": "p544-economics-v1",
+    "dossierPath": null,
+    "profiles": [
+      { "id": "near-idle", "activeVmHours": 5, "monthlyTasks": 10 },
+      { "id": "60h", "activeVmHours": 60, "monthlyTasks": 120 },
+      { "id": "120h", "activeVmHours": 120, "monthlyTasks": 240 },
+      { "id": "240h", "activeVmHours": 240, "monthlyTasks": 480 }
+    ],
+    "taskMixPercent": { "light": 40, "typical": 40, "heavy": 20 },
+    "requiredCostCategories": [
+      "compute", "retained-disks", "backups", "network", "control-plane", "inference"
+    ],
+    "sourceRequirements": [
+      "Retain hashed usage, rate and shared-cost allocation sources for each category, provider and profile",
+      "Use measured exposure projected to the named month profile; catalog-only or missing amounts remain unknown",
+      "Include retained storage and backups, provisioned performance, network and IPv4, shared control plane, inference and any optional warm capacity without dropping idle costs or double-counting",
+      "Keep credits excluded from the steady-state comparison and preserve invoice conservation",
+      "Compare measured GCP and AWS on-demand zero-warm-floor options and any optional warm alternatives; select the economic option for each monthly profile",
+      "Document Cloud Run, Fargate, Lambda and managed-DB fit plus the existing lifecycle writer and any IaC foundation boundary"
+    ],
+    "strictUpperBoundUsdMicros": 20000000,
+    "equalityPasses": false,
+    "evaluationArgvTemplate": [
+      "node_modules/.bin/tsx", "scripts/agent-capacity/cost-model.ts",
+      "--qualification-economics", "<hashed-economics-dossier.json>",
+      "--expected-sha", "<independently-admitted-candidate-sha>",
+      "--expected-artifact-sha256", "<independently-admitted-artifact-sha256>"
+    ],
+    "evaluationTemplateExecuted": false
+  },
+  "nextExecution": "After verified D090 acceptance, resolve the null candidate/admission fields, stage the maintained drivers and their writer manifest, run the admitted integrated lifecycle/native journey, retain original source observations, then evaluate native and economics dossiers and obtain independent acceptance before final shipment.",
+  "acceptance": {
+    "integratedTrialQualified": false,
+    "allCostsMeasured": false,
+    "under20Proved": false,
+    "independentlyAccepted": false,
+    "shipped": false
+  }
+}

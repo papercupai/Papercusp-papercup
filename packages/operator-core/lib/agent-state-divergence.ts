@@ -650,17 +650,24 @@ export function detectIntentActionDivergence(
     // Suppress only when EVERY observed live goal is present in EVERY declaration
     // copy carried by the bucket; absent or partial metadata remains positive drift.
     const observedGoals = [...distinct.keys()];
-    const fullyDeclared = bucket
-      .map((c) => c.declaredGoalRefs)
-      .every(
-        (refs) => Array.isArray(refs) && observedGoals.every((goal) => refs.includes(goal)),
+    const declaredByEveryCopy = (goal: string) =>
+      bucket.every(
+        (c) => Array.isArray(c.declaredGoalRefs) && c.declaredGoalRefs.includes(goal),
       );
+    const fullyDeclared = observedGoals.every(declaredByEveryCopy);
     if (fullyDeclared || hasSharedDeclaredPlanLane(bucket)) continue;
     // Report against the FIRST goal seen — the one the intent was declared
     // under. Pairing every goal against every other would multiply one drift
     // into n² findings that all describe the same event.
     const [first, ...rest] = [...distinct.values()];
     for (const other of rest) {
+      // A third undeclared goal must not turn a pair of explicitly covered goals
+      // into a false positive. Keep each pair only when at least one side is
+      // absent from some declaration copy; incomplete/missing metadata therefore
+      // remains positive evidence rather than being silently trusted.
+      if (declaredByEveryCopy(first.goalRef as string) && declaredByEveryCopy(other.goalRef as string)) {
+        continue;
+      }
       push({
         kind: 'goal-drift-within-intent',
         ownerId: first.ownerId,

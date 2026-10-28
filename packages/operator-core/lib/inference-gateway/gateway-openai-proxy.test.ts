@@ -2991,7 +2991,11 @@ describe('proxyOpenAi — owner-outcome taxonomy (pinned directly, not via respo
   it('keeps a durable report failure distinct from a successful upstream turn', async () => {
     const report = vi.fn().mockRejectedValue(new Error('outcome storage unavailable'));
     await bootCodex(ok, undefined, {
-      requestOutcomeStore: { record: async () => {}, report },
+      requestOutcomeStore: {
+        record: async () => {},
+        report,
+        providerSummary: vi.fn().mockRejectedValue(new Error('outcome storage unavailable')),
+      },
     });
 
     const response = await postResponses({ model: 'gpt-5', input: 'hi' }, { [OWNER_HEADER]: 'bee-store-down' });

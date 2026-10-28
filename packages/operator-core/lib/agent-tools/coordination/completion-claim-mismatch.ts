@@ -26,6 +26,7 @@ export interface CompletionClaimInput {
   summary?: string;
   body?: string | readonly Pick<MessageSection, 'text' | 'premises'>[];
   planSlug?: string;
+  goalRef?: string;
   basedOn?: readonly Pick<BasedOnEntry, 'ref'>[];
 }
 
@@ -142,6 +143,11 @@ function comparisonRef(ref: string): string {
   return trimmed.startsWith('rubric:') ? `plan:${trimmed.slice('rubric:'.length)}` : trimmed;
 }
 
+function comparisonWorkItemGoalRef(goalRef: string | undefined): string | null {
+  const match = /^(?:work-item:)?((?:WI|EI)-\d+)$/i.exec(goalRef?.trim() ?? '');
+  return match ? `work-item:${match[1]!.toLowerCase()}` : null;
+}
+
 /**
  * Return the additive mismatch stamp, or undefined when the message is not a
  * positive completion claim or every named artifact is represented in basedOn.
@@ -214,7 +220,17 @@ export function completionClaimMismatch(input: CompletionClaimInput): Completion
   const declaredRefs = completionClaimRefs(input);
   if (!declaredRefs.length) return undefined;
   const readRefs = new Set((input.basedOn ?? []).map((entry) => comparisonRef(entry.ref)));
-  const missingFromBasedOn = declaredRefs.filter((ref) => !readRefs.has(comparisonRef(ref)));
+  const goalRef = comparisonWorkItemGoalRef(input.goalRef);
+  // A human-facing completion summary may abbreviate the current work-item ID.
+  // Use that prefix only when the exact structured goal is itself in the
+  // derived read trace; an unrelated longer ID in basedOn is not a match.
+  const goalWasRead = goalRef !== null && readRefs.has(goalRef);
+  const missingFromBasedOn = declaredRefs.filter((ref) => {
+    const normalized = comparisonRef(ref);
+    if (readRefs.has(normalized)) return false;
+    if (!goalWasRead || !normalized.startsWith('work-item:')) return true;
+    return !goalRef.startsWith(normalized) || goalRef.length === normalized.length;
+  });
   if (!missingFromBasedOn.length) return undefined;
 
   return {

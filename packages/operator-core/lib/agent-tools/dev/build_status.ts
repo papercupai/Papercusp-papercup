@@ -1,7 +1,8 @@
 /**
  * dev:build_status — local-host build + service reachability check.
  *
- * Reads .next mtime, tails the prod log, and probes :3055 / :3070.
+ * Reads .next mtime, tails the prod log, and probes the dev/prod roots plus
+ * the API proxy through Vite :3055.
  * Used by the /dev right rail and the future Build block.
  */
 
@@ -90,7 +91,7 @@ function compactBuildStatus(
   const data: JsonRecord = {};
   const clippedFields: string[] = [];
 
-  for (const field of ['prodBuild', 'devBuild', 'dev3055Reachable', 'prod3070Reachable']) {
+  for (const field of ['prodBuild', 'devBuild', 'dev3055Reachable', 'prod3070Reachable', 'dev3055ApiReachable']) {
     if (payload[field] !== undefined) data[field] = compactBuildValue(payload[field], opts);
   }
 

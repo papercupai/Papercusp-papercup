@@ -191,5 +191,23 @@ export async function verifyEngineeringTauri(env = process.env) {
   return receipt;
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  await verifyEngineeringTauri();
+  // The verification-harness contract (contract-lint R-10): the run is recorded under the shared
+  // evidence root. A failed assertion still fails the process instead of being absorbed.
+  const { defaultEvidenceRoot, runHarness } = await import('@papercusp/verification-harness');
+  let thrown = null;
+  await runHarness({
+    contract: { name: 'engineering-evidence-tauri', phases: [{ id: 'verify' }] },
+    evidenceRoot: defaultEvidenceRoot('engineering-evidence-tauri'),
+    async runPhase(ctx) {
+      ctx.markStep('verify-journey');
+      try {
+        await verifyEngineeringTauri();
+        return { ok: true };
+      } catch (error) {
+        thrown = error;
+        throw error;
+      }
+    },
+  });
+  if (thrown) throw thrown;
 }

@@ -6,6 +6,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   EVENT_CATALOG,
   catalogEntry,
@@ -23,6 +25,7 @@ import {
   type FireProof,
 } from './catalog';
 import { buildAnnouncedKey } from './announce-key';
+import { blindReviewPostedEventKey } from '../../blind-review-post-event';
 
 describe('events catalog — registry integrity', () => {
   it('has unique family ids', () => {
@@ -65,6 +68,8 @@ describe('events catalog — registry integrity', () => {
  */
 const ID_SCOPED_FIRE_PROOF: Record<string, FireProof> = {
   'repair-admitted': 'change',
+  // One key per admit-preview handle; the fire is that operation's terminal state.
+  'repair-admit-preview': 'condition',
   lock: 'condition',
   'plan-run': 'condition',
   'task-terminal': 'condition',
@@ -91,6 +96,8 @@ const ID_SCOPED_FIRE_PROOF: Record<string, FireProof> = {
   'consult-reply': 'change',
   'consult-answer-posted': 'condition',
   'consult-closed': 'condition',
+  // awaitable-review-post-events-2026-10-27 R-3: per reviewer binding, so a fire certifies that binding posted.
+  'plan-blind-review-posted': 'condition',
   'handoff-accepted': 'condition',
   'report-published': 'condition',
   // event-wait-settlement-2026-10-20 D-005: explicit id scope — `release:deployed:<sha>`.
@@ -134,18 +141,39 @@ describe('events catalog — fireProves classification (event-wait-settlement-20
 
 describe('buildKey', () => {
   it.each([
-    ['plan-blind-review-posted', { slug: 'my-plan' }, 'plan:blind-review-posted:my-plan'],
+    ['plan-blind-review-posted', { slug: 'my-plan', bindingId: '17' }, 'plan:blind-review-posted:my-plan:17'],
     ['consult-answer-posted', { conversationId: 'conv-123' }, 'consult:answer-posted:conv-123'],
     ['consult-closed', { conversationId: 'conv-123' }, 'consult:closed:conv-123'],
   ] as const)('discovers and builds the subject-scoped %s event', (family, params, key) => {
     expect(catalogEntry(family)).toMatchObject({ exists: true });
-    expect(catalogEntry(family)?.fireProves).toBe(family === 'plan-blind-review-posted' ? undefined : 'condition');
+    expect(catalogEntry(family)?.fireProves).toBe('condition');
     expect(buildKey(family, params)).toBe(key);
     expect(keyMatchesCatalog(key)).toBe(true);
   });
 
-  it('keeps repeated plan review posts scoped to the plan, with the audit in the payload', () => {
-    expect(subjectScopeOf(catalogEntry('plan-blind-review-posted')!)).toBe('scope');
+  // awaitable-review-post-events-2026-10-27 R-3: the family is keyed per reviewer binding.
+  it('lists the plan:blind-review-posted family with the slug and bindingId params', () => {
+    const entry = catalogEntry('plan-blind-review-posted')!;
+    expect(entry.keyTemplate).toBe('plan:blind-review-posted:<slug>:<bindingId>');
+    expect(entry.params?.map((p) => [p.name, p.required])).toEqual([['slug', true], ['bindingId', true]]);
+    expect(subjectScopeOf(entry)).toBe('id');
+  });
+
+  it('builds the same key the post emitter and recruiter results use', () => {
+    expect(buildKey('plan-blind-review-posted', { slug: 'my-plan', bindingId: '17' }))
+      .toBe(blindReviewPostedEventKey('my-plan', 17));
+  });
+
+  // R-3 emitter clause: the entry must name the bound post path, and that source must
+  // really fire the family through the shared key helper — so the emitter text cannot drift.
+  it('names the bound plans:blind-review post path as the emitter, and that source fires the key', () => {
+    const entry = catalogEntry('plan-blind-review-posted')!;
+    expect(entry.emitter).toContain('plans:blind-review op post');
+    expect(entry.emitter).toContain('packages/operator-core/lib/agent-tools/plans/blind-review.ts');
+    expect(entry.emitter).toContain('blindReviewPostedEventKey');
+    const source = readFileSync(
+      fileURLToPath(new URL('../../agent-tools/plans/blind-review.ts', import.meta.url)), 'utf8');
+    expect(source).toMatch(/emitAwaitedEvent\(\{[\s\S]{0,200}key: blindReviewPostedEventKey\(/);
   });
 
   it('interpolates a required param', () => {

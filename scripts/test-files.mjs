@@ -22,6 +22,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism, tmpdir, homedir } from 'node:os';
 import { retainNativeProofPacket } from './lib/budgeted-task-scheduler.mjs';
+import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV } from './lib/with-test-pg-cleanup.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 import { startupTraceEnv } from './lib/vitest-startup-trace.mjs';
 import { expandWorkspaces } from './assert-workspace-links.mjs';
@@ -3471,6 +3472,7 @@ export function privateIntegrationVerifierInputs(root, files, env = process.env,
     return source.includes('isolated-integration-proof') && /\brecordIsolatedIntegrationProof\s*\(/.test(source);
   });
   return privateProof ? [...new Set([...selected, 'scripts/test-files.mjs',
+    'scripts/lib/with-test-pg-cleanup.mjs',
     'packages/operator-core/test/isolated-integration-proof.ts',
     'packages/operator-core/test/private-http-workspace-preflight.ts'])].sort() : null;
 }
@@ -3572,6 +3574,11 @@ export async function main(
   // them before anything is spawned: every child below receives `process.env`, so leaving them
   // there handed the parent's unique barrier to any test that spawns a nested router.
   const preemptMarkerPaths = consumePreemptMarkerEnv(process.env);
+  // One native command retains one identity across all workspace groups.
+  // Preserve a caller/CI-owned group, including across nested router calls.
+  if (process.env.PAPERCUSP_TEST_RUN_WORK_ITEM?.trim()
+    && !process.env.PAPERCUSP_TEST_RUN_GROUP?.trim())
+    process.env.PAPERCUSP_TEST_RUN_GROUP = randomUUID();
   // An explicit receipt sink marks a proof-consuming run. Snapshot its current
   // end so only receipts written by this invocation can satisfy the verdict.
   // Ordinary focused runs keep the reporter's fail-soft contract when no sink
@@ -3733,6 +3740,7 @@ export async function main(
         console.error(`TEST_FILE_VERIFIER_SOURCE ref=${ref} receipt=${receiptPath}`);
         try {
           return await runPrivateVerifierImpl({ repo: repoRoot, ref, receiptPath, inputs,
+            releaseParentPrivatePg: Boolean(process.env[PRIVATE_TEST_PG_RELEASE_TOKEN_ENV]),
             // The frozen router takes over this same logical invocation's
             // barriers; ordinary test children still never inherit them.
             env: { ...process.env,

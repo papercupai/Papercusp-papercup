@@ -500,6 +500,20 @@ describe('selectDeadOneShotConditions (WI-6554700010016120)', () => {
     });
     expect(selectDeadOneShotConditions([state], new Map([['degraded:retrieval:mixed', 'dead']]))).toEqual([]);
   });
+
+  // EI-27231825178306204: the leg router runs inside the gate's per-RUN process, so its
+  // stamped emitter is dead after every run while the leg is still failing.
+  it('does not resolve a frozen-repair-leg condition from its gate run exiting, but still resolves an ordinary one-shot', () => {
+    const leg = 'frozen-repair-leg:papercusp:lint:mock-cast-escape';
+    const ordinary = 'origin-freshness:papercusp';
+    const states = [
+      mkState({ condition_key: leg, one_shot: true, latest_emitter: emitter }),
+      mkState({ condition_key: ordinary, one_shot: true, latest_emitter: emitter }),
+    ];
+    expect(
+      selectDeadOneShotConditions(states, new Map([[leg, 'dead'], [ordinary, 'dead']])),
+    ).toEqual([ordinary]);
+  });
 });
 
 describe('runConditionStalenessTick — one-shot emitter death reconciliation', () => {
@@ -610,6 +624,42 @@ describe('runConditionStalenessTick — one-shot emitter death reconciliation', 
     });
     expect(result.reconciled).toEqual([]);
     expect(broadcasts).toEqual([]);
+  });
+
+  it('keeps a still-failing frozen-repair-leg condition open after the gate run that opened it exits (EI-27231825178306204)', async () => {
+    const leg = 'frozen-repair-leg:papercusp:lint:condition-rail';
+    const ordinary = 'origin-freshness:papercusp';
+    const gateRun = {
+      pid: 2668804,
+      startedAt: '2026-10-28T12:33:00.000Z',
+      uptimeSec: 60,
+      cwd: '/repo',
+      host: 'host-a',
+      processIdentity: 'linux:boot:2668804',
+    };
+    const states = [
+      mkState({ condition_key: leg, one_shot: true, latest_emitter: gateRun, last_seen: '2026-10-28T13:00:00.000Z' }),
+      mkState({ condition_key: ordinary, one_shot: true, latest_emitter: gateRun, last_seen: '2026-10-28T13:00:00.000Z' }),
+    ];
+    const broadcasts: string[][] = [];
+    const result = await runConditionStalenessTick({
+      readStates: async () => states,
+      probeEmitter: () => 'dead',
+      readHealthByKey: async () => new Map(),
+      readGitSyncHealthByKey: async () => new Map(),
+      broadcastResolvedMany: async ({ conditionKeys }) => {
+        broadcasts.push(conditionKeys);
+        return true;
+      },
+      listOpen: async () => [],
+      resolve: async () => undefined,
+      escalate: async () => undefined,
+      now: () => Date.parse('2026-10-28T13:52:28.000Z'),
+      staleMs: 45 * 60_000,
+      absenceMs: 2 * 60 * 60_000,
+    });
+    expect(result.reconciled).toEqual([ordinary]);
+    expect(broadcasts).toEqual([[ordinary]]);
   });
 });
 

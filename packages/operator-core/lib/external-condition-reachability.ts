@@ -299,6 +299,20 @@ export async function readEventConditionReachability(
   const loadComposedRoot = opts.loadComposedRoot ?? loadNode;
   const loadComposedRootAnchor = opts.loadComposedRootAnchor ?? findRootAnchor;
   const loadPredicateWatch = opts.loadPredicateWatch ?? loadPredicateWatchRow;
+  if (opts.requireSpecificCondition) {
+    // Broad wakes and change notifications can never certify a specific condition,
+    // even when announced. Refuse them before touching the event ledger: that read
+    // cannot change the result, and an unavailable admin pool must not turn this
+    // deterministic refusal into a misleading `unmeasured` resolver failure.
+    const deterministicRefusal = uncertifiedConditionReason(eventKey);
+    if (deterministicRefusal === 'broad' || deterministicRefusal === 'change-notification') {
+      return {
+        ...classifyExternalConditionReachability({ registration: 'unmeasured' }, now.toISOString()),
+        evidence: uncertifiedTriggerEvidence(eventKey, false),
+        uncertifiedReason: deterministicRefusal,
+      };
+    }
+  }
   try {
     const snapshot = await inspect(eventKey);
     // An announcement is a causal generation boundary. The per-key fire latch

@@ -273,6 +273,22 @@ describe('P544 retained qualification and monthly economics composition', () => 
     expect(result.selected).toHaveLength(4);
     expect(result.selected.find(p => p.profileId === '240h')?.totalMicros).toBe(1203);
   });
+  it('retains observed zero usage as a measured zero cost', () => {
+    const f = fixture();
+    f.dossier.options[0].profiles[1].costs.network!.amountMicros = 0;
+    Object.assign(f.sources['gcp:60h:network:usage'], {
+      observedQuantityMicros: 0, monthQuantityMicros: 0,
+    });
+    expect(grade(f)).toMatchObject({ comparison: 'pass', trialCost: 'pass', gaps: [] });
+  });
+  it.each([null, 0])('keeps zero usage unknown without a positive observed exposure (%s)', exposure => {
+    const f = fixture();
+    f.dossier.options[0].profiles[1].costs.network!.amountMicros = 0;
+    Object.assign(f.sources['gcp:60h:network:usage'], {
+      observedQuantityMicros: 0, monthQuantityMicros: 0, observedExposureMicros: exposure,
+    });
+    expect(grade(f)).toMatchObject({ comparison: 'unknown', trialCost: 'unknown' });
+  });
   it.each(['qualification', 'candidate', 'provider', 'model', 'storage', 'population', 'zero-warm', 'selection', 'backend', 'iac'])(
     'keeps %s evidence incomplete', kind => {
       const f = fixture();

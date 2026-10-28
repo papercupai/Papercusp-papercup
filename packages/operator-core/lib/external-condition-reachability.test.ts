@@ -58,6 +58,26 @@ describe('uncertifiedConditionReason (P-006)', () => {
     expect(certified).toMatchObject({ verdict: 'reachable', basis: 'live-resolver' });
     expect(certified).not.toHaveProperty('uncertifiedReason');
   });
+
+  it.each([
+    ['coord:inbox-wake:su-a', 'broad'],
+    ['work-item:status:WI-9', 'change-notification'],
+  ] as const)('refuses deterministic %s without reading the event ledger', async (key, reason) => {
+    const inspect = vi.fn(async () => { throw new Error('org-admin pool unavailable'); });
+
+    const reachability = await readEventConditionReachability(key, {
+      inspect,
+      requireSpecificCondition: true,
+    });
+
+    expect(reachability).toMatchObject({
+      verdict: 'unknown',
+      basis: 'unmeasured',
+      authoritative: false,
+      uncertifiedReason: reason,
+    });
+    expect(inspect).not.toHaveBeenCalled();
+  });
 });
 
 describe('fireCertifiesCondition (event-wait-settlement-2026-10-20 P-001)', () => {

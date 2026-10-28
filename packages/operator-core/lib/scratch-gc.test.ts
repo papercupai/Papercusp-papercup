@@ -48,7 +48,7 @@ import {
 } from 'node:fs';
 import { access as accessAsync, mkdir, readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 import {
   runScratchGc,
@@ -77,7 +77,7 @@ import {
 import type { OpenWriterScan } from './native-bg-task-ledger';
 import { parseScratchReference, writeScratchReference } from './scratch-reference';
 import { applyResultDoorAsync, RESULT_DOOR_TOKENS } from './result-door';
-import { scratchRootForWorkspace } from './scratch-uri';
+import { scratchRoot, scratchRootForWorkspace } from './scratch-uri';
 import { createRetentionPin } from './storage/retention-pins';
 import { spawn } from 'node:child_process';
 import { createTextCollector } from './child-output.js';
@@ -1752,6 +1752,7 @@ describe('deferred scratch quota recovery', () => {
             sizeWalkEntries: expect.any(Number),
             readdirOperations: expect.any(Number),
             currentOperationKind: 'readdir',
+            currentOperationPath: relative(scratchRoot(), scratchRootForWorkspace('ws-Q')),
             currentOperationElapsedMs: expect.any(Number),
           },
         });
@@ -1760,6 +1761,7 @@ describe('deferred scratch quota recovery', () => {
       }
       expect(JSON.stringify(progressRows)).not.toContain(scratchRootForWorkspace('ws-Q'));
       expect(JSON.stringify(progressRows)).not.toContain(UUID(1));
+      expect(JSON.stringify(progressRows)).toContain(relative(scratchRoot(), scratchRootForWorkspace('ws-Q')));
       releaseScan();
       await write;
       expect(timings.filter((row) => row.progress)).toHaveLength(3);
@@ -2029,6 +2031,7 @@ describe('deferred scratch quota recovery', () => {
         usageRefreshDiagnostics: {
           readdirOperations: expect.any(Number),
           currentOperationKind: 'readdir',
+          currentOperationPath: relative(scratchRoot(), wsRoot),
           currentOperationElapsedMs: expect.any(Number),
         },
       });
@@ -2049,6 +2052,67 @@ describe('deferred scratch quota recovery', () => {
       readdirMock.mockImplementation(originalRead);
       vi.useRealTimers();
       await Promise.allSettled([measurement, ...(write ? [write] : [])]);
+    }
+  });
+
+  it('records the relative path and error code when a result write waits on a failed usage refresh', async () => {
+    const workspaceRoot = scratchRootForWorkspace('ws-Q');
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    const failure = Object.assign(new Error('controlled scratch refresh read failure'), { code: 'EACCES' });
+    let releaseFailure!: () => void;
+    let reachedRoot!: () => void;
+    const scanGate = new Promise<void>((resolve) => { releaseFailure = resolve; });
+    const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    readdirMock.mockImplementation((async (path: unknown, options?: unknown) => {
+      if (String(path) === workspaceRoot) {
+        reachedRoot();
+        await scanGate;
+        throw failure;
+      }
+      return read(path, options);
+    }) as typeof readdirAsync);
+
+    _resetScratchUsageForTests();
+    const timings: ScratchWriteTimings[] = [];
+    const expectedPath = relative(scratchRoot(), workspaceRoot);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let write: Promise<void> | undefined;
+    try {
+      write = writeWithScratchQuota({
+        workspaceId: 'ws-Q',
+        filePath: join(workspaceRoot, 'quota', UUID(2), 'refresh-error.bin'),
+        bytes: 16,
+        onTiming: (row) => timings.push(row),
+      }, async () => {
+        throw new Error('payload writer must not run after refresh failure');
+      });
+
+      await atRoot;
+      await vi.advanceTimersByTimeAsync(5_000);
+      const progress = timings.find((row) => row.progress)?.progress;
+      expect(progress?.usageRefreshDiagnostics).toMatchObject({
+        currentOperationKind: 'readdir',
+        currentOperationPath: expectedPath,
+      });
+      expect(JSON.stringify(progress)).not.toContain(workspaceRoot);
+
+      releaseFailure();
+      await expect(write).rejects.toMatchObject({ code: 'EACCES' });
+      expect(timings.find((row) => !row.progress)).toMatchObject({
+        usageRefreshDiagnostics: {
+          currentOperationPath: null,
+          firstOperationErrorCode: 'EACCES',
+          firstOperationErrorKind: 'readdir',
+          firstOperationErrorPath: expectedPath,
+        },
+      });
+    } finally {
+      releaseFailure();
+      readdirMock.mockImplementation(originalRead);
+      vi.useRealTimers();
+      await Promise.allSettled(write ? [write] : []);
     }
   });
 

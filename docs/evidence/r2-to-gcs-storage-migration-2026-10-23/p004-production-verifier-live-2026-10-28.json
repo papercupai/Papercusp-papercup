@@ -1,0 +1,163 @@
+{
+  "schemaVersion": "r2gcs-p004-maintained-production-v1",
+  "workItem": "WI-6554700010025563",
+  "workerVersion": "968092d7-beeb-4bdb-a1b3-3953d4b9fefc",
+  "workerScriptEtag": "f0f5bb5e132a6b85843da0ee066fb62794f96e4f9307257e4568176048a6de20",
+  "servingDeploymentBefore": {
+    "deploymentId": "89fff309-507b-4223-95c8-66035153f461",
+    "versions": [
+      {
+        "version_id": "968092d7-beeb-4bdb-a1b3-3953d4b9fefc",
+        "percentage": 100
+      }
+    ]
+  },
+  "servingDeploymentAfter": {
+    "deploymentId": "89fff309-507b-4223-95c8-66035153f461",
+    "versions": [
+      {
+        "version_id": "968092d7-beeb-4bdb-a1b3-3953d4b9fefc",
+        "percentage": 100
+      }
+    ]
+  },
+  "servingVersionStable": true,
+  "sourceHashesBefore": {
+    "scripts/lib/workspace-host-gcs-publication.mjs": "282d94e22db773affb840adf5e120595768daa1aaf138e5ea3a43231daeb5537",
+    "scripts/publish-workspace-host-artifacts.test.ts": "baec96aea10396521994c6a93d744d596b8080b0da645df848d2efc9bac0a603",
+    "scripts/lib/workspace-host-gcs-publication.d.mts": "238257d120a6fad7596fb32c817e5b737bb23348d3205c7f5ff9769542bd156e"
+  },
+  "sourceHashesAfter": {
+    "scripts/lib/workspace-host-gcs-publication.mjs": "282d94e22db773affb840adf5e120595768daa1aaf138e5ea3a43231daeb5537",
+    "scripts/publish-workspace-host-artifacts.test.ts": "baec96aea10396521994c6a93d744d596b8080b0da645df848d2efc9bac0a603",
+    "scripts/lib/workspace-host-gcs-publication.d.mts": "238257d120a6fad7596fb32c817e5b737bb23348d3205c7f5ff9769542bd156e"
+  },
+  "sourceStable": true,
+  "instrument": {
+    "path": "scripts/lib/workspace-host-gcs-publication.mjs",
+    "testPath": "scripts/publish-workspace-host-artifacts.test.ts",
+    "export": "verifyGcsWorkspaceHostUpload"
+  },
+  "tests": {
+    "runId": "a6baf608-3f60-4db3-bd28-b865ce097140",
+    "testRunId": 22564076,
+    "passed": 65,
+    "failed": 0,
+    "skipped": 0
+  },
+  "observation": {
+    "operationId": "11af8e11-e6cb-455f-9a97-0dfac4dec1a1",
+    "sha256": "d363d36a802f3cc3c8fb1d9cda08f13bdf092b33ce0bf93cc4484933fe6bfbf8",
+    "sizeBytes": 76,
+    "startedAt": "2026-10-28T18:52:24.427Z",
+    "checks": [
+      {
+        "name": "unique-destination-absent",
+        "ok": true
+      },
+      {
+        "name": "anonymous-write-denied",
+        "ok": true,
+        "status": 401
+      },
+      {
+        "name": "production-multipart-created",
+        "ok": true,
+        "status": 201
+      },
+      {
+        "name": "operation-state-durable",
+        "ok": true,
+        "status": 200
+      },
+      {
+        "name": "reconnect-resumes-original-operation",
+        "ok": true,
+        "status": 200
+      },
+      {
+        "name": "unfinalized-public-read-before-upload-denied",
+        "ok": true,
+        "status": 404
+      },
+      {
+        "name": "declared-part-uploaded",
+        "ok": true,
+        "status": 200
+      },
+      {
+        "name": "multipart-complete",
+        "ok": true,
+        "status": 201
+      },
+      {
+        "name": "completed-object-metadata-readable",
+        "ok": true,
+        "status": 200
+      },
+      {
+        "name": "generation-pinned-exact-bytes",
+        "ok": true,
+        "generation": "1793213557534034",
+        "sha256": "d363d36a802f3cc3c8fb1d9cda08f13bdf092b33ce0bf93cc4484933fe6bfbf8",
+        "sizeBytes": 76
+      },
+      {
+        "name": "completion-replay-retains-generation",
+        "ok": true,
+        "status": 200,
+        "generation": "1793213557534034"
+      },
+      {
+        "name": "unfinalized-public-read-after-completion-denied",
+        "ok": true,
+        "status": 404
+      },
+      {
+        "name": "raw-private-bucket-anonymous-denied",
+        "ok": true,
+        "status": 403
+      },
+      {
+        "name": "existing-finalized-public-positive-control",
+        "ok": true
+      }
+    ],
+    "result": "pass",
+    "cleanup": {
+      "deleted": [
+        {
+          "key": "__artifact_uploads/0e26da86-14db-4042-85d6-01a30c14e81a/part-1",
+          "generation": "1793213555133671",
+          "status": 204
+        },
+        {
+          "key": "__artifact_uploads/0e26da86-14db-4042-85d6-01a30c14e81a/session",
+          "generation": "1793213550259991",
+          "status": 204
+        },
+        {
+          "key": "artifacts/workspace-host/sha256/d363d36a802f3cc3c8fb1d9cda08f13bdf092b33ce0bf93cc4484933fe6bfbf8/.multipart/11af8e11-e6cb-455f-9a97-0dfac4dec1a1/parts/1.json",
+          "generation": "1793213555437907",
+          "status": 204
+        },
+        {
+          "key": "artifacts/workspace-host/sha256/d363d36a802f3cc3c8fb1d9cda08f13bdf092b33ce0bf93cc4484933fe6bfbf8/server.tgz",
+          "generation": "1793213557534034",
+          "status": 204
+        }
+      ],
+      "complete": true,
+      "remaining": [],
+      "providerRemaining": []
+    },
+    "objectIdentity": {
+      "generation": "1793213557534034",
+      "metageneration": "1",
+      "crc32c": "JmQxWw==",
+      "sizeBytes": 76
+    },
+    "finishedAt": "2026-10-28T18:52:42.073Z"
+  },
+  "scope": "Deployed Cupboard workspace-host private multipart/replay/finalization boundary, exact bytes and fenced cleanup. No historical R2 census, publish-worker deployment, full migration acceptance or P544 cloud trial."
+}

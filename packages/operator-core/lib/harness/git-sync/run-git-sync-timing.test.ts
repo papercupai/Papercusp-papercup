@@ -47,7 +47,8 @@ describe('git-sync submodule timing evidence', () => {
     expect(f.logs.some((line) => line.includes('repository-settled') && line.includes(timing.runId))).toBe(true);
     expect(f.diagnosticCalls.length).toBeGreaterThan(0);
     expect(f.diagnosticCalls.every(({ diagnosticTags }) =>
-      diagnosticTags?.runId === timing.runId && diagnosticTags.commandClass === 'git')).toBe(true);
+      diagnosticTags !== undefined && diagnosticTags.runId === timing.runId
+      && diagnosticTags.commandClass === 'git')).toBe(true);
 
     const before = f.calls.length;
     const replay: GitSyncStepRunner = async (name, fn) => f.recorded.has(name) ? f.recorded.get(name) : fn();
@@ -97,6 +98,7 @@ describe('git-sync submodule timing evidence', () => {
       expect.objectContaining({ scope: 'libs/broken', status: 'error' }),
       expect.objectContaining({ scope: 'libs/healthy', status: 'synced' }),
     ]));
+    if (!('errors' in outcome)) throw new Error(`expected an error-bearing git-sync outcome, got status=${outcome.status}`);
     expect(outcome.errors).toEqual(expect.arrayContaining([expect.objectContaining({ scope: 'libs/broken' })]));
     expect(f.calls).toContain('/fake/libs/healthy');
   });

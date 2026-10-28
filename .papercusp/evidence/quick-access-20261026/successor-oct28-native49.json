@@ -1,0 +1,439 @@
+{
+  "updatedAt": "2026-10-28T17:46Z",
+  "scope": {
+    "owner": "su-58f6ce8c-a42b-4feb-ac5c-79a11355ec0f",
+    "mode": "AUTO",
+    "route": "self",
+    "plan": "quick-access-search-launcher-2026-10-26",
+    "planVersion": 10,
+    "planHash": "1e5bd2d57458b78855a0072190c8dbbb752900b41646eac61d80b90b2771b5d3",
+    "planItem": "P-003",
+    "heldItems": [
+      "WI-6554700010029944",
+      "WI-6554700010029574",
+      "WI-6554700010029565",
+      "EI-27097533673404156",
+      "EI-27096789704667327",
+      "EI-27070891256151472",
+      "EI-27069808170359846"
+    ]
+  },
+  "source": {
+    "pin": "49ef70dc63ab1160ee301add40377c92e431ee0a",
+    "root": "/tmp/pcv/papercusp-lint-as-committed-49ef70dc63-XUcu8W",
+    "firstFixCommit": "5fab8e7062",
+    "currentReviewedChanges": "Original census/status fix retained; later startup-guard ordering, canonical source-ref and hermetic test env changes reviewed.",
+    "materialize": {
+      "task": "0mvsd447z1e7yo6idyx",
+      "exit": 0
+    },
+    "qualification": {
+      "task": "0mvsd6th410johvd1n6",
+      "exit": 0,
+      "passed": 119,
+      "skipped": 0,
+      "survivorRun": 22556972,
+      "snapshotRun": 22556971,
+      "worktreeDirty": false
+    },
+    "collection": {
+      "task": "0mvsde9h318w6gg413g",
+      "exit": 0,
+      "registeredCases": 1
+    }
+  },
+  "native": {
+    "task": "0mvsdhlyyv68behc202",
+    "bash": "8da7bc95-a1a",
+    "log": ".papercusp/scratch/bash-8da7bc95-a1a.log",
+    "deadline": "2026-10-28T19:12:52.169Z",
+    "state": "RUNNING, no native acceptance pass",
+    "args": {
+      "command": "PAPERCUSP_REPO_DIR=/home/marsh-office/papercupai-workspace/papercusp TMPDIR=/mnt/data/tmp RTK_DISABLED=1 VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ISOLATED_SHORTCUT=CmdOrCtrl+Shift+K VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE=copy VERIFY_TAURI_SOURCE_REF=49ef70dc63ab1160ee301add40377c92e431ee0a VERIFY_TAURI_SOURCE_INPUTS=apps/operator/app/quick-panel/QuickAccessLauncher.tsx,apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx,apps/operator/app/quick-panel/quick-access-model.ts,apps/operator/app/quick-panel/quick-access.css,apps/operator/app/quick-panel/page.tsx,apps/operator-vite/src/routes/quick-panel.tsx,apps/operator/e2e/quick-access.native.spec.mts,papercusp-desktop/src-tauri/src/docs_search.rs,scripts/verify-tauri-headless.sh,apps/operator/lib/verify-tauri-headless-ready-seed.test.ts PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:e2e:isolated -- e2e/quick-access.native.spec.mts --workers=1",
+      "cwd": "/tmp/pcv/papercusp-lint-as-committed-49ef70dc63-XUcu8W/apps/operator",
+      "description": "Verify clean committed Quick Access native acceptance",
+      "run_in_background": true,
+      "timeout": 7200000,
+      "work_item_id": "WI-6554700010029574",
+      "require_task_confinement": true
+    },
+    "harnessEvidence": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261028T171313Z-1507317",
+    "phase": "operator-source-snapshot",
+    "progress": "Snapshot stderr has concrete copy/checksum progress, last read written9279MiB elapsed661s/read13070MiB. Task memory bound17179869184, confinedtrue, separate transient service survives staging API restarts. Do not launch duplicate.",
+    "budget": "Old forecast artifact pruned; removed its unavailable env reference, maintained default admissions and2h deadline retained. Raw collection and clean119 preconditions passed; attempt audit post1209327."
+  },
+  "amendment": {
+    "request": ".papercusp/evidence/quick-access-20261026/amend-v8-request.json",
+    "idempotencyKey": "quick-access-native-ledger-check-v8-20261028",
+    "reviewReceipt": "review-1ef2378adf6056c19b6f96fb4550fbb35ba4c56affdd3bc36f8a133c012d41ad",
+    "previewPost": "thread-post:1209336",
+    "approvalPost": "thread-post:1209345",
+    "reviewer": "su-8ef42bd4-fc7f-4848-b992-70e57beb4671",
+    "state": "COMMITTED rubric revision5",
+    "barSetHash": "8dd84fb09575fab0dcfaa8169f17b09bfaf5e843b923b999c8b85f03c4674b35",
+    "planRequirements": "Verified synchronized new pin/task SQL, old pin absent; plan10 hash as above.",
+    "nativePredicate": "Latest clean-local Playwright row at49ef AND exact task0mvsdhlyyv68behc202 stateexited/exit0/ended_at nonnull. Old51dc assertion row is not terminal harness proof.",
+    "advisories": "Reviewer approved exact patch. Bare client-navigation.test.ts in method means packages/operator-core/lib/client-navigation.test.ts; qualify in any next amendment, do not silently change approved payload.",
+    "applyArgs": {
+      "rubricRef": "acceptance-quick-access-search-launcher-2026-10-26",
+      "criteria": [
+        {
+          "key": "r-1",
+          "title": "Independent entry",
+          "intent": {
+            "request": "Native Quick Panel defaults to the A search launcher outside regular app chrome while retaining existing tools and the configured opt-in shortcut.",
+            "sourceRefs": [
+              "quick-access-search-launcher-2026-10-26#D-003"
+            ]
+          },
+          "model": "Native Quick Panel defaults to the A search launcher outside regular app chrome while retaining existing tools and the configured opt-in shortcut.",
+          "bar": "Native Quick Panel defaults to the A search launcher outside regular app chrome while retaining existing tools and the configured opt-in shortcut.",
+          "barKey": "R-1",
+          "role": "outcome",
+          "mandatory": true,
+          "requiredScope": [
+            "tree"
+          ],
+          "evidencePlane": "tree",
+          "requiredTestLayers": [
+            "e2e",
+            "unit"
+          ],
+          "passRatings": [
+            "healthy"
+          ],
+          "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Execute the registered isolated native suite and the named unit checks; bind both unit and e2e evidence to the clause. The read-only results-ledger probe verifies the frozen native acceptance run passed; it never substitutes for running the tests. Do not dispatch native Playwright through the Vitest-only tests check router. Required unit check: apps/operator/lib/quick-panel-escape.test.tsx. The latest recorded native run at the pinned commit must pass and have worktree_dirty=false; a later failure or dirty run invalidates an earlier pass. Governing scope and reuse decision: quick-access-search-launcher-2026-10-26#D-003. Required shortcut proof: run the existing docs_search::tests:: Cargo cases in papercusp-desktop/src-tauri/src/docs_search.rs, including OFF/default/preset roundtrip and failed/successful rebind, and the private PAPERCUSP_HOME regression; bind the resulting Cargo ledger evidence alongside unit and e2e proof. The native spec's first entry must be a real Ctrl+Shift+K from the isolated external xterm through the native startup shortcut registrar. Native proof is frozen at commit 49ef70dc63ab1160ee301add40377c92e431ee0a and managed task 0mvsdhlyyv68behc202. The latest clean local Playwright result and the exact task's exited/exit0/ended-at receipt must both pass; an assertion pass followed by failed cleanup is insufficient. R-1, R-3 and R-5 share this native row but assess distinct assertion sections, not independent executions. R-1 observes the first real OS shortcut from the external xterm, native /quick-panel route/default Search, singleton and retained tools. Named existing clean Cargo evidence: runs22293335,22293336,22293337,22293340,22293346,22293352,22293363,22293367,22293372,22293382, bound71979-71988; preserve only while source/test/fixture fingerprints remain current.",
+          "driftMarkers": "The native shortcut opens a regular app route, duplicates the popup, or defaults to Prompts.",
+          "check": {
+            "kind": "probe",
+            "probe": {
+              "sql": "SELECT (COALESCE((SELECT status = 'pass' AND worktree_dirty = FALSE FROM harness_shared.test_runs WHERE harness_slug = 'papercusp' AND framework = 'playwright' AND source = 'local' AND file_path LIKE '%quick-access.native.spec.mts' AND commit_sha = '49ef70dc63ab1160ee301add40377c92e431ee0a' AND started_at > TIMESTAMPTZ '2026-10-28T17:00:00Z' ORDER BY finished_at DESC, id DESC LIMIT 1), FALSE) AND EXISTS (SELECT 1 FROM harness_shared.task_ledger WHERE workspace_id = 'papercusp-workspace' AND task_id = '0mvsdhlyyv68behc202' AND work_item_id = 'WI-6554700010029574' AND state = 'exited' AND exit_code = 0 AND ended_at IS NOT NULL)) AS passed",
+              "kind": "sql",
+              "expect": {
+                "op": "eq",
+                "path": "$.rows[0].passed",
+                "value": true
+              },
+              "maxRows": 1,
+              "schemaRevision": "live"
+            }
+          }
+        },
+        {
+          "key": "r-2",
+          "title": "Discovery",
+          "intent": {
+            "request": "Plans, agents and reports remain independently searchable by scope with canonical selection, errors and keyboard navigation.",
+            "sourceRefs": [
+              "quick-access-search-launcher-2026-10-26#D-003"
+            ]
+          },
+          "model": "Plans, agents and reports remain independently searchable by scope with canonical selection, errors and keyboard navigation.",
+          "bar": "Plans, agents and reports remain independently searchable by scope with canonical selection, errors and keyboard navigation.",
+          "barKey": "R-2",
+          "role": "outcome",
+          "mandatory": true,
+          "requiredScope": [
+            "tree"
+          ],
+          "evidencePlane": "tree",
+          "requiredTestLayers": [
+            "unit"
+          ],
+          "passRatings": [
+            "healthy"
+          ],
+          "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Governing scope and reuse decision: quick-access-search-launcher-2026-10-26#D-003.",
+          "driftMarkers": "A large plan list hides people or reports, selection targets the wrong identity, or errors appear as empty success.",
+          "check": {
+            "kind": "tests",
+            "files": [
+              "apps/operator/app/quick-panel/quick-access-model.test.ts",
+              "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx"
+            ],
+            "cases": [
+              {
+                "file": "apps/operator/app/quick-panel/quick-access-model.test.ts",
+                "testName": "keeps identically named plans and agents distinct by canonical identity"
+              },
+              {
+                "file": "apps/operator/app/quick-panel/quick-access-model.test.ts",
+                "testName": "searches across types and honors scope without matching unrelated results"
+              },
+              {
+                "file": "apps/operator/app/quick-panel/quick-access-model.test.ts",
+                "testName": "drops stale selection when a query or live update removes the target"
+              },
+              {
+                "file": "apps/operator/app/quick-panel/quick-access-model.test.ts",
+                "testName": "keeps people and reports reachable when plans exceed the visible result budget"
+              },
+              {
+                "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+                "testName": "supports scope, search, empty results and Escape clearing without changing host state"
+              },
+              {
+                "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+                "testName": "navigates results with arrows and Enter using selected identity"
+              },
+              {
+                "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+                "testName": "shows partial-source errors and reports-disabled state instead of false empty success"
+              }
+            ]
+          }
+        },
+        {
+          "key": "r-3",
+          "title": "Preview and access",
+          "intent": {
+            "request": "The popup displays selected plan progress and people, reads an authorized report and opens the exact owner conversation in place.",
+            "sourceRefs": [
+              "quick-access-search-launcher-2026-10-26#D-003"
+            ]
+          },
+          "model": "The popup displays selected plan progress and people, reads an authorized report and opens the exact owner conversation in place.",
+          "bar": "The popup displays selected plan progress and people, reads an authorized report and opens the exact owner conversation in place.",
+          "barKey": "R-3",
+          "role": "outcome",
+          "mandatory": true,
+          "requiredScope": [
+            "tree"
+          ],
+          "evidencePlane": "tree",
+          "requiredTestLayers": [
+            "e2e",
+            "unit"
+          ],
+          "passRatings": [
+            "healthy"
+          ],
+          "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Execute the registered isolated native suite and the named unit checks; bind both unit and e2e evidence to the clause. The read-only results-ledger probe verifies the frozen native acceptance run passed; it never substitutes for running the tests. Do not dispatch native Playwright through the Vitest-only tests check router. Required unit check: apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx. The latest recorded native run at the pinned commit must pass and have worktree_dirty=false; a later failure or dirty run invalidates an earlier pass. Governing scope and reuse decision: quick-access-search-launcher-2026-10-26#D-003. Required report authorization negative checks: packages/operator-core/lib/report-library.integration.test.ts cases 'SPEC-P-002-visible-to-matrix: visibleTo grants exactly workspace + own-pot + authored' and 'REPORT-CITED-READ-SCOPE-P001: a citation scope opens one exact private report only'. Bind their passing integration evidence; the human-owner positive read alone does not establish denial for unauthorized viewers. Native proof is frozen at commit 49ef70dc63ab1160ee301add40377c92e431ee0a and managed task 0mvsdhlyyv68behc202. The latest clean local Playwright result and the exact task's exited/exit0/ended-at receipt must both pass; an assertion pass followed by failed cleanup is insufficient. R-1, R-3 and R-5 share this native row but assess distinct assertion sections, not independent executions. R-3 observes selected plan/people, exact owner conversation objective and actual conversation UI, authorized report body and in-popup report view. Existing clean report authorization negative proof run22259678, binding71969, remains required subject to current fingerprints.",
+          "driftMarkers": "Report content or conversation belongs to a different result, or reading requires leaving the popup.",
+          "check": {
+            "kind": "probe",
+            "probe": {
+              "sql": "SELECT (COALESCE((SELECT status = 'pass' AND worktree_dirty = FALSE FROM harness_shared.test_runs WHERE harness_slug = 'papercusp' AND framework = 'playwright' AND source = 'local' AND file_path LIKE '%quick-access.native.spec.mts' AND commit_sha = '49ef70dc63ab1160ee301add40377c92e431ee0a' AND started_at > TIMESTAMPTZ '2026-10-28T17:00:00Z' ORDER BY finished_at DESC, id DESC LIMIT 1), FALSE) AND EXISTS (SELECT 1 FROM harness_shared.task_ledger WHERE workspace_id = 'papercusp-workspace' AND task_id = '0mvsdhlyyv68behc202' AND work_item_id = 'WI-6554700010029574' AND state = 'exited' AND exit_code = 0 AND ended_at IS NOT NULL)) AS passed",
+              "kind": "sql",
+              "expect": {
+                "op": "eq",
+                "path": "$.rows[0].passed",
+                "value": true
+              },
+              "maxRows": 1,
+              "schemaRevision": "live"
+            }
+          }
+        },
+        {
+          "key": "r-4",
+          "title": "Exact window",
+          "intent": {
+            "request": "Focus targets the selected live local agent through canonical native or launch-record actions and explains unavailable targets.",
+            "sourceRefs": [
+              "quick-access-search-launcher-2026-10-26#D-003"
+            ]
+          },
+          "model": "Focus targets the selected live local agent through canonical native or launch-record actions and explains unavailable targets.",
+          "bar": "Focus targets the selected live local agent through canonical native or launch-record actions and explains unavailable targets.",
+          "barKey": "R-4",
+          "role": "outcome",
+          "mandatory": true,
+          "requiredScope": [
+            "tree"
+          ],
+          "evidencePlane": "tree",
+          "requiredTestLayers": [
+            "unit"
+          ],
+          "passRatings": [
+            "healthy"
+          ],
+          "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Governing scope and reuse decision: quick-access-search-launcher-2026-10-26#D-003.",
+          "driftMarkers": "Focus uses a guessed/shared PID, targets a different owner or claims success after an unavailable window.",
+          "check": {
+            "kind": "tests",
+            "files": [
+              "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+              "apps/operator/app/quick-panel/quick-access-model.test.ts"
+            ],
+            "cases": [
+              {
+                "file": "apps/operator/app/quick-panel/quick-access-model.test.ts",
+                "testName": "permits launch-record resolution without guessing from a shared process pid"
+              },
+              {
+                "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+                "testName": "uses observed native success without a second focus or guessed window"
+              },
+              {
+                "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+                "testName": "resolves local launch records through the canonical focus action"
+              },
+              {
+                "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+                "testName": "uses the launch identity when a shared terminal PID has no recorded window"
+              },
+              {
+                "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+                "testName": "refuses browser, remote, ended and unrelated content-origin targets"
+              },
+              {
+                "file": "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+                "testName": "surfaces focus failure to the person who clicked"
+              }
+            ]
+          }
+        },
+        {
+          "key": "r-5",
+          "title": "Verified UX",
+          "intent": {
+            "request": "The current-build native popup supports keyboard dismissal and keeps its search, preview and conversation usable at its default size.",
+            "sourceRefs": [
+              "quick-access-search-launcher-2026-10-26#D-003"
+            ]
+          },
+          "model": "The current-build native popup supports keyboard dismissal and keeps its search, preview and conversation usable at its default size.",
+          "bar": "The current-build native popup supports keyboard dismissal and keeps its search, preview and conversation usable at its default size.",
+          "barKey": "R-5",
+          "role": "outcome",
+          "mandatory": true,
+          "requiredScope": [
+            "live"
+          ],
+          "evidencePlane": "live",
+          "evidenceRuntime": "desktop-shell",
+          "requiredTestLayers": [
+            "e2e",
+            "unit"
+          ],
+          "passRatings": [
+            "healthy"
+          ],
+          "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Execute the registered isolated native suite and the named unit checks; bind both unit and e2e evidence to the clause. The read-only results-ledger probe verifies the frozen native acceptance run passed; it never substitutes for running the tests. Do not dispatch native Playwright through the Vitest-only tests check router. Required unit check: apps/operator/lib/quick-panel-escape.test.tsx. The latest recorded native run at the pinned commit must pass and have worktree_dirty=false; a later failure or dirty run invalidates an earlier pass. Evidence runtime: desktop-shell, exercised by the isolated current-build native harness. Governing scope and reuse decision: quick-access-search-launcher-2026-10-26#D-003. Native proof is frozen at commit 49ef70dc63ab1160ee301add40377c92e431ee0a and managed task 0mvsdhlyyv68behc202. The latest clean local Playwright result and the exact task's exited/exit0/ended-at receipt must both pass; an assertion pass followed by failed cleanup is insufficient. R-1, R-3 and R-5 share this native row but assess distinct assertion sections, not independent executions. R-5 observes native hit-testing at default size, conversation/report Escape preserving the popup, query Escape, final OS Escape and exact selected focus. Required nested-report unit case: Quick Access launcher > dismisses the nested report with Escape before dismissing the native popup, in apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx; keep quick-panel-escape.test.tsx and client-navigation.test.ts lifecycle guards. Owner entry instructions: .papercusp/evidence/quick-access-20261026/entry-instructions.md.",
+          "driftMarkers": "Escape closes the parent before a nested dialog or the default native layout obscures its primary controls.",
+          "check": {
+            "kind": "probe",
+            "probe": {
+              "sql": "SELECT (COALESCE((SELECT status = 'pass' AND worktree_dirty = FALSE FROM harness_shared.test_runs WHERE harness_slug = 'papercusp' AND framework = 'playwright' AND source = 'local' AND file_path LIKE '%quick-access.native.spec.mts' AND commit_sha = '49ef70dc63ab1160ee301add40377c92e431ee0a' AND started_at > TIMESTAMPTZ '2026-10-28T17:00:00Z' ORDER BY finished_at DESC, id DESC LIMIT 1), FALSE) AND EXISTS (SELECT 1 FROM harness_shared.task_ledger WHERE workspace_id = 'papercusp-workspace' AND task_id = '0mvsdhlyyv68behc202' AND work_item_id = 'WI-6554700010029574' AND state = 'exited' AND exit_code = 0 AND ended_at IS NOT NULL)) AS passed",
+              "kind": "sql",
+              "expect": {
+                "op": "eq",
+                "path": "$.rows[0].passed",
+                "value": true
+              },
+              "maxRows": 1,
+              "schemaRevision": "live"
+            }
+          }
+        }
+      ],
+      "dryRun": false,
+      "reason": "Final v8 native acceptance re-pin after committed cleanup race/census repairs and reviewed startup/ref/hermetic-test changes. Clean49ef snapshot passed119 checks (local runs22556972/22556971, dirty=false) and native discovery collected the registered case. Native task 0mvsdhlyyv68behc202 is running; no native pass is claimed. Require BOTH latest clean-local native row at 49ef70dc63ab1160ee301add40377c92e431ee0a and exact whole task terminal exit0, since historical51dc passed assertions but failed teardown. Attribute distinct R1/R3/R5 sections, name nested-report Escape, existing Cargo/ACL proof and entry instructions. Preserve approved D-003 scope, outcomes, evidence planes and unit/e2e requirements.",
+      "expectedRubricRevision": 4,
+      "expectedSubjectPlanRevision": 9,
+      "idempotencyKey": "quick-access-native-ledger-check-v8-20261028",
+      "approvalRef": "thread-post:1209345"
+    }
+  },
+  "acceptance": {
+    "activationAudit": 6,
+    "manualClauses": "QUICK-ACCESS-DEFAULT-P-002 / QUICK-ACCESS-SELECTION-P-001 / QUICK-ACCESS-NESTED-ESCAPE-P-003 nowrev2 with exact rubric@5:R1/R2/R5 refs. Behaviors unchanged; rebind current evidence to new revisions.",
+    "quality": {
+      "card": "EI-27245850364348787",
+      "state": "pass card emitted; independent grading audit pending",
+      "audit": "payload.observation.gradingAudit; dispatchReservation grading-audit:EI-27245850364348787 reserved17:46:08Z",
+      "lastStartRefusal": "spec_quality_scorecard_grading_audit_pending"
+    },
+    "remaining": "Read current audit then finish activation/current critiques as demanded. Rebind changed R1/R3/R5 and manual3 proof using existing clean Cargo/ACL/component/mutation rows where current, not reruns merely to recover IDs. Native pass then native bindings/currentadequacy/independentacceptance/itemclosures/report publish+get+GUI link.",
+    "historicalProof": ".papercusp/evidence/quick-access-20261026/successor-fire22.json and fire19/fire11/fire10 hold exact IDs, binding recipes and commands."
+  },
+  "scanner": {
+    "item": "WI-6554700010029944",
+    "spec": "FROZEN-SOURCE-CENSUS-FAIL-CLOSED-P-6554700010029944@1",
+    "binding": 73523,
+    "retracted": 73516,
+    "close": "Attempt NOT SAVED: current adequacy requires mutation/counterexample proof plus top-level specAdequacy:{classRef:'plan-class-bugfix'}. Do not claim done.",
+    "adequacy": "After explicit case observations only falsifiability and plan-class-risk-floor remain unknown; a binder falsifiable flag alone is insufficient.",
+    "mutation": {
+      "activeTask": "0mvsemdt1mzs605g1by",
+      "bash": "52a9e6f6-608",
+      "log": ".papercusp/scratch/bash-52a9e6f6-608.log",
+      "deadline": "2026-10-28T17:59:34.487Z",
+      "command": "RTK_DISABLED=1 PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_OPERATOR_BASE=http://127.0.0.1:3170 bash scripts/mutation-probe.sh --relocation overlay --fake-destructive --file scripts/verify-tauri-headless.sh --mutate 'if (/FATAL: cannot census frozen operator source; preserving/ .. /return 1/) { s/return 1/return 0/; }' --test 'npm run test:file -- apps/operator/lib/verify-tauri-headless-frozen-source-survivor.test.ts --testNamePattern='\\''preserves the snapshot when its process census fails'\\''' --expect caught",
+      "state": "RUNNING; clean baseline1case passed, relocated baseline started",
+      "scope": "Exactly one line initial census return1 -> return0, verified using Perl preflight diff. overlay and fake-destructive shims; no shared source edits.",
+      "failedPreflights": "0mvseaq7l1miv7uydus refused destructive subject before tests; 0mvsegk00zyq7iac4wa no-op because Perl is linewise and pattern crossed newline. Both original-byte integrityverified; no proof claimed."
+    },
+    "next": "Read active mutation only. If caught, bind the actual mutation-probe ledger row with exact spec target and L4 coverage, re-evaluate adequacy, then retry stored completion with top-level specAdequacy class. Narrow selection to current binding73523+mutation. Verify closure authority; no unconditional done claim.",
+    "completionDraft": {
+      "summary": "Committed the single-process frozen-source census and explicit status capture. Census failures now fail closed and preserve the snapshot; generated-stop safety cases pass within the existing deadline. Native Quick Access acceptance remains separately owned by WI-6554700010029574.",
+      "testsRun": "npm run test:file -- apps/operator/lib/verify-tauri-headless-frozen-source-survivor.test.ts apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts",
+      "testResult": "passed 119 tests with zero skips; managed task0mvsd6th410johvd1n6 exited0. Clean local runs22556972 (survivor) and22556971 (source-snapshot), commit49ef70dc63ab1160ee301add40377c92e431ee0a, worktree_dirty=false.",
+      "verifiedHow": "Fresh committed extraction49ef, reviewed against original fix5fab8e7062; source census algorithm/status capture unchanged by later startup/ref and hermetic-env changes. Binding73523 to FROZEN-SOURCE-CENSUS-FAIL-CLOSED-P-6554700010029944@1 read back current. Generated spa/run and verifier-spa/run cases passed18569ms/17582ms under their unchanged25000ms deadline. Prior controlled same-child old/new comparison3845ms/1386ms and deterministic red census73 test are preserved in successor-fire19.json and tasks0mvq41i72fwy21hetaz/0mvq3ygk7beudxy1565.",
+      "filesChanged": [
+        "scripts/verify-tauri-headless.sh",
+        "apps/operator/lib/verify-tauri-headless-frozen-source-survivor.test.ts"
+      ],
+      "kindEvidence": [
+        {
+          "kind": "logic",
+          "testsRun": "npm run test:file -- apps/operator/lib/verify-tauri-headless-frozen-source-survivor.test.ts apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts",
+          "testResult": "passed 119 tests, clean local22556972/22556971 at49ef; binding73516 current"
+        },
+        {
+          "kind": "test-only",
+          "testsRun": "npm run test:file -- apps/operator/lib/verify-tauri-headless-frozen-source-survivor.test.ts apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts",
+          "testResult": "passed 119 tests with0skip, including the registered forced-census-failure and generated-stop survivor cases"
+        }
+      ],
+      "verification": {
+        "coverage": {
+          "population": [
+            "Failed census preserves the snapshot and returns failure",
+            "Generated-stop cleanup reaps owned survivors and preserves foreign survivors",
+            "Rooted-process detection remains correct and generated-stop cases fit the existing deadline"
+          ],
+          "checked": [
+            "Failed census preserves the snapshot and returns failure",
+            "Generated-stop cleanup reaps owned survivors and preserves foreign survivors",
+            "Rooted-process detection remains correct and generated-stop cases fit the existing deadline"
+          ],
+          "notChecked": [],
+          "notApplicable": [],
+          "residue": []
+        }
+      },
+      "rootCauseVerification": {
+        "hypothesis": "The repeated find/grep census pipelines add avoidable cleanup cost, and process substitution drops a failed census's status at the reaper boundary, allowing false empty success.",
+        "alternativeHypothesis": "The unchanged signal/ownership loop or an insufficient fixture deadline causes the failure, while the census boundary correctly propagates errors and has no material cost.",
+        "distinguishingTest": "Override only frozen_source_rooted_processes to return73, invoke the real reaper and inspect its exit/snapshot existence before any candidates or signals; pair this with the recorded old/new scan over the same stable child and run the maintained generated-stop safety matrix without increasing deadlines.",
+        "testResult": "The pre-fix forced-census test reproduced exit0; the committed implementation passes the registered exit1/snapshot-preserved assertion. Same stable child found once by both scanners, old3845ms/new1386ms. Fresh clean119/119 safety/source tests pass, generated owned-stop cases18569/17582ms under25000ms.",
+        "testProcedure": "From the prepared committed49ef root run npm run test:file -- apps/operator/lib/verify-tauri-headless-frozen-source-survivor.test.ts apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts. The case 'preserves the snapshot when its process census fails' injects return73 into the census; generated stop.sh cases exercise owned/foreign survivors. Historical red/controlled comparison commands and outputs are on tasks0mvq3ygk7beudxy1565 and0mvq41i72fwy21hetaz, referenced by successor-fire19.json.",
+        "predictedObservations": {
+          "hypothesis": "A forced census73 falsely succeeds before the fix and returns1 with snapshot preserved after status capture; the equivalent single-process scan is faster and generated-stop cases pass without a deadline change.",
+          "alternativeHypothesis": "The census73 boundary already returns1, or changing only census/status leaves the generated-stop failure and no equivalent scan-cost improvement; fixing the signal loop or increasing the fixture deadline would be necessary."
+        },
+        "actualObservation": "Pre-fix census73 yielded false exit0; the fresh committed guard now passes exit1 plus snapshot-preserved. Exact stable-child detection was equivalent with lower census time; the current unchanged-deadline generated-stop suite passes. No global resource-pressure cause is claimed.",
+        "evidenceRefs": [
+          "test-run:22556972",
+          "test-run:22556971",
+          "spec-binding:73523",
+          "task:0mvsd6th410johvd1n6",
+          "task:0mvq3ygk7beudxy1565",
+          "task:0mvq41i72fwy21hetaz",
+          ".papercusp/evidence/quick-access-20261026/successor-fire19.json"
+        ]
+      }
+    },
+    "peerHandoff": "Original requester28a3e is ended. Durable clean-source update posted to EI-26427345071744104 thread-post1209350 instead of claiming live receipt."
+  },
+  "tools": {
+    "host": "Use tools:invoke build:'staging' (currently1776b4b2a4); main d740 lacks required fields.",
+    "lockMode": "MANUAL until fresh coord:orient verifies automatic. apply_patch posthook failed release on v8file; exact held lock6fa569dc was explicitly released. Bugrecord EI-27244520597232437 is observation/probation, assignee null despite requestedself; do not invent ownership/closure. No second record.",
+    "newFileLock": "1ef2a3f2-2aed-4edb-9839-175740ea5399 acquired for this successor; release after successful write."
+  },
+  "guardRails": "No manualgit/branch/worktree/release/checkpoint edits, LIVE_GATE_OPS or realHOMEshortcut changes. Existing Quick Panel shortcut remains opt-in. Native privateHOME/isolatedDB/realOSshortcut/--all mandatory. No new app feature scope or Codex->Claude successor swaps. System-routed outside BAR reviewer is independent review, not replacement of this Codex session.",
+  "remainingOwnedEIs": "EI270698/EI270708/EI270967/EI270975 remain open. Read their checkpoints before separate fixes/closures; do not infer root cause resolution from a later passing step alone."
+}

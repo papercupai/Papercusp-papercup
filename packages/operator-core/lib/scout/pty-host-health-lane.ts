@@ -179,6 +179,11 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     // psu-pty-host.mjs: result.ok ? 'respawn-carry-mcp-ready' : '...-unavailable').
     kind === 'respawn-carry-mcp-unavailable' ||
     kind === 'busy-gate-expired' ||
+    // EI-27244198558252718: an unbounded production re-arm still pending past its
+    // stall interval. While a carry is pending every wake is deferred behind it, so
+    // this row is the only signal of a host that has gone mute (one sat 3h, silent).
+    kind === 'respawn-rearm-still-pending' ||
+    kind === 'wake-rearm-still-pending' ||
     kind === 'codex-starting-stuck-early-drop' ||
     // A respawn whose compaction was never reported to the operator.
     kind === 'respawn-compaction-unannounced' ||

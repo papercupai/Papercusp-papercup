@@ -799,7 +799,7 @@ test('reloadPool follows the back-compat single resolveAccount path (re-resolves
 
 test('credit projection records depletion immediately even when the included meter is unchanged', async () => {
   const recorded = vi.spyOn(burnAlert, 'recordAccountWindowWithBurnAlert')
-    .mockResolvedValue({ pool: { accounts: [] }, transition: null });
+    .mockResolvedValue({ pool: { accounts: [] }, transition: null, planTransition: null });
   tempDir = mkdtempSync(join(tmpdir(), 'codex-gw-credit-projection-'));
   const codexTokenPath = join(tempDir, 'codex.token');
   writeFileSync(codexTokenPath, 'test-codex-token\n', { mode: 0o600 });
