@@ -618,6 +618,8 @@ if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT
   # host throws `ReferenceError: X is not defined` at runtime (bg-host git-sync, 2026-10-06). Check
   # every repo-owned input changed since the last-known-good $OUTFILE (still in place here — the
   # atomic mv is below) for value references that reach global scope unbound. Findings keep LKG.
+  # No $OUTFILE yet (first build / scratch outdir) => every input is checked, never skipped
+  # (WI-6554700010030641: a skipped check exited 0 and read as a pass).
   # Metafile input keys are repo-root relative; keep --base-dir at REPO_ROOT. Unreadable inputs
   # and a selected batch with zero analyzable inputs refuse publication instead of reading clean.
   if ! bundle_host_run_step host-free-refs "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundle-free-refs.mjs" \

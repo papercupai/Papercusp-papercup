@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+
+import { listTrackedFiles } from '../../../scripts/lib/tracked-files.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const API_ALIAS = 'npm:@typescript/typescript6@6.0.2';
@@ -14,7 +16,8 @@ const DEPENDENCY_SECTIONS = [
   'peerDependencies',
   'optionalDependencies',
 ] as const;
-const SKIP_DIRECTORIES = new Set([
+const MANIFEST_ROOTS = ['apps/', 'packages/', 'libs/', 'tools/'] as const;
+const SKIP_SEGMENTS = new Set([
   '.git',
   '.papercusp',
   '_retired',
@@ -22,6 +25,21 @@ const SKIP_DIRECTORIES = new Set([
   'dist',
   'node_modules',
 ]);
+
+/**
+ * Tracked manifests that declare `typescript` but are NOT Papercusp toolchain
+ * consumers. Each prefix models a project OUTSIDE Papercusp and deliberately keeps
+ * that project's own toolchain, so pinning it to the native CLI would falsify the
+ * fixture. Every prefix must still match a TypeScript-declaring manifest (unless it
+ * sits in a submodule this checkout did not scan), so a stale entry fails instead of
+ * silently widening the exemption.
+ */
+const OUT_OF_CONTRACT: Record<string, string> = {
+  'apps/slack-asana-bug-drill/':
+    'bug-drill fixture submodule (@bug-drill/fixture) modelling an external customer repo on its own TypeScript 5.9 toolchain',
+  'packages/operator-core/test/fixtures/':
+    'test fixtures modelling external plugins (outlook-graph-provider declares typescript "*")',
+};
 
 type Manifest = {
   name?: string;
@@ -31,34 +49,57 @@ type Manifest = {
   optionalDependencies?: Record<string, string>;
 };
 
-function manifestsDeclaringTypeScript(): Array<{ path: string; manifest: Manifest }> {
-  const paths = [join(REPO_ROOT, 'package.json')];
-  const visit = (directory: string): void => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        if (!SKIP_DIRECTORIES.has(entry.name)) visit(join(directory, entry.name));
-      } else if (entry.name === 'package.json') {
-        paths.push(join(directory, entry.name));
-      }
-    }
-  };
-  for (const directory of ['apps', 'packages', 'libs', 'tools']) {
-    visit(join(REPO_ROOT, directory));
-  }
+type TypeScriptManifests = {
+  consumers: Array<{ path: string; manifest: Manifest }>;
+  exempted: string[];
+  unscannedSubmodules: string[];
+};
 
-  return paths.flatMap((path) => {
-    const manifest = JSON.parse(readFileSync(path, 'utf8')) as Manifest;
+/**
+ * Enumerates TRACKED manifests (superproject + every checked-out submodule), never
+ * the filesystem: the gate judges an isolated checkout of committed content, so a
+ * filesystem walk on the shared tree also counts build output (e.g. a Next.js
+ * `.next/standalone/package.json`) and untracked work that no candidate contains.
+ */
+function manifestsDeclaringTypeScript(): TypeScriptManifests {
+  const tracked = listTrackedFiles(REPO_ROOT);
+  const paths = (tracked.files as string[]).filter(
+    (path) =>
+      path === 'package.json' ||
+      (path.endsWith('/package.json') &&
+        MANIFEST_ROOTS.some((root) => path.startsWith(root)) &&
+        !path.split('/').some((segment) => SKIP_SEGMENTS.has(segment))),
+  );
+
+  const consumers: TypeScriptManifests['consumers'] = [];
+  const exempted: string[] = [];
+  for (const path of paths) {
+    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, path), 'utf8')) as Manifest;
     const declaresTypeScript = DEPENDENCY_SECTIONS.some(
       (section) => manifest[section]?.typescript !== undefined,
     );
-    return declaresTypeScript ? [{ path, manifest }] : [];
-  });
+    if (!declaresTypeScript) continue;
+    if (Object.keys(OUT_OF_CONTRACT).some((prefix) => path.startsWith(prefix))) {
+      exempted.push(path);
+    } else {
+      consumers.push({ path, manifest });
+    }
+  }
+  return { consumers, exempted, unscannedSubmodules: tracked.unscanned as string[] };
 }
 
 describe('Papercusp TypeScript toolchain contract', () => {
   it('pins every active TypeScript consumer to the native CLI and official API alias', () => {
-    const consumers = manifestsDeclaringTypeScript();
-    const relativePaths = consumers.map(({ path }) => path.slice(REPO_ROOT.length)).sort();
+    const { consumers, exempted, unscannedSubmodules } = manifestsDeclaringTypeScript();
+    const relativePaths = consumers.map(({ path }) => path).sort();
+
+    for (const prefix of Object.keys(OUT_OF_CONTRACT)) {
+      if (unscannedSubmodules.some((submodule) => prefix.startsWith(`${submodule}/`))) continue;
+      expect(
+        exempted.some((path) => path.startsWith(prefix)),
+        `stale OUT_OF_CONTRACT entry ${prefix}: no TypeScript-declaring manifest matches it`,
+      ).toBe(true);
+    }
 
     expect(relativePaths).toEqual([
       'apps/operator-docs/package.json',

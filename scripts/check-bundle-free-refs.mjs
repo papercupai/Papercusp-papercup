@@ -19,10 +19,12 @@
  * repo-owned bundle INPUT on its own, using @typescript-eslint's parser + scope
  * manager, and reports VALUE references that reach the global scope without a
  * binding the host runtime provides. By default only inputs modified after
- * `--since <file>` (the last-known-good bundle) are checked; `--all` checks every
- * repo-owned input and is how the allowlist below is calibrated.
+ * `--since <file>` (the last-known-good bundle) are checked; when that file does not
+ * exist, every input is checked (selection=no-baseline-full — never a silent skip,
+ * WI-6554700010030641); `--all` checks every repo-owned input and is how the
+ * allowlist below is calibrated.
  *
- * Exit: 0 clean or skipped · 1 free references, unreadable inputs, or a selected batch
+ * Exit: 0 clean · 1 free references, unreadable inputs, or a selected batch
  * with zero analyzable inputs (bundle-host refuses to publish, keeping the
  * last-known-good bundle) · 2 misuse / unreadable metafile. Parser syntax gaps remain
  * `unparsed` warnings when some selected inputs are analyzable: esbuild already
@@ -56,6 +58,9 @@ export const RUNTIME_PROVIDED_NAMES = new Map([
   ['document', 'browser global (client module inlined into the host graph)'],
   ['location', 'browser global (client module inlined into the host graph)'],
   ['PopStateEvent', 'browser global (client module inlined into the host graph)'],
+  // Measured --all, 2026-10-28 (WI-6554700010030641): libs/generic/papergrid/
+  // kv-persist-indexeddb reaches it only after its own `typeof indexedDB` probe.
+  ['indexedDB', 'browser global (client module inlined into the host graph)'],
 ]);
 
 /**
@@ -230,7 +235,7 @@ function parseArgs(argv) {
 /**
  * @param {string[]} [argv]
  * @param {{ log: (line: string) => void, error: (line: string) => void }} [io]
- * @returns {number} 0 clean or skipped · 1 free references found · 2 misuse
+ * @returns {number} 0 clean · 1 free references found · 2 misuse
  */
 export function main(argv = process.argv.slice(2), io = { log: console.log, error: console.error }) {
   let opts;
@@ -256,10 +261,15 @@ export function main(argv = process.argv.slice(2), io = { log: console.log, erro
       }
     }
     if (sinceMs === null) {
-      // No last-known-good bundle: there is nothing to fall back to, so a refusal
-      // would only turn a possibly-broken boot into a certain non-boot. Skip.
-      io.log(`BUNDLE_FREE_REFS_RESULT status=skipped selection=no-baseline inputs=${inputs.length} checked=0 findings=0 unparsed=0 ms=0`);
-      return 0;
+      // WI-6554700010030641: no last-known-good bundle (a first build, or a scratch
+      // outdir used as a pre-restart smoke test). This used to SKIP with exit 0, which
+      // is indistinguishable from a pass: a scratch build reported green over a tree
+      // the live rebuild then refused. With no baseline there is no "changed since"
+      // set, so the honest selection is EVERY repo-owned input (~30 s on the host
+      // graph, paid only when no baseline exists). A finding refuses publication like
+      // any other: shipping a bundle that throws ReferenceError is not a boot.
+      selection = 'no-baseline-full';
+      io.error(`ⓘ no last-known-good bundle at ${opts.since ?? '(no --since)'}; checking every repo-owned input (${inputs.length})`);
     } else {
       selection = 'changed-since-baseline';
       files = inputs.filter((f) => {

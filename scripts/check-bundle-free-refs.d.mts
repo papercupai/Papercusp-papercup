@@ -60,7 +60,7 @@ export function checkInputs(files: string[], { known, readFile }?: {
 /**
  * @param {string[]} [argv]
  * @param {{ log: (line: string) => void, error: (line: string) => void }} [io]
- * @returns {number} 0 clean or skipped · 1 free references found · 2 misuse
+ * @returns {number} 0 clean · 1 free references found · 2 misuse
  */
 export function main(argv?: string[], io?: {
     log: (line: string) => void;

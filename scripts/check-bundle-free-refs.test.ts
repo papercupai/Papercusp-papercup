@@ -237,10 +237,25 @@ describe('main (the CLI bundle-host.sh runs)', () => {
     expect(result()).toMatch(/status=clean/);
   });
 
-  it('skips (exit 0) when there is no last-known-good bundle to fall back to', () => {
+  // WI-6554700010030641: a scratch-outdir build has no last-known-good bundle. It used to
+  // report status=skipped and exit 0 — indistinguishable from a pass — so a smoke-test build
+  // read green over a tree the live rebuild refused. No baseline must mean a FULL scan.
+  it('checks EVERY input, and refuses on a finding, when there is no last-known-good bundle', () => {
+    const code = main(['--metafile', metafilePath, '--base-dir', dir, '--since', path.join(dir, 'absent.mjs')], io());
+    expect(code).toBe(1);
+    expect(result()).toMatch(/status=refused selection=no-baseline-full inputs=3 checked=3 findings=2 unreadable=0 unparsed=0/);
+    expect(result()).not.toMatch(/skipped/);
+    // staleFree is OLDER than any baseline would be: only a full scan can see it.
+    expect(errors.join('\n')).toContain('`staleFree`');
+    expect(errors.join('\n')).toContain('no last-known-good bundle');
+  });
+
+  it('reports clean (exit 0) on a no-baseline full scan only after analysing every input', () => {
+    writeFileSync(path.join(dir, 'old.ts'), "import { staleFree } from './s';\nexport const s = staleFree;");
+    writeFileSync(path.join(dir, 'new.ts'), "import { freshFree } from './f';\nexport const f = freshFree;");
     const code = main(['--metafile', metafilePath, '--base-dir', dir, '--since', path.join(dir, 'absent.mjs')], io());
     expect(code).toBe(0);
-    expect(result()).toMatch(/status=skipped selection=no-baseline inputs=3 checked=0/);
+    expect(result()).toMatch(/status=clean selection=no-baseline-full inputs=3 checked=3 findings=0/);
   });
 
   it('refuses when a metafile input cannot be read instead of reporting a clean analysis', () => {
