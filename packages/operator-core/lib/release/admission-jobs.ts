@@ -54,6 +54,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { expandWorkspaces } from '../../../../scripts/assert-workspace-links.mjs';
 import { expandAffectedWorkspaceNames, pinnedNonWorkspacePathRoutes } from '../../../../scripts/lib/affected-path-routes.mjs';
 import { buildMultiSourceAdmissionSource } from './multi-source-admission';
+import { routeCohortDragTests, type CohortDragRouteInput } from './cohort-drag-patch-routing';
 import {
   chainAdmissionPreflights,
   lockfileManifestConsistencyPreflight,
@@ -554,6 +555,7 @@ export type AdmissionJob =
   | { kind: 'committed-patch'; input: CommittedPatchInput }
   | { kind: 'hunk-exact'; input: Omit<BuildHunkExactSourceInput, 'git'> }
   | { kind: 'multi-source'; input: MultiSourceInput }
+  | { kind: 'cohort-drag-route'; input: Omit<CohortDragRouteInput, 'git'> }
   | {
       kind: 'admit';
       input: Omit<AdmitPathsInput, 'git' | 'preflight'>;
@@ -569,6 +571,7 @@ export interface AdmissionJobResults {
   'committed-patch': ReturnType<typeof buildCommittedPatchSource>;
   'hunk-exact': HunkExactSourceOutcome;
   'multi-source': ReturnType<typeof buildMultiSourceAdmissionSource>;
+  'cohort-drag-route': ReturnType<typeof routeCohortDragTests>;
   admit: AdmissionOutcome;
   retract: boolean;
 }
@@ -610,6 +613,8 @@ export async function executeAdmissionJob(job: AdmissionJob): Promise<AdmissionJ
       return buildHunkExactSource(job.input);
     case 'multi-source':
       return buildMultiSourceAdmissionSource(job.input);
+    case 'cohort-drag-route':
+      return routeCohortDragTests(job.input);
     case 'admit':
       return admitPathsOntoRepairHead({
         ...job.input,

@@ -94,6 +94,8 @@ const mocks = vi.hoisted(() => ({
   hunkExact: vi.fn(),
   committedPatch: vi.fn(),
   multiSource: vi.fn(),
+  // P-003 (R-3): the cohort-drag patch router (its real-git behaviour is pinned in cohort-drag-patch-routing.test.ts).
+  cohortRoute: vi.fn(),
   foreign: vi.fn(),
   ledger: vi.fn(),
   importPreflight: vi.fn(),
@@ -176,6 +178,11 @@ vi.mock('../../release/multi-source-admission', async (importOriginal) => ({
   // The REAL normalizeAdmissionSources: the door's source validation runs end-to-end.
   ...(await importOriginal<typeof import('../../release/multi-source-admission')>()),
   buildMultiSourceAdmissionSource: mocks.multiSource,
+}));
+vi.mock('../../release/cohort-drag-patch-routing', async (importOriginal) => ({
+  // The REAL isCohortTestPath: the door picks the refused tests with the production rule.
+  ...(await importOriginal<typeof import('../../release/cohort-drag-patch-routing')>()),
+  routeCohortDragTests: mocks.cohortRoute,
 }));
 vi.mock('../../release/frozen-repair-edit-ledger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/frozen-repair-edit-ledger')>()),
@@ -3059,6 +3066,81 @@ describe('release:repair-queue', () => {
         expect((mocks.write.mock.calls[0]![1] as Written).admissions[0]).toMatchObject({ patch: second, patches: [patch, second] });
         expect(JSON.parse(mocks.audit.mock.calls[0]![1][5])).toMatchObject({ patches: [patch, second] });
       } else expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    describe('P-003 cohort-drag patch routing (R-3)', () => {
+      const T1 = 'lib/drag.test.ts';
+      const T2 = 'lib/drag2.test.ts';
+      const C1 = '1'.repeat(40);
+      const identity = { expectedCandidate: queue.candidate, expectedRepairHead: queue.repairHead, expectedUpdatedAtMs: queue.updatedAtMs };
+      const wholeBlobArgs = { op: 'admit', paths: ['lib/red.test.ts'], wholeBlob: true, reason: 'shared refactor reviewed' };
+      const refusedWith = (wanted: string[]) =>
+        mocks.admit.mockReturnValue({
+          ok: false, code: 'admission-incomplete', detail: 'REFUSED: whole-blob cohort incomplete', commit: 'e'.repeat(40),
+          missing: wanted.map((w) => ({ from: 'lib/red.test.ts', specifier: w, wanted: w, tried: [w], atProbeRef: 'present', relation: 'reverse-importer' })),
+        });
+      type Routing = { routed: Array<{ admit: Record<string, unknown>; confirm: Record<string, unknown> }>; unrouted: unknown[]; combined?: Record<string, unknown>; combinedConfirm?: Record<string, unknown>; error?: unknown };
+      const routingOf = (result: Record<string, unknown>) => result.patchRouting as Routing;
+
+      it('a refused cohort test whose repair-head blob equals its pre-fix blob comes back as a ready patchCommit admission, plus the combined admit', async () => {
+        refusedWith([T1]);
+        mocks.cohortRoute.mockReturnValue({ ok: true, routed: [{ path: T1, patchCommit: C1, parent: '2'.repeat(40), preFixBlob: 'b'.repeat(40) }], unrouted: [] });
+        const result = body(await tool.handler(wholeBlobArgs as never, ctx));
+        expect(result).toMatchObject({ ok: false, refused: true, reason: 'admission-incomplete', mode: 'whole-blob' });
+        expect(mocks.cohortRoute).toHaveBeenCalledTimes(1);
+        expect(mocks.cohortRoute.mock.calls[0]![0]).toEqual({ root: '/repo', repairHead: queue.repairHead, integrationRef: 'staging', paths: [T1] });
+        const routing = routingOf(result);
+        expect(routing.routed[0]!.admit).toMatchObject({ op: 'admit', paths: [T1], patchCommit: C1, ...identity });
+        expect(routing.routed[0]!.confirm).toEqual({ ...routing.routed[0]!.admit, confirm: true });
+        expect(routing.combined).toMatchObject({
+          op: 'admit', ...identity,
+          sources: [{ paths: ['lib/red.test.ts'], wholeBlob: true }, { paths: [T1], patchCommit: C1 }],
+        });
+        expect(routing.combinedConfirm).toEqual({ ...routing.combined, confirm: true });
+        // Both proposals are valid door calls as written.
+        expect(tool.args.safeParse(routing.routed[0]!.confirm).success).toBe(true);
+        expect(tool.args.safeParse(routing.combinedConfirm).success).toBe(true);
+        expect(mocks.write).not.toHaveBeenCalled();
+      });
+
+      it('a test changed again since the repair head is reported unrouted, and no combined admit is offered while any missing path is unrouted', async () => {
+        refusedWith([T1, T2, 'lib/helper.ts']);
+        mocks.cohortRoute.mockReturnValue({
+          ok: true,
+          routed: [{ path: T1, patchCommit: C1, parent: '2'.repeat(40), preFixBlob: null }],
+          unrouted: [{ path: T2, reason: 'repair-head-differs', patchCommit: '3'.repeat(40), repairHeadBlob: 'd'.repeat(40), preFixBlob: 'f'.repeat(40) }],
+        });
+        const result = body(await tool.handler(wholeBlobArgs as never, ctx));
+        // Only the refused TESTS are routed; the non-test missing path never reaches the router.
+        expect(mocks.cohortRoute.mock.calls[0]![0]).toMatchObject({ paths: [T1, T2] });
+        const routing = routingOf(result);
+        expect(routing.routed.map((r) => r.admit.paths)).toEqual([[T1]]);
+        expect(routing.unrouted).toEqual([expect.objectContaining({ path: T2, reason: 'repair-head-differs' })]);
+        expect(routing).not.toHaveProperty('combined');
+        expect(routing).not.toHaveProperty('combinedConfirm');
+      });
+
+      it('a routing failure leaves the refusal exactly as it was and only adds patchRouting.error', async () => {
+        refusedWith([T1]);
+        mocks.cohortRoute.mockReturnValue({ ok: false, code: 'git-failed', step: 'find last commit', detail: 'exited 128: bad ref' });
+        const result = body(await tool.handler(wholeBlobArgs as never, ctx));
+        expect(result).toMatchObject({ ok: false, refused: true, reason: 'admission-incomplete', missing: [expect.objectContaining({ wanted: T1 })] });
+        expect(String(result.admitCommand)).toContain(T1);
+        expect(routingOf(result)).toEqual({ error: { step: 'find last commit', detail: 'exited 128: bad ref' } });
+
+        mocks.cohortRoute.mockImplementation(() => { throw new Error('worker timed out'); });
+        const thrown = body(await tool.handler(wholeBlobArgs as never, ctx));
+        expect(thrown).toMatchObject({ refused: true, reason: 'admission-incomplete' });
+        expect(routingOf(thrown)).toEqual({ error: { step: 'cohort-drag-route', detail: 'worker timed out' } });
+      });
+
+      it('a hunk-exact refusal is never routed (only whole-blob and multi-source drag a cohort)', async () => {
+        refusedWith([T1]);
+        const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, ctx));
+        expect(result).toMatchObject({ refused: true, reason: 'admission-incomplete' });
+        expect(result).not.toHaveProperty('patchRouting');
+        expect(mocks.cohortRoute).not.toHaveBeenCalled();
+      });
     });
 
     describe('P-002 multi-source admission (R-2)', () => {

@@ -75,6 +75,7 @@ import {
   runAdmissionJob,
 } from '../../release/admission-offthread';
 import { ADMISSION_RADIUS_CAP, type AdmissionJobKind, type AdmissionJobOf } from '../../release/admission-jobs';
+import { isCohortTestPath } from '../../release/cohort-drag-patch-routing';
 import { isCheckpointRunLockHeldCheap } from '../../release-checkpoint-lock';
 import { createAdmissionStepClock } from '../../release/admission-step-clock';
 import {
@@ -2418,6 +2419,63 @@ export default defineTool({
             ...base,
           });
         }
+        // P-003 (R-3): a whole-blob admission refused for a cohort test it would drag in. When that
+        // test's repair-head blob equals its blob before the commit that last changed it, replaying
+        // that one commit (patchCommit) is the exact gap — propose it, ready to confirm. Routing is
+        // advisory: its own failure never changes the refusal.
+        let patchRouting: Record<string, unknown> | undefined;
+        const draggedTests = outcome.code === 'admission-incomplete' && (mode === 'whole-blob' || mode === 'multi-source')
+          ? [...new Set((outcome.missing ?? []).map((m) => m.wanted).filter(isCohortTestPath))]
+          : [];
+        if (draggedTests.length > 0) {
+          const identity = {
+            expectedCandidate: queue.candidate,
+            expectedRepairHead: queue.repairHead,
+            expectedUpdatedAtMs: queue.updatedAtMs,
+          };
+          try {
+            const routing = await runJob('cohort-drag-route', {
+              kind: 'cohort-drag-route',
+              input: { root, repairHead: queue.repairHead, integrationRef: branch, paths: draggedTests },
+            });
+            if (!routing.ok) {
+              patchRouting = { error: { step: routing.step, detail: routing.detail } };
+            } else {
+              const replay = (r: { path: string; patchCommit: string }) =>
+                `cohort-drag: replay ${r.patchCommit.slice(0, 12)}'s change to ${r.path} (repair-head blob = pre-fix blob)`;
+              const routed = routing.routed.map((r) => {
+                const admit = { op: 'admit' as const, paths: [r.path], patchCommit: r.patchCommit, reason: replay(r), ...identity };
+                return { ...r, admit, confirm: { ...admit, confirm: true } };
+              });
+              const missingPaths = new Set((outcome.missing ?? []).map((m) => m.wanted));
+              const allRouted = routed.length > 0 && [...missingPaths].every((p) => routed.some((r) => r.path === p));
+              const original = multiSourceArgs !== undefined
+                ? [...multiSourceArgs]
+                : [{ paths, wholeBlob: true as const, ...(effectiveSourceCommit !== undefined ? { sourceCommit: effectiveSourceCommit } : {}) }];
+              const combined = allRouted
+                ? {
+                    op: 'admit' as const,
+                    sources: [...original, ...routed.map((r) => ({ paths: [r.path], patchCommit: r.patchCommit }))],
+                    reason: `${effectiveReason ?? ''}; ${routed.map(replay).join('; ')}`.replace(/^; /, ''),
+                    ...identity,
+                  }
+                : undefined;
+              patchRouting = {
+                routed,
+                unrouted: routing.unrouted,
+                ...(combined ? { combined, combinedConfirm: { ...combined, confirm: true } } : {}),
+                note: combined
+                  ? 'Every missing path is a cohort test whose repair-head blob equals its pre-fix blob: `combined` is this ' +
+                    'admission plus each test replayed by its own commit, as one commit. Preview it, check proof.diff, then send ' +
+                    '`combinedConfirm`. Each replay diffs only that commit\'s change to that one file.'
+                  : 'Each `routed` test can be replayed by its own commit (`admit` to preview, `confirm` to publish); `unrouted` ' +
+                    'tests changed again after the repair head (or have no single-parent commit) and must be admitted as written.',
+              };
+            }
+          } catch (err) {
+            patchRouting = { error: { step: 'cohort-drag-route', detail: err instanceof Error ? err.message : String(err) } };
+          }
+        }
         return json({
           ok: false,
           admitted: false,
@@ -2425,6 +2483,7 @@ export default defineTool({
           dryRun,
           verdict: 'refused',
           reason: outcome.code,
+          ...(patchRouting ? { patchRouting } : {}),
           detail: outcome.detail,
           ...(outcome.stray ? { stray: outcome.stray } : {}),
           ...(outcome.paths ? { invalidPaths: outcome.paths } : {}),

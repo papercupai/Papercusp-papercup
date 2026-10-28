@@ -11,9 +11,11 @@ endpoint can return HTTP 200 while ``result.isError`` is true; that is still a
 rejected tool call, not a usable inner payload.
 """
 
+import ast
 import hashlib
 import json
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -23,6 +25,186 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 OUTPUT_ENVELOPE_SCHEMA_VERSION = 'papercusp.output-envelope/v1'
 SCRATCH_URI_PREFIX = 'papercusp://scratch/'
+
+
+def _skip_js_quoted(source, start):
+    quote = source[start]
+    index = start + 1
+    while index < len(source):
+        if source[index] == '\\':
+            index += 2
+        elif source[index] == quote:
+            return index + 1
+        else:
+            index += 1
+    return len(source)
+
+
+def _exec_source(tool_input):
+    if isinstance(tool_input, str):
+        return tool_input
+    if isinstance(tool_input, dict):
+        for key in ('source', 'code', 'script'):
+            value = tool_input.get(key)
+            if isinstance(value, str):
+                return value
+    return None
+
+
+def extract_nested_codex_apply_patches(tool_name, tool_input):
+    """Find literal tools.apply_patch calls in a Codex JS exec input.
+
+    Only static string arguments are admitted: the pre-hook must know every
+    touched path before allowing the parent tool to run. A detected dynamic or
+    malformed call is returned with complete=False so the caller can deny it.
+    Strings and comments are skipped while looking for executable call sites.
+    """
+    if tool_name not in ('exec', 'functions.exec', 'functions__exec'):
+        return None
+    source = _exec_source(tool_input)
+    if not isinstance(source, str):
+        return {'found': False, 'complete': False, 'patches': []}
+    if len(source) > 4 * 1024 * 1024:
+        return {'found': 'tools' in source and 'apply_patch' in source,
+                'complete': False, 'patches': []}
+
+    found = False
+    complete = True
+    patches = []
+    calls = 0
+    index = 0
+    while index < len(source):
+        if source.startswith('//', index):
+            newline = source.find('\n', index + 2)
+            index = len(source) if newline < 0 else newline + 1
+            continue
+        if source.startswith('/*', index):
+            end = source.find('*/', index + 2)
+            index = len(source) if end < 0 else end + 2
+            continue
+        if source[index] in ('"', "'", '`'):
+            index = _skip_js_quoted(source, index)
+            continue
+
+        if source.startswith('tools', index) and (index == 0 or not (source[index - 1].isalnum() or source[index - 1] in '_$')):
+            cursor = index + len('tools')
+            while cursor < len(source) and source[cursor].isspace():
+                cursor += 1
+            if cursor < len(source) and source[cursor] == '.':
+                cursor += 1
+                while cursor < len(source) and source[cursor].isspace():
+                    cursor += 1
+                if source.startswith('apply_patch', cursor):
+                    after_name = cursor + len('apply_patch')
+                    if after_name == len(source) or not (source[after_name].isalnum() or source[after_name] in '_$'):
+                        cursor = after_name
+                        while cursor < len(source) and source[cursor].isspace():
+                            cursor += 1
+                        if cursor < len(source) and source[cursor] == '(':
+                            found = True
+                            calls += 1
+                            arg = cursor + 1
+                            while arg < len(source) and source[arg].isspace():
+                                arg += 1
+                            patch = None
+                            end_arg = arg
+                            if arg < len(source) and source[arg] in ('"', "'"):
+                                end_arg = _skip_js_quoted(source, arg)
+                                try:
+                                    patch = ast.literal_eval(source[arg:end_arg])
+                                except (ValueError, SyntaxError):
+                                    patch = None
+                                tail = end_arg
+                                while tail < len(source) and source[tail].isspace():
+                                    tail += 1
+                                if tail < len(source) and source[tail] not in (',', ')'):
+                                    patch = None
+                            if (isinstance(patch, str)
+                                    and '*** Begin Patch' in patch
+                                    and '*** End Patch' in patch):
+                                patches.append(patch)
+                            else:
+                                complete = False
+                            index = max(end_arg, cursor + 1)
+                            continue
+        index += 1
+
+    return {'found': found, 'complete': complete and calls == len(patches), 'patches': patches}
+
+
+def codex_apply_patch_paths(patch):
+    """Return the file headers the lock and attribution hooks both recognize."""
+    if not isinstance(patch, str):
+        return []
+    text = patch.replace('\r\n', '\n').replace('\r', '\n')
+    paths = []
+    for match in re.finditer(r'^\*\*\* (?:Add|Update|Delete) File: (.+)$', text, re.MULTILINE):
+        path = match.group(1).strip()
+        if path:
+            paths.append(path)
+    for match in re.finditer(r'^\*\*\* Move to: (.+)$', text, re.MULTILINE):
+        path = match.group(1).strip()
+        if path:
+            paths.append(path)
+    return paths
+
+
+def nested_codex_apply_patch_results(response):
+    """Extract only serialized/structured nested tool results from an exec reply.
+
+    A parent status such as ``completed`` is deliberately not proof that its
+    nested apply_patch succeeded. The function result must be surfaced as a
+    structured apply_patch result or as JSON emitted in output/content text.
+    """
+    results = []
+    visited = set()
+
+    def is_result(value):
+        return isinstance(value, dict) and (
+            isinstance(value.get('content'), list)
+            or isinstance(value.get('structuredContent'), dict)
+            or any(key in value for key in ('ok', 'success', 'isError', 'is_error'))
+        )
+
+    def visit(value, serialized=False, depth=0):
+        if depth > 10:
+            return
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value.strip())
+            except (ValueError, TypeError):
+                return
+            visit(decoded, True, depth + 1)
+            return
+        if isinstance(value, list):
+            for item in value:
+                visit(item, serialized, depth + 1)
+            return
+        if not isinstance(value, dict):
+            return
+
+        name = value.get('tool_name') or value.get('toolName') or value.get('name')
+        if isinstance(name, str) and name.lower() in ('apply_patch', 'functions.apply_patch'):
+            result = value.get('result', value.get('tool_response', value.get('toolResponse', value)))
+            if is_result(result):
+                results.append(result)
+            return
+        if serialized and is_result(value):
+            marker = id(value)
+            if marker not in visited:
+                visited.add(marker)
+                results.append(value)
+            return
+
+        for key in ('result', 'tool_result', 'toolResult', 'tool_results', 'toolResults',
+                    'tool_calls', 'toolCalls', 'content', 'output', 'stdout', 'text', 'data'):
+            if key not in value:
+                continue
+            child = value[key]
+            visit(child, key in ('result', 'tool_result', 'toolResult', 'tool_results', 'toolResults'), depth + 1)
+
+    visit(response)
+    return results
 
 
 def read_lock_operation(path, owner, session_id):
