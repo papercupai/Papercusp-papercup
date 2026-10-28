@@ -882,6 +882,56 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
     }, 180_000,
   );
 
+  // R-3 locked re-validation. The cases above replace the generation AFTER the selection is
+  // committed, so consumption-time validation refuses them even if the locked check before the
+  // commit is missing. This case replaces it inside the serializer window, before the commit,
+  // and observes the commit itself: an invalid selection must never become durable authority.
+  it("re-validates the prepared generation under the serializer before committing the selection", async () => {
+    const f = await lineage();
+    let commits = 0;
+    let replaced = 0;
+    f.deps.readFrozenRepairPendingCarry = async () => {
+      // The re-read that runs while the serializer is held happens after unlocked preparation
+      // and before the locked re-validation: replace the published token in exactly that window.
+      if (existsSync(f.lockDir) && replaced === 0) {
+        for (const identity of new Set([f.knownGoodGeneration.identity, f.tipGeneration.identity])) {
+          const marker = join(f.root, "generations", identity, ".papercusp-dependency-generation");
+          const before = readFileSync(marker, "utf8");
+          expect(before).toMatch(/^publication_token=/m);
+          chmodSync(marker, 0o600);
+          writeFileSync(marker, before.replace(/^publication_token=.*$/m,
+            `publication_token=v3:${"0".repeat(64)}`));
+        }
+        replaced += 1;
+      }
+      return null;
+    };
+    // Durable authority needs both hooks; nothing is committed yet, so the read finds no record.
+    Object.assign(f.deps, {
+      readPreparedCheckpointSelection: async () => null,
+      commitPreparedCheckpointSelection: async () => {
+        commits += 1;
+        return true;
+      },
+    });
+    const input: SelectionInput = {
+      target: null,
+      checkpointSelection: { deps: f.deps, opts: { noPush: true } },
+    };
+    const outcome = await beginCheckpointPreflight(f.cfg, f.tip, f.exec, input).then(
+      (result) => {
+        if (result.kind === "ready" && result.lock.acquired) result.lock.release();
+        return { kind: result.kind, error: "" };
+      },
+      (error) => ({ kind: "refused", error: String(error) }),
+    );
+    expect(replaced).toBe(1);
+    expect(commits).toBe(0);
+    expect(outcome.kind).toBe("refused");
+    expect(outcome.error).toMatch(/generation|token|root|input|identity|invalid/i);
+    expect(existsSync(f.lockDir)).toBe(false);
+  }, 180_000);
+
   it("preserves an aged exhausted live repair queue without automatic retirement or a fresh cut", async () => {
     const f = await lineage();
     const queue = liveQueue(f);

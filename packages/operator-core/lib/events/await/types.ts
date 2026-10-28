@@ -258,17 +258,19 @@ export function wakeChannelInvokesTurn(channel: WakeChannel | null | undefined):
  * also host-owned: its original accepted write is waiting in the PTY re-arm.
  * Keep incumbent park reasons readable across deployment so a handled inbox
  * message cannot retire a queued host write. */
+export const ACCEPTED_PSU_HOST_DELIVERY_PREFIXES = [
+  'psu-host accepted:',
+  'psu-host deferred-busy-gate:',
+  'psu-host pending-delivery-id:',
+  'psu-host coalesced-into-pending-turn:',
+  'psu-host accepted the cancellation request;',
+  'psu-host still owns the accepted delivery;',
+  'psu-host accepted the fail-open wake retry;',
+] as const;
+
 export function isAcceptedPsuHostDelivery(delivery: Pick<DeliveryWork, 'lastError'>): boolean {
   const reason = delivery.lastError ?? '';
-  return [
-    'psu-host accepted:',
-    'psu-host deferred-busy-gate:',
-    'psu-host pending-delivery-id:',
-    'psu-host coalesced-into-pending-turn:',
-    'psu-host accepted the cancellation request;',
-    'psu-host still owns the accepted delivery;',
-    'psu-host accepted the fail-open wake retry;',
-  ].some((prefix) => reason.startsWith(prefix));
+  return ACCEPTED_PSU_HOST_DELIVERY_PREFIXES.some((prefix) => reason.startsWith(prefix));
 }
 
 export interface DeliveryRow {

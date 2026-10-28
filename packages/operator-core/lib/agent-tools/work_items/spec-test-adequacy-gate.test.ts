@@ -432,6 +432,72 @@ describe('test-checked completion uses mechanical adequacy', () => {
     expect(deps.listCards).not.toHaveBeenCalled();
   });
 
+  it('rejects a renamed source BAR selector absent from the passing run ledger', async () => {
+    const deps = mechanicalDeps();
+    deps.resolveSourceBarTestRequirements.mockResolvedValue({
+      status: 'required',
+      files: [RECONNECT_TEST_PATH],
+      cases: [{ file: RECONNECT_TEST_PATH, testName: 'acknowledged events survive reconnect' }],
+    });
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('acknowledged events survive reconnect'),
+    });
+  });
+
+  it('does not satisfy a source BAR selector recorded only for another test file', async () => {
+    const deps = mechanicalDeps();
+    const selector = 'acknowledged events are not replayed';
+    deps.resolveSourceBarTestRequirements.mockResolvedValue({
+      status: 'required',
+      files: [RECONNECT_TEST_PATH],
+      cases: [{ file: RECONNECT_TEST_PATH, testName: selector }],
+    });
+    const primary = deps.rows[0]!;
+    primary.testRunExecution!.passedCaseTitles = ['a different passing case'];
+    primary.details.adequacy = {
+      ...(primary.details.adequacy as Record<string, unknown>),
+      testCases: ['a different passing case'],
+    };
+    const otherFile = 'packages/reconnect/other.test.ts';
+    deps.listEvidence.mockResolvedValue([...deps.rows, {
+      ...primary,
+      id: 44,
+      testRunId: 44,
+      evidenceRef: 'test:other-file',
+      testRunExecution: {
+        ...primary.testRunExecution!,
+        filePath: otherFile,
+        passedCaseTitles: [selector],
+      },
+      testRunProvenance: { ...primary.testRunProvenance!, filePath: otherFile },
+    }]);
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining(selector),
+    });
+  });
+
+  it('accepts a source BAR selector found in the same file’s server-recorded case titles', async () => {
+    const deps = mechanicalDeps();
+    const selector = 'acknowledged events are not replayed';
+    deps.resolveSourceBarTestRequirements.mockResolvedValue({
+      status: 'required',
+      files: [RECONNECT_TEST_PATH],
+      cases: [{ file: RECONNECT_TEST_PATH, testName: selector }],
+    });
+    const primary = deps.rows[0]!;
+    primary.testRunExecution!.passedCaseTitles = ['reconnect suite > ' + selector];
+    primary.details.adequacy = {
+      ...(primary.details.adequacy as Record<string, unknown>),
+      testCases: [selector],
+    };
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+    expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+  });
+
   it('reports the missing caught mutant without recruiting a grading audit', async () => {
     const deps = mechanicalDeps();
     deps.listEvidence.mockResolvedValue([deps.rows[0]!]);

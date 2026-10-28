@@ -1431,8 +1431,8 @@
     },
     {
       "class": "prompt-constant",
-      "id": "prompt-constant:packages/operator-core/lib/agent-tools/scheduler/get_next.ts#IDLE_PULL_MISS_ADVICE",
-      "path": "packages/operator-core/lib/agent-tools/scheduler/get_next.ts",
+      "id": "prompt-constant:packages/operator-core/lib/agent-tools/scheduler/idle-pull-miss-advice.ts#IDLE_PULL_MISS_ADVICE",
+      "path": "packages/operator-core/lib/agent-tools/scheduler/idle-pull-miss-advice.ts",
       "name": "IDLE_PULL_MISS_ADVICE",
       "kind": "second-person"
     },

@@ -68,6 +68,38 @@ function configureDb(options: { settleDelivering?: boolean } = {}) {
   };
 }
 
+function configureAcceptedParkedDb() {
+  const row: { status: string; channel: string; turnProof: string; lastError: string } = {
+    status: 'parked',
+    channel: 'psu-socket-inject',
+    turnProof: 'awaiting',
+    lastError: 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+  };
+  sqlState.respond = (text) => {
+    if (text.includes('pg_attribute')) return [{ n: schema.TURN_PROOF_COLUMNS.length }];
+    if (text.includes('SELECT status')) {
+      const selected = { status: row.status, channel: row.channel };
+      return text.includes('last_error AS "lastError"')
+        ? [{ ...selected, turnProof: row.turnProof, lastError: row.lastError }]
+        : [selected];
+    }
+    if (text.includes('UPDATE harness_shared.event_wake_deliveries')) {
+      if (text.includes("channel = 'suppressed-redundant'")) {
+        if (!text.includes("status IN ('pending', 'parked', 'delivering', 'delivered')")) return [];
+        row.status = 'delivered';
+        return [{ id: 7 }];
+      }
+      if (row.status === 'parked' && row.lastError.startsWith('psu-host accepted:')) {
+        if (text.includes('last_error LIKE ANY')) return [];
+        row.status = 'delivered';
+        return [{ id: 7 }];
+      }
+      return [];
+    }
+    return [];
+  };
+  return row;
+}
 beforeEach(() => {
   sqlState.calls = [];
   sqlState.order = [];
@@ -121,6 +153,52 @@ describe('ackDelivery for a pump-claimed row', () => {
       status: 'parked',
     });
     expect(updateCount).toBe(3);
+  });
+
+  it('cancels a parked host-owned delivery before acknowledging a handled message', async () => {
+    schema.setTurnProofColumnsReadyForTests(true);
+    const row = configureAcceptedParkedDb();
+    mockResolvedTyped(vi.mocked(pty.injectIntoHostWithConfirmation), {
+      ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
+    });
+
+    await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
+      acked: true,
+      alreadySettled: false,
+    });
+
+    const directAck = sqlState.calls.find((call) =>
+      call.text.includes('UPDATE harness_shared.event_wake_deliveries') &&
+      !call.text.includes("channel = 'suppressed-redundant'"),
+    );
+    const suppression = sqlState.calls.find((call) => call.text.includes("channel = 'suppressed-redundant'"));
+    expect(directAck?.text).toContain('last_error LIKE ANY');
+    expect(sqlState.calls.find((call) => call.text.includes('SELECT status'))?.text).toContain('last_error AS "lastError"');
+    expect(suppression?.text).toContain("status IN ('pending', 'parked', 'delivering', 'delivered')");
+    expect(pty.injectIntoHostWithConfirmation).toHaveBeenCalledWith('/test/host.sock', {
+      mode: 'delivery-cancel', data: '', ownerId: 'su-ack', deliveryId: '7',
+    });
+    const hostIndex = sqlState.order.findIndex((entry) => entry.kind === 'host');
+    const suppressionIndex = sqlState.order.findIndex((entry) =>
+      entry.kind === 'sql' && entry.text?.includes("channel = 'suppressed-redundant'"),
+    );
+    expect(hostIndex).toBeGreaterThan(-1);
+    expect(suppressionIndex).toBeGreaterThan(hostIndex);
+    expect(row.status).toBe('delivered');
+  });
+
+  it('keeps a parked host-owned delivery active when the host only accepts cancellation request', async () => {
+    schema.setTurnProofColumnsReadyForTests(true);
+    configureAcceptedParkedDb();
+
+    await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
+      acked: false,
+      alreadySettled: false,
+      status: 'parked',
+      cancellationRequested: true,
+    });
+
+    expect(sqlState.calls.some((call) => call.text.includes("channel = 'suppressed-redundant'"))).toBe(false);
   });
 
   it('does not send the new control mode to a host without the advertised capability', async () => {

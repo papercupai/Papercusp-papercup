@@ -3808,7 +3808,7 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
-  it.each(['terminal', 'quoted', 'unreadable', 'healthy-peer'] as const)(
+  it.each(['terminal', 'credit-balance', 'quoted', 'unreadable', 'healthy-peer'] as const)(
     'repairs a fresh reserved auditor only with complete terminal proof: %s', async (proof) => {
       const d = deps();
       const issueId = 'EI-fresh-reserved-terminal';
@@ -3830,10 +3830,13 @@ describe('dispatchPendingGradingAudits', () => {
       } as TaskRow;
       d.listTasks.mockResolvedValueOnce(proof === 'healthy-peer' ? [task, healthy] : [task]);
       const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' as const }));
+      const nativeErrorText = proof === 'credit-balance'
+        ? 'Credit balance too low · Add funds:'
+        : "API Error: 400 role 'system' is not supported on this model";
       const nativeTranscript = JSON.stringify({
         type: 'assistant', sessionId, isSidechain: false, isApiErrorMessage: proof !== 'quoted', apiErrorStatus: 400,
         message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text',
-          text: "API Error: 400 role 'system' is not supported on this model" }] },
+          text: nativeErrorText }] },
       });
       const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx, harness: 'papercusp' }, {
         ...d, killTask,
@@ -3844,11 +3847,14 @@ describe('dispatchPendingGradingAudits', () => {
             if (proof === 'unreadable') throw new Error('native evidence unavailable');
             return nativeTranscript;
           }
+          if (proof === 'credit-balance') {
+            return '  ⎿ Credit balance too low · Add funds: \n\n✻Sautéed for 1m 48s · done 5:15 AM\n❯';
+          }
           return "API Error: 400 role 'system' is not supported on this model\n❯";
         },
         terminalLogRecheckDelayMs: 0, terminalLogMaxRechecks: 0,
       });
-      if (proof === 'terminal') {
+      if (proof === 'terminal' || proof === 'credit-balance') {
         expect(d.release).toHaveBeenCalledWith(issueId, prior.key,
           expect.objectContaining({ workspaceId: 'ws-test', reservedAt: prior.reservedAt }));
         expect(d.reserve).toHaveBeenCalledTimes(2);
@@ -3861,7 +3867,7 @@ describe('dispatchPendingGradingAudits', () => {
         expect(d.launch).not.toHaveBeenCalled();
         expect(result.receipts[0]).toMatchObject({ state: 'skipped' });
       }
-      if (proof === 'terminal' || proof === 'healthy-peer') expect(killTask).toHaveBeenCalledOnce();
+      if (proof === 'terminal' || proof === 'credit-balance' || proof === 'healthy-peer') expect(killTask).toHaveBeenCalledOnce();
       else expect(killTask).not.toHaveBeenCalled();
     },
   );

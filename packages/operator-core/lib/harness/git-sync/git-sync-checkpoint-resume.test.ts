@@ -138,8 +138,10 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
     // The checkpointed phase's work is DURABLE: the submodule commit reached its origin…
     expect(git(subOrigin, 'log', '--format=%s', 'main')).toMatch(/sync\(root\): sub-work\.txt/);
     const subCountAfterFire1 = revCount(subOrigin);
-    // …while the superproject (killed before its phases) has NOT moved.
+    // The early ordinary-root commit is local, but the superproject remote has NOT moved.
+    expect(git(repo, 'show', 'HEAD:super-work.txt')).toBe('super work');
     expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit ckpt/);
+    expect(() => git(superOrigin, 'show', 'main:super-work.txt')).toThrow();
     const superCountAfterFire1 = revCount(superOrigin);
 
     // FIRE 2 — the requeued fire (a NEW workflow, from the top). It must CONVERGE:
@@ -154,11 +156,35 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
     }
     // NO double-commit: the submodule origin gained ZERO commits on the requeued fire.
     expect(revCount(subOrigin)).toBe(subCountAfterFire1);
-    // The superproject converged: exactly one new commit, whose gitlink resolves remotely.
-    expect(revCount(superOrigin)).toBe(superCountAfterFire1 + 1);
+    // Both the early root-local commit and the later gitlink commit reached the origin.
+    expect(revCount(superOrigin)).toBe(superCountAfterFire1 + 2);
     const subHead = git(join(repo, 'libs/sub'), 'rev-parse', 'HEAD');
     expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(subHead);
     expect(() => git(subOrigin, 'cat-file', '-e', `${subHead}^{commit}`)).not.toThrow();
+  });
+
+  it('commits ordinary root work locally before the first child fetch, but publishes only after child sync', async () => {
+    writeFileSync(join(repo, 'libs/sub', 'sub-work.txt'), 'sub work\n');
+    writeFileSync(join(repo, 'super-work.txt'), 'super work\n');
+    const superCountBefore = revCount(superOrigin);
+
+    let observedFirstChildFetch = false;
+    const observingRunGit: RunGit = async (args, cwd, options) => {
+      const remoteOperation = args.includes('fetch') || args.includes('ls-remote');
+      if (!observedFirstChildFetch && cwd === join(repo, 'libs/sub') && remoteOperation) {
+        observedFirstChildFetch = true;
+        expect(git(repo, 'show', 'HEAD:super-work.txt')).toBe('super work');
+        expect(() => git(superOrigin, 'show', 'main:super-work.txt')).toThrow();
+      }
+      return runGitBounded(args, cwd, gitTimeoutMsFor(args), { env: options?.env });
+    };
+
+    const out = await runGitSync('ckpt', { repoPath: repo, runGit: observingRunGit });
+
+    expect(observedFirstChildFetch).toBe(true);
+    expect(out.status).toBe('synced');
+    expect(git(superOrigin, 'show', 'main:super-work.txt')).toBe('super work');
+    expect(revCount(superOrigin)).toBe(superCountBefore + 2);
   });
 
   it('ACCEPTANCE: a FULL DBOS replay (all step outputs recorded) re-executes NOTHING and does not double-commit', async () => {
@@ -273,8 +299,11 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
     expect(names).toEqual(['git-sync:submodules', 'git-sync:pointer-bump']);
     expect(names).not.toContain('git-sync:push');
     expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit ckpt/);
-    // ...and the superproject's own work is safely committed locally rather than stranded.
-    expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/sync\(root,sub\):/);
+    // ...and both local commits are safely retained: root source was committed before
+    // the child remote failure; the gitlink was committed afterward for a later push.
+    expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/sync\(root\):/);
+    expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/sync\(sub\):/);
+    expect(git(repo, 'show', 'HEAD:super-work.txt')).toBe('super work');
   });
 });
 

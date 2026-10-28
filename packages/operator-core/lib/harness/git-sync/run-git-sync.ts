@@ -8305,6 +8305,13 @@ async function runGitSyncPass(
      *  checkpointed output, so a crash-replay of this step yields again instead of
      *  treating the partial walk as a complete phase. */
     yielded?: { reason: string; synced: number; total: number };
+    /** A guarded, local-only root commit made before child remote sync begins. */
+    earlyRootCommit?: CommitRepoResult & {
+      localCommitSha?: string;
+      localCommitAtMs?: number;
+      localCommitShas?: string[];
+      localCommits?: GitSyncRootCommit[];
+    };
   }
   // WI-10007606: fail-open probe — a throwing shouldYield must never stop commits.
   const checkYield = async (): Promise<string | null> => {
@@ -8477,6 +8484,116 @@ async function runGitSyncPass(
         subPaths = kept;
       }
       out.submodulePaths = [...subPaths];
+
+      // EI-26790085278063139: child fetch/merge/push can take minutes, but ordinary
+      // superproject work is safe to commit locally before that remote walk. This pass
+      // publishes nothing, and excludes every child/nested gitlink plus protected and
+      // migration paths; pointer-bump and publication remain after child success.
+      if (subPaths.length > 0) {
+        const yieldBeforeEarlyCommit = await checkYield();
+        if (yieldBeforeEarlyCommit) {
+          out.yielded = { reason: yieldBeforeEarlyCommit, synced: 0, total: subPaths.length };
+          timing.setupMs = Math.round(performance.now() - phaseStartedAt);
+          return out;
+        }
+
+        const nestedPotPaths = cfg.nestedPotCheckouts ?? [];
+        const rootProtectedPaths = protectedPaths.filter(
+          (path) => !subPaths.some((subPath) => path === subPath || path.startsWith(`${subPath}/`)),
+        );
+        const rootProtectedHoldings = protectedHoldings.filter(
+          (holding) =>
+            !subPaths.some((subPath) => holding.path === subPath || holding.path.startsWith(`${subPath}/`)) &&
+            !isUnderAnyPath(holding.path, nestedPotPaths),
+        );
+        const earlyHeadBefore = await headSha(runGit, repo);
+        const earlyLocalCommits: GitSyncRootCommit[] = [];
+        const yieldEarlySuperproject = async (boundary: GitSyncSuperprojectYieldBoundary): Promise<void> => {
+          const reason = await checkYield();
+          if (!reason) return;
+          const headNow = await headSha(runGit, repo);
+          const landed =
+            headNow && headNow !== earlyHeadBefore
+              ? {
+                  localCommitSha: headNow,
+                  localCommitAtMs: earlyLocalCommits.at(-1)?.committedAtMs ?? Date.now(),
+                  localCommitShas: await commitsSince(runGit, repo, earlyHeadBefore, headNow),
+                  localCommits: earlyLocalCommits,
+                }
+              : undefined;
+          throw new GitSyncYieldError(reason, boundary, 0, subPaths.length, landed);
+        };
+
+        // Preserve the normal root commit guards before taking the early local snapshot.
+        try {
+          await toolRoutingChecker({ runGit, repoPath: repo, log });
+        } catch (e) {
+          log(`[git-sync] ${repo}: tool-routing pre-commit check threw (${String(e)}) — continuing with the commit fail-soft`);
+        }
+        await yieldEarlySuperproject('before-superproject-stage');
+        try {
+          await toolCatalogRegenerator({ runGit, repoPath: repo, log });
+        } catch (e) {
+          log(`[git-sync] ${repo}: tool-catalog pre-commit repair threw (${String(e)}) — continuing with the commit fail-soft`);
+        }
+        await yieldEarlySuperproject('before-superproject-stage');
+        let declarationRepair: GeneratedDeclarationsRepairResult;
+        try {
+          declarationRepair = await generatedDeclarationsRegenerator({ runGit, repoPath: repo, log });
+        } catch (e) {
+          declarationRepair = { status: 'blocked', atomicPaths: [], detail: String(e).slice(0, 300) };
+        }
+        await yieldEarlySuperproject('before-superproject-stage');
+
+        if (declarationRepair.status === 'blocked') {
+          log(`[git-sync] ${repo}: early superproject commit deferred because generated declaration repair is blocked — pointer-bump will retry`);
+        } else {
+          const earlyMigrationPaths = migrationPaths(await dirtyFiles(runGit, repo));
+          const earlyExcludedPaths = [...new Set([
+            ...rootProtectedPaths,
+            ...subPaths,
+            ...nestedPotPaths,
+            ...earlyMigrationPaths,
+            ...(declarationRepair.status === 'deferred' ? declarationRepair.atomicPaths : []),
+          ])];
+          if (declarationRepair.status === 'deferred') {
+            log(
+              `[git-sync] ${repo}: early declaration repair deferred (${declarationRepair.detail}) — excluding ` +
+                `${declarationRepair.atomicPaths.length} declaration-related path(s) from the local commit`,
+            );
+          }
+          const committed = await commitOneRepo(runGit, repo, {
+            ...repoO,
+            scope: 'superproject',
+            migrationFenceRoster: roster,
+            migrationDependencySubmodulePaths: subPaths,
+            excludePaths: earlyExcludedPaths,
+            preDetectedContentOffenders:
+              declarationRepair.status === 'deferred'
+                ? declarationCompileOffenders(declarationRepair.compilerErrors ?? [])
+                : [],
+            protectedHoldings: rootProtectedHoldings,
+            refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.('', subPaths),
+            attribution: attributionMapForRepo(roster, '', repo),
+            onAttribution,
+            forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
+            yieldIfRequested: yieldEarlySuperproject,
+            onPublished: (sha) => earlyLocalCommits.push({ sha, committedAtMs: Date.now() }),
+          });
+          const earlyHeadAfter = committed.committedLocal ? await headSha(runGit, repo) : undefined;
+          out.earlyRootCommit = {
+            ...committed,
+            localCommits: earlyLocalCommits,
+            ...(earlyHeadAfter
+              ? {
+                  localCommitSha: earlyHeadAfter,
+                  localCommitAtMs: earlyLocalCommits.at(-1)?.committedAtMs ?? Date.now(),
+                  localCommitShas: await commitsSince(runGit, repo, earlyHeadBefore, earlyHeadAfter),
+                }
+              : {}),
+          };
+        }
+      }
     }
     timing.setupMs = Math.round(performance.now() - phaseStartedAt);
     const syncSubmodule = (s: string): Promise<RepoSyncResult> =>
@@ -8636,7 +8753,8 @@ async function runGitSyncPass(
   // inside it): outside the step it ran `git rev-parse HEAD` on a full DBOS replay,
   // which must re-execute NOTHING (git-sync-checkpoint-resume.test.ts).
   let superprojectHeadBefore = '';
-  const localCommits: GitSyncRootCommit[] = [];
+  const earlyRootCommits = sub.earlyRootCommit?.localCommits ?? [];
+  const localCommits: GitSyncRootCommit[] = [...earlyRootCommits];
   const notifiedRootCommits = new Set<string>();
   const notifyRootCommit = (commit: GitSyncRootCommit): void => {
     if (notifiedRootCommits.has(commit.sha)) return;
@@ -8647,6 +8765,7 @@ async function runGitSyncPass(
       log(`[git-sync] ${slug}: root commit notification failed: ${String(error)}`);
     }
   };
+  for (const commit of earlyRootCommits) notifyRootCommit(commit);
   const yieldSuperproject = async (boundary: GitSyncSuperprojectYieldBoundary): Promise<void> => {
     const reason = await checkYield();
     if (!reason) return;
@@ -8750,7 +8869,6 @@ async function runGitSyncPass(
       onPublished: (sha) => {
         const commit = { sha, committedAtMs: Date.now() };
         localCommits.push(commit);
-        notifyRootCommit(commit);
       },
     });
     // Persist the proof with the commit phase itself. On a durable replay the
@@ -8768,13 +8886,23 @@ async function runGitSyncPass(
   });
   // Old phase checkpoints carry only committedLocal; never manufacture their
   // missing proof from a newer checkout HEAD.
-  const localCommitSha = 'localCommitSha' in commitRes ? commitRes.localCommitSha : undefined;
-  const localCommitAtMs = 'localCommitAtMs' in commitRes ? commitRes.localCommitAtMs : undefined;
-  const localCommitShas = 'localCommitShas' in commitRes ? commitRes.localCommitShas : undefined;
+  const pointerLocalCommitSha = 'localCommitSha' in commitRes ? commitRes.localCommitSha : undefined;
+  const pointerLocalCommitAtMs = 'localCommitAtMs' in commitRes ? commitRes.localCommitAtMs : undefined;
+  const pointerLocalCommitShas = 'localCommitShas' in commitRes ? commitRes.localCommitShas : undefined;
   // Outside the durable step: a replay skips the body, but must recover the same
   // per-commit notifications before any later phase, with their original times.
-  const savedLocalCommits = 'localCommits' in commitRes ? commitRes.localCommits : undefined;
+  const pointerLocalCommits = 'localCommits' in commitRes ? commitRes.localCommits : undefined;
+  const savedLocalCommits =
+    earlyRootCommits.length > 0 || pointerLocalCommits
+      ? [...new Map([...earlyRootCommits, ...(pointerLocalCommits ?? [])].map((commit) => [commit.sha, commit])).values()]
+      : undefined;
   for (const commit of savedLocalCommits ?? []) notifyRootCommit(commit);
+  const localCommitSha = pointerLocalCommitSha ?? sub.earlyRootCommit?.localCommitSha;
+  const localCommitAtMs = pointerLocalCommitAtMs ?? sub.earlyRootCommit?.localCommitAtMs;
+  const localCommitShas = [...new Set([
+    ...(sub.earlyRootCommit?.localCommitShas ?? []),
+    ...(pointerLocalCommitShas ?? []),
+  ])];
   const commitMetrics = {
     dirtyPathCount: commitRes.dirtyPathCount,
     committedCount: commitRes.committedCount,
@@ -8925,16 +9053,29 @@ async function runGitSyncPass(
   const pushed = [...sub.pushed, ...supr.pushed];
   const merged = [...sub.merged, ...supr.merged];
   const mergeCompleted = [...sub.mergeCompleted, ...supr.mergeCompleted];
-  const oversized = [...sub.oversized, ...supr.oversized];
+  const earlyRootCommit = sub.earlyRootCommit;
+  const oversized = [...new Map([
+    ...sub.oversized,
+    ...supr.oversized,
+    ...(earlyRootCommit?.oversized ?? []).map((file) => ({ scope: 'superproject', ...file })),
+  ].map((file) => [`${file.scope}:${file.path}`, file])).values()];
   const bulkExcluded = oversized.filter((f) => f.exclusionReason === 'cumulative-limit');
-  const contentErrors = [...sub.contentErrors, ...supr.contentErrors];
+  const contentErrors = [...new Map([
+    ...sub.contentErrors,
+    ...supr.contentErrors,
+    ...(earlyRootCommit?.contentErrors ?? []).map((file) => ({ scope: 'superproject', ...file })),
+  ].map((file) => [`${file.scope}:${file.file}`, file])).values()];
   // Older in-flight checkpoints predate the skipped-path census. Replay must
   // reconstruct those phase outputs as an empty census rather than throwing or
   // turning a clean replay into an error.
-  const skippedPaths = [...(sub.skippedPaths ?? []), ...(supr.skippedPaths ?? [])];
-  const dirtyPathCount = (sub.dirtyPathCount ?? 0) + (supr.dirtyPathCount ?? 0);
-  const committedCount = (sub.committedCount ?? 0) + (supr.committedCount ?? 0);
-  const didSomething = sub.didSomething || supr.didSomething;
+  const skippedPaths = [...new Map([
+    ...(sub.skippedPaths ?? []),
+    ...(supr.skippedPaths ?? []),
+    ...(earlyRootCommit?.skippedPaths ?? []),
+  ].map((entry) => [JSON.stringify(entry), entry])).values()];
+  const dirtyPathCount = (sub.dirtyPathCount ?? 0) + (supr.dirtyPathCount ?? 0) + (earlyRootCommit?.dirtyPathCount ?? 0);
+  const committedCount = (sub.committedCount ?? 0) + (supr.committedCount ?? 0) + (earlyRootCommit?.committedCount ?? 0);
+  const didSomething = sub.didSomething || supr.didSomething || earlyRootCommit?.committedLocal === true;
   // P-016: present on every status so a sync-back conflict is reported even when the
   // pass itself is otherwise clean ('nothing' / 'synced' are the common cases).
   const syncBackField = superSyncBack ? { syncBack: superSyncBack } : {};

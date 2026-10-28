@@ -29,7 +29,11 @@ import {
 } from './psu-pty-discovery';
 import { normalizeEventKey } from './announce-key';
 import { isPattern, keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from './pattern';
-import { WAKE_TURN_CHANNELS } from './types';
+import {
+  ACCEPTED_PSU_HOST_DELIVERY_PREFIXES,
+  isAcceptedPsuHostDelivery,
+  WAKE_TURN_CHANNELS,
+} from './types';
 import { turnProofColumnsReady } from './turn-proof-schema';
 import {
   type TurnProof,
@@ -3146,6 +3150,7 @@ async function markDeliveryAcked(
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const hasTurnProof = await turnProofColumnsReady();
+  const acceptedHostErrorPatterns = ACCEPTED_PSU_HOST_DELIVERY_PREFIXES.map((prefix) => `${prefix}%`);
   const rows = hasTurnProof
     ? await sql`
     UPDATE harness_shared.event_wake_deliveries
@@ -3156,6 +3161,8 @@ async function markDeliveryAcked(
      WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
        AND ((${options.pendingOrParked} AND status IN ('pending', 'parked'))
          OR (${options.delivering} AND status = 'delivering'))
+       AND NOT (status IN ('pending', 'parked')
+         AND COALESCE(last_error LIKE ANY(${acceptedHostErrorPatterns}::text[]), false))
      RETURNING id
   `
     : await sql`
@@ -3165,6 +3172,8 @@ async function markDeliveryAcked(
      WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
        AND ((${options.pendingOrParked} AND status IN ('pending', 'parked'))
          OR (${options.delivering} AND status = 'delivering'))
+       AND NOT (status IN ('pending', 'parked')
+         AND COALESCE(last_error LIKE ANY(${acceptedHostErrorPatterns}::text[]), false))
      RETURNING id
   `;
   return rows.length > 0;
@@ -3216,7 +3225,7 @@ async function markDeliverySuppressedBeforeWrite(input: {
              turn_proof = 'superseded', turn_started_at = NULL, pickup_deadline_at = NULL,
              last_error = 'host confirmed cancelled-before-write during handled-message settlement'
        WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
-         AND status IN ('delivering', 'delivered')
+         AND status IN ('pending', 'parked', 'delivering', 'delivered')
        RETURNING id
     `
     : await sql`
@@ -3224,7 +3233,7 @@ async function markDeliverySuppressedBeforeWrite(input: {
          SET status = 'delivered', channel = 'suppressed-redundant', delivered_at = COALESCE(delivered_at, now()),
              last_error = 'host confirmed cancelled-before-write during handled-message settlement'
        WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
-         AND status IN ('delivering', 'delivered')
+         AND status IN ('pending', 'parked', 'delivering', 'delivered')
        RETURNING id
     `;
   return rows.length > 0;
@@ -3242,20 +3251,21 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
     status: string;
     channel?: string | null;
     turnProof?: string | null;
+    lastError?: string | null;
   };
   const readOwnedState = async (): Promise<OwnedDeliveryState | undefined> => {
     const { sql } = getOrgPg();
     const hasTurnProof = await turnProofColumnsReady();
     const rows = hasTurnProof
       ? await sql<OwnedDeliveryState[]>`
-          SELECT status, channel, turn_proof AS "turnProof"
+          SELECT status, channel, turn_proof AS "turnProof", last_error AS "lastError"
             FROM harness_shared.event_wake_deliveries
            WHERE workspace_id = ${eventsWs()} AND id = ${input.deliveryId}
              AND subscriber_id = ${input.subscriberId}
            LIMIT 1
         `
       : await sql<OwnedDeliveryState[]>`
-          SELECT status, channel
+          SELECT status, channel, last_error AS "lastError"
             FROM harness_shared.event_wake_deliveries
            WHERE workspace_id = ${eventsWs()} AND id = ${input.deliveryId}
              AND subscriber_id = ${input.subscriberId}
@@ -3266,6 +3276,8 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
   const recallableHostWake = (state: OwnedDeliveryState | undefined): boolean => {
     if (!state) return false;
     if (state.status === 'delivering') return true;
+    if ((state.status === 'pending' || state.status === 'parked') &&
+        isAcceptedPsuHostDelivery({ lastError: state.lastError ?? null })) return true;
     return state.status === 'delivered' &&
       (state.channel === 'psu-socket-inject' || state.channel === 'pty-inject') &&
       (state.turnProof == null || state.turnProof === 'awaiting');
@@ -3278,13 +3290,14 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
     // owned row instead of turning that state transition into a false miss.
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (!owned || (owned.status !== 'pending' && owned.status !== 'parked')) return false;
+      if (isAcceptedPsuHostDelivery({ lastError: owned.lastError ?? null })) return false;
       if (await markDeliveryAcked(input, { pendingOrParked: true, delivering: false })) return true;
       owned = await readOwnedState();
     }
     return false;
   };
   if (await ackQueuedDelivery()) return { acked: true, alreadySettled: false };
-  if (owned?.status === 'pending' || owned?.status === 'parked') {
+  if ((owned?.status === 'pending' || owned?.status === 'parked') && !recallableHostWake(owned)) {
     return { acked: false, alreadySettled: false, status: owned.status };
   }
 
@@ -3293,7 +3306,8 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
     if (cancellation === 'confirmed-before-write') {
       // Only the host's acknowledged pre-write barrier permits a direct ACK of
       // a row the pump already claimed or optimistically marked delivered.
-      if (owned?.status === 'delivered') {
+      if (owned?.status === 'delivered' ||
+          (owned && isAcceptedPsuHostDelivery({ lastError: owned.lastError ?? null }))) {
         if (await markDeliverySuppressedBeforeWrite(input)) {
           return { acked: true, alreadySettled: false };
         }

@@ -13,6 +13,7 @@ import { assemblePresenceSnapshot, type PresenceSnapshot } from '../presence-sna
 import rosterTool, { EXPLICIT_LIVENESS_ROW_CAP, ROSTER_AUDIT_DEADLINE_MS } from './roster';
 import { createRosterAudit, auditKnown } from './roster-audit';
 import { resolveSelfRef } from '../self-marker';
+import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 
 const auditStore = vi.hoisted(() => ({ build: vi.fn(), load: vi.fn(), save: vi.fn() }));
 vi.mock('./roster-audit-store', async importOriginal => ({
@@ -37,7 +38,7 @@ vi.mock('../presence-snapshot', async (importOriginal) => ({
   resolvePresenceScope: vi.fn(async (ctx, args) => ({
     scope: args.hive ? 'hive' : (args.scope ?? (args.targetedOwner ? 'workspace' : 'hive')),
     wsId: 'test-ws',
-    potId: args.hive ?? 'test-hive',
+    potId: args.hive ?? (args.scope === 'workspace' ? null : 'test-hive'),
   })),
   assemblePresenceSnapshot: vi.fn(async (resolved, opts) => {
     const allActive = opts?.detail
@@ -221,6 +222,37 @@ describe('coord:roster', () => {
       expect(auditStore.build.mock.calls[0][0].agents.map((a: { ownerId: string }) => a.ownerId)).toEqual(['agent-2']);
       expect(vi.mocked(assemblePresenceSnapshot).mock.lastCall?.[1]).toMatchObject({ includeMaintenance: false });
       expect(auditStore.save).toHaveBeenCalledOnce();
+    });
+    it('uses the operator-home harness for an unscoped audit and its continuation', async () => {
+      const homeHarness = operatorHomeHarnessSlug();
+      let snapshot!: ReturnType<typeof createRosterAudit>;
+      vi.mocked(resolveSelfRef)
+        .mockReturnValueOnce({ ownerId: 'reader-a', ownerLabel: 'Reader A' })
+        .mockReturnValueOnce({ ownerId: 'reader-a', ownerLabel: 'Reader A' });
+      auditStore.build.mockImplementation(async input => {
+        snapshot = createRosterAudit({
+          asOf: input.asOf, scope: input.scope, expectedPopulation: input.expectedPopulation,
+          population: input.agents.map((a: { ownerId: string }) => a.ownerId),
+          records: input.agents.map((a: { ownerId: string }) => ({ id: 'agent:' + a.ownerId, kind: 'agent', ownerId: a.ownerId,
+            fields: { state: auditKnown('parked', 'test-oracle', input.asOf) } })),
+          provenance: { status: 'unknown', directiveId: null, sourceRef: null, quote: null, turnOrigin: null },
+          previous: { status: 'known', auditId: null, asOf: null, total: null, corrections: [] },
+        });
+        return snapshot;
+      });
+
+      const ctx = { workspaceId: 'test-ws', harnessSlug: '*' };
+      const initial = await call({ view: 'audit', scope: 'workspace' }, ctx);
+      expect(initial.output).toMatchObject({ view: 'audit', auditId: snapshot.auditId });
+      expect(auditStore.build.mock.calls[0]?.[0].harness).toBe(homeHarness);
+      expect(auditStore.save).toHaveBeenCalledWith(homeHarness, snapshot);
+
+      auditStore.load.mockResolvedValue(snapshot);
+      const continuation = await call({ view: 'audit', scope: 'workspace', auditId: snapshot.auditId }, ctx);
+      expect(continuation.output).toMatchObject({ view: 'audit', auditId: snapshot.auditId });
+      expect(auditStore.load).toHaveBeenCalledWith(homeHarness, snapshot.auditId, expect.objectContaining({
+        workspaceId: 'test-ws', scope: 'workspace', potId: null, readerId: 'reader-a',
+      }));
     });
     it('refuses a degraded census instead of persisting a complete-looking empty snapshot', async () => {
       const snapshotSource = vi.mocked(assemblePresenceSnapshot).getMockImplementation()!;

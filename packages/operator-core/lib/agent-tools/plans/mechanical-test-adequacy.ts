@@ -76,7 +76,10 @@ function staleDetail(row: SpecEvidenceForAdequacy): string {
   return `${row.currentness.overall}${reasons.length ? ` (${reasons.join(', ')})` : ''}`;
 }
 
-function isPassingLedgerRun(row: SpecEvidenceForAdequacy): boolean {
+function isPassingLedgerRun(
+  row: SpecEvidenceForAdequacy,
+  sourceBarCaseTitles: readonly string[] = [],
+): boolean {
   const execution = row.testRunExecution;
   const rawCases = (row.details.adequacy as { testCases?: unknown } | undefined)?.testCases;
   if (rawCases !== undefined && (!Array.isArray(rawCases) ||
@@ -89,13 +92,15 @@ function isPassingLedgerRun(row: SpecEvidenceForAdequacy): boolean {
   // narrows the claim when the canonical ledger confirms every named case.
   const declaredCasesPassed = declaredCases !== undefined && declaredCases.length > 0 &&
     declaredCases.every(title => hasMatchingDeclaredCaseTitle(title, execution?.passedCaseTitles ?? []));
+  const sourceBarCasePassed = sourceBarCaseTitles.some(title =>
+    hasMatchingDeclaredCaseTitle(title, execution?.passedCaseTitles ?? []));
   if (declaredCases?.length && !declaredCasesPassed) return false;
   return (
     execution != null &&
     execution.status === 'pass' &&
     execution.passed > 0 &&
     execution.failed === 0 &&
-    (execution.skipped === 0 || declaredCasesPassed) &&
+    (execution.skipped === 0 || declaredCasesPassed || sourceBarCasePassed) &&
     execution.collectionFailed === false
   );
 }
@@ -149,6 +154,18 @@ export function evaluateMechanicalTestAdequacy(input: {
 
   const gaps: string[] = [];
   const passingTestBindingIds: Record<string, number> = {};
+  const sourceBarCases = sourceBarTestRequirements.cases ?? [];
+  const requiredFileSet = new Set(requiredFiles);
+  for (const selector of sourceBarCases) {
+    if (!requiredFileSet.has(normalizeTestPath(selector.file))) {
+      gaps.push(
+        normalizeTestPath(selector.file) + ': source BAR selector "' + selector.testName +
+          '" does not belong to a registered test file',
+      );
+    }
+  }
+  const selectorsForFile = (file: string) =>
+    sourceBarCases.filter(selector => normalizeTestPath(selector.file) === file);
   const testRows = clauseRows.filter(
     (row) =>
       row.evidenceKind === 'test' &&
@@ -156,20 +173,30 @@ export function evaluateMechanicalTestAdequacy(input: {
       isOriginalTestRun(row),
   );
   for (const file of requiredFiles) {
+    const selectors = selectorsForFile(file);
+    const selectorTitles = selectors.map(selector => selector.testName);
     const bound = testRows.filter((row) => rowMatchesTestFile(row, file));
-    const qualifying = bound.find(
-      (row) => row.id !== undefined && isPassingLedgerRun(row) && isCurrent(row),
+    const passing = bound.filter(
+      (row) => row.id !== undefined && isPassingLedgerRun(row, selectorTitles) && isCurrent(row),
     );
-    if (qualifying) {
-      passingTestBindingIds[file] = qualifying.id!;
+    if (passing.length > 0) {
+      passingTestBindingIds[file] = passing[0]!.id!;
+      const missingSelectors = selectors.filter(({ testName }) => !passing.some(row =>
+        hasMatchingDeclaredCaseTitle(testName, row.testRunExecution?.passedCaseTitles ?? [])));
+      if (missingSelectors.length > 0) {
+        gaps.push(
+          file + ': current passing run is missing required source BAR case selector(s) in server-recorded passedCaseTitles: ' +
+            missingSelectors.map(({ testName }) => JSON.stringify(testName)).join(', '),
+        );
+      }
       continue;
     }
     if (bound.length === 0) {
       gaps.push(`${file}: no ledger-backed test run is bound (autobind binds its next passing run at a committed tree)`);
-    } else if (!bound.some(isPassingLedgerRun)) {
+    } else if (!bound.some(row => isPassingLedgerRun(row))) {
       gaps.push(`${file}: the bound run did not pass (binding ${bound.map((row) => row.id ?? '?').join(', ')})`);
     } else {
-      const passing = bound.filter(isPassingLedgerRun);
+      const passing = bound.filter(row => isPassingLedgerRun(row));
       gaps.push(
         `${file}: the passing run is no longer current — ${passing.map((row) => `binding ${row.id ?? '?'} ${staleDetail(row)}`).join('; ')}`,
       );

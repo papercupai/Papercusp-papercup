@@ -39,6 +39,7 @@ import {
   RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
 } from '../../fleet/assignments';
 import { resolveConcreteWorkspaceId } from '../../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 import { resolveAgentIdentity } from '../identity';
 import { PRESENCE_TIER_CAPS, shapeCoordPresence } from './presence-shape';
 import { decodeAuditCursor, RosterAuditError, type RosterAuditSnapshot } from './roster-audit';
@@ -272,7 +273,10 @@ export default defineTool({
         ]);
         const resolved = await resolvePresenceScope(c, { scope: args.scope, hive: args.pot, workspace: args.workspace, targetedOwner: !!args.owner });
         const scopeKey = { workspaceId: resolved.wsId ?? resolveConcreteWorkspaceId(args.workspace, c.workspaceId), scope: resolved.scope === 'hive' ? 'hive' as const : 'workspace' as const, potId: resolved.potId ?? null, owner: args.owner ?? null, readerId: resolveSelfRef(ctx)?.ownerId ?? null };
-        const harness = resolved.potId ?? c.harnessSlug ?? 'papercusp';
+        const harness = [resolved.potId, c.harnessSlug]
+          .map(value => value?.trim())
+          .find((value): value is string => !!value && value !== '*')
+          ?? operatorHomeHarnessSlug();
         const auditDeadlineAt = Date.now() + ROSTER_AUDIT_DEADLINE_MS;
         const boundedAuditStep = async <T>(phase: string, work: () => Promise<T>, fallback: T) => {
           const remainingMs = auditDeadlineAt - Date.now();

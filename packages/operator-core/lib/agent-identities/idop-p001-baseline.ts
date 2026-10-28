@@ -227,7 +227,9 @@ function launchedToolSchemas(promptsDir: string) {
 }
 
 export function buildIdopP001Baseline(promptsDir: string) {
-  const head = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const head = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {
+    encoding: 'utf8', timeout: 10_000, maxBuffer: 1024,
+  }).trim();
   const prompt = readFileSync(join(root, IDOP_P001_PROMPT_REL));
   const identities = builtInIdentities();
   const tools = launchedToolSchemas(promptsDir);
@@ -236,7 +238,9 @@ export function buildIdopP001Baseline(promptsDir: string) {
     plan: 'identity-definitions-own-policy-2026-10-17',
     item: 'P-001',
     capturedAt: '2026-10-22T17:03:00Z',
-    base: { commit: head, promptPath: IDOP_P001_PROMPT_REL, promptGitBlob: execFileSync('git', ['-C', root, 'hash-object', IDOP_P001_PROMPT_REL], { encoding: 'utf8' }).trim(), promptSha256: sha256(prompt), promptBytes: prompt.length },
+    base: { commit: head, promptPath: IDOP_P001_PROMPT_REL, promptGitBlob: execFileSync('git', ['-C', root, 'hash-object', IDOP_P001_PROMPT_REL], {
+      encoding: 'utf8', timeout: 10_000, maxBuffer: 1024,
+    }).trim(), promptSha256: sha256(prompt), promptBytes: prompt.length },
     population: { roles: [{ id: 'infra-reviewer' }, { id: 'security-reviewer' }], roleCount: 2, builtInIdentities: identities, builtInIdentityCount: identities.length },
     toolCatalog: { sourceKind: 'real-launched-codex-managed-tool-prompts', sourceDirectory: promptsDir, count: tools.length, digest: sha256(JSON.stringify(tools)), tools },
     observations: RUNTIME_OBSERVATIONS,

@@ -2592,6 +2592,24 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     },
   },
   {
+    path: "packages/operator-core/lib/agent-identities/idop-p001-baseline.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-013 reviewed bypass disposition for idop-p001-baseline.ts: buildIdopP001Baseline has two sequential local Git metadata reads and is reachable only through this module's direct CLI guard; the integration-test importer calls inspectIdopP001PromptArchive, which starts no process. Each execFileSync waits for exit with a 10-second timeout and 1 KiB output bound. A failure propagates before the immutable baseline is written, and no child or queue remains. This one-shot evidence generator is not an agent runtime and carries no persistent capacity for a Governor receipt to meter.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 2 &&
+        source.includes("const head = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {") &&
+        source.includes("encoding: 'utf8', timeout: 10_000, maxBuffer: 1024,") &&
+        source.includes("promptGitBlob: execFileSync('git', ['-C', root, 'hash-object', IDOP_P001_PROMPT_REL], {") &&
+        source.includes("if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))") &&
+        source.includes("{ flag: 'wx' }") &&
+        !/\bdetached\s*:\s*true/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
     path: "packages/operator-core/lib/agent-identities/idop-p001-stack-population.ts",
     code: "unbounded-resident-queue",
     disposition: "semantic",
@@ -2822,6 +2840,24 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
       source.includes("maxBuffer: 64 * 1024 * 1024") &&
       source.includes("stdio: ['ignore', 'pipe', 'pipe']") &&
       source.includes("export function createGitInputManifestReader(git = runGit)"),
+  },
+  {
+    path: "apps/operator/bin/release/dependency-lock-tree-audit.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-014 reviewed bypass disposition for dependency-lock-tree-audit.mjs: this standalone, node-only dependency verifier is called by dependency-generation.sh and imported by npm-install-safe, not started as a serving runtime. Its only child is the synchronous per-copy SQLite usability probe: `spawnSync(process.execPath, ['--eval', SQLITE_RUNTIME_PROBE, resolve(packagePath)], ...)` runs sequentially for installed better-sqlite3 lock entries, waits for exit, and is bounded to 15 seconds. The probe closes its in-memory database in finally; the parent retains no child or queue. Callers serialize install writes with their filesystem mutex and generation builds with the identity lock, but those locks are not represented as a Governor receipt for this nested probe. Keeping this helper node-only lets release and install checks run while the operator is down; a second resident lease would add no persistent capacity to govern.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("import { spawnSync } from 'node:child_process';") &&
+        source.includes("spawnSync(process.execPath, ['--eval', SQLITE_RUNTIME_PROBE, resolve(packagePath)], {") &&
+        source.includes("encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000,") &&
+        source.includes("} finally { db.close(); }") &&
+        !/\bdetached\s*:\s*true/.test(code) &&
+        !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
   },
   {
     path: "packages/operator-core/lib/agent-chat-stream.ts",
