@@ -117,12 +117,18 @@ describe.skipIf(!enabled)('Dream control observation live METHOD', () => {
           expect(snapshot.r2Assertions.clauses.every(c => c.status === 'unknown' && !c.healthy)).toBe(true);
         }
         // Compare the actually loaded source objects, not merely branch distance.
+        // The decision-journal producer (WI-6554700010030749) scans on the background
+        // host and the API reads its snapshot, so those files are pinned on both builds.
+        const decisionJournalPaths = ['packages/operator-core/lib/dream/dream-decision-journal.ts',
+          'packages/operator-core/lib/derived-reads/producers.ts'];
         const sourcePaths = ['packages/operator-core/lib/dream/dream-control-observations.ts',
-          'packages/operator-core/lib/sync-resolver/index.ts'];
-        for (const path of sourcePaths) {
-          const loaded = execFileSync('git', ['show', `${discovery.runtime.buildSha}:${path}`],
+          'packages/operator-core/lib/sync-resolver/index.ts', ...decisionJournalPaths];
+        const loadedChecks = [...sourcePaths.map(path => [path, discovery.runtime.buildSha] as const),
+          ...decisionJournalPaths.map(path => [path, background.runtime.buildSha] as const)];
+        for (const [path, buildSha] of loadedChecks) {
+          const loaded = execFileSync('git', ['show', `${buildSha}:${path}`],
             { cwd: root, maxBuffer: 4 * 1024 * 1024 });
-          expect(loaded.equals(readFileSync(resolve(root, path))), `${path} differs from loaded source`).toBe(true);
+          expect(loaded.equals(readFileSync(resolve(root, path))), `${path} differs from loaded source at ${buildSha}`).toBe(true);
         }
         const observation = await observeCoveredWindow(profile.origin, { ...base, expectedRuntime: discovery.runtime,
           actionJournalUnit: 'papercusp-bg-host.service', expectedActionRuntime: background.runtime,

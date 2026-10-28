@@ -111,18 +111,53 @@ export interface CodexModelRefusalRegistry {
   snapshot(): CodexModelRefusalEntry[];
   /** Every still-believed entry, including those whose re-check window has lapsed. */
   believedSnapshot(): CodexModelRefusalEntry[];
+  /** Seed from the durable store (WI-6554700010030570) — on gateway boot and each resync. Newer
+   *  wins: a stored entry replaces the in-memory one only when its `lastAt` is later, and an entry
+   *  no later than an in-memory CLEAR of the pair is ignored, so a resync that reads the store
+   *  before the clear's write lands cannot resurrect it. Expired entries are skipped. Never fires
+   *  `onChange`. Returns how many entries were applied. */
+  hydrate(entries: ReadonlyArray<CodexModelRefusalEntry>): number;
 }
+
+/** A registry mutation, for write-through to the durable store (WI-6554700010030570). */
+export type CodexModelRefusalChange =
+  | { kind: 'record'; entry: CodexModelRefusalEntry }
+  | { kind: 'clear'; accountId: string; model: string; at: number };
 
 const keyOf = (accountId: string, model: string): string => `${accountId}\u0000${model.trim().toLowerCase()}`;
 
 export function createCodexModelRefusalRegistry(
-  opts: { ttlMs?: number; reportHorizonMs?: number; now?: () => number; maxEntries?: number } = {},
+  opts: {
+    ttlMs?: number;
+    reportHorizonMs?: number;
+    now?: () => number;
+    maxEntries?: number;
+    /** Write-through hook (WI-6554700010030570): fired after each record and each effective
+     *  clear. Synchronous and fire-and-forget — a throw is swallowed so persistence can never
+     *  break routing. */
+    onChange?: (change: CodexModelRefusalChange) => void;
+  } = {},
 ): CodexModelRefusalRegistry {
   const ttlMs = opts.ttlMs ?? DEFAULT_CODEX_MODEL_REFUSAL_TTL_MS;
   const reportHorizonMs = Math.max(ttlMs, opts.reportHorizonMs ?? DEFAULT_CODEX_MODEL_REFUSAL_REPORT_HORIZON_MS);
   const now = opts.now ?? (() => Date.now());
   const maxEntries = opts.maxEntries ?? 512;
   const entries = new Map<string, CodexModelRefusalEntry>();
+  /** When each pair was last cleared by a 2xx — the hydrate guard against resurrecting it. */
+  const clearedAt = new Map<string, number>();
+  const notify = (change: CodexModelRefusalChange): void => {
+    if (!opts.onChange) return;
+    try {
+      opts.onChange(change);
+    } catch {
+      /* persistence must never break routing */
+    }
+  };
+  const evictIfFull = (map: Map<string, unknown>): void => {
+    if (map.size < maxEntries) return;
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  };
 
   /** The entry while it is still believed; deleted once the report horizon has passed. */
   const believed = (key: string, at: number): CodexModelRefusalEntry | undefined => {
@@ -164,15 +199,16 @@ export function createCodexModelRefusalRegistry(
         existing.reportUntil = at + reportHorizonMs;
         existing.hits += 1;
         existing.detail = detail || existing.detail;
+        notify({ kind: 'record', entry: { ...existing } });
         return startsExclusion;
       }
-      if (entries.size >= maxEntries) {
-        const oldest = entries.keys().next().value;
-        if (oldest !== undefined) entries.delete(oldest);
-      }
-      entries.set(key, {
+      evictIfFull(entries);
+      const entry: CodexModelRefusalEntry = {
         accountId, model, since: at, lastAt: at, until: at + ttlMs, reportUntil: at + reportHorizonMs, hits: 1, detail,
-      });
+      };
+      entries.set(key, entry);
+      clearedAt.delete(key);
+      notify({ kind: 'record', entry: { ...entry } });
       return true;
     },
     isRefused(accountId, model) {
@@ -185,9 +221,32 @@ export function createCodexModelRefusalRegistry(
     },
     clear(accountId, model) {
       if (!accountId || !model) return false;
-      return entries.delete(keyOf(accountId, model));
+      const key = keyOf(accountId, model);
+      if (!entries.delete(key)) return false;
+      const at = now();
+      clearedAt.delete(key);
+      evictIfFull(clearedAt);
+      clearedAt.set(key, at);
+      notify({ kind: 'clear', accountId, model, at });
+      return true;
     },
     snapshot: () => collect(excluded),
     believedSnapshot: () => collect(believed),
+    hydrate(stored) {
+      const at = now();
+      let applied = 0;
+      for (const e of stored) {
+        if (!e?.accountId || !e.model || !(e.reportUntil > at)) continue;
+        const key = keyOf(e.accountId, e.model);
+        const cleared = clearedAt.get(key);
+        if (cleared !== undefined && e.lastAt <= cleared) continue;
+        const existing = entries.get(key);
+        if (existing && existing.lastAt >= e.lastAt) continue;
+        if (!existing) evictIfFull(entries);
+        entries.set(key, { ...e });
+        applied += 1;
+      }
+      return applied;
+    },
   };
 }

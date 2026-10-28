@@ -287,6 +287,27 @@ export interface AccountRateState {
    * `undefined` = stamped before this field existed, or never evaluated.
    */
   lastBurnDisposition?: BurnDisposition;
+  /**
+   * WI-6554700010030570: the gateway's still-believed Codex per-model refusals for this account,
+   * keyed by lower-cased model id. The gateway's refusal registry
+   * (`inference-gateway/codex-model-refusals.ts`) writes each record/clear through to this field
+   * and re-seeds itself from it on boot, so a gateway restart no longer forgets that an account
+   * refuses a model (which made launch preflights read "unknown" and pay one failed session per
+   * model). Entries past `reportUntil` are pruned on the next write. `undefined` = none believed.
+   */
+  modelRefusals?: Record<string, PersistedCodexModelRefusal>;
+}
+
+/** One persisted Codex (account, model) refusal — the registry's entry minus the account id,
+ *  which is the row it lives on. Epoch-ms timestamps. */
+export interface PersistedCodexModelRefusal {
+  model: string;
+  since: number;
+  lastAt: number;
+  until: number;
+  reportUntil: number;
+  hits: number;
+  detail: string;
 }
 
 export interface AccountPool {
@@ -562,6 +583,10 @@ export function recordAccountPenalty(
  * plain `{ ...freshRate() }` with none of the observed-budget fields carried forward. Default
  * `false` is byte-identical to the pre-WI-3553 behavior.
  */
+/** Carry `modelRefusals` across a rate rewrite only when present (absent stays absent). */
+const keepModelRefusals = (rate: AccountRateState): Pick<AccountRateState, 'modelRefusals'> =>
+  rate.modelRefusals ? { modelRefusals: rate.modelRefusals } : {};
+
 export function recordAccountReset(pool: AccountPool, id: string, opts: { resetWindows?: boolean } = {}): AccountPool {
   return {
     accounts: pool.accounts.map((a) =>
@@ -569,7 +594,7 @@ export function recordAccountReset(pool: AccountPool, id: string, opts: { resetW
         ? {
             ...a,
             rate: opts.resetWindows
-              ? { ...freshRate() }
+              ? { ...freshRate(), ...keepModelRefusals(a.rate) }
               : {
                   ...freshRate(),
                   utilization: a.rate.utilization,
@@ -577,10 +602,40 @@ export function recordAccountReset(pool: AccountPool, id: string, opts: { resetW
                   utilization7d: a.rate.utilization7d,
                   windowResetAt7d: a.rate.windowResetAt7d,
                   utilizationAt: a.rate.utilizationAt,
+                  // A model refusal is a plan entitlement, not a rate reading — a rate reset must
+                  // not silently drop it from the store the gateway re-seeds from.
+                  ...keepModelRefusals(a.rate),
                 },
           }
         : a,
     ),
+  };
+}
+
+/**
+ * WI-6554700010030570: write one Codex (account, model) refusal into the projection (`entry`), or
+ * clear it (`null`). Prunes every entry on the row whose `reportUntil` has passed, so the field
+ * cannot grow without bound. Unknown id = no-op. Pure.
+ */
+export function setAccountModelRefusal(
+  pool: AccountPool,
+  id: string,
+  model: string,
+  entry: PersistedCodexModelRefusal | null,
+  now: number,
+): AccountPool {
+  const key = model.trim().toLowerCase();
+  return {
+    accounts: pool.accounts.map((a) => {
+      if (a.id !== id) return a;
+      const next: Record<string, PersistedCodexModelRefusal> = {};
+      for (const [k, v] of Object.entries(a.rate.modelRefusals ?? {})) {
+        if (k !== key && v && v.reportUntil > now) next[k] = v;
+      }
+      if (entry && key && entry.reportUntil > now) next[key] = { ...entry };
+      const { modelRefusals: _drop, ...rest } = a.rate;
+      return { ...a, rate: Object.keys(next).length > 0 ? { ...rest, modelRefusals: next } : rest };
+    }),
   };
 }
 

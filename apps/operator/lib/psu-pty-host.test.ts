@@ -4302,6 +4302,33 @@ describe('findNativeTranscriptMarker (fresh row provenance)', () => {
     // A real task prompt ahead of the kickoff still blocks certification.
     nodeFs.writeFileSync(transcript, `${[...localCommandRows, row('do something else first'), row(wrapped)].join('\n')}\n`);
     expect(find()).toBeNull();
+
+    // EI-27177937539716077 (measured su-835df722 04:18Z): Claude Code writes
+    // request-capture rows ahead of the kickoff. The blob carries role 'user',
+    // NO timestamp, and the whole request (a system reminder first, then every
+    // user block — the kickoff included). It is not a prompt: it must neither
+    // end the scan before the real kickoff row nor certify on its own.
+    const blob = JSON.stringify({
+      type: 'api-request-blob',
+      sessionId: 'native',
+      hash: 'h',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: '<system-reminder>\nCodebase and user instructions are shown below.\n</system-reminder>' },
+          { type: 'text', text: wrapped },
+        ],
+      },
+    });
+    const captureRows = [
+      JSON.stringify({ type: 'api-request-shape', timestamp: new Date().toISOString() }),
+      blob,
+      JSON.stringify({ type: 'api-request', timestamp: new Date().toISOString() }),
+    ];
+    nodeFs.writeFileSync(transcript, `${[...localCommandRows, ...captureRows, row(wrapped)].join('\n')}\n`);
+    expect(find()).toBe(transcript);
+    nodeFs.writeFileSync(transcript, `${[...localCommandRows, ...captureRows].join('\n')}\n`);
+    expect(find()).toBeNull();
   });
 
   it('requires the marker on the first fresh task user prompt, not a later prompt or assistant echo', () => {

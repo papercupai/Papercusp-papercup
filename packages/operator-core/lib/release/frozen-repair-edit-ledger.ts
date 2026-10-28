@@ -333,6 +333,70 @@ export function parseFrozenRepairEditHunk(value: unknown): FrozenRepairEditHunk 
 
 const CANDIDATE_RE = /^[0-9a-f]{40,64}$/;
 
+/** A bare client UUID — a native CLI session id or a static machine id, never a signed su-/spawn owner. */
+const BARE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Map a native CLI session id to the signed coordination owner its session is bound to (adv_sessions). */
+export type FrozenRepairSessionBindingLookup = (nativeSessionId: string) => Promise<string | null>;
+
+export interface FrozenRepairEditAgentResolution {
+  /** The owner the ledger row is recorded under — the id the agent's own `admit` resolves to. */
+  agent: string;
+  /** The id the superuser transport resolved (the hook's `client=`), kept for the receipt. */
+  transportOwnerId: string;
+  attributedVia: 'signed-session' | 'native-session-binding' | 'unbound-transport' | 'binding-unreadable';
+}
+
+/**
+ * P-004 / R-11 (change-provenance-and-admission-throughput-2026-10-27): the owner a record-edit
+ * row is ledgered under. The superuser transport resolves the hook's `client=` verbatim, and the
+ * hook falls back to the CLI's native `session_id` (a bare UUID) whenever PAPERCUSP_SID is not in
+ * its env — so the row carried an id no agent's `admit` call ever resolves to (measured
+ * 2026-10-28 01:41Z: agent=f75e5f87-…, unresolvable), and hunk-exact admission refused
+ * `no-ledgered-hunks` for the agent's own edit. A signed owner (su-…, durable-spawn:…, anything
+ * not a bare UUID) is kept as-is; a bare UUID that adv_sessions binds to a signed session is
+ * re-attributed to that session. An unbound or unreadable binding keeps the transport id: the
+ * row stays a faithful record of what the hook claimed, never a guess.
+ */
+export async function resolveFrozenRepairEditAgent(
+  transportOwnerId: string,
+  lookup: FrozenRepairSessionBindingLookup,
+): Promise<FrozenRepairEditAgentResolution> {
+  const transport = transportOwnerId.trim();
+  if (!BARE_UUID_RE.test(transport)) {
+    return { agent: transport, transportOwnerId: transport, attributedVia: 'signed-session' };
+  }
+  let bound: string | null;
+  try {
+    bound = (await lookup(transport))?.trim() || null;
+  } catch {
+    return { agent: transport, transportOwnerId: transport, attributedVia: 'binding-unreadable' };
+  }
+  if (!bound || bound === transport || BARE_UUID_RE.test(bound)) {
+    return { agent: transport, transportOwnerId: transport, attributedVia: 'unbound-transport' };
+  }
+  return { agent: bound, transportOwnerId: transport, attributedVia: 'native-session-binding' };
+}
+
+/** The adv_sessions binding read: the newest session row whose native id is `nativeSessionId`. */
+export function sqlFrozenRepairSessionBindingLookup(
+  sql: FrozenRepairLedgerSql,
+  workspaceId: string,
+): FrozenRepairSessionBindingLookup {
+  return async (nativeSessionId) => {
+    const rows = (await sql.unsafe(
+      `SELECT coord_owner_id FROM harness_shared.adv_sessions
+        WHERE workspace_id = $1 AND (session_id = $2 OR omp_thread_id = $2)
+          AND coord_owner_id IS NOT NULL AND coord_owner_id <> ''
+        ORDER BY started_at DESC NULLS LAST, id DESC
+        LIMIT 1`,
+      [workspaceId, nativeSessionId],
+    )) as Array<{ coord_owner_id: string | null }> | undefined;
+    const first = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+    return first?.coord_owner_id ? String(first.coord_owner_id) : null;
+  };
+}
+
 /**
  * Record one hunk. Idempotent: a retried hook call (same agent, path, toolUseId, editIndex)
  * inserts nothing and reports `inserted:false`. Never throws for a shape problem — the hook

@@ -22,13 +22,20 @@ export const DREAM_CONTROL_LIVE_SPEC = 'AUTO-BAR-R-4-P-002';
 export const DREAM_CONTROL_RUNTIME_UNITS = ['hono-host:3170', 'hono-host:3271'];
 export const DREAM_CONTROL_LIVE_TEST = 'packages/operator-core/lib/dream/dream-control-observations.live.e2e.test.ts';
 export const DREAM_CONTROL_LIVE_FIXTURE = 'packages/operator-core/test/fixtures/dream-control-observations-live.json';
+// The decision-journal evidence (WI-6554700010030749) is produced by the
+// learning.dreamDecisionJournal derived-read: the scan runs on the background
+// host's precompute routine, and the API's learning.dream view imports both
+// modules to read and window-slice the snapshot. Pin them on both builds.
+const decisionJournalSources = ['packages/operator-core/lib/dream/dream-decision-journal.ts',
+  'packages/operator-core/lib/derived-reads/producers.ts'];
 const apiSources = ['packages/operator-core/lib/dream/dream-control-observations.ts',
-  'packages/operator-core/lib/sync-resolver/index.ts'];
+  'packages/operator-core/lib/sync-resolver/index.ts', ...decisionJournalSources];
 const backgroundSources = ['packages/operator-core/lib/dream/dream-cycle-action.ts',
   'packages/operator-core/lib/dream/dream-config.ts', 'packages/operator-core/lib/harness/routines/gym-actions.ts',
-  'packages/operator-core/lib/scout/run.ts', 'packages/operator-core/lib/scout/scheduler.ts'];
-export const DREAM_CONTROL_LIVE_SOURCES = [...apiSources, ...backgroundSources,
-  DREAM_CONTROL_LIVE_TEST, DREAM_CONTROL_LIVE_FIXTURE];
+  'packages/operator-core/lib/scout/run.ts', 'packages/operator-core/lib/scout/scheduler.ts', ...decisionJournalSources];
+// A file pinned on both builds appears once: the edition's sourceFiles must be unique.
+export const DREAM_CONTROL_LIVE_SOURCES = [...new Set([...apiSources, ...backgroundSources,
+  DREAM_CONTROL_LIVE_TEST, DREAM_CONTROL_LIVE_FIXTURE])];
 const clauseIds = ['r2:dream-action-decisions', 'r2:gym-admission-decisions', 'r2:full-admission-and-spend',
   'r2:scout-zero-route-lens-cap-provenance', 'r2:actual-attempts-or-explicit-policy-skips'];
 const digest = (bytes: string) => createHash('sha256').update(bytes).digest('hex');

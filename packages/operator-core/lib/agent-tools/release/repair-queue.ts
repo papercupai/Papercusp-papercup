@@ -48,6 +48,8 @@ import {
   parseFrozenRepairEditHunk,
   readFrozenRepairEditLedger,
   recordFrozenRepairEdit,
+  resolveFrozenRepairEditAgent,
+  sqlFrozenRepairSessionBindingLookup,
   type FrozenRepairEditLedgerRow,
 } from '../../release/frozen-repair-edit-ledger';
 import {
@@ -70,6 +72,15 @@ import {
 import { ADMISSION_RADIUS_CAP, type AdmissionJobKind, type AdmissionJobOf } from '../../release/admission-jobs';
 import { isCheckpointRunLockHeldCheap } from '../../release-checkpoint-lock';
 import { createAdmissionStepClock } from '../../release/admission-step-clock';
+import {
+  ADMISSION_PREVIEW_INLINE_BUDGET_MS,
+  createRoutineMetadataAdmissionPreviewStore,
+  deferredAdmissionPreviewPayload,
+  describeAdmissionPreviewOperation,
+  emitAdmissionPreviewSettled,
+  runAdmissionPreviewOperation,
+  type AdmissionPreviewStore,
+} from '../../release/admission-preview-operation';
 import {
   ADMISSION_PRECHECK_MAX_FILES,
   ADMISSION_PRECHECK_PER_FILE_BUDGET_MS,
@@ -333,7 +344,11 @@ const argsSchema = z.preprocess(
   },
   z
     .discriminatedUnion('op', [
-      z.object({ op: z.literal('get') }),
+      z.object({
+        op: z.literal('get'),
+        /** R-1: read the settled verdict of a dry run that returned `previewOperation`. */
+        previewOperationId: z.string().min(4).max(80).optional(),
+      }),
       z.object({
         op: z.literal('admit'),
         /** Repo-relative paths your fix touched — the admission allowlist. REQUIRED: an admission is by explicit path. */
@@ -1035,6 +1050,9 @@ export default defineTool({
       verdict: z.string().optional(),
       admitted: z.boolean().optional(),
       precheckOperation: z.unknown().optional(),
+      // R-1: a dry run that outlasts the inline budget returns this handle; `get` reads it back.
+      previewOperation: z.unknown().optional(),
+      admissionPreview: z.unknown().optional(),
       dryRun: z.boolean().optional(),
       judgedSha: z.string().nullable().optional(),
       source: z.unknown().optional(),
@@ -1075,6 +1093,7 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const queueTarget = target(ctx);
+    const core = async () => {
     let scopeRoot = integrationRoot();
     let toolingRoot = scopeRoot;
     let testCommand: string[] | undefined;
@@ -1129,9 +1148,17 @@ export default defineTool({
       const sameHeadContradicted = inspected.queue
         ? await readSameHeadContradiction(inspected.target.installSlug, inspected.queue)
         : null;
+      const admissionPreview = args.previewOperationId
+        ? await readAdmissionPreview(
+            admissionPreviewStoreFor(queueTarget),
+            args.previewOperationId,
+            inspected.queue?.repairHead ?? null,
+          )
+        : undefined;
       return json({
         ok: true,
         op: 'get',
+        ...(admissionPreview ? { admissionPreview } : {}),
         target: inspected.target,
         repairQueue: renderedQueue,
         repairQueueRead: compactRead,
@@ -1250,12 +1277,17 @@ export default defineTool({
       let outcome:
         | Awaited<ReturnType<typeof recordFrozenRepairEdit>>
         | { ok: false; reason: 'persist_failed'; detail: string };
+      // P-004 / R-11: ledger under the signed agent session, not the transport's bare client id.
+      const attribution = await resolveFrozenRepairEditAgent(
+        identity.ownerId,
+        sqlFrozenRepairSessionBindingLookup(getOrgPg().sql, inspected.target.workspaceId),
+      );
       try {
         outcome = await recordFrozenRepairEdit(getOrgPg().sql, {
           workspaceId: inspected.target.workspaceId,
           installSlug: inspected.target.installSlug,
           candidate: queue.candidate,
-          agent: identity.ownerId,
+          agent: attribution.agent,
           path: args.path,
           hunk,
           atMs: typeof args.atMs === 'number' && args.atMs > 0 ? args.atMs : Date.now(),
@@ -1298,7 +1330,11 @@ export default defineTool({
         oversize: outcome.oversize,
         ledgerId: outcome.id,
         path: outcome.path,
-        agent: identity.ownerId,
+        agent: attribution.agent,
+        attributedVia: attribution.attributedVia,
+        ...(attribution.agent !== attribution.transportOwnerId
+          ? { transportOwnerId: attribution.transportOwnerId }
+          : {}),
         candidate: queue.candidate,
         judgedSha: queue.repairHead,
         inRepairRadius,
@@ -2913,5 +2949,87 @@ export default defineTool({
       }
       throw err;
     }
+    };
+    // R-1: a dry run that outlasts the inline budget returns a preview handle and keeps running.
+    if ((args.op === 'admit' || args.op === 'converge') && args.confirm !== true) {
+      return runDeferrableAdmissionPreview(args.paths, queueTarget, core);
+    }
+    return core();
   },
 });
+
+/** Test seam: the admission-preview store the tool uses (default: the routine-metadata PG store). */
+let admissionPreviewStoreFactory: (target: GateVerdictTarget) => AdmissionPreviewStore =
+  createRoutineMetadataAdmissionPreviewStore;
+let admissionPreviewEmitter: typeof emitAdmissionPreviewSettled = emitAdmissionPreviewSettled;
+let admissionPreviewInlineBudgetMs = ADMISSION_PREVIEW_INLINE_BUDGET_MS;
+
+export function __setAdmissionPreviewDepsForTests(deps: {
+  store?: (target: GateVerdictTarget) => AdmissionPreviewStore;
+  emit?: typeof emitAdmissionPreviewSettled;
+  inlineBudgetMs?: number;
+} | null): void {
+  admissionPreviewStoreFactory = deps?.store ?? createRoutineMetadataAdmissionPreviewStore;
+  admissionPreviewEmitter = deps?.emit ?? emitAdmissionPreviewSettled;
+  admissionPreviewInlineBudgetMs = deps?.inlineBudgetMs ?? ADMISSION_PREVIEW_INLINE_BUDGET_MS;
+}
+
+function admissionPreviewStoreFor(queueTarget: GateVerdictTarget): AdmissionPreviewStore {
+  return admissionPreviewStoreFactory(queueTarget);
+}
+
+async function runDeferrableAdmissionPreview<T extends { data?: unknown }>(
+  paths: readonly string[],
+  queueTarget: GateVerdictTarget,
+  run: () => Promise<T>,
+): Promise<T | { data: unknown }> {
+  const outcome = await runAdmissionPreviewOperation({
+    run,
+    store: admissionPreviewStoreFor(queueTarget),
+    emitSettled: (operation) => admissionPreviewEmitter(operation, queueTarget.workspaceId),
+    paths,
+    inlineBudgetMs: admissionPreviewInlineBudgetMs,
+    toVerdict: (result) => result.data ?? null,
+  });
+  if (outcome.mode === 'inline') return outcome.result;
+  return json(deferredAdmissionPreviewPayload(outcome, admissionPreviewInlineBudgetMs));
+}
+
+async function readAdmissionPreview(
+  store: AdmissionPreviewStore,
+  operationId: string,
+  currentRepairHead: string | null,
+): Promise<Record<string, unknown>> {
+  let operation;
+  try {
+    operation = await store.get(operationId);
+  } catch (error) {
+    return {
+      operationId,
+      status: 'unreadable',
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (!operation) {
+    return {
+      operationId,
+      status: 'unknown-operation',
+      detail: 'No preview operation with this id is stored (unknown id, or pruned after newer previews). Re-run the dry run.',
+    };
+  }
+  const read = describeAdmissionPreviewOperation(operation, { nowMs: Date.now(), currentRepairHead });
+  return {
+    operationId,
+    status: read.status,
+    judgedSha: read.judgedSha,
+    stale: read.stale,
+    nextAction: read.nextAction,
+    startedAtMs: operation.startedAtMs,
+    settledAtMs: operation.settledAtMs,
+    expiresAtMs: operation.expiresAtMs,
+    paths: operation.paths,
+    verdictTruncated: operation.verdictTruncated,
+    ...(operation.error ? { error: operation.error } : {}),
+    verdict: operation.verdict,
+  };
+}

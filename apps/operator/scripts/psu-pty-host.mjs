@@ -1126,6 +1126,10 @@ export function composerEchoMarkerWhitespaceLoss(marker, visible) {
 }
 
 /** Read the user-message content from Claude, Codex, or OMP native row shapes. */
+/** Claude Code request-capture row types (`api-request`, `api-request-blob`,
+ * `api-request-shape`). Never submitted prompts. */
+const CLAUDE_REQUEST_CAPTURE_ROW_RE = /^api-request(?:-|$)/;
+
 function nativeUserPromptContent(row) {
   const payload = row?.payload && typeof row.payload === 'object' ? row.payload : null;
   let content;
@@ -1133,6 +1137,13 @@ function nativeUserPromptContent(row) {
   else if (row?.type === 'response_item' && payload?.type === 'message' && payload?.role === 'user') {
     content = payload.content;
   } else if (row?.type === 'message' && row?.role === 'user') content = row.content;
+  // EI-27177937539716077: Claude Code also writes request CAPTURES
+  // (`api-request-blob`, …) that carry message.role 'user' and no timestamp.
+  // They hold the whole request (system reminders + every user block), not a
+  // submitted prompt. Admitting one made it "the first fresh task prompt" and
+  // ended the kickoff-proof scan before the real kickoff row, so the host
+  // killed working judges (measured su-835df722, exit 129 at 04:19:52Z).
+  else if (CLAUDE_REQUEST_CAPTURE_ROW_RE.test(String(row?.type ?? ''))) return null;
   else if (row?.message?.role === 'user') content = row.message.content;
   else return null;
   if (Array.isArray(content)) {

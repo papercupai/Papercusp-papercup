@@ -9,6 +9,8 @@ import {
   readFrozenRepairEditLedger,
   recordFrozenRepairEdit,
   replayFrozenRepairHunks,
+  resolveFrozenRepairEditAgent,
+  sqlFrozenRepairSessionBindingLookup,
   type FrozenRepairEditHunk,
   type FrozenRepairEditLedgerRow,
 } from './frozen-repair-edit-ledger';
@@ -293,5 +295,57 @@ describe('groupLedgerRowsByPath', () => {
     const grouped = groupLedgerRowsByPath([row(1, 'a'), row(2, 'b'), row(3, 'a')]);
     expect([...grouped.keys()]).toEqual(['a', 'b']);
     expect(grouped.get('a')!.map((r) => r.id)).toEqual([1, 3]);
+  });
+});
+
+describe('resolveFrozenRepairEditAgent — superuser-transport ledger owner (P-004 / R-11)', () => {
+  // Measured 2026-10-28: the hook had no PAPERCUSP_SID, fell back to the CLI's native session_id,
+  // and the superuser transport resolved that bare UUID verbatim as the ledger owner.
+  const NATIVE = 'f75e5f87-b482-4fdf-a7d0-33f9df39cc43';
+  const SIGNED = 'su-28bda5ad-1d63-4a7e-a50f-8ff367f1f0b1';
+
+  it('re-attributes a bare-UUID transport owner to the signed session adv_sessions binds it to', async () => {
+    const { resolveAgentIdentity } = await import('../agent-tools/coordination/identity');
+    const transport = resolveAgentIdentity({ isSuperuser: true, uiClientId: NATIVE, workspaceId: 'ws-1' });
+    expect(transport.ownerId).toBe(NATIVE);
+    const lookup = vi.fn(async (id: string) => (id === NATIVE ? SIGNED : null));
+    expect(await resolveFrozenRepairEditAgent(transport.ownerId, lookup)).toEqual({
+      agent: SIGNED, transportOwnerId: NATIVE, attributedVia: 'native-session-binding',
+    });
+  });
+
+  it('records the row under the signed session, the id the agent\'s own admit reads', async () => {
+    const r = await resolveFrozenRepairEditAgent(NATIVE, async () => SIGNED);
+    const params: unknown[][] = [];
+    const sql = { unsafe: vi.fn(async (_q: string, p?: unknown[]) => { params.push(p ?? []); return [{ id: 7 }]; }) };
+    const out = await recordFrozenRepairEdit(sql, {
+      ...base, agent: r.agent, path: 'lib/a.ts', hunk: { kind: 'edit', old: 'x', new: 'y', replaceAll: false },
+      atMs: 1, toolUseId: 'toolu_1',
+    });
+    expect(out.ok).toBe(true);
+    expect(params[0]?.[3]).toBe(SIGNED);
+  });
+
+  it('keeps a signed owner without consulting the binding', async () => {
+    const lookup = vi.fn(async () => 'su-other');
+    expect(await resolveFrozenRepairEditAgent(SIGNED, lookup)).toEqual({
+      agent: SIGNED, transportOwnerId: SIGNED, attributedVia: 'signed-session',
+    });
+    expect((await resolveFrozenRepairEditAgent('durable-spawn:launch:x:1', lookup)).agent).toBe('durable-spawn:launch:x:1');
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('keeps the transport id, labelled, when the binding is absent or unreadable', async () => {
+    expect(await resolveFrozenRepairEditAgent(NATIVE, async () => null)).toMatchObject({ agent: NATIVE, attributedVia: 'unbound-transport' });
+    expect(await resolveFrozenRepairEditAgent(NATIVE, async () => { throw new Error('pg down'); }))
+      .toMatchObject({ agent: NATIVE, attributedVia: 'binding-unreadable' });
+  });
+
+  it('the adv_sessions lookup is workspace-scoped and returns the bound coord owner', async () => {
+    const sql = { unsafe: vi.fn(async (_q: string, _p?: unknown[]) => [{ coord_owner_id: SIGNED }]) };
+    expect(await sqlFrozenRepairSessionBindingLookup(sql, 'ws-1')(NATIVE)).toBe(SIGNED);
+    expect(sql.unsafe.mock.calls[0]?.[0]).toMatch(/adv_sessions[\s\S]*workspace_id = \$1/);
+    expect(sql.unsafe.mock.calls[0]?.[1]).toEqual(['ws-1', NATIVE]);
+    expect(await sqlFrozenRepairSessionBindingLookup({ unsafe: async () => [] }, 'ws-1')(NATIVE)).toBeNull();
   });
 });

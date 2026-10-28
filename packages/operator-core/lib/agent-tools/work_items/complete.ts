@@ -5184,6 +5184,33 @@ async function completeOneTracked(
       `in coverage.residue; next time pass assign_to on work_items:create.`
     : undefined;
 
+  // P-011 / R-10 (change-provenance-and-admission-throughput-2026-10-27): name the edited files
+  // no recorded test run in the claim window exercised, and whether any pass was on a clean tree.
+  // WARNING ONLY — bounded, best-effort, and never able to refuse or fail the close.
+  const closeCoverageWarning = await (async () => {
+    if (!effectiveState || !TERMINAL_WORK_ITEM_STATES.has(String(effectiveState).toLowerCase())) return undefined;
+    const windowStartMs = Date.parse(String(existing.takenAt ?? existing.createdAt ?? ''));
+    const itemId = it.id;
+    const repoRoot = completionRoot();
+    if (!itemId || !repoRoot || !Number.isFinite(windowStartMs)) return undefined;
+    try {
+      const { computeCloseCoverage, closeCoverageWarningText } = await import('../../work-item-close-coverage');
+      const report = await Promise.race([
+        computeCloseCoverage({
+          workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+          workItemId: itemId,
+          windowStartMs,
+          windowEndMs: Date.now(),
+          repoRoot,
+        }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000).unref?.()),
+      ]);
+      return report ? closeCoverageWarningText(itemId, report) : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+
   // EI-18682004530991057 (proposal 3): stamp WHAT TREE this evidence was observed
   // against. Applied to the PERSISTED object only — never to `completionEvidenceForGate`
   // — for the same reason `summary` is kept out of it above: `hasTests`,
@@ -6492,6 +6519,7 @@ async function completeOneTracked(
     ...(requirementShortfallWarning ? { requirementShortfallWarning } : {}),
     ...(claimsFalsifiedWarning ? { claimsFalsifiedWarning } : {}),
     ...(residueUnownedWarning ? { residueUnownedWarning } : {}),
+    ...(closeCoverageWarning ? { closeCoverageWarning } : {}),
     ...(terminalCriteriaWarning ? { terminalCriteriaWarning } : {}),
     // The full per-claim verdict set, including the ones that HELD and the ones that could
     // not be decided — returned even when nothing was falsified, so a closer can see that
