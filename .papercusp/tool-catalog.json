@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 990,
+  "count": 991,
   "tools": [
     {
       "name": "ablation:report",
@@ -29335,6 +29335,39 @@
         "when": "Periodic hygiene (an idle-turn task) to clear the long tail of one-off recipes that were authored on a single run and never reused. ALWAYS run it once with the default dryRun:true to review the candidates, then dryRun:false to retire them.",
         "notWhen": "To merge near-duplicates (recipes:merge) or to find promote candidates (recipes:candidates). Don't lower staleDays/raise maxRunCount to reach ONE specific recipe — that is what `ids` is for; widening the heuristic retires the whole long tail with it (on this corpus the 30-day default matches 0 while staleDays:1 matches thousands).",
         "chaining": "recipes:sweep { dryRun: true } (review the would-retire list) → recipes:sweep { dryRun: false } (commit). recipes:get { id } to inspect any candidate before committing."
+      }
+    },
+    {
+      "name": "release:change-trail",
+      "http": {
+        "path": "/api/agent-tools/release/change-trail",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Per-commit trail for one file in the canonical tree (or the commit that last touched one line): sha, the agent and work-items from its Papercusp-* trailers, each work-item’s origin (owner directive, plan item, or linked item), and test_runs of the file and its sibling test at that sha. Submodule paths resolve to the owning repo.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "release-fixer",
+        "release-manager"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A gate red needs attributing to the change and work-item that caused it (the eject rung), or you need to know why a line exists.",
+        "notWhen": "Is my change live / in the candidate → dev:pipeline_position or state:read gate.greenCheckpoint.candidate.",
+        "chaining": "release:change-trail → work_items:get on the named items → eject or fix."
       }
     },
     {

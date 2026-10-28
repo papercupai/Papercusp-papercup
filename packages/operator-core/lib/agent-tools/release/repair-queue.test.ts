@@ -1,6 +1,6 @@
 import type { ToolResult } from '@papercusp/tooldef';
 import { projectBoundedPayload } from '@papercusp/tooldef';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { drainDetached, trackDetached } from '../../detached-imports';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
@@ -3613,5 +3613,78 @@ describe('P-007 (#D-040) — precheckRecordOf persists the admission radius on e
   it('carries no radius when the door computed none (gitlink or legacy population)', () => {
     const none = precheckPopulation({ signature: [], admittedPaths: ['lib/src.ts'] });
     expect(repairQueueModule.precheckRecordOf(null, { ...ctx, population: none })).not.toHaveProperty('radius');
+  });
+});
+
+describe('R-1: a slow admission dry run returns a preview handle instead of holding the call', () => {
+  type Rec = Record<string, any>;
+  const ops = new Map<string, unknown>();
+  const store = {
+    put: vi.fn(async (op: { operationId: string }) => { ops.set(op.operationId, JSON.parse(JSON.stringify(op))); }),
+    get: vi.fn(async (id: string) => (ops.get(id) as never) ?? null),
+  };
+  const emit = vi.fn(async () => {});
+  const su = { role: 'su' } as never;
+  beforeEach(() => {
+    ops.clear();
+    repairQueueModule.__setAdmissionPreviewDepsForTests({ store: () => store as never, emit, inlineBudgetMs: 20 });
+  });
+  afterEach(() => repairQueueModule.__setAdmissionPreviewDepsForTests(null));
+
+  it('defers past the budget, op:get reads running then the settled verdict, and the settle event fires', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mocks.readState.mockImplementationOnce(async () => { await gate; return { status: 'value', queue }; });
+    mocks.admit.mockReturnValue(admissionOf(false));
+    const first = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, su)) as Rec;
+    expect(first).toMatchObject({ op: 'admit', dryRun: true, admitted: false, verdict: 'preview-running' });
+    const id = first.previewOperation.operationId as string;
+    expect(first.previewOperation.settleEvent).toBe(`release:repair-queue:admit-preview-settled:${id}`);
+    expect(first.nextAction).toEqual({ tool: 'release:repair-queue', args: { op: 'get', previewOperationId: id } });
+    expect(store.put).toHaveBeenCalledTimes(1);
+    expect(emit).not.toHaveBeenCalled();
+
+    const running = body(await tool.handler({ op: 'get', previewOperationId: id } as never, su)) as Rec;
+    expect(running.admissionPreview).toMatchObject({ operationId: id, status: 'running', verdict: null });
+
+    release();
+    await vi.waitFor(() => expect(emit).toHaveBeenCalledTimes(1));
+    const settled = body(await tool.handler({ op: 'get', previewOperationId: id } as never, su)) as Rec;
+    expect(settled.admissionPreview).toMatchObject({ operationId: id, status: 'settled', paths: ['lib/red.test.ts'] });
+    expect(settled.admissionPreview.verdict).toMatchObject({ op: 'admit' });
+    expect(settled.admissionPreview.verdict.verdict).not.toBe('preview-running');
+  });
+
+  it('a dry run inside the budget returns its verdict inline and writes no preview record', async () => {
+    repairQueueModule.__setAdmissionPreviewDepsForTests({ store: () => store as never, emit, inlineBudgetMs: 30_000 });
+    mocks.admit.mockReturnValue(admissionOf(false));
+    const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, su)) as Rec;
+    expect(result.op).toBe('admit');
+    expect(result).not.toHaveProperty('previewOperation');
+    expect(store.put).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('op:get with an unknown preview id says so instead of reporting a verdict', async () => {
+    const result = body(await tool.handler({ op: 'get', previewOperationId: 'arp-missing' } as never, su)) as Rec;
+    expect(result.admissionPreview).toMatchObject({ operationId: 'arp-missing', status: 'unknown-operation' });
+    expect(result.admissionPreview).not.toHaveProperty('verdict');
+  });
+
+  it('a confirmed admit is never deferred, however slow', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mocks.admit.mockImplementation((input: { dryRun: boolean; paths: string[] }) => admissionOf(!input.dryRun, input.paths));
+    mocks.readState.mockImplementationOnce(async () => {
+      await gate;
+      return { status: 'value', queue: { ...queue, admissionPrecheck: undefined } };
+    });
+    const pending = tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, su);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(store.put).not.toHaveBeenCalled();
+    release();
+    const result = body(await pending) as Rec;
+    expect(result).not.toHaveProperty('previewOperation');
+    expect(store.put).not.toHaveBeenCalled();
   });
 });

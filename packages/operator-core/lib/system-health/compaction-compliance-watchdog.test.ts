@@ -227,8 +227,43 @@ import {
   carryRespawnLoopEscalationBody,
   carryRespawnStreakVerdict,
   compactionConditionKey,
+  openOwnerMessageFingerprint,
+  openOwnerMessageRefusalDecision,
+  resetOpenOwnerMessageRefusalsForTests,
   type CompactionComplianceDeps,
 } from './compaction-compliance-watchdog';
+
+// EI-27196658754379064: the soft-threshold carry refused EVERY tick for a
+// session with an open owner message although P-010 (and the log line) say
+// "once". The memo must refuse the first sighting and let the next one through.
+describe('open-owner-message refuse-once memo', () => {
+  beforeEach(() => resetOpenOwnerMessageRefusalsForTests());
+
+  it('refuses the first sighting and proceeds on the second sighting of the same message', () => {
+    const fp = openOwnerMessageFingerprint({ basis: 'known-unanswered' }, 'please fix the operator');
+    expect(openOwnerMessageRefusalDecision('su-a', fp)).toBe('refuse');
+    expect(openOwnerMessageRefusalDecision('su-a', fp)).toBe('proceed');
+    expect(openOwnerMessageRefusalDecision('su-a', fp)).toBe('proceed');
+  });
+
+  it('gives a NEW open message its own single refusal', () => {
+    const first = openOwnerMessageFingerprint({ basis: 'known-unanswered' }, 'first question');
+    const second = openOwnerMessageFingerprint({ basis: 'known-unanswered' }, 'second question');
+    expect(first).not.toBe(second);
+    expect(openOwnerMessageRefusalDecision('su-a', first)).toBe('refuse');
+    expect(openOwnerMessageRefusalDecision('su-a', first)).toBe('proceed');
+    expect(openOwnerMessageRefusalDecision('su-a', second)).toBe('refuse');
+    expect(openOwnerMessageRefusalDecision('su-a', second)).toBe('proceed');
+  });
+
+  it('tracks owners independently and covers history-uncertain gates with no first prompt', () => {
+    const fp = openOwnerMessageFingerprint({ basis: 'history-uncertain', historyStatus: 'truncated' }, null);
+    expect(openOwnerMessageRefusalDecision('su-a', fp)).toBe('refuse');
+    expect(openOwnerMessageRefusalDecision('su-b', fp)).toBe('refuse');
+    expect(openOwnerMessageRefusalDecision('su-a', fp)).toBe('proceed');
+    expect(openOwnerMessageRefusalDecision('su-b', fp)).toBe('proceed');
+  });
+});
 import {
   getContextUsage,
   isContextGaugeEnabled,

@@ -55,6 +55,7 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { coordScopeReady, coordScopeWorkspace } from '../agent-tools/coordination/log';
 import { MESSAGE_GC_RETENTION_DAYS } from '../agent-tools/coordination/message-log-gc';
 import { hostname } from 'node:os';
+import { createHash } from 'node:crypto';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import { observeFallback } from '../degradation/fallback-observations';
@@ -376,6 +377,40 @@ const contextDeathEscalated = new Set<string>();
  *  /compact never landed — EI-9982). Cleared when the owner recovers below its soft
  *  limit. A failed inject is NOT recorded, so it retries next pass. */
 const forceCompactedAt = new Map<string, number>();
+
+/**
+ * EI-27196658754379064: P-010 says a DELIBERATE cut is refused ONCE per open owner
+ * message, and the log line said "once" — but nothing remembered the refusal, so
+ * every watchdog tick re-derived the same open message and refused again (5x in
+ * 8 min for su-96b7fe62). A session holding an unanswered (or misread) owner
+ * message therefore NEVER got its soft-threshold carry. This memo keys the owner
+ * to a fingerprint of the open message: the first sighting refuses, the next
+ * sighting of the SAME message proceeds and carries it to the successor as
+ * spec.firstPrompt (the same safety net forced cuts already rely on). A different
+ * open message gets its own single refusal.
+ */
+const openOwnerMessageRefusedFor = new Map<string, string>();
+
+export function openOwnerMessageFingerprint(gate: {
+  basis?: string;
+  historyStatus?: string;
+}, firstPrompt: string | null | undefined): string {
+  return createHash('sha256')
+    .update(`${gate.basis ?? ''}\u0000${gate.historyStatus ?? ''}\u0000${firstPrompt ?? ''}`)
+    .digest('hex')
+    .slice(0, 24);
+}
+
+/** 'refuse' the first time this owner's open message is seen, 'proceed' after. */
+export function openOwnerMessageRefusalDecision(ownerId: string, fingerprint: string): 'refuse' | 'proceed' {
+  if (openOwnerMessageRefusedFor.get(ownerId) === fingerprint) return 'proceed';
+  openOwnerMessageRefusedFor.set(ownerId, fingerprint);
+  return 'refuse';
+}
+
+export function resetOpenOwnerMessageRefusalsForTests(): void {
+  openOwnerMessageRefusedFor.clear();
+}
 
 /** P-018 deterministic successor dedup. A socket ACK means the clean-boundary
  * lifecycle verb is queued in the host; suppress both duplicate respawns and the
@@ -1400,12 +1435,20 @@ async function maybeCarryRespawn(
     });
     if (!spec) return false;
     if (spec.openOwnerQuestion.crossesOpenOwnerMessage && reason === 'soft-threshold') {
+      const fingerprint = openOwnerMessageFingerprint(spec.openOwnerQuestion, spec.firstPrompt);
+      if (openOwnerMessageRefusalDecision(ownerId, fingerprint) === 'refuse') {
+        console.warn(
+          `[compaction-watchdog] ${ownerLabel} (${ownerId}) ${
+            'reached the deterministic carry threshold and'
+          } has an unanswered owner message (${spec.openOwnerQuestion.basis ?? 'unknown'}); ` +
+            'refusing this deliberate cut once (P-010/P-018).',
+        );
+        return false;
+      }
       console.warn(
-        `[compaction-watchdog] ${ownerLabel} (${ownerId}) ${
-          'reached the deterministic carry threshold and'
-        } has an unanswered owner message; refusing this deliberate cut once (P-010/P-018).`,
+        `[compaction-watchdog] ${ownerLabel} (${ownerId}) open owner message already refused once; ` +
+          'proceeding with the carry and handing the message to the successor (EI-27196658754379064).',
       );
-      return false;
     }
     // WI-39942: firstPrompt is null after an ANSWERED owner turn by design. The
     // carry addendum alone only briefs the successor; it does not start a turn.

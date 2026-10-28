@@ -1029,6 +1029,30 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
 
   const gateway = createInferenceGateway({
     ...(carryTrial === undefined ? {} : { carryTrial }),
+    // WI-6554700010030570: write each Codex refusal record/clear through to the account pool's
+    // per-account rate JSONB, so refreshGatewayHints re-seeds the registry after a restart.
+    persistCodexModelRefusal: (change) => {
+      const accountId = change.kind === 'record' ? change.entry.accountId : change.accountId;
+      const model = change.kind === 'record' ? change.entry.model : change.model;
+      void trackDetached(
+        Promise.all([import('../deployment/account-pool-store'), import('../deployment/account-pool')]),
+      )
+        .then(async ([{ updateAccountPool }, { setAccountModelRefusal }]) => {
+          const entry =
+            change.kind === 'record'
+              ? (({ accountId: _a, ...rest }) => rest)(change.entry)
+              : null;
+          await updateAccountPool(
+            (p) => setAccountModelRefusal(p, accountId, model, entry, Date.now()),
+            opts.workspace ?? activeWorkspaceId(),
+          );
+        })
+        .then(() => recordDbOutcome('model-refusals', true))
+        .catch((e) => {
+          recordDbOutcome('model-refusals', false, e);
+          log('warn', `codex model-refusal persist failed for ${accountId}/${model}: ${String(e)}`);
+        });
+    },
     readAcceptedOperationBudgetBinding: async ownerId => {
       const [{ activeWorkspaceId }, { readSupportOperationBudgetBinding }] = await Promise.all([
         import('../workspace-registry'), import('../blueprint/support-workflow-budget'),
@@ -1321,6 +1345,8 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           // in-memory park only on a reading newer than the park it would clear.
           readingAt: Math.max(a.rate?.utilizationAt ?? 0, a.rate?.usageCreditsObservedAt ?? 0) || undefined,
           usageCreditsAvailable: a.rate?.usageCreditsAvailable,
+          // WI-6554700010030570: persisted Codex (account, model) refusals — the gateway hydrates them.
+          modelRefusals: a.rate?.modelRefusals,
           // Re-evaluate at the hint-read seam instead of trusting the persisted transition stamp:
           // The verdict applies the canonical freshness gate, so a days-old SHED verdict cannot
           // strand an otherwise recovered account after its projection has gone stale. The GATEWAY

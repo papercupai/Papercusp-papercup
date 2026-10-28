@@ -113,7 +113,9 @@ export default defineTool({
       // The lock guard serializes the mutation but does not use locks:acquire's
       // grant handler, which is the ordinary edit-attribution writer. Capture
       // this successful write directly so nested dispatches retain the child
-      // dispatcher id and the exact normalized file key.
+      // dispatcher id and the exact normalized file key. No native hook runs on this path,
+      // so there is no client session id: record the calling coord session (the lock owner)
+      // as the session, per change-provenance-and-admission-throughput-2026-10-27 R-5.
       if (
         (ctx.codeMode || ctx.indirectDispatch)
         && lock.coordinated
@@ -125,6 +127,7 @@ export default defineTool({
           repoRoot: lock.coordinationDomain,
           files: lock.paths,
           agentId: lock.ownerId,
+          sessionId: lock.ownerId,
           intent: 'capability:edit',
           workspaceId: ctx.workspaceId,
           dispatchCallId: ctx.dispatchCallId,

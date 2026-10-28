@@ -1034,7 +1034,7 @@ export default defineTool({
     chaining:
       '`get` → preview `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. Pin whole-blob source with `wholeBlob:true, sourceCommit:<reviewed ancestor SHA>, reason`. On `precheck-running`, read `get`; confirm only after pass with fresh identity. Retry only a terminal failed pre-check. For missed hooks, `patchCommit:<full SHA>, reason` replays one delta; `patchCommits:[<older SHA>,<newer SHA>], reason` replays dependent deltas before one R6/publication; each path must change in each commit. Retire only with `retireAllowed` and exact identity.',
     returns:
-      '{ ok, op, verdict?, repairQueueRead?, admitted?, precheckOperation?, dryRun?, judgedSha?, nextAction?, containment?, proof?, inconclusiveTerminal? }. Read `nextAction`; a successful retire of an unjudged repairHead emits the exact-SHA inconclusive terminal and reports its wake status.',
+      '{ ok, op, verdict?, repairQueueRead?, admitted?, precheckOperation?, previewOperation?, admissionPreview?, dryRun?, judgedSha?, nextAction?, containment?, proof?, inconclusiveTerminal? }. A slow dry run returns `previewOperation`; read `get{previewOperationId}` for its `admissionPreview` or await its settle event. Read `nextAction`; a successful retire of an unjudged repairHead emits the exact-SHA inconclusive terminal and reports its wake status.',
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
   args: argsSchema,

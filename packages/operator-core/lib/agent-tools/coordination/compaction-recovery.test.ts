@@ -534,14 +534,16 @@ describe('automatic compaction recovery — carried probes run at recovery', () 
         expect: { path: '$.value', op: 'eq', value: 'green' },
       },
     }] });
+    const adapterCallsBefore = vi.mocked(carriedProbeBlockForDelivery).mock.calls.length;
     const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
       sessionHarness: 'h',
       heldItems: [{ id: 'WI-1', harness: 'h', checkpoint } as never],
       carriedRefChangesFn: async () => null,
     });
+    const adapterCallsThisInvocation = vi.mocked(carriedProbeBlockForDelivery).mock.calls.length - adapterCallsBefore;
     const dispatchCalls = dispatchTool.mock.calls as unknown as unknown[][];
     expect({
-      adapterCalls: vi.mocked(carriedProbeBlockForDelivery).mock.calls.length,
+      adapterCalls: adapterCallsThisInvocation,
       parsedSources: capturedSources?.map(({ source, checkIndex, check }) => ({
         source: source.kind === 'work-item' ? `${source.kind}:${source.id}` : `${source.kind}:${source.ownerId}`,
         checkIndex,

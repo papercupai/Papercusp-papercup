@@ -1067,6 +1067,8 @@ import './release/deploy';
 import './release/checkpoint-run';
 // EI-22696988206071153 — exact attempt/unit cancellation for a known-unsafe detached runner:
 import './release/checkpoint-cancel';
+// change-provenance-and-admission-throughput-2026-10-27 P-010 — per-file/line change trail (D-006):
+import './release/change-trail';
 // desktop-update-center-and-release-tooling P-5 Unit B — the LOCAL desktop-release cut + hand-off orchestrator:
 import './release/cut';
 

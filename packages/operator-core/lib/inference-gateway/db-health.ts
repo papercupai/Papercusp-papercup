@@ -62,9 +62,18 @@ export type DbOp =
   | 'rate-hints'
   /** account-pool-store initAccountScaleObserver — the penalty read-modify-write behind
    *  auto-scale-out. Event-driven and rare, so never rely on it alone. */
-  | 'scale-observer';
+  | 'scale-observer'
+  /** launch.ts persistCodexModelRefusal — the Codex (account, model) refusal write-through
+   *  (WI-6554700010030570). Event-driven: fires only on a refusal record or its clear. */
+  | 'model-refusals';
 
-export const DB_OPS: readonly DbOp[] = ['window-projection', 'pool-reload', 'rate-hints', 'scale-observer'];
+export const DB_OPS: readonly DbOp[] = [
+  'window-projection',
+  'pool-reload',
+  'rate-hints',
+  'scale-observer',
+  'model-refusals',
+];
 
 /** Consecutive failures on a single op before it can be considered unhealthy. */
 export const FAILURE_STREAK = (() => {

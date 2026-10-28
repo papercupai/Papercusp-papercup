@@ -16,7 +16,14 @@
 import { z } from 'zod';
 import type { CoordOp } from '../../coord-ops/types.js';
 import { registerCoordOp } from '../../coord-ops/registry.js';
-import { runPromptAblation, type PromptAblationDeps } from '../../ablation/run.js';
+// Type-only at module scope. ablation/run -> ablation/runner -> llm-testing/scenarios
+// is the whole LLM scenario catalog, and blueprint-steps/index is loaded by the blueprint
+// registry, the identity resolver and inference-gateway launch. A static edge here put
+// llm-testing/scenarios/index.ts on a cycle with scenarios/su/S42-drain-watch-recheck.ts
+// (S42 -> agent-tools/events/watch -> ... -> blueprint-steps/index -> this file), so a
+// test entering through S42 saw `SU_S42_DRAIN_WATCH_RECHECK is not iterable`
+// (WI-6554700010030765). The runner loads when the step actually runs.
+import type { PromptAblationDeps } from '../../ablation/run.js';
 
 /** Declared input I/O — the cycle tunables (the routine's payload knobs). */
 const args = z.object({
@@ -60,6 +67,7 @@ export const promptAblationOp: CoordOp<z.infer<typeof args>, z.infer<typeof resu
     if (!workspaceId) throw new Error('prompt:ablation requires ctx.workspaceId');
     const installSlug = ctx.harnessSlug ?? 'op';
 
+    const { runPromptAblation } = await import('../../ablation/run.js');
     const outcome = await runPromptAblation({ workspaceId, installSlug, payload: a }, _deps ?? {});
     ctx.log?.(
       `prompt:ablation ran=${outcome.ran}` +

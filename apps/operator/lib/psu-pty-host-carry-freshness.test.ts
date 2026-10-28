@@ -125,3 +125,67 @@ describe('carryNativeOwnerInputFreshness scan evidence', () => {
     expect(scan?.lines).toHaveLength(100);
   });
 });
+
+// EI-27188648844771651: Claude Code writes `api-request-blob` rows (request
+// captures) with message.role 'user' and NO timestamp. Counting one as owner
+// input made every Claude carry read `native-input-clock-missing`, so every
+// carry-respawn was dropped fleet-wide.
+describe('carryNativeOwnerInputFreshness with Claude request-capture rows', () => {
+  function claudeFixture(rows: unknown[]) {
+    const home = mkdtempSync(join(tmpdir(), 'psu-carry-freshness-claude-'));
+    tempDirs.push(home);
+    const project = join(home, 'projects', '-repo');
+    mkdirSync(project, { recursive: true });
+    const transcriptPath = join(project, 'session.jsonl');
+    writeFileSync(transcriptPath, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+    return { home, transcriptPath, env: { PAPERCUSP_AGENT: 'claude', CLAUDE_CONFIG_DIR: home } };
+  }
+  const snapshot = 'Carry document built at 2026-10-28T04:30:00Z';
+  const earlierOwnerTurn = {
+    type: 'user',
+    timestamp: '2026-10-28T04:10:00Z',
+    message: { role: 'user', content: 'please fix the operator' },
+  };
+  const requestBlob = {
+    type: 'api-request-blob',
+    message: { role: 'user', content: [{ type: 'text', text: 'please fix the operator' }] },
+  };
+
+  function freshness(rows: unknown[]) {
+    const fixture = claudeFixture(rows);
+    return carryNativeOwnerInputFreshness({
+      agent: 'claude',
+      env: fixture.env,
+      transcriptPath: fixture.transcriptPath,
+      systemPromptAddendum: snapshot,
+    });
+  }
+
+  it('reads current when the only rows after the snapshot are timestamp-less api-request-blob captures', () => {
+    expect(freshness([earlierOwnerTurn, requestBlob, requestBlob])).toMatchObject({
+      status: 'current',
+      snapshotAtMs: Date.parse('2026-10-28T04:30:00Z'),
+    });
+  });
+
+  it('still reads superseded when a real owner turn lands after the snapshot', () => {
+    const laterOwnerTurn = {
+      type: 'user',
+      timestamp: '2026-10-28T04:35:00Z',
+      message: { role: 'user', content: 'actually, stop and do this instead' },
+    };
+    expect(freshness([earlierOwnerTurn, requestBlob, laterOwnerTurn, requestBlob])).toMatchObject({
+      status: 'superseded',
+      reason: 'owner-input-after-carry-snapshot',
+      latestOwnerInputAtMs: Date.parse('2026-10-28T04:35:00Z'),
+    });
+  });
+
+  it('stays fail-closed for a genuine user row that lacks its timestamp', () => {
+    const undatedOwnerTurn = { type: 'user', message: { role: 'user', content: 'undated owner text' } };
+    expect(freshness([earlierOwnerTurn, undatedOwnerTurn])).toMatchObject({
+      status: 'unverifiable',
+      reason: 'native-input-clock-missing',
+    });
+  });
+});

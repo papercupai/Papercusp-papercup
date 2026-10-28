@@ -764,13 +764,20 @@ function checkWholeBlobSourceCohort(input: {
   root: string;
   sourceCommit: string;
   repairHead: string;
+  /** Every path the admission carries, from any source — "already admitted". */
   admitted: readonly string[];
+  /**
+   * P-002 multi-source: the paths copied from THIS source. Only these can drag a cohort path in;
+   * a path another source admitted is never read at this source. Omitted = all of `admitted`.
+   */
+  sourcePaths?: readonly string[];
   git?: AdmissionGitRunner;
 }):
   | { ok: true }
   | { ok: false; code: 'git-failed'; step: string; detail: string }
   | { ok: false; code: 'admission-incomplete'; missing: AdmissionMissingImport[] } {
   const git = input.git ?? realAdmissionGit;
+  const fromSource = new Set(input.sourcePaths ?? input.admitted);
   const diff = git(['diff', '--no-ext-diff', '--name-only', '-z', input.repairHead, input.sourceCommit, '--'],
     { cwd: input.root });
   if (diff.status !== 0) return {
@@ -782,7 +789,7 @@ function checkWholeBlobSourceCohort(input: {
   const differing = new Set(diff.stdout.split('\0').filter(Boolean));
   const admitted = new Set(input.admitted);
   const testFile = (path: string) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path);
-  const tests = [...new Set([...differing, ...admitted].filter(testFile))];
+  const tests = [...new Set([...differing, ...fromSource].filter(testFile))];
   if (tests.length === 0) return { ok: true };
 
   // EI-24383095185523946: resolving every extension candidate through rev:path
@@ -818,7 +825,7 @@ function checkWholeBlobSourceCohort(input: {
   for (const ask of asks) {
     const imported = ask.candidates.find((candidate) => blobs.has(candidate));
     if (!imported) continue;
-    if (!admitted.has(ask.test) && admitted.has(imported) && differing.has(ask.test)) {
+    if (!admitted.has(ask.test) && fromSource.has(imported) && differing.has(ask.test)) {
       missing.set(ask.test, {
         from: imported,
         specifier: ask.specifier,
@@ -828,7 +835,7 @@ function checkWholeBlobSourceCohort(input: {
         relation: 'reverse-importer',
       });
     }
-    if (admitted.has(ask.test) && differing.has(imported) && !admitted.has(imported)) {
+    if (fromSource.has(ask.test) && differing.has(imported) && !admitted.has(imported)) {
       missing.set(imported, {
         from: ask.test,
         specifier: ask.specifier,
@@ -873,6 +880,12 @@ export function importCompletenessPreflight(opts: {
   git?: AdmissionGitRunner;
   /** D-045 whole-blob source-cohort closure; other admission modes retain the forward check. */
   enforceSourceCohort?: boolean;
+  /**
+   * P-002 multi-source: the real whole-blob source commits, each with the paths copied from it.
+   * When given, the cohort check runs once per entry (instead of against `built.sourceCommit`,
+   * which for a multi-source admission is the synthesized commit) against the whole admitted set.
+   */
+  cohortSources?: ReadonlyArray<{ sourceCommit: string; paths: readonly string[] }>;
 }): NonNullable<AdmitPathsInput['preflight']> {
   return (built): AdmissionPreflightRefusal | null => {
     const r = checkAdmissionImportCompleteness({
@@ -894,30 +907,39 @@ export function importCompletenessPreflight(opts: {
           'the tip is never widened for you — admit the named path(s) alongside yours.',
       };
     }
-    if (!opts.enforceSourceCohort) return null;
-    const cohort = checkWholeBlobSourceCohort({
-      root: opts.root,
-      sourceCommit: built.sourceCommit,
-      repairHead: built.repairHead,
-      admitted: built.admitted,
-      git: opts.git,
-    });
-    if (cohort.ok) return null;
-    if (cohort.code === 'git-failed') return {
-      code: 'git-failed',
-      step: `source cohort preflight: ${cohort.step}`,
-      detail: cohort.detail,
-    };
-    const listed = cohort.missing.map((m) => m.relation === 'reverse-importer'
-      ? `${m.wanted} imports admitted ${m.from} via ${JSON.stringify(m.specifier)}`
-      : `${m.wanted} is imported by admitted test ${m.from} via ${JSON.stringify(m.specifier)}`);
-    return {
-      code: 'admission-incomplete',
-      missing: cohort.missing,
-      detail:
-        `REFUSED: whole-blob admission ${built.commit.slice(0, 12)} omits ${cohort.missing.length} differing ` +
-        `same-source cohort path(s) from ${built.sourceCommit.slice(0, 12)} (${listed.join('; ')}). ` +
-        'It was NOT published and repairHead did not move; admit the named paths from the same source commit.',
-    };
+    const checks: Array<{ sourceCommit: string; sourcePaths?: readonly string[] }> = opts.cohortSources
+      ? opts.cohortSources.map((c) => ({ sourceCommit: c.sourceCommit, sourcePaths: c.paths }))
+      : opts.enforceSourceCohort
+        ? [{ sourceCommit: built.sourceCommit }]
+        : [];
+    for (const check of checks) {
+      const cohort = checkWholeBlobSourceCohort({
+        root: opts.root,
+        sourceCommit: check.sourceCommit,
+        repairHead: built.repairHead,
+        admitted: built.admitted,
+        ...(check.sourcePaths ? { sourcePaths: check.sourcePaths } : {}),
+        git: opts.git,
+      });
+      if (cohort.ok) continue;
+      if (cohort.code === 'git-failed') return {
+        code: 'git-failed',
+        step: `source cohort preflight: ${cohort.step}`,
+        detail: cohort.detail,
+      };
+      const listed = cohort.missing.map((m) => m.relation === 'reverse-importer'
+        ? `${m.wanted} imports admitted ${m.from} via ${JSON.stringify(m.specifier)}`
+        : `${m.wanted} is imported by admitted test ${m.from} via ${JSON.stringify(m.specifier)}`);
+      return {
+        code: 'admission-incomplete',
+        missing: cohort.missing,
+        detail:
+          `REFUSED: whole-blob admission ${built.commit.slice(0, 12)} omits ${cohort.missing.length} differing ` +
+          `same-source cohort path(s) from ${check.sourceCommit.slice(0, 12)} (${listed.join('; ')}). ` +
+          'It was NOT published and repairHead did not move; admit the named paths from the same source commit' +
+          (opts.cohortSources ? ', or add a source that admits them.' : '.'),
+      };
+    }
+    return null;
   };
 }

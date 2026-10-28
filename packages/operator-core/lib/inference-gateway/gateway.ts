@@ -83,7 +83,11 @@ import {
   type ClaudeCreditWallCause,
 } from './anthropic-billing';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
-import { createCodexModelRefusalRegistry, type CodexModelRefusalEntry } from './codex-model-refusals';
+import {
+  createCodexModelRefusalRegistry,
+  type CodexModelRefusalChange,
+  type CodexModelRefusalEntry,
+} from './codex-model-refusals';
 import {
   classifyTransportFailure,
   createUpstreamReachabilityTracker,
@@ -194,7 +198,7 @@ import {
   type CodexAuth,
   type CodexProviderCompletionEvidence,
 } from './codex-oauth-proxy';
-import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
+import type { AccountEgress, ClaudeAccount, PersistedCodexModelRefusal } from '../deployment/account-pool';
 import { egressEntries } from '../deployment/account-pool';
 import { egressCacheKey, egressIsHttpProxy, egressIsSocks5Proxy, egressIsSupportedProxy } from './egress-dispatcher';
 import {
@@ -1584,6 +1588,10 @@ export interface GatewayDeps {
   /** Codex (account, model) refusal registry horizons (WI-10003306, WI-6554700010030462). Omit for
    *  the env/defaults (30-minute selection re-check, 24-hour reported belief). */
   codexModelRefusalPolicy?: { ttlMs?: number; reportHorizonMs?: number; now?: () => number };
+  /** WI-6554700010030570: write-through for every Codex refusal record/clear, so the belief survives a
+   *  gateway restart. The launch layer persists it into the account pool's per-account `rate` and
+   *  re-seeds it via `setAccountRateHints({ modelRefusals })`. Must not throw (wrapped anyway). */
+  persistCodexModelRefusal?: (change: CodexModelRefusalChange) => void;
   log?(level: 'info' | 'warn' | 'error', msg: string): void;
   /** Fired with each upstream response's headers + status + the account that served it (pool
    *  projection / observability) — the gateway is the only process that sees the unified-budget
@@ -3426,7 +3434,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** WI-10003306: Codex (account, model) pairs the ChatGPT backend has refused. Selection routes
    *  around them per model; entries lapse on a TTL and clear on the next 2xx, so an account marked
    *  here is never removed from the pool and never needs a manual flip to come back. */
-  const codexModelRefusals = createCodexModelRefusalRegistry(deps.codexModelRefusalPolicy);
+  const codexModelRefusals = createCodexModelRefusalRegistry({
+    ...deps.codexModelRefusalPolicy,
+    onChange: deps.persistCodexModelRefusal,
+  });
   /** WI-10007199: can the gateway reach the Codex upstream AT ALL? Kept apart from account capacity
    *  so a host network outage is reported as one, not as every account being usage-walled. */
   const codexReachability = createUpstreamReachabilityTracker();
@@ -12704,8 +12715,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
         /** When the store took the reading (`utilizationAt`); gates the store↔pool park reconciliation. */
         readingAt?: number;
         usageCreditsAvailable?: boolean;
+        /** WI-6554700010030570: the persisted Codex (account, model) refusals — re-seeded into the
+         *  registry so a restart does not forget that this account refuses a model. */
+        modelRefusals?: Record<string, PersistedCodexModelRefusal>;
       }>,
     ): void {
+      codexModelRefusals.hydrate(
+        hints.flatMap((h) =>
+          h?.accountId ? Object.values(h.modelRefusals ?? {}).map((r) => ({ ...r, accountId: h.accountId })) : [],
+        ),
+      );
       accountRateHints.clear();
       for (const h of hints) {
         if (h?.accountId) {
