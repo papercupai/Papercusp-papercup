@@ -601,6 +601,7 @@ export interface RestrictedEditBeforeRelease {
   intent?: string;
   workspaceId?: string;
   contributor?: string;
+  sessionId?: string;
 }
 
 export interface RestrictedEditBeforeReleaseDeps {
@@ -636,6 +637,7 @@ export async function recordRestrictedEditBeforeRelease(
         intent: i.intent,
         workspaceId: i.workspaceId,
         contributor: i.contributor,
+        sessionId: i.sessionId,
       });
     });
   try {

@@ -404,12 +404,15 @@ def native_edit_proof(tool, response, paths):
         return None
     if not native_edit_result_succeeded(response):
         return None
-    return {
+    proof = {
         'success': True,
         'source': source,
         'tool': tool,
         'paths': list(paths),
     }
+    if isinstance(session_id, str) and session_id:
+        proof['sessionId'] = session_id
+    return proof
 
 
 def recover_failed_code_mode_edit(current_cache_path):

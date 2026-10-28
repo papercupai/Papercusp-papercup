@@ -923,7 +923,7 @@ export interface CouplingDerivationSources {
   }>;
   /** Sink for the code-dependency shadow result. Fail-soft, and it cannot change what
    *  is delivered. */
-  shadowLog?: (result: CodeDependencyShadowResult) => void | Promise<void>;
+  shadowLog?: (result: CodeDependencyShadowResult) => unknown;
   /**
    * P-007 — the DEAD-SIGNAL CENSUS sink. Optional and fail-soft: a caller that
    * wires it gets one `DerivedSignalCensus` per run (see derived-signal-census.ts

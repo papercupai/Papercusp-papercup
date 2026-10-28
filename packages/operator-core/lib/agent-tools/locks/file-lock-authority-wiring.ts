@@ -194,7 +194,7 @@ export async function finishHookOperationAtAuthority(p: FileLockReleaseParams): 
         repoRoot: p.coordinationDomain, files: result.requestedPaths, agentId: p.owner,
         intent: `PostToolUse:${proof.source}:${proof.tool ?? proof.tools?.join(',')}`,
         goalRef: result.goalRef ?? undefined, dispatchCallId: operation.id,
-        workspaceId: p.workspaceId, contributor: p.contributor,
+        workspaceId: p.workspaceId, contributor: p.contributor, sessionId: proof.sessionId,
       });
     }
     return { ...result, operationId: operation.id, attributed: proof ? result.requestedPaths : [] };

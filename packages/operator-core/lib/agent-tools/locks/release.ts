@@ -143,6 +143,7 @@ async function attestRetainedNativeEdit(input: {
     intent: `PostToolUse:${proof.source}:${tools}:retained`,
     workspaceId: input.identity.workspaceId ?? undefined,
     contributor: input.identity.userId ?? undefined,
+    sessionId: proof.sessionId,
   };
   try {
     // P-014: a restricted owner's row is the git-sync hold, written strictly.
@@ -214,6 +215,7 @@ export default defineTool({
         tool: z.string().min(1).optional(),
         tools: z.array(z.string().min(1)).min(1).optional(),
         paths: z.array(z.string().min(1)).min(1),
+        sessionId: z.string().min(1).max(256).optional(),
       })
       .refine((proof) => Boolean(proof.tool) || (proof.tools?.length ?? 0) > 0, {
         message: 'native_edit_proof requires tool or tools',
@@ -427,6 +429,7 @@ export default defineTool({
             intent: `PostToolUse:${proof.source}:${proof.tool ?? proof.tools?.join(',') ?? 'native-edit'}`,
             workspaceId: identity.workspaceId ?? undefined,
             contributor: identity.userId ?? undefined,
+            sessionId: proof.sessionId,
           });
         }
         // P-025: push the release to the plan lock banner. Uses the paths the
@@ -452,6 +455,7 @@ export default defineTool({
           intent: `PostToolUse:${preReleaseProof.source}:${preReleaseProof.tool ?? preReleaseProof.tools?.join(',') ?? 'native-edit'}`,
           workspaceId: identity.workspaceId ?? undefined,
           contributor: identity.userId ?? undefined,
+          sessionId: preReleaseProof.sessionId,
         });
       }
       try {

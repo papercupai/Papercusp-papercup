@@ -2018,6 +2018,8 @@ export interface NativeEditProof {
   source: 'omp';
   tool: string;
   paths: string[];
+  /** This OMP session's native id, stamped on the edit-ledger row (R-5). */
+  sessionId?: string;
 }
 
 const OMP_NATIVE_EDIT_TOOLS = new Set(['write', 'edit', 'ast_edit', 'multi_edit']);
@@ -5228,7 +5230,9 @@ export async function onToolResult(event: ToolResultEvent): Promise<void> {
     ...(lock.coordinationDomain
       ? { coordination_domain: lock.coordinationDomain }
       : {}),
-    ...(proof ? { native_edit_proof: proof } : {}),
+    ...(proof
+      ? { native_edit_proof: _nativeSessionId ? { ...proof, sessionId: _nativeSessionId } : proof }
+      : {}),
   });
 }
 

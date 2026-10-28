@@ -334,12 +334,15 @@ def native_edit_batch_proof(state, key='release_paths'):
     tools = batch_edit_tools(state)
     if tools is None:
         return None
-    return {
+    proof = {
         'success': True,
         'source': 'claude',
         'tools': tools,
         'paths': list(paths),
     }
+    if isinstance(session_id, str) and session_id:
+        proof['sessionId'] = session_id
+    return proof
 
 
 def release_confirmed(inner, expected_paths):

@@ -130,6 +130,8 @@ export interface NativeEditProof {
   /** Native tools covered by one successful Claude PostToolBatch. */
   tools?: string[];
   paths: string[];
+  /** The native CLI session that made the edit (the hook's own session id), stamped on the ledger row (R-5). */
+  sessionId?: string;
 }
 
 const NATIVE_EDIT_TOOLS: Record<NativeEditProof['source'], ReadonlySet<string>> = {

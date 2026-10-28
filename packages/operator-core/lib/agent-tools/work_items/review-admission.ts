@@ -18,14 +18,24 @@ export default defineTool({
   }).strict(),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
-    const authority = bindAdmissionAuthority(ctx);
-    if (!identity.workspaceId || !harnessSlug || !authority) {
-      throw new AdmissionAuthorityRefused('review requires renewable transport authentication and concrete scope');
+    try {
+      const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
+      const authority = bindAdmissionAuthority(ctx);
+      if (!identity.workspaceId || !harnessSlug || !authority) {
+        throw new AdmissionAuthorityRefused('review requires renewable transport authentication and concrete scope');
+      }
+      const result = await requestAdmissionReview({ workspaceId: identity.workspaceId, harnessSlug, workItemId: args.id }, {
+        caller: identity.ownerId, authority, requestId: args.requestId,
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    } catch (error) {
+      if (!(error instanceof AdmissionAuthorityRefused)) throw error;
+      return { content: [{ type: 'text' as const, text: JSON.stringify({
+        ok: false, error: 'admission_review_refused', reason: error.message,
+        workItemId: args.id, responsibleActor: identity.ownerId,
+        nextAction: 'Repair the named authority, policy or hold, then retry this same item with purpose admission-review.',
+        pickupConfirmed: false,
+      }) }] };
     }
-    const result = await requestAdmissionReview({ workspaceId: identity.workspaceId, harnessSlug, workItemId: args.id }, {
-      caller: identity.ownerId, authority, requestId: args.requestId,
-    });
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
   },
 });
