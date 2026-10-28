@@ -428,6 +428,7 @@ describe('posttoolbatch already-held attestation (WI-10006900)', () => {
         source: 'claude',
         tools: ['Edit', 'Edit'],
         paths: ['src/first.ts', 'src/second.ts'],
+        sessionId: 'batch-owner',
       },
     });
     expect(readAttest()).toMatchObject({

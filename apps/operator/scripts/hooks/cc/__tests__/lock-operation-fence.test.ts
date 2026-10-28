@@ -334,7 +334,7 @@ describe('native hook operation fence', () => {
     expect(requests.filter(r => r.name === 'locks:acquire')).toHaveLength(2);
     await hook('posttooluse-locks-release.sh', success());
     expect(grants.size).toBe(0);
-    expect(proofs.get(saved.operation.id)).toEqual({ success: true, source: 'codex', tool: 'apply_patch', paths: ['sub/one.ts'] });
+    expect(proofs.get(saved.operation.id)).toEqual({ success: true, source: 'codex', tool: 'apply_patch', paths: ['sub/one.ts'], sessionId: 'native-operation-session' });
     expect(requests.at(-1)?.url).toContain(`native_session=${session}`);
     expect(record().terminal).toBe('completed');
   });
@@ -553,7 +553,7 @@ describe('native hook operation fence', () => {
     expect(grants.size).toBe(2); expect(fs.existsSync(join(cache, filename))).toBe(true);
     await hook('posttoolbatch-locks-release.sh', result);
     expect(grants.size).toBe(0);
-    expect([...proofs.values()]).toEqual([{ success: true, source: 'claude', tools: ['Edit', 'Write'], paths: ['sub/one.ts', 'sub/two.ts'] }]);
+    expect([...proofs.values()]).toEqual([{ success: true, source: 'claude', tools: ['Edit', 'Write'], paths: ['sub/one.ts', 'sub/two.ts'], sessionId: 'native-operation-session' }]);
     await hook('posttoolbatch-locks-release.sh', result);
     expect(requests.filter(r => r.name === 'locks:release')).toHaveLength(1);
   });

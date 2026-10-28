@@ -1283,6 +1283,7 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
           source: "claude",
           tool: "Edit",
           paths: ["sub/attest.ts"],
+          sessionId: "s",
         },
       });
       // An operator predating `retain` strips it; without these keys it must
