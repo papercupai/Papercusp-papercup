@@ -54,6 +54,11 @@ describe('resource governor enforcement lint', () => {
         `const execution = await beginGovernedExecution(request, owner, runtime); const child = spawn('tsc', []); await execution.finish();`,
       ),
     ).not.toContain('resource-start-outside-admission');
+    expect(
+      inspectGovernorSource(
+        `await runGovernedOperation<PsqlResult>(operation, async () => execFile('psql', args, callback));`,
+      ),
+    ).not.toContain('resource-start-outside-admission');
   });
 
   it('detects called aliases bound to child-process starts without widening arbitrary names', () => {

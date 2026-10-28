@@ -132,8 +132,8 @@ describe('admission ledger interpreter baseline', () => {
         await waitFor('attempts', 2);
       });
       const results = await Promise.all(pending);
-      const winner = results.find(r => r.actual?.leased);
-      const loser = results.find(r => r.actual?.leased === false);
+      const winner = results.find(r => r.status === 'passed');
+      const loser = results.find(r => r.status === 'failed');
       expect(winner).toBeDefined();
       expect(loser).toBeDefined();
       passed(winner!);

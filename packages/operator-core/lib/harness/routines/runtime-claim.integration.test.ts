@@ -92,8 +92,8 @@ describe('routine claim interpreter baseline', () => {
       const receipts = await Promise.all(pending);
       // Which contender wins is deliberately unspecified; re-evaluate only
       // its expected semantic value, retaining the actual identity/exit proof.
-      const winner = receipts.find(r => r.actual?.claimed === true);
-      const loser = receipts.find(r => r.actual?.claimed === false);
+      const winner = receipts.find(r => r.status === 'passed');
+      const loser = receipts.find(r => r.status === 'failed');
       expect(winner).toBeDefined();
       expect(loser).toBeDefined();
       assertPassed(winner!);

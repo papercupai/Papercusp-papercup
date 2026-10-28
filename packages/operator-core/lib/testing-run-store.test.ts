@@ -958,6 +958,10 @@ describe('durable detached snapshot lifecycle', () => {
     { name: 'ended_unobserved pruned PASS', status: 'running', expected: 'pass', legacy: true, expired: true, missing: true, taskState: 'ended_unobserved', processExit: null },
     { name: 'ended_unobserved pruned FAIL', status: 'running', expected: 'fail', failure: true, legacy: true, expired: true, missing: true, taskState: 'ended_unobserved', processExit: null },
     { name: 'ended_unobserved partial report', status: 'running', expected: 'error', partial: true, taskState: 'ended_unobserved', processExit: null },
+    { name: 'deadline-expired running task retains reporter PASS without process exit', status: 'running', expected: 'error', reportOnly: true, deadlineExpired: true, taskState: 'running', processExit: null },
+    { name: 'deadline-expired running task retains reporter FAIL without process exit', status: 'running', expected: 'error', reportOnly: true, deadlineExpired: true, failure: true, taskState: 'running', processExit: null },
+    { name: 'late report after deadline no-verdict recovery stays error', status: 'error', expected: 'error', reportOnly: true, deadlineExpired: true, taskState: 'running', processExit: null },
+    { name: 'deadline-expired incomplete report cannot recover an all-pass subset', status: 'running', expected: 'error', reportOnly: true, deadlineExpired: true, taskState: 'running', processExit: null, missingRequestedFile: true },
     { name: 'live task retained report', status: 'running', expected: 'running', taskState: 'running', processExit: null },
     { name: 'live task pruned report', status: 'running', expected: null, legacy: true, expired: true, missing: true, taskState: 'running', processExit: null },
     { name: 'cancelled task running snapshot', status: 'running', expected: 'error', taskState: 'killed', processExit: null },
@@ -969,6 +973,7 @@ describe('durable detached snapshot lifecycle', () => {
       status: string; expected: string | null; failure?: boolean; cancelled?: boolean;
       partial?: boolean; writeFailure?: boolean; casLost?: boolean; legacy?: boolean; wrongScope?: boolean;
       expired?: boolean; missing?: boolean;
+      reportOnly?: boolean; deadlineExpired?: boolean;
       ambiguous?: boolean;
       inlineSelector?: boolean;
       secretOutput?: boolean; missingRequestedFile?: boolean;
@@ -1043,6 +1048,7 @@ describe('durable detached snapshot lifecycle', () => {
           started_at: snapshot.startedAt, finished_at: status === 'error' ? snapshot.startedAt + 30 : null,
           output: status === 'error' ? '[detached-recovery] no test verdict was observed.' : '', truncated: false,
           task_state: taskState, task_exit_code: processExit,
+          task_deadline_at: options.deadlineExpired ? new Date(Date.now() - 1_000) : null,
           task_ended_at: taskState === 'running' ? null : snapshot.startedAt + 25,
           task_detail: options.legacy ? { requestedFiles: ['lib/saved.test.ts'] } : detail,
           task_cwd: '/tmp', task_harness_slug: options.legacy ? null : 'papercusp', task_workspace_id: 'papercusp-workspace',
@@ -1084,6 +1090,22 @@ describe('durable detached snapshot lifecycle', () => {
         expect(taskQuery!.slice(1)).toEqual(expect.arrayContaining([
           snapshot.runId, options.wrongScope ? 'other-workspace' : 'papercusp-workspace', '/tmp', 'papercusp',
         ]));
+      }
+      if (options.reportOnly) {
+        expect(recovered).toMatchObject({ status: 'error', exitCode: null, finishedAt: expect.any(Number) });
+        expect(sql.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE harness_shared.task_ledger'))).toBe(false);
+        if (options.missingRequestedFile) {
+          expect(writes).toHaveLength(0);
+          await expect(readFile(reportPath, 'utf8')).resolves.toContain('testResults');
+        } else {
+          expect(recovered?.output).toContain(`completed saved Vitest report (${options.failure ? 'fail' : 'pass'})`);
+          expect(recovered?.output).toContain('overall run remains error');
+          expect(writes).toHaveLength(1);
+          expect(writes[0]!.status).toBe(options.failure ? 'fail' : 'pass');
+          expect(writes[0]!.run_group_id).toBe(snapshot.runId);
+          await expect(readFile(reportPath)).rejects.toMatchObject({ code: 'ENOENT' });
+        }
+        return;
       }
       if (options.expected !== 'pass' && options.expected !== 'fail') {
         if (options.routerReports || options.missingRequestedFile) expect(writes).toHaveLength(0);

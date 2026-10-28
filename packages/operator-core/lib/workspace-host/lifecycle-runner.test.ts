@@ -307,9 +307,27 @@ describe('runWorkspaceHostLifecycle', () => {
     vi.mocked(store.readTarget).mockResolvedValue({ ...target, target: 'aws',
       desired: { ...desired, target: 'aws', labels },
       originalCanaryAdmission: scenario === 'missing-origin' ? null : original });
+    const callerRenewal: WorkspaceHostCanaryAdmission = {
+      runId: original.runId,
+      workspaceId: original.workspaceId,
+      maxSpendCents: 100,
+      teardownDeadlineAt: '2026-10-24T06:00:00.000Z',
+      budgetEvidenceRef: 'gcp://billing/budgets/aws-original',
+      preRunZeroBaseline: {
+        cents: 0,
+        observedAt: '2026-10-22T00:00:00.000Z',
+        providerEvidenceRef: 'gcp://billing/aws-original-zero',
+      },
+      contractApproval: {
+        status: 'approved',
+        suiteVersion: WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+        approvedBy: 'test-reviewer',
+        approvedAt: '2026-10-22T00:00:00.000Z',
+        reportRef: 'report://aws/original-contract',
+      },
+    };
     await expect(runWorkspaceHostLifecycle({ ...input(provider, store), connection: { ...connection, target: 'aws' },
-      ...(scenario === 'caller-renewal' ? { canary: { ...original,
-        teardownDeadlineAt: '2026-10-24T06:00:00.000Z' } as WorkspaceHostCanaryAdmission } : {}) }))
+      ...(scenario === 'caller-renewal' ? { canary: callerRenewal } : {}) }))
       .rejects.toThrow(/original AWS canary|cannot replace the original/);
     expect(planProvider).not.toHaveBeenCalled(); expect(apply).not.toHaveBeenCalled();
     expect(store.beginOperation).not.toHaveBeenCalled();

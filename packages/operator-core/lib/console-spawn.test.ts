@@ -93,6 +93,16 @@ function fakeChild(pid = 4242) {
   return child;
 }
 
+function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout: () => Error): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<T>((_, reject) => {
+    timeout = setTimeout(() => reject(onTimeout()), timeoutMs);
+  });
+  return Promise.race([promise, deadline]).finally(() => {
+    if (timeout !== undefined) clearTimeout(timeout);
+  });
+}
+
 const APPEARANCE: AppearanceOpts = { mode: 'console', planSlug: null, label: null };
 
 /** Decode the shell-escaped rcfile payload from buildConsoleOneliner. */
@@ -101,6 +111,19 @@ function interactiveRcScript(oneliner: string): string {
   expect(match).not.toBeNull();
   return execFileSync('bash', ['-c', `printf '%s' ${match![1]}`], { encoding: 'utf8' });
 }
+
+describe('raceWithTimeout cleanup', () => {
+  it('clears the losing deadline when the operation resolves first', async () => {
+    vi.useFakeTimers();
+    try {
+      await expect(raceWithTimeout(Promise.resolve('exited'), 3_000, () => new Error('timed out')))
+        .resolves.toBe('exited');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 // WI-3114: HERMETIC desktop-env probes. The stubbed DISPLAY=:99 alone is NOT
 // deterministic — resolveLinuxDesktopEnv validates the display's X socket
@@ -1888,22 +1911,19 @@ describe('buildConsoleOneliner', () => {
         await waitForOutput('PAPERCUSP-SURVIVED> ', outputOffset);
 
         terminal.write('exit\n');
-        await Promise.race([
-          exited,
-          new Promise<void>((_, reject) => setTimeout(() => {
-            let pidState = 'alive';
-            try {
-              process.kill(terminal.pid, 0);
-            } catch (error) {
-              const code = (error as NodeJS.ErrnoException).code;
-              pidState = code === 'ESRCH' ? 'exited' : `unknown (${code ?? String(error)})`;
-            }
-            reject(new Error(
-              `terminal did not exit (ptyPid=${terminal.pid}, pidState=${pidState}, ` +
-              `onExit=${JSON.stringify(exitEvent)}); output=${JSON.stringify(captured)}`,
-            ));
-          }, 3_000)),
-        ]);
+        await raceWithTimeout(exited, 3_000, () => {
+          let pidState = 'alive';
+          try {
+            process.kill(terminal.pid, 0);
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            pidState = code === 'ESRCH' ? 'exited' : `unknown (${code ?? String(error)})`;
+          }
+          return new Error(
+            `terminal did not exit (ptyPid=${terminal.pid}, pidState=${pidState}, ` +
+            `onExit=${JSON.stringify(exitEvent)}); output=${JSON.stringify(captured)}`,
+          );
+        });
 
         expect(captured).toContain('^C');
         expect(captured).toContain(survivedMarker);

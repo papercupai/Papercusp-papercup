@@ -12,14 +12,12 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-// @ts-expect-error — .mjs guard script, no type declarations by design
 import { attributedTypeErrors, collectExportedRequiredProps, collectExportedSignatures, collectExportedTypeNames, collectExportedUnionMembers, collectExportedValueNames, diffRequiredAdditions, diffSignatureBreaks, diffUnionWidenings, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, formatUnattributedFindings, strandHeadline, submoduleFor, submoduleRevisionAt } from '../../../../scripts/check-required-field-strands.mjs';
 
 const ROOT = resolve(__dirname, '../../../..');
 
 describe('measured exported symbol changes for incident pushes', () => {
   it('distinguishes a body edit from unchanged exports, comments and formatting', async () => {
-    // @ts-expect-error — shared executable guard has no type declarations
     const { diffExportedSymbolText } = await import('../../../../scripts/check-required-field-strands.mjs');
     const before = 'export function changed() { return 1; }\nexport const same = 2;';
     expect(diffExportedSymbolText(before, before.replace('return 1', 'return 3'), 'a.ts'))

@@ -16,6 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import type { AgentIdentity } from './identity';
 import { sendMessage, resolveMessageRef, getMessageById } from './messages';
+import { hydrateRefs } from './ref-hydrate-resolve';
 import { openHandoff } from './handoffs';
 import { openEscalation, reopenEscalation, resolveEscalation } from './escalations';
 import { readCoordFeed } from './feed';
@@ -205,6 +206,35 @@ describe('resolveMessageRef (WI-6725)', () => {
     expect(res.msgId).toBe(handoff.msg_id);
     expect(res.message.kind).toBe('handoff');
     expect(res.message.summary).toBe('take over this work');
+  });
+
+  it('EI-26803382243765884: inbox message-ref hydration resolves the same handoff as coord:read', async () => {
+    const handoff = await openHandoff(ASKER, {
+      to: [READER.ownerId],
+      plan_slug: 'plan-x',
+      summary: 'take over this work',
+    });
+
+    expect(await getMessageById(handoff.msg_id)).toBeNull();
+    const readResult = await readTool.handler({ msg_id: handoff.msg_id }, {} as never);
+    const readPayload = (readResult as { data?: unknown }).data as {
+      found: boolean;
+      msg_id: string;
+      message: { kind: string; msg_id: string; summary?: string } | null;
+    };
+    expect(readPayload).toMatchObject({
+      found: true,
+      msg_id: handoff.msg_id,
+      message: { kind: 'handoff', msg_id: handoff.msg_id, summary: 'take over this work' },
+    });
+
+    const [hydrated] = await hydrateRefs([{ kind: 'msg', id: handoff.msg_id }]);
+    expect(hydrated).toMatchObject({
+      ok: true,
+      ref: { kind: 'msg', id: handoff.msg_id },
+      label: expect.stringContaining(handoff.msg_id),
+      snippet: expect.stringContaining('take over this work'),
+    });
   });
 
   it('EI-25503280746355318: coord:read resolves an idempotent coord:send id returned by coord:feed', async () => {

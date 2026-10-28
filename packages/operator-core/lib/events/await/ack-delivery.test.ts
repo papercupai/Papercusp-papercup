@@ -61,7 +61,7 @@ function configureDb(options: { settleDelivering?: boolean } = {}) {
     if (text.includes('pg_attribute')) return [{ n: schema.TURN_PROOF_COLUMNS.length }];
     if (text.includes('SELECT status')) return [{ status: 'delivering' }];
     if (text.includes('UPDATE harness_shared.event_wake_deliveries')) {
-      const allowDelivering = values[values.length - 1] === true;
+      const allowDelivering = values[4] === true;
       return allowDelivering && options.settleDelivering ? [{ id: 7 }] : [];
     }
     return [];
@@ -158,8 +158,9 @@ describe('ackDelivery for a pump-claimed row', () => {
   it('cancels a parked host-owned delivery before acknowledging a handled message', async () => {
     schema.setTurnProofColumnsReadyForTests(true);
     const row = configureAcceptedParkedDb();
-    mockResolvedTyped(vi.mocked(pty.injectIntoHostWithConfirmation), {
-      ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
+    vi.mocked(pty.injectIntoHostWithConfirmation).mockImplementation(async () => {
+      sqlState.order.push({ kind: 'host' });
+      return { ok: true, confirmation: 'acked', reason: 'cancelled-before-write' } as never;
     });
 
     await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
@@ -213,7 +214,7 @@ describe('ackDelivery for a pump-claimed row', () => {
     expect(pty.findLiveHostAsync).toHaveBeenCalledWith('su-ack', '/test/psu-pty');
     expect(pty.hostSupports).toHaveBeenCalledWith({ sock: '/test/host.sock' }, 'delivery-cancel');
     expect(pty.injectIntoHostWithConfirmation).not.toHaveBeenCalled();
-    expect(sqlState.calls.some((call) => call.values[call.values.length - 1] === true)).toBe(false);
+    expect(sqlState.calls.some((call) => call.values[4] === true)).toBe(false);
   });
 
   it('keeps delivering when the host accepted a cancellation request without confirming the barrier', async () => {
@@ -232,7 +233,7 @@ describe('ackDelivery for a pump-claimed row', () => {
     expect(pty.injectIntoHostWithConfirmation).toHaveBeenCalledWith('/test/host.sock', {
       mode: 'delivery-cancel', data: '', ownerId: 'su-ack', deliveryId: '7',
     });
-    expect(sqlState.calls.some((call) => call.values[call.values.length - 1] === true)).toBe(false);
+    expect(sqlState.calls.some((call) => call.values[4] === true)).toBe(false);
   });
 
   it('settles delivering only after an ACKed cancelled-before-write receipt', async () => {
@@ -249,7 +250,7 @@ describe('ackDelivery for a pump-claimed row', () => {
 
     const hostIndex = sqlState.order.findIndex((entry) => entry.kind === 'host');
     const deliveringUpdateIndex = sqlState.order.findIndex((entry) =>
-      entry.kind === 'sql' && entry.text?.includes('UPDATE harness_shared.event_wake_deliveries') && entry.values?.at(-1) === true,
+      entry.kind === 'sql' && entry.text?.includes('UPDATE harness_shared.event_wake_deliveries') && entry.values?.[4] === true,
     );
     expect(hostIndex).toBeGreaterThan(-1);
     expect(deliveringUpdateIndex).toBeGreaterThan(hostIndex);
@@ -267,7 +268,7 @@ describe('ackDelivery for a pump-claimed row', () => {
       alreadySettled: false,
       status: 'delivering',
     });
-    expect(sqlState.calls.some((call) => call.values[call.values.length - 1] === true)).toBe(false);
+    expect(sqlState.calls.some((call) => call.values[4] === true)).toBe(false);
   });
 
   it('recalls a delivered but unconfirmed socket wake before a handled-message replay', async () => {

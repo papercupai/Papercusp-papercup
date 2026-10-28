@@ -13,13 +13,21 @@ vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: {} }),
 }));
-vi.mock('../../operator-chat-store', () => ({ operatorChatChildAuthority: vi.fn(() => async () => true) }));
-vi.mock('../operator/converse-card', () => ({ findConverseCard: vi.fn() }));
+vi.mock('../../operator-chat-store', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../operator-chat-store')>()),
+  operatorChatChildAuthority: vi.fn(() => async () => true),
+}));
+vi.mock('../operator/converse-card', async importOriginal => ({
+  ...(await importOriginal<typeof import('../operator/converse-card')>()),
+  findConverseCard: vi.fn(),
+}));
 
 import { commitLinkedConverseCard, unblockLinkedCard } from './card-link';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
-import { findConverseCard } from '../operator/converse-card';
+import { getOrgPg } from '@papercusp/db-org';
+import { createConverseCard, findConverseCard } from '../operator/converse-card';
 import { operatorChatChildAuthority } from '../../operator-chat-store';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const mockResolve = resolveCardResponse as unknown as ReturnType<typeof vi.fn>;
 
@@ -87,6 +95,22 @@ describe('version1 durable inbox decision', () => {
   const ctx = { workspaceId: 'ws', isSuperuser: true,
     admissionRecoveryAuthority: { kind: 'superuser', role: 'operator', credentialSha256: 'a'.repeat(64) },
   } as Parameters<typeof commitLinkedConverseCard>[2];
+  type CommitResponse = NonNullable<ReturnType<typeof createConverseCard>['commitResponse']>;
+  const mockConverseCard = (commitResponse: CommitResponse) => {
+    const card = createConverseCard({
+      sql: getOrgPg().sql,
+      parent: {
+        workspaceId: 'ws', conversationId: 'conversation', turnId: 'parent-turn', runId: 'parent-run',
+        authority: { kind: 'system', principalId: 'system:parent', credentialSha256: 'a'.repeat(64) },
+      },
+      binding: { dispatchCallId: 'dispatch', childRunId: 'run', credentialSha256: 'b'.repeat(64) },
+      tool: { name: 'chat:ask_choice', callId: 'dispatch',
+        input: { question: 'choose', options: [{ id: 'yes', label: 'Yes' }] } },
+      correlationId: 'card',
+    });
+    card.commitResponse = commitResponse;
+    mockResolvedTyped(vi.mocked(findConverseCard), card);
+  };
 
   it('leaves legacy links on their existing path', async () => {
     await commitLinkedConverseCard({ cardCorrelationId: 'legacy' }, 'yes', ctx);
@@ -107,8 +131,7 @@ describe('version1 durable inbox decision', () => {
 
   it('awaits the authenticated durable decision and propagates uncertain outcomes', async () => {
     const commitResponse = vi.fn(async () => { throw new Error('needs-reconciliation'); });
-    vi.mocked(findConverseCard).mockResolvedValue({ commitResponse,
-      info: () => ({ correlationId: 'card', runId: 'run', workspaceId: 'ws' }) } as never);
+    mockConverseCard(commitResponse);
     await expect(commitLinkedConverseCard(record, 'yes', ctx)).rejects.toThrow('needs-reconciliation');
     expect(operatorChatChildAuthority).toHaveBeenCalledWith({ workspaceId: 'ws', credentialSha256: 'a'.repeat(64),
       capability: 'coord:write', toolName: 'coord:resolve' });
@@ -121,8 +144,7 @@ describe('version1 durable inbox decision', () => {
   it('permits exact committed-winner reconciliation and refuses a competing choice', async () => {
     const commitResponse = vi.fn(async () => ({ accepted: false,
       response: { action: 'submit', payload: { picks: ['yes'] } } }));
-    vi.mocked(findConverseCard).mockResolvedValue({ commitResponse,
-      info: () => ({ correlationId: 'card', runId: 'run', workspaceId: 'ws' }) } as never);
+    mockConverseCard(commitResponse);
     await expect(commitLinkedConverseCard(record, 'yes', ctx)).resolves.toBeUndefined();
     await expect(commitLinkedConverseCard(record, 'no', ctx)).rejects.toThrow('already-decided');
     expect(mockResolve).not.toHaveBeenCalled();

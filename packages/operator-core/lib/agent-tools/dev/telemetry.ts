@@ -8,6 +8,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { trackPhase } from '@papercusp/tooldef';
 import { flagPollSuspects, handlerPhaseRollup, telemetryRollup } from '../../dev-data';
 import { runtimeObservabilityHealth } from '../../observability/runtime';
 
@@ -38,17 +39,25 @@ export default defineTool({
     phasesFor: z.string().min(1).optional()
       .describe('Tool name: also return its per-phase timing (handlerPhases) and phase coverage of wall time.'),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     const hours = args.hours ?? 24;
     const [result, handlerPhases] = await Promise.all([
-      telemetryRollup({
-        workspaceIds: args.workspaceIds ?? null,
-        transports: args.transports ?? null,
-        hours,
-        limit: args.limit,
-      }),
+      trackPhase(
+        ctx.phases,
+        'dev:telemetry:rollup',
+        () => telemetryRollup({
+          workspaceIds: args.workspaceIds ?? null,
+          transports: args.transports ?? null,
+          hours,
+          limit: args.limit,
+        }),
+      ),
       args.phasesFor
-        ? handlerPhaseRollup({ toolName: args.phasesFor, workspaceIds: args.workspaceIds ?? null, hours })
+        ? trackPhase(
+            ctx.phases,
+            'dev:telemetry:handler-phase-rollup',
+            () => handlerPhaseRollup({ toolName: args.phasesFor!, workspaceIds: args.workspaceIds ?? null, hours }),
+          )
         : Promise.resolve(null),
     ]);
     // Poll-detector guard (EI-7029): surface polling-shaped tools UP FRONT so a

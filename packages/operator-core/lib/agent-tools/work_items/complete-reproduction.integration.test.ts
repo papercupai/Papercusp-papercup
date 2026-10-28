@@ -113,6 +113,7 @@ async function seedHeldIssue(holder: string, heldAt: string): Promise<{ id: stri
   );
   const existing = await getWorkItem(issue.id);
   if (!existing) throw new Error('held-open fixture ' + issue.id + ' was not readable after seeding');
+  if (existing.harness === null) throw new Error('held-open fixture ' + issue.id + ' has no harness');
   return { id: issue.id, harness: existing.harness, initialState: existing.state };
 }
 
@@ -194,14 +195,14 @@ describe('BQL receipt authority through the close handler and real persistence',
     expect(String(preview.stateError)).toContain('HELD OPEN by su-live-gatekeeper');
     const afterPreview = await getWorkItem(fixture.id);
     expect(afterPreview?.state).toBe(fixture.initialState);
-    expect(afterPreview?.payload?.held_open_by).toBe('su-live-gatekeeper');
+    expect(afterPreview?.payload).toMatchObject({ held_open_by: 'su-live-gatekeeper' });
 
     const write = await runHeldOpenCompletion(fixture.id, fixture.harness, false);
     expect(write.ok).toBe(false);
     expect(String(write.stateError)).toContain('HELD OPEN by su-live-gatekeeper');
     const afterWrite = await getWorkItem(fixture.id);
     expect(afterWrite?.state).toBe(fixture.initialState);
-    expect(afterWrite?.payload?.held_open_by).toBe('su-live-gatekeeper');
+    expect(afterWrite?.payload).toMatchObject({ held_open_by: 'su-live-gatekeeper' });
   }, 60_000);
 
   it('keeps the holder positive control eligible for preview and terminal write', async () => {
@@ -228,7 +229,7 @@ describe('BQL receipt authority through the close handler and real persistence',
         heldOpenTransition: { staleHoldOpen: true, writeWillRecheck: true },
       });
       expect(warning).not.toHaveBeenCalled();
-      expect((await getWorkItem(fixture.id))?.payload?.held_open_by).toBe(holder);
+      expect((await getWorkItem(fixture.id))?.payload).toMatchObject({ held_open_by: holder });
 
       const write = await runHeldOpenCompletion(fixture.id, fixture.harness, false);
       expect(write.ok).toBe(true);
@@ -238,7 +239,7 @@ describe('BQL receipt authority through the close handler and real persistence',
       );
       const closed = await getWorkItem(fixture.id);
       expect(closed?.state).toBe('done');
-      expect(closed?.payload?.held_open_by).toBeUndefined();
+      expect(closed?.payload).not.toHaveProperty('held_open_by');
     } finally {
       warning.mockRestore();
     }

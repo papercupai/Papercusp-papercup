@@ -171,6 +171,13 @@ function success(id = 'edit-one', paths = ['sub/one.ts']) {
   return { ...payload(id, paths), tool_response: { success: true, output: 'Success. Updated the following files.' } };
 }
 
+function nestedGitfileSubmodule() {
+  const gitdir = join(repo, '.git', 'modules', 'sub');
+  fs.mkdirSync(gitdir, { recursive: true });
+  fs.writeFileSync(join(gitdir, 'HEAD'), 'ref: refs/heads/staging\n');
+  fs.writeFileSync(join(repo, 'sub', '.git'), 'gitdir: ../.git/modules/sub\n');
+}
+
 function parent(response: unknown, paths = ['sub/one.ts']) {
   const input = payload('parent', paths);
   return { ...input, tool_name: 'functions.exec',
@@ -337,6 +344,44 @@ describe('native hook operation fence', () => {
     expect(proofs.get(saved.operation.id)).toEqual({ success: true, source: 'codex', tool: 'apply_patch', paths: ['sub/one.ts'], sessionId: 'native-operation-session' });
     expect(requests.at(-1)?.url).toContain(`native_session=${session}`);
     expect(record().terminal).toBe('completed');
+  });
+
+  it('settles an empty Codex apply_patch result for a multi-file nested submodule edit', async () => {
+    nestedGitfileSubmodule();
+    const paths = ['sub/test-coverage-map.ts', 'sub/test-coverage-provider.ts'];
+    const input = payload('edit-submodule', paths);
+    const submoduleDomain = join(repo, 'sub');
+    const relativePaths = ['test-coverage-map.ts', 'test-coverage-provider.ts'];
+
+    await hook('pretooluse-locks-acquire.sh', input);
+
+    const saved = record('edit-submodule');
+    expect(saved).toMatchObject({ coordination_domain: submoduleDomain, paths: relativePaths });
+    expect(acquires().at(-1)?.args).toMatchObject({
+      coordination_domain: submoduleDomain,
+      paths: relativePaths,
+    });
+
+    await hook('posttooluse-locks-release.sh', { ...input, tool_response: {} });
+
+    expect(requests.filter(r => r.name === 'locks:release')).toHaveLength(1);
+    expect(requests.at(-1)?.args).toMatchObject({
+      coordination_domain: submoduleDomain,
+      hook_operation: {
+        id: saved.operation.id,
+        paths: relativePaths,
+      },
+    });
+    expect(mutations.get(saved.operation.id)?.state).toBe('completed');
+    expect(grants.size).toBe(0);
+    expect(proofs.get(saved.operation.id)).toEqual({
+      success: true,
+      source: 'codex',
+      tool: 'apply_patch',
+      paths: relativePaths,
+      sessionId: 'native-operation-session',
+    });
+    expect(record('edit-submodule').terminal).toBe('completed');
   });
 
   it('a lost acquire reply completes without a lock token and fences the delayed grant', async () => {

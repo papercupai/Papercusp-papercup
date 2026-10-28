@@ -60,7 +60,9 @@ describe('Drizzle child admission settlement', () => {
 
   async function start() {
     const post = routes.find(route => route.method === 'POST')!;
-    const response = post.handler();
+    const response = post.handler(
+      new Request('http://localhost/dev/drizzle-studio', { method: 'POST' }), undefined as never,
+    );
     await vi.advanceTimersByTimeAsync(800);
     expect((await response).status).toBe(200);
   }
@@ -72,7 +74,9 @@ describe('Drizzle child admission settlement', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(finish).toHaveBeenCalledOnce();
     const get = routes.find(route => route.method === 'GET')!;
-    expect(await (await get.handler()).json()).toMatchObject({ running: false, lastExitCode: 0 });
+    expect(await (await get.handler(
+      new Request('http://localhost/dev/drizzle-studio'), undefined as never,
+    )).json()).toMatchObject({ running: false, lastExitCode: 0 });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(finish).toHaveBeenCalledTimes(2);
     expect(cancel).not.toHaveBeenCalled();

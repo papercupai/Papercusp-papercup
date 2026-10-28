@@ -4,13 +4,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { CardResponse } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@papercusp/db-org';
 
 vi.mock('../../auth', () => ({ getSessionUser: vi.fn(), resolveSessionToken: vi.fn(async () => 'current') }));
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: {} }),
 }));
-vi.mock('../../agent-tools/operator/converse-card', () => ({ findConverseCard: vi.fn(async () => null) }));
+vi.mock('../../agent-tools/operator/converse-card', async original => ({
+  ...(await original<typeof import('../../agent-tools/operator/converse-card')>()),
+  findConverseCard: vi.fn(async () => null),
+}));
 vi.mock('../../operator-conversations', () => ({ getConversationById: vi.fn() }));
 const nativeCards = vi.hoisted(() => ({ route: vi.fn() }));
 vi.mock('../../su-session-owner-routing', () => ({ routeSuNativeCard: nativeCards.route }));
@@ -20,8 +24,9 @@ vi.mock('../telemetry', () => ({
 
 import { Hono } from 'hono';
 import { getSessionUser } from '../../auth';
-import { getConversationById } from '../../operator-conversations';
-import { findConverseCard } from '../../agent-tools/operator/converse-card';
+import { getConversationById, type ConversationRow } from '../../operator-conversations';
+import { createConverseCard, findConverseCard } from '../../agent-tools/operator/converse-card';
+import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
 import {
   _resetCardCorrelatorForTests,
   registerCard,
@@ -44,6 +49,31 @@ function post(body: unknown) {
   });
 }
 
+type CommitResponse = NonNullable<ReturnType<typeof createConverseCard>['commitResponse']>;
+
+function mockConverseCard(input: { correlationId: string; runId: string; commitResponse: CommitResponse }) {
+  const card = createConverseCard({
+    sql: getOrgPg().sql,
+    parent: {
+      workspaceId: ws, conversationId: 'c1', turnId: 'parent-turn', runId: 'parent-run',
+      authority: { kind: 'system', principalId: 'system:parent', credentialSha256: 'a'.repeat(64) },
+    },
+    binding: { dispatchCallId: 'dispatch', childRunId: input.runId, credentialSha256: 'b'.repeat(64) },
+    tool: { name: 'chat:ask_choice', callId: 'dispatch', input: { question: 'choose', options: [{ id: 'a', label: 'A' }] } },
+    correlationId: input.correlationId,
+  });
+  card.commitResponse = input.commitResponse;
+  mockResolvedTyped(vi.mocked(findConverseCard), card);
+  return card;
+}
+
+function conversationRow(id: string, workspaceId: string): ConversationRow {
+  return {
+    id, workspaceId, harnessSlug: null, subjectKind: 'global', subjectRef: null, title: null,
+    status: 'active', startedAt: 0, endedAt: null, elConversationIds: [], hasAudio: false,
+  };
+}
+
 describe('POST /api/operator/conversations/:id/card-response', () => {
   beforeEach(() => {
     nativeCards.route.mockReset();
@@ -58,8 +88,8 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     vi.mocked(getConversationById).mockReset();
     vi.mocked(findConverseCard).mockReset();
     vi.mocked(findConverseCard).mockResolvedValue(null);
-    vi.mocked(getConversationById).mockImplementation(async (id, workspaceId) =>
-      id === 'c1' && workspaceId === ws ? { id, workspaceId } as never : null);
+    mockImplementationTyped(vi.mocked(getConversationById), async (id, workspaceId) =>
+      id === 'c1' && workspaceId === ws ? conversationRow(id, workspaceId) : null);
     app = new Hono().basePath('/api');
     registerRoute(app, cardResponse);
   });
@@ -81,8 +111,7 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     openRun({ workspaceId: ws, runId: 'r1' });
     const reg = registerCard({ workspaceId: ws, runId: 'r1',
       spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
-    vi.mocked(findConverseCard).mockResolvedValue({ commitResponse,
-      info: () => ({ correlationId: reg.correlationId, runId: 'r1', workspaceId: ws }) } as never);
+    mockConverseCard({ commitResponse, correlationId: reg.correlationId, runId: 'r1' });
     return reg;
   }
 
@@ -135,8 +164,7 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     const commitResponse = vi.fn(async (response: CardResponse) => { await gate; return { accepted: true, response }; });
     const reg = registerCard({ workspaceId: ws, runId: 'durable-http',
       spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
-    vi.mocked(findConverseCard).mockResolvedValue({ commitResponse,
-      info: () => ({ correlationId: reg.correlationId, runId: 'durable-http', workspaceId: ws }) } as never);
+    mockConverseCard({ commitResponse, correlationId: reg.correlationId, runId: 'durable-http' });
     let acknowledged = false;
     let delivered = false;
     void reg.result.then(() => { delivered = true; });
@@ -155,8 +183,7 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     const commitResponse = vi.fn(async () => { throw new Error('commit-ack-lost'); });
     const reg = registerCard({ workspaceId: ws, runId: 'uncertain-http',
       spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
-    vi.mocked(findConverseCard).mockResolvedValue({ commitResponse,
-      info: () => ({ correlationId: reg.correlationId, runId: 'uncertain-http', workspaceId: ws }) } as never);
+    mockConverseCard({ commitResponse, correlationId: reg.correlationId, runId: 'uncertain-http' });
     let delivered = false;
     void reg.result.then(() => { delivered = true; });
     const res = await post({ correlationId: reg.correlationId, workspaceId: ws,
@@ -179,8 +206,7 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
 
   it('commits a recovered scoped card without a process-local waiter', async () => {
     const commitResponse = vi.fn(async (response: CardResponse) => ({ accepted: true, response }));
-    vi.mocked(findConverseCard).mockResolvedValue({ commitResponse,
-      info: () => ({ correlationId: 'recovered', runId: 'child', workspaceId: ws }) } as never);
+    mockConverseCard({ commitResponse, correlationId: 'recovered', runId: 'child' });
     expect((await post({ correlationId: 'recovered', workspaceId: ws, action: 'submit',
       payload: { picks: ['a'] } })).status).toBe(200);
     expect(findConverseCard).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: ws,
@@ -209,8 +235,7 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     const commitResponse = vi.fn(async () => ({ accepted: false, response: winner }));
     const reg = registerCard({ workspaceId: ws, runId: 'winner',
       spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
-    vi.mocked(findConverseCard).mockResolvedValue({ commitResponse,
-      info: () => ({ correlationId: reg.correlationId, runId: 'winner', workspaceId: ws }) } as never);
+    mockConverseCard({ commitResponse, correlationId: reg.correlationId, runId: 'winner' });
     expect((await post({ correlationId: reg.correlationId, workspaceId: ws,
       action: 'submit', payload: { picks: ['a'] } })).status).toBe(409);
     expect(await reg.result).toEqual(winner);

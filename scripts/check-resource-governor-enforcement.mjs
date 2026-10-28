@@ -2632,6 +2632,79 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     },
   },
   {
+    path: "packages/operator-core/lib/agent-identities/idop-p001-stack-population.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-013 reviewed bypass for the P-001 population source reader. Its sole process primitive is a synchronous local Git helper used by the dedicated population test to read the frozen superproject/submodule source set. Each call performs one submodule `ls-tree` and six sequential `show` reads, with a 15-second timeout and 4 MiB output cap per command; it creates no detached worker, retry loop, durable queue, or resident runtime work. Any failed pin/blob read aborts before the candidate population is returned. The source predicate pins the exact read set, command, timeout, buffer, and non-detached behavior.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      const pathsStart = source.indexOf("  const paths = [");
+      const pathsEnd = source.indexOf("\n  ];", pathsStart);
+      const pathsBlock = pathsStart >= 0 && pathsEnd >= 0
+        ? source.slice(pathsStart, pathsEnd)
+        : "";
+      const pinnedPaths = [...pathsBlock.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+      const expectedPaths = [
+        "packages/operator-core/lib/modes/registry.ts",
+        "packages/operator-core/lib/modes/store.ts",
+        "packages/operator-core/lib/agent-tools/fleet_registry/join.ts",
+        "packages/operator-core/lib/agent-tools/fleet_registry/take-leadership-core.ts",
+        "libs/papercusp/packages/orchestrator/src/blueprint/mode-catalog.generated.ts",
+        "libs/papercusp/packages/orchestrator/src/blueprint/su-stack.ts",
+      ];
+      return resourceStartCallCount(source) === 1 &&
+        JSON.stringify(pinnedPaths) === JSON.stringify(expectedPaths) &&
+        source.includes("export function readIdopP001StackSources(root: string, superprojectCommit: string)") &&
+        source.includes("execFileSync('git', ['-C', repo, ...args], {") &&
+        source.includes("encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 15_000,") &&
+        source.includes("git(root, ['ls-tree', superprojectCommit, 'libs/papercusp'])") &&
+        source.includes("const sources = paths.map(path => {") &&
+        source.includes("const text = git(repo, ['show',") &&
+        source.includes("const commit = nested ? gitlink : superprojectCommit;") &&
+        !/\bdetached\s*:\s*true/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
+    path: "packages/operator-core/lib/agent-tools/capability/__fixtures__/managed-api-client.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-014 reviewed parent-owned test-process start. The canonical managed-capability integration file runs under test-files' runGovernedTestFileProcess/runGovernedTestProcess receipt and passes its admission environment through with-test-pg into this test-only fixture. The fixture starts one non-detached private operator host, waits for readiness, then observes its exact process identity gone and closes its loopback page server in teardown before the admitted file worker exits. This adds no independent serving service or resident queue; its lifecycle is covered by the parent test-file admission.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      const caller = readFileSync(new URL("../packages/operator-core/lib/agent-tools/capability/managed-capability-api.integration.test.ts", import.meta.url), "utf8");
+      const testRunner = readFileSync(new URL("./test-files.mjs", import.meta.url), "utf8");
+      const pgWrapper = readFileSync(new URL("./with-test-pg.mjs", import.meta.url), "utf8");
+      const privateHostEnv = readFileSync(new URL("../packages/operator-core/test/private-http-workspace-preflight.ts", import.meta.url), "utf8");
+      const governedRunner = readFileSync(new URL("./lib/governed-test-process.mjs", import.meta.url), "utf8");
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("assert(workspace?.startsWith('test-runtime-'), 'Disposable runtime identity required')") &&
+        source.includes("assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');") &&
+        source.includes("assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');") &&
+        source.includes("const host = spawn(process.execPath, [bundle], { env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });") &&
+        source.includes("try { await waitForPrivateOperator({ host, base, evidenceDir, environment: hostEnv, hostIdentity }); }") &&
+        source.includes("catch (error) { await stopPrivateOperatorHost(host); throw error; }") &&
+        source.includes("async () => { await stopPrivateOperatorHost(host);") &&
+        source.includes("pageServer.close(() => resolve())") &&
+        source.includes("await finishManagedApiTeardown({ hasProof: !!proof, rowCount: rows.length, cleanupErrors, close: [") &&
+        !/\bdetached\s*:\s*true/.test(code) &&
+        !hasCalledResourceStartAlias(code) &&
+        caller.includes("filePath: 'packages/operator-core/lib/agent-tools/capability/managed-capability-api.integration.test.ts'") &&
+        caller.includes("'packages/operator-core/lib/agent-tools/capability/__fixtures__/managed-api-client.mts'") &&
+        caller.includes("resolve(__dirname, '__fixtures__/managed-api-client.mts')") &&
+        caller.includes("captureIsolatedWorker(child, evidenceDir, isolatedTestFileWorkerOptions(childEnv, 1))") &&
+        testRunner.includes("return runGovernedTestFileProcess(governedProcessImpl, governedOptions, runChild") &&
+        testRunner.includes("const childEnv = startupTraceEnv(governedEnv ?? env);") &&
+        testRunner.includes("env: childEnv,") &&
+        testRunner.includes("child.once('close', (status, signal) => {") &&
+        pgWrapper.includes("...childEnv,") &&
+        privateHostEnv.includes("return { ...env, NODE_OPTIONS: kept.join(' ') }") &&
+        governedRunner.includes("return await api.runGovernedOperation(operation, (context) => {");
+    },
+  },
+  {
     path: "packages/operator-core/lib/agent-tools/plans/tree-instruments.ts",
     code: "unbounded-resident-queue",
     disposition: "semantic",
@@ -3856,7 +3929,7 @@ function hasCalledResourceStartAlias(code) {
   return false;
 }
 const GOVERNED =
-  /\bGovernor\.admit\b|\bgovernor\.admit\s*\(|\bbeginGovernedExecution\s*\(|\bwithGovernedExecution\s*\(|\brunGovernedOperation\s*\(|\brunGovernedTestProcess\s*\(|\bAdmissionContext\b|\bvalid(?:ated)?\s+local\s+lease\b/i;
+  /\bGovernor\.admit\b|\bgovernor\.admit\s*\(|\bbeginGovernedExecution\s*\(|\bwithGovernedExecution\s*\(|\brunGovernedOperation(?:\s*<[^;()]*>)?\s*\(|\brunGovernedTestProcess\s*\(|\bAdmissionContext\b|\bvalid(?:ated)?\s+local\s+lease\b/i;
 const RELEASE = /\.release\s*\(|\bAdmissionRelease\b/;
 const STATIC_CAP =
   /\b(?:maxConcurrent|maxWorkers|maxQueue|maxSimultaneous|capacityCeiling)\b\s*(?:[:=]|\?\?)\s*\d+/i;

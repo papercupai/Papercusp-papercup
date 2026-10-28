@@ -17,7 +17,7 @@
  */
 
 import type { CoordEnvelope } from './envelope';
-import { getMessageById } from './messages';
+import { getMessageById, resolveMessageRef } from './messages';
 import { getWorkItem, isSettledWorkItemState } from '../../work-items';
 import { findAnnouncementsForKey } from '../../events/await/store';
 import { getPlanRow, planItemsForRow } from '../plans/source';
@@ -117,8 +117,9 @@ function terminalSubjectFor(wi: {
 
 const defaultMsgResolver: RefResolver = async (ref, budget) => {
   if (ref.kind !== 'msg') return null;
-  const env = await getMessageById(ref.id);
-  if (!env) return null;
+  const resolution = await resolveMessageRef(ref.id);
+  if (resolution.status !== 'found') return null;
+  const env = resolution.message;
   const content = [env.summary, env.body].filter(Boolean).join(' — ');
   return { label: msgLabel(env), snippet: clampSnippet(content, budget.snippetChars) };
 };

@@ -1,0 +1,286 @@
+/**
+ * decision-provenance-record — a plan decision's provenance as a FIELD, not a text tag.
+ *
+ * one-work-graph-structured-holds-2026-10-26 P-018 (WI-6554700010030925); shape fixed by
+ * one-work-graph-structured-holds-2026-10-26#D-012, bar reading in #D-008 ("a decision's
+ * provenance is a field: an owner turn ref, or the agent").
+ *
+ * The row lives in harness_shared.plan_decision_provenance (migration 1603), NOT on
+ * harness_shared.plan_decisions: that table is rebuilt from the plan body on every plan write
+ * (plan-index-rows.ts writePlanIndexRows deletes then inserts), so a column only the decision
+ * tools write would be wiped by the next unrelated edit.
+ *
+ * Rules (each has a positive and a negative test in decision-provenance-record.test.ts):
+ *   1. `kind:'agent'` records the CALLER's identity as agent_id. It is never a caller argument.
+ *   2. `kind:'owner'` needs a `[turn:<session>@<ts>]` ref that the turn-provenance ledger
+ *      resolves to a verdict in OWNER_TURN_VERDICTS. A ref that does not parse, cannot be
+ *      checked, is not found, or resolves to a non-owner turn is REFUSED: an owner claim needs
+ *      positive evidence, so "could not check" is not good enough.
+ *   3. A body carrying an `[owner:…]` tag is refused unless the provenance kind is owner. The
+ *      tag is what this field replaces; leaving it in agent-kind bodies keeps the old ambiguity.
+ *      `[turn:…]` refs stay allowed as citations.
+ *
+ * Resolution does transcript IO (verifyTurnRefs), so call {@link resolveDecisionProvenance}
+ * BEFORE taking the plan lock, like decision-provenance.ts. The row write happens after the
+ * lock, once the decision id is known.
+ */
+
+import { z } from 'zod';
+import { withWorkspace } from '@papercusp/db-org';
+import { OWNER_TURN_VERDICTS } from '../../carry-surface-provenance-stamp';
+import {
+  parseTurnRefs,
+  verifyTurnRefs,
+  type RecordedTurnVerdict,
+  type TurnRefVerdict,
+} from '../../turn-provenance/turn-ref';
+import { resolveAgentIdentity } from '../coordination/identity';
+
+/** The tool argument. Omitted on add-decision means agent; omitted on set-decision-body keeps the row. */
+export const decisionProvenanceArg = z
+  .discriminatedUnion('kind', [
+    z.object({ kind: z.literal('agent') }).strict(),
+    z
+      .object({
+        kind: z.literal('owner'),
+        turnRef: z
+          .string()
+          .min(1)
+          .max(200)
+          .describe('the owner turn this ruling came from, as [turn:<session-prefix>@<iso-ts>]'),
+      })
+      .strict(),
+  ])
+  .describe(
+    "who this decision came from: { kind:'agent' } (default — the recording agent) or " +
+      "{ kind:'owner', turnRef:'[turn:<session>@<ts>]' } (refused unless that turn verifies as the owner). " +
+      'Replaces [owner:…] tags in the body.',
+  );
+export type DecisionProvenanceArg = z.infer<typeof decisionProvenanceArg>;
+
+export type OwnerTurnVerdict = 'owner-typed' | 'owner-turn' | 'owner-dialog';
+
+export type ResolvedDecisionProvenance =
+  | { kind: 'agent'; agentId: string }
+  | { kind: 'owner'; agentId: string; ownerTurnRef: string; ownerTurnVerdict: OwnerTurnVerdict };
+
+export type DecisionProvenanceRefusalCode =
+  | 'provenance_owner_turn_unparseable'
+  | 'provenance_owner_turn_unverified'
+  | 'provenance_owner_turn_not_owner'
+  | 'provenance_owner_tag_without_owner_kind'
+  | 'provenance_unattributable';
+
+export interface DecisionProvenanceRefusal {
+  ok: false;
+  error: DecisionProvenanceRefusalCode;
+  /** The argument path that failed, so the caller knows what to change. */
+  field: string;
+  message: string;
+  verdict?: TurnRefVerdict;
+}
+
+export type DecisionProvenanceResolution =
+  | { ok: true; provenance: ResolvedDecisionProvenance }
+  /** No identity and agent kind: the decision write proceeds, no row is recorded. */
+  | { ok: true; provenance: null; unrecordedReason: string }
+  | DecisionProvenanceRefusal;
+
+export interface DecisionProvenanceDeps {
+  verify: (ownerId: string, refs: ReturnType<typeof parseTurnRefs>) => Promise<TurnRefVerdict[]>;
+}
+
+const defaultDeps: DecisionProvenanceDeps = { verify: (ownerId, refs) => verifyTurnRefs(ownerId, refs) };
+
+// A real tag is the owner prefix plus content, closed by `]` on the same line. A sentence that
+// merely names the tag syntax has no closing bracket and is not a tag.
+const OWNER_TAG_RE = /\[owner:[^\]\s][^\]\n]{0,160}\]/i;
+
+/** Text outside fenced blocks and inline code spans: quoting a tag is not carrying one. */
+function proseOnly(text: string): string {
+  return text.replace(/```[\s\S]*?```/g, ' ').replace(/~~~[\s\S]*?~~~/g, ' ').replace(/`[^`\n]*`/g, ' ');
+}
+
+/** The first `[owner:…]` tag in the body's prose, or null. */
+export function findOwnerTag(text: string): string | null {
+  return OWNER_TAG_RE.exec(proseOnly(text))?.[0] ?? null;
+}
+
+function isOwnerVerdict(v: RecordedTurnVerdict | null): v is OwnerTurnVerdict {
+  return v !== null && OWNER_TURN_VERDICTS.has(v);
+}
+
+/**
+ * Resolve the provenance for a decision write. `arg` undefined means agent kind.
+ * `body` is the full text being written (title + body), checked for `[owner:…]` tags.
+ */
+export async function resolveDecisionProvenance(
+  arg: DecisionProvenanceArg | undefined,
+  body: string,
+  ctx: unknown,
+  deps: DecisionProvenanceDeps = defaultDeps,
+): Promise<DecisionProvenanceResolution> {
+  const kind = arg?.kind ?? 'agent';
+  const tag = findOwnerTag(body);
+  if (tag && kind !== 'owner') {
+    return {
+      ok: false,
+      error: 'provenance_owner_tag_without_owner_kind',
+      field: 'provenance',
+      message:
+        `The body carries the owner tag ${tag}, but provenance is '${kind}'. Owner provenance is a field now: ` +
+        "pass provenance: { kind:'owner', turnRef:'[turn:<session>@<ts>]' } naming the owner's turn, or remove the tag " +
+        'if the ruling is your own. one-work-graph-structured-holds-2026-10-26#D-012.',
+    };
+  }
+
+  let agentId: string | null = null;
+  try {
+    agentId = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId ?? null;
+  } catch {
+    agentId = null;
+  }
+
+  if (!arg || arg.kind === 'agent') {
+    if (!agentId) return { ok: true, provenance: null, unrecordedReason: 'caller identity unresolvable' };
+    return { ok: true, provenance: { kind: 'agent', agentId } };
+  }
+
+  if (!agentId) {
+    return {
+      ok: false,
+      error: 'provenance_unattributable',
+      field: 'provenance',
+      message: 'Owner provenance needs a caller identity: the owner turn is verified against your own transcript chain.',
+    };
+  }
+  const wrapped = arg.turnRef.trim().startsWith('[') ? arg.turnRef.trim() : `[turn:${arg.turnRef.trim()}]`;
+  const refs = parseTurnRefs(wrapped);
+  if (refs.length !== 1) {
+    return {
+      ok: false,
+      error: 'provenance_owner_turn_unparseable',
+      field: 'provenance.turnRef',
+      message: `provenance.turnRef must be exactly one [turn:<session-prefix>@<iso-ts>] ref; got ${JSON.stringify(arg.turnRef)}.`,
+    };
+  }
+  let verdicts: TurnRefVerdict[] = [];
+  try {
+    verdicts = await deps.verify(agentId, refs);
+  } catch {
+    verdicts = [];
+  }
+  const v = verdicts[0];
+  if (!v || !v.checked || !v.found) {
+    return {
+      ok: false,
+      error: 'provenance_owner_turn_unverified',
+      field: 'provenance.turnRef',
+      message:
+        `Owner turn ${refs[0].raw} could not be ${v?.checked ? 'found in' : 'checked against'} your transcript chain. ` +
+        'An owner claim needs positive evidence; cite a turn the turn-provenance ledger can resolve, or record the decision as agent.',
+      ...(v ? { verdict: v } : {}),
+    };
+  }
+  if (!isOwnerVerdict(v.verdict)) {
+    return {
+      ok: false,
+      error: 'provenance_owner_turn_not_owner',
+      field: 'provenance.turnRef',
+      message: `Turn ${refs[0].raw} resolved to verdict '${v.verdict ?? 'none'}', which is not the owner speaking. Record the decision as agent.`,
+      verdict: v,
+    };
+  }
+  return {
+    ok: true,
+    provenance: { kind: 'owner', agentId, ownerTurnRef: refs[0].raw, ownerTurnVerdict: v.verdict },
+  };
+}
+
+export interface DecisionKey {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  decisionId: string;
+}
+
+/** What a decision read returns. 'unrecorded' = no row (a decision written before P-018 and not yet converted). */
+export type DecisionProvenanceView =
+  | { kind: 'agent'; agentId: string; source: 'write' | 'conversion'; recordedAt: string }
+  | {
+      kind: 'owner';
+      agentId: string;
+      ownerTurnRef: string;
+      ownerTurnVerdict: OwnerTurnVerdict;
+      source: 'write' | 'conversion';
+      recordedAt: string;
+    }
+  | { kind: 'unrecorded' };
+
+export const UNRECORDED_PROVENANCE: DecisionProvenanceView = { kind: 'unrecorded' };
+
+/** Insert or replace the row for one decision (source 'write'). */
+export async function upsertDecisionProvenance(key: DecisionKey, p: ResolvedDecisionProvenance): Promise<void> {
+  const turnRef = p.kind === 'owner' ? p.ownerTurnRef : null;
+  const verdict = p.kind === 'owner' ? p.ownerTurnVerdict : null;
+  await withWorkspace(key.workspaceId, async (tx) => {
+    await tx`
+      INSERT INTO harness_shared.plan_decision_provenance
+        (workspace_id, harness_slug, plan_slug, decision_id, kind, owner_turn_ref, owner_turn_verdict, agent_id, source)
+      VALUES (${key.workspaceId}, ${key.harnessSlug}, ${key.planSlug}, ${key.decisionId},
+              ${p.kind}, ${turnRef}, ${verdict}, ${p.agentId}, 'write')
+      ON CONFLICT (workspace_id, harness_slug, plan_slug, decision_id) DO UPDATE SET
+        kind = EXCLUDED.kind,
+        owner_turn_ref = EXCLUDED.owner_turn_ref,
+        owner_turn_verdict = EXCLUDED.owner_turn_verdict,
+        agent_id = EXCLUDED.agent_id,
+        source = 'write',
+        updated_at = now()`;
+  });
+}
+
+interface ProvenanceRow {
+  decision_id: string;
+  kind: 'owner' | 'agent';
+  owner_turn_ref: string | null;
+  owner_turn_verdict: OwnerTurnVerdict | null;
+  agent_id: string;
+  source: 'write' | 'conversion';
+  recorded_at: Date | string;
+}
+
+export function rowToView(r: ProvenanceRow): DecisionProvenanceView {
+  const recordedAt = r.recorded_at instanceof Date ? r.recorded_at.toISOString() : String(r.recorded_at);
+  if (r.kind === 'owner' && r.owner_turn_ref && r.owner_turn_verdict) {
+    return {
+      kind: 'owner',
+      agentId: r.agent_id,
+      ownerTurnRef: r.owner_turn_ref,
+      ownerTurnVerdict: r.owner_turn_verdict,
+      source: r.source,
+      recordedAt,
+    };
+  }
+  return { kind: 'agent', agentId: r.agent_id, source: r.source, recordedAt };
+}
+
+/** Provenance for the given decisions of one plan; ids with no row map to 'unrecorded'. */
+export async function loadDecisionProvenance(
+  scope: Omit<DecisionKey, 'decisionId'>,
+  decisionIds: readonly string[],
+): Promise<Map<string, DecisionProvenanceView>> {
+  const out = new Map<string, DecisionProvenanceView>();
+  for (const id of decisionIds) out.set(id, UNRECORDED_PROVENANCE);
+  if (decisionIds.length === 0) return out;
+  const rows = await withWorkspace(scope.workspaceId, async (tx) =>
+    tx<ProvenanceRow[]>`
+      SELECT decision_id, kind, owner_turn_ref, owner_turn_verdict, agent_id, source, recorded_at
+        FROM harness_shared.plan_decision_provenance
+       WHERE workspace_id = ${scope.workspaceId}
+         AND harness_slug = ${scope.harnessSlug}
+         AND plan_slug = ${scope.planSlug}
+         AND decision_id = ANY(${[...decisionIds]})`,
+  );
+  for (const r of rows) out.set(r.decision_id, rowToView(r));
+  return out;
+}

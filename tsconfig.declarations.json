@@ -284,6 +284,8 @@
     "scripts/templates-mirror-sync.mjs",
     "scripts/check-typeless-reexport-trap.mjs",
     "scripts/check-full-replacement-mocks.mjs",
+    // EI-26800712165140052 — the peer-edit-impact integration test imports this analysis helper directly.
+    "scripts/check-required-field-strands.mjs",
     // WI-37717: its .d.mts was COMMITTED but never registered, so gen:declarations skipped it
     // and the checked-in declaration silently drifted from the source. Found when migrating
     // the guard to the shared stripper changed an exported signature and removed an export —

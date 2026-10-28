@@ -344,7 +344,7 @@ CLAUDE_NATIVE_EDIT_TOOLS = {'Edit', 'Write', 'MultiEdit'}
 CODEX_NATIVE_EDIT_TOOLS = {'apply_patch', 'write_file', 'edit_file'}
 
 
-def native_edit_result_succeeded(response):
+def native_edit_result_succeeded(response, tool=None):
     """Return True only when a native edit result carries usable success evidence.
 
     Claude's PostToolUse payload has had both structured and text result shapes.
@@ -363,9 +363,14 @@ def native_edit_result_succeeded(response):
             return False
         return not re.match(r'^(?:error|failed|failure|denied|permission denied)\b', text, re.I)
     if isinstance(response, list):
-        return bool(response) and all(native_edit_result_succeeded(item) for item in response)
+        return bool(response) and all(native_edit_result_succeeded(item, tool) for item in response)
     if not isinstance(response, dict):
         return False
+
+    # Codex reports a successful native apply_patch as {}. Keep this exception
+    # scoped to that exact tool; empty results from other edit tools stay unknown.
+    if not response:
+        return tool == 'apply_patch'
 
     if response.get('is_error') is True or response.get('isError') is True:
         return False
@@ -437,7 +442,7 @@ def native_edit_proof(tool, response, paths, tool_input=None, coordination_domai
             return None
         results = nested_codex_apply_patch_results(response)
         if (len(results) != len(patches)
-                or not all(native_edit_result_succeeded(result) for result in results)
+                or not all(native_edit_result_succeeded(result, 'apply_patch') for result in results)
                 or not nested_codex_paths_match(patches, paths, coordination_domain)):
             return None
         nested_proof = True
@@ -447,7 +452,7 @@ def native_edit_proof(tool, response, paths, tool_input=None, coordination_domai
             or not all(isinstance(p, str) and p for p in paths)
             or len(set(paths)) != len(paths)):
         return None
-    if not nested_proof and not native_edit_result_succeeded(response):
+    if not nested_proof and not native_edit_result_succeeded(response, tool):
         return None
     proof = {
         'success': True,
@@ -471,7 +476,8 @@ def recover_failed_code_mode_edit(current_cache_path):
     if not native_retry and not parent_tool_terminal(payload.get('tool_response', payload.get('toolResponse'))):
         return
     if native_retry:
-        if not native_edit_result_succeeded(payload.get('tool_response', payload.get('toolResponse'))):
+        if not native_edit_result_succeeded(
+                payload.get('tool_response', payload.get('toolResponse')), tool_name):
             return
     elif tool_name not in ('exec', 'functions.exec', 'functions__exec'):
         return

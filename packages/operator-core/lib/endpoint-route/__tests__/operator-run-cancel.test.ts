@@ -5,13 +5,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { CardResponse } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@papercusp/db-org';
+import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('../../auth', () => ({ getSessionUser: vi.fn(), getSessionUserOrDefault: vi.fn(), resolveSessionToken: vi.fn() }));
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: {} }),
 }));
-vi.mock('../../agent-tools/operator/converse-card', () => ({ findConverseRunCards: vi.fn(async () => null) }));
+vi.mock('../../agent-tools/operator/converse-card', async original => ({
+  ...(await original<typeof import('../../agent-tools/operator/converse-card')>()),
+  findConverseRunCards: vi.fn(async () => null),
+}));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'workspace-cancel' }));
 vi.mock('../../operator-conversations', () => ({ getConversationById: vi.fn() }));
 vi.mock('../telemetry', () => ({
@@ -20,8 +25,8 @@ vi.mock('../telemetry', () => ({
 
 import { Hono } from 'hono';
 import { getSessionUser, getSessionUserOrDefault } from '../../auth';
-import { getConversationById } from '../../operator-conversations';
-import { findConverseRunCards } from '../../agent-tools/operator/converse-card';
+import { getConversationById, type ConversationRow } from '../../operator-conversations';
+import { createConverseCard, findConverseRunCards } from '../../agent-tools/operator/converse-card';
 import {
   _resetCardCorrelatorForTests,
   _resetStateChannelForTests,
@@ -44,6 +49,31 @@ function post(body: unknown) {
   });
 }
 
+type CommitResponse = NonNullable<ReturnType<typeof createConverseCard>['commitResponse']>;
+
+function mockConverseRunCard(input: { correlationId: string; runId: string; commitResponse: CommitResponse }) {
+  const card = createConverseCard({
+    sql: getOrgPg().sql,
+    parent: {
+      workspaceId: ws, conversationId: 'c1', turnId: 'parent-turn', runId: 'parent-run',
+      authority: { kind: 'system', principalId: 'system:parent', credentialSha256: 'a'.repeat(64) },
+    },
+    binding: { dispatchCallId: 'dispatch', childRunId: input.runId, credentialSha256: 'b'.repeat(64) },
+    tool: { name: 'chat:ask_choice', callId: 'dispatch', input: { question: 'choose', options: [{ id: 'a', label: 'A' }] } },
+    correlationId: input.correlationId,
+  });
+  card.commitResponse = input.commitResponse;
+  mockResolvedTyped(vi.mocked(findConverseRunCards), [card]);
+  return card;
+}
+
+function conversationRow(id: string, workspaceId: string): ConversationRow {
+  return {
+    id, workspaceId, harnessSlug: null, subjectKind: 'global', subjectRef: null, title: null,
+    status: 'active', startedAt: 0, endedAt: null, elConversationIds: [], hasAudio: false,
+  };
+}
+
 describe('POST /run-cancel', () => {
   beforeEach(() => {
     _resetCardCorrelatorForTests();
@@ -58,8 +88,8 @@ describe('POST /run-cancel', () => {
     vi.mocked(getConversationById).mockReset();
     vi.mocked(findConverseRunCards).mockReset();
     vi.mocked(findConverseRunCards).mockResolvedValue(null);
-    vi.mocked(getConversationById).mockImplementation(async (id, workspaceId) =>
-      id === 'c1' && workspaceId === ws ? { id, workspaceId } as never : null);
+    mockImplementationTyped(vi.mocked(getConversationById), async (id, workspaceId) =>
+      id === 'c1' && workspaceId === ws ? conversationRow(id, workspaceId) : null);
     app = new Hono().basePath('/api');
     registerRoute(app, runCancel);
   });
@@ -86,8 +116,7 @@ describe('POST /run-cancel', () => {
     const commitResponse = vi.fn(async (response: CardResponse) => { await gate; return { accepted: true, response }; });
     const card = registerCard({ workspaceId: ws, runId: 'durable-run',
       spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
-    vi.mocked(findConverseRunCards).mockResolvedValue([{ commitResponse,
-      info: () => ({ correlationId: card.correlationId, runId: 'durable-run', workspaceId: ws }) }] as never);
+    mockConverseRunCard({ correlationId: card.correlationId, runId: 'durable-run', commitResponse });
     let acknowledged = false;
     let delivered = false;
     void card.result.then(() => { delivered = true; });
@@ -105,8 +134,7 @@ describe('POST /run-cancel', () => {
     const commitResponse = vi.fn(async () => { throw new Error('cancel-ack-lost'); });
     const card = registerCard({ workspaceId: ws, runId: 'uncertain-run',
       spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
-    vi.mocked(findConverseRunCards).mockResolvedValue([{ commitResponse,
-      info: () => ({ correlationId: card.correlationId, runId: 'uncertain-run', workspaceId: ws }) }] as never);
+    mockConverseRunCard({ correlationId: card.correlationId, runId: 'uncertain-run', commitResponse });
     let delivered = false;
     void card.result.then(() => { delivered = true; });
     expect((await post({ runId: 'uncertain-run', workspaceId: ws })).status).toBe(503);
@@ -136,9 +164,8 @@ describe('POST /run-cancel', () => {
   });
 
   it('cancels a recovered durable run without a local snapshot or deferred', async () => {
-    const commitResponse = vi.fn(async () => ({ accepted: true, response: { action: 'cancel' } }));
-    vi.mocked(findConverseRunCards).mockResolvedValue([{ commitResponse,
-      info: () => ({ correlationId: 'remote-card', runId: 'remote-child', workspaceId: ws }) }] as never);
+    const commitResponse = vi.fn(async () => ({ accepted: true, response: { action: 'cancel' } satisfies CardResponse }));
+    mockConverseRunCard({ correlationId: 'remote-card', runId: 'remote-child', commitResponse });
     expect((await post({ runId: 'remote-child', workspaceId: ws })).status).toBe(200);
     expect(findConverseRunCards).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: ws,
       conversationId: 'c1', runId: 'remote-child', authorizeAdditional: expect.any(Function) }));

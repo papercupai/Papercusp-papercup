@@ -11,6 +11,7 @@ import {
   currentBuildRoutesForRuntime,
   currentBuildTestRoute,
   SERVING_RUNTIME_IDS,
+  SERVING_RUNTIMES,
   describeServingRuntimes,
   evaluateServingRuntime,
   parseHealthBundleState,
@@ -76,6 +77,23 @@ describe('runtime selection', () => {
     });
     expect(currentBuildRoutesForRuntime('release-operator')).toEqual([]);
     expect(currentBuildTestRoute('unrecognized')).toBeNull();
+  });
+
+  it('describes staging activation through maintained local sync, restart, then containment verification', () => {
+    const staging = SERVING_RUNTIMES['staging-operator'];
+    const { activation } = staging;
+    const syncAt = activation.indexOf('papercup-staging-sync.service');
+    const restartAt = activation.indexOf('dev:restart');
+    const verificationAt = activation.indexOf('dev:pipeline_position');
+
+    expect(staging.label).not.toContain('origin/staging');
+    expect(activation).toMatch(/locally committed staging HEAD/i);
+    expect(activation).toMatch(/dev:restart only reloads that published generation/);
+    expect(activation).toContain('servingRuntimes');
+    expect(activation).not.toContain('git-sync publishes to origin/staging');
+    expect(syncAt).toBeGreaterThanOrEqual(0);
+    expect(syncAt).toBeLessThan(restartAt);
+    expect(restartAt).toBeLessThan(verificationAt);
   });
 
   it('keeps pre-release route gaps explicit instead of claiming :3170 covers every class', () => {

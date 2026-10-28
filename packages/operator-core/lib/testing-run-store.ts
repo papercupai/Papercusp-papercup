@@ -980,13 +980,16 @@ async function persistReconciledSnapshot(
   reconciled: RunSnapshot,
   sql: SqlLike,
 ): Promise<RunSnapshot> {
+  const finishedAt = reconciled.finishedAt === null
+    ? null
+    : new Date(reconciled.finishedAt).toISOString();
   let update: PromiseLike<unknown>;
   try {
     update = sql`
       UPDATE harness_shared.testing_run_snapshots
          SET status = ${reconciled.status},
              exit_code = ${reconciled.exitCode},
-             finished_at = ${new Date(reconciled.finishedAt!).toISOString()},
+             finished_at = ${finishedAt},
              output = ${reconciled.output},
              truncated = ${reconciled.truncated},
              updated_at = now()
@@ -1340,8 +1343,13 @@ async function reconcilePersistedReportArtifact(
   // verdict; it must never turn an unknown process exit into an observed one.
   const unobservedExit = row.task_state === 'ended_unobserved' && row.task_exit_code === null;
   const observedExit = row.task_state === 'exited' && typeof row.task_exit_code === 'number';
-  if ((snapshot.status !== 'running' && !noVerdict && !closed) || (!observedExit && !unobservedExit)
-    || epochMs(row.task_ended_at ?? null) === null) return snapshot;
+  const taskDeadlineAt = epochMs(row.task_deadline_at ?? null);
+  const expiredRunningTask = row.task_state === 'running' && taskDeadlineAt !== null && taskDeadlineAt <= Date.now();
+  const taskEnded = epochMs(row.task_ended_at ?? null) !== null;
+  if ((snapshot.status !== 'running' && !noVerdict && !closed)
+    || (!observedExit && !unobservedExit && !expiredRunningTask)
+    || (!expiredRunningTask && !taskEnded)
+    || (expiredRunningTask && snapshot.status !== 'running' && !noVerdict)) return snapshot;
   const artifacts = detachedArtifactsFromRow(snapshot, row);
   if (artifacts.length === 0) return snapshot;
   const requestedFiles = snapshot.requestedFiles ?? requestedFilesFromTaskDetail(row.task_detail) ?? undefined;
@@ -1385,7 +1393,15 @@ async function reconcilePersistedReportArtifact(
         || (observedExit && verdict.exitCode !== row.task_exit_code)) {
         throw new Error('detached_report_process_verdict_mismatch');
       }
-      const reconciled = await persistReconciledSnapshot(snapshot, {
+      const reconciled = await persistReconciledSnapshot(snapshot, expiredRunningTask ? {
+        ...snapshot,
+        // The report proves per-file assertions, not the detached process exit.
+        // Keep deadline expiry visible at the run level and leave its exit unknown.
+        status: 'error', exitCode: null, finishedAt: Date.now(),
+        output: snapshot.output + `\n[detached-recovery] recorded completed saved Vitest report (${verdict.status}) `
+          + 'after the linked task deadline; per-file results were ingested, but the overall run remains error '
+          + 'because the process exit code was not observed.\n',
+      } : {
         ...snapshot, status: verdict.status, exitCode: row.task_exit_code!, finishedAt: verdict.finishedAt,
         output: snapshot.output + '\n[detached-recovery] recovered completed saved Vitest report.'
           + (unobservedExit ? ' The process exit code was not observed.' : '') + '\n',

@@ -6,7 +6,8 @@
  * because the release operator is the one process the git pipeline activates. Every
  * other long-lived runtime on this box loads code by a different route (bg-host, the
  * gateway and the embed sidecar bundle the canonical tree on start; the staging operator
- * runs its own `origin/staging` checkout; each psu session's pty host loads its script at
+ * runs an isolated generation selected by `papercup-staging-sync.service` from the locally
+ * committed staging branch; each psu session's pty host loads its script at
  * launch). Measured 2026-09-23 on psu-pty-turn-boundary-generalization: the ingest
  * routine had been running the fix in bg-host since 23:58Z while the tool said
  * `deployed:false, blockedOn:gate`, and both the implementer and the independent grader
@@ -92,7 +93,7 @@ export const SERVING_RUNTIMES: Readonly<Record<ServingRuntimeId, ServingRuntimeS
   },
   'staging-operator': {
     id: 'staging-operator',
-    label: ':3170 staging operator (origin/staging checkout)',
+    label: ':3170 staging operator (maintained committed staging generation)',
     releasePipelineApplies: false,
     codeSource: 'staging-checkout',
     unit: RESTART_TARGET_UNITS.staging,
@@ -100,7 +101,7 @@ export const SERVING_RUNTIMES: Readonly<Record<ServingRuntimeId, ServingRuntimeS
     vintageUnit: 'hono-host:3170',
     aliases: ['staging-operator', ':3170', '3170', 'staging operator'],
     activation:
-      'git-sync publishes to origin/staging, then dev:restart { target: "staging", confirm: true, authorize: true, reason: "<why>" } reloads it',
+      'papercup-staging-sync.service selects the locally committed staging HEAD and publishes the immutable :3170 generation; dev:restart only reloads that published generation ({ target: "staging", confirm: true, authorize: true, reason: "<why>" }); verify the intended commit with dev:pipeline_position { path: "<changed path>" } → servingRuntimes',
   },
   'bg-host': {
     id: 'bg-host',
@@ -324,7 +325,8 @@ export function currentBuildRoutesForRuntime(runtime: EvidenceRuntimeId): Curren
 export function runtimesForHost(host: RuntimeHost): ServingRuntimeId[] {
   switch (host) {
     // The operator's code is served by TWO processes on two routes: the release
-    // checkout (:3070, green main) and the staging checkout (:3170, origin/staging).
+    // checkout (:3070, green main) and the isolated :3170 generation selected from the
+    // locally committed staging branch by papercup-staging-sync.service.
     case 'operator-release':
       return ['release-operator', 'staging-operator'];
     case 'bg-host':
