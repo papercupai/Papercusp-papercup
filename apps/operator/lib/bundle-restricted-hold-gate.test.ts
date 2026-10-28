@@ -305,7 +305,33 @@ describe('bundle-host.sh wiring', () => {
         .split('\n')
         .map((line, index) => ({ line: line.trim(), number: index + 1 }))
         .filter(({ line }) => !line.startsWith('#') && /(^|[\s!(;]|\$\()node\s+"/.test(line));
-    expect(plainNode(script), 'bundle-host.sh runs a helper with plain node').toEqual([]);
+    // The ONE exemption (EI-27162307954577154): the caller-owned BG transaction branch
+    // (bg-host-committed-generation-2026-10-24) binds its attempt BEFORE any loader. Its only
+    // helper, source-preview.mjs bg-build-*, refuses ambient Node resolution (the recorded
+    // NODE_OPTIONS must be empty, which this loader would break) and requires the builder and
+    // repository to be the selected generation's own (prepared.root), never the live shared tree,
+    // so its bytes are already the committed generation's. Pin the branch so the exemption cannot
+    // widen: it must refuse NODE_OPTIONS/NODE_PATH, exit on every path, run only bg-build-*, and
+    // sit before the loader is configured.
+    const lines = script.split('\n');
+    const bgStart = lines.indexOf('if [[ "${1:-}" == --bg-transaction ]]; then');
+    expect(bgStart, 'bundle-host.sh lost its --bg-transaction branch').toBeGreaterThan(-1);
+    const bgEnd = lines.indexOf('fi', bgStart);
+    expect(bgEnd).toBeGreaterThan(bgStart);
+    const bgBlock = lines.slice(bgStart, bgEnd + 1).join('\n');
+    const outsideBg = [...lines.slice(0, bgStart), ...lines.slice(bgEnd + 1)].join('\n');
+    expect(bgEnd, 'the BG branch must run before the committed-source loader is configured')
+      .toBeLessThan(lines.findIndex((line) => line.startsWith('COMMITTED_NODE=(')));
+    expect(bgBlock).toContain('if [[ -n "${NODE_OPTIONS:-}" || -n "${NODE_PATH:-}" ]]; then');
+    expect(lines.slice(bgStart, bgEnd).filter((line) => line.trim()).at(-1)?.trim(),
+      'every path through the BG branch must exit before the build continues').toBe('exit 0');
+    const bgNode = plainNode(bgBlock);
+    expect(bgNode.length, 'the BG branch must keep exactly its two source-preview steps').toBe(2);
+    for (const { line } of bgNode) {
+      expect(line, 'the BG branch may run only source-preview bg-build-*')
+        .toMatch(/node "\$REPO_ROOT\/scripts\/source-preview\.mjs" bg-build-(begin|run) \\$/);
+    }
+    expect(plainNode(outsideBg), 'bundle-host.sh runs a helper with plain node').toEqual([]);
     expect(plainNode(common), 'bundle-host-common.sh runs a helper with plain node').toEqual([]);
     for (const helper of [
       '"$REPO_ROOT/scripts/npm-install-safe.mjs"',

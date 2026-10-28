@@ -21,6 +21,7 @@ import type { SuAgent } from './su-agents';
 import { caveat, type FieldCaveat } from './field-reliability';
 import { trackDetached } from './detached-imports';
 import { recordSessionIdentityReanchor } from './session-identity-attribution';
+import { RESUMABLE_PORT_STATUS } from './resumable-port-status';
 import { traceNamedQueryStage } from './agent-tools/db-diagnostic-correlation-wiring';
 
 /**
@@ -2620,8 +2621,10 @@ export async function listResumableSessions(
            AND attname = 'port_status' AND NOT attisdropped
       ) AS present
     `;
+    // Same rule as portStatusAllowsResume (resumable-port-status.ts), which the
+    // consult router applies before it launches a fork or a port (WI-6554700010030461).
     const deliveredPort = portColumn?.present
-      ? sql`COALESCE(a.port_status, 'delivered') = 'delivered'`
+      ? sql`COALESCE(a.port_status, ${RESUMABLE_PORT_STATUS}) = ${RESUMABLE_PORT_STATUS}`
       : sql`TRUE`;
     const rows = await sql<
       Array<{

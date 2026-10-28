@@ -8262,11 +8262,15 @@ export async function setWorkItemClaimHold(
   const rows = await sql<{ payload: Record<string, unknown> | null }[]>`
     UPDATE harness_shared.work_items
        SET payload = CASE
+             -- WI-6554700010030449: a (re-)park drops the contract-less re-check date; a lease-only
+             -- hold (no parkedBy) leaves the park and its date alone.
+             WHEN ${hold} AND ${Boolean(opts.parkedBy)} THEN (COALESCE(payload, '{}'::jsonb) - 'claim_hold_recheck') || ${holdPatch}::text::jsonb
              WHEN ${hold} THEN COALESCE(payload, '{}'::jsonb) || ${holdPatch}::text::jsonb
              WHEN ${opts.leaseOnly === true} AND COALESCE(payload, '{}'::jsonb) ? 'claim_hold_by'
              THEN COALESCE(payload, '{}'::jsonb) - 'held_open_by' - 'held_open_reason' - 'held_open_at'
              ELSE COALESCE(payload, '{}'::jsonb) - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
                     - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at' - 'claim_hold_release'
+                    - 'claim_hold_recheck'
            END,
            updated_ts = ${Date.now()}
      WHERE workspace_id = ${ws} AND feature_id = ${id}

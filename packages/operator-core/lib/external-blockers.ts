@@ -238,8 +238,11 @@ export function readExternalBlockers(payload: unknown): ExternalBlockerRecord[] 
   return rows.flatMap((row): ExternalBlockerRecord[] => {
     if (!row || typeof row !== 'object' || Array.isArray(row)) return [];
     const r = row as Record<string, unknown>;
+    // Keep these checks in step with listMalformedActiveBlockers in
+    // attention/work-item-blocker-reaper.ts: its SQL reports every active row rejected here.
     if (
-      !['event', 'gate', 'runtime', 'human'].includes(String(r.kind)) ||
+      typeof r.kind !== 'string' ||
+      !['event', 'gate', 'runtime', 'human'].includes(r.kind) ||
       typeof r.ref !== 'string' ||
       typeof r.summary !== 'string' ||
       (r.status !== 'active' && r.status !== 'cleared') ||

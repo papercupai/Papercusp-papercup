@@ -221,11 +221,11 @@ function readProbe(overrides: Partial<ContinuityProbe> = {}): ContinuityProbe {
   } as ContinuityProbe;
 }
 
-function source(probe: ContinuityProbe, i = 0): ContinuityProbeSource {
+function source(probe: ContinuityProbe, i = 0, recheck = 'read status'): ContinuityProbeSource {
   return {
     source: { kind: 'work-item', id: `WI-${i + 1}`, harness: 'papercusp' },
     checkIndex: i,
-    check: { id: `check-${i}`, claim: `claim ${i}`, recheck: 'read status', probe },
+    check: { id: `check-${i}`, claim: `claim ${i}`, recheck, probe },
   };
 }
 
@@ -425,6 +425,19 @@ describe('continuity probe wake replay', () => {
     expect(batch.results[2]?.diagnostic).toMatchObject({ code: 'tool_error', message: expect.stringMatching(/returned an error: failed$/) });
     expect(batch.results.map((result) => result.source)).toEqual(probes.map((row) => row.source));
     expect(batch.executed).toBe(3);
+  });
+
+  it('carries a conditional stored re-check beside a probe failure', async () => {
+    const recheck = 'On an unblock or deployed-SHA transition, read state:read for the pipeline position.';
+    const batch = await runContinuityProbeBatch([source(readProbe(), 0, recheck)], {
+      dispatchTool: async () => ({ isError: true, content: [{ type: 'text', text: 'cell unavailable' }] }),
+    });
+    expect(batch.results[0]).toMatchObject({
+      status: 'error',
+      executed: true,
+      recheck,
+      diagnostic: { code: 'tool_error' },
+    });
   });
 
   it('fails closed on revision/argument drift without dispatching', async () => {

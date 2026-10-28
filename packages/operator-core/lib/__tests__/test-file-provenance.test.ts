@@ -32,6 +32,7 @@ import {
   provenanceResultFields,
   readChildSourceNotices,
   snapshotProvenance,
+  unscopedFocusedRunWarning,
   REPO_ROOT,
   // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
   // line of this multi-line import, so the suppression directive must be the
@@ -347,13 +348,17 @@ describe('provenance fields on the terminal marker line', () => {
 describe('test-spawned child committed-source substitutions', () => {
   it('main records actual substituted cases and isolates the next node group from earlier notices', async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'router-node-source-')));
+    // PAPERCUSP_TEST_RUN_HARNESS is cleared so every runner sees the gate's environment:
+    // testing:run sets it, the green-checkpoint does not, and main() warns when it is unset.
     const keys = [CHILD_SOURCE_NOTICE_ENV, 'NODE_OPTIONS', 'PC_HEAVY_PREEMPT_READY_FILE',
-      'PC_HEAVY_PSI_FINALIZATION_FILE', 'VERIFY_TAURI_SOURCE_RECEIPT', 'VERIFY_TAURI_SOURCE_REF'];
+      'PC_HEAVY_PSI_FINALIZATION_FILE', 'VERIFY_TAURI_SOURCE_RECEIPT', 'VERIFY_TAURI_SOURCE_REF',
+      'PAPERCUSP_TEST_RUN_HARNESS'];
     const saved = keys.map(key => process.env[key]);
     for (const key of keys) delete process.env[key];
     const rows: TestRunRow[] = [];
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
@@ -386,6 +391,8 @@ describe('test-spawned child committed-source substitutions', () => {
         },
       });
       expect(code).toBe(0);
+      // The only console.warn is the unscoped-ledger notice; any other warning still fails.
+      expect(warnSpy.mock.calls.map(call => String(call[0]))).toEqual([unscopedFocusedRunWarning({})]);
       expect(rows).toHaveLength(2);
       const substituted = rows.find(row => row.filePath === 'scripts/fixture.test.mjs')!;
       expect(substituted).toMatchObject({ status: 'pass', commitSha: null, worktreeDirty: true });
@@ -401,7 +408,7 @@ describe('test-spawned child committed-source substitutions', () => {
         if (saved[index] === undefined) delete process.env[key];
         else process.env[key] = saved[index];
       });
-      logSpy.mockRestore(); errSpy.mockRestore(); stdoutSpy.mockRestore(); stderrSpy.mockRestore();
+      logSpy.mockRestore(); errSpy.mockRestore(); warnSpy.mockRestore(); stdoutSpy.mockRestore(); stderrSpy.mockRestore();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -549,9 +556,11 @@ describe('test-spawned child committed-source substitutions', () => {
   // its child env before the channel was exported, so the child got no channel while
   // process.env had one; reading process.env here hid that.
   async function runMainWithFakeChild(receiptFile?: string) {
+    // PAPERCUSP_TEST_RUN_HARNESS is cleared so every runner sees the gate's environment
+    // (testing:run sets it; the green-checkpoint does not; main() warns when it is unset).
     const keys: string[] = [
       CHILD_SOURCE_NOTICE_ENV, 'PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE',
-      'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
+      'PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PAPERCUSP_TEST_RUN_HARNESS',
     ];
     const saved = keys.map((key) => process.env[key]);
     // Under `npm run test:file` this worker inherits the PARENT router's channel; the fake child
@@ -560,6 +569,7 @@ describe('test-spawned child committed-source substitutions', () => {
     if (receiptFile) process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = receiptFile;
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     let censusSaw: string | undefined = 'census not called';
     let channel: string | undefined;
@@ -589,6 +599,8 @@ describe('test-spawned child committed-source substitutions', () => {
       });
       afterMain = process.env[CHILD_SOURCE_NOTICE_ENV];
       output = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+      // The only console.warn is the unscoped-ledger notice; any other warning still fails.
+      expect(warnSpy.mock.calls.map((call: unknown[]) => String(call[0]))).toEqual([unscopedFocusedRunWarning({})]);
     } finally {
       keys.forEach((key, i) => {
         if (saved[i] === undefined) delete process.env[key];

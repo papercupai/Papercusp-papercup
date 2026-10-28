@@ -17,6 +17,7 @@
  * @property {boolean} [memoryEnabled]
  * @property {string} [detectorSessionKey] private failure-loop detector key
  * @property {string | null} [confirmedDelivery] turn-start ACK-ON-PROOF token (delivery-ledger.mjs)
+ * @property {string} [turnStartRequestId] opaque per-request receipt key
  */
 /** Loopback operator. */
 export function operatorBase(env?: NodeJS.ProcessEnv): string;
@@ -98,7 +99,8 @@ export function baseRequest({ port, client, owner, cwd, env }: {
  *
  * @param {InjectionPort} port
  * @param {InjectionRequest} body
- * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number }} [opts]
+ * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number,
+ *   onTurnStartOutcome?: (outcome: object) => void }} [opts]
  * @returns {Promise<{ text: string, deliveryToken: string | null } | null>} the text
  *   to inject plus the turn-start orientation delivery token (delivery-ledger.mjs),
  *   or null to inject nothing
@@ -107,6 +109,7 @@ export function postInjection(port: InjectionPort, body: InjectionRequest, opts?
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
     now?: () => number;
+    onTurnStartOutcome?: (outcome: object) => void;
 }): Promise<{
     text: string;
     deliveryToken: string | null;
@@ -262,4 +265,8 @@ export type InjectionRequest = {
      * turn-start ACK-ON-PROOF token (delivery-ledger.mjs)
      */
     confirmedDelivery?: string | null | undefined;
+    /**
+     * opaque per-request receipt key
+     */
+    turnStartRequestId?: string | undefined;
 };

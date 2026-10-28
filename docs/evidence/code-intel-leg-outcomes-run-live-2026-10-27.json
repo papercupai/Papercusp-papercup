@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "code-intel leg-outcome check is re-scored by an armed schedule and its latest score is fresh and successful on the running build (SPEC-P-013-C, SPEC-P-013-D, AUTO-BAR-R-10-P-013)",
+  "plan": "code-intel-delivery-and-outcomes-2026-10-26",
+  "specIds": [
+    "SPEC-P-013-C",
+    "SPEC-P-013-D",
+    "AUTO-BAR-R-10-P-013"
+  ],
+  "workItemId": "WI-6554700010029487",
+  "host": "127.0.0.1:3271 (routine worker, bg-host; fire requested via routines:fire)",
+  "buildSha": "b609e1da6a",
+  "command": [
+    "routines:fire { name: 'plan-schedule-code-intel-delivery-and-outcomes-2026-10-26', installSlug: 'papercusp' }",
+    "sudo -n -u postgres psql -d papercusp -c \"SELECT id, ts, actor, subject, details FROM harness_shared.audit_log WHERE workspace_id='papercusp-workspace' AND action='code-intel.leg-outcomes.score' ORDER BY ts DESC LIMIT 5\"",
+    "sudo -n -u postgres psql -d papercusp -c \"SELECT active, trigger_config->>'cron', target_role FROM harness_shared.routines WHERE name='plan-schedule-code-intel-delivery-and-outcomes-2026-10-26' AND install_slug='papercusp'\""
+  ],
+  "startedAt": "2026-10-27T23:23:04.449000Z",
+  "finishedAt": "2026-10-27T23:25:57.334000Z",
+  "exitCode": 0,
+  "summary": "The registered instrument code-intel:leg-outcomes (native-adoption.ts codeIntelLegOutcomesRescore, R-10 check per D-028) is run by the plan's system:rubric-rescore routine plan-schedule-code-intel-delivery-and-outcomes-2026-10-26 (active=t, cron '40 6 * * *'). Two recorded scores on the running build: ci-leg-outcomes-mvrb9ugx-kveke1 at 2026-10-27T23:23:04.449000Z and ci-leg-outcomes-mvrbdjva-j3gyof at 2026-10-27T23:25:57.334000Z. The latest score's schedule verdict reads armed=True status=fresh interval 86400000 ms, readError None, divergence [], and it covers all 10 registry legs.",
+  "observations": {
+    "latestRun": {
+      "auditLogId": "ci-leg-outcomes-mvrbdjva-j3gyof",
+      "action": "code-intel.leg-outcomes.score",
+      "actor": "system:code-intel-leg-outcomes",
+      "subject": "code-intel:leg-outcomes",
+      "at": "2026-10-27T23:25:57.334000Z",
+      "buildSha": "b609e1da6a",
+      "fingerprint": "native-adoption.ts@b6a5833aad6c2cdc6fbb361f0a73284d0343d316+design@b56fe4555afc846eb348132dcb127a80d2012061efdbbf35330315896873752b",
+      "legs": [
+        "grep",
+        "first-touch",
+        "interface",
+        "incident",
+        "completion",
+        "clone",
+        "antipattern",
+        "intent",
+        "resume",
+        "notes"
+      ],
+      "schedule": {
+        "armed": true,
+        "reason": "The latest score (2026-10-27T23:23:04.449Z) is within one interval.",
+        "status": "fresh",
+        "intervalMs": 86400000
+      },
+      "readError": null,
+      "divergence": [],
+      "verdict": "unknown",
+      "rating": {
+        "reason": "measured: none; insufficient-data: interface, completion, clone; unmeasured: grep, first-touch, incident, antipattern, intent, resume.",
+        "verdict": "unknown",
+        "measured": [],
+        "unmeasured": [
+          "grep",
+          "first-touch",
+          "incident",
+          "antipattern",
+          "intent",
+          "resume"
+        ],
+        "insufficient": [
+          "interface",
+          "completion",
+          "clone"
+        ]
+      },
+      "window": {
+        "windowEnd": "2026-10-27T23:24:41.618Z",
+        "harnessSlug": "papercusp",
+        "windowStart": "2026-10-20T23:24:41.618Z",
+        "workspaceId": "papercusp-workspace"
+      }
+    },
+    "priorRun": {
+      "auditLogId": "ci-leg-outcomes-mvrb9ugx-kveke1",
+      "action": "code-intel.leg-outcomes.score",
+      "actor": "system:code-intel-leg-outcomes",
+      "subject": "code-intel:leg-outcomes",
+      "at": "2026-10-27T23:23:04.449000Z",
+      "buildSha": "b609e1da6a",
+      "fingerprint": "native-adoption.ts@b6a5833aad6c2cdc6fbb361f0a73284d0343d316+design@b56fe4555afc846eb348132dcb127a80d2012061efdbbf35330315896873752b",
+      "legs": [
+        "grep",
+        "first-touch",
+        "interface",
+        "incident",
+        "completion",
+        "clone",
+        "antipattern",
+        "intent",
+        "resume",
+        "notes"
+      ],
+      "schedule": {
+        "armed": true,
+        "reason": "No recorded score yet.",
+        "status": "no-score",
+        "intervalMs": 86400000
+      },
+      "readError": null,
+      "divergence": [],
+      "verdict": "unknown",
+      "rating": {
+        "reason": "measured: none; insufficient-data: interface, completion, clone; unmeasured: grep, first-touch, incident, antipattern, intent, resume.",
+        "verdict": "unknown",
+        "measured": [],
+        "unmeasured": [
+          "grep",
+          "first-touch",
+          "incident",
+          "antipattern",
+          "intent",
+          "resume"
+        ],
+        "insufficient": [
+          "interface",
+          "completion",
+          "clone"
+        ]
+      },
+      "window": {
+        "windowEnd": "2026-10-27T23:19:58.520Z",
+        "harnessSlug": "papercusp",
+        "windowStart": "2026-10-20T23:19:58.520Z",
+        "workspaceId": "papercusp-workspace"
+      }
+    },
+    "routine": {
+      "name": "plan-schedule-code-intel-delivery-and-outcomes-2026-10-26",
+      "active": true,
+      "cron": "40 6 * * *"
+    }
+  },
+  "assertions": [
+    {
+      "id": "schedule-armed",
+      "passed": true,
+      "evidence": "Routine plan-schedule-code-intel-delivery-and-outcomes-2026-10-26 active=t cron '40 6 * * *'; the check's own schedule verdict armed=True, intervalMs=86400000 (<= 24 h)."
+    },
+    {
+      "id": "latest-score-fresh",
+      "passed": true,
+      "evidence": "The second run read the first run (ci-leg-outcomes-mvrb9ugx-kveke1, 2026-10-27T23:23:04.449000Z) as the latest score and reported status=fresh: The latest score (2026-10-27T23:23:04.449Z) is within one interval. The gap between the two runs is 172885 ms, inside the 86400000 ms interval."
+    },
+    {
+      "id": "latest-score-successful",
+      "passed": true,
+      "evidence": "readError null, Design-table divergence [], fingerprint native-adoption.ts@b6a5833aad6c2cdc6fbb361f0a73284d0343d316+design@b56fe4555afc846eb348132dcb127a80d2012061efdbbf35330315896873752b, legs = all 10 registry legs (grep, first-touch, interface, incident, completion, clone, antipattern, intent, resume, notes), buildSha b609e1da6a."
+    }
+  ],
+  "notMeasuredHere": "The rubric rating inside the score is verdict 'unknown', not pass: measured: none; insufficient-data: interface, completion, clone; unmeasured: grep, first-touch, incident, antipattern, intent, resume. Three legs have exposure below the 20-trigger minimum and six have no live reader yet; the readers are WI-6554700010030568. This record proves the check runs on an armed schedule, is fresh and executes without error over the full leg registry; it does not prove any leg earns its context."
+}

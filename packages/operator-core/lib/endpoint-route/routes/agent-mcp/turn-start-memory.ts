@@ -56,6 +56,12 @@ type PackageSinkDelivery = {
   receipt: Record<string, unknown> | null;
 };
 
+type TurnStartAmbientOutcome = 'allowed' | 'denied' | 'error' | 'unknown';
+type LoopMarkerAppendOutcome = 'appended' | 'failed' | 'not-applicable' | 'pending' | 'unknown';
+type LoopMarkerOutcome = { loopFire: boolean | null; loopMarkerAppend: LoopMarkerAppendOutcome };
+const TURN_START_REQUEST_ID = /^[A-Za-z0-9_-]{1,80}$/;
+const LOOP_MARKER_RECEIPT_WAIT_MS = 250;
+
 /**
  * WI-10005053: the RESPONSE deadline. The hook (hooks/inject/core.mjs) aborts at
  * its own wall and then prints NOTHING, so a response that misses the wall by any
@@ -151,14 +157,34 @@ const turnStartMemory = defineTool({
        * (WI-10004485). Absent (an older hook): no wall is assumed.
        */
       wallMs?: number;
+      /** Opaque per-hook request id; never derived from prompt text. */
+      turnStartRequestId?: string;
     };
+    let turnStartRequestId: string | null = null;
+    let ambientOutcome: TurnStartAmbientOutcome = 'unknown';
+    let markerOutcome: LoopMarkerOutcome = { loopFire: null, loopMarkerAppend: 'unknown' };
+    let markerOutcomePromise: Promise<LoopMarkerOutcome> | null = null;
+    const responseWithOutcome = (text: string): Response => Response.json({
+      ok: true,
+      text,
+      ...(turnStartRequestId ? {
+        turnStartOutcome: {
+          requestId: turnStartRequestId,
+          ambientGate: ambientOutcome,
+          ...markerOutcome,
+        },
+      } : {}),
+    });
     // Taken before the body read: the hook's wall started when it sent the request.
     const arrivedAt = Date.now();
     try {
       body = (await req.json()) as typeof body;
     } catch {
-      return Response.json({ ok: true, text: '' });
+      return responseWithOutcome('');
     }
+    turnStartRequestId = typeof body.turnStartRequestId === 'string' && TURN_START_REQUEST_ID.test(body.turnStartRequestId)
+      ? body.turnStartRequestId
+      : null;
     const respondBy = turnStartRespondBy(arrivedAt, body.wallMs);
     const owner = (body.owner ?? '').trim();
     const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
@@ -189,24 +215,61 @@ const turnStartMemory = defineTool({
       const workspace = (body.workspace ?? '').trim();
       const { activeWorkspaceId } = await import('../../../workspace-registry');
       const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();
-      const { sessionAllowsAmbientContext } = await import('../../../capability-envelope/session-confinement-port');
-      if (!await sessionAllowsAmbientContext({ ownerId: owner, workspaceId }))
-        return Response.json({ ok: true, text: '' });
-
-      // EI-24791346664119438: stamp a loop-fire turn start in real time, so the loop
-      // reconciler can tell a long-running loop turn from a wake that never became one
-      // (session_turns is ingested only after the turn). Never awaited, never throws.
-      void import('../../../harness/routines/loop-turn-start-stamp')
-        .then(({ recordLoopTurnStart }) =>
-          recordLoopTurnStart({
+      // EI-24791346664119438: lifecycle evidence is independent of whether this
+      // request may receive ambient context. Start the marker before the ambient
+      // gate so a denied context read cannot erase proof that the loop turn began.
+      // The hook receives a bounded, privacy-safe outcome; prompt text is never
+      // copied into that receipt.
+      let observedLoopFire: boolean | null = null;
+      const markerWrite = (async (): Promise<LoopMarkerOutcome> => {
+        try {
+          const { isLoopFirePrompt, recordLoopTurnStart } =
+            await import('../../../harness/routines/loop-turn-start-stamp');
+          const loopFire = isLoopFirePrompt(prompt);
+          observedLoopFire = loopFire;
+          if (!loopFire) return { loopFire: false, loopMarkerAppend: 'not-applicable' };
+          const appended = await recordLoopTurnStart({
             owner,
             prompt,
             workspaceId,
             cwd: typeof body.cwd === 'string' ? body.cwd : null,
             client: typeof body.client === 'string' ? body.client : null,
-          }),
-        )
-        .catch(() => undefined);
+            ...(turnStartRequestId ? { turnStartRequestId } : {}),
+          });
+          return { loopFire: true, loopMarkerAppend: appended ? 'appended' : 'failed' };
+        } catch {
+          return { loopFire: observedLoopFire, loopMarkerAppend: 'failed' };
+        }
+      })();
+      const markerWaitMs = Math.max(0, Math.min(
+        LOOP_MARKER_RECEIPT_WAIT_MS,
+        respondBy === null ? LOOP_MARKER_RECEIPT_WAIT_MS : respondBy - Date.now(),
+      ));
+      let markerTimer: ReturnType<typeof setTimeout> | undefined;
+      const markerPending = new Promise<LoopMarkerOutcome>((resolve) => {
+        markerTimer = setTimeout(() => resolve({
+          loopFire: observedLoopFire,
+          loopMarkerAppend: 'pending',
+        }), markerWaitMs);
+      });
+      markerOutcomePromise = Promise.race([markerWrite, markerPending])
+        .then((result) => { markerOutcome = result; return result; })
+        .finally(() => clearTimeout(markerTimer));
+
+      let ambientAllowed: boolean;
+      try {
+        const { sessionAllowsAmbientContext } = await import('../../../capability-envelope/session-confinement-port');
+        ambientAllowed = await sessionAllowsAmbientContext({ ownerId: owner, workspaceId });
+        ambientOutcome = ambientAllowed ? 'allowed' : 'denied';
+      } catch {
+        ambientOutcome = 'error';
+        await markerOutcomePromise;
+        return responseWithOutcome('');
+      }
+      if (!ambientAllowed) {
+        await markerOutcomePromise;
+        return responseWithOutcome('');
+      }
 
       /**
        * WI-37597: report THIS port's delivery coverage.
@@ -882,13 +945,22 @@ const turnStartMemory = defineTool({
             `(elapsedMs=${Date.now() - arrivedAt} wallMs=${body.wallMs} omitted=${omitted.join(',') || 'none'})`,
         );
       }
+      await markerOutcomePromise;
       return Response.json({
         ok: true,
         text: [control.text, orientationBlock, memory, personal].filter(Boolean).join('\n\n'),
         ...(deliveryToken ? { deliveryToken } : {}),
+        ...(turnStartRequestId ? {
+          turnStartOutcome: {
+            requestId: turnStartRequestId,
+            ambientGate: ambientOutcome,
+            ...markerOutcome,
+          },
+        } : {}),
       });
     } catch {
-      return Response.json({ ok: true, text: '' });
+      if (markerOutcomePromise) await markerOutcomePromise;
+      return responseWithOutcome('');
     }
   },
 });

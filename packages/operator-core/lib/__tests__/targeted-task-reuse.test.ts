@@ -313,6 +313,85 @@ describe('restoreCandidateCheckpointForReuse', () => {
     expect(restored).toEqual({ ok: false, reason: 'candidate-checkpoint-identity-unverified' });
     expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('preserve this unverified output\n');
   });
+
+  /**
+   * WI-6554700010030332: a pot with no release checkout (calendar has calendar + calendar-checkpoint
+   * but no calendar-release) still passes the conventional `<slug>-release` path. Every restore on
+   * such pots was refused checkpoint-root-unverified (107 refusals, 0 restores in the checkpoint
+   * logs), which left pure-lane proof capture skipping dirty-checkout and test reuse blocked.
+   */
+  function dirtyCommittedCheckpoint() {
+    fixture();
+    const git = (args: string[]) => {
+      const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+      if (result.status !== 0) throw new Error(String(result.stderr));
+      return String(result.stdout ?? '');
+    };
+    git(['init', '-q']);
+    git(['config', 'user.email', 'test@example.invalid']);
+    git(['config', 'user.name', 'Test']);
+    writeFileSync(join(root, 'tracked.txt'), 'committed contents\n');
+    git(['add', '.']);
+    git(['commit', '-qm', 'candidate checkpoint']);
+    const judgedSha = git(['rev-parse', 'HEAD']).trim();
+    writeFileSync(join(root, 'tracked.txt'), 'test output mutation\n');
+    writeFileSync(join(root, 'untracked-output.txt'), 'test output\n');
+    const envFor = (releaseRoot: string) => ({
+      GREEN_CHECKPOINT: '1',
+      PAPERCUSP_TEST_RUN_COMMIT: judgedSha,
+      PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT: root,
+      PC_TEST_REUSE_INTEGRATION_ROOT: independentGitRoot(),
+      PC_TEST_REUSE_RELEASE_ROOT: releaseRoot,
+    });
+    return { git, judgedSha, envFor };
+  }
+
+  it('restores when the configured release checkout does not exist at all', () => {
+    const { git, judgedSha, envFor } = dirtyCommittedCheckpoint();
+    const parent = mkdtempSync(join(tmpdir(), 'targeted-reuse-no-release-'));
+    temps.push(parent);
+    const absentRelease = join(parent, 'pot-release');
+    expect(existsSync(absentRelease)).toBe(false);
+
+    const restored = restoreCandidateCheckpointForReuse({ root, judgedSha, env: envFor(absentRelease) });
+
+    expect(restored).toEqual({ ok: true, restored: true });
+    expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('committed contents\n');
+    expect(existsSync(join(root, 'untracked-output.txt'))).toBe(false);
+    expect(git(['status', '--porcelain', '--ignore-submodules=none'])).toBe('');
+  });
+
+  it.each([
+    ['exists but is not its own Git worktree root', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'targeted-reuse-plain-release-'));
+      temps.push(directory);
+      return directory;
+    }],
+    ['is a dangling symlink', () => {
+      const parent = mkdtempSync(join(tmpdir(), 'targeted-reuse-dangling-release-'));
+      temps.push(parent);
+      const link = join(parent, 'pot-release');
+      symlinkSync(join(parent, 'never-created'), link);
+      return link;
+    }],
+    ['is relative, so absence cannot be proven', () => 'pot-release-that-does-not-exist'],
+    ['is a missing path inside the checkpoint itself', () => join(root, 'nested-release')],
+    ['is a missing path inside the checkpoint reached through a symlinked parent', () => {
+      const parent = mkdtempSync(join(tmpdir(), 'targeted-reuse-alias-release-'));
+      temps.push(parent);
+      symlinkSync(root, join(parent, 'checkpoint-alias'));
+      return join(parent, 'checkpoint-alias', 'nested-release');
+    }],
+  ])('still refuses and preserves the dirty checkout when the release root %s', (_label, releaseFor) => {
+    const { judgedSha, envFor } = dirtyCommittedCheckpoint();
+    const releaseRoot = releaseFor();
+
+    const restored = restoreCandidateCheckpointForReuse({ root, judgedSha, env: envFor(releaseRoot) });
+
+    expect(restored).toEqual({ ok: false, reason: 'checkpoint-root-unverified' });
+    expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('test output mutation\n');
+    expect(existsSync(join(root, 'untracked-output.txt'))).toBe(true);
+  });
 });
 
 describe('armTargetedTaskReuse', () => {

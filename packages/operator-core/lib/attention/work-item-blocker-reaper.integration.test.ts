@@ -67,6 +67,7 @@ const {
 } = await import('./work-item-blocker-reaper');
 const { recordKeyFire } = await import('../events/await/store');
 const { buildDurableParkReleaseContract } = await import('../durable-park-release-contract');
+const { readExternalBlockers } = await import('../external-blockers');
 
 const H = 'papercup';
 const WS = 'default';
@@ -524,5 +525,71 @@ describe('durable parks on unprovable triggers get a re-check against the real s
     await wi.setWorkItemClaimHold('EI-park-broad', true, { harness: H, parkedBy: 'park-owner',
       releaseContract: await buildDurableParkReleaseContract({ condition: 'the deploy landed', trigger: 'release:deployed:parkrecheck' }, 'park-owner') });
     expect((await rowOf('EI-park-broad')).payload.claim_hold_release).not.toHaveProperty('recheckAt');
+  });
+});
+
+// WI-6554700010030445: an active blocker row readExternalBlockers drops still parks its item
+// through the raw-payload SQL, so the sweep names it. The SQL is pinned to the parser here.
+describe('malformed active blocker rows are reported, pinned to the typed parser (WI-6554700010030445)', () => {
+  const wellFormed = (): Record<string, unknown> => ({
+    kind: 'event', capability: 'live-dependency', ref: 'event:malformed-test', summary: 'waiting', status: 'active',
+    createdAt: PAST, createdBy: 'su-test', updatedAt: PAST,
+  });
+  const without = (key: string, row: Record<string, unknown>) => {
+    const copy = { ...row };
+    delete copy[key];
+    return copy;
+  };
+  // Every way the parser rejects a row, plus a well-formed row and a rejected CLEARED row
+  // (only active rows park an item, so only those count).
+  const fixtures: Record<string, Record<string, unknown>> = {
+    'WI-mal-good': wellFormed(),
+    'WI-mal-kind-unknown': { ...wellFormed(), kind: 'webhook' },
+    'WI-mal-kind-array': { ...wellFormed(), kind: ['event'] },
+    'WI-mal-kind-missing': without('kind', wellFormed()),
+    'WI-mal-ref-number': { ...wellFormed(), ref: 42 },
+    'WI-mal-summary-null': { ...wellFormed(), summary: null },
+    'WI-mal-no-created-at': without('createdAt', wellFormed()),
+    'WI-mal-no-created-by': without('createdBy', wellFormed()),
+    'WI-mal-no-updated-at': without('updatedAt', wellFormed()),
+    'WI-mal-cleared': without('createdAt', { ...wellFormed(), status: 'cleared' }),
+  };
+
+  // `lane` is GENERATED from payload->>'lane', so an observation row sets it in the payload.
+  async function seed(id: string, blocker: Record<string, unknown>, over: { status?: string; lane?: string } = {}) {
+    const payload = { externalBlockers: [blocker], ...(over.lane ? { lane: over.lane } : {}) };
+    await db.sql`INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload)
+      VALUES (${H}, ${id}, 'feature', ${`title ${id}`}, ${over.status ?? 'open'}, NULL, ${WS}, 100, 0,
+        ${JSON.stringify(payload)}::text::jsonb)`;
+  }
+
+  it('selects exactly the items whose active row the parser drops, and the sweep names them', async () => {
+    for (const [id, blocker] of Object.entries(fixtures)) await seed(id, blocker);
+    // Terminal items and observation-lane rows are out of scope even with a malformed row.
+    await seed('WI-mal-done', fixtures['WI-mal-no-created-by']!, { status: 'done' });
+    await seed('WI-mal-observation', fixtures['WI-mal-no-created-by']!, { lane: 'observation' });
+
+    const parserDrops = Object.entries(fixtures)
+      .filter(([, row]) => row.status === 'active' && readExternalBlockers({ externalBlockers: [row] }).length === 0)
+      .map(([id]) => id)
+      .sort();
+    expect(parserDrops).toHaveLength(Object.keys(fixtures).length - 2);
+
+    const listed = (await defaultBlockerReapDeps.listMalformedActiveBlockers!(50)).map((r) => r.id).sort();
+    expect(listed).toEqual(parserDrops);
+
+    const result = await sweepWorkItemBlockerDefaults({ limit: 50 });
+    expect(result.malformed).toMatchObject({ count: parserDrops.length, truncatedByLimit: false, failed: false });
+    expect([...result.malformed.sample].sort()).toEqual(parserDrops.slice(0, 10).map((id) => `${H}/${id}`).sort());
+  });
+
+  it('reports nothing when every active row is well formed', async () => {
+    await seed('WI-mal-good', fixtures['WI-mal-good']!);
+    await seed('WI-mal-cleared', fixtures['WI-mal-cleared']!);
+    expect(await defaultBlockerReapDeps.listMalformedActiveBlockers!(50)).toEqual([]);
+    expect((await sweepWorkItemBlockerDefaults()).malformed).toEqual({
+      count: 0, sample: [], truncatedByLimit: false, failed: false,
+    });
   });
 });

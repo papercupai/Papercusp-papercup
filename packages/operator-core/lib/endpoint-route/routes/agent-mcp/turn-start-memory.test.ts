@@ -52,6 +52,8 @@ const {
   readAdvSessionLaunchRecordByOwnerMock,
   evaluateTurnStartPackageSinkMock,
   packageSinkReceiptMock,
+  isLoopFirePromptMock,
+  recordLoopTurnStartMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   preparePendingControlTransitionMock: vi.fn(),
@@ -73,6 +75,8 @@ const {
   readAdvSessionLaunchRecordByOwnerMock: vi.fn(),
   evaluateTurnStartPackageSinkMock: vi.fn(),
   packageSinkReceiptMock: vi.fn(),
+  isLoopFirePromptMock: vi.fn(),
+  recordLoopTurnStartMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (this test is
@@ -81,6 +85,10 @@ vi.mock('../../../memory/injection', () => ({
   buildMemoryContextBlock: buildMemoryContextBlockMock,
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+vi.mock('../../../harness/routines/loop-turn-start-stamp', () => ({
+  isLoopFirePrompt: isLoopFirePromptMock,
+  recordLoopTurnStart: recordLoopTurnStartMock,
+}));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-1' }) }));
 vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
   preparePendingControlTransition: preparePendingControlTransitionMock,
@@ -152,7 +160,17 @@ const endpoint = routes[0] as unknown as {
   handler: (req: Request) => Promise<Response>;
 };
 
-const post = async (body: unknown): Promise<{ ok: boolean; text: string; deliveryToken?: string }> => {
+const post = async (body: unknown): Promise<{
+  ok: boolean;
+  text: string;
+  deliveryToken?: string;
+  turnStartOutcome?: {
+    requestId: string;
+    ambientGate: string;
+    loopFire: boolean | null;
+    loopMarkerAppend: string;
+  };
+}> => {
   const res = await endpoint.handler(
     new Request('http://localhost/agent-mcp/turn-start-memory', {
       method: 'POST',
@@ -165,8 +183,17 @@ const post = async (body: unknown): Promise<{ ok: boolean; text: string; deliver
 it('suppresses all live turn-start context before recall, control or package reads for frozen sessions', async () => {
   setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['coord:whoami'],
     denyAmbientContext: true, reason: 'frozen benchmark', imposedBy: 'host' }));
+  isLoopFirePromptMock.mockReturnValue(true);
+  recordLoopTurnStartMock.mockResolvedValue(true);
   try {
-    expect(await post({ owner: 'su-frozen', workspace: 'private', prompt: 'retrieve live context' })).toEqual({ ok: true, text: '' });
+    const out = await post({ owner: 'su-frozen', workspace: 'private', prompt: 'retrieve live context',
+      turnStartRequestId: 'req-frozen-1' });
+    expect(out).toMatchObject({ ok: true, text: '', turnStartOutcome: {
+      requestId: 'req-frozen-1', ambientGate: 'denied', loopFire: true, loopMarkerAppend: 'appended',
+    } });
+    expect(recordLoopTurnStartMock).toHaveBeenCalledWith(expect.objectContaining({
+      owner: 'su-frozen', turnStartRequestId: 'req-frozen-1',
+    }));
     expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
     expect(preparePendingControlTransitionMock).not.toHaveBeenCalled();
     expect(evaluateTurnStartPackageSinkMock).not.toHaveBeenCalled();
@@ -215,6 +242,8 @@ beforeEach(() => {
   readAdvSessionLaunchRecordByOwnerMock.mockReset().mockResolvedValue(null);
   evaluateTurnStartPackageSinkMock.mockReset().mockResolvedValue({ result: null, classes: [] });
   packageSinkReceiptMock.mockReset().mockReturnValue(null);
+  isLoopFirePromptMock.mockReset().mockReturnValue(false);
+  recordLoopTurnStartMock.mockReset().mockResolvedValue(false);
 });
 afterEach(() => resetReadCursorStore());
 
@@ -465,6 +494,26 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
       }),
     );
     expect(res.status).toBe(400);
+  });
+});
+
+describe('turn-start per-request outcome receipt', () => {
+  it('reports a failed loop marker append separately from an allowed ambient gate', async () => {
+    isLoopFirePromptMock.mockReturnValue(true);
+    recordLoopTurnStartMock.mockResolvedValue(false);
+
+    const out = await post({
+      owner: 'sess-marker-failed',
+      prompt: 'loop-fire prompt',
+      turnStartRequestId: 'req-marker-failed',
+    });
+
+    expect(out.turnStartOutcome).toEqual({
+      requestId: 'req-marker-failed',
+      ambientGate: 'allowed',
+      loopFire: true,
+      loopMarkerAppend: 'failed',
+    });
   });
 });
 

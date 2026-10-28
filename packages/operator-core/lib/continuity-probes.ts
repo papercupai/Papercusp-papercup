@@ -599,6 +599,8 @@ export interface ContinuityProbeResult {
   checkIndex: number;
   checkId?: string;
   claim: string;
+  /** The stored human re-check instruction, kept with probe results so its trigger survives. */
+  recheck?: string;
   status: 'fresh' | 'stale' | 'error' | 'unknown';
   executed: boolean;
   observed?: unknown;
@@ -731,6 +733,9 @@ async function runOne(
     checkIndex: source.checkIndex,
     ...(source.check.id ? { checkId: source.check.id } : {}),
     claim: source.check.claim,
+    ...(source.check.recheck?.trim()
+      ? { recheck: source.check.recheck.trim().slice(0, 320) + (source.check.recheck.trim().length > 320 ? '…' : '') }
+      : {}),
   };
   if (!probe)
     return {

@@ -301,7 +301,8 @@ bundle_host_primary() { # <repo root> <out dir> [esbuild boundary args...]
     --bundle --platform=node --format=esm --target=node22 \
     --outfile="$tmp" --metafile="$output.meta.json" --banner:js="$HOST_BANNER" \
     "${HOST_BANNER_DEFINES[@]}" "$@" || return 1
-  bundle_host_run_step primary-ascii-and-syntax node "$repo_root/apps/operator/bin/ascii-escape-bundle.mjs" "$tmp" --check || return 1
+  local -a run_node=("${COMMITTED_NODE[@]:-node}")
+  bundle_host_run_step primary-ascii-and-syntax "${run_node[@]}" "$repo_root/apps/operator/bin/ascii-escape-bundle.mjs" "$tmp" --check || return 1
   mv -f "$tmp" "$output"
 }
 

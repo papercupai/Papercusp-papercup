@@ -357,6 +357,36 @@ describe('event-wait-settlement P-009 — a holder await and an item blocker dra
     expect(holder.getAttribute('class')).toContain('pc-depgraph__edge--wait-stale');
     expect(holder.getAttribute('class')).not.toContain('pc-depgraph__edge--await');
   });
+
+  it('WI-6554700010030344: draws a runtime blocker as a CONDITION node with a `condition` edge, never as an event', async () => {
+    waitsState = {
+      loading: false,
+      error: null,
+      data: [
+        {
+          itemId: 'WI-2', waitKind: 'item-condition', eventKey: 'pc-heavy queue', blockerKind: 'runtime',
+          capability: 'live-dependency', recheckAt: '2026-10-30T00:00:00.000Z', certification: 'not-an-event', stale: false,
+        },
+      ],
+    };
+    renderPanel();
+    const svg = await waitForCanvas();
+    const edge = await waitFor(() => {
+      const p = svg.querySelector('path[data-wait-kind="item-waits-on-condition"]');
+      if (!p) throw new Error('condition edge not drawn yet');
+      return p;
+    });
+    expect(edge.getAttribute('class')).toContain('pc-depgraph__edge--condition');
+    expect(edge.getAttribute('marker-end')).toMatch(/^url\(#pc-dg-arrow-condition-/);
+    const node = svg.querySelector('g[data-node-id="condition:runtime:pc-heavy queue"]');
+    expect(node?.getAttribute('class')).toContain('pc-depgraph__node--condition');
+    expect(node?.getAttribute('class')).not.toContain('pc-depgraph__node--event');
+    expect(node?.textContent).toContain('runtime · live-dependency · 1 wait · recheck 2026-10-30');
+    expect(svg.querySelector('g[data-node-id="event:pc-heavy queue"]')).toBeNull();
+    // The KEY names the condition mark, and the accessible list says what it is.
+    expect(screen.getByText(/runtime or human condition no event can prove/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Condition pc-heavy queue/ })).toBeTruthy();
+  });
 });
 
 describe('P-005 — no node is drawn sliced', () => {

@@ -64,7 +64,11 @@
 import type { Sql } from 'postgres';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { EXPLICIT_PARK_NOTE_MARKER } from '../events/await/types';
-import { activeExternalBlockers } from '../external-blockers';
+import {
+  activeExternalBlockers,
+  type ExternalBlockerCapability,
+  type ExternalBlockerKind,
+} from '../external-blockers';
 import {
   uncertifiedConditionReason,
   type UncertifiedConditionReason,
@@ -282,14 +286,21 @@ export async function resolveDependencyGraphEdges(
 //     attention/durable-park-recheck.ts: `_claimHold` true with a string trigger. A held-open
 //     lease alone carries no contract and is not a wait. Each row names who parked it and the
 //     re-check date an unprovable trigger is given (WI-6554700010030346).
+//   • 'item-condition' — the item's OWN active `runtime` or `human` external blocker
+//     (WI-6554700010030344, blind review #110 G-2). No event proves these: they are what
+//     wait-ref admission redirects a refused wait into (WAIT_REF_OPTIONS option 4), so leaving
+//     them out drew every refused wait as no wait at all. `eventKey` carries the blocker's
+//     REF, which is not an event key: `certification` is 'not-an-event' and the row is never
+//     looked up as an announced key. Its capability and re-check date travel with it.
 //
 // Each row carries the item's node fields (title/status/kind/plan), for the same reason the
 // edge rows do (WI-36045): the item may sit outside the list's 500-row window.
 //
 // ⚠ This is a SIBLING read, not more rows on `resolveDependencyGraphEdges`: that query's
-// contract is "every row is a `blocks` edge", and its consumers (integrity findings, depth)
-// must not start seeing event endpoints. The pane fetches both and the model keeps waits out
-// of depth and integrity (dep-graph-model.ts).
+// contract is "every row is a `blocks` edge", and its consumers (integrity findings) must not
+// start seeing event endpoints. The model counts an item's OWN waits (blocker, park,
+// condition) toward depth and the critical path, never a session await, and keeps every wait
+// out of the integrity findings (dep-graph-model.ts; event-wait-settlement-2026-10-20#D-015).
 //
 // LIVENESS. A wait whose subscriber session has ENDED is not a wait anyone is keeping alive:
 // it is marked `stale` (R-16). The verdict comes from the ONE shared liveness oracle
@@ -304,9 +315,12 @@ export async function resolveDependencyGraphEdges(
 // on work_items_external_blockers_gin_idx (migration 1539); holder leg 46 ms on
 // hfc_taken_by_idx + idx_event_awaits_subscriber; bound leg on event_awaits_bound_to_active.
 // Park leg (measured 2026-10-27, 895 live parks): 58 ms on work_items_claim_hold_release_trigger_idx,
-// which is why its WHERE repeats that partial index's `payload ? 'claim_hold_release'`. The
-// blocker and park legs share ONE statement (a UNION ALL of two independently capped branches),
-// so a call is still four SQL statements regardless of corpus size, plus the liveness batch.
+// which is why its WHERE repeats that partial index's `payload ? 'claim_hold_release'`.
+// Condition leg (measured 2026-10-27: 1,465 items carrying 1,489 active runtime/human rows):
+// 67 ms, a BitmapOr of two `@>` probes on work_items_external_blockers_gin_idx. The blocker,
+// park and condition legs share ONE statement (a UNION ALL of three independently capped
+// branches), so a call is still four SQL statements regardless of corpus size, plus the
+// liveness batch.
 
 /** The `bound_to.kind` values that bind an await to a work item by id. */
 export const ITEM_BOUND_AWAIT_KINDS = ['work-item-claim', 'work-item-blocked'] as const;
@@ -322,13 +336,24 @@ const WAIT_LEG_TERMINAL = ['done', 'resolved', 'closed', 'dropped', 'deprecated'
  * ended while holding items). Ordered by the item's recency, so the cap drops the least
  * recently touched holds first.
  */
-export const DEP_WAITS_LIMITS = { bound: 1000, holder: 600, blocker: 2000, park: 2000 } as const;
+export const DEP_WAITS_LIMITS = { bound: 1000, holder: 600, blocker: 2000, park: 2000, condition: 2000 } as const;
+
+/** The blocker kinds no event can prove — the 'item-condition' leg. */
+export const CONDITION_BLOCKER_KINDS = ['runtime', 'human'] as const satisfies readonly ExternalBlockerKind[];
+export type ConditionBlockerKind = (typeof CONDITION_BLOCKER_KINDS)[number];
+const isConditionBlockerKind = (kind: ExternalBlockerKind): kind is ConditionBlockerKind =>
+  (CONDITION_BLOCKER_KINDS as readonly ExternalBlockerKind[]).includes(kind);
 /** The holder's other awaits shown per held item — the most recent first. */
 export const DEP_WAITS_PER_HOLDER = 3;
 /** The liveness oracle gets this long before every subscriber reads as not measured. */
 export const DEP_WAITS_LIVENESS_TIMEOUT_MS = 3000;
 
-export type DependencyGraphWaitCertification = 'proving' | UncertifiedConditionReason;
+/**
+ * 'proving' when one fire of the key proves the condition; otherwise why not. 'not-an-event'
+ * is the 'item-condition' answer: the wait names a runtime or human condition, not a key, so
+ * no fire can prove it and only its re-check date revisits it.
+ */
+export type DependencyGraphWaitCertification = 'proving' | UncertifiedConditionReason | 'not-an-event';
 
 export interface DependencyGraphWait {
   /** feature_id of the item the wait is on. */
@@ -339,13 +364,19 @@ export interface DependencyGraphWait {
   itemPlanSlug: string | null;
   /** The item's current holder (`taken_by`), or null when unclaimed. */
   holderId: string | null;
-  waitKind: 'session-await' | 'item-blocker' | 'item-park';
-  /** The event key waited on — for a blocker, its ref; for a park, its release trigger. */
+  waitKind: 'session-await' | 'item-blocker' | 'item-park' | 'item-condition';
+  /**
+   * What is waited on. An event key for an await, an event/gate blocker (its ref) and a park
+   * (its release trigger). For 'item-condition' it is the runtime/human blocker's REF, which
+   * is NOT an event key — `certification` is then 'not-an-event'.
+   */
   eventKey: string;
   /** 'session-await' only: the `event_awaits` row id. */
   awaitId: string | null;
-  /** 'item-blocker' only: the blocker's kind. */
-  blockerKind: 'event' | 'gate' | null;
+  /** 'item-blocker' ('event' | 'gate') and 'item-condition' ('runtime' | 'human'): the blocker's kind. */
+  blockerKind: ExternalBlockerKind | null;
+  /** 'item-condition' only: the capability that clears the condition (e.g. 'credential'). */
+  capability: ExternalBlockerCapability | null;
   /** 'session-await' only: true when `bound_to` names THIS item. */
   bound: boolean;
   /** 'session-await' only: the `bound_to.kind`, when bound. */
@@ -359,14 +390,17 @@ export interface DependencyGraphWait {
   /** 'item-park' only: who parked the item (`claim_hold_by`). */
   parkedBy: string | null;
   /**
-   * 'item-park' only: ISO `claim_hold_release.recheckAt` — set when no fire can prove the
-   * trigger, so the park is escalated for review on that date (WI-6554700010030346).
+   * 'item-park': ISO `claim_hold_release.recheckAt` — set when no fire can prove the trigger,
+   * so the park is escalated for review on that date (WI-6554700010030346).
+   * 'item-condition': the blocker's own `recheckAt`, when the re-check sweep revisits it.
    */
   recheckAt: string | null;
   /** Whether one fire of the key proves the condition, or why not. */
   certification: DependencyGraphWaitCertification;
-  /** A producer declared (announced) this key. */
+  /** A producer declared (announced) this key. Always false for 'item-condition'. */
   announced: boolean;
+  /** Who declared the key: the most recent live announcement's owner, or null when none. */
+  announcedBy: string | null;
   /** 'session-await' only: the oracle's verdict for the subscriber; null = not measured. */
   subscriberState: SessionState | null;
   /** The wait is dead: its subscriber session ended, or the await expired unfired. */
@@ -439,9 +473,9 @@ type AwaitRow = WaitItemRow & {
   bound_kind: string | null;
   bound_ref: string | null;
 };
-/** One row of the combined blocker/park statement; the unused branch's columns are NULL. */
+/** One row of the combined blocker/park/condition statement; an unused branch's columns are NULL. */
 type ItemLegRow = WaitItemRow & {
-  leg: 'blocker' | 'park';
+  leg: 'blocker' | 'park' | 'condition';
   blockers: unknown;
   park_trigger: string | null;
   park_recheck_at: string | null;
@@ -450,8 +484,9 @@ type ItemLegRow = WaitItemRow & {
 };
 
 /**
- * Every live event wait on an item in (workspace, harness): session awaits bound to it, its
- * holder's other awaits, and its own active event/gate blockers. See the section header.
+ * Every live wait on an item in (workspace, harness): session awaits bound to it, its holder's
+ * other awaits, its own active event/gate blockers, its durable park, and its own active
+ * runtime/human blockers. See the section header.
  */
 export async function resolveDependencyGraphWaits(
   sql: Sql,
@@ -512,12 +547,14 @@ export async function resolveDependencyGraphWaits(
          AND w.status <> ALL(${terminal})
        ORDER BY w.updated_ts DESC NULLS LAST, w.feature_id, a.created_at DESC
        LIMIT ${DEP_WAITS_LIMITS.holder + 1}`,
-    // Legs 3 + 4 — ONE statement, two independently capped branches (so a call stays at four
+    // Legs 3-5 — ONE statement, three independently capped branches (so a call stays at four
     // statements). Branch 'blocker': items carrying an ACTIVE event/gate external blocker; the
     // `@>` shape is what work_items_external_blockers_gin_idx (migration 1539) serves. Branch
     // 'park': durably parked items with a string release trigger; `payload ? 'claim_hold_release'`
-    // is work_items_claim_hold_release_trigger_idx's predicate. Payload sub-objects are projected
-    // instead of the whole payload.
+    // is work_items_claim_hold_release_trigger_idx's predicate. Branch 'condition': items
+    // carrying an ACTIVE runtime/human blocker, the same `@>` shape on the same GIN index. An
+    // item with both kinds appears in both branches; each keeps only its own kinds below.
+    // Payload sub-objects are projected instead of the whole payload.
     sql<Array<ItemLegRow>>`
       (SELECT 'blocker' AS leg, w.feature_id, w.item_kind, w.title, w.status, w.source_plan_slug, w.taken_by,
               w.payload -> 'externalBlockers' AS blockers,
@@ -547,19 +584,35 @@ export async function resolveDependencyGraphWaits(
           AND jsonb_typeof(w.payload -> 'claim_hold_release' -> 'trigger') = 'string'
           AND btrim(w.payload -> 'claim_hold_release' ->> 'trigger') <> ''
         ORDER BY w.feature_id
-        LIMIT ${DEP_WAITS_LIMITS.park + 1})`,
+        LIMIT ${DEP_WAITS_LIMITS.park + 1})
+      UNION ALL
+      (SELECT 'condition' AS leg, w.feature_id, w.item_kind, w.title, w.status, w.source_plan_slug, w.taken_by,
+              w.payload -> 'externalBlockers' AS blockers,
+              NULL::text AS park_trigger, NULL::text AS park_recheck_at,
+              NULL::text AS parked_by, NULL::text AS parked_at
+         FROM harness_shared.work_items w
+        WHERE w.workspace_id = ${opts.workspaceId}
+          AND w.harness_slug = ${opts.harnessSlug}
+          AND w.status <> ALL(${terminal})
+          AND ((w.payload -> 'externalBlockers') @> '[{"kind":"runtime","status":"active"}]'::jsonb
+               OR (w.payload -> 'externalBlockers') @> '[{"kind":"human","status":"active"}]'::jsonb)
+        ORDER BY w.feature_id
+        LIMIT ${DEP_WAITS_LIMITS.condition + 1})`,
   ]);
 
   const blockers = itemLegs.filter((r) => r.leg === 'blocker');
   const parks = itemLegs.filter((r) => r.leg === 'park');
+  const conditions = itemLegs.filter((r) => r.leg === 'condition');
   const boundTruncated = bound.length > DEP_WAITS_LIMITS.bound;
   const holderTruncated = holder.length > DEP_WAITS_LIMITS.holder;
   const blockerTruncated = blockers.length > DEP_WAITS_LIMITS.blocker;
   const parkTruncated = parks.length > DEP_WAITS_LIMITS.park;
+  const conditionTruncated = conditions.length > DEP_WAITS_LIMITS.condition;
   const boundRows = bound.slice(0, DEP_WAITS_LIMITS.bound);
   const holderRows = holder.slice(0, DEP_WAITS_LIMITS.holder);
   const blockerRows = blockers.slice(0, DEP_WAITS_LIMITS.blocker);
   const parkRows = parks.slice(0, DEP_WAITS_LIMITS.park);
+  const conditionRows = conditions.slice(0, DEP_WAITS_LIMITS.condition);
 
   type BlockerWait = { item: WaitItemRow; kind: 'event' | 'gate'; ref: string; since: string | null };
   const blockerWaits: BlockerWait[] = [];
@@ -571,8 +624,31 @@ export async function resolveDependencyGraphWaits(
   }
   // The SQL already requires a non-blank string trigger; the guard keeps the type honest.
   const parkWaits = parkRows.flatMap((row) => row.park_trigger ? [{ item: row, trigger: row.park_trigger }] : []);
+  type ConditionWait = {
+    item: WaitItemRow;
+    kind: ConditionBlockerKind;
+    ref: string;
+    capability: ExternalBlockerCapability;
+    recheckAt: string | null;
+    since: string | null;
+  };
+  const conditionWaits: ConditionWait[] = [];
+  for (const row of conditionRows) {
+    for (const b of activeExternalBlockers({ externalBlockers: row.blockers })) {
+      if (!isConditionBlockerKind(b.kind)) continue;
+      conditionWaits.push({
+        item: row,
+        kind: b.kind,
+        ref: b.ref,
+        capability: b.capability,
+        recheckAt: isoOrNull(b.recheckAt),
+        since: isoOrNull(b.createdAt),
+      });
+    }
+  }
 
-  // One read for "which of these keys did a producer announce", and one oracle batch.
+  // One read for "which of these keys did a producer announce, and who", and one oracle batch.
+  // A condition's ref is not an event key, so it is never looked up here.
   const keys = [...new Set([
     ...boundRows.map((r) => r.event_key),
     ...holderRows.map((r) => r.event_key),
@@ -582,20 +658,22 @@ export async function resolveDependencyGraphWaits(
   const subscribers = [...new Set([...boundRows, ...holderRows].map((r) => r.subscriber_id))];
   const [announcedRows, states] = await Promise.all([
     keys.length === 0
-      ? Promise.resolve([] as Array<{ event_key: string }>)
-      : sql<Array<{ event_key: string }>>`
-          SELECT DISTINCT event_key
+      ? Promise.resolve([] as Array<{ event_key: string; announced_by: string }>)
+      : sql<Array<{ event_key: string; announced_by: string }>>`
+          SELECT DISTINCT ON (event_key) event_key, subscriber_id AS announced_by
             FROM harness_shared.event_awaits
            WHERE workspace_id = ANY(${awaitWorkspaces})
              AND policy = 'announce'
              AND superseded_at IS NULL
              AND cancelled_at IS NULL
-             AND event_key = ANY(${keys})`,
+             AND event_key = ANY(${keys})
+           ORDER BY event_key, created_at DESC, id DESC`,
     boundedSessionStates(subscribers, deps),
   ]);
-  const announced = new Set(announcedRows.map((r) => r.event_key));
+  const announcer = new Map(announcedRows.map((r) => [r.event_key, r.announced_by]));
   const certify = (key: string): DependencyGraphWaitCertification =>
-    uncertifiedConditionReason(key, announced.has(key)) ?? 'proving';
+    uncertifiedConditionReason(key, announcer.has(key)) ?? 'proving';
+  const announcement = (key: string) => ({ announced: announcer.has(key), announcedBy: announcer.get(key) ?? null });
   const nowMs = Date.now();
 
   const itemFields = (r: WaitItemRow) => ({
@@ -621,6 +699,7 @@ export async function resolveDependencyGraphWaits(
       eventKey: r.event_key,
       awaitId: String(r.await_id),
       blockerKind: null,
+      capability: null,
       bound: isBound,
       boundKind: r.bound_kind,
       subscriberId: r.subscriber_id,
@@ -629,7 +708,7 @@ export async function resolveDependencyGraphWaits(
       parkedBy: null,
       recheckAt: null,
       certification: certify(r.event_key),
-      announced: announced.has(r.event_key),
+      ...announcement(r.event_key),
       subscriberState,
       stale: staleReason !== null,
       staleReason,
@@ -646,6 +725,7 @@ export async function resolveDependencyGraphWaits(
       eventKey: w.ref,
       awaitId: null,
       blockerKind: w.kind,
+      capability: null,
       bound: false,
       boundKind: null,
       subscriberId: null,
@@ -654,7 +734,7 @@ export async function resolveDependencyGraphWaits(
       parkedBy: null,
       recheckAt: null,
       certification: certify(w.ref),
-      announced: announced.has(w.ref),
+      ...announcement(w.ref),
       subscriberState: null,
       stale: false,
       staleReason: null,
@@ -666,6 +746,7 @@ export async function resolveDependencyGraphWaits(
       eventKey: trigger,
       awaitId: null,
       blockerKind: null,
+      capability: null,
       bound: false,
       boundKind: null,
       subscriberId: null,
@@ -674,11 +755,33 @@ export async function resolveDependencyGraphWaits(
       parkedBy: item.parked_by,
       recheckAt: isoOrNull(item.park_recheck_at),
       certification: certify(trigger),
-      announced: announced.has(trigger),
+      ...announcement(trigger),
       subscriberState: null,
       stale: false,
       staleReason: null,
       legTruncated: parkTruncated,
+    })),
+    ...conditionWaits.map((w): DependencyGraphWait => ({
+      ...itemFields(w.item),
+      waitKind: 'item-condition',
+      eventKey: w.ref,
+      awaitId: null,
+      blockerKind: w.kind,
+      capability: w.capability,
+      bound: false,
+      boundKind: null,
+      subscriberId: null,
+      subscriberIsHolder: false,
+      since: w.since,
+      parkedBy: null,
+      recheckAt: w.recheckAt,
+      certification: 'not-an-event',
+      announced: false,
+      announcedBy: null,
+      subscriberState: null,
+      stale: false,
+      staleReason: null,
+      legTruncated: conditionTruncated,
     })),
   ];
 }

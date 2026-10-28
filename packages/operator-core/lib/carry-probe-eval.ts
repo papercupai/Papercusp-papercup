@@ -44,6 +44,8 @@ export type CarriedProbeOutcome = { kind: 'batch'; batch: CarriedProbeBatch } | 
 export const CARRIED_PROBE_CLAIM_CHARS = 160;
 /** Longest diagnostic message rendered per could-not-run line. */
 export const CARRIED_PROBE_REASON_CHARS = 220;
+/** Longest stored re-check instruction rendered beside a failed probe. */
+export const CARRIED_PROBE_RECHECK_CHARS = 320;
 /** Longest observed-value rendering per changed line. */
 export const CARRIED_PROBE_OBSERVED_CHARS = 120;
 
@@ -157,6 +159,13 @@ function renderReason(result: ContinuityProbeResult): string {
   return clip(`${d.code} — ${d.message}`, CARRIED_PROBE_REASON_CHARS);
 }
 
+function renderStoredRecheck(result: ContinuityProbeResult): string {
+  const recheck = (result.recheck ?? '').trim();
+  return recheck
+    ? `; stored re-check: ${clip(recheck, CARRIED_PROBE_RECHECK_CHARS)}`
+    : '; no stored re-check instruction';
+}
+
 /**
  * Render a delivery-time probe outcome. Every evaluated probe gets exactly one line:
  *   ✗ CHANGED        — the probe ran and its expect no longer matches (observed value shown);
@@ -173,7 +182,7 @@ export function renderCarriedProbeBlock(
   if (outcome.kind === 'failed') {
     return (
       `🧪 CARRIED PROBES — COULD NOT RUN at delivery${at}: ${clip(outcome.reason, CARRIED_PROBE_REASON_CHARS)}. ` +
-      `This is NOT evidence the carried checks hold; run their re-checks before relying on them.`
+      `This is NOT evidence the carried checks hold. Consult each stored re-check and honor its stated trigger before taking any manual re-check action.`
     );
   }
   const { batch } = outcome;
@@ -196,12 +205,12 @@ export function renderCarriedProbeBlock(
       (r) => `  ✗ CHANGED — ${clip(r.claim, CARRIED_PROBE_CLAIM_CHARS)} [${sourceLabel(r)}]: observed ${renderObserved(r.observed)}`,
     ),
     ...couldNotRun.map(
-      (r) => `  ? COULD NOT RUN — ${clip(r.claim, CARRIED_PROBE_CLAIM_CHARS)} [${sourceLabel(r)}]: ${renderReason(r)}`,
+      (r) => `  ? COULD NOT RUN — ${clip(r.claim, CARRIED_PROBE_CLAIM_CHARS)} [${sourceLabel(r)}]: ${renderReason(r)}${renderStoredRecheck(r)}`,
     ),
   ];
   if (batch.truncated > 0) {
     lines.push(
-      `  … ${batch.truncated} more carried probe(s) were NOT run (per-delivery cap ${batch.limits.maxProbes} probes / result budget) — run their re-checks by hand before relying on them.`,
+      `  … ${batch.truncated} more carried probe(s) were NOT run (per-delivery cap ${batch.limits.maxProbes} probes / result budget) — consult each stored re-check and honor its trigger before taking manual re-check action.`,
     );
   }
   return lines.join('\n');

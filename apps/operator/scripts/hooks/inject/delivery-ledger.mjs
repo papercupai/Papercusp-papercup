@@ -42,6 +42,7 @@ import { join } from 'node:path';
  */
 
 export const MAX_DELIVERY_RECEIPTS = 128;
+export const MAX_TURN_START_OUTCOME_RECEIPTS = 128;
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const isHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -85,6 +86,36 @@ function pruneEmissionReceipts(dir, current) {
       try { unlinkSync(join(dir, entry.name)); } catch { /* another hook may have pruned it */ }
     }
   } catch { /* optional retention must not change a successful emission */ }
+}
+
+/** Keep the per-request diagnostic receipt bounded independently of stdout proofs. */
+function pruneTurnStartOutcomeReceipts(dir, current) {
+  try {
+    const older = readdirSync(dir, { withFileTypes: true })
+      .filter(entry => entry.isFile() && /^[a-f0-9]{64}\.json$/.test(entry.name) && entry.name !== current)
+      .map(entry => ({ name: entry.name, mtime: statSync(join(dir, entry.name)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name));
+    for (const entry of older.slice(MAX_TURN_START_OUTCOME_RECEIPTS - 1)) {
+      try { unlinkSync(join(dir, entry.name)); } catch { /* another hook may have pruned it */ }
+    }
+  } catch { /* optional retention must not change a successful receipt */ }
+}
+
+/** Whitelist the diagnostic vocabulary; prompt, error, and response text never persist. */
+function turnStartOutcomeMetadata(outcome) {
+  if (typeof outcome?.requestId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(outcome.requestId)) return null;
+  const oneOf = (value, values, fallback) => values.includes(value) ? value : fallback;
+  return {
+    requestId: outcome.requestId,
+    client: ['claude', 'codex', 'omp'].includes(outcome.client) ? outcome.client : null,
+    hookOutcome: oneOf(outcome.hookOutcome,
+      ['response-received', 'http-error', 'request-failed', 'invalid-response', 'suppressed'], 'request-failed'),
+    serverOutcome: oneOf(outcome.serverOutcome, ['matched', 'missing', 'mismatched', 'unavailable'], 'unavailable'),
+    ambientGate: oneOf(outcome.ambientGate, ['allowed', 'denied', 'error', 'unknown'], 'unknown'),
+    loopFire: typeof outcome.loopFire === 'boolean' ? outcome.loopFire : null,
+    loopMarkerAppend: oneOf(outcome.loopMarkerAppend,
+      ['appended', 'failed', 'not-applicable', 'pending', 'unknown'], 'unknown'),
+  };
 }
 
 /**
@@ -132,6 +163,32 @@ export function openDeliveryLedger(owner, env = process.env) {
     offer(token, emission) {
       offered = typeof token === 'string' && token
         ? { token, metadata: emissionMetadata(owner, emission) } : null;
+    },
+    recordOutcome(outcome) {
+      const metadata = turnStartOutcomeMetadata(outcome);
+      if (!metadata) return false;
+      const receipts = join(dir, `${key}.outcomes`);
+      const name = `${hash(metadata.requestId)}.json`;
+      const receiptFile = join(receipts, name);
+      const tmp = `${receiptFile}.${process.pid}.${randomUUID()}.tmp`;
+      try {
+        mkdirSync(receipts, { recursive: true, mode: 0o700 });
+        const record = { version: 1, stage: 'turn-start-outcome', recordedAt: new Date().toISOString(), ...metadata };
+        writeFileSync(tmp, JSON.stringify(record), { mode: 0o600, flag: 'wx' });
+        try { linkSync(tmp, receiptFile); }
+        catch (error) {
+          if (error.code !== 'EEXIST') throw error;
+          const existing = JSON.parse(readFileSync(receiptFile, 'utf8'));
+          if (existing.version !== 1 || existing.stage !== 'turn-start-outcome' ||
+              existing.requestId !== metadata.requestId) throw error;
+        }
+        pruneTurnStartOutcomeReceipts(receipts, name);
+        return true;
+      } catch {
+        return false;
+      } finally {
+        try { unlinkSync(tmp); } catch { /* linked, failed, or never created */ }
+      }
     },
     commit() {
       if (!offered) return false;

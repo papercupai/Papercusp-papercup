@@ -43,8 +43,8 @@ function probe(tool: string, id: string): ContinuityProbe {
   } as ContinuityProbe;
 }
 
-function check(claim: string, p?: ContinuityProbe, id?: string): CheckEntry {
-  return { ...(id ? { id } : {}), claim, recheck: 'read status', ...(p ? { probe: p } : {}) } as CheckEntry;
+function check(claim: string, p?: ContinuityProbe, id?: string, recheck = 'read status'): CheckEntry {
+  return { ...(id ? { id } : {}), claim, recheck, ...(p ? { probe: p } : {}) } as CheckEntry;
 }
 
 /** A read-only dispatcher answering `{ state }` from the probe's id; 'boom' returns a tool error. */
@@ -104,13 +104,14 @@ describe('R-1 / R-25: changed and could-not-run probes get a line; matching prob
 
   it('renders a changed probe with its observed value and a probe that could not run with its reason', async () => {
     const dispatchTool = statusDispatcher();
+    const conditionalRecheck = 'On an unblock or deployed-SHA transition, read state:read for the pipeline position.';
     const sources = carriedProbeSources({
       loop: {
         ownerId: 'su-me',
         checks: [
           check('gate is green', probe('status:read', 'ok'), 'gate'),
           check('deploy is green', probe('status:read', 'drifted'), 'deploy'),
-          check('table exists', probe('status:read', 'boom')),
+          check('table exists', probe('status:read', 'boom'), undefined, conditionalRecheck),
         ],
       },
     });
@@ -123,6 +124,9 @@ describe('R-1 / R-25: changed and could-not-run probes get a line; matching prob
     expect(lines).toContain('  ✗ CHANGED — deploy is green [loop #deploy]: observed "red"');
     expect(lines.find((l) => l.startsWith('  ? COULD NOT RUN — table exists [loop check 3]'))).toMatch(
       /tool_error — read-only probe status:read returned an error: relation does not exist/,
+    );
+    expect(lines.find((l) => l.startsWith('  ? COULD NOT RUN — table exists [loop check 3]'))).toContain(
+      `stored re-check: ${conditionalRecheck}`,
     );
     // R-25: the matching probe is counted in the header but gets no line of its own.
     expect(lines.some((l) => l.includes('gate is green'))).toBe(false);
@@ -231,6 +235,8 @@ describe('delivery fail-soft never reads as "all hold"', () => {
       },
     });
     expect(block).toMatch(/^🧪 CARRIED PROBES — COULD NOT RUN at delivery: registry offline\. This is NOT evidence/);
+    expect(block).toContain('honor its stated trigger before taking any manual re-check action');
+    expect(block).not.toContain('run their re-checks before relying on them');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('carry-probe-eval:delivery failed: registry offline'));
     warn.mockRestore();
   });

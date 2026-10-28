@@ -65,25 +65,38 @@ import {
 } from './dep-graph-model';
 
 /** Edge classes, each with its own arrowhead marker (see the ARROWHEADS note in the canvas). */
-const EDGE_VARIANTS = ['default', 'satisfied', 'dangling', 'wait', 'await', 'wait-stale'] as const;
+const EDGE_VARIANTS = ['default', 'satisfied', 'dangling', 'wait', 'await', 'wait-stale', 'condition'] as const;
 type EdgeVariant = (typeof EDGE_VARIANTS)[number];
 /**
- * P-009 (D-003): the two wait kinds draw DIFFERENTLY. `wait` is the item's own event/gate
- * blocker; `await` is an agent's session awaiting the event for an item it holds. Drawn
- * alike, a reader cannot tell "this item is blocked on K" from "its holder is waiting on K".
+ * P-009 (D-003): the wait kinds draw DIFFERENTLY. `wait` is the item's own event/gate
+ * blocker or park; `await` is an agent's session awaiting the event for an item it holds;
+ * `condition` is the item's own runtime/human blocker, which no event can prove
+ * (WI-6554700010030344). Drawn alike, a reader cannot tell "this item is blocked on K" from
+ * "its holder is waiting on K", or a key a fire settles from a condition only a re-check does.
  * Staleness wins over kind: a stale wait is nobody's live wait, whichever kind it was.
  */
 function edgeVariant(e: DepGraphEdge): EdgeVariant {
-  if (e.wait) return e.wait.stale ? 'wait-stale' : e.wait.kind === 'session-awaits-event' ? 'await' : 'wait';
+  if (e.wait) {
+    if (e.wait.stale) return 'wait-stale';
+    if (e.wait.kind === 'session-awaits-event') return 'await';
+    return e.wait.kind === 'item-waits-on-condition' ? 'condition' : 'wait';
+  }
   return e.dangling ? 'dangling' : e.satisfied ? 'satisfied' : 'default';
 }
 
-/** The two short lines an EVENT node shows: what it is, and whether one fire proves it. */
+/** The short line a waited-on node shows: what it is, how many wait on it, and how it settles. */
 function eventNodeLabel(n: DepGraphNode): string {
+  const plural = (count: number) => `${count} wait${count === 1 ? '' : 's'}`;
+  const cond = n.condition;
+  if (cond) {
+    const recheck = cond.recheckAt ? ` · recheck ${cond.recheckAt.slice(0, 10)}` : ' · no recheck date';
+    return `${cond.kind} · ${cond.capability ?? 'unknown'} · ${plural(cond.waitCount)}${recheck}`;
+  }
   const ev = n.event;
   if (!ev) return n.id;
   const proof = ev.certification === 'proving' ? 'proving key' : `${ev.certification ?? 'unknown'} key`;
-  return `event · ${ev.waitCount} wait${ev.waitCount === 1 ? '' : 's'} · ${proof}`;
+  const by = ev.announcedBy ? ` · declared by ${ev.announcedBy}` : '';
+  return `event · ${plural(ev.waitCount)} · ${proof}${by}`;
 }
 
 /** One row of `workItems.depEdges` (see lib/sync-resolver/dependency-graph-edges.ts). */
@@ -242,6 +255,17 @@ function DepGraphLegend() {
           </g>
         </LegendSwatch>
         <span>event being waited on (dashed when every wait on it is stale)</span>
+      </li>
+      <li>
+        {edge('condition')}
+        <LegendSwatch>
+          <g className="pc-depgraph__node pc-depgraph__node--condition">
+            <rect x={1} y={1} width={24} height={10} rx={1} />
+          </g>
+        </LegendSwatch>
+        <span>
+          item blocked on a runtime or human condition no event can prove (re-checked on a date)
+        </span>
       </li>
       {/*
         ⚠ The node marks are wrapped in a <g class="pc-depgraph__node"> with the <rect> as
@@ -1146,7 +1170,9 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
             >
               {n.event
                 ? `Event ${n.event.key} — ${eventNodeLabel(n)}${n.event.stale ? ', every wait on it is stale' : ''}`
-                : n.dangling
+                : n.condition
+                  ? `Condition ${n.condition.ref} — ${eventNodeLabel(n)}`
+                  : n.dangling
                   ? `Unresolved blocker ${n.title}`
                   : `${n.id} — ${n.title} (depth ${n.depth}, ${n.state})`}
             </button>
@@ -1262,7 +1288,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                   transform={`translate(${n.x}, ${n.y})`}
                   className={`pc-depgraph__node${n.dangling ? ' pc-depgraph__node--dangling' : ''}${
                     n.event ? ` pc-depgraph__node--event${n.event.stale ? ' pc-depgraph__node--event-stale' : ''}` : ''
-                  }${
+                  }${n.condition ? ' pc-depgraph__node--condition' : ''}${
                     n.planSlug ? ' pc-depgraph__node--plan' : ''
                   }${n.id === selectedId ? ' pc-depgraph__node--selected' : ''}${
                     // P-006 — a node is emphasised when it is the focus or a neighbour of
@@ -1285,11 +1311,14 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                   <title>
                     {n.event
                       ? `${n.event.key} — ${eventNodeLabel(n)}${n.event.stale ? ' — every wait on it is stale' : ''}`
-                      : n.dangling
-                        ? `${n.id} — unresolved blocker`
-                        : `${n.id} — ${n.title} (${n.state}, depth ${n.depth})`}
+                      : n.condition
+                        ? `${n.condition.ref} — ${eventNodeLabel(n)}`
+                        : n.dangling
+                          ? `${n.id} — unresolved blocker`
+                          : `${n.id} — ${n.title} (${n.state}, depth ${n.depth})`}
                   </title>
-                  <rect width={NODE_W} height={NODE_H} rx={n.event ? NODE_H / 2 : 6} />
+                  {/* Event = pill, condition = square-cornered, item = rounded card. */}
+                  <rect width={NODE_W} height={NODE_H} rx={n.event ? NODE_H / 2 : n.condition ? 2 : 6} />
                   {/* P-012: plan provenance as a left edge-marker rather than a fill or
                       border change. Fill is already spoken for by state and the border by
                       selection/dangling, so distinguishing plan items by either would
@@ -1312,7 +1341,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                       legible at this size. Dangling nodes get none: a placeholder for a row
                       that does not exist has no state to report, and inventing one would be
                       asserting data we do not have. */}
-                  {!n.dangling && !n.event && (
+                  {!n.dangling && !n.event && !n.condition && (
                     <circle
                       className={`pc-depgraph__node-state pc-depgraph__node-state--${stateBucket(n.state)}`}
                       cx={NODE_W - 11}
@@ -1325,7 +1354,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                       muted label above it. It was the other way round, which is part of why
                       the pane read as a grid of ids. */}
                   <text x={10} y={17} className="pc-depgraph__node-id">
-                    {n.event ? eventNodeLabel(n) : n.id}
+                    {n.event || n.condition ? eventNodeLabel(n) : n.id}
                   </text>
                   <text x={10} y={34} className="pc-depgraph__node-title">
                     {n.title.length > TITLE_CHARS ? `${n.title.slice(0, TITLE_CHARS - 1)}…` : n.title}

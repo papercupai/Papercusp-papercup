@@ -363,6 +363,25 @@
   fill-opacity: 0.75;
 }
 
+/* WI-6554700010030344 — a CONDITION node is a runtime or human blocker no event can prove
+ * (re-checked on a date instead). Same accent hue as an event, since both are things an item
+ * waits on, but square-cornered with no fill tint, and its edge is dash-dot: a reader must
+ * be able to tell "a fire settles this" from "only a re-check settles this". */
+.pc-depgraph__node--condition rect {
+  fill: transparent;
+  stroke: var(--accent, #38bdf8);
+  stroke-opacity: 0.7;
+}
+.pc-depgraph__edge--condition {
+  stroke: var(--accent, #38bdf8);
+  stroke-opacity: 0.6;
+  stroke-dasharray: 6 2 1 2;
+}
+.pc-depgraph__arrowhead--condition {
+  fill: var(--accent, #38bdf8);
+  fill-opacity: 0.75;
+}
+
 /* P-012 — plan provenance (`source_plan_slug`), drawn as a left edge-marker.
  *
  * ⚠ SPECIFICITY IS LOAD-BEARING HERE, not incidental. The marker is a <rect> INSIDE

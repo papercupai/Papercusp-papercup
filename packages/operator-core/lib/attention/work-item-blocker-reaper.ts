@@ -138,6 +138,10 @@ export interface BlockerReapDeps {
   listStrandedBlocked?(limit: number): Promise<StrandedBlockedCandidate[]>;
   /** Return one stranded item to open under a row lock, re-checking every other hold. */
   repairStranded?(candidate: StrandedBlockedCandidate): Promise<StrandedRepairOutcome>;
+  /** WI-6554700010030445: non-terminal items with an ACTIVE externalBlockers row that
+   *  readExternalBlockers drops. The raw-payload SQL still parks such an item while every
+   *  typed reader (this re-check, set_blocker's clear) ignores it. Optional: absent, skipped. */
+  listMalformedActiveBlockers?(limit: number): Promise<Array<{ id: string; harness: string }>>;
 }
 
 export interface BlockerSweepResult {
@@ -155,6 +159,10 @@ export interface BlockerSweepResult {
     skipped: Partial<Record<StrandedSkipReason | Exclude<StrandedRepairOutcome, 'cleared'> | 'failed', number>>;
     truncatedByLimit: boolean;
   };
+  /** WI-6554700010030445: items parked by an active blocker row no typed reader parses.
+   *  `count` is a floor when `truncatedByLimit`; `sample` names up to 10 as harness/id;
+   *  `failed` means the listing threw, so `count` measured nothing. */
+  malformed: { count: number; sample: string[]; truncatedByLimit: boolean; failed: boolean };
 }
 
 function bump(result: BlockerSweepResult, why: keyof BlockerSweepResult['skipped']): void {
@@ -300,6 +308,34 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
       actor: STRANDED_BLOCKED_REPAIR_ACTOR,
     });
   },
+  async listMalformedActiveBlockers(limit) {
+    const { sql } = getOrgPg();
+    // The inner predicate is readExternalBlockers' rejection rule (external-blockers.ts),
+    // restricted to rows whose status is 'active'. The integration test runs both over the
+    // same fixtures, so a change to one that the other does not follow fails there.
+    const rows = await sql<Array<{ id: string; harness: string }>>`
+      SELECT w.feature_id AS id, w.harness_slug AS harness
+        FROM harness_shared.work_items w
+       WHERE w.workspace_id = ${activeWorkspaceId()}
+         AND NOT (w.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+         AND w.lane IS DISTINCT FROM 'observation'
+         AND (w.payload -> 'externalBlockers') @> '[{"status":"active"}]'::jsonb
+         AND EXISTS (
+               SELECT 1
+                 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(w.payload -> 'externalBlockers') = 'array'
+                                                THEN w.payload -> 'externalBlockers' ELSE '[]'::jsonb END) b
+                WHERE b ->> 'status' = 'active'
+                  AND (jsonb_typeof(b -> 'kind') IS DISTINCT FROM 'string'
+                    OR b ->> 'kind' NOT IN ('event', 'gate', 'runtime', 'human')
+                    OR jsonb_typeof(b -> 'ref') IS DISTINCT FROM 'string'
+                    OR jsonb_typeof(b -> 'summary') IS DISTINCT FROM 'string'
+                    OR jsonb_typeof(b -> 'createdAt') IS DISTINCT FROM 'string'
+                    OR jsonb_typeof(b -> 'createdBy') IS DISTINCT FROM 'string'
+                    OR jsonb_typeof(b -> 'updatedAt') IS DISTINCT FROM 'string'))
+       ORDER BY w.feature_id
+       LIMIT ${limit}`;
+    return rows.map((r) => ({ id: r.id, harness: r.harness }));
+  },
 };
 
 /**
@@ -427,6 +463,34 @@ function recheckClearedItem(input: {
   };
 }
 
+const MALFORMED_SAMPLE_SIZE = 10;
+
+/**
+ * WI-6554700010030445 — report items parked by an active blocker row the typed parser
+ * drops. Nothing can release such an item (the re-check and set_blocker's clear never see
+ * the row), so the sweep names it instead of leaving it silent. Read-only.
+ */
+async function findMalformedActiveBlockers(
+  deps: BlockerReapDeps,
+  limit: number,
+): Promise<BlockerSweepResult['malformed']> {
+  const out: BlockerSweepResult['malformed'] = { count: 0, sample: [], truncatedByLimit: false, failed: false };
+  if (!deps.listMalformedActiveBlockers) return out;
+  let rows: Array<{ id: string; harness: string }>;
+  try {
+    rows = await deps.listMalformedActiveBlockers(limit + 1);
+  } catch (err) {
+    console.warn(`[blocker-recheck] ! malformed-blocker listing: ${err instanceof Error ? err.message : String(err)}`);
+    out.failed = true;
+    return out;
+  }
+  out.truncatedByLimit = rows.length > limit;
+  const batch = out.truncatedByLimit ? rows.slice(0, limit) : rows;
+  out.count = batch.length;
+  out.sample = batch.slice(0, MALFORMED_SAMPLE_SIZE).map((r) => `${r.harness}/${r.id}`);
+  return out;
+}
+
 /**
  * One sweep. Never throws for a single bad row: a per-item failure is counted and the
  * sweep continues, because one malformed payload must not strand every other deadline.
@@ -455,6 +519,7 @@ export async function sweepWorkItemBlockerDefaults(opts?: {
     truncatedByLimit,
     recovered,
     repaired: { examined: 0, reopened: 0, skipped: {}, truncatedByLimit: false },
+    malformed: { count: 0, sample: [], truncatedByLimit: false, failed: false },
   };
 
   for (const row of batch) {
@@ -576,6 +641,7 @@ export async function sweepWorkItemBlockerDefaults(opts?: {
   }
   // P-005: last, so it also catches an item this tick's re-check or default left blocked.
   result.repaired = await repairStrandedItems(deps, limit, dryRun);
+  result.malformed = await findMalformedActiveBlockers(deps, limit);
   return result;
 }
 

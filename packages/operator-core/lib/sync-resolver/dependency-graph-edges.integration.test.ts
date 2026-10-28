@@ -464,6 +464,83 @@ describe('resolveDependencyGraphWaits — event waits on items', () => {
     expect(got.find((w) => w.blockerKind === 'event')).toMatchObject({ announced: false, since: '2026-10-21T00:00:00.000Z' });
   });
 
+  it('WI-6554700010030344 G-2: returns an item\'s own active runtime and human blockers as item-condition waits, with capability and re-check date, never as event waits', async () => {
+    await heldItem('WI-C1', 'su-holder', {
+      blockers: [
+        { ...blocker('runtime', 'pc-heavy queue'), capability: 'live-dependency', recheckAt: '2026-10-30T00:00:00.000Z' },
+        { ...blocker('human', 'owner picks the vendor'), capability: 'product-decision' },
+        blocker('runtime', 'an old queue', 'cleared'),
+        blocker('event', 'release:deployed:abc123def'),
+      ],
+    });
+    await heldItem('WI-CDONE', null, { status: 'done', blockers: [blocker('runtime', 'pc-heavy queue')] });
+    await heldItem('WI-COTHER', null, { harness: 'some-other-harness', blockers: [blocker('human', 'owner picks the vendor')] });
+    // An announcement whose key equals a condition's ref must not make the condition "proving":
+    // a ref is never looked up as a key.
+    await awaitRow('su-leader', 'pc-heavy queue', { policy: 'announce' });
+    await awaitRow('su-leader', 'release:deployed:abc123def', { policy: 'announce' });
+
+    const got = await waits();
+    const conditions = got.filter((w) => w.waitKind === 'item-condition');
+    expect(conditions.map((w) => [w.itemId, w.blockerKind, w.eventKey]).sort()).toEqual([
+      ['WI-C1', 'human', 'owner picks the vendor'],
+      ['WI-C1', 'runtime', 'pc-heavy queue'],
+    ]);
+    expect(conditions.find((w) => w.blockerKind === 'runtime')).toMatchObject({
+      capability: 'live-dependency',
+      recheckAt: '2026-10-30T00:00:00.000Z',
+      certification: 'not-an-event',
+      announced: false,
+      announcedBy: null,
+      since: '2026-10-21T00:00:00.000Z',
+      holderId: 'su-holder',
+      subscriberId: null,
+      awaitId: null,
+      parkedBy: null,
+      stale: false,
+      legTruncated: false,
+    });
+    expect(conditions.find((w) => w.blockerKind === 'human')).toMatchObject({ capability: 'product-decision', recheckAt: null });
+    // The event blocker on the same item stays an event wait, attributed to its announcer.
+    expect(got.filter((w) => w.itemId === 'WI-C1' && w.waitKind === 'item-blocker')).toEqual([
+      expect.objectContaining({ blockerKind: 'event', announced: true, announcedBy: 'su-leader', capability: null }),
+    ]);
+    // Every non-condition wait leaves capability null.
+    expect(got.filter((w) => w.waitKind !== 'item-condition').every((w) => w.capability === null)).toBe(true);
+  });
+
+  it('WI-6554700010030344 G-3c: an announced key names its most recent live announcer; an unannounced key names none', async () => {
+    await heldItem('WI-A1', null, { blockers: [blocker('gate', 'fleet:alpha:schema-ready'), blocker('event', 'release:deployed:ffff')] });
+    await awaitRow('su-first', 'fleet:alpha:schema-ready', { policy: 'announce' });
+    await awaitRow('su-second', 'fleet:alpha:schema-ready', { policy: 'announce' });
+    await db.sql`UPDATE harness_shared.event_awaits SET created_at = now() - interval '1 hour' WHERE subscriber_id = 'su-first'`;
+
+    const got = (await waits()).filter((w) => w.itemId === 'WI-A1');
+    expect(got.find((w) => w.eventKey === 'fleet:alpha:schema-ready')).toMatchObject({ announced: true, announcedBy: 'su-second' });
+    expect(got.find((w) => w.eventKey === 'release:deployed:ffff')).toMatchObject({ announced: false, announcedBy: null });
+  });
+
+  it('WI-6554700010030344 G-2: the condition branch is capped on its own and says so, without truncating the event-blocker branch', async () => {
+    const n = DEP_WAITS_LIMITS.condition + 3;
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, title, status, item_kind, workspace_id, created_ts, updated_ts, payload)
+      SELECT ${H}, 'WI-CAP-' || lpad(g::text, 5, '0'), 'capped', 'blocked', 'bug', ${WS}, 0, 0,
+             jsonb_build_object('externalBlockers', jsonb_build_array(jsonb_build_object(
+               'kind', 'runtime', 'ref', 'queue ' || g, 'status', 'active', 'summary', 's',
+               'createdAt', '2026-10-21T00:00:00.000Z', 'createdBy', 'su-holder', 'updatedAt', '2026-10-21T00:00:00.000Z')))
+        FROM generate_series(1, ${n}) g`;
+    await heldItem('WI-EV', null, { blockers: [blocker('event', 'release:deployed:abc123def')] });
+
+    const got = await waits();
+    const conditions = got.filter((w) => w.waitKind === 'item-condition');
+    expect(conditions).toHaveLength(DEP_WAITS_LIMITS.condition);
+    expect(conditions.every((w) => w.legTruncated)).toBe(true);
+    expect(got.filter((w) => w.waitKind === 'item-blocker')).toEqual([
+      expect.objectContaining({ itemId: 'WI-EV', legTruncated: false }),
+    ]);
+  }, 60_000);
+
   it('WI-6554700010030343: returns a durable park\'s release trigger as an item-park wait, but not a lease, a stale contract, a blank trigger, or a terminal item', async () => {
     const parked = (trigger: unknown, over: Record<string, unknown> = {}) => ({
       _claimHold: true,

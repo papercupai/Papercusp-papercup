@@ -281,6 +281,20 @@ describe('planDispatchOperation (D-009 walk shape)', () => {
     expect(planDispatchOperation({ agent: 'claude', live: false }, { agent: 'omp' })).toEqual({ operation: 'convert' });
   });
 
+  it('skips a source whose session port is not delivered, for every rank (WI-6554700010030461)', () => {
+    for (const portStatus of ['failed', 'pending', 'preparing']) {
+      for (const agent of ['claude', 'codex', 'omp'] as const) {
+        expect(planDispatchOperation({ agent: 'claude', live: false, tracked: true, portStatus }, { agent }))
+          .toMatchObject({ operation: null, reason: 'source-session-untracked' });
+      }
+    }
+    // No port (null/absent) and a delivered port keep the normal plan.
+    for (const portStatus of [null, undefined, 'delivered']) {
+      expect(planDispatchOperation({ agent: 'claude', live: false, tracked: true, portStatus }, { agent: 'claude' }))
+        .toEqual({ operation: 'fork' });
+    }
+  });
+
   it('an OMP source uses the maintained isolated port on its own backend', () => {
     expect(planDispatchOperation({ agent: 'omp', live: false }, { agent: 'omp' })).toMatchObject({
       operation: 'convert',
@@ -1037,6 +1051,32 @@ describe('dispatchConsultResponder — the walk', () => {
         expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
         expect(calls.stopped).toEqual(['task-1']);
         expect(result.attempts.find((a) => a.operation === 'convert')?.detail).not.toContain('First reply not');
+      });
+
+      // WI-6554700010030363: measured 2026-10-27 11:26Z, a codex convert's first turn
+      // was interrupted while Codex reconnected; it ended turn_aborted with nothing
+      // written and the consult sat awaiting a reply that could never come.
+      const item = (type: string) => ({ type: 'event_msg', payload: { type: 'item_completed', item: { type, id: `i-${type}` } } });
+      const aborted = { type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } };
+
+      it('does not count a first turn aborted before any output as a reply', async () => {
+        const { deps } = makeFakes({
+          analyzeClaudeTranscript: claudeWall,
+          analyzeCodexRollout: rollout(started, item('UserMessage'), item('Reasoning'), aborted),
+        });
+        const result = await dispatchConsultResponder(OPTS, CTX, deps);
+        expect(result.attempts.some((a) => a.operation === 'convert' && a.outcome === 'dispatched')).toBe(false);
+        expect(result.attempts.find((a) => a.operation === 'convert')?.detail)
+          .toContain('first turn was aborted (turn_aborted) before producing any output');
+      });
+
+      it('keeps a convert whose aborted first turn had already written output', async () => {
+        const { deps } = makeFakes({
+          analyzeClaudeTranscript: claudeWall,
+          analyzeCodexRollout: rollout(started, item('UserMessage'), item('McpToolCall'), aborted),
+        });
+        const result = await dispatchConsultResponder(OPTS, CTX, deps);
+        expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
       });
 
       it('keeps the dispatch when the rollout is unreadable, and says the check did not run', async () => {
@@ -2492,6 +2532,27 @@ describe('answer-window failure records (WI-10003199, P-003)', () => {
 describe('cited-turn brief launch for unforkable sources (P-002, D-008)', () => {
   it('covers exactly the two intentional session-port skips', () => {
     expect([...BRIEF_FALLBACK_REASONS].sort()).toEqual(['conversion-unavailable', 'source-session-untracked']);
+  });
+
+  // WI-6554700010030461 (R-6 Round E cell 1): row #53037 was a session-port
+  // target with port_status 'failed'. psu's resumable list hides such a row, so
+  // both Claude ranks launched a fork that psu refused. The tracked binding was
+  // intact, so only the port status tells the router this source is unforkable.
+  it('briefs a tracked source whose session port failed, and launches no fork', async () => {
+    const { deps, calls } = makeFakes({
+      readCitedTurns: async () => [
+        { turn_idx: 1, speaker: 'assistant', ts: '2026-10-27T00:00:01Z', text: 'the expert explained the lock order' },
+      ],
+    }, { source: { portStatus: 'failed' } });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result).toMatchObject({ dispatched: true, operation: 'brief' });
+    const skipped = result.attempts.filter((a) => a.reason === 'source-session-untracked');
+    expect(skipped.length).toBeGreaterThan(0);
+    expect(skipped.every((a) => a.outcome === 'skipped' && /session-port target whose port is 'failed'/.test(a.detail ?? '')))
+      .toBe(true);
+    expect(result.attempts.some((a) => a.operation === 'fork' || a.operation === 'convert')).toBe(false);
+    expect(calls.spawn).toHaveLength(1);
+    expect(calls.spawn[0]!.envelope.greetingCmd).not.toContain('--fork');
   });
 
   it('launches a fresh briefed session for an untracked native source instead of refusing', async () => {

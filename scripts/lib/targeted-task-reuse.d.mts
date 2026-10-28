@@ -68,7 +68,11 @@ export function nodeVersionRunnerIdentity(root: string, env: NodeJS.ProcessEnv, 
  * @param {string|null} o.expectedSha exact candidate SHA expected at HEAD
  * @param {string} o.checkpointRoot configured disposable checkpoint checkout
  * @param {string} o.integrationRoot protected integration checkout
- * @param {string} o.releaseRoot protected release checkout
+ * @param {string} o.releaseRoot protected release checkout. A pot with no release checkout
+ *   still names one (`<slug>-release`); when that absolute path does not exist at all (ENOENT)
+ *   there is nothing to protect, so the release predicates are skipped and every checkpoint and
+ *   integration predicate still applies. A path that exists but is not its own Git worktree
+ *   root (or a dangling symlink) stays unverified.
  * @param {Partial<typeof defaultDeps>} [o.deps] injection seam for tests
  * @returns {{ok:boolean, restored?:boolean, reason?:string}}
  */

@@ -41,6 +41,8 @@ describe('analyzeCodexRolloutText on the captured over-window rollout', () => {
       modelContextWindow: 828400,
       currentTurnOutcome: 'usage-limit',
       currentTurnErrorEvidence: expect.stringMatching(/^Error running remote compact task: You.ve hit your usage limit/),
+      // The walled compaction turn wrote nothing before it failed.
+      currentTurnProducedOutput: false,
     });
   });
 
@@ -100,6 +102,33 @@ describe('analyzeCodexRolloutText current-turn outcome', () => {
     expect(analyzeCodexRolloutText(lines.slice(0, 5).join('\n'))).toMatchObject({ currentTurnOutcome: 'aborted', currentTurnErrorEvidence: null });
     expect(analyzeCodexRolloutText([started, failed({ message: 'stream disconnected before completion' })].join('\n')))
       .toMatchObject({ currentTurnOutcome: 'error', currentTurnErrorEvidence: 'stream disconnected before completion' });
+  });
+
+  // WI-6554700010030363: record shapes as Codex 0.159 writes them (su-codex-homes
+  // rollouts, 2026-10-27). An item_completed carries the item; turn_aborted the reason.
+  describe('whether the newest turn produced output (WI-6554700010030363)', () => {
+    const item = (type: string) => JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', item: { type, id: `i-${type}` } } });
+    const aborted = JSON.stringify({ type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } });
+    const complete = JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'answered' } });
+
+    it('is false for a turn aborted with only its input and reasoning written', () => {
+      const analysis = analyzeCodexRolloutText([started, item('UserMessage'), item('Reasoning'), aborted].join('\n'));
+      expect(analysis).toMatchObject({ currentTurnOutcome: 'aborted', currentTurnProducedOutput: false });
+    });
+
+    it.each(['AgentMessage', 'McpToolCall', 'CommandExecution', 'FileChange'])('is true once the turn wrote a %s', (type) => {
+      const analysis = analyzeCodexRolloutText([started, item('UserMessage'), item(type), aborted].join('\n'));
+      expect(analysis).toMatchObject({ currentTurnOutcome: 'aborted', currentTurnProducedOutput: true });
+    });
+
+    it('never credits an older turn’s output to the newest turn', () => {
+      const text = [started, item('AgentMessage'), complete, started, item('UserMessage'), aborted].join('\n');
+      expect(analyzeCodexRolloutText(text).currentTurnProducedOutput).toBe(false);
+    });
+
+    it('is false when the text holds no turn start', () => {
+      expect(analyzeCodexRolloutText(item('AgentMessage')).currentTurnProducedOutput).toBe(false);
+    });
   });
 
   it('bounds the evidence and is null when the text holds no turn start', () => {

@@ -56,6 +56,7 @@ import {
 } from '../agent-tools/coordination/context-pressure';
 import { tokensFromFileSize } from '../compaction-usage';
 import { codexModelIdFromSpec, codexServiceableForModel } from '../model-context-budget.mjs';
+import { portStatusAllowsResume } from '../resumable-port-status';
 import {
   analyzeClaudeResumeTranscriptFile,
   type ClaudeResumeTranscriptAnalysis,
@@ -525,12 +526,18 @@ type FirstTurnAnalysis = NonNullable<ReturnType<ConsultDispatchDeps['analyzeClau
  * so the newest `task_started` is the answering session's own kickoff turn. Until
  * that turn ends there is no reply yet. A usage limit is an account wall, an
  * overflow is a context-limit rejection and any other error is a transient
- * provider error. A clean or aborted ending is a reply, and the dispatch stands.
+ * provider error. A first turn aborted before producing any output never
+ * answered: a headless answer session gets no further prompt, so it is judged as
+ * a transient provider error too (WI-6554700010030363). A clean ending, or an
+ * aborted turn that did produce output, is a reply, and the dispatch stands.
  */
 export function codexFirstTurnAnalysis(analysis: CodexRolloutOverflowAnalysis | null): FirstTurnAnalysis | null {
   if (!analysis) return null;
-  const outcome = analysis.currentTurnOutcome;
-  const evidence = analysis.currentTurnErrorEvidence;
+  const silentAbort = analysis.currentTurnOutcome === 'aborted' && !analysis.currentTurnProducedOutput;
+  const outcome = silentAbort ? 'error' : analysis.currentTurnOutcome;
+  const evidence = silentAbort
+    ? 'first turn was aborted (turn_aborted) before producing any output'
+    : analysis.currentTurnErrorEvidence;
   return {
     assistantTurnsSinceLastPrompt: outcome === null ? 0 : 1,
     trailingAccountWallTurns: outcome === 'usage-limit' ? 1 : 0,
@@ -1495,7 +1502,14 @@ function childExitFailure(exit: SpawnChildExit): string | null {
 
 /** The operation a rank implies against this source, or the reason there is none. */
 export function planDispatchOperation(
-  source: { agent: string | null; live: boolean; tracked?: boolean; historical?: boolean; role?: string | null },
+  source: {
+    agent: string | null;
+    live: boolean;
+    tracked?: boolean;
+    historical?: boolean;
+    role?: string | null;
+    portStatus?: string | null;
+  },
   rank: Pick<AllowedExpertModel, 'agent'>,
 ): { operation: DispatchOperation } | { operation: null; reason: DispatchSkipReason; detail: string } {
   const sourceAgent = (source.agent ?? '').toLowerCase();
@@ -1505,6 +1519,19 @@ export function planDispatchOperation(
       reason: 'conversion-unavailable',
       detail:
         `unsupported source backend ${sourceAgent || 'unknown'}`,
+    };
+  }
+  // WI-6554700010030461: psu resolves every tracked fork/resume through the
+  // resumable list, which hides a session-port target whose port never
+  // delivered. Launching one fails per rank with "not a resumable tracked row",
+  // so treat it as untracked here; the brief fallback still reaches the expert.
+  if (!portStatusAllowsResume(source.portStatus)) {
+    return {
+      operation: null,
+      reason: 'source-session-untracked',
+      detail:
+        `the source's tracked row is a session-port target whose port is '${source.portStatus}', not ` +
+        'delivered; psu refuses to resume or fork such a row, so the rank is skipped before launch',
     };
   }
   if (source.tracked === false) {
@@ -1880,6 +1907,7 @@ async function walkConsultDispatch(
           tracked: exactTracked || historical,
           historical,
           role: target.role,
+          portStatus: target.portStatus ?? null,
         },
         rank,
       );

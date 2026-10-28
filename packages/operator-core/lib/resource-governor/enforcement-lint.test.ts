@@ -593,6 +593,8 @@ describe('resource governor enforcement lint', () => {
       ['packages/operator-core/lib/memory/bench/measurement-dossier.fixture.ts', 'resource-start-outside-admission', false],
       ['packages/operator-core/lib/memory/bench/measurement-dossier.ts', 'resource-start-outside-admission', false],
       ['packages/operator-core/lib/memory/bench/tracked-evidence.ts', 'resource-start-outside-admission', false],
+      ['scripts/agent-capacity/cost-model.ts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/agent-tools/harness/create.ts', 'resource-start-outside-admission', false],
     ];
     for (const [path, code, p016] of startPins) {
       const source = readFileSync(ROOT + path, 'utf8');
@@ -619,6 +621,9 @@ describe('resource governor enforcement lint', () => {
         'pending.set(entry, { key, fingerprint });', 'pending.push(entry);', false],
       ['scripts/bench-work-item-continuations.ts', 'unbounded-resident-queue',
         'pending.push(heldWrite);', 'pending.set(heldWrite);', true],
+      ['packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts', 'unbounded-resident-queue',
+        "if (current === null || typeof current !== 'object' || seen.has(current)) continue;",
+        "if (current === null || typeof current !== 'object') continue;", false],
     ];
     for (const [path, code, before, after, p016] of queuePins) {
       const source = readFileSync(ROOT + path, 'utf8');
@@ -724,6 +729,30 @@ describe('resource governor enforcement lint', () => {
     for (const mutant of [secondStart, detached, unresolvedExecutable]) {
       expect(mutant).not.toBe(source);
       expect(scanInventory([[path, mutant]], { migrations: ['P-016'], validateRegistry: true })).toEqual([
+        `${path}:resource-start-outside-admission`,
+      ]);
+    }
+  });
+
+  it('does not let regex-literal RegExp#exec void the committed-source loader pin, but still counts exec calls', () => {
+    // WI-6554700010030439: the pin counts exec/execSync too, and a regex LITERAL's
+    // `.exec(` read as a second child start, so a parse helper silently voided the
+    // reviewed disposition and redded the gate. Only a literal receiver is exempt.
+    const path = 'scripts/lib/committed-source-loader.mjs';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const entry = P016_DISPOSITION_REGISTRY.get(`${path}::resource-start-outside-admission`);
+    expect(entry?.matchesSource?.(source)).toBe(true);
+    const regexLiteralParse = `${source}\nexport const fb439 = (s) => /^(.+)\\.timestamp-\\d+$/i.exec(s);`;
+    expect(entry?.matchesSource?.(regexLiteralParse)).toBe(true);
+    expect(scanInventory([[path, regexLiteralParse]], { migrations: ['P-016'] })).toEqual([]);
+    for (const mutant of [
+      `${source}\nconst FB439_RE = /x/; FB439_RE.exec(s);`,
+      `${source}\ncp.exec('ls');`,
+      `${source}\nexec('ls');`,
+      `${source}\nexecSync('ls');`,
+    ]) {
+      expect(entry?.matchesSource?.(mutant), mutant.slice(-40)).toBe(false);
+      expect(scanInventory([[path, mutant]], { migrations: ['P-016'] })).toEqual([
         `${path}:resource-start-outside-admission`,
       ]);
     }

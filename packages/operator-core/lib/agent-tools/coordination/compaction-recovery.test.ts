@@ -519,9 +519,11 @@ describe('automatic compaction recovery — carried probes run at recovery', () 
       ]);
     const actual = await vi.importActual<typeof import('../../carry-probe-eval')>('../../carry-probe-eval');
     const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text', text: JSON.stringify({ value: 'red' }) }] }));
-    vi.mocked(carriedProbeBlockForDelivery).mockImplementationOnce((sources, deps) =>
-      actual.carriedProbeBlockForDelivery(sources, { ...deps, dispatchTool }),
-    );
+    let capturedSources: Parameters<typeof actual.carriedProbeBlockForDelivery>[0] | undefined;
+    vi.mocked(carriedProbeBlockForDelivery).mockImplementationOnce((sources, deps) => {
+      capturedSources = sources;
+      return actual.carriedProbeBlockForDelivery(sources, { ...deps, dispatchTool });
+    });
     const checkpoint = renderCarryNote({ checks: [{
       id: 'changed-probe',
       claim: 'the carried value is green',
@@ -537,11 +539,36 @@ describe('automatic compaction recovery — carried probes run at recovery', () 
       heldItems: [{ id: 'WI-1', harness: 'h', checkpoint } as never],
       carriedRefChangesFn: async () => null,
     });
+    const dispatchCalls = dispatchTool.mock.calls as unknown as unknown[][];
+    expect({
+      adapterCalls: vi.mocked(carriedProbeBlockForDelivery).mock.calls.length,
+      parsedSources: capturedSources?.map(({ source, checkIndex, check }) => ({
+        source: source.kind === 'work-item' ? `${source.kind}:${source.id}` : `${source.kind}:${source.ownerId}`,
+        checkIndex,
+        checkId: check.id,
+        probeTool: check.probe?.tool ?? null,
+      })),
+      dispatchCalls: dispatchCalls.map((call) => ({
+        tool: call[0],
+        args: call[1],
+        hasAbortSignal: call[2] instanceof AbortSignal,
+      })),
+    }).toMatchObject({
+      adapterCalls: 1,
+      parsedSources: [{
+        source: 'work-item:WI-1',
+        checkIndex: 0,
+        checkId: 'changed-probe',
+        probeTool: 'state:read',
+      }],
+      dispatchCalls: [{
+        tool: 'state:read',
+        args: { cell: 'test.carriedValue' },
+        hasAbortSignal: true,
+      }],
+    });
     expect(delivery.recovery.carriedProbes).toContain(
       '✗ CHANGED — the carried value is green [WI-1 #changed-probe]: observed "red"',
-    );
-    expect(dispatchTool).toHaveBeenCalledExactlyOnceWith(
-      'state:read', { cell: 'test.carriedValue' }, expect.any(AbortSignal),
     );
     expect(delivery.recovery.carriedProbes).not.toContain('COULD NOT RUN');
   });

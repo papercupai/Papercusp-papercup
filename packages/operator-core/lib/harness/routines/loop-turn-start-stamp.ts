@@ -46,6 +46,8 @@ export interface LoopTurnStartInput {
   workspaceId: string;
   cwd?: string | null;
   client?: string | null;
+  /** Opaque hook request id for joining this marker to its turn-start receipt. */
+  turnStartRequestId?: string | null;
   /** Resolved identity; the async recorder binds production lookups to the launch ledger. */
   loopFire?: LoopFireIdentity | null;
 }
@@ -93,6 +95,9 @@ export function loopTurnStartRecord(input: LoopTurnStartInput): ActivityRecord |
           origin: envelope.origin,
           nonce: envelope.nonce,
           source: 'turn-start',
+          ...(typeof input.turnStartRequestId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(input.turnStartRequestId)
+            ? { turnStartRequestId: input.turnStartRequestId }
+            : {}),
           ...(loopFire ? { loopFire } : {}),
         }
       : null,

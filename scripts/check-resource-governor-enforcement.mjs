@@ -386,6 +386,17 @@ function resourceStartCallCount(source) {
   ].length;
   return directStarts + inlinePromisifiedStarts;
 }
+// Counts child-process verb calls INCLUDING exec/execSync, for dispositions that
+// pin "exactly one start" over the wider verb set. A call whose receiver is a
+// regular-expression LITERAL (`/re/flags.exec(...)`) is RegExp#exec, never a child
+// process, so it is not counted; a named regex (`RE.exec(...)`) or a namespace
+// (`cp.exec(...)`) still is. Without this, parsing with a regex literal read as a
+// second start and silently voided a reviewed disposition (WI-6554700010030439).
+function childProcessVerbCallCount(code) {
+  return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync|exec|execSync)\s*\(/g)]
+    .filter((match) => !(/^exec\s*\($/.test(match[0]) && /\/[dgimsuyv]*\.$/.test(code.slice(Math.max(0, match.index - 16), match.index))))
+    .length;
+}
 
 export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
   {
@@ -600,6 +611,24 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/agent-capacity/session-process.ts: `runAsync` spawns native `cp -a --reflink=auto` and `rm -rf` (copy workdir mode), or `sudo -n mount -t overlay` / `sudo -n umount` (overlay workdir mode, WI-10004672), to prepare a session work dir from a prepared checkout and remove it afterwards. Each child is awaited to its exit code, is not detached, and holds nothing after exit (an overlay mount is a kernel object the same session unmounts), so it adds no residency or queue of its own. It is called only by load-driver.ts and record-session.ts after their assertHostAdmission check, once per session they were already admitted to run (WI-10004522).",
   },
   {
+    path: "scripts/agent-capacity/cost-model.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/agent-capacity/cost-model.ts (WI-6554700010030439): the capacity cost-model CLI's `--qualification-economics` read route. Its only start is one synchronous `spawnSync('python3', [<sibling>/vm/swap-tier.py, 'evaluate-workload', ...])` inside readTrialEconomics, once per selected economics option, re-deriving each option's verdict from retained, hash-checked qualification evidence instead of trusting a saved verdict. Each child runs to completion before the next under a 30 s timeout and a 4 MiB output cap; an error, signal or non-zero exit maps to an `unknown` verdict, and nothing is retained after the call returns. It runs only when an operator invokes the CLI by hand, never from a fleet path, so it adds no resident worker or queue.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        [...code.matchAll(/\bspawnSync\s*\(/g)].length === 1 &&
+        source.includes("import { spawnSync } from 'node:child_process';") &&
+        source.includes("const result = spawnSync('python3', [join(dirname(fileURLToPath(import.meta.url)), 'vm/swap-tier.py'),") &&
+        source.includes("'evaluate-workload', '--out', resolve(root, option.qualification.directory),") &&
+        source.includes("{ encoding: 'utf8', timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });") &&
+        source.includes("if (result.error || result.signal || result.status !== 0) return { status: 'unknown' };") &&
+        !/\bdetached\s*:\s*true/.test(code) && !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code);
+    },
+  },
+  {
     path: "scripts/lib/pure-lane-proof-capture.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -663,7 +692,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/lib/committed-source-loader.mjs (plan personal-data-reader-set-labels-2026-10-01 D-012; WI-10005764, WI-10005802): the `--import` load hook makes the `spawnCensus` restricted-hold census child execute only committed bytes. Its only start is the `git(top, args)` helper: one synchronous `execFileSync(gitExecutable, ['-C', top, ...args])` site that reads `ls-tree -r HEAD` (once per checkout, cached), `check-ignore -q` (per untracked module), and `cat-file blob` (per differing module). The executable resolves through realpath to an absolute executable; each read has a 60 s timeout, is awaited, and leaves no resident child. The hook runs only inside the timeout-bounded restricted-hold census child, which already owns admission. The exact executable-resolution and single-read shape is pinned below.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
-      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync|exec|execSync)\s*\(/g)].length === 1 &&
+      return childProcessVerbCallCount(code) === 1 &&
         /\breturn execFileSync\(gitExecutable, \['-C', top, \.\.\.args\]/.test(source) &&
         source.includes("const COMMITTED_SOURCE_GIT_ENV = 'PAPERCUSP_COMMITTED_SOURCE_GIT';") &&
         source.includes("if (configured && !isAbsolute(configured))") &&
@@ -2893,6 +2922,54 @@ export const BYPASS_REGISTRY = new Map([
       disposition: "bypass",
       reason:
         "git config user.email — cheap metadata read, awaited, exits immediately",
+    },
+  ],
+  [
+    "packages/operator-core/lib/agent-tools/harness/create.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for harness:create's registrationOnly path (WI-6554700010030439): before registering an existing checkout it proves the caller's path is that checkout's root, at the expected commit, and clean. Those proofs are exactly three awaited `git` metadata reads (rev-parse --show-toplevel, rev-parse --verify HEAD, status --porcelain) through one lazily promisified execFile alias, each under a 10 s timeout and a 1 MiB output cap, run once per tool call inside the caller's own tool invocation. No child outlives the call and nothing is queued; scaffolding paths start no process. The source predicate pins that single alias, its one call site, the three reads and their bounds, and rejects any additional start.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        const branch = source.indexOf("if (args.registrationOnly === true) {");
+        const alias = source.indexOf("const execFileAsync = promisify(execFile);");
+        return resourceStartCallCount(source) === 0 &&
+          branch >= 0 && alias > branch &&
+          [...code.matchAll(/\bpromisify\s*\(\s*execFile\s*\)/g)].length === 1 &&
+          [...code.matchAll(/\bexecFileAsync\s*\(/g)].length === 1 &&
+          [...code.matchAll(/\bawait\s+git\s*\(/g)].length === 3 &&
+          source.includes("const git = async (...argv: string[]) => (await execFileAsync('git', ['--no-optional-locks', '-C', path, ...argv], {") &&
+          source.includes("env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, timeout: 10_000, maxBuffer: 1024 * 1024,") &&
+          source.includes("await git('rev-parse', '--show-toplevel')") &&
+          source.includes("await git('rev-parse', '--verify', 'HEAD')") &&
+          source.includes("await git('-c', 'core.fsmonitor=false', 'status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none')") &&
+          !/\bdetached\s*:\s*true/.test(code) && !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code);
+      },
+    },
+  ],
+  [
+    "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "Reviewed semantic disposition for spec-evidence-store.ts (WI-6554700010030439): in stringLeaves, pending is a function-local depth-first stack over one evidence value. It is seeded with that value alone, consumed synchronously by pop, and each object is expanded at most once because the seen Set skips revisits, so cyclic evidence terminates. It starts no work, holds no handle, and is discarded when the function returns its string leaves. The source predicate requires that single writer, the pop consumption and the seen dedup, and rejects any additional queue writer.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        const writers = [...code.matchAll(RESIDENT_QUEUE)];
+        const start = source.indexOf("function stringLeaves(value: unknown): string[] {");
+        const end = source.indexOf("\n}\n", start);
+        if (start < 0 || end < 0) return false;
+        const section = source.slice(start, end);
+        return writers.length === 1 && writers[0][1] === "pending" &&
+          section.includes("const pending: unknown[] = [value];") &&
+          section.includes("const seen = new Set<object>();") &&
+          section.includes("while (pending.length > 0) {") &&
+          section.includes("const current = pending.pop();") &&
+          section.includes("if (current === null || typeof current !== 'object' || seen.has(current)) continue;") &&
+          section.includes("seen.add(current);") &&
+          section.includes("pending.push(...(Array.isArray(current) ? current : Object.values(current)));");
+      },
     },
   ],
   [

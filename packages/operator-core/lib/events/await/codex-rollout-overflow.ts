@@ -47,7 +47,17 @@ export interface CodexRolloutOverflowAnalysis {
   currentTurnOutcome: 'ok' | 'context-overflow' | 'usage-limit' | 'error' | 'aborted' | null;
   /** Bounded provider error text of that ending, when it carried one. */
   currentTurnErrorEvidence: string | null;
+  /**
+   * Whether that turn produced any output (an agent message, tool call, command or
+   * file change) before it ended. A first turn aborted with no output never
+   * answered: measured 2026-10-27, a consult convert interrupted while Codex was
+   * reconnecting ended `turn_aborted` with nothing written (WI-6554700010030363).
+   */
+  currentTurnProducedOutput: boolean;
 }
+
+/** `item_completed` item types that are the turn's own output, not its input or reasoning. */
+const OUTPUT_ITEM_TYPES: ReadonlySet<string> = new Set(['AgentMessage', 'McpToolCall', 'CommandExecution', 'FileChange']);
 
 type TurnTerminal =
   | { kind: 'ok' }
@@ -68,7 +78,12 @@ function errorEvidence(error: unknown, serialized: string): string {
 interface RolloutRecord {
   timestamp?: unknown;
   type?: unknown;
-  payload?: { type?: unknown; error?: unknown; model_context_window?: unknown } | null;
+  payload?: {
+    type?: unknown;
+    error?: unknown;
+    model_context_window?: unknown;
+    item?: { type?: unknown } | null;
+  } | null;
 }
 
 function classifyTaskComplete(record: RolloutRecord): TurnTerminal {
@@ -103,6 +118,7 @@ export function analyzeCodexRolloutText(text: string): CodexRolloutOverflowAnaly
   const terminals: TurnTerminal[] = [];
   let modelContextWindow: number | null = null;
   let currentTurnStart: number | null = null;
+  let currentTurnProducedOutput = false;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     let record: RolloutRecord;
@@ -116,8 +132,16 @@ export function analyzeCodexRolloutText(text: string): CodexRolloutOverflowAnaly
     if (kind === 'task_started') {
       // The newest turn's ending is the first terminal recorded after it starts.
       currentTurnStart = terminals.length;
+      currentTurnProducedOutput = false;
       const window = record.payload.model_context_window;
       if (typeof window === 'number' && Number.isFinite(window) && window > 0) modelContextWindow = window;
+    } else if (kind === 'item_completed') {
+      // Only output written while the newest turn is still open belongs to it.
+      const itemType = record.payload.item?.type;
+      if (
+        currentTurnStart !== null && terminals.length === currentTurnStart
+        && typeof itemType === 'string' && OUTPUT_ITEM_TYPES.has(itemType)
+      ) currentTurnProducedOutput = true;
     } else if (kind === 'task_complete') {
       terminals.push(classifyTaskComplete(record));
     } else if (kind === 'turn_aborted') {
@@ -141,6 +165,7 @@ export function analyzeCodexRolloutText(text: string): CodexRolloutOverflowAnaly
     modelContextWindow,
     currentTurnOutcome: current ? CURRENT_TURN_OUTCOME[current.kind] : null,
     currentTurnErrorEvidence: current && 'evidence' in current ? current.evidence : null,
+    currentTurnProducedOutput: currentTurnStart !== null && currentTurnProducedOutput,
   };
 }
 

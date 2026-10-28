@@ -33,7 +33,7 @@
 // numbers must not be folded into it.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { captureRuntimeProofIdentity, runtimeProofFingerprint } from "./runtime-compatibility.mjs";
@@ -239,7 +239,11 @@ const defaultDeps = {
  * @param {string|null} o.expectedSha exact candidate SHA expected at HEAD
  * @param {string} o.checkpointRoot configured disposable checkpoint checkout
  * @param {string} o.integrationRoot protected integration checkout
- * @param {string} o.releaseRoot protected release checkout
+ * @param {string} o.releaseRoot protected release checkout. A pot with no release checkout
+ *   still names one (`<slug>-release`); when that absolute path does not exist at all (ENOENT)
+ *   there is nothing to protect, so the release predicates are skipped and every checkpoint and
+ *   integration predicate still applies. A path that exists but is not its own Git worktree
+ *   root (or a dangling symlink) stays unverified.
  * @param {Partial<typeof defaultDeps>} [o.deps] injection seam for tests
  * @returns {{ok:boolean, restored?:boolean, reason?:string}}
  */
@@ -257,15 +261,42 @@ export function restoreDisposableCheckpoint({ root, expectedSha, checkpointRoot,
     if (typeof output !== "string" || !output.trim()) return null;
     return canonicalPath(output.trim());
   };
+  // WI-6554700010030332: only a configured, absolute path that is missing outright counts as
+  // "no release checkout". lstat (not stat) keeps a dangling symlink in the unverified branch.
+  const pathIsAbsent = (candidate) => {
+    if (typeof candidate !== "string" || !path.isAbsolute(candidate)) return false;
+    try {
+      lstatSync(candidate);
+      return false;
+    } catch (err) {
+      return err?.code === "ENOENT";
+    }
+  };
 
   const rootPath = canonicalPath(root);
   const checkpointPath = canonicalPath(checkpointRoot);
   const integrationPath = canonicalPath(integrationRoot);
-  const releasePath = canonicalPath(releaseRoot);
+  // A missing path still takes part in the containment checks below, so canonicalize it through
+  // its nearest existing ancestor: a symlinked parent must not hide a release path nested in the
+  // checkpoint.
+  const canonicalMissingPath = (candidate) => {
+    const missing = [];
+    let current = path.resolve(candidate);
+    while (pathIsAbsent(current)) {
+      const parent = path.dirname(current);
+      if (parent === current) return null;
+      missing.unshift(path.basename(current));
+      current = parent;
+    }
+    const existing = canonicalPath(current);
+    return existing ? path.join(existing, ...missing) : null;
+  };
+  const releaseAbsent = pathIsAbsent(releaseRoot);
+  const releasePath = releaseAbsent ? canonicalMissingPath(releaseRoot) : canonicalPath(releaseRoot);
   const actualRoot = gitRoot(root);
   const actualCheckpoint = gitRoot(checkpointRoot);
   const actualIntegration = gitRoot(integrationRoot);
-  const actualRelease = gitRoot(releaseRoot);
+  const actualRelease = releaseAbsent ? null : gitRoot(releaseRoot);
   const pathContains = (parent, candidate) => {
     const relative = path.relative(parent, candidate);
     return relative === "" ||
@@ -279,18 +310,18 @@ export function restoreDisposableCheckpoint({ root, expectedSha, checkpointRoot,
     !actualRoot ||
     !actualCheckpoint ||
     !actualIntegration ||
-    !actualRelease ||
+    (!releaseAbsent && !actualRelease) ||
     rootPath !== checkpointPath ||
     actualRoot !== rootPath ||
     actualCheckpoint !== checkpointPath ||
     actualIntegration !== integrationPath ||
-    actualRelease !== releasePath ||
+    (!releaseAbsent && actualRelease !== releasePath) ||
     pathContains(checkpointPath, integrationPath) ||
     pathContains(integrationPath, checkpointPath) ||
     pathContains(checkpointPath, releasePath) ||
     pathContains(releasePath, checkpointPath) ||
     actualRoot === actualIntegration ||
-    actualRoot === actualRelease
+    (!releaseAbsent && actualRoot === actualRelease)
   ) {
     return { ok: false, reason: "checkpoint-root-unverified" };
   }

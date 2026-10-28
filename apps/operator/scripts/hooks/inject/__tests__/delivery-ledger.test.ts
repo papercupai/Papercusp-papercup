@@ -13,10 +13,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const { ledgerDir, openDeliveryLedger, codeIntelDelivery, MAX_DELIVERY_RECEIPTS } = await import(path.join(HERE, '..', 'delivery-ledger.mjs'));
+const {
+  ledgerDir, openDeliveryLedger, codeIntelDelivery, MAX_DELIVERY_RECEIPTS, MAX_TURN_START_OUTCOME_RECEIPTS,
+} = await import(path.join(HERE, '..', 'delivery-ledger.mjs'));
+const { runInjection } = await import(path.join(HERE, '..', 'core.mjs'));
 
 const home = () => ({ PAPERCUSP_HOME: mkdtempSync(path.join(tmpdir(), 'ledger-unit-')) });
 type CodeIntelState = { turn: string; chars: number; subjects: string[] };
@@ -114,6 +117,132 @@ describe('delivery ledger', () => {
     expect(names.every(name => /^[a-f0-9]{64}\.json$/.test(name))).toBe(true);
     expect(names.map(name => JSON.parse(readFileSync(path.join(receipts, name), 'utf8')).token))
       .toContain(`token-${MAX_DELIVERY_RECEIPTS + 4}`);
+  });
+
+  it('stores bounded per-request outcomes using only the privacy-safe status vocabulary', () => {
+    const env = home();
+    const ledger = openDeliveryLedger('su-outcome', env);
+    const receiptDir = path.join(ledgerDir(env), 'su-outcome.outcomes');
+    const requestId = 'request-privacy-1';
+    expect(ledger.recordOutcome({
+      requestId,
+      client: 'codex',
+      hookOutcome: 'response-received',
+      serverOutcome: 'matched',
+      ambientGate: 'denied',
+      loopFire: true,
+      loopMarkerAppend: 'appended',
+      prompt: 'private prompt must not be stored',
+      error: 'private error must not be stored',
+    })).toBe(true);
+    const storedPath = path.join(receiptDir, `${createHash('sha256').update(requestId).digest('hex')}.json`);
+    const storedBytes = readFileSync(storedPath, 'utf8');
+    expect(JSON.parse(storedBytes)).toMatchObject({
+      version: 1,
+      stage: 'turn-start-outcome',
+      requestId,
+      client: 'codex',
+      hookOutcome: 'response-received',
+      serverOutcome: 'matched',
+      ambientGate: 'denied',
+      loopFire: true,
+      loopMarkerAppend: 'appended',
+    });
+    expect(storedBytes).not.toContain('private prompt');
+    expect(storedBytes).not.toContain('private error');
+
+    for (let n = 0; n < MAX_TURN_START_OUTCOME_RECEIPTS + 4; n++) {
+      expect(ledger.recordOutcome({
+        requestId: `request-${n}`,
+        hookOutcome: 'request-failed',
+      })).toBe(true);
+    }
+    const names = readdirSync(receiptDir);
+    expect(names).toHaveLength(MAX_TURN_START_OUTCOME_RECEIPTS);
+    expect(names).toContain(`${createHash('sha256').update(`request-${MAX_TURN_START_OUTCOME_RECEIPTS + 3}`).digest('hex')}.json`);
+  });
+
+  it('records hook response and server outcome even when there is no context to print', async () => {
+    const env = { ...home(), PAPERCUSP_SID: 'su-hook-outcome' };
+    const adapter = {
+      client: 'codex' as const,
+      portForEvent: () => 'turn-start' as const,
+      parse: () => ({ prompt: 'PRIVATE PROMPT', cwd: '/private/path' }),
+      render: () => 'unreachable for an empty response',
+    };
+    const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { turnStartRequestId: string };
+      return new Response(JSON.stringify({
+        text: '',
+        turnStartOutcome: {
+          requestId: request.turnStartRequestId,
+          ambientGate: 'denied',
+          loopFire: true,
+          loopMarkerAppend: 'appended',
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+
+    await expect(runInjection({
+      adapter,
+      nativeEvent: 'UserPromptSubmit',
+      event: { prompt: 'PRIVATE PROMPT' },
+      env,
+      fetchImpl: fetchImpl as typeof fetch,
+      openDeliveryLedger,
+    })).resolves.toBeNull();
+
+    const requestId = JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body)).turnStartRequestId;
+    const outcomeDir = path.join(ledgerDir(env), 'su-hook-outcome.outcomes');
+    const receipt = JSON.parse(readFileSync(
+      path.join(outcomeDir, `${createHash('sha256').update(requestId).digest('hex')}.json`), 'utf8',
+    ));
+    expect(receipt).toMatchObject({
+      stage: 'turn-start-outcome',
+      requestId,
+      client: 'codex',
+      hookOutcome: 'response-received',
+      serverOutcome: 'matched',
+      ambientGate: 'denied',
+      loopFire: true,
+      loopMarkerAppend: 'appended',
+    });
+    expect(JSON.stringify(receipt)).not.toContain('PRIVATE PROMPT');
+    expect(JSON.stringify(receipt)).not.toContain('/private/path');
+  });
+
+  it('records an unreceived response without retaining transport error text', async () => {
+    const env = { ...home(), PAPERCUSP_SID: 'su-hook-no-response' };
+    const adapter = {
+      client: 'codex' as const,
+      portForEvent: () => 'turn-start' as const,
+      parse: () => ({ prompt: 'PRIVATE PROMPT' }),
+      render: () => 'must not render',
+    };
+    const fetchImpl = vi.fn(async () => { throw new Error('private transport detail'); });
+
+    await expect(runInjection({
+      adapter,
+      nativeEvent: 'UserPromptSubmit',
+      event: {},
+      env,
+      fetchImpl: fetchImpl as typeof fetch,
+      openDeliveryLedger,
+    })).resolves.toBeNull();
+
+    const request = JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body)) as { turnStartRequestId: string };
+    const receiptDir = path.join(ledgerDir(env), 'su-hook-no-response.outcomes');
+    const receipt = JSON.parse(readFileSync(
+      path.join(receiptDir, `${createHash('sha256').update(request.turnStartRequestId).digest('hex')}.json`), 'utf8',
+    ));
+    expect(receipt).toMatchObject({
+      hookOutcome: 'request-failed',
+      serverOutcome: 'unavailable',
+      ambientGate: 'unknown',
+      loopFire: null,
+      loopMarkerAppend: 'unknown',
+    });
+    expect(JSON.stringify(receipt)).not.toContain('private transport detail');
   });
 });
 

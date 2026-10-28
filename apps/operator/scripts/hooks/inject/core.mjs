@@ -21,7 +21,7 @@
 
 import { PORTS, killSwitchState, specFor } from './ports.mjs';
 import { resolve, relative } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
@@ -44,6 +44,7 @@ import { codeIntelDelivery } from './delivery-ledger.mjs';
  * @property {boolean} [memoryEnabled]
  * @property {string} [detectorSessionKey] private failure-loop detector key
  * @property {string | null} [confirmedDelivery] turn-start ACK-ON-PROOF token (delivery-ledger.mjs)
+ * @property {string} [turnStartRequestId] opaque per-request receipt key
  */
 
 /** Loopback operator. */
@@ -187,7 +188,8 @@ export function baseRequest({ port, client, owner, cwd, env = process.env }) {
  *
  * @param {InjectionPort} port
  * @param {InjectionRequest} body
- * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number }} [opts]
+ * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number,
+ *   onTurnStartOutcome?: (outcome: object) => void }} [opts]
  * @returns {Promise<{ text: string, deliveryToken: string | null } | null>} the text
  *   to inject plus the turn-start orientation delivery token (delivery-ledger.mjs),
  *   or null to inject nothing
@@ -196,10 +198,42 @@ export async function postInjection(port, body, opts = {}) {
   const { env = process.env, fetchImpl = globalThis.fetch, now = Date.now } = opts;
   const spec = specFor(port);
   if (!spec) return null;
+  const requestId = port === 'turn-start' && typeof body.turnStartRequestId === 'string' &&
+    /^[A-Za-z0-9_-]{1,80}$/.test(body.turnStartRequestId) ? body.turnStartRequestId : null;
+  let outcomeReported = false;
+  const reportTurnStartOutcome = (hookOutcome, payload = null) => {
+    if (port !== 'turn-start' || !requestId || outcomeReported) return;
+    outcomeReported = true;
+    const responseOutcome = payload && typeof payload === 'object' ? payload.turnStartOutcome : null;
+    const validOutcome = responseOutcome && typeof responseOutcome === 'object' ? responseOutcome : null;
+    const serverOutcome = hookOutcome !== 'response-received' ? 'unavailable'
+      : !validOutcome ? 'missing'
+        : validOutcome.requestId === requestId ? 'matched' : 'mismatched';
+    const matches = serverOutcome === 'matched';
+    const oneOf = (value, values, fallback) => values.includes(value) ? value : fallback;
+    try {
+      opts.onTurnStartOutcome?.({
+        requestId,
+        client: body.client,
+        hookOutcome,
+        serverOutcome,
+        ambientGate: matches
+          ? oneOf(validOutcome.ambientGate, ['allowed', 'denied', 'error', 'unknown'], 'unknown')
+          : 'unknown',
+        loopFire: matches && typeof validOutcome.loopFire === 'boolean' ? validOutcome.loopFire : null,
+        loopMarkerAppend: matches
+          ? oneOf(validOutcome.loopMarkerAppend, ['appended', 'failed', 'not-applicable', 'pending', 'unknown'], 'unknown')
+          : 'unknown',
+      });
+    } catch { /* optional per-request evidence never changes hook delivery */ }
+  };
   const startedAt = now();
 
   const { off, mode } = killSwitchState(port, env);
-  if (off && mode === 'suppress') return null;
+  if (off && mode === 'suppress') {
+    reportTurnStartOutcome('suppressed');
+    return null;
+  }
 
   if (port === 'turn-start' || port === 'compaction') codeIntelDelivery(body.owner, env, () => null, port);
   const finish = (text = '', deliveryToken = null) => {
@@ -216,7 +250,10 @@ export async function postInjection(port, body, opts = {}) {
     // Collect locally, where the edited file and its owning repo exist. Never run
     // the parser/compiler on the shared operator's 250ms snapshot push path.
     if (port === 'mid-turn') await Promise.all([collectInterfaceEdits(body, undefined, env), collectAntipatternEdits(body), collectCloneEdits(body)]);
-    if (controller.signal.aborted || typeof fetchImpl !== 'function') return finish();
+    if (controller.signal.aborted || typeof fetchImpl !== 'function') {
+      reportTurnStartOutcome('request-failed');
+      return finish();
+    }
     // wallMs: what is LEFT of this hook's own wall when the request leaves, so the
     // operator spends only that (the Jev memory filter's wait, WI-10004485). The
     // wall timer above started before local collection, which measured 0.75-0.8 s
@@ -245,14 +282,22 @@ export async function postInjection(port, body, opts = {}) {
         if (controller.signal.aborted) throw err;
       }
     }
-    if (!res || !res.ok) return finish();
+    if (!res || !res.ok) {
+      reportTurnStartOutcome(res ? 'http-error' : 'request-failed');
+      return finish();
+    }
     const payload = await res.json();
-    if (!payload || typeof payload !== 'object') return finish();
+    if (!payload || typeof payload !== 'object') {
+      reportTurnStartOutcome('invalid-response');
+      return finish();
+    }
+    reportTurnStartOutcome('response-received', payload);
     const { text, deliveryToken } = payload;
     return finish(typeof text === 'string' ? text : '', typeof deliveryToken === 'string' && deliveryToken ? deliveryToken : null);
   } catch {
     // Timeout, connection refused, malformed JSON, operator restarting mid-call.
     // All of it is "inject nothing" — never an error the turn can see.
+    reportTurnStartOutcome('request-failed');
     return finish();
   } finally {
     clearTimeout(timer);
@@ -591,6 +636,7 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
         ? env.PAPERCUSP_FAILURE_LOOP_SESSION_KEY.trim()
         : owner;
     const ledger = port === 'turn-start' && openDeliveryLedger ? openDeliveryLedger(owner, env) : null;
+    const turnStartRequestId = port === 'turn-start' ? randomUUID() : null;
     const request = {
       ...baseRequest({ port, client: adapter.client, owner, cwd: partial.cwd, env }),
       ...partial,
@@ -602,9 +648,14 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
       // preserves older hook launches that predate the carrier.
       ...(port === 'mid-turn' ? { detectorSessionKey } : {}),
       ...(ledger ? { confirmedDelivery: ledger.confirmed() } : {}),
+      ...(turnStartRequestId ? { turnStartRequestId } : {}),
     };
 
-    const response = await postInjection(port, request, { env, fetchImpl });
+    const response = await postInjection(port, request, {
+      env,
+      fetchImpl,
+      ...(ledger ? { onTurnStartOutcome: outcome => ledger.recordOutcome(outcome) } : {}),
+    });
     const safeText = fenceControlTransition(response?.text ?? null, owner);
     if (!safeText) return null;
 

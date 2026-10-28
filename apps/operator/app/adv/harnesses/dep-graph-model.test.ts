@@ -12,6 +12,7 @@ import {
   computeDepths,
   isBlockerSatisfied,
   DEP_GRAPH_NODE_BUDGET,
+  conditionNodeId,
   eventNodeId,
   type DepGraphItem,
   type DepGraphEdgeInput,
@@ -850,24 +851,29 @@ describe('buildDepSubgraph — event waits (P-009)', () => {
     expect(waitEdgesInto(plain, 'WI-1')[0]!.wait).not.toHaveProperty('park');
   });
 
-  it('SPEC-P-009: keeps waits out of depth and integrity findings, hydrates an out-of-window item, and honours filters', () => {
+  it('SPEC-P-009 / D-015: an item\'s own wait deepens it but a session await does not; waits stay out of integrity findings; hydrates an out-of-window item and honours filters', () => {
     const g = buildDepSubgraph({
-      items: [item('A'), item('B')],
+      items: [item('A'), item('B'), item('S')],
       edges: [edge('A', 'B')],
       waits: [
         sessionWait('A', 'work-item:done:B'),
+        // S's only incoming edge is a session await: an agent's wait, not the item's.
+        sessionWait('S', 'release:green:papercusp'),
         // An item outside the list's window: drawn from the wait row's fields, not dropped.
         blockerWait('OUT', 'release:deployed:abc', { itemTitle: 'outside the window', itemKind: 'bug', itemStatus: 'blocked' }),
       ],
     });
     const byId = new Map(g.nodes.map((n) => [n.id, n]));
-    // Depth is the `blocks` chain only: the event node above A does not deepen it.
+    // A's depth comes from its `blocks` edge; the session await above it adds nothing.
     expect(byId.get('A')?.depth).toBe(1);
     expect(byId.get('B')?.depth).toBe(0);
     expect(byId.get(eventNodeId('work-item:done:B'))?.depth).toBe(0);
-    // OUT's only incoming edge is a wait. A has a `blocks` edge too, so it cannot tell a
-    // depth pass that counts waits from one that does not; OUT can (it would read 1).
-    expect(byId.get('OUT')?.depth).toBe(0);
+    // S and OUT each have ONE incoming edge and it is a wait, so together they tell the two
+    // rules apart: OUT's is its own blocker (depth 1, "something blocks it"), S's is a session
+    // await (depth 0). A pass that counted every wait would read S as 1; one that counted none
+    // would read OUT as 0.
+    expect(byId.get('OUT')?.depth).toBe(1);
+    expect(byId.get('S')?.depth).toBe(0);
     expect(byId.get('OUT')).toMatchObject({ title: 'outside the window', kind: 'bug', state: 'blocked', hydrated: true });
     expect(g.findings.flatMap((f) => f.nodes)).not.toContain(eventNodeId('work-item:done:B'));
 
@@ -886,5 +892,99 @@ describe('buildDepSubgraph — event waits (P-009)', () => {
     // Selecting the event node scopes to the items waiting on it.
     const sel = buildDepSubgraph({ items: [item('A'), item('B'), item('C')], edges: [edge('A', 'B')], waits: [sessionWait('C', 'k:9')], selectedId: eventNodeId('k:9') });
     expect(sel.nodes.map((n) => n.id).sort()).toEqual(['C', eventNodeId('k:9')].sort());
+  });
+
+  // WI-6554700010030344 (blind review #110 G-2, G-3; event-wait-settlement-2026-10-20#D-015).
+  const conditionWait = (itemId: string, ref: string, over: Partial<DepGraphWaitInput> = {}): DepGraphWaitInput => ({
+    itemId,
+    waitKind: 'item-condition',
+    eventKey: ref,
+    blockerKind: 'runtime',
+    capability: 'live-dependency',
+    certification: 'not-an-event',
+    recheckAt: '2026-10-30T00:00:00.000Z',
+    ...over,
+  });
+
+  it('WI-6554700010030344 G-2: draws an item\'s own runtime and human blockers as CONDITION nodes, never as event nodes', () => {
+    const g = buildDepSubgraph({
+      items: [item('WI-1'), item('WI-2'), item('WI-3')],
+      edges: [],
+      waits: [
+        conditionWait('WI-1', 'pc-heavy queue'),
+        conditionWait('WI-2', 'pc-heavy queue', { recheckAt: '2026-10-29T00:00:00.000Z' }),
+        conditionWait('WI-3', 'owner picks the vendor', { blockerKind: 'human', capability: 'product-decision', recheckAt: null }),
+      ],
+    });
+
+    const runtime = conditionNodeId('runtime', 'pc-heavy queue');
+    // Two items blocked on the same runtime ref share ONE node, carrying the earliest re-check.
+    expect(g.nodes.find((n) => n.id === runtime)).toMatchObject({
+      kind: 'condition',
+      title: 'pc-heavy queue',
+      state: 'waiting',
+      condition: { kind: 'runtime', ref: 'pc-heavy queue', capability: 'live-dependency', recheckAt: '2026-10-29T00:00:00.000Z', waitCount: 2 },
+    });
+    expect(g.nodes.find((n) => n.id === conditionNodeId('human', 'owner picks the vendor'))).toMatchObject({
+      kind: 'condition',
+      condition: { kind: 'human', capability: 'product-decision', recheckAt: null, waitCount: 1 },
+    });
+    // A condition is not an event: no event node, and the ref is never drawn as an event key.
+    expect(g.nodes.filter((n) => n.kind === 'event')).toEqual([]);
+    expect(g.nodes.some((n) => n.id === eventNodeId('pc-heavy queue'))).toBe(false);
+    const into1 = waitEdgesInto(g, 'WI-1');
+    expect(into1).toHaveLength(1);
+    expect(into1[0]).toMatchObject({
+      source: runtime,
+      wait: {
+        kind: 'item-waits-on-condition', subscriberId: null, blockerKind: 'runtime', certification: 'not-an-event',
+        condition: { capability: 'live-dependency', recheckAt: '2026-10-30T00:00:00.000Z' },
+      },
+    });
+    expect(into1[0]!.wait).not.toHaveProperty('park');
+    expect(g.waitCount).toBe(3);
+    // Selecting the condition node scopes to exactly the items blocked on it.
+    const sel = buildDepSubgraph({
+      items: [item('WI-1'), item('WI-2'), item('WI-3')],
+      edges: [],
+      waits: [conditionWait('WI-1', 'pc-heavy queue'), conditionWait('WI-2', 'pc-heavy queue'), conditionWait('WI-3', 'other')],
+      selectedId: runtime,
+    });
+    expect(sel.nodes.map((n) => n.id).sort()).toEqual(['WI-1', 'WI-2', runtime].sort());
+  });
+
+  it('WI-6554700010030344 G-3: an item\'s own waits count toward the critical path and readiness, never toward the fan findings', () => {
+    // C is blocked by B; B is blocked on a runtime condition. D is blocked by the free item R.
+    const g = buildDepSubgraph({
+      items: [item('B'), item('C'), item('D'), item('R')],
+      edges: [edge('C', 'B'), edge('D', 'R')],
+      waits: [conditionWait('B', 'pc-heavy queue')],
+    });
+    const byId = new Map(g.nodes.map((n) => [n.id, n]));
+    expect(byId.get(conditionNodeId('runtime', 'pc-heavy queue'))?.depth).toBe(0);
+    expect(byId.get('B')?.depth).toBe(1);
+    expect(byId.get('C')?.depth).toBe(2);
+    // The blocks-only critical path was 1 (C behind B); the wait on B is part of the path.
+    expect(g.topologyRisk.criticalPathDepth).toBe(2);
+    // B has no blocks predecessor but is not READY: only R is.
+    expect(g.topologyRisk.readyWidth).toBe(1);
+
+    // Five items waiting on one event key: the key is not a high-degree WORK ITEM.
+    const popular = buildDepSubgraph({
+      items: ['P1', 'P2', 'P3', 'P4', 'P5'].map((id) => item(id)),
+      edges: [],
+      waits: ['P1', 'P2', 'P3', 'P4', 'P5'].map((id) => blockerWait(id, 'release:deployed:abc')),
+    });
+    expect(popular.topologyRisk).toMatchObject({ maxFanIn: 0, maxFanOut: 0, readyWidth: 0, criticalPathDepth: 1 });
+    expect(popular.findings.map((f) => f.code)).not.toContain('high-degree-node');
+    expect(popular.nodes.filter((n) => n.id.startsWith('P')).every((n) => n.depth === 1)).toBe(true);
+
+    // A session await neither deepens an item nor makes it un-ready.
+    const session = buildDepSubgraph({
+      items: [item('X'), item('Y')],
+      edges: [edge('Y', 'X')],
+      waits: [sessionWait('X', 'release:green:papercusp')],
+    });
+    expect(session.topologyRisk).toMatchObject({ readyWidth: 1, criticalPathDepth: 1 });
   });
 });

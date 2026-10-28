@@ -109,6 +109,23 @@ describe('loop-turn-start-stamp', () => {
     });
   });
 
+  it('joins the marker to a per-request receipt without copying prompt content', () => {
+    const record = loopTurnStartRecord({
+      owner: 'su-1',
+      prompt: LOOP_PROMPT,
+      workspaceId: 'ws-1',
+      turnStartRequestId: 'request-123',
+    });
+    expect(record?.detail).toMatchObject({ turnStartRequestId: 'request-123' });
+    expect(JSON.stringify(record?.detail)).not.toContain('Loop wake');
+    expect(loopTurnStartRecord({
+      owner: 'su-1',
+      prompt: LOOP_PROMPT,
+      workspaceId: 'ws-1',
+      turnStartRequestId: 'prompt content must not be copied',
+    })?.detail).not.toHaveProperty('turnStartRequestId');
+  });
+
   it('appends one row for a loop-fire prompt and none otherwise', async () => {
     const append = vi.fn(async (_record: ActivityRecord) => ({ id: '1' as string | null }));
     expect(await recordLoopTurnStart({ owner: 'su-1', prompt: LOOP_PROMPT, workspaceId: 'ws-1', loopFire: null }, { append })).toBe(true);

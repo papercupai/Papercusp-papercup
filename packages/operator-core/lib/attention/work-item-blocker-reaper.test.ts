@@ -549,6 +549,49 @@ describe('the re-check sweep recovers missed fires and stranded items (event-wai
     const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: fakeDeps({}).deps });
     expect(out.recovered).toEqual({ keys: 0, settled: 0, failed: 0, truncatedByLimit: false });
     expect(out.repaired).toEqual({ examined: 0, reopened: 0, skipped: {}, truncatedByLimit: false });
+    expect(out.malformed).toEqual({ count: 0, sample: [], truncatedByLimit: false, failed: false });
+  });
+});
+
+// WI-6554700010030445: items parked by an active blocker row the typed parser drops.
+describe('the sweep names items parked by a malformed active blocker row', () => {
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => `WI-bad-${String(i).padStart(2, '0')}`);
+
+  it('counts the listed items, samples ten, and marks a listing past the limit as a floor', async () => {
+    const { deps } = fakeDeps({});
+    const asked: number[] = [];
+    deps.listMalformedActiveBlockers = async (limit) => {
+      asked.push(limit);
+      return ids(13).map((id) => ({ id, harness: 'h' }));
+    };
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, limit: 12, deps });
+    expect(asked).toEqual([13]);
+    expect(out.malformed).toEqual({
+      count: 12, truncatedByLimit: true, failed: false, sample: ids(10).map((id) => `h/${id}`),
+    });
+  });
+
+  it('a listing within the limit is a full count', async () => {
+    const { deps } = fakeDeps({});
+    deps.listMalformedActiveBlockers = async () => ids(2).map((id) => ({ id, harness: 'h' }));
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps });
+    expect(out.malformed).toEqual({ count: 2, truncatedByLimit: false, failed: false, sample: ['h/WI-bad-00', 'h/WI-bad-01'] });
+  });
+
+  it('a failed listing reads as failed rather than as zero, and the sweep still returns its other passes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { deps } = fakeDeps({ 'WI-1': { externalBlockers: [blocker()] } });
+      deps.listMalformedActiveBlockers = async () => {
+        throw new Error('pg unavailable');
+      };
+      const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps });
+      expect(out.malformed).toEqual({ count: 0, sample: [], truncatedByLimit: false, failed: true });
+      expect(out.examined).toBe(1);
+      expect(warn).toHaveBeenCalledWith('[blocker-recheck] ! malformed-blocker listing: pg unavailable');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

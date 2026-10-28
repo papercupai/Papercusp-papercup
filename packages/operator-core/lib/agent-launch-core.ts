@@ -274,6 +274,9 @@ export interface ResumeTarget {
   advSessionId: number;
   /** The persisted incarnation, which may differ from an exact transcript pin. */
   binding: AdvSessionExpectedBinding | null;
+  /** The row's session-port status (null = not a port target). psu refuses to
+   *  resume or fork the row unless portStatusAllowsResume(portStatus) holds. */
+  portStatus?: string | null;
 }
 
 /** Server-only guard carried through an internal projected successor dispatch. */
@@ -516,6 +519,7 @@ export async function resolveResumeTarget(ref: {
     endedBy: row.endedBy,
     live: host != null,
     advSessionId: row.id,
+    portStatus: row.portStatus ?? null,
     binding: row.coordOwnerId && rows[0].binding_started_at ? {
       coordOwnerId: row.coordOwnerId,
       sessionId: row.sessionId,
