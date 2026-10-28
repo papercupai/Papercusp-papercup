@@ -1472,6 +1472,21 @@ record_node_modules_copy_metadata() {
 }
 
 # RUNTIME DEPENDENCY CLOSURE
+# A package-local toolchain is REQUIRED only where a lockfile declares one: the
+# root lockfile has `<dir>/node_modules/...` entries, or the workspace carries its
+# own lockfile. A bare `<dir>/node_modules` in the live tree is not evidence —
+# Vite/Vitest/esbuild create cache-only `node_modules/.vite*` / `.esbuild-*` dirs
+# in any package they touch, and a clean-install dependency generation correctly
+# has no tree there. Keying on directory existence made every run FATAL with
+# "missing the package-local toolchain for packages/omp-plugin" while the
+# generation was lockfile-complete (EI-27225885680515664, 2026-10-28).
+runtime_workspace_declares_local_install() {
+  local workspace_dir="$1"
+  [ -f "$INTEGRATION_ROOT/$workspace_dir/package-lock.json" ] && return 0
+  [ -f "$INTEGRATION_ROOT/package-lock.json" ] || return 1
+  grep -Fq "\"$workspace_dir/node_modules/" "$INTEGRATION_ROOT/package-lock.json"
+}
+
 configure_release_dependency_workspace_dirs() {
   local workspace workspace_root
   local selected=("${NODE_MODULES_WORKSPACE_DIRS[@]}")
@@ -1481,6 +1496,10 @@ configure_release_dependency_workspace_dirs() {
     [ -n "$workspace_root" ] && [ -d "$workspace_root/node_modules" ] || continue
     case "$workspace_root" in
       "$INTEGRATION_ROOT"/*)
+        if ! runtime_workspace_declares_local_install "${workspace_root#"$INTEGRATION_ROOT"/}"; then
+          log "runtime workspace $workspace has no lockfile-declared package-local install — not requiring one"
+          continue
+        fi
         RUNTIME_DEPENDENCY_WORKSPACE_DIRS+=("${workspace_root#"$INTEGRATION_ROOT"/}")
         ;;
       *)
@@ -1924,7 +1943,13 @@ build_pinned_workspace_runtime_outputs() {
     # snapshot; only package SOURCE is pinned independently.
     integration_workspace_root="$(readlink -f "$INTEGRATION_ROOT/node_modules/$scope/$package" 2>/dev/null || true)"
     release_workspace_root="$(readlink -f "$RELEASE_ROOT/node_modules/$scope/$package" 2>/dev/null || true)"
-    if [ -n "$integration_workspace_root" ] && [ -d "$integration_workspace_root/node_modules" ]; then
+    if [ -n "$integration_workspace_root" ] && [ -d "$integration_workspace_root/node_modules" ] \
+      && [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ] \
+      && ! printf '%s\n' "${RUNTIME_DEPENDENCY_WORKSPACE_DIRS[@]}" | grep -Fxq -- "${integration_workspace_root#"$INTEGRATION_ROOT"/}"; then
+      # The closure above enrolls only lockfile-declared package-local installs;
+      # a cache-only live node_modules has no counterpart in the pinned generation.
+      log "pinned runtime workspace $workspace has no lockfile-declared package-local toolchain — building with the root toolchain"
+    elif [ -n "$integration_workspace_root" ] && [ -d "$integration_workspace_root/node_modules" ]; then
       case "$integration_workspace_root:$release_workspace_root" in
         "$INTEGRATION_ROOT"/*:"$RELEASE_ROOT"/*)
           log "restoring package-local toolchain for $workspace"

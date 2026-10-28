@@ -48,6 +48,7 @@ import {
   projectLeaderBriefOwnerDirectives,
   projectFleetAdmissionBlockRead,
   projectLeaderBriefFleetPause,
+  boundLeaderBriefMembers,
   prioritizeActionableMembers,
   prioritizeBenchSuggestedMembers,
   readLeaderMonitoringBlindAdvisory,
@@ -2122,6 +2123,25 @@ describe('intent attention actionability (WI-41174 / P-012)', () => {
       'divergent',
       'ordinary',
     ]);
+  });
+});
+
+describe('fleet:leader-brief full-tier member details', () => {
+  const members = Array.from({ length: 3 }, (_, index) => ({
+    agentId: `member-${index}`,
+    detail: 'x'.repeat(4_000),
+  }));
+
+  it('preserves all computed member rows for an explicit full request', () => {
+    expect(boundLeaderBriefMembers(members, 'full')).toEqual({ kept: members, truncated: false });
+  });
+
+  it('continues to byte-bound default and shaped requests', () => {
+    for (const tier of [undefined, 'trimmed', 'standard'] as const) {
+      const bounded = boundLeaderBriefMembers(members, tier);
+      expect(bounded.kept).toEqual([members[0]]);
+      expect(bounded.truncated).toBe(true);
+    }
   });
 });
 

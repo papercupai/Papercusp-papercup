@@ -694,14 +694,16 @@ export async function readAuthorizedComponentScreeningIds(
  * an already-delivered request does not reserve the ordinary admission lane.
  */
 export async function runAdmissionRecoveries(
-  scope: Omit<AdmissionRecoveryScope, 'workItemId'>,
+  scope: Omit<AdmissionRecoveryScope, 'workItemId'> & { excludedItemIds?: readonly string[] },
   deps: AdmissionRecoveryDeps,
   sql: Sql = getOrgPg().sql,
 ): Promise<number> {
+  const { excludedItemIds = [], ...recoveryScope } = scope;
   const rows = await sql<{ feature_id: string; queued: boolean }[]>`
     SELECT feature_id, payload->'_admissionRecovery'->>'state' = 'queued' AS queued
       FROM harness_shared.work_items
-     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+     WHERE workspace_id = ${recoveryScope.workspaceId} AND harness_slug = ${recoveryScope.harnessSlug}
+       AND NOT (feature_id = ANY(${[...excludedItemIds]}::text[]))
        AND (
          payload->'_admissionRecovery'->>'state' = 'queued'
          OR (payload->'_admissionRecovery'->>'state' = 'delivered'
@@ -718,7 +720,7 @@ export async function runAdmissionRecoveries(
   const lockSql = deps.lockSql ?? createAdmissionRecoveryLockSql();
   try {
     for (const row of rows) {
-      const exact = { ...scope, workItemId: row.feature_id };
+      const exact = { ...recoveryScope, workItemId: row.feature_id };
       const lockKey = admissionRecoveryLockKey(exact);
       const reserved = await lockSql.reserve();
       let lockAcquired = false;

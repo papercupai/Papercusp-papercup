@@ -62,10 +62,17 @@ describe('runAdmissionPreviewOperation (R-1)', () => {
     expect(emitted).toHaveLength(1);
     expect(emitted[0].operationId).toBe(outcome.operation.operationId);
 
-    const payload = deferredAdmissionPreviewPayload(outcome, 30);
+    const payload = deferredAdmissionPreviewPayload(outcome, 30, outcome.operation.startedAtMs);
     expect(payload.previewOperation).toMatchObject({
       operationId: outcome.operation.operationId,
       settleEvent: `${ADMISSION_PREVIEW_SETTLED_EVENT_PREFIX}${outcome.operation.operationId}`,
+    });
+    // G-6: the handed-out await is bounded to the preview lifetime and wakes on timeout.
+    const lifetimeSec = Math.ceil((outcome.operation.expiresAtMs - outcome.operation.startedAtMs) / 1000);
+    expect(payload.awaitArgs).toEqual({
+      event: `${ADMISSION_PREVIEW_SETTLED_EVENT_PREFIX}${outcome.operation.operationId}`,
+      timeout_sec: lifetimeSec + 30,
+      on_timeout: 'wake',
     });
     expect(payload.nextAction).toEqual({
       tool: 'release:repair-queue',
@@ -192,6 +199,26 @@ describe('describeAdmissionPreviewOperation (op:get read)', () => {
   it('reports a running record past its expiry as expired', () => {
     expect(describeAdmissionPreviewOperation(base, { nowMs: 1_500, currentRepairHead: 'h' }).status).toBe('running');
     expect(describeAdmissionPreviewOperation(base, { nowMs: 2_500, currentRepairHead: 'h' }).status).toBe('expired');
+  });
+
+  it('bounds the await for a running preview so a restart mid-preview cannot strand the awaiter (blind review G-6)', () => {
+    const read = describeAdmissionPreviewOperation(
+      { ...base, expiresAtMs: 1_000 + 15 * 60_000 },
+      { nowMs: 1_000 + 5 * 60_000, currentRepairHead: 'h' },
+    );
+    expect(read.status).toBe('running');
+    // 10 minutes of lifetime left plus a 30 s margin, and the await wakes on timeout.
+    expect(read.awaitArgs).toEqual({
+      event: `${ADMISSION_PREVIEW_SETTLED_EVENT_PREFIX}arp-1`,
+      timeout_sec: 630,
+      on_timeout: 'wake',
+    });
+    expect(read.nextAction).toContain("timeout_sec: 630, on_timeout: 'wake'");
+    expect(read.nextAction).toContain('then re-read this op:get');
+    // Past expiry the read reports expired and offers no await at all.
+    const expired = describeAdmissionPreviewOperation(base, { nowMs: 2_500, currentRepairHead: 'h' });
+    expect(expired.awaitArgs).toBeNull();
+    expect(expired.nextAction).toContain('Re-run the dry run');
   });
 
   it('flags a settled verdict whose judged head is no longer the repair head', () => {

@@ -879,6 +879,40 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
     expect(h.wake).not.toHaveBeenCalled();
   });
 
+  it('processes a queued exact recovery after a successful review result', async () => {
+    const reviewed = await create('Review result before exact recovery');
+    const twin = await create(reviewed.title);
+    await claimOriginal(reviewed.id);
+    const reviewRequest = await review(reviewed.id);
+
+    const recoveryTarget = await create('Queued exact recovery after review');
+    const recoveryRequest = await request(recoveryTarget.id);
+    h.model.mockResolvedValueOnce(distinctPair(reviewed.id, twin.id));
+
+    const promoterRunId = `chain-review-recovery-${++run}`;
+    const result = await runAdmissionPromoterWithRecovery({
+      ...scope, runId: promoterRunId, batchSize: 10, recentTerminalDays: 30, model: undefined,
+    }, { sql: db.sql, lockSql: db.sql, llmCall: h.model,
+      authorize: authorizeAdmissionRecovery, dispatch });
+
+    expect(result.promoted).toBe(1);
+    expect(h.model).toHaveBeenCalledTimes(1);
+    expect((await row(reviewed.id)).payload._admissionReviewReceipt).toMatchObject({
+      requestId: reviewRequest.requestId, purpose: 'admission-review',
+    });
+    expect(await row(recoveryTarget.id)).toMatchObject({ admission: 'admitted', taken_by: reviewerOwnerId });
+    expect((await row(recoveryTarget.id)).payload._admissionRecovery).toMatchObject({
+      requestId: recoveryRequest.request.requestId, state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
+    });
+
+    const [reviewRun] = await db.sql`SELECT detail FROM harness_shared.admission_runs
+      WHERE id = ${`${promoterRunId}:review:${reviewRequest.requestId}`}`;
+    const [recoveryRun] = await db.sql`SELECT detail FROM harness_shared.admission_runs
+      WHERE id = ${`${promoterRunId}:recovery:${recoveryTarget.id}`}`;
+    expect(reviewRun!.detail).toMatchObject({ mode: 'promoter', status: 'complete' });
+    expect(recoveryRun!.detail).toMatchObject({ mode: 'promoter', status: 'complete' });
+  });
+
   it('keeps unavailable review authority fatal so unrelated recovery is not dispatched', async () => {
     const original = await create('Unavailable review authority');
     await claimOriginal(original.id);

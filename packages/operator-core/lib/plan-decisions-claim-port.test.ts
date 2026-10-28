@@ -141,15 +141,35 @@ describe('getClaimTimePlanDecisions (agent-trap-guards-2026-07-26 P-003b)', () =
       ],
       totalDecisions: 1,
     }));
+    // P-018 (D-012 item 4): rows are keyed by the decision's OWN plan, so the affected decision
+    // is joined against source-plan and the local ones against target-plan.
+    const loadProvenance = vi.fn(async (scope: { planSlug: string }, ids: readonly string[]) => {
+      const out = new Map<string, { kind: 'agent'; agentId: string; source: 'write'; recordedAt: string } | { kind: 'unrecorded' }>();
+      for (const id of ids) out.set(id, { kind: 'unrecorded' });
+      if (scope.planSlug === 'source-plan') {
+        out.set('D-900', { kind: 'agent', agentId: 'su-x', source: 'write', recordedAt: '2026-10-28T00:00:00.000Z' });
+      }
+      return out;
+    });
 
     const r = await getClaimTimePlanDecisions({
       planSlug: 'target-plan',
       harness: 'papercusp',
       workspaceId: 'ws-1',
       lookupAffectedDecisions,
+      loadProvenance,
     });
 
     expect(r?.decisions.map((d) => d.id)).toEqual(['D-900', 'D-001', 'D-002']);
+    expect(r?.decisions.map((d) => d.provenance.kind)).toEqual(['agent', 'unrecorded', 'unrecorded']);
+    expect(loadProvenance).toHaveBeenCalledWith(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: 'source-plan' },
+      ['D-900'],
+    );
+    expect(loadProvenance).toHaveBeenCalledWith(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: 'target-plan' },
+      ['D-001', 'D-002'],
+    );
     expect(r?.decisions[0]).toMatchObject({
       sourcePlanSlug: 'source-plan',
       ref: 'source-plan#D-900',
@@ -186,6 +206,31 @@ describe('getClaimTimePlanDecisions (agent-trap-guards-2026-07-26 P-003b)', () =
     expect(r?.authorityReadFailed).toBe(true);
     expect(r?.decisions).toEqual([]);
     expect(renderPlanDecisionsNote(r!)).toMatch(/^⚠ CROSS-PLAN AUTHORITY READ FAILED/);
+  });
+
+  it('P-018: an unscoped row or a failed provenance read reads unavailable, never unrecorded', async () => {
+    mockGetPlanRow.mockResolvedValueOnce({ content: PLAN_WITH_DECISIONS });
+    const unscoped = await getClaimTimePlanDecisions({ planSlug: 'p' });
+    expect(unscoped?.decisions.map((d) => d.provenance.kind)).toEqual(['unavailable', 'unavailable']);
+
+    mockGetPlanRow.mockResolvedValueOnce({
+      content: PLAN_WITH_DECISIONS,
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlug: 'p',
+    });
+    const failed = await getClaimTimePlanDecisions({
+      planSlug: 'p',
+      lookupAffectedDecisions: async () => ({ decisions: [], totalDecisions: 0 }),
+      loadProvenance: async () => {
+        throw new Error('relation missing');
+      },
+    });
+    expect(failed?.decisions.map((d) => d.id)).toEqual(['D-001', 'D-002']);
+    expect(failed?.decisions[0].provenance).toEqual({
+      kind: 'unavailable',
+      reason: 'provenance read failed: relation missing',
+    });
   });
 
   it('fails soft to null on a lookup error — never throws, never blocks the claim it decorates', async () => {

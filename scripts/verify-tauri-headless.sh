@@ -2154,6 +2154,21 @@ snapshot_committed_operator_source() {
   # donor's mutable acceptance/tooling files. The fallback preserves callers
   # that invoke this function without the startup snapshot/re-exec.
   local source_repo="${VERIFY_TAURI_SOURCE_REPO_DIR:-$REPO_DIR}"
+  local selected_source_ref="$VERIFY_TAURI_SOURCE_REF"
+  local resolved_source_ref
+  if ! resolved_source_ref="$(git -C "$source_repo" rev-parse --verify --quiet "${selected_source_ref}^{commit}")"; then
+    echo "FATAL: selected committed verifier source ref cannot be resolved: $selected_source_ref" >&2
+    return 1
+  fi
+  if [ -z "$resolved_source_ref" ]; then
+    echo "FATAL: selected committed verifier source ref resolved to an empty commit: $selected_source_ref" >&2
+    return 1
+  fi
+  # The receipt stores the resolved commit SHA. Keep this variable canonical too,
+  # so downstream receipt checks compare the same immutable identity, even when
+  # the caller selected a symbolic ref such as HEAD.
+  VERIFY_TAURI_SOURCE_REF="$resolved_source_ref"
+  export VERIFY_TAURI_SOURCE_REF
   [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ] || {
     echo 'FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE tested acceptance paths' >&2
     return 1

@@ -60,6 +60,12 @@ export interface CloseCoverageReport {
   coveredFiles: string[];
   /** Edited files no recorded run in the window exercised. */
   uncoveredFiles: string[];
+  /**
+   * Edited files the mapping cannot judge (migrations, docs, Rust, config: anything outside
+   * JS/TS) that no run named directly. They are reported here, never as uncovered: the
+   * direct-import mapping has no way to say what exercises them (blind review G-5).
+   */
+  unmappedFiles: string[];
   /** Test runs in the window whose status counts as having exercised code (pass / fail). */
   runsConsidered: number;
   /** Passing runs in the window that exercised at least one edited file. */
@@ -93,6 +99,8 @@ export function classifyCloseCoverage(input: {
   windowEndMs: number;
   /** The caller's run read hit its row cap (see {@link CLOSE_COVERAGE_MAX_TEST_FILES}). */
   runsTruncated?: boolean;
+  /** Whether `covers` can judge this edited file; default {@link isCoverageMappable}. */
+  mappable?: (editedFile: string) => boolean;
 }): CloseCoverageReport {
   const { windowStartMs, windowEndMs } = input;
   const inWindow = (ms: number) => Number.isFinite(ms) && ms >= windowStartMs && ms <= windowEndMs;
@@ -103,10 +111,14 @@ export function classifyCloseCoverage(input: {
     (r) => inWindow(r.finishedAtMs) && EXERCISING_STATUSES.has(String(r.status).toLowerCase()),
   );
   const testFiles = [...new Set(runs.map((r) => normalize(r.testFile)).filter(Boolean))];
+  const mappable = input.mappable ?? isCoverageMappable;
   const coveredFiles: string[] = [];
   const uncoveredFiles: string[] = [];
+  const unmappedFiles: string[] = [];
   for (const file of editedFiles) {
-    (testFiles.some((t) => t === file || input.covers(file, t)) ? coveredFiles : uncoveredFiles).push(file);
+    if (testFiles.some((t) => t === file || input.covers(file, t))) coveredFiles.push(file);
+    else if (mappable(file)) uncoveredFiles.push(file);
+    else unmappedFiles.push(file);
   }
   const exercises = (file: string, r: CloseCoverageTestRun) => {
     const t = normalize(r.testFile);
@@ -131,6 +143,7 @@ export function classifyCloseCoverage(input: {
     editedFiles,
     coveredFiles,
     uncoveredFiles,
+    unmappedFiles,
     runsConsidered: runs.length,
     passingRuns: passes.length,
     anyCleanPass,
@@ -172,6 +185,14 @@ export function closeCoverageWarningText(itemId: string, r: CloseCoverageReport)
     );
   }
   if (parts.length === 0) return undefined;
+  // A report built before unmappedFiles existed has no such key; treat it as none.
+  const unmapped = r.unmappedFiles ?? [];
+  if (unmapped.length > 0) {
+    parts.push(
+      `${unmapped.length} edited non-JS/TS file(s) are not mapped to tests and are not counted as uncovered: ` +
+        `${listFiles(unmapped)}`,
+    );
+  }
   if (r.runsTruncated) {
     parts.push(`the test-run read hit its ${CLOSE_COVERAGE_MAX_TEST_FILES * 3}-row cap, so coverage may be undercounted`);
   }
@@ -191,6 +212,15 @@ function normalize(p: string): string {
 
 const CODE_EXT = /\.(?:[cm]?[jt]sx?)$/;
 const TEST_SUFFIX = /\.(?:integration\.)?(?:test|spec)$/;
+
+/**
+ * True when the direct-import mapping can judge `editedFile`: a JS/TS source. A migration, doc,
+ * Rust file or config is exercised by tests the mapping cannot see, so it is reported as
+ * unmapped rather than uncovered.
+ */
+export function isCoverageMappable(editedFile: string): boolean {
+  return CODE_EXT.test(normalize(editedFile));
+}
 
 /** `a/b/x.ts` → `a/b/x`; `a/b/__tests__/x.test.ts` → `a/b/x`. Non-code paths return null. */
 function subjectStem(p: string): string | null {

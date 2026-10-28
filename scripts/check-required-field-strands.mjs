@@ -873,6 +873,11 @@ function workspaceFor(file) {
  * Measured 2026-08-02: this printed a green for a change that HAD added required
  * field `ServeProgress.bytesIn`, purely because git-sync had already swept it.
  */
+/**
+ * @param {string[]} examinedFiles
+ * @param {string} base
+ * @param {{ declared?: boolean, identicalFiles?: string[] }} [options]
+ */
 export function formatNoFindings(examinedFiles, base, { declared = false, identicalFiles = [] } = {}) {
   const files = Array.isArray(examinedFiles) ? examinedFiles : [];
   if (files.length > 0) {

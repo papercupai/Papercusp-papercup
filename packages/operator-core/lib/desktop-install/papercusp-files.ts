@@ -48,6 +48,7 @@ import {
   resolveUncommittedSources,
   gcStrandedInstallTmp,
 } from './install-provenance';
+import { withHookInstallLock } from './hook-install-lock';
 import {
   spliceAtMarker,
   spliceToolingOverlay,
@@ -1428,6 +1429,31 @@ function hookDirCandidates(operatorAppRoot: string, explicitRoot: boolean, subdi
  * Best-effort like its CC sibling: never throws, never blocks install.
  */
 export async function installInjectionHooks(home: string, injectSrcDir: string): Promise<string[]> {
+  try {
+    const result = await withHookInstallLock(home, () =>
+      installInjectionHooksUnlocked(home, injectSrcDir),
+    );
+    if (!result.acquired) {
+      console.warn(
+        '[desktop-install] injection hooks: automatic install skipped because the shared file lock is unavailable (' +
+          result.reason +
+          ')',
+      );
+      return [];
+    }
+    return result.value;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(
+      '[desktop-install] injection hooks: automatic install skipped because the shared file lock could not be acquired (' +
+        reason +
+        ')',
+    );
+    return [];
+  }
+}
+
+async function installInjectionHooksUnlocked(home: string, injectSrcDir: string): Promise<string[]> {
   const ompSourceDir = path.join(path.dirname(injectSrcDir), 'omp');
   const ompTypeScriptSource = path.join(ompSourceDir, 'inject-hook.ts');
   const ompBundledSource = path.join(ompSourceDir, 'inject-hook.mjs');

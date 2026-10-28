@@ -36,6 +36,21 @@ describe('findOwnerTag', () => {
     expect(findOwnerTag('1,043 bodies carry an [owner' + ': tag (264 dated October)')).toBeNull();
     expect(findOwnerTag('quote: `' + TAG + '` and\n```\n' + TAG + '\n```')).toBeNull();
   });
+  // Every shape measured in the 2026-10-28 decision census claims owner authority, not only the colon form.
+  it.each([
+    ['space + date', '[owner' + ' 2026-08-26]'],
+    ['space + date + note', '[owner' + ' 2026-08-31, verbatim in turn]'],
+    ['comma', '[owner' + ', verbatim]'],
+    ['dash qualifier', '[owner' + '-ratified 2026-09-01]'],
+    ['equals', '[owner' + '=Someone]'],
+    ['bare', '[owner' + ']'],
+    ['leading whitespace', '[ owner' + ': Someone]'],
+  ])('finds a %s owner tag', (_shape, tag) => {
+    expect(findOwnerTag(`Ruling ${tag} ship it.`)).toBe(tag);
+  });
+  it('does not treat identifiers that merely start with owner as a tag', () => {
+    expect(findOwnerTag('lookup map[ownerId] and list[owners] fall back to unknown')).toBeNull();
+  });
 });
 
 describe('decisionProvenanceArg', () => {

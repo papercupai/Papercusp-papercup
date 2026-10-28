@@ -1,9 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { verifyCutSourceClone } from './cut-source-clone';
+
+vi.mock('../../resource-governor/execution', () => ({
+  runGovernedOperation: async (_input: unknown, run: (context: unknown) => Promise<unknown>) => run({}),
+}));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-workspace' }));
 
 const git = (root: string, ...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const commit = (root: string) => {

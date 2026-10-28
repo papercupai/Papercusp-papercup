@@ -161,6 +161,11 @@ function payloadOf(res: unknown) {
 }
 
 describe('docs:outline handler — harness_required gate', () => {
+  it('opts out of the ambient workspace transaction during registry and docs reads', async () => {
+    const tool = (await import('../outline')).default;
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('no arg + ctx harnessSlug="*" → harness_required, engine never called', async () => {
     mockRegistry([]);
     const tool = (await import('../outline')).default;

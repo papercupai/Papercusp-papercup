@@ -192,6 +192,46 @@ test('report query readiness still enforces the navigation deadline', async ({ p
   await expect(navigateToPublishedReport(page, report, 250)).rejects.toThrow('page.waitForResponse: Timeout 250ms');
 });
 
+test('report navigation recovers from a connection refusal before the selected report query', async ({ page }) => {
+  const endpoint = '/api/zero-harness/rest-query?name=reports.get&args=' +
+    encodeURIComponent(JSON.stringify({ reportId: report.report_id }));
+  let navigationAttempts = 0;
+  await page.route('**/api/zero-harness/rest-query?*', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify({ rows: [report] }),
+  }));
+  await page.route('**/reports?*', async route => {
+    navigationAttempts += 1;
+    if (navigationAttempts === 1) {
+      await route.abort('connectionrefused');
+      return;
+    }
+    await route.fulfill({
+      contentType: 'text/html',
+      body: '<script>setTimeout(() => fetch(' + JSON.stringify(endpoint) + '), 0)</script>',
+    });
+  });
+
+  const selectedQuery = await navigateToPublishedReport(page, report, 3_000);
+  expect(navigationAttempts).toBe(2);
+  expect(selectedQuery.ok()).toBe(true);
+});
+
+test('report navigation stops repeated connection refusals at its existing deadline', async ({ page }) => {
+  let navigationAttempts = 0;
+  await page.route('**/reports?*', async route => {
+    navigationAttempts += 1;
+    await route.abort('connectionrefused');
+  });
+
+  await expect(navigateToPublishedReport(page, report, 600))
+    .rejects.toThrow(/ERR_CONNECTION_REFUSED|Timeout 600ms/);
+  const attemptsAtFailure = navigationAttempts;
+  expect(attemptsAtFailure).toBeGreaterThan(1);
+  expect(attemptsAtFailure).toBeLessThanOrEqual(3);
+  await page.waitForTimeout(250);
+  expect(navigationAttempts).toBe(attemptsAtFailure);
+});
+
 test('report renderer readiness uses its navigation budget beyond the action timeout', async ({ page }) => {
   await page.route('**/vditor/**', route => route.fulfill({ contentType: 'application/javascript', body: '' }));
   await page.route('**/renderer-readiness', route => route.fulfill({ contentType: 'text/html', body: `

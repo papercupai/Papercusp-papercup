@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { writeSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { nativeCliCall, nativeCliTestTimeout, nativeFixtureProcess, scopedNativeFixtureArgs } from './native-cli.fixture';
 import './scoped-contracts.e2e.test';
 import { privateReuseTestEnvironment } from './__fixtures__/reuse-api-journey';
@@ -104,6 +104,41 @@ function nativeFixtureFailureDiagnostic(
     `child output tail:\n${childOutput.slice(-4_000)}`;
 }
 
+/** bundle-host.sh stall window and ceiling; a fresh host bundle measured ~83s unloaded. */
+const hostBundleStallMs = 120_000;
+const hostBundleMaxMs = 360_000;
+const privateJourneyTimeoutMs = hostBundleMaxMs + 180_000 + 20_000;
+
+/**
+ * One host-handler bundle per file (EI-27225287785052203): each of six journeys used to pay a
+ * fresh bundle under a fixed 120s deadline. A bundle is reused only while every hashed journey
+ * source is unchanged since it was built; a failed build is not reused.
+ */
+let hostHandler: { key: string; build: Promise<{ handlerPath: string; handlerHash: string }> } | undefined;
+const hostHandlerRoots: string[] = [];
+afterAll(() => { for (const dir of hostHandlerRoots.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+function privateHostHandler(root: string, sourceKey: string) {
+  if (hostHandler?.key === sourceKey) return hostHandler.build;
+  const artifactRoot = mkdtempSync(join(tmpdir(), 'native-incident-handler-'));
+  hostHandlerRoots.push(artifactRoot);
+  const handlerPath = join(artifactRoot, 'handler.mjs');
+  const build = (async () => {
+    // Keep the producer's own step journal and evidence; kill its entire process group on expiry.
+    const result = await nativeFixtureProcess('bash',
+      [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/host-handler.ts', handlerPath], {
+        cwd: root, env: process.env, timeoutMs: hostBundleStallMs, maxMs: hostBundleMaxMs,
+        stepJournal: `${handlerPath}.build-steps.jsonl`,
+      });
+    expect(result.code, nativeFixtureFailureDiagnostic('Host bundle', result)).toBe(0);
+    return { handlerPath, handlerHash: createHash('sha256').update(readFileSync(handlerPath)).digest('hex') };
+  })();
+  const entry = { key: sourceKey, build };
+  hostHandler = entry;
+  build.catch(() => { if (hostHandler === entry) hostHandler = undefined; });
+  return build;
+}
+
 async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch' | 'grep' | 'reuse' | 'reuse-claim',
   recordRuntime?: (runId: string) => void) {
     const root = resolve(import.meta.dirname, '../../../..');
@@ -131,10 +166,12 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
       'packages/operator-core/lib/code-intelligence/packer-facade.ts',
       'packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts',
       'packages/operator-core/lib/agent-tools/coordination/tools/orient.ts',
-      'packages/operator-core/lib/agent-tools/work_items/complete.ts',
-      ...(mode.startsWith('reuse') ? ['libs/test-config/src/test-coverage-provider.ts',
-        'libs/test-config/src/admin-test-runs-reporter.ts',
-        'libs/test-config/src/test-coverage-map.ts', 'libs/test-config/src/vitest-config.ts'] : [])];
+      'packages/operator-core/lib/agent-tools/work_items/complete.ts'];
+    // Mode-only sources are checked per journey but do not select the shared host bundle.
+    const handlerSourceCount = sourcePaths.length;
+    if (mode.startsWith('reuse')) sourcePaths.push('libs/test-config/src/test-coverage-provider.ts',
+      'libs/test-config/src/admin-test-runs-reporter.ts',
+      'libs/test-config/src/test-coverage-map.ts', 'libs/test-config/src/vitest-config.ts');
     const sourceHashes = () => Object.fromEntries(sourcePaths.map(path =>
       [path, createHash('sha256').update(readFileSync(join(root, path))).digest('hex')]));
     const beforeHashes = sourceHashes();
@@ -149,17 +186,11 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
     // Prepare the maintained ESM handler artifact before allocating private PG.
     // A direct tsx import of apps/operator's CommonJS entry is intentionally
     // refused by the committed-source guard.
-    const artifactRoot = mkdtempSync(join(tmpdir(), 'native-incident-handler-'));
-    const handlerPath = join(artifactRoot, 'handler.mjs');
-    try {
-    // Keep the producer's own deadline and evidence; kill its entire process
-    // group and remove its artifacts even when this precondition fails.
-    const build = await nativeFixtureProcess('bash',
-      [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/host-handler.ts', handlerPath], {
-        cwd: root, env: process.env, timeoutMs: 120_000,
-      });
-    expect(build.code, nativeFixtureFailureDiagnostic('Host bundle', build)).toBe(0);
-    const handlerHash = createHash('sha256').update(readFileSync(handlerPath)).digest('hex');
+    const { handlerPath, handlerHash } = await privateHostHandler(root, createHash('sha256')
+      .update(JSON.stringify(sourcePaths.slice(0, handlerSourceCount).map(path => [path, beforeHashes[path]])))
+      .digest('hex'));
+    // The fixture must execute exactly the bundle that was hashed when it was built.
+    expect(createHash('sha256').update(readFileSync(handlerPath)).digest('hex')).toBe(handlerHash);
     let pendingStage = '';
     let result: Awaited<ReturnType<typeof nativeFixtureProcess>>;
     const workerArgs = ['--isolated-runtime=operator-api', '--', process.execPath,
@@ -217,7 +248,6 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
       : mode === 'first-touch' ? 'NATIVE_P036_RUNTIME_PROOF'
       : mode === 'grep' ? 'NATIVE_P035_RUNTIME_PROOF' : 'NATIVE_P039_RUNTIME_PROOF'}=${JSON.stringify({ ...proof, beforeHashes, afterHashes })}\n`);
     return proof;
-    } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
 }
 
 describe('native P010 private operator completion reuse delivery', () => {
@@ -230,7 +260,7 @@ describe('native P010 private operator completion reuse delivery', () => {
       scope: expect.stringContaining('private current-source') });
     expect(proof.handlerHash).toMatch(/^[a-f0-9]{64}$/);
     expect(proof.issued.length).toBeGreaterThanOrEqual(3);
-  }, 120_000 + 180_000 + 20_000);
+  }, privateJourneyTimeoutMs);
 });
 
 describe('native P010 controlled CLI claim reuse delivery', () => {
@@ -243,7 +273,7 @@ describe('native P010 controlled CLI claim reuse delivery', () => {
       scope: expect.stringContaining('controlled private current-source CLI fixture') });
     expect(proof.controlledSession.id).toBeGreaterThan(0);
     expect(proof.issued).toHaveLength(5);
-  }, 120_000 + 180_000 + 20_000);
+  }, privateJourneyTimeoutMs);
 });
 
 describe('native P035 private operator installed grep answer', () => {
@@ -256,7 +286,7 @@ describe('native P035 private operator installed grep answer', () => {
         hookEventName: 'PostToolUse', additionalContext: expect.stringContaining('Code intelligence (grep)') } } },
       scope: expect.stringContaining('no live Codex model session'),
     });
-  }, 120_000 + 180_000 + 20_000);
+  }, privateJourneyTimeoutMs);
 });
 
 describe('native P036 private operator installed first-touch Read', () => {
@@ -270,7 +300,7 @@ describe('native P036 private operator installed first-touch Read', () => {
           additionalContext: expect.stringContaining('Code intelligence (first-touch)') } } },
       scope: expect.stringContaining('no live Codex model session'),
     });
-  }, 120_000 + 180_000 + 20_000);
+  }, privateJourneyTimeoutMs);
 });
 
 describe('native P018 private operator CLI incident claim and resume', () => {
@@ -290,7 +320,7 @@ describe('native P018 private operator CLI incident claim and resume', () => {
     });
   // The build and private journey have separate producer deadlines. The test
   // deadline must allow both plus the maintained process-group exit fence.
-  }, 120_000 + 180_000 + 20_000);
+  }, privateJourneyTimeoutMs);
 });
 
 describe('native P039 private operator intent and completion briefs', () => {
@@ -304,7 +334,7 @@ describe('native P039 private operator intent and completion briefs', () => {
         tests: [expect.objectContaining({ path: 'target.test.ts', execution: 'not-recorded-in-bound-run' })],
         testsWithoutRunEvidence: ['target.test.ts'] }, terminal: true,
     });
-  }, 120_000 + 180_000 + 20_000);
+  }, privateJourneyTimeoutMs);
 });
 
 describe.runIf(Boolean(baseUrl && planningPlan))('native P013 real CLI graph planning advice', () => {

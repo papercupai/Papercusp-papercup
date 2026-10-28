@@ -1643,6 +1643,25 @@ export default defineTool({
         }
       }
     }
+    // P-018 (one-work-graph-structured-holds-2026-10-26#D-012 item 4): every returned decision
+    // carries its provenance row ('unrecorded' when none). Outside cachedRead because the decision
+    // tools write the row after the plan revision lands; narrowed decisionId reads get it too.
+    {
+      const { withDecisionProvenance } = await import('./decision-provenance-record');
+      for (const result of env.results as Array<Record<string, unknown>>) {
+        if (result.ok !== true || typeof result.slug !== 'string' || !Array.isArray(result.decisions)) continue;
+        const decisions = result.decisions as Array<{ id: string }>;
+        try {
+          const scope = await resolvePlanScope({
+            harnessSlug: typeof result.harness === 'string' ? result.harness : undefined,
+          });
+          result.decisions = await withDecisionProvenance({ ...scope, planSlug: result.slug }, decisions);
+        } catch (error) {
+          const reason = `plan scope unresolved: ${error instanceof Error ? error.message : String(error)}`;
+          result.decisions = decisions.map((d) => ({ ...d, provenance: { kind: 'unavailable', reason } }));
+        }
+      }
+    }
     // derived-status-not-hand-written-2026-10-12 P-002: once every item of an unshipped plan
     // is terminal, `derivedStatus.shipGate` names what refuses the ship — from the SAME
     // resolver as shipReadiness above (reused when the caller asked for it, so the gate is

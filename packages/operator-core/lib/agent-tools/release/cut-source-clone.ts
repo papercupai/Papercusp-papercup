@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process';
 import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { runGovernedOperation } from '../../resource-governor/execution';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 const exec = promisify(execFile);
 const git = async (root: string, ...args: string[]) => (await exec(
@@ -26,6 +28,33 @@ export async function verifyCutSourceClone(
   if (!sourceSha || !/^[0-9a-f]{40}$/.test(sourceSha) || !path.isAbsolute(requestedRoot)) {
     return { ok: false, reason: 'root_clone_source_required — independent clones require an absolute root and exact sourceSha' };
   }
+  try {
+    return await runGovernedOperation(
+      {
+        workspaceId: activeWorkspaceId(),
+        namespace: 'release-cut-source-clone',
+        owner: 'release:cut:source-clone',
+        admissionClass: 'process',
+        demand: { cpuWeight: 1, memoryBytes: 256 * 1024 * 1024, fileDescriptors: 6 },
+        payloadRef: `release:cut-source-clone:${sourceSha}`,
+        metadata: { projectCount: projects.length, operation: 'verify-independent-clone' },
+      },
+      async () => verifyCutSourceCloneAdmitted(requestedRoot, projects, sourceSha, options),
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `root_clone_admission_failed — ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+async function verifyCutSourceCloneAdmitted(
+  requestedRoot: string,
+  projects: ReadonlyArray<{ path: string }>,
+  sourceSha: string,
+  options: { readOnly?: boolean; reuseSeedVersion?: string },
+): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
   try {
     const root = await realpath(requestedRoot);
     if (!(await lstat(path.join(root, '.git'))).isDirectory()) throw new Error('root must have an independent .git directory');

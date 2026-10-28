@@ -79,6 +79,16 @@ describe('detectAbsencePremises', () => {
     expect(p.recheck).not.toMatch(/whole repo/i);
   });
 
+  it('uses the exact named path for an artifact absence without requiring file/path wording', () => {
+    const exactPath = '.papercusp/scratch/ei267083-current-qualification-20261023e.json';
+    const [p] = derive(
+      `There is no E receipt, naming \`${exactPath}\`; guarded capture threw before \`writeFileSync\`.`,
+    );
+    expect(p.recheck).toContain(`\`${exactPath}\``);
+    expect(p.recheck).toMatch(/filesystem existence/i);
+    expect(p.recheck).not.toMatch(/whole repo|search for/i);
+  });
+
   it('keeps a serving-runtime absence check on its loaded build', () => {
     const [p] = derive('The served handler at build 516579404d is selected and it lacks startupReservation.');
     expect(p.recheck).toContain('serving runtime/handler at 516579404d');

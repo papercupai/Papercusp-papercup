@@ -248,7 +248,31 @@ export interface AdmissionPreviewRead {
   judgedSha: string | null;
   /** True when the queue's repair head has moved since the verdict was computed. */
   stale: boolean | null;
+  /** For a running preview: the bounded events:await arguments (see {@link admissionPreviewAwaitArgs}). */
+  awaitArgs: ReturnType<typeof admissionPreviewAwaitArgs> | null;
   nextAction: string;
+}
+
+/** Margin past `expiresAtMs` so a bounded await wakes after a reader would report `expired`. */
+const ADMISSION_PREVIEW_AWAIT_MARGIN_SEC = 30;
+
+/**
+ * The events:await arguments for a running preview. The settle event is emitted only by the
+ * in-process settle path, so a host restart mid-preview never emits it (blind review G-6). The
+ * timeout is bounded to the operation's remaining lifetime and wakes on timeout, so an awaiter is
+ * woken to re-read op:get (which then reports `expired`) instead of sleeping on an event that
+ * will never fire.
+ */
+export function admissionPreviewAwaitArgs(
+  operation: Pick<AdmissionPreviewOperation, 'operationId' | 'expiresAtMs'>,
+  nowMs: number,
+): { event: string; timeout_sec: number; on_timeout: 'wake' } {
+  const remainingSec = Math.ceil(Math.max(0, operation.expiresAtMs - nowMs) / 1000);
+  return {
+    event: `${ADMISSION_PREVIEW_SETTLED_EVENT_PREFIX}${operation.operationId}`,
+    timeout_sec: remainingSec + ADMISSION_PREVIEW_AWAIT_MARGIN_SEC,
+    on_timeout: 'wake',
+  };
 }
 
 export function describeAdmissionPreviewOperation(
@@ -260,9 +284,12 @@ export function describeAdmissionPreviewOperation(
   const verdict = operation.verdict as { judgedSha?: unknown } | null;
   const judgedSha = verdict && typeof verdict.judgedSha === 'string' ? verdict.judgedSha : null;
   const stale = judgedSha && ctx.currentRepairHead ? judgedSha !== ctx.currentRepairHead : null;
+  const awaitArgs = status === 'running' ? admissionPreviewAwaitArgs(operation, ctx.nowMs) : null;
   const nextAction =
-    status === 'running'
-      ? `Still running. Await ${ADMISSION_PREVIEW_SETTLED_EVENT_PREFIX}${operation.operationId} (or re-read this op:get) instead of re-issuing the dry run.`
+    awaitArgs
+      ? `Still running. events:await { event: '${awaitArgs.event}', timeout_sec: ${awaitArgs.timeout_sec}, on_timeout: 'wake' }, ` +
+        'then re-read this op:get, instead of re-issuing the dry run. Keep the bounded timeout: a host restart mid-preview ' +
+        'never emits the settle event, and op:get reports it expired once the timeout passes.'
       : status === 'expired'
         ? 'The preview never settled before its expiry (its host most likely restarted). Re-run the dry run.'
         : status === 'failed'
@@ -270,15 +297,17 @@ export function describeAdmissionPreviewOperation(
           : stale
             ? 'The repair head moved after this verdict was computed. Re-run the dry run before confirming.'
             : 'Settled. If the verdict is a pass, confirm with the expected-identity tuple it carries.';
-  return { operation, status, judgedSha, stale, nextAction };
+  return { operation, status, judgedSha, stale, awaitArgs, nextAction };
 }
 
 /** The response body for a deferred dry run, so every caller gets the same handle contract. */
 export function deferredAdmissionPreviewPayload(
   outcome: Extract<AdmissionPreviewOutcome<unknown>, { mode: 'deferred' }>,
   inlineBudgetMs: number,
+  nowMs: number = Date.now(),
 ): Record<string, unknown> {
   const { operation } = outcome;
+  const awaitArgs = admissionPreviewAwaitArgs(operation, nowMs);
   return {
     ok: true,
     op: 'admit',
@@ -290,18 +319,20 @@ export function deferredAdmissionPreviewPayload(
       status: operation.status,
       startedAtMs: operation.startedAtMs,
       expiresAtMs: operation.expiresAtMs,
-      settleEvent: `${ADMISSION_PREVIEW_SETTLED_EVENT_PREFIX}${operation.operationId}`,
+      settleEvent: awaitArgs.event,
       persisted: outcome.persisted,
       ...(outcome.persistError ? { persistError: outcome.persistError } : {}),
     },
+    awaitArgs,
     nextAction: {
       tool: 'release:repair-queue',
       args: { op: 'get', previewOperationId: operation.operationId },
     },
     detail:
       `The read-only preview is still running after ${inlineBudgetMs}ms, so it continues in the background ` +
-      'instead of holding this call. Await the settle event (events:await) or read ' +
-      "release:repair-queue { op:'get', previewOperationId } for the settled verdict. Nothing was admitted.",
+      'instead of holding this call. Await the settle event with events:await using `awaitArgs` exactly (its timeout ' +
+      'is bounded to the preview lifetime and wakes on timeout: a host restart mid-preview never emits the event), then read ' +
+      "release:repair-queue { op:'get', previewOperationId } for the verdict. Nothing was admitted.",
   };
 }
 

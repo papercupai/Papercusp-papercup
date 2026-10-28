@@ -1,8 +1,10 @@
 /** Real native CLI fixture: preserve the selected runtime and producer budgets. */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { writeSync } from 'node:fs';
+import { existsSync, readFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { decideWatchdogExpiry } from '../../../../scripts/lib/batch-watchdog.mjs';
 import { moduleRepoRoot } from '../module-repo-root';
 import { resolveAgentMcpBaseUrl } from '../mcp-base-url';
 import { processGroupLifetime } from '../fleet/process-group-lifetime';
@@ -31,11 +33,79 @@ export function scopedNativeFixtureArgs(fixtureUrl: string, entry: string, argv:
   return ['--input-type=module', '-e', script, ...argv];
 }
 
-/** Preserve phase evidence while a private fixture runs, including on deadline. */
+/** One step from a bundle-host.sh journal, in ms relative to the fixture start. */
+export type FixtureJournalStep = { step: string; startMs: number; durMs: number; rc: number };
+
+/**
+ * Incremental reader for a bundle-host.sh step journal (`$OUTFILE.build-steps.jsonl`).
+ * Progress is only a fully appended `end` row with status 0 that closes a `start` row from the
+ * same pid written after the fixture started. buildPrivateOperatorApiBundle applies the same
+ * rule, so stale, torn, interleaved or failed rows never extend a deadline.
+ */
+export function bundleStepJournal(path: string, startedAtEpochMs: number) {
+  const completed = new Set<string>();
+  const open = new Map<string, number>();
+  const steps: FixtureJournalStep[] = [];
+  let rowsSeen = 0;
+  return {
+    /** Fold newly appended rows; returns how many steps newly completed with status 0. */
+    sample(): number {
+      if (!existsSync(path)) return 0;
+      const lines = readFileSync(path, 'utf8').split('\n').slice(0, -1);
+      let advanced = 0;
+      for (const line of lines.slice(rowsSeen)) {
+        let row: { at?: unknown; pid?: unknown; step?: unknown; event?: unknown; status?: unknown };
+        try { row = JSON.parse(line); } catch { continue; }
+        if (typeof row.at !== 'number' || !Number.isFinite(row.at) || row.at < startedAtEpochMs / 1000
+          || !Number.isSafeInteger(row.pid) || (row.pid as number) <= 0
+          || typeof row.step !== 'string' || !row.step) continue;
+        const key = `${row.pid}:${row.step}`;
+        if (row.event === 'start') { if (!completed.has(row.step)) open.set(key, row.at); continue; }
+        const startAt = row.event === 'end' ? open.get(key) : undefined;
+        if (startAt === undefined) continue;
+        open.delete(key);
+        const rc = typeof row.status === 'number' ? row.status : -1;
+        if (steps.length === 64) steps.splice(16, 1);
+        steps.push({ step: row.step, startMs: Math.round(startAt * 1000 - startedAtEpochMs),
+          durMs: Math.round((row.at - startAt) * 1000), rc });
+        if (rc === 0 && !completed.has(row.step)) { completed.add(row.step); advanced++; }
+      }
+      rowsSeen = lines.length;
+      return advanced;
+    },
+    get steps() { return [...steps]; },
+    get openSteps() { return [...open.keys()].map(key => key.slice(key.indexOf(':') + 1)); },
+    get completedSteps() { return completed.size; },
+  };
+}
+
+/**
+ * Preserve phase evidence while a private fixture runs, including on deadline.
+ *
+ * Without `stepJournal` the deadline is fixed at `timeoutMs`. With it, each validated step
+ * completion in the child's bundle-host.sh journal renews the deadline (`timeoutMs` is then the
+ * stall window) up to the absolute `maxMs` ceiling (EI-27225287785052203: a fresh host bundle
+ * spent its whole fixed 120s in startup under load and timed out with no phase evidence).
+ */
 export async function nativeFixtureProcess(command: string, argv: string[], options: {
   cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number;
+  stepJournal?: string; maxMs?: number; pollMs?: number;
   onOutput?: (text: string, timing: { elapsedMs: number; remainingMs: number }) => void;
 }) {
+  const maxMs = options.maxMs ?? options.timeoutMs;
+  if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0 || !Number.isSafeInteger(maxMs)
+    || maxMs < options.timeoutMs) {
+    throw new Error(`Private fixture deadline must be positive and covered by its ceiling (timeoutMs=${
+      options.timeoutMs}, maxMs=${maxMs})`);
+  }
+  if (options.maxMs !== undefined && !options.stepJournal) {
+    throw new Error('A private fixture ceiling needs a step journal to measure progress against');
+  }
+  if (options.stepJournal && existsSync(options.stepJournal)) {
+    throw new Error(`Progress-aware private fixture requires a fresh step journal: ${options.stepJournal}`);
+  }
+  const journal = options.stepJournal ? bundleStepJournal(options.stepJournal, Date.now()) : undefined;
+  let deadlineMs = options.timeoutMs, extensions = 0, killReason: string | null = null;
   const startedAt = performance.now();
   const child = spawn(command, argv, { cwd: options.cwd, env: options.env,
     detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -43,7 +113,7 @@ export async function nativeFixtureProcess(command: string, argv: string[], opti
   const phases: { elapsedMs: number; line: string }[] = [];
   const pending = new Map<object, string>();
   const clock = () => ({ elapsedMs: Math.round(performance.now() - startedAt),
-    remainingMs: Math.max(0, options.timeoutMs - Math.round(performance.now() - startedAt)) });
+    remainingMs: Math.max(0, deadlineMs - Math.round(performance.now() - startedAt)) });
   const capture = (text: string, stream: object) => {
     if (head.length < 8_000) head = (head + text).slice(0, 8_000);
     tail = (tail + text).slice(-30_000);
@@ -76,15 +146,42 @@ export async function nativeFixtureProcess(command: string, argv: string[], opti
     capture(String(data), stream);
   });
   const evidence = () => `NATIVE_FIXTURE_TIMING=${JSON.stringify({ timeoutMs: options.timeoutMs,
-    ...clock(), phaseCount, phases })}\nfailure:\n${failureOutput}\nstartup:\n${head}\ntail:\n${tail}`;
+    ...clock(), phaseCount, phases,
+    // Name the producer step a deadline interrupted, not just that it expired.
+    ...(journal && { maxMs, deadlineMs, extensions, killReason, completedSteps: journal.completedSteps,
+      openSteps: journal.openSteps, steps: journal.steps }) })}\nfailure:\n${failureOutput}\nstartup:\n${
+    head}\ntail:\n${tail}`;
   let timedOut = false;
   let termination: Promise<void> | undefined;
-  const timer = setTimeout(() => {
+  let lastProgressAt: number | null = null;
+  const observeJournal = () => {
+    try { if (journal && journal.sample() > 0) lastProgressAt = performance.now(); }
+    catch (error) { capture(`\nStep journal unreadable: ${String(error)}\n`, child); }
+  };
+  const poll = journal && managedSetInterval('native-fixture-step-journal', options.pollMs ?? 250, observeJournal,
+    { category: 'watchdog', classification: 'must-sample', instanced: true, allowInTest: true });
+  let timer: ReturnType<typeof setTimeout>;
+  const expire = () => {
+    observeJournal();
+    const elapsedMs = performance.now() - startedAt;
+    // Same policy as the private operator builder: no validated completion kills on time,
+    // a stall longer than one window kills, and nothing outlives the absolute ceiling.
+    const decision = decideWatchdogExpiry({ elapsedMs, maxMs,
+      lastProgressAgeMs: lastProgressAt === null ? null : performance.now() - lastProgressAt,
+      stallWindowMs: options.timeoutMs, extensionMs: options.timeoutMs });
+    if (decision.action === 'extend') {
+      extensions++;
+      deadlineMs = Math.round(elapsedMs + decision.extendByMs);
+      timer = setTimeout(expire, decision.extendByMs);
+      return;
+    }
+    killReason = decision.reason;
     timedOut = true;
     termination = lifetime.terminate().catch(error => {
       capture(`\nCleanup failed: ${String(error)}\n`, child);
     });
-  }, options.timeoutMs);
+  };
+  timer = setTimeout(expire, options.timeoutMs);
   try {
     const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done, reject) => {
       child.once('error', reject);
@@ -92,9 +189,14 @@ export async function nativeFixtureProcess(command: string, argv: string[], opti
     });
     if (termination) await termination;
     else await lifetime.waitForExit({ timeoutMs: 10_000 });
-    if (timedOut) throw new Error(`Private fixture deadline ${options.timeoutMs}ms exceeded\n${evidence()}`);
+    observeJournal();
+    if (timedOut) {
+      throw new Error(`Private fixture deadline ${options.timeoutMs}ms exceeded${journal ? ` (${killReason}; ${
+        extensions} extension(s), ceiling ${maxMs}ms, open step ${journal.openSteps.at(-1) ?? 'none'})` : ''}\n${
+        evidence()}`);
+    }
     return { ...result, failureOutput, output: evidence() };
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); poll?.stop(); }
 }
 
 export function nativeCliPlan(baseUrl: string, name: string, args: Record<string, unknown>,

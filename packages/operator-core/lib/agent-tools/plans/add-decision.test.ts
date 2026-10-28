@@ -709,10 +709,10 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
     expect(result.results[0].anchors).toHaveLength(1);
   });
 
-  it('WI-42142: a bare [owner:…] tag with no anchor is NOT refused — it folds through as advisory', async () => {
-    // The dominant existing convention: 432 of the 483 decision-body owner-tag
-    // lines in this workspace's plans are bare tags. Refusing them would break
-    // correct practice AND still miss the falsified-anchor shape above.
+  it('D-012: a colon-less owner tag on an agent-kind decision is refused before the write', async () => {
+    // one-work-graph-structured-holds-2026-10-26#D-012 item 3 supersedes WI-42142's advisory
+    // fold-through: owner authority is a structured provenance field, so a new body carrying an
+    // owner tag without provenance kind 'owner' is refused. The colon-less form must not slip past.
     const ctx = handlerContext();
     handlerMocks.carryProvenanceFields.mockResolvedValue({
       provenanceLint: {
@@ -732,9 +732,12 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
       ctx,
     );
 
-    expect(handlerMocks.withPlanLock).toHaveBeenCalled();
-    expect(result.results[0]).toMatchObject({ ok: true, decisionId: 'D-001' });
-    expect(result.results[0].provenanceLint).toMatchObject({ flagged: true });
+    expect(handlerMocks.withPlanLock).not.toHaveBeenCalled();
+    expect(result.results[0]).toMatchObject({
+      ok: false,
+      slug: 'handler-plan',
+      error: 'provenance_owner_tag_without_owner_kind',
+    });
   });
 
   it('WI-42142: a stamp fault fails OPEN — the decision still lands', async () => {

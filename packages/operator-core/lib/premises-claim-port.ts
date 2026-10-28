@@ -429,10 +429,14 @@ function hasUnfilteredLiveProcessCensus(probeText: string): boolean {
 function recheckFor(subject: string, claim: string): string {
   if (isCurrentUnaccountedProcessState(`${subject} ${claim}`)) return LIVE_PROCESS_CENSUS_RECHECK;
   // A bounded containment claim needs evidence from that same file/ref/runtime.
-  // Repository-wide absence still needs the broader search, even when it cites
-  // one example file. Inspect the full sentence before its display is clamped.
+  // An explicitly named path is itself a usable scope even when the prose does
+  // not repeat the words "file" or "path". Repository-wide absence still needs
+  // the broader search, even when it cites one example file. Inspect the full
+  // sentence before its display is clamped.
   const repositoryWide = /\b(?:(?:whole|entire)\s+(?:repo(?:sitory)?|codebase)|anywhere\s+in\s+(?:the\s+)?(?:repo(?:sitory)?|codebase)|across\s+(?:the\s+)?(?:repo(?:sitory)?|codebase))\b/i.test(claim);
-  const path = claim.match(/\b(?:[\w.-]+\/)*[\w.-]+\.(?:tsx?|[cm]?js|json|sql|md|ya?ml)\b/i)?.[0];
+  const path = claim.match(
+    /(?:^|[\s`"'(])((?:\/[\w./-]+|(?:[\w.-]+\/)+[\w./-]+|[\w.-]+\.(?:tsx?|[cm]?js|json|sql|md|ya?ml)(?::\d+)?))/i,
+  )?.[1];
   const ref = claim.match(/\b(?:commit|build|candidate|ref)\s*[:=]?\s*`?([0-9a-f]{7,40}|HEAD|origin\/[\w./-]+)/i)?.[1];
   const fileScoped = path && /\b(?:in|inside|within|file|path|blob)\b/i.test(claim);
   const runtimeScoped = /\b(?:served|serving|loaded|current|live)\b/i.test(claim)
@@ -443,6 +447,9 @@ function recheckFor(subject: string, claim: string): string {
     const probe = path && ref ? ` Read it with git show ${ref}:${path}.` : '';
     return `Verify the claim in ${target}${version}, preserving its stated file/ref/runtime scope.${probe} `
       + 'For a serving build, confirm the loaded code identity before checking containment.';
+  }
+  if (!repositoryWide && path) {
+    return `Probe the exact named path \`${path}\` for filesystem existence, then read it if present; report only that path's result. A repository-wide symbol search cannot establish this file's existence.`;
   }
   const scopeRule =
     'across the WHOLE repo (not the one file that suggested it), then state the scope you searched — ' +

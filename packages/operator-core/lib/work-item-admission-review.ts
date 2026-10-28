@@ -130,7 +130,7 @@ export async function requestAdmissionReview(
 export async function runAdmissionReviews(
   options: { workspaceId: string; harnessSlug: string; runId: string; targetItemIds?: readonly string[] },
   sql: Sql, llmCall: PromoterLlmCall,
-): Promise<{ result: PromoterRunResult | null; guardRefusals: AdmissionMergeGuardRefusal[] }> {
+): Promise<{ result: PromoterRunResult | null; guardRefusals: AdmissionMergeGuardRefusal[]; reviewedItemId?: string }> {
   const rows = await sql<{ feature_id: string; request: unknown }[]>`
     SELECT feature_id, payload->'_admissionReviewRequest' AS request FROM harness_shared.work_items
      WHERE workspace_id = ${options.workspaceId} AND harness_slug = ${options.harnessSlug}
@@ -190,7 +190,7 @@ export async function runAdmissionReviews(
         },
       },
     });
-    return { result, guardRefusals };
+    return { result, guardRefusals, reviewedItemId: scope.workItemId };
   }
   return { result: null, guardRefusals };
 }

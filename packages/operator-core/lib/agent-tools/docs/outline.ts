@@ -194,6 +194,11 @@ export default defineTool({
   },
   capability: 'docs:read',
   requirePrincipal: false,
+  // docs:outline resolves the harness registry and builds its outline from
+  // filesystem-backed sources; the handler never consumes ctx.tx. Release the
+  // ambient workspace transaction before those reads so outline calls do not
+  // hold an org-app pool slot while waiting on registry or docs I/O.
+  skipWorkspaceTx: true,
   // The release-fixer follows the shared docs-first guidance before inspecting
   // a gate failure; keep its direct role-scoped surface paired with docs:read.
   agentRoles: [...SU_ROLES, 'release-fixer'],

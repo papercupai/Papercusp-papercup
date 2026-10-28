@@ -52,15 +52,22 @@ describe('parseBlamePorcelain', () => {
   });
 });
 
-describe('workItemOrigin (D-001 order)', () => {
+describe('workItemOrigin (D-016 order)', () => {
   const base: WorkItemOriginRow = { id: 'WI-1' };
-  it('prefers the directive', () => {
-    expect(workItemOrigin({ ...base, directiveRef: 42, sourcePlanSlug: 'p' })).toEqual({ kind: 'directive', ref: '#42' });
-  });
-  it('falls back to the plan item', () => {
+  it('prefers the plan item, even when a directive is also recorded (blind review G-9)', () => {
+    expect(
+      workItemOrigin({ ...base, directiveRef: 42, sourcePlanSlug: 'p', sourcePlanItemIds: ['P-010'] }),
+    ).toEqual({ kind: 'plan-item', ref: 'p#P-010' });
     expect(workItemOrigin({ ...base, sourcePlanSlug: 'p', sourcePlanItemIds: ['P-010'] })).toEqual({
       kind: 'plan-item',
       ref: 'p#P-010',
+    });
+  });
+  it('falls back to the directive when no plan is recorded', () => {
+    expect(workItemOrigin({ ...base, directiveRef: 42 })).toEqual({ kind: 'directive', ref: '#42' });
+    expect(workItemOrigin({ ...base, directiveRef: 42, links: [{ rel: 'caused-by', dstKind: 'issue', dstRef: 'EI-9' }] })).toEqual({
+      kind: 'directive',
+      ref: '#42',
     });
   });
   it('then to the first link', () => {

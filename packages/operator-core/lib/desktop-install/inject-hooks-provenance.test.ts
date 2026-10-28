@@ -33,6 +33,14 @@ import {
 } from './papercusp-files';
 import { INSTALLED_FROM_BASENAME, readInstallStamp } from './install-provenance';
 
+const hookInstallLockMocks = vi.hoisted(() => ({
+  withHookInstallLock: vi.fn(),
+}));
+
+vi.mock('./hook-install-lock', () => ({
+  withHookInstallLock: hookInstallLockMocks.withHookInstallLock,
+}));
+
 const run = promisify(execFile);
 
 let root: string;
@@ -130,6 +138,12 @@ const injectDest = () => path.join(home, '.papercusp', 'hooks', 'inject');
 const ompDest = () => path.join(home, '.papercusp', 'hooks', 'omp');
 
 beforeEach(() => {
+  hookInstallLockMocks.withHookInstallLock.mockImplementation(
+    async (_home: string, operation: () => Promise<unknown>) => ({
+      acquired: true,
+      value: await operation(),
+    }),
+  );
   root = mkdtempSync(path.join(tmpdir(), 'inject-hooks-prov-'));
   home = path.join(root, 'home');
   srcRoot = path.join(root, 'src', 'hooks');
@@ -142,6 +156,29 @@ afterEach(() => {
 });
 
 describe('installInjectionHooks — install provenance', () => {
+  it('does not change installed hook bytes or stamps when a shared external-path lock is busy', async () => {
+    await makeSources();
+    const oldDispatcher = path.join(injectDest(), 'index.mjs');
+    const oldOmpHook = path.join(ompDest(), 'inject-hook.ts');
+    await fs.mkdir(path.dirname(oldDispatcher), { recursive: true });
+    await fs.mkdir(path.dirname(oldOmpHook), { recursive: true });
+    await fs.writeFile(oldDispatcher, '// previous dispatcher\n');
+    await fs.writeFile(oldOmpHook, '// previous omp hook\n');
+    hookInstallLockMocks.withHookInstallLock.mockImplementationOnce(
+      async () => ({ acquired: false, reason: 'held by an agent editing installed hooks' }),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(installInjectionHooks(home, injectSrc)).resolves.toEqual([]);
+
+    expect(await fs.readFile(oldDispatcher, 'utf8')).toBe('// previous dispatcher\n');
+    expect(await fs.readFile(oldOmpHook, 'utf8')).toBe('// previous omp hook\n');
+    await expect(fs.access(path.join(injectDest(), INSTALLED_FROM_BASENAME))).rejects.toThrow();
+    await expect(fs.access(path.join(ompDest(), INSTALLED_FROM_BASENAME))).rejects.toThrow();
+    expect(hookInstallLockMocks.withHookInstallLock).toHaveBeenCalledWith(home, expect.any(Function));
+    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/shared file lock is unavailable/);
+  });
+
   it('delivers one merged consequence from installed modules across fresh hook processes', async () => {
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
     const hookSources = path.join(repoRoot, 'apps/operator/scripts/hooks');

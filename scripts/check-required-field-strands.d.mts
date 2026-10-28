@@ -149,9 +149,14 @@ export function diffInterfaceConsequences(beforeText: any, afterText: any, fileN
  * Measured 2026-08-02: this printed a green for a change that HAD added required
  * field `ServeProgress.bytesIn`, purely because git-sync had already swept it.
  */
-export function formatNoFindings(examinedFiles: any, base: any, { declared, identicalFiles }?: {
-    declared?: boolean | undefined;
-    identicalFiles?: never[] | undefined;
+/**
+ * @param {string[]} examinedFiles
+ * @param {string} base
+ * @param {{ declared?: boolean, identicalFiles?: string[] }} [options]
+ */
+export function formatNoFindings(examinedFiles: string[], base: string, { declared, identicalFiles }?: {
+    declared?: boolean;
+    identicalFiles?: string[];
 }): string;
 /**
  * An inferred candidate set is useful context, but it is not a caller-owned change set

@@ -242,15 +242,26 @@ async function admissionPromoterPass(
   const { runAdmissionReviews } = await import('../../work-item-admission-review');
   const reviewPass = await runAdmissionReviews(options, deps.sql, deps.llmCall);
   const reviewGuardRefusals = reviewPass.guardRefusals;
-  if (reviewPass.result) {
-    return persistReviewGuardRefusals(deps.sql, options, reviewPass.result, reviewGuardRefusals);
-  }
+  // Keep the review result and its refusal evidence durable, then continue
+  // through the ordinary-slot/recovery arbitration below. runAdmissionReviews
+  // stays first so unavailable review authority fails closed before any
+  // unrelated recovery can dispatch.
+  const reviewResult = reviewPass.result
+    ? await persistReviewGuardRefusals(deps.sql, options, reviewPass.result, reviewGuardRefusals)
+    : null;
   let ordinarySlot = options.targetItemIds === undefined ? await claimOrdinarySlot(deps.sql, options) : null;
   if (ordinarySlot?.completedRunIds?.includes(options.runId) && ordinarySlot.result) {
     return persistReviewGuardRefusals(deps.sql, options, ordinarySlot.result, reviewGuardRefusals);
   }
   const recoveryRuns: PromoterRunResult[] = [];
-  const recovered = ordinarySlot ? 0 : await runAdmissionRecoveries(options, {
+  const recoveryScope = {
+    workspaceId: options.workspaceId,
+    harnessSlug: options.harnessSlug,
+    ...(reviewPass.result && reviewPass.reviewedItemId
+      ? { excludedItemIds: [reviewPass.reviewedItemId] }
+      : {}),
+  };
+  const recovered = ordinarySlot ? 0 : await runAdmissionRecoveries(recoveryScope, {
     authorize: deps.authorize,
     dispatch: deps.dispatch,
     lockSql: deps.lockSql,
@@ -281,6 +292,7 @@ async function admissionPromoterPass(
         deps.sql, options, recoveryRuns[0]!, reviewGuardRefusals,
       );
     }
+    if (reviewResult && recoveryRuns.length === 0) return reviewResult;
     return recoveryRuns.reduce<PromoterRunResult>((total, run) => ({
       ...total,
       batchSize: total.batchSize + run.batchSize, flaggedPairs: total.flaggedPairs + run.flaggedPairs,
@@ -296,6 +308,10 @@ async function admissionPromoterPass(
       guardRefusals: [], writerCoverageGap: [],
     });
   }
+  // Preserve the existing review-only result when there is no recovery and no
+  // due ordinary slot to consume. A due ordinary slot continues through its
+  // own screening path below before exact recovery resumes on the next fire.
+  if (!ordinarySlot && reviewResult) return reviewResult;
   if (options.targetItemIds === undefined && !ordinarySlot) {
     ordinarySlot = await claimOrdinarySlot(deps.sql, options, true);
   }

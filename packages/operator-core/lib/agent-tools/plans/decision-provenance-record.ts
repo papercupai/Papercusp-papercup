@@ -92,16 +92,22 @@ export interface DecisionProvenanceDeps {
 
 const defaultDeps: DecisionProvenanceDeps = { verify: (ownerId, refs) => verifyTurnRefs(ownerId, refs) };
 
-// A real tag is the owner prefix plus content, closed by `]` on the same line. A sentence that
-// merely names the tag syntax has no closing bracket and is not a tag.
-const OWNER_TAG_RE = /\[owner:[^\]\s][^\]\n]{0,160}\]/i;
+// An owner-authority tag is `[owner]`, or `[owner` + a separator (colon, whitespace, comma, `=`, `-`)
+// + content, closed by `]` on the same line. A sentence that merely names the tag syntax has no
+// closing bracket and is not a tag. Requiring a separator keeps `[ownerId]` and `[owners]` out.
+// Measured 2026-10-28 over 16,870 papercusp-workspace decisions (first tag per body): colon 1,041,
+// `[owner 2026-…]` 48, dash (`[owner-ratified …]`, `[owner-reviewed …]`) 19, bare `[owner]` 19,
+// comma or space+word 8. A colon-only pattern let about 9% of owner claims past the D-012 refusal.
+// One body in the census used `[owner-gated]` as a status marker; it is refused too, and rewording it
+// is cheap.
+const OWNER_TAG_RE = /\[\s*owner(?:\]|[\s:=,-][^\]\n]{0,160}\])/i;
 
 /** Text outside fenced blocks and inline code spans: quoting a tag is not carrying one. */
 function proseOnly(text: string): string {
   return text.replace(/```[\s\S]*?```/g, ' ').replace(/~~~[\s\S]*?~~~/g, ' ').replace(/`[^`\n]*`/g, ' ');
 }
 
-/** The first `[owner:…]` tag in the body's prose, or null. */
+/** The first owner-authority tag (`[owner:…]`, `[owner …]`, `[owner-…]`, `[owner]`) in the body's prose, or null. */
 export function findOwnerTag(text: string): string | null {
   return OWNER_TAG_RE.exec(proseOnly(text))?.[0] ?? null;
 }
@@ -239,6 +245,31 @@ export async function upsertDecisionProvenance(key: DecisionKey, p: ResolvedDeci
   });
 }
 
+/** What a decision WRITE reports: the row it recorded, or why no row was recorded. */
+export type RecordedDecisionProvenance =
+  | Exclude<DecisionProvenanceView, { kind: 'unrecorded' }>
+  | { kind: 'unrecorded'; reason: string };
+
+/**
+ * Record the resolved provenance after the decision write landed. Never throws: the decision
+ * is already in the plan, so failing the call would report a written decision as not written.
+ * A missing row is reported in the result instead, and P-019's conversion backfills it.
+ */
+export async function recordDecisionProvenance(
+  key: DecisionKey | null,
+  provenance: ResolvedDecisionProvenance | null,
+  unrecordedReason = 'no provenance resolved',
+): Promise<RecordedDecisionProvenance> {
+  if (!provenance) return { kind: 'unrecorded', reason: unrecordedReason };
+  if (!key) return { kind: 'unrecorded', reason: 'plan scope unresolved; no row written' };
+  try {
+    await upsertDecisionProvenance(key, provenance);
+  } catch (e) {
+    return { kind: 'unrecorded', reason: `provenance row write failed: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  return { ...provenance, source: 'write', recordedAt: new Date().toISOString() };
+}
+
 interface ProvenanceRow {
   decision_id: string;
   kind: 'owner' | 'agent';
@@ -283,4 +314,33 @@ export async function loadDecisionProvenance(
   );
   for (const r of rows) out.set(r.decision_id, rowToView(r));
   return out;
+}
+
+/**
+ * What a decision READ carries (D-012 item 4). 'unavailable' is distinct from 'unrecorded':
+ * 'unrecorded' asserts that no row exists, so a failed or unscoped read must never report it.
+ */
+export type DecisionProvenanceReadView = DecisionProvenanceView | { kind: 'unavailable'; reason: string };
+
+/**
+ * Attach `provenance` to each decision of ONE plan — the join behind plans:get and the claim
+ * planDecisions block. Never throws: a failed load marks every decision 'unavailable'.
+ */
+export async function withDecisionProvenance<T extends { id: string }>(
+  scope: Omit<DecisionKey, 'decisionId'>,
+  decisions: readonly T[],
+  load: typeof loadDecisionProvenance = loadDecisionProvenance,
+): Promise<Array<T & { provenance: DecisionProvenanceReadView }>> {
+  if (decisions.length === 0) return [];
+  let byId: Map<string, DecisionProvenanceView>;
+  try {
+    byId = await load(scope, decisions.map((d) => d.id));
+  } catch (e) {
+    const provenance: DecisionProvenanceReadView = {
+      kind: 'unavailable',
+      reason: `provenance read failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+    return decisions.map((d) => ({ ...d, provenance }));
+  }
+  return decisions.map((d) => ({ ...d, provenance: byId.get(d.id) ?? UNRECORDED_PROVENANCE }));
 }

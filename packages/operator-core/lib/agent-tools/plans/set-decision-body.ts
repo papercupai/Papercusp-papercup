@@ -17,6 +17,12 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { decisionProvenance, FALSIFIED_OWNER_ANCHOR_NOTE } from './decision-provenance';
+import {
+  decisionProvenanceArg,
+  findOwnerTag,
+  recordDecisionProvenance,
+  resolveDecisionProvenance,
+} from './decision-provenance-record';
 import { parsePlan, maskFences, normalizeDecisionBodyHeadings, type LegacyReason } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { hardText, softText, clampText, LIMITS } from '../limits';
@@ -105,11 +111,14 @@ const argsSchema = z.object({
   rationale: softText(LIMITS.ANNOTATION)
     .optional()
     .describe('Optional — why the decision body changed (a correction, an added caveat). Stored on the plan revision (D-009). Auto-truncated to 2000 chars if longer.'),
+  // P-018: omitted keeps the decision's stored provenance row unchanged.
+  provenance: decisionProvenanceArg.optional(),
 });
 
 type SetDecisionBodyValue =
   | { ok: true; decisionId: string; slug: string; oldBody: string }
   | { ok: false; code: 'not_found' | 'decision_not_found' }
+  | { ok: false; code: 'provenance_owner_tag_without_owner_kind'; reason: string }
   | { ok: false; code: 'legacy_plan'; reason?: LegacyReason };
 
 const text = (payload: Record<string, unknown>, isError = false) => ({
@@ -193,6 +202,26 @@ export default defineTool({
         true,
       );
     }
+    // P-018 (#D-012): explicit provenance resolves exactly as plans:add-decision does. Omitted
+    // keeps the stored row; a body [owner:…] tag is then checked under the lock against the
+    // prior body, so a pre-P-019 decision that already carried the tag stays editable.
+    const provenanceResolution = args.provenance
+      ? await resolveDecisionProvenance(args.provenance, args.body, ctx)
+      : null;
+    if (provenanceResolution && !provenanceResolution.ok) {
+      return text(
+        {
+          error: provenanceResolution.error,
+          slug: args.slug,
+          decisionId: args.decisionId,
+          field: provenanceResolution.field,
+          message: provenanceResolution.message,
+          ...(provenanceResolution.verdict ? { verdict: provenanceResolution.verdict } : {}),
+        },
+        true,
+      );
+    }
+    const newOwnerTag = args.provenance ? null : findOwnerTag(args.body);
 
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
@@ -222,6 +251,19 @@ export default defineTool({
         }
         const decision = parsed.decisions.find((d) => d.id === args.decisionId);
         if (!decision) return { newBody: null, value: { ok: false, code: 'decision_not_found' } };
+        if (newOwnerTag && !decision.body.includes(newOwnerTag)) {
+          return {
+            newBody: null,
+            value: {
+              ok: false,
+              code: 'provenance_owner_tag_without_owner_kind',
+              reason:
+                `The new body adds the owner tag ${newOwnerTag}. Owner provenance is a field: pass ` +
+                "provenance: { kind:'owner', turnRef:'[turn:<session>@<ts>]' }, or remove the tag. " +
+                'one-work-graph-structured-holds-2026-10-26#D-012.',
+            },
+          };
+        }
 
         const { newBody, found, oldBody } = setDecisionBodyInBody(
           current,
@@ -273,10 +315,24 @@ export default defineTool({
       /* best-effort — the next natural refresh picks it up */
     }
 
+    // P-018: only an explicit provenance argument rewrites the row.
+    let recordedProvenance: Awaited<ReturnType<typeof recordDecisionProvenance>> | undefined;
+    if (provenanceResolution?.ok) {
+      const scope = (result as { scope?: { workspaceId: string; harnessSlug: string } }).scope;
+      recordedProvenance = await recordDecisionProvenance(
+        scope
+          ? { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, planSlug: args.slug, decisionId: args.decisionId }
+          : null,
+        provenanceResolution.provenance,
+        'unrecordedReason' in provenanceResolution ? provenanceResolution.unrecordedReason : undefined,
+      );
+    }
+
     return text({
       ...result.value,
       filePath: result.filePath,
       revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+      ...(recordedProvenance ? { recordedProvenance } : {}),
       // WI-42142: advisory provenance — absent on the clean common case.
       ...provenance,
     });

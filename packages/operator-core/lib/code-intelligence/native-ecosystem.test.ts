@@ -11,7 +11,7 @@ import './semgrep-taint-facade.test';
 import '../dream/capability-review.test';
 import '../dream/dream-evaluation.test';
 import '../dream/dream-study-graph-comparison.test';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,7 +28,7 @@ import { captureCodeDependencies, assertCodeDependencyVersions } from '../agent-
 import { classifySpecEvidenceCurrentness, measureAndPinRepoFilesEvidenceAtRoot } from '../agent-tools/plans/spec-evidence-store';
 import { sourceRuntimeProvenance } from './source-runtime-provenance';
 import { nativeCliPlan, nativeCliResult, nativeCliTestTimeout } from './native-cli.fixture';
-import { nativeFixtureProcess, recoverNativeCliResult, scopedNativeFixtureArgs } from './native-cli.fixture';
+import { bundleStepJournal, nativeFixtureProcess, recoverNativeCliResult, scopedNativeFixtureArgs } from './native-cli.fixture';
 import { PTOOL_CONNECT_TIMEOUT_MS, PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS, PTOOL_LIST_TOOLS_TIMEOUT_MS,
   ptoolConnectionRetryOptions, ptoolConnectAttemptTimeoutMs, timeoutForTool,
   resolvePtoolInvocationCandidates } from '../../../../apps/operator/scripts/ptool.mjs';
@@ -214,6 +214,118 @@ describe('native CLI fixture runtime and deadline guards', () => {
       .rejects.toThrow(/deadline 5000ms exceeded[\s\S]*waiting-for-handler/);
     expect(chunks.join('')).toContain('waiting-for-handler');
   });
+  // EI-27225287785052203: a fresh host bundle used the whole fixed 120s startup deadline.
+  // The progress-aware deadline renews only on validated bundle-host.sh step completions.
+  const fixtureTiming = (text: string) => JSON.parse(text.split('\n')
+    .find(row => row.startsWith('NATIVE_FIXTURE_TIMING='))!.slice('NATIVE_FIXTURE_TIMING='.length));
+  const journalChild = (body: string) => `
+    const { appendFileSync } = require('node:fs');
+    const journal = process.argv[1];
+    const row = (step, event, status) => appendFileSync(journal, JSON.stringify({ at: Date.now() / 1000,
+      pid: process.pid, step, event, ...(status === undefined ? {} : { status }) }) + '\\n');
+    const complete = step => { row(step, 'start'); row(step, 'end', 0); };
+    ${body}
+  `;
+  const withJournal = async (run: (stepJournal: string) => Promise<void>) => {
+    const root = mkdtempSync(join(tmpdir(), 'native-fixture-journal-'));
+    try { await run(join(root, 'handler.mjs.build-steps.jsonl')); }
+    finally { rmSync(root, { recursive: true, force: true }); }
+  };
+  it('folds only fresh, complete, same-pid, successful journal rows as progress', () => withJournal(async path => {
+    const startedAtEpochMs = 1_800_000_000_000;
+    const at = (offsetMs: number) => (startedAtEpochMs + offsetMs) / 1000;
+    const rows = (entries: object[]) => entries.map(entry => JSON.stringify(entry) + '\n').join('');
+    const journal = bundleStepJournal(path, startedAtEpochMs);
+    expect(journal.sample()).toBe(0);
+    writeFileSync(path, rows([
+      { at: at(-5_000), pid: 7, step: 'stale', event: 'start' },
+      { at: at(-4_000), pid: 7, step: 'stale', event: 'end', status: 0 },
+      { at: at(10), pid: 0, step: 'bad-pid', event: 'start' },
+      { at: at(20), pid: 7, step: 'orphan-end', event: 'end', status: 0 },
+      { at: at(30), pid: 7, step: 'esbuild', event: 'start' },
+      { at: at(40), pid: 8, step: 'esbuild', event: 'end', status: 0 },
+      { at: at(50), pid: 7, step: 'failed', event: 'start' },
+      { at: at(60), pid: 7, step: 'failed', event: 'end', status: 1 },
+      { at: at(70), pid: 7, step: 'host-free-refs', event: 'start' },
+    ]) + 'not json\n{"at":');
+    expect(journal.sample()).toBe(0);
+    expect(journal.completedSteps).toBe(0);
+    expect(journal.openSteps).toEqual(['esbuild', 'host-free-refs']);
+    expect(journal.steps).toEqual([{ step: 'failed', startMs: 50, durMs: 10, rc: 1 }]);
+    // The torn row completes as an invalid row; a restarted completed step never counts twice.
+    appendFileSync(path, '1}\n' + rows([
+      { at: at(80), pid: 7, step: 'esbuild', event: 'end', status: 0 },
+      { at: at(90), pid: 7, step: 'esbuild', event: 'start' },
+      { at: at(95), pid: 7, step: 'esbuild', event: 'end', status: 0 },
+      { at: at(100), pid: 7, step: 'host-free-refs', event: 'end', status: 0 },
+    ]));
+    expect(journal.sample()).toBe(2);
+    expect(journal.sample()).toBe(0);
+    expect(journal).toMatchObject({ completedSteps: 2, openSteps: [] });
+    expect(journal.steps).toEqual([{ step: 'failed', startMs: 50, durMs: 10, rc: 1 },
+      { step: 'esbuild', startMs: 30, durMs: 50, rc: 0 }, { step: 'host-free-refs', startMs: 70, durMs: 30, rc: 0 }]);
+  }));
+  it('renews the deadline while validated steps advance', () => withJournal(async stepJournal => {
+    const result = await nativeFixtureProcess(process.execPath, ['-e', journalChild(`
+      let n = 0;
+      complete('boot');
+      // Exit explicitly: at loadavg ~350 an idle child's natural teardown measured >3.4s after its
+      // last step, which the stall window (correctly) judges as no progress.
+      setInterval(() => { complete('step-' + ++n); if (n === 12) process.exit(0); }, 500);
+    `), stepJournal], { cwd: process.cwd(), timeoutMs: 4_000, maxMs: 30_000, pollMs: 50, stepJournal });
+    expect(result.code).toBe(0);
+    const timing = fixtureTiming(result.output);
+    expect(timing).toMatchObject({ maxMs: 30_000, killReason: null, completedSteps: 13, openSteps: [] });
+    expect(timing.extensions).toBeGreaterThanOrEqual(1);
+    expect(timing.steps.map((step: { step: string }) => step.step))
+      .toEqual(['boot', ...Array.from({ length: 12 }, (_, index) => `step-${index + 1}`)]);
+  }), 30_000);
+  it('kills a stalled producer after one stall window and names the open step', () => withJournal(async stepJournal => {
+    const error = await nativeFixtureProcess(process.execPath, ['-e', journalChild(`
+      complete('bundle-prep');
+      row('host-free-refs', 'start');
+      setInterval(() => {}, 1000);
+    `), stepJournal], { cwd: process.cwd(), timeoutMs: 2_000, maxMs: 30_000, pollMs: 50, stepJournal })
+      .then(() => '', (failure: unknown) => String(failure));
+    expect(error).toMatch(
+      /deadline 2000ms exceeded \(progress-stalled; \d+ extension\(s\), ceiling 30000ms, open step host-free-refs\)/);
+    expect(fixtureTiming(error)).toMatchObject({ killReason: 'progress-stalled', completedSteps: 1,
+      openSteps: ['host-free-refs'] });
+  }), 30_000);
+  it('never extends past the absolute ceiling while steps keep advancing', () => withJournal(async stepJournal => {
+    const error = await nativeFixtureProcess(process.execPath, ['-e', journalChild(`
+      let n = 0;
+      complete('boot');
+      setInterval(() => complete('step-' + ++n), 200);
+    `), stepJournal], { cwd: process.cwd(), timeoutMs: 2_000, maxMs: 5_000, pollMs: 50, stepJournal })
+      .then(() => '', (failure: unknown) => String(failure));
+    expect(error).toMatch(/deadline 2000ms exceeded \(absolute-ceiling; \d+ extension\(s\), ceiling 5000ms/);
+    const timing = fixtureTiming(error);
+    expect(timing).toMatchObject({ killReason: 'absolute-ceiling', maxMs: 5_000 });
+    expect(timing.extensions).toBeGreaterThanOrEqual(2);
+    expect(timing.deadlineMs).toBeLessThanOrEqual(5_001);
+    expect(timing.completedSteps).toBeGreaterThan(5);
+  }), 30_000);
+  it('keeps the fixed deadline when the journal never shows a validated completion', () => withJournal(async stepJournal => {
+    const error = await nativeFixtureProcess(process.execPath, ['-e', journalChild(`
+      row('orphan-end', 'end', 0);
+      row('failed', 'start');
+      row('failed', 'end', 1);
+      setInterval(() => {}, 1000);
+    `), stepJournal], { cwd: process.cwd(), timeoutMs: 1_500, maxMs: 30_000, pollMs: 50, stepJournal })
+      .then(() => '', (failure: unknown) => String(failure));
+    expect(error).toMatch(/deadline 1500ms exceeded \(progress-unknown; 0 extension\(s\), ceiling 30000ms/);
+    expect(fixtureTiming(error)).toMatchObject({ killReason: 'progress-unknown', extensions: 0, completedSteps: 0 });
+  }), 30_000);
+  it('refuses a ceiling without a journal, a ceiling below the window, and a reused journal', () => withJournal(
+    async stepJournal => {
+      const run = (options: Omit<Parameters<typeof nativeFixtureProcess>[2], 'cwd'>) =>
+        nativeFixtureProcess(process.execPath, ['-e', ''], { cwd: process.cwd(), ...options });
+      await expect(run({ timeoutMs: 1_000, maxMs: 5_000 })).rejects.toThrow(/ceiling needs a step journal/);
+      await expect(run({ timeoutMs: 5_000, maxMs: 1_000, stepJournal })).rejects.toThrow(/covered by its ceiling/);
+      writeFileSync(stepJournal, '');
+      await expect(run({ timeoutMs: 1_000, maxMs: 5_000, stepJournal })).rejects.toThrow(/requires a fresh step journal/);
+    }));
   it.each([false, true])('preserves early and late phase clocks after output truncation (deadline %s)', async timedOut => {
     const script = `
       process.stdout.write('fixture-bootstrap-diagnostics\\n');

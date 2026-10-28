@@ -40,6 +40,10 @@ import { getPlanRow } from './agent-tools/plans/source';
 import { parsePlan } from './agent-tools/plans/parser';
 import { clampSnippet } from './agent-tools/coordination/ref-hydrate';
 import { planDecisionRef } from './agent-goal-ref';
+import type {
+  DecisionProvenanceReadView,
+  loadDecisionProvenance,
+} from './agent-tools/plans/decision-provenance-record';
 
 export interface ClaimTimePlanDecision {
   id: string;
@@ -52,6 +56,42 @@ export interface ClaimTimePlanDecision {
   /** Globally citable form for an inbound decision (`<plan>#D-NNN`). */
   ref?: string;
   relation?: 'affects';
+  /** Who decided it (one-work-graph-structured-holds-2026-10-26#D-012 item 4): the recorded row,
+   *  'unrecorded' when the decision has none, 'unavailable' when the row could not be read. */
+  provenance: DecisionProvenanceReadView;
+}
+
+type UnjoinedPlanDecision = Omit<ClaimTimePlanDecision, 'provenance'>;
+
+/**
+ * Join each surfaced decision to its provenance row. An affected decision's row is keyed by its
+ * SOURCE plan, so the join runs per plan. Never throws: the claim it decorates must not fail on it.
+ */
+async function attachProvenance(
+  decisions: UnjoinedPlanDecision[],
+  scope: { workspaceId?: string | null; harnessSlug?: string | null; planSlug: string },
+  load?: typeof loadDecisionProvenance,
+): Promise<ClaimTimePlanDecision[]> {
+  if (decisions.length === 0) return [];
+  const { workspaceId, harnessSlug } = scope;
+  const unavailable = (reason: string) => decisions.map((d) => ({ ...d, provenance: { kind: 'unavailable' as const, reason } }));
+  if (!workspaceId || !harnessSlug) return unavailable('plan scope unresolved; no provenance row is addressable');
+  try {
+    const { withDecisionProvenance } = await import('./agent-tools/plans/decision-provenance-record');
+    const byPlan = new Map<string, UnjoinedPlanDecision[]>();
+    for (const d of decisions) {
+      const plan = d.sourcePlanSlug ?? scope.planSlug;
+      byPlan.set(plan, [...(byPlan.get(plan) ?? []), d]);
+    }
+    const joined = new Map<UnjoinedPlanDecision, DecisionProvenanceReadView>();
+    for (const [planSlug, group] of byPlan) {
+      const rows = await withDecisionProvenance({ workspaceId, harnessSlug, planSlug }, group, load);
+      rows.forEach((row, i) => joined.set(group[i], row.provenance));
+    }
+    return decisions.map((d) => ({ ...d, provenance: joined.get(d) ?? { kind: 'unrecorded' as const } }));
+  } catch (e) {
+    return unavailable(`provenance join failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 export interface ClaimTimePlanDecisionsBrief {
@@ -190,6 +230,8 @@ export async function getClaimTimePlanDecisions(opts: {
   harness?: string | null;
   workspaceId?: string | null;
   lookupAffectedDecisions?: ClaimTimeAffectedDecisionLookup;
+  /** Test seam for the provenance join; defaults to the table read. */
+  loadProvenance?: typeof loadDecisionProvenance;
 }): Promise<ClaimTimePlanDecisionsBrief | null> {
   const planSlug = opts.planSlug ?? (opts.workItem ? planSlugOfWorkItem(opts.workItem as WorkItem) : null);
   if (!planSlug) return null;
@@ -221,7 +263,7 @@ export async function getClaimTimePlanDecisions(opts: {
     const affectedRows = affected.decisions.slice(0, MAX_DECISIONS);
     const remainingLocalSlots = Math.max(0, MAX_DECISIONS - affectedRows.length);
     const localWindow = remainingLocalSlots > 0 ? localDecisions.slice(-remainingLocalSlots) : [];
-    const decisions: ClaimTimePlanDecision[] = [
+    const unjoined: UnjoinedPlanDecision[] = [
       ...affectedRows.map((d) => ({
         id: d.decisionId,
         title: d.title,
@@ -236,6 +278,11 @@ export async function getClaimTimePlanDecisions(opts: {
         snippet: clampSnippet(d.body, SNIPPET_CHARS),
       })),
     ];
+    const decisions = await attachProvenance(
+      unjoined,
+      { workspaceId: row.workspaceId, harnessSlug: row.harnessSlug, planSlug: row.planSlug || planSlug },
+      opts.loadProvenance,
+    );
     const totalAffectedDecisions = Math.max(affected.totalDecisions, affected.decisions.length);
     if (!decisions.length && !authorityReadFailed) return null;
     return {

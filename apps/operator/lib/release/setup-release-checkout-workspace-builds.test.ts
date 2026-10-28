@@ -89,8 +89,16 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
       mkdirSync(join(integrationRoot, path, 'node_modules'), { recursive: true });
       symlinkSync(join(integrationRoot, path), join(scope, name));
     }
+    // Both package-local installs are LOCKFILE-DECLARED here, so both are required.
+    writeFileSync(join(integrationRoot, 'package-lock.json'), JSON.stringify({
+      packages: {
+        'packages/omp-plugin/node_modules/esbuild': { version: '0.0.0' },
+        'libs/generic/sse/node_modules/typescript': { version: '5.9.0' },
+      },
+    }));
     const runner = [
       'set -euo pipefail',
+      'log() { :; }',
       `INTEGRATION_ROOT=${JSON.stringify(integrationRoot)}`,
       `DEPENDENCY_GENERATION_TREE=${JSON.stringify(generation)}`,
       'PINNED_DEPENDENCY_GENERATION_ID=fixture-generation',
@@ -114,6 +122,20 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     const full = runner.replace('NODE_MODULES_WORKSPACE_DIRS=(papercusp-desktop)', 'NODE_MODULES_WORKSPACE_DIRS=()');
     expect(spawnSync('bash', ['-c', full], { encoding: 'utf8' }).status).toBe(0);
     expect(readFileSync(capture, 'utf8').trim()).toBe(integrationRoot);
+
+    // EI-27225885680515664: a cache-only live node_modules (Vite/esbuild write
+    // `.vite-temp` / `.esbuild-*` into any package they touch) is NOT a declared
+    // package-local install. A lockfile-faithful generation without that tree must
+    // pass, and the selected capture must not enroll the undeclared directory.
+    writeFileSync(join(integrationRoot, 'package-lock.json'), JSON.stringify({
+      packages: { 'libs/generic/sse/node_modules/typescript': { version: '5.9.0' } },
+    }));
+    rmSync(join(generation, 'packages/omp-plugin'), { recursive: true, force: true });
+    const cacheOnly = spawnSync('bash', ['-c', runner], { encoding: 'utf8' });
+    expect(cacheOnly.status, cacheOnly.stderr).toBe(0);
+    expect(readFileSync(capture, 'utf8').trim().split('\n')).toEqual([
+      integrationRoot, 'papercusp-desktop', 'libs/generic/sse',
+    ]);
     expect(SCRIPT.indexOf('    validate_runtime_dependency_toolchains\n'))
       .toBeLessThan(SCRIPT.indexOf('  if pinned_dependency_generation_reuse_safe; then'));
   });

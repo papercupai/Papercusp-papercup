@@ -81,15 +81,18 @@ export type TrailOrigin =
   | { kind: 'link'; ref: string; rel: string }
   | { kind: 'none' };
 
-/** D-001: directive, else plan item, else link, else "no recorded origin". Pure. */
+/**
+ * D-016 (supersedes D-001's order): plan item, else directive, else link, else "no recorded
+ * origin". Work items come from plans; directive_ref is only a fallback (blind review G-9). Pure.
+ */
 export function workItemOrigin(row: WorkItemOriginRow): TrailOrigin {
-  if (row.directiveRef !== null && row.directiveRef !== undefined && String(row.directiveRef) !== '') {
-    return { kind: 'directive', ref: `#${row.directiveRef}` };
-  }
   if (row.sourcePlanSlug) {
     const items = (row.sourcePlanItemIds ?? []).filter(Boolean);
     const ref = items.length ? items.map((i) => `${row.sourcePlanSlug}#${i}`).join(', ') : row.sourcePlanSlug;
     return { kind: 'plan-item', ref };
+  }
+  if (row.directiveRef !== null && row.directiveRef !== undefined && String(row.directiveRef) !== '') {
+    return { kind: 'directive', ref: `#${row.directiveRef}` };
   }
   const link = (row.links ?? [])[0];
   if (link) return { kind: 'link', rel: link.rel, ref: `${link.dstKind}:${link.dstRef}` };

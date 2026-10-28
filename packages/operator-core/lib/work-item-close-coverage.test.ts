@@ -50,6 +50,43 @@ describe('classifyCloseCoverage (R-10)', () => {
     expect(r.anyCleanPass).toBe(false);
   });
 
+  it('reports a non-JS/TS edit as unmapped, never uncovered (blind review G-5)', () => {
+    const r = classifyCloseCoverage({
+      edits: [
+        edit('libs/db/sql/1600-x.sql'),
+        edit('libs/db/sql/1601-y.sql.DRAFT'),
+        edit('docs/guide.mdx'),
+        edit('desktop/src/lib.rs'),
+        edit('config/app.json'),
+        edit('lib/b.ts'),
+      ],
+      testRuns: [run('lib/a.test.ts', 'pass', false)],
+      covers: directImportCoverageMapping(() => null),
+      windowStartMs: W0,
+      windowEndMs: W1,
+    });
+    expect(r.uncoveredFiles).toEqual(['lib/b.ts']);
+    expect(r.unmappedFiles).toEqual([
+      'config/app.json',
+      'desktop/src/lib.rs',
+      'docs/guide.mdx',
+      'libs/db/sql/1600-x.sql',
+      'libs/db/sql/1601-y.sql.DRAFT',
+    ]);
+  });
+
+  it('a non-JS/TS file a run names directly is covered, not unmapped', () => {
+    const r = classifyCloseCoverage({
+      edits: [edit('desktop/tests/smoke.rs')],
+      testRuns: [run('desktop/tests/smoke.rs', 'pass', false)],
+      covers: () => false,
+      windowStartMs: W0,
+      windowEndMs: W1,
+    });
+    expect(r.coveredFiles).toEqual(['desktop/tests/smoke.rs']);
+    expect(r.unmappedFiles).toEqual([]);
+  });
+
   it('an edited test file is covered by its own run without any mapping', () => {
     const r = classifyCloseCoverage({
       edits: [edit('lib/z.test.ts')],
@@ -141,6 +178,32 @@ describe('closeCoverageWarningText', () => {
     });
     expect(r.runsTruncated).toBe(true);
     expect(closeCoverageWarningText('WI-1', r)).toContain('may be undercounted');
+  });
+
+  it('is silent when the only gap is an unmapped non-JS/TS edit (blind review G-5)', () => {
+    const r = classifyCloseCoverage({
+      edits: [edit('lib/a.ts'), edit('libs/db/sql/1600-x.sql'), edit('docs/guide.md')],
+      testRuns: [run('lib/a.test.ts', 'pass', false)],
+      covers: mapping,
+      windowStartMs: W0,
+      windowEndMs: W1,
+    });
+    expect(r.unmappedFiles).toEqual(['docs/guide.md', 'libs/db/sql/1600-x.sql']);
+    expect(closeCoverageWarningText('WI-1', r)).toBeUndefined();
+  });
+
+  it('names unmapped files as not counted when another gap already warns', () => {
+    const r = classifyCloseCoverage({
+      edits: [edit('lib/b.ts'), edit('libs/db/sql/1600-x.sql')],
+      testRuns: [],
+      covers: mapping,
+      windowStartMs: W0,
+      windowEndMs: W1,
+    });
+    const w = closeCoverageWarningText('WI-1', r)!;
+    expect(w).toContain('exercised by no recorded test run in its claim window: lib/b.ts');
+    expect(w).not.toMatch(/exercised by no recorded test run[^;]*1600-x\.sql/);
+    expect(w).toContain('1 edited non-JS/TS file(s) are not mapped to tests and are not counted as uncovered: libs/db/sql/1600-x.sql');
   });
 
   it('is silent when every edited file is covered by a clean pass', () => {

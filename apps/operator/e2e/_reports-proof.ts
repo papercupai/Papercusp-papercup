@@ -158,8 +158,35 @@ export async function observeReportReadiness(page: Page, testInfo: TestInfo) {
   };
 }
 
+/** Retry a pre-response connection refusal within the navigation's existing deadline. */
+async function gotoReportWithConnectionRefusedRetry(page: Page, url: string, deadline: number): Promise<void> {
+  let retryDelayMs = 100;
+  let lastConnectionRefusal: Error | undefined;
+  while (true) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      if (lastConnectionRefusal) throw lastConnectionRefusal;
+      throw new Error('Report navigation deadline elapsed before navigation');
+    }
+    try {
+      await page.goto(url, { timeout: remainingMs });
+      return;
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('net::ERR_CONNECTION_REFUSED')) throw error;
+      lastConnectionRefusal = error;
+      const remainingAfterFailureMs = deadline - Date.now();
+      if (remainingAfterFailureMs <= 0) throw error;
+      await new Promise(resolve => setTimeout(resolve, Math.min(retryDelayMs, remainingAfterFailureMs)));
+      retryDelayMs = Math.min(retryDelayMs * 2, 1_000);
+    }
+  }
+}
+
 /** Navigation is ready only after the selected report query finishes with exact saved text. */
 export async function navigateToPublishedReport(page: Page, report: PublishedReportProof, navigationTimeout: number) {
+  const url = '/reports?sel=' + encodeURIComponent(report.report_id) +
+    '&ws=' + encodeURIComponent(report.workspace_id);
+  const deadline = Date.now() + navigationTimeout;
   // The selected query is navigation readiness, so both waits use the caller's
   // navigation budget rather than inheriting a shorter or longer action timeout.
   const query = page.waitForResponse(response => {
@@ -169,7 +196,7 @@ export async function navigateToPublishedReport(page: Page, report: PublishedRep
     catch { return false; }
   }, { timeout: navigationTimeout });
   const [, response] = await Promise.all([
-    page.goto(`/reports?sel=${encodeURIComponent(report.report_id)}&ws=${encodeURIComponent(report.workspace_id)}`, { timeout: navigationTimeout }), query,
+    gotoReportWithConnectionRefusedRetry(page, url, deadline), query,
   ]);
   expect(response.ok(), 'Selected report query must complete successfully').toBe(true);
   const payload = await response.json();

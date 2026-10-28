@@ -4223,6 +4223,7 @@ export default defineTool({
           // so the caller is installed when the seat is empty.
           allowLeadershipWrites: true,
           resolveCallerMembership: true,
+          payloadTierOverride: ctx.payloadTierOverride,
           metadata: recordMetadata,
         }),
       {
@@ -4286,8 +4287,24 @@ export interface LeaderBriefCaller {
   allowLeadershipWrites: boolean;
   /** See LeaderBriefCaller's docblock §2. */
   resolveCallerMembership: boolean;
+  /** Explicit per-call tier; `full` preserves the computed member detail rows. */
+  payloadTierOverride?: 'trimmed' | 'standard' | 'full';
   /** Invocation-ledger metadata sink. Optional for read-only internal callers. */
   metadata?: (value: Record<string, unknown>) => void;
+}
+
+/**
+ * Bound verbose member rows for shaped/default reads. An explicit `full` call
+ * asks for the handler's unshaped data; the tooldef hard ceiling still guards
+ * oversized results after this handler returns.
+ */
+export function boundLeaderBriefMembers<T>(
+  rows: T[],
+  payloadTierOverride?: LeaderBriefCaller['payloadTierOverride'],
+): { kept: T[]; truncated: boolean } {
+  return payloadTierOverride === 'full'
+    ? { kept: rows, truncated: false }
+    : trimToByteBudget(rows, LEADER_BRIEF_MEMBER_DETAIL_BUDGET);
 }
 
 export type LeaderBriefFleetTarget =
@@ -4415,7 +4432,7 @@ export async function buildLeaderBrief(
   },
   caller: LeaderBriefCaller,
 ) {
-  const { agentIdentity, ownerId, actorWorkspace, self, allowLeadershipWrites, metadata } = caller;
+  const { agentIdentity, ownerId, actorWorkspace, self, allowLeadershipWrites, metadata, payloadTierOverride } = caller;
   // Resolve the workspace before the omitted-fleet lookup. `listFleetsLedBy`
   // is the durable per-fleet leadership authority, and unlike presence it can
   // answer for every fleet this owner leads.
@@ -5603,12 +5620,12 @@ export async function buildLeaderBrief(
     workspaceId,
     { timeoutMs: LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS, nowMs },
   );
-  const boundedMembers = trimToByteBudget(
+  const boundedMembers = boundLeaderBriefMembers(
     detailMembers.map((member) => ({
       ...member,
       ...(progress.has(member.agentId) ? { checkpointProgress: progress.get(member.agentId)! } : {}),
     })),
-    LEADER_BRIEF_MEMBER_DETAIL_BUDGET,
+    payloadTierOverride,
   );
   const boundedReservationMembers = trimToByteBudget(reservation.members, LEADER_BRIEF_RESERVATION_DETAIL_BUDGET);
   const reservationForResponse = {

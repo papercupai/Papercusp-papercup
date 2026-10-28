@@ -41,6 +41,12 @@ import {
   FALSIFIED_OWNER_ANCHOR_NOTE,
   hasConcreteDecisionMeasurement,
 } from './decision-provenance';
+import {
+  decisionProvenanceArg,
+  recordDecisionProvenance,
+  resolveDecisionProvenance,
+  type DecisionProvenanceArg,
+} from './decision-provenance-record';
 import { neutralizeToolCallTags } from '../../text-safety';
 import { containsDeviationFence } from '../../spec-conformance/deviation';
 import { planDecisionRef } from '../../agent-goal-ref';
@@ -94,6 +100,7 @@ const itemSpec = z.object({
   affects: AFFECTS.optional().describe(AFFECTS_DESC),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
+  provenance: decisionProvenanceArg.optional(),
 });
 
 const argsSchema = z
@@ -106,6 +113,7 @@ const argsSchema = z
     refs: REFS.optional(),
     itemRefs: REFS.optional().describe(ITEM_REFS_ALIAS_DESC),
     affects: AFFECTS.optional().describe(AFFECTS_DESC),
+    provenance: decisionProvenanceArg.optional(),
     items: z
       .array(itemSpec)
       .min(1)
@@ -133,6 +141,8 @@ export interface NewDecision {
   affects?: string[];
   harness?: string;
   rationale?: string;
+  /** P-018: who the decision came from; omitted = the recording agent. */
+  provenance?: DecisionProvenanceArg;
 }
 
 /** Internal callers only — never reachable from tool args. */
@@ -445,6 +455,20 @@ export async function addDecisionOne(
       anchors,
     };
   }
+  // P-018 (one-work-graph-structured-holds-2026-10-26#D-012): provenance is a field. Resolved
+  // before the lock (owner kind verifies a transcript turn); an [owner:…] tag in the body
+  // without owner kind is refused here, naming the field to set instead.
+  const provenanceResolution = await resolveDecisionProvenance(it.provenance, `${it.title}\n${it.body}`, ctx);
+  if (!provenanceResolution.ok) {
+    return {
+      ok: false,
+      slug: it.slug,
+      error: provenanceResolution.error,
+      field: provenanceResolution.field,
+      message: provenanceResolution.message,
+      ...(provenanceResolution.verdict ? { verdict: provenanceResolution.verdict } : {}),
+    };
+  }
 
   const resolved = await decisionContext(it, ctx);
   if (!resolved.ok) return resolved.result;
@@ -640,6 +664,16 @@ export async function addDecisionOne(
   const cascadeActivationAudit = barReadiness?.activationAudit;
   if (barReadiness) delete barReadiness.activationAudit;
 
+  // P-018: the provenance row, written once the decision exists. A deduped retry returned
+  // above, so its row is the one the landed call wrote.
+  const recordedProvenance = await recordDecisionProvenance(
+    lockScope
+      ? { workspaceId: lockScope.workspaceId, harnessSlug: lockScope.harnessSlug, planSlug: it.slug, decisionId }
+      : null,
+    provenanceResolution.provenance,
+    'unrecordedReason' in provenanceResolution ? provenanceResolution.unrecordedReason : undefined,
+  );
+
   return {
     ...result.value,
     ...(cascadeActivationAudit ? { activationAudit: cascadeActivationAudit } : {}),
@@ -648,6 +682,7 @@ export async function addDecisionOne(
     ref: planDecisionRef(it.slug, decisionId),
     filePath: result.filePath,
     revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+    recordedProvenance,
     ...(propagatedTo.length > 0 ? { propagated_to: propagatedTo } : {}),
     ...(unknownAffects.length > 0 ? { unknown_affects: unknownAffects } : {}),
     // Only the blocked / cleared / unmeasured cases: a plan with no BAR contract keeps the
@@ -708,6 +743,7 @@ export default defineTool({
           affects: it.affects ?? args.affects,
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
+          provenance: it.provenance ?? args.provenance,
         }))
       : [
           {
@@ -719,6 +755,7 @@ export default defineTool({
             affects: args.affects,
             harness: args.harness,
             rationale: args.rationale,
+            provenance: args.provenance,
           },
         ];
     const env = await runBulk(list, (it) => addDecisionOne(it, ctx), {
