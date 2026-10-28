@@ -4522,6 +4522,9 @@ export async function main(
       // this gate is meant to catch.
       const reporter = receiptReporter;
       expectedPaths = expectedPaths.filter(reporter.shouldRecordTestRunPath);
+      // ENOENT means no receipt census was available for these expected files.
+      // Count them as missing instead of emitting the misleading `missing=0`.
+      if (receiptStartError?.code === 'ENOENT') missingPaths = [...expectedPaths];
       if (expectedPaths.length > 0 && !receiptIssue && receiptFile) {
         const contents = readFileSync(receiptFile);
         if (contents.length < receiptStartOffset) {
@@ -4547,6 +4550,7 @@ export async function main(
       }
     } catch (error) {
       receiptIssue = `could not validate Vitest ledger receipts: ${error instanceof Error ? error.message : String(error)}`;
+      if (error?.code === 'ENOENT') missingPaths = [...expectedPaths];
     }
     if (expectedPaths.length > 0 && receiptIssue) {
       console.error(

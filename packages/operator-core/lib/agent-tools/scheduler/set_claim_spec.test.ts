@@ -954,3 +954,81 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(setClaimSpec).not.toHaveBeenCalled();
   });
 });
+
+// EI-27202502401633951: the workspace's lone shared hive is a stale June test joined
+// view. The retired fallback stamped it on an operator-scope fleet write, which rebound
+// every member's session harness. The mock pins that lone-hive answer, so a regression to
+// the workspace-level guess fails these assertions deterministically.
+const resolveWorkspaceHiveScope = vi.hoisted(() => vi.fn());
+vi.mock('../coordination/federation-scope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/federation-scope')>()),
+  resolveWorkspaceHiveScope: (...args: unknown[]) => resolveWorkspaceHiveScope(...args),
+}));
+
+describe('set_claim_spec pot scope — EI-27202502401633951 (never a workspace hive guess)', () => {
+  const operatorCtx = { isSuperuser: true, uiClientId: 'su-operator', workspaceId: 'ws-test', harnessSlug: '*' };
+  const spec = { ...DEFAULT_CLAIM_SPEC, specId: 'binding-lane', revision: 4 };
+
+  function arm(incumbent: unknown) {
+    vi.clearAllMocks();
+    resolveWorkspaceHiveScope.mockResolvedValue({ kind: 'one', homeSlug: 'shared-hive-test-hive-2' });
+    getFleet.mockResolvedValue({ slug: 'frozen-burndown' });
+    getClaimSpecRecord.mockResolvedValue(incumbent);
+    previewSpecPoolEffect.mockResolvedValue({ matched: 20, pool: 20, states: ['open'] });
+    setClaimSpec.mockResolvedValue({ ok: true, errors: [], revision: 5 });
+    listFleetMembers.mockResolvedValue([]);
+    wakeClaimableAwaitersForSubscribers.mockResolvedValue(0);
+    getOrgPg.mockReturnValue({ sql: vi.fn().mockResolvedValue([]) });
+    fetchWakeability.mockResolvedValue(new Map());
+  }
+
+  it('an operator-scope fleet re-steer keeps the incumbent fleet binding', async () => {
+    arm({ source: 'fleet', fleetSlug: 'frozen-burndown', spec, revision: 4, updatedBy: 'su-leader',
+      updatedAt: '2026-10-28T05:00:00.000Z', harnessSlug: 'papercusp' });
+
+    const result = await (setClaimSpecTool as any).handler({ fleet: 'frozen-burndown', spec }, operatorCtx);
+
+    expect(result.data.ok).toBe(true);
+    expect(setClaimSpec).toHaveBeenCalledOnce();
+    expect(setClaimSpec.mock.calls[0]![0]).toMatchObject({ cupId: 'fleet:frozen-burndown', potSlug: 'papercusp' });
+  });
+
+  it('refuses a binding-less fleet write instead of stamping the workspace hive', async () => {
+    arm({ source: 'default', fleetSlug: 'frozen-burndown', spec: DEFAULT_CLAIM_SPEC, revision: null,
+      updatedBy: null, updatedAt: null });
+
+    const result = await (setClaimSpecTool as any).handler({ fleet: 'frozen-burndown', spec }, operatorCtx);
+
+    expect(result.data).toMatchObject({ ok: false, code: 'fleet_harness_binding_required' });
+    expect(result.data.errors[0]).toContain('pass `harness`');
+    expect(setClaimSpec).not.toHaveBeenCalled();
+  });
+
+  it('an explicit harness still binds a new fleet spec', async () => {
+    arm({ source: 'default', fleetSlug: 'frozen-burndown', spec: DEFAULT_CLAIM_SPEC, revision: null,
+      updatedBy: null, updatedAt: null });
+
+    const result = await (setClaimSpecTool as any).handler(
+      { fleet: 'frozen-burndown', harness: 'papercusp', spec }, operatorCtx);
+
+    expect(result.data.ok).toBe(true);
+    expect(setClaimSpec.mock.calls[0]![0]).toMatchObject({ potSlug: 'papercusp' });
+  });
+
+  it('a harness-less cup write with no incumbent binding stays local (null), never the hive', async () => {
+    arm(null);
+
+    const result = await (setClaimSpecTool as any).handler({ cupId: 'su-member', spec }, operatorCtx);
+
+    expect(result.data.ok).toBe(true);
+    expect(setClaimSpec.mock.calls[0]![0]).toMatchObject({ cupId: 'su-member', potSlug: null });
+  });
+
+  it('resolveClaimSpecWritePotSlug: caller harness, then incumbent, then null; the wildcard is never a slug', async () => {
+    const { resolveClaimSpecWritePotSlug } = await import('../../scheduler/claim-spec-workspace');
+    expect(resolveClaimSpecWritePotSlug({ resolvedHarness: 'papercusp', incumbentHarness: 'other' })).toBe('papercusp');
+    expect(resolveClaimSpecWritePotSlug({ resolvedHarness: undefined, incumbentHarness: 'papercusp' })).toBe('papercusp');
+    expect(resolveClaimSpecWritePotSlug({ resolvedHarness: '*', incumbentHarness: ' * ' })).toBeNull();
+    expect(resolveClaimSpecWritePotSlug({ resolvedHarness: undefined, incumbentHarness: null })).toBeNull();
+  });
+});

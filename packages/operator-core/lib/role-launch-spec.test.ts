@@ -2157,10 +2157,10 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
   });
 
   it('two launches in the same pot with different stacks are read with DIFFERENT tokens', async () => {
-    await buildLaunchSpec({ ...su, fleetRole: 'leader' });
+    const leader = await buildLaunchSpec({ ...su, fleetRole: 'leader' });
     await composerFromLastRender()({ text: 'G', source: '/g' });
     const leaderTokens = lastRead().tokens;
-    await buildLaunchSpec({ ...su, fleetRole: 'member', modes: ['auto'] });
+    const member = await buildLaunchSpec({ ...su, fleetRole: 'member', modes: ['auto'] });
     await composerFromLastRender()({ text: 'G', source: '/g' });
     const memberTokens = lastRead().tokens;
     expect(leaderTokens).toContain('blueprint:su.fleet-leader');
@@ -2168,6 +2168,11 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     expect(memberTokens).toContain('blueprint:su.mode-auto');
     expect(leaderTokens).not.toContain('blueprint:su.mode-auto');
     expect(leaderTokens).not.toEqual(memberTokens);
+    expect(leader.impliedStack).toContain('fleet-posture:su.fleet-leader');
+    expect(member.impliedStack).toEqual(expect.arrayContaining([
+      'fleet-posture:su.fleet-member',
+      'autonomy:su.mode-auto',
+    ]));
   });
 
   it('GENERIC profile (no repo guide) threads NO composer; POWER reads under the launch harness', async () => {

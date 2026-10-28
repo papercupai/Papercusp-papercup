@@ -154,6 +154,9 @@ async function defaultRecordAttribution(input: {
     intent: input.intent,
     workspaceId: input.workspaceId,
     goalRef: input.goalRef,
+    // R-5: a pending edit applied on grant has no hook payload, so the row carries
+    // the coord session of the agent whose lock was granted.
+    sessionId: input.owner,
   });
 }
 

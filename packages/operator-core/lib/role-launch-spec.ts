@@ -1269,6 +1269,8 @@ export interface LaunchSpec {
   promptText: string;
   /** Canonical launch-time identity binding that produced the prompt. */
   stack: string[];
+  /** Additional SU identity layers rendered into the prompt without being explicitly selected. */
+  impliedStack?: string[];
   /** Resolved prompt source path (role `.md`, or the su base playbook). */
   promptFile: string;
   mcpUrl: string;
@@ -1507,6 +1509,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   let suBaseSource: string | undefined;
   let suOverlayDir: string | undefined;
   let suBaseText: string | undefined;
+  let impliedStack: string[] | undefined;
   const modeCatalog = input.modes?.length
     ? await (await import('./agent-identities/source')).getSelectedModeCatalog()
     : undefined;
@@ -1531,7 +1534,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
         try {
           // Loaded lazily, like the flags above: the blueprint barrel pulls the loader (and its
           // harness-path resolution) which this module otherwise never needs at import time.
-          const { composeSuStackSource, isSuTilingError, normalizeStackBinding, slotSpec, SU_SOURCE_REL, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
+          const { composeSuStackSource, isSuTilingError, normalizeStackBinding, slotSpec, SU_SOURCE_REL, SU_STATIC_LAYERS, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
           const { getIdentitySource, readSelectedIdentityDocument } = await import('./agent-identities/source');
           const harnessDir = path.resolve(suBaseSource, '..', '..', '..', '..'); // <root>/blueprints/base/prompts/su.md
           // P-012 / P-021: the launch-time stack binding — the fleet posture the session
@@ -1598,6 +1601,10 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
             suBaseText = composeFrom(buildDir);
             suBaseSource = path.join(buildDir, SU_SOURCE_REL);
           }
+          impliedStack = [
+            ...SU_STATIC_LAYERS.map((layer) => `${layer.slot}:${layer.id}`),
+            ...derived.layers.map((layer) => `${layer.slot}:${layer.id}`),
+          ];
         } catch (e) {
           if (modeCatalog || requestedStack.layers.length > 0 || hostManagedWorkflow) throw e;
           console.warn(`[role-launch-spec] su slot-stack compose failed — rendering su.md unsealed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1825,6 +1832,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     cwd,
     promptText,
     stack: stackRefs,
+    impliedStack,
     promptFile: rendered.baseSource,
     mcpUrl: mcpUrlStr,
     mcpJsonContents,

@@ -483,6 +483,43 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
   return reconciled.filter((row) => !superseded.has(row));
 }
 
+/**
+ * EI-27137425108703071: the STALE rows hidden behind the visible stale rows of a clause.
+ * `activeSpecEvidence` grades only the newest row of each logical reference / attempt, so an
+ * older stale row sharing that identity is shadowed. Retracting the visible stale row (the
+ * advised repair when supersession cannot clear it) surfaces the older one, and the next
+ * evaluation names it — one stale binding per pass. This simulates that retraction to a
+ * fixpoint over the clause's raw population and returns every stale id it would surface, so
+ * one `retract` call can withdraw the whole chain. A surfaced current/unknown row stops the
+ * chain for its identity and is not returned.
+ */
+export function shadowedStaleEvidenceIds(
+  population: readonly SpecEvidenceForAdequacy[],
+  visibleStale: readonly SpecEvidenceForAdequacy[],
+): number[] {
+  const idOf = (row: SpecEvidenceForAdequacy): number | null => (Number.isSafeInteger(row.id) ? row.id! : null);
+  const seen = new Set(activeSpecEvidence(population).flatMap((row) => idOf(row) ?? []));
+  const withdrawn = new Set(visibleStale.flatMap((row) => idOf(row) ?? []));
+  const shadowed: number[] = [];
+  for (;;) {
+    const surfaced = activeSpecEvidence(population.filter((row) => {
+      const id = idOf(row);
+      return id === null || !withdrawn.has(id);
+    })).filter((row) => {
+      const id = idOf(row);
+      return id !== null && !seen.has(id);
+    });
+    if (surfaced.length === 0) return shadowed.sort((a, b) => a - b);
+    for (const row of surfaced) {
+      const id = idOf(row)!;
+      seen.add(id);
+      if (row.currentness.overall !== 'stale') continue;
+      withdrawn.add(id);
+      shadowed.push(id);
+    }
+  }
+}
+
 export type SpecEvidenceLineage = 'durable' | 'ephemeral' | 'unknown';
 
 export interface SpecEvidenceLineageAssessment {
@@ -4036,13 +4073,21 @@ export function evaluateSpecTestAdequacy(input: {
   }
 
   const freshnessStates = evidence.map((row) => row.currentness.overall);
+  // EI-27137425108703071: older stale rows shadowed behind the visible ones surface one pass at
+  // a time after each retraction; name them now so one retract clears the whole chain.
+  const shadowedStaleIds = freshnessStates.includes('stale')
+    ? shadowedStaleEvidenceIds(exactSelectorMatches, evidence.filter((row) => row.currentness.overall === 'stale'))
+    : [];
   ratings.freshness = freshnessStates.includes('stale')
     ? {
         rating: 'fail',
         evidence: evidenceWithBindings(
           `Stale binding(s) invalidate freshness for ${clauseIdentity(clause)}.`,
           evidence.filter((row) => row.currentness.overall === 'stale'),
-        ),
+        ) + (shadowedStaleIds.length > 0
+          ? ` ${shadowedStaleIds.length} older stale binding(s) are shadowed behind these and would surface once ` +
+            `they are retracted: ids ${JSON.stringify(shadowedStaleIds)} (included in draggingBindingIds.freshness).`
+          : ''),
         // P-019: a stale row drags this criterion even when a current sibling proves the clause.
         // EI-25215634977268694: name supersession only when it would actually clear the rows.
         suggestion: freshnessDragSuggestion(evidence),
@@ -4276,9 +4321,11 @@ export function evaluateSpecTestAdequacy(input: {
   for (const criterion of ADEQUACY_CRITERIA) {
     if (!wouldBlock.includes(criterion)) continue;
     const ids = [
-      ...new Set(
-        (draggingRows[criterion] ?? []).flatMap((row) => (Number.isSafeInteger(row.id) ? [row.id!] : [])),
-      ),
+      ...new Set([
+        ...(draggingRows[criterion] ?? []).flatMap((row) => (Number.isSafeInteger(row.id) ? [row.id!] : [])),
+        // EI-27137425108703071: a freshness retraction must withdraw the shadowed stale chain too.
+        ...(criterion === 'freshness' ? shadowedStaleIds : []),
+      ]),
     ].sort((a, b) => a - b);
     if (ids.length > 0) draggingBindingIds[criterion] = ids;
   }

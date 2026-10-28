@@ -19,6 +19,10 @@ import {
   type FileIo,
 } from '../apply-on-grant';
 import type { GrantedPendingEdit } from '../su-lock-store';
+import { recordEditAttribution } from '../../../edit-attribution';
+
+// Only the DEFAULT attribution recorder reaches this; every other case injects its own.
+vi.mock('../../../edit-attribution', () => ({ recordEditAttribution: vi.fn(async () => {}) }));
 
 const memIo = (files: Record<string, string>): FileIo & { files: Record<string, string> } => ({
   files,
@@ -135,6 +139,15 @@ describe('applyPendingEditOnGrant (orchestration)', () => {
       lockId: 'lock-1',
     });
     expect(calls.setOutcome).toHaveBeenCalledWith('t-1', 'applied');
+  });
+
+  it('R-5: the default recorder stamps the granted agent’s coord session on the ledger row', async () => {
+    const { deps } = spyDeps();
+    const { recordAttribution: _injected, ...withDefaultRecorder } = deps;
+    await applyPendingEditOnGrant('t-1', 'ws', withDefaultRecorder);
+    expect(recordEditAttribution).toHaveBeenCalledWith(
+      expect.objectContaining({ files: ['boot.ts'], agentId: 'su-queuer', sessionId: 'su-queuer' }),
+    );
   });
 
   it('mismatch-fallback: old_string no longer matches → fallback, NO apply side effects', async () => {

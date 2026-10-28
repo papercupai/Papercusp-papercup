@@ -2934,6 +2934,7 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
 
     expect(result.code).toBe(2);
     expect(result.errors).toContain('TEST_FILE_LEDGER_RECEIPT_MISSING');
+    expect(result.errors).toContain('missing=1');
     expect(result.errors).toContain('packages/operator-core/lib/__tests__/test-file-router.test.ts');
     expect(result.output).not.toContain('TEST_FILE_RESULT');
   });

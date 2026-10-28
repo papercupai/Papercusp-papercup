@@ -198,4 +198,77 @@ describe('resolveSharedHiveDisambiguation (WI-5211 / EI-16673)', () => {
       error: expect.stringMatching(/NO shared hive/),
     });
   });
+
+  it('an explicit hive naming a DORMANT joined view is honoured; implicit is refused and names it', () => {
+    const dormantOnly: WorkspaceHiveScope = { kind: 'none', dormant: ['hive-dead'] };
+    expect(resolveSharedHiveDisambiguation(dormantOnly, 'hive-dead', null)).toEqual({
+      ok: true,
+      homeSlug: 'hive-dead',
+      candidates: [],
+    });
+    const implicit = resolveSharedHiveDisambiguation(dormantOnly, undefined, null);
+    expect(implicit.ok).toBe(false);
+    expect(implicit.ok === false && implicit.error).toMatch(/dormant joined views.*hive-dead/);
+  });
+});
+
+// WI-6554700010030876: a dead joined view (shared-hive-test-hive-2: 120k outbound coord
+// rows, zero ever received) was the lone implicit default and absorbed every unscoped send.
+describe('resolveWorkspaceHiveScope — dormant joined views', () => {
+  const OLD = Date.now() - 60 * 24 * 60 * 60 * 1000; // pot row 60 days old
+  const joinedDeps = (over?: Partial<FederationScopeDeps>) =>
+    makeDeps({
+      listHives: vi.fn(async () => [{ homeSlug: 'hive-dead', createdAt: OLD }]),
+      loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'hive-dead', remote_hive: true }] })),
+      getOwnedHiveMeta: vi.fn(async () => null),
+      ...over,
+    });
+
+  it('an old joined view with no remote activity in the window is dormant, never the default', async () => {
+    const probe = vi.fn(async () => false);
+    const r = await resolveWorkspaceHiveScope('ws1', { deps: joinedDeps({ hasRecentRemoteActivity: probe }), fresh: true });
+    expect(r).toEqual({ kind: 'none', dormant: ['hive-dead'] });
+    expect(probe).toHaveBeenCalledWith('hive-dead', 'ws1', expect.any(Number));
+  });
+
+  it('a dormant view does not shadow a live owned-published hive (it stays the lone default)', async () => {
+    const deps = joinedDeps({
+      listHives: vi.fn(async () => [{ homeSlug: 'hive-dead', createdAt: OLD }, { homeSlug: 'hive-live' }]),
+      getOwnedHiveMeta: vi.fn(async () => ({ visibility: 'public' })),
+      hasRecentRemoteActivity: vi.fn(async () => false),
+    });
+    const r = await resolveWorkspaceHiveScope('ws1', { deps, fresh: true });
+    expect(r).toEqual({ kind: 'one', homeSlug: 'hive-live', dormant: ['hive-dead'] });
+  });
+
+  it('an old joined view that HAS heard from a peer stays shared', async () => {
+    const r = await resolveWorkspaceHiveScope('ws1', {
+      deps: joinedDeps({ hasRecentRemoteActivity: vi.fn(async () => true) }),
+      fresh: true,
+    });
+    expect(r).toEqual({ kind: 'one', homeSlug: 'hive-dead' });
+  });
+
+  it('a FRESH join (pot row inside the window) stays shared without probing', async () => {
+    const probe = vi.fn(async () => false);
+    const r = await resolveWorkspaceHiveScope('ws1', {
+      deps: joinedDeps({
+        listHives: vi.fn(async () => [{ homeSlug: 'hive-dead', createdAt: Date.now() - 1000 }]),
+        hasRecentRemoteActivity: probe,
+      }),
+      fresh: true,
+    });
+    expect(r).toEqual({ kind: 'one', homeSlug: 'hive-dead' });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('a probe ERROR fails soft to the pre-guard behaviour (counted as shared)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const r = await resolveWorkspaceHiveScope('ws1', {
+      deps: joinedDeps({ hasRecentRemoteActivity: vi.fn(async () => { throw new Error('pg down'); }) }),
+      fresh: true,
+    });
+    expect(r).toEqual({ kind: 'one', homeSlug: 'hive-dead' });
+    warn.mockRestore();
+  });
 });

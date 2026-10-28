@@ -3086,7 +3086,7 @@ describe('release:repair-queue', () => {
         refusedWith([T1]);
         mocks.cohortRoute.mockReturnValue({ ok: true, routed: [{ path: T1, patchCommit: C1, parent: '2'.repeat(40), preFixBlob: 'b'.repeat(40) }], unrouted: [] });
         const result = body(await tool.handler(wholeBlobArgs as never, ctx));
-        expect(result).toMatchObject({ ok: false, refused: true, reason: 'admission-incomplete', mode: 'whole-blob' });
+        expect(result).toMatchObject({ ok: false, refused: true, verdict: 'refused', reason: 'admission-incomplete' });
         expect(mocks.cohortRoute).toHaveBeenCalledTimes(1);
         expect(mocks.cohortRoute.mock.calls[0]![0]).toEqual({ root: '/repo', repairHead: queue.repairHead, integrationRef: 'staging', paths: [T1] });
         const routing = routingOf(result);
@@ -3239,6 +3239,23 @@ describe('release:repair-queue', () => {
         expect(body(await tool.handler({ ...multiBase, sources: overwrite } as never, ctx)))
           .toMatchObject({ ok: false, refused: true, reason: 'invalid-sources' });
         expect(mocks.multiSource).not.toHaveBeenCalled();
+      });
+
+      it('a confirmed mixed-sources admit starts exactly ONE R6 pre-check for the combined tree and publishes nothing first', async () => {
+        mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, admissionPrecheck: undefined } });
+        mocks.startPrecheckWorker.mockResolvedValue({ taskId: 'multi-precheck', confined: true });
+        mocks.multiSource.mockReturnValue({
+          ok: true, sourceCommit: HX_SOURCE, tree: 'a'.repeat(40), paths: ['lib/a.ts', 'lib/red.test.ts'],
+          applied, patches: [patch], cohortSources: [{ sourceCommit: pinned, paths: ['lib/a.ts'] }], integrationTip: pinned,
+        });
+        mocks.admit.mockReturnValue(admissionOf(true));
+        const result = body(await tool.handler({ ...multiBase, sources, confirm: true } as never, ctx));
+        expect(result).toMatchObject({ ok: true, admitted: false, verdict: 'precheck-running' });
+        expect(mocks.multiSource).toHaveBeenCalledTimes(1);
+        expect(mocks.population).toHaveBeenCalledTimes(1);
+        expect(mocks.startPrecheckWorker).toHaveBeenCalledOnce();
+        expect(mocks.audit).not.toHaveBeenCalled();
+        expect((mocks.write.mock.calls[0]![1] as FrozenCandidateRepairQueue).admissions ?? []).toEqual([]);
       });
     });
 

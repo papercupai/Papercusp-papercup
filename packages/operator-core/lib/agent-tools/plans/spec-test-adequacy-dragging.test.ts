@@ -272,6 +272,42 @@ describe('any-drags adequacy names the dragging binding (P-019)', () => {
     expect(RETRACT_DRAGGING_SUGGESTION).toContain('retract:[{ bindingId, reason }]');
   });
 
+  // EI-27137425108703071: measured on get-feedback-reliability-usefulness-adoption-2026-10-03
+  // (262 live rows over 165 logical keys). Only the newest row of a logical reference is graded,
+  // so retracting the named stale row surfaced an older stale row with the same evidenceRef and
+  // the next pass named it — one stale binding per pass. The verdict must name the whole chain.
+  it('names stale rows shadowed behind a stale logical reference so one retract clears the chain', () => {
+    const unbacked = { evidenceKind: 'operational' as const, testRunId: null, testRunProvenance: undefined };
+    const shared = (id: number, currentness = STALE) =>
+      row(id, { ...unbacked, evidenceRef: 'operational:shared', currentness });
+    const freshOps = row(39, { ...unbacked, evidenceRef: 'operational:39' });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [shared(31), shared(32), shared(33), freshOps],
+      classRef: 'plan-class-feature-ship',
+      current: [],
+    });
+    expect(result.ratings.freshness.rating).toBe('fail');
+    expect(result.draggingBindingIds.freshness).toEqual([31, 32, 33]);
+    expect(result.ratings.freshness.evidence).toContain('ids [31,32]');
+    expect(result.ratings.freshness.suggestion).toBe(RETRACT_DRAGGING_SUGGESTION);
+  });
+
+  it('stops the shadowed chain at a current row, which would surface and carry its reference', () => {
+    const unbacked = { evidenceKind: 'operational' as const, testRunId: null, testRunProvenance: undefined };
+    const shared = (id: number, currentness = STALE) =>
+      row(id, { ...unbacked, evidenceRef: 'operational:shared', currentness });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [shared(41), shared(42, CURRENT), shared(43)],
+      classRef: 'plan-class-feature-ship',
+      current: [],
+    });
+    expect(result.ratings.freshness.rating).toBe('fail');
+    expect(result.draggingBindingIds.freshness).toEqual([43]);
+    expect(result.ratings.freshness.evidence).not.toContain('shadowed');
+  });
+
   it('names retract when the only eligible current sibling is a different evidenceKind', () => {
     // supersedeAtRevision retracts only rows of the superseding binding's own kind, so a
     // ledger-backed current `test` row cannot clear a stale `operational` row.

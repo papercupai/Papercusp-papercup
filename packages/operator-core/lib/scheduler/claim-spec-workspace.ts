@@ -26,3 +26,35 @@ export function resolveClaimSpecPotSlug(
   const ambient = ambientHarness.trim();
   return ambient && ambient !== '*' ? ambient : undefined;
 }
+
+/**
+ * EI-27202502401633951: the pot scope a claim-spec WRITE stamps on its row.
+ *
+ * A stored spec's `harness_slug` is not only its federation scope. The MCP
+ * host's harness inheritance (`readFleetHarnessBinding` in
+ * agent-tools/_harness-scope.ts) reads it as the SESSION harness binding of
+ * every member that inherits the row: a fleet sentinel binds the whole fleet,
+ * and a cup row binds that cup. So the scope must name a harness the target is
+ * already bound to, never a workspace-level guess:
+ *
+ *   1. the explicit/ambient harness the caller resolved (`resolveClaimSpecPotSlug`);
+ *   2. else the incumbent EFFECTIVE binding (the target's own row, or for a cup
+ *      the fleet row it inherits), so a harness-less re-steer preserves it;
+ *   3. else null. The caller decides whether a binding-less row is acceptable
+ *      (a cup row: yes, it contributes no binding; a fleet sentinel: no, it
+ *      would fail every member's harness resolution closed).
+ *
+ * The retired fallback was the workspace's lone shared hive
+ * (`resolveWorkspaceHiveScope`). On 2026-10-28 an operator-scope write took
+ * that path and rebound six frozen-burndown members to a stale June test
+ * joined view, `shared-hive-test-hive-2`.
+ */
+export function resolveClaimSpecWritePotSlug(args: {
+  resolvedHarness: string | undefined;
+  incumbentHarness: string | null | undefined;
+}): string | null {
+  const resolved = args.resolvedHarness?.trim();
+  if (resolved && resolved !== '*') return resolved;
+  const incumbent = args.incumbentHarness?.trim();
+  return incumbent && incumbent !== '*' ? incumbent : null;
+}

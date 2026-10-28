@@ -92,6 +92,16 @@ function normalizeReleasePaths(paths: string[] | undefined): string[] | undefine
  * `paths` would then be a plain path release that drops the explicit hold.
  * Without `paths` an older operator refuses the request and releases nothing.
  */
+/**
+ * R-5 (change-provenance-and-admission-throughput-2026-10-27): the edit ledger's
+ * session id is the client session id the native hook sent, else the coord
+ * session of the agent releasing the lock. An older hook that sends no session
+ * id still yields a row that names whose session made the edit.
+ */
+function editSessionId(proof: NativeEditProof | undefined, ownerId: string): string {
+  return proof?.sessionId ?? ownerId;
+}
+
 async function attestRetainedNativeEdit(input: {
   ownerId: string;
   ownerLabel: string | undefined;
@@ -143,7 +153,7 @@ async function attestRetainedNativeEdit(input: {
     intent: `PostToolUse:${proof.source}:${tools}:retained`,
     workspaceId: input.identity.workspaceId ?? undefined,
     contributor: input.identity.userId ?? undefined,
-    sessionId: proof.sessionId,
+    sessionId: editSessionId(proof, input.ownerId),
   };
   try {
     // P-014: a restricted owner's row is the git-sync hold, written strictly.
@@ -429,7 +439,7 @@ export default defineTool({
             intent: `PostToolUse:${proof.source}:${proof.tool ?? proof.tools?.join(',') ?? 'native-edit'}`,
             workspaceId: identity.workspaceId ?? undefined,
             contributor: identity.userId ?? undefined,
-            sessionId: proof.sessionId,
+            sessionId: editSessionId(proof, ownerId),
           });
         }
         // P-025: push the release to the plan lock banner. Uses the paths the
@@ -455,7 +465,7 @@ export default defineTool({
           intent: `PostToolUse:${preReleaseProof.source}:${preReleaseProof.tool ?? preReleaseProof.tools?.join(',') ?? 'native-edit'}`,
           workspaceId: identity.workspaceId ?? undefined,
           contributor: identity.userId ?? undefined,
-          sessionId: preReleaseProof.sessionId,
+          sessionId: editSessionId(preReleaseProof, ownerId),
         });
       }
       try {

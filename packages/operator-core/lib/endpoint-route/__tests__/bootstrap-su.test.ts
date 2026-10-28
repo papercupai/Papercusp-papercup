@@ -796,6 +796,22 @@ describe('bootstrap-su', () => {
     expect(setModeMock.mock.calls.map((call) => (call[0] as { modeId: string }).modeId)).toEqual(['auto', mode]);
   });
 
+  it('passes the rendered mode identity refs into the immutable launch artifact', async () => {
+    const originalBuild = buildLaunchSpecMock.getMockImplementation()!;
+    const impliedStack = ['autonomy:su.mode-auto', 'objective:su.mode-drain'];
+    buildLaunchSpecMock.mockImplementationOnce(async (input) => ({
+      ...await originalBuild(input),
+      impliedStack,
+    }));
+
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', mode: 'drain' });
+
+    expect(res.status).toBe(200);
+    expect(compileLaunchSpecificationArtifactMock).toHaveBeenCalledWith(
+      expect.objectContaining({ impliedStack }),
+    );
+  });
+
   it('refuses a verifier launch when its durable mode cannot be activated', async () => {
     setModeMock.mockRejectedValueOnce(new Error('mode store unavailable'));
     const res = await callPost({ agent: 'claude', harness_slug: 'papercup', mode: 'test' });

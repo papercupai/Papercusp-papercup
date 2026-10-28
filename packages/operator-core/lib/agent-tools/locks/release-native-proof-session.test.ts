@@ -51,6 +51,13 @@ const call = (args: Record<string, unknown>) => tool.handler(args as never, {} a
 const LOCK = '66666666-6666-4666-8666-666666666666';
 const proof = { success: true, source: 'claude', tool: 'Edit', paths: ['a.ts'], sessionId: 'native-sess-1' } as const;
 
+/** One live hold on a.ts by the caller, as the retained-hold check reads it. */
+function mockHeldA(): void {
+  vi.mocked(readQueue).mockResolvedValueOnce({
+    active_locks: [{ owner: 'me', coordination_domain: 'dom', path: 'a.ts' }],
+  } as never);
+}
+
 beforeEach(() => {
   vi.mocked(recordEditAttribution).mockClear();
   vi.mocked(recordEditAttributionStrict).mockClear();
@@ -77,17 +84,27 @@ describe('native_edit_proof.sessionId reaches the edit ledger (R-5)', () => {
   });
 
   it('stamps the session on a retained (attest-only) hold', async () => {
-    vi.mocked(readQueue).mockResolvedValueOnce({
-      active_locks: [{ owner: 'me', coordination_domain: 'dom', path: 'a.ts' }],
-    } as never);
+    mockHeldA();
     await call({ retain: true, native_edit_proof: proof });
     expect(recordEditAttributionStrict).toHaveBeenCalledWith(expect.objectContaining({ files: ['a.ts'], sessionId: 'native-sess-1' }));
   });
 
-  it('still attributes a proof from a hook that sends no session id', async () => {
+  it('falls back to the releasing agent’s coord session when the hook sends no session id', async () => {
     mockResolvedTyped(routeM, { value: { ok: true, released: ['a.ts'] }, via: 'local-authority' });
     const { sessionId: _omit, ...legacy } = proof;
     await call({ lock_id: LOCK, native_edit_proof: legacy });
-    expect(recordEditAttribution).toHaveBeenCalledWith(expect.objectContaining({ files: ['a.ts'], sessionId: undefined }));
+    expect(recordEditAttribution).toHaveBeenCalledWith(expect.objectContaining({ files: ['a.ts'], sessionId: 'me' }));
+  });
+
+  it('falls back to the coord session on a restricted owner’s pre-release row and a retained hold', async () => {
+    const { sessionId: _omit, ...legacy } = proof;
+    vi.mocked(recordRestrictedEditBeforeRelease).mockResolvedValueOnce(true);
+    mockResolvedTyped(routeM, { value: { ok: true, released: ['a.ts'] }, via: 'local-authority' });
+    await call({ lock_id: LOCK, paths: ['a.ts'], native_edit_proof: legacy });
+    expect(recordRestrictedEditBeforeRelease).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'me' }));
+
+    mockHeldA();
+    await call({ retain: true, native_edit_proof: legacy });
+    expect(recordEditAttributionStrict).toHaveBeenCalledWith(expect.objectContaining({ files: ['a.ts'], sessionId: 'me' }));
   });
 });

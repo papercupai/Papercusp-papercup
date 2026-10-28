@@ -3042,8 +3042,9 @@ export const bootstrapSu = defineTool({
         harnessSlug,
         role: suRoleRaw ?? 'su',
         stack: spec.stack,
-        // WI-10004747: the persona always composes the su static layers; record them.
-        impliedStack: 'su-static',
+        // Keep the artifact's slotted source closure aligned with the identities
+        // buildLaunchSpec rendered into this prompt, including fleet posture and modes.
+        impliedStack: spec.impliedStack ?? 'su-static',
         expectedModelDefault: identityModelDefault,
         compositionRootId: body.stack?.length === 1 && body.stack[0]?.startsWith('composition:')
           ? body.stack[0].slice('composition:'.length) : null,

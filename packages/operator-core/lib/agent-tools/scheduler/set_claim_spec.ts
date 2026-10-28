@@ -18,7 +18,7 @@ import { resolveClaimSpecWorkspace, setClaimSpec } from '../../scheduler/claim-s
 import type { ClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 export { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
-import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
+import { resolveClaimSpecWritePotSlug } from '../../scheduler/claim-spec-workspace';
 import { fetchWakeability } from '../coordination/presence-wakeability';
 import { claimSpecSchema, claimSpecReferencesField, positiveIdCohortIds, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
 import { claimSpecFilterToClaimablePayloadFilter } from '../../scheduler/claim-spec-payload-filter';
@@ -687,6 +687,33 @@ export default defineTool({
       goalFenceWarning = `positive goal-fence guard could not inspect the incumbent spec (write proceeds fail-open): ${detail}`;
     }
 
+    // EI-27202502401633951: the row's harness_slug is also the SESSION harness
+    // binding of every member that inherits it, so the pot scope is the caller's
+    // harness, else the incumbent effective binding — never a workspace-level
+    // guess (see resolveClaimSpecWritePotSlug). A fleet sentinel with no binding
+    // would fail every member's harness resolution closed, so refuse it here,
+    // loudly, instead of storing it.
+    const potSlug = resolveClaimSpecWritePotSlug({
+      resolvedHarness,
+      incumbentHarness: incumbentRecord?.harnessSlug,
+    });
+    if (args.fleet && !potSlug) {
+      const fleetSlug = args.fleet.trim();
+      return {
+        data: {
+          ok: false,
+          code: 'fleet_harness_binding_required',
+          errors: [
+            `fleet \`${fleetSlug}\` has no harness binding and this call names none: pass \`harness\` ` +
+              `(the harness its members work in, e.g. harness:'papercusp'). A fleet claim spec's ` +
+              `harness_slug binds every member's session harness, so it is never inferred from the ` +
+              `workspace (EI-27202502401633951).`,
+          ],
+          admissibilityPreview: admission.preview,
+        },
+      };
+    }
+
     // WI-5212: write-time POOL-EFFECT preview + collapse guard for DYNAMIC specs (the
     // fixed-cohort path already has WI-4429's admission check above). Both 2026-07-16/17
     // fleet starvations were specs that VALIDATED fine and matched (nearly) nothing —
@@ -766,22 +793,10 @@ export default defineTool({
       }
     }
 
-    // P-016 (cross-machine-coord-parity): federate the spec when the queen is in a
-    // single shared-hive workspace, so a bee pulling on ANOTHER machine sees it.
-    // An explicit harness wins (including when tools:invoke is dispatched from an
-    // unscoped operator context); else inherit the concrete ctx harness; else the
-    // workspace's one shared hive; else null (operator-scope / local-only — today's
-    // behavior). Best-effort:
-    // a scope-resolve failure degrades to local (never blocks the spec write).
-    let potSlug: string | null = resolvedHarness ?? null;
-    try {
-      if (!potSlug && ident.workspaceId && ident.workspaceId !== '*') {
-        const scope = await resolveWorkspaceHiveScope(ident.workspaceId);
-        if (scope.kind === 'one') potSlug = scope.homeSlug;
-      }
-    } catch {
-      potSlug = null;
-    }
+    // P-016 (cross-machine-coord-parity): a hive-scoped potSlug (resolved above)
+    // federates the spec, so a bee pulling on ANOTHER machine sees it. The scope
+    // comes from the caller's harness or the incumbent binding only; the old
+    // "workspace's one shared hive" fallback is retired (EI-27202502401633951).
     // WI-1564 (LIVE-1 D5): thread the caller's workspace — omitting it landed
     // the row under DEFAULT_COORD_WORKSPACE 'default', whose (workspace, hive)
     // outbox handle no drain serves, so a hive-scoped spec NEVER federated.
