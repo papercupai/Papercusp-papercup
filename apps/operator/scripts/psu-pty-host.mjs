@@ -45,6 +45,7 @@ import { constants as osConstants, homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { Worker } from 'node:worker_threads';
 // Keep the interactive bootstrap independent of operator packages while using
 // the same dependency-free signature as the governed turn taxonomy.
 import { makeModelCapacityDetector, modelCapacityLineMatch, modelCapacityRetryAfterMs } from '../../../libs/papercusp-shared/src/agent/model-capacity.mjs';
@@ -3774,6 +3775,134 @@ export function collectCodexStartingStuckSnapshot({
   } catch (error) {
     return { rootPid: Number.isInteger(rootPid) ? rootPid : null, error: hostErrorEvidence(error) };
   }
+}
+
+export const CODEX_STARTING_STUCK_SNAPSHOT_TIMEOUT_MS = 10_000;
+
+/** Run the synchronous proc/log snapshot away from the host's verdict event loop. */
+export function startCodexStartingStuckSnapshot({
+  ownerId,
+  label,
+  reason,
+  rootPid,
+  codexHome,
+  startupOutput,
+  screenDims,
+  dir = PSU_PTY_DIR,
+  timeoutMs = CODEX_STARTING_STUCK_SNAPSHOT_TIMEOUT_MS,
+  workerFactory = (url, options) => new Worker(url, options),
+} = {}) {
+  const startedAt = Date.now();
+  let worker;
+  let timeout;
+  let settled = false;
+  const record = (fields) => {
+    if (settled) return;
+    settled = true;
+    if (timeout) clearTimeout(timeout);
+    appendHostEvent(ownerId, 'codex-starting-stuck-snapshot', {
+      label,
+      reason,
+      ...fields,
+      snapshotElapsedMs: Math.max(0, Date.now() - startedAt),
+    }, dir);
+    try {
+      const termination = worker?.terminate?.();
+      termination?.catch?.(() => {});
+    } catch {
+      /* a completed or wedged diagnostic worker must not affect the host */
+    }
+  };
+
+  try {
+    worker = workerFactory(new URL('./psu-pty-host-starting-snapshot-worker.mjs', import.meta.url), {
+      workerData: { rootPid, codexHome, startupOutput, screenDims },
+    });
+    if (!worker || typeof worker.once !== 'function') throw new TypeError('snapshot worker has no event API');
+    worker.once('message', (result) => {
+      if (!result || typeof result !== 'object' || !result.snapshot || typeof result.snapshot !== 'object') {
+        record({ snapshotStatus: 'invalid-result' });
+        return;
+      }
+      record({
+        ...result.snapshot,
+        snapshotStatus: 'complete',
+        ...(Number.isFinite(result.snapshotWallMs) ? { snapshotWorkerWallMs: result.snapshotWallMs } : {}),
+        ...(Number.isFinite(result.snapshotCpuMs) ? { snapshotWorkerCpuMs: result.snapshotCpuMs } : {}),
+      });
+    });
+    worker.once('error', (error) => record({
+      snapshotStatus: 'worker-error',
+      snapshotError: hostErrorEvidence(error),
+    }));
+    worker.once('exit', (code) => {
+      if (!settled) record({ snapshotStatus: 'worker-exit', workerExitCode: code });
+    });
+    worker.unref?.();
+    const boundedTimeoutMs = Number.isFinite(timeoutMs)
+      ? Math.max(1, Math.min(timeoutMs, 30_000))
+      : CODEX_STARTING_STUCK_SNAPSHOT_TIMEOUT_MS;
+    timeout = setTimeout(() => record({ snapshotStatus: 'timeout' }), boundedTimeoutMs);
+    timeout.unref?.();
+    return true;
+  } catch (error) {
+    record({
+      snapshotStatus: worker ? 'worker-setup-failed' : 'worker-start-failed',
+      snapshotError: hostErrorEvidence(error),
+    });
+    return false;
+  }
+}
+
+/** Record a terminal kickoff decision before scheduling its best-effort snapshot. */
+export function recordStartupTurnDrop({
+  ownerId,
+  label,
+  dropReason,
+  attempts,
+  budgetMs,
+  elapsedMs,
+  earlyStuck = false,
+  snapshotArgs = null,
+  dir = PSU_PTY_DIR,
+  onDrop = () => {},
+  writeDroppedLine = () => {},
+  snapshotScheduler = startCodexStartingStuckSnapshot,
+} = {}) {
+  appendHostEvent(ownerId, 'startup-turn-dropped', {
+    label,
+    reason: dropReason,
+    attempts,
+    budgetMs,
+    elapsedMs,
+    ...(earlyStuck ? { earlyStuck: true } : {}),
+    ...(snapshotArgs ? { snapshotScheduled: true } : {}),
+  }, dir);
+  if (snapshotArgs) {
+    try {
+      snapshotScheduler({ ownerId, label, reason: dropReason, ...snapshotArgs, dir });
+    } catch (error) {
+      appendHostEvent(ownerId, 'codex-starting-stuck-snapshot', {
+        label,
+        reason: dropReason,
+        snapshotStatus: 'schedule-failed',
+        snapshotError: hostErrorEvidence(error),
+      }, dir);
+    }
+  }
+  try {
+    onDrop();
+  } catch {
+    /* the terminal verdict must survive caller cleanup */
+  }
+  if (!earlyStuck) {
+    try {
+      writeDroppedLine();
+    } catch {
+      /* a terminal diagnostic must never break the host */
+    }
+  }
+  return { delivered: false, reason: dropReason, attempts, ...(earlyStuck ? { earlyStuck: true } : {}) };
 }
 
 /** Small, non-secret error identity for durable host events. Exception messages can
@@ -13182,27 +13311,6 @@ export function hostThroughPty(o) {
       /* an unexpected inject error still falls through to the drop trace */
     }
     if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
-    if (dropReason === 'codex-startup-still-starting' || dropReason === 'codex-backend-frame-not-observed') {
-      // WI-10004943 (b), WI-10007305: capture what the stuck child was waiting on while it is
-      // still alive. The respawn this drop leads to starts a fresh codex-tui.log
-      // in the same CODEX_HOME, so this is the last chance to see its log.
-      try {
-        const snapshot = collectCodexStartingStuckSnapshot({
-          rootPid: child?.pid,
-          codexHome: env.CODEX_HOME,
-          startupOutput: childStartupOutput,
-          screenDims: childScreenDims(),
-        });
-        appendHostEvent(ownerId, 'codex-starting-stuck-snapshot', { label, reason: dropReason, ...snapshot });
-      } catch {
-        /* diagnostic only */
-      }
-    }
-    try {
-      onDrop();
-    } catch {
-      /* the drop trace must never break the session */
-    }
     // WI-10004943: an early `Starting` drop is armed only for a caller that
     // replaces the child and retries (the carry's fresh epoch, the launch
     // kickoff's fresh child), so it is not terminal. It must not print the
@@ -13210,16 +13318,33 @@ export function hostThroughPty(o) {
     // with no first-turn progress as a dead judge, and would retire one whose
     // retry is about to land. A caller whose retry cannot run prints it.
     const earlyStuck = codexStartingStuckReported && dropReason === 'codex-startup-still-starting';
-    appendHostEvent(ownerId, 'startup-turn-dropped', {
+    let snapshotArgs = null;
+    if (dropReason === 'codex-startup-still-starting' || dropReason === 'codex-backend-frame-not-observed') {
+      // Keep the last-chance child evidence, but never collect it on the host's
+      // deadline/verdict path: proc and log reads are synchronous and can stall.
+      try {
+        snapshotArgs = {
+          rootPid: child?.pid,
+          codexHome: env.CODEX_HOME,
+          startupOutput: childStartupOutput,
+          screenDims: childScreenDims(),
+        };
+      } catch {
+        /* the terminal verdict does not depend on diagnostic inputs */
+      }
+    }
+    return recordStartupTurnDrop({
+      ownerId,
       label,
-      reason: dropReason,
+      dropReason,
       attempts,
       budgetMs,
       elapsedMs: Math.max(0, Date.now() - injectStartedAt),
-      ...(earlyStuck ? { earlyStuck: true } : {}),
+      earlyStuck,
+      snapshotArgs,
+      onDrop,
+      writeDroppedLine: () => writeStartupTurnDroppedLine({ label, dropReason, budgetMs, attempts }),
     });
-    if (!earlyStuck) writeStartupTurnDroppedLine({ label, dropReason, budgetMs, attempts });
-    return { delivered: false, reason: dropReason, attempts, ...(earlyStuck ? { earlyStuck: true } : {}) };
   };
 
   // WI-10004926: the ONE writer of the parsed DROPPED receipt, pinned to the

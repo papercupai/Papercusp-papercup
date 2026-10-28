@@ -659,6 +659,63 @@ describe('derived-reads producers: learning.soakReport demand-driven refresh (EI
   });
 });
 
+// ── learning.dreamDecisionJournal (WI-6554700010030749) ───────────────────────────────
+//
+// The Dream observation view's journalctl scan moved here off the sync read
+// path. Its only reader is the live observation instrument, so it must stay
+// demand-driven (zero reads, zero scans) and keep a short TTL so a window that
+// ends after the last scan triggers a fresh one on the next read.
+describe('derived-reads producers: learning.dreamDecisionJournal (WI-6554700010030749)', () => {
+  afterEach(() => {
+    vi.doUnmock('../journal-read');
+  });
+
+  it('is demand-driven, workspace-scoped and short-lived', async () => {
+    vi.resetModules();
+    const registry = await import('./registry');
+    registry.__clearDerivedReadRegistryForTest();
+    await import('./producers');
+    const producer = registry.listDerivedReadProducers().find((p) => p.key === 'learning.dreamDecisionJournal');
+
+    expect(producer, 'learning.dreamDecisionJournal producer must be registered').toBeDefined();
+    expect(producer!.excludeFromDefaultSweep).toBe(true);
+    expect(producer!.refreshOnRead).toBe(true);
+    expect(producer!.scope).toBe('workspace');
+    expect(producer!.ttlMs).toBeLessThanOrEqual(60_000);
+  });
+
+  it('scans each unit once for BOTH decision prefixes and records its coverage', async () => {
+    vi.resetModules();
+    const readJournal = vi.fn(async (opts: { units: string[]; since: string; until: string; grep: string; limit: number }) => ({
+      entries: [], matched: 0, collapsed: 0, truncated: false,
+      window: { since: opts.since, until: opts.until, resolved: null }, units: opts.units,
+      journalAvailable: true, backend: 'systemd' as const, journalError: null, unitsUnknown: [],
+      windowOutsideJournal: null, command: 'journalctl',
+    }));
+    vi.doMock('../journal-read', () => ({ readJournal }));
+    const registry = await import('./registry');
+    registry.__clearDerivedReadRegistryForTest();
+    await import('./producers');
+    const { DREAM_ACTION_DECISION_PREFIX } = await import('../dream/dream-config');
+    const { GYM_ADMISSION_DECISION_PREFIX } = await import('../gym/autoloop-tick');
+    const { dreamDecisionJournalUnits } = await import('../dream/dream-decision-journal');
+    const producer = registry.listDerivedReadProducers().find((p) => p.key === 'learning.dreamDecisionJournal')!;
+
+    const before = Date.now();
+    const rows = (await producer.compute({ workspaceId: 'ws-test', harnessSlug: '__global__' })) as Array<{
+      unit: string; coveredSince: string; coveredUntil: string;
+    }>;
+
+    expect(readJournal).toHaveBeenCalledTimes(dreamDecisionJournalUnits().length);
+    const call = readJournal.mock.calls[0][0];
+    expect(call.grep).toContain(DREAM_ACTION_DECISION_PREFIX);
+    expect(call.grep).toContain(GYM_ADMISSION_DECISION_PREFIX);
+    expect(rows.map((row) => row.unit)).toEqual(dreamDecisionJournalUnits());
+    expect(Date.parse(rows[0].coveredUntil)).toBeLessThan(Date.parse(new Date().toISOString()) + 1);
+    expect(Date.parse(rows[0].coveredSince)).toBeLessThan(before);
+  });
+});
+
 // ── syncReads.audit must stay OUT of the shared sweep (EI-19457924854150358) ───
 //
 // registry.test.ts already proves the `excludeFromDefaultSweep` MECHANISM works,
@@ -698,13 +755,17 @@ describe('derived-reads producers: syncReads.audit (EI-19457924854150358)', () =
 
     // And the exclusion must remain the rare exception, not the norm.
     const excluded = all.filter((p) => p.excludeFromDefaultSweep);
-    expect(excluded.map((p) => p.key)).toEqual(['plans.lint', 'learning.soakReport', 'syncReads.audit']);
+    expect(excluded.map((p) => p.key)).toEqual([
+      'plans.lint', 'learning.soakReport', 'learning.dreamDecisionJournal', 'syncReads.audit',
+    ]);
 
-    // plans.lint and learning.soakReport are demand-driven. syncReads.audit remains
-    // dedicated-routine owned, so an ordinary read can never launch its minutes-scale audit.
+    // plans.lint, learning.soakReport and learning.dreamDecisionJournal are
+    // demand-driven. syncReads.audit remains dedicated-routine owned, so an
+    // ordinary read can never launch its minutes-scale audit.
     expect(all.filter((p) => p.refreshOnRead).map((p) => p.key)).toEqual([
       'plans.lint',
       'learning.soakReport',
+      'learning.dreamDecisionJournal',
     ]);
   });
 });

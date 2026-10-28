@@ -80,11 +80,11 @@ export async function actOnPr(number: number | null, action: 'merge' | 'close' |
 export async function livePrViewerDeps(slug: string): Promise<PrViewerDeps> {
   const [{ createGitHubPrHost }, { resolveHarnessPrRemote, attachReportsAndWi },
     { buildPrReviewerSettingsResponse }, { activeWorkspaceId }, { getOrgPg },
-    { makeSqlStore }, { projectDirForSlug }, { execFile }, { promisify }] = await Promise.all([
+    { makeSqlStore }, { projectDirForSlug }, { readHarnessPrGitFacts }] = await Promise.all([
     import('./github'), import('../endpoint-route/routes/harness/prs'),
     import('../endpoint-route/routes/harness/pr-reviewer-settings'), import('../workspace-registry'),
     import('@papercusp/db-org'), import('./poll-daemon'), import('../operator-notes'),
-    import('node:child_process'), import('node:util'),
+    import('./pr-git-facts'),
   ]);
   const host = await createGitHubPrHost();
   if (!host) throw new Error('GitHub is not authenticated.');
@@ -106,12 +106,14 @@ export async function livePrViewerDeps(slug: string): Promise<PrViewerDeps> {
       const raw = records?.[String(number)];
       const record = raw && ['pass', 'fail', 'running'].includes(raw.result) &&
         [raw.mergeSha, raw.prHeadSha, raw.targetTipSha].every(x => typeof x === 'string' && /^[a-f0-9]{40}$/.test(x)) ? raw : null;
-      let promotedSha: string | null = null;
-      if (repoDir) {
-        try { promotedSha = (await promisify(execFile)('git', ['rev-parse', '--verify', 'refs/heads/main^{commit}'], { cwd: repoDir })).stdout.trim(); }
-        catch { /* no promoted commit */ }
-      }
-      return { record, promotedSha };
+      // The promoted sha comes from the harnessPrs.gitFacts snapshot: this runs on the
+      // harnessPrs.detail sync read, which must never spawn git (WI-6554700010030747).
+      // With no snapshot yet the evidence is incomplete, so throw and let
+      // readPrViewerDetails report it as unavailable instead of judging the merge gate
+      // against a guessed null.
+      const facts = await readHarnessPrGitFacts(slug);
+      if (!facts) throw new Error('The promoted-commit snapshot for this harness has not been computed yet.');
+      return { record, promotedSha: facts.promotedSha };
     },
     async merge(pr) {
       const { isPrAuthorRevoked } = await import('./contribution-admission');

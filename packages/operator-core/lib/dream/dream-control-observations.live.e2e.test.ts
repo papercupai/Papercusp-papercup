@@ -46,6 +46,27 @@ async function observe(origin: string, args: Record<string, unknown>, request: t
   }
 }
 
+// WI-6554700010030749: the decision lines come from the precomputed
+// learning.dreamDecisionJournal snapshot, which answers only a window it fully
+// covers. A window ending "now" is covered once a scan starts after it, and a
+// read of a stale snapshot triggers that scan, so re-observe (bounded) until
+// neither decision source reports the window as not yet covered. Every other
+// outcome, including a real journal failure, is returned on the first read.
+const NOT_YET_COVERED = 'journal-snapshot-does-not-cover-window';
+function journalWindowNotYetCovered(row: Snapshot): boolean {
+  const sources = row as unknown as Record<string, { value?: { journal?: { journalError?: string | null } } } | undefined>;
+  return ['actionDecisions', 'gymDecisions'].some(key =>
+    sources[key]?.value?.journal?.journalError?.startsWith(NOT_YET_COVERED) === true);
+}
+async function observeCoveredWindow(origin: string, args: Record<string, unknown>): Promise<Snapshot> {
+  const deadline = Date.now() + 180_000;
+  for (;;) {
+    const row = await observe(origin, args);
+    if (!journalWindowNotYetCovered(row) || Date.now() > deadline) return row;
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 15_000));
+  }
+}
+
 describe('Dream observation request diagnostics', () => {
   it('retains endpoint, phase, and elapsed time when the request times out', async () => {
     const request: typeof fetch = async () => {
@@ -103,7 +124,7 @@ describe.skipIf(!enabled)('Dream control observation live METHOD', () => {
             { cwd: root, maxBuffer: 4 * 1024 * 1024 });
           expect(loaded.equals(readFileSync(resolve(root, path))), `${path} differs from loaded source`).toBe(true);
         }
-        const observation = await observe(profile.origin, { ...base, expectedRuntime: discovery.runtime,
+        const observation = await observeCoveredWindow(profile.origin, { ...base, expectedRuntime: discovery.runtime,
           actionJournalUnit: 'papercusp-bg-host.service', expectedActionRuntime: background.runtime,
           gymJournalUnit: 'papercusp-bg-host.service', expectedGymRuntime: background.runtime });
         const consumedAt = new Date().toISOString();
@@ -163,5 +184,5 @@ describe.skipIf(!enabled)('Dream control observation live METHOD', () => {
     expect(measured).toMatchObject({ ok: true, status: 'pass', runtimeEnvironmentMeasured: true });
     expect(measured.testRunIds).toHaveLength(1);
     console.info('DREAM_CONTROL_OPERATIONAL_RUN', JSON.stringify(measured));
-  }, 90_000);
+  }, 300_000);
 });

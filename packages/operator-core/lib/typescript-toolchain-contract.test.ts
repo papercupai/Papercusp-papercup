@@ -110,6 +110,7 @@ describe('Papercusp TypeScript toolchain contract', () => {
       'apps/papercusp-publish/package.json',
       'apps/the-swarm-site/package.json',
       'libs/generic/artifact-registry/package.json',
+      'libs/generic/chat-protocol/package.json',
       'libs/generic/dock-workbench/package.json',
       'libs/generic/resumable-download/package.json',
       'libs/generic/sse/package.json',

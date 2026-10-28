@@ -17,8 +17,6 @@
  * response shape is identical so the UI doesn't change.
  */
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveProject } from '../../../harness-core';
 import { createGitHubPrHost } from '../../../pr-host/github';
@@ -30,28 +28,6 @@ import {
 import { markFeaturePrState } from '../../../harness/feature-pr-producer';
 import { resolveLocalGithubIdentity } from '../../../identity/resolve-local-github-identity';
 
-const execFileP = promisify(execFile);
-
-/**
- * #5: harness projects frequently carry no `remote` in their metadata, so the
- * PR pane silently returned an empty list. Derive a `github.com/<owner>/<repo>`
- * remote (the format parseRemote expects) from the checkout's git origin so the
- * pane works for ANY harness whose project is a GitHub clone. Best-effort:
- * returns null when the path isn't a git repo or origin isn't a github remote.
- */
-async function gitOriginRemote(projectPath: string): Promise<string | null> {
-  try {
-    const { stdout } = await execFileP(
-      'git',
-      ['-C', projectPath, 'config', '--get', 'remote.origin.url'],
-      { timeout: 3000 },
-    );
-    const m = /github\.com[/:]([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(stdout.trim());
-    return m ? `github.com/${m[1]}/${m[2]}` : null;
-  } catch {
-    return null;
-  }
-}
 import {
   tryAutoApprove,
   type AutoApproveContext,
@@ -105,11 +81,13 @@ export async function resolveHarnessPrRemote(slug: string): Promise<string | nul
   if (!project) return null;
 
   // Read remote from project metadata; fall back to the checkout's git origin
-  // (#5) so a harness with no `remote` field still lists PRs.
+  // (#5) so a harness with no `remote` field still lists PRs. The origin comes
+  // from the harnessPrs.gitFacts snapshot (pr-host/pr-git-facts.ts): this runs on
+  // the sync read path, which must never spawn git (WI-6554700010030747).
   let remote = (project as unknown as { remote?: string }).remote ?? '';
   if (!remote) {
-    const projectPath = (project as unknown as { path?: string }).path ?? '';
-    if (projectPath) remote = (await gitOriginRemote(projectPath)) ?? '';
+    const { readHarnessPrGitFacts } = await import('../../../pr-host/pr-git-facts');
+    remote = (await readHarnessPrGitFacts(slug))?.originRemote ?? '';
   }
   return remote || null;
 }

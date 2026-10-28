@@ -1203,7 +1203,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
   'harnessPrs.byHarness': {
-    backingTables: ['harness_shared.pr_review_reports', 'harness_shared.pr_check_status_cache', 'harness_shared.harness_feature_prs', 'harness_shared.routines'],
+    // derived_read_snapshots: the git origin fallback is the harnessPrs.gitFacts snapshot
+    // (WI-6554700010030747), so its writes must re-trigger this query too.
+    backingTables: ['harness_shared.pr_review_reports', 'harness_shared.pr_check_status_cache', 'harness_shared.harness_feature_prs', 'harness_shared.routines', 'harness_shared.derived_read_snapshots'],
     argsSchema: z.object({ harnessSlug: z.string().trim().min(1), scope: z.enum(['harness', 'hive']).optional() }),
     resolve: async (raw) => {
       const { harnessSlug, scope } = raw as { harnessSlug: string; scope?: 'harness' | 'hive' };
@@ -1212,7 +1214,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
   'harnessPrs.detail': {
-    backingTables: ['harness_shared.pr_review_reports', 'harness_shared.pr_check_status_cache', 'harness_shared.routines', 'harness_shared.pr_reviewer_settings', 'harness_shared.shared_repo_binding_cache'],
+    // derived_read_snapshots: the promoted sha and origin come from the harnessPrs.gitFacts
+    // snapshot (WI-6554700010030747), so its writes must re-trigger this query too.
+    backingTables: ['harness_shared.pr_review_reports', 'harness_shared.pr_check_status_cache', 'harness_shared.routines', 'harness_shared.pr_reviewer_settings', 'harness_shared.shared_repo_binding_cache', 'harness_shared.derived_read_snapshots'],
     argsSchema: z.object({ harnessSlug: z.string().trim().min(1), number: z.number().int().positive() }),
     resolve: async (raw) => {
       const { harnessSlug, number } = raw as { harnessSlug: string; number: number };
@@ -5203,7 +5207,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   'learning.dream': {
-    backingTables: ['harness_shared.routines', 'harness_shared.dream_runs', 'harness_shared.pot_settings', 'harness_shared.learning_spend_events', 'harness_shared.learning_spend_reservations', 'harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope', 'harness_shared.scout_routed_ideas', 'harness_shared.experiment_runs', 'harness_shared.gym_autoloop_config', 'harness_shared.operator_gym_gates', 'harness_shared.scout_ticks'],
+    // derived_read_snapshots: view=observations serves its decision-journal
+    // windows from the learning.dreamDecisionJournal snapshot.
+    backingTables: ['harness_shared.routines', 'harness_shared.dream_runs', 'harness_shared.derived_read_snapshots', 'harness_shared.pot_settings', 'harness_shared.learning_spend_events', 'harness_shared.learning_spend_reservations', 'harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope', 'harness_shared.scout_routed_ideas', 'harness_shared.experiment_runs', 'harness_shared.gym_autoloop_config', 'harness_shared.operator_gym_gates', 'harness_shared.scout_ticks'],
     argsSchema: z.object({
       potSlug: z.string().trim().min(1).max(120),
       mode: z.enum(['manual', 'auto']).optional(),
@@ -5231,49 +5237,29 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         const scope = { workspaceId, potSlug: args.potSlug, since: args.since!, until: args.until!, expectedRuntime: args.expectedRuntime!,
           ...(args.actionJournalUnit ? { actionJournalUnit: args.actionJournalUnit, expectedActionRuntime: args.expectedActionRuntime } : {}),
           ...(args.gymJournalUnit ? { gymJournalUnit: args.gymJournalUnit, expectedGymRuntime: args.expectedGymRuntime } : {}) };
-        // Canonical journal scans can each exceed the sync resolver's 10s
-        // ceiling. Capture both before taking a workspace transaction, sharing
-        // the existing 6s read deadline. A missed source stays UNKNOWN through
-        // the observation reader's error path; never substitute an empty log.
-        const withinJournalBudget = createReadDeadline(RESOLVER_FANOUT_BUDGET_MS);
-        const [{ readJournal }, { DREAM_ACTION_DECISION_PREFIX }, { GYM_ADMISSION_DECISION_PREFIX }] = await traceNamedQueryStage('dream-journal-dependencies-import', () => Promise.all([
-          import('../journal-read'), import('../dream/dream-config'), import('../gym/autoloop-tick'),
+        // The decision lines come from the PRECOMPUTED learning.dreamDecisionJournal
+        // snapshot (derived-reads/producers.ts, WI-6554700010030749): this read
+        // never runs journalctl. A window the snapshot cannot answer exactly
+        // (unscanned unit, outside coverage, failed scan) arrives as a journal
+        // error, so the source stays UNKNOWN; never an empty log.
+        const [{ readDerivedSnapshotRows }, { DREAM_ACTION_DECISION_PREFIX }, { GYM_ADMISSION_DECISION_PREFIX },
+          { DREAM_DECISION_JOURNAL_KEY, sliceDecisionJournal }] = await traceNamedQueryStage('dream-journal-dependencies-import', () => Promise.all([
+          import('../derived-reads/registry'), import('../dream/dream-config'), import('../gym/autoloop-tick'),
+          import('../dream/dream-decision-journal'), import('../derived-reads/producers'),
         ]));
-        // Both decisions are normally written by the same bg-host. Scan that
-        // physical journal once, while retaining each consumer's own row cap.
-        // Distinct units remain independent sources with independent failures.
-        const sharedJournal = args.actionJournalUnit && args.actionJournalUnit === args.gymJournalUnit
-          ? readJournal({ units: [args.actionJournalUnit], since: `@${Date.parse(args.since!) / 1000}`,
-            until: `@${Date.parse(args.until!) / 1000}`,
-            grep: `(?:${DREAM_ACTION_DECISION_PREFIX}|${GYM_ADMISSION_DECISION_PREFIX})`, limit: 1000 })
-          : null;
-        const sourceJournal = (value: Awaited<ReturnType<typeof readJournal>>, prefix: string, limit: number) => {
-          const matching = value.entries.filter(entry => entry.message.includes(prefix));
-          const matched = matching.reduce((count, entry) => count + entry.repeat, 0);
-          const entries = matching.slice(-limit);
-          return { ...value, entries, matched: value.matched === null ? null : matched,
-            collapsed: entries.reduce((count, entry) => count + entry.repeat - 1, 0),
-            truncated: value.truncated || matched > limit,
-            // A clipped shared message can hide the other prefix after the cut.
-            // Neither source may infer absence from that incomplete message.
-            journalError: value.journalError ?? (value.entries.some(entry => entry.clipped) ? 'shared-journal-message-clipped' : null) };
-        };
-        const captureJournal = (unit: string, grep: string, limit: number, label: string,
-          stage: 'dream-action-journal' | 'dream-gym-journal') => traceNamedQueryStage(stage, () =>
-          withinJournalBudget(sharedJournal ? sharedJournal.then(value => sourceJournal(value, grep, limit))
-            : readJournal({ units: [unit], since: `@${Date.parse(args.since!) / 1000}`,
-              until: `@${Date.parse(args.until!) / 1000}`, grep, limit }), label))
-            .then(value => ({ ok: true as const, value }), error => ({ ok: false as const, error }));
-        const [journal, gymJournal] = await Promise.all([
-          args.actionJournalUnit ? captureJournal(args.actionJournalUnit, DREAM_ACTION_DECISION_PREFIX, 20, 'dream-action-journal', 'dream-action-journal') : null,
-          args.gymJournalUnit ? captureJournal(args.gymJournalUnit, GYM_ADMISSION_DECISION_PREFIX, 1000, 'gym-admission-journal', 'dream-gym-journal') : null,
-        ]);
+        const decisionJournal = args.actionJournalUnit || args.gymJournalUnit
+          ? await traceNamedQueryStage('dream-decision-journal-snapshot', () =>
+            readDerivedSnapshotRows<import('../dream/dream-decision-journal').DreamDecisionJournalRow>(DREAM_DECISION_JOURNAL_KEY))
+          : [];
+        const sliceJournal = (unit: string, prefix: string, limit: number) =>
+          sliceDecisionJournal(decisionJournal, { unit, since: args.since!, until: args.until!, prefix, limit });
+        const journal = args.actionJournalUnit ? sliceJournal(args.actionJournalUnit, DREAM_ACTION_DECISION_PREFIX, 20) : null;
+        const gymJournal = args.gymJournalUnit ? sliceJournal(args.gymJournalUnit, GYM_ADMISSION_DECISION_PREFIX, 1000) : null;
         return traceNamedQueryStage('dream-workspace-transaction', () => routeWithWorkspace(async tx => [await traceNamedQueryStage('dream-observation-read', () => journal || gymJournal
           ? readDreamControlObservations(tx as unknown as import('postgres').Sql, scope, { journal: async request => {
             const captured = request.grep === GYM_ADMISSION_DECISION_PREFIX ? gymJournal : journal;
             if (!captured) throw new Error('Requested journal was not captured before transaction');
-            if (!captured.ok) throw captured.error;
-            return captured.value;
+            return captured;
           } })
           : readDreamControlObservations(tx as unknown as import('postgres').Sql, scope))]));
       }
@@ -6493,7 +6479,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       let sshProfiles: unknown[] = [];
       let sshProfilesError: string | null = null;
       try {
-        const { loadPsuConnectionStore } = await import('../../../../apps/operator/scripts/psu-connection-front-controller.mjs');
+        // The store module, not the front-controller CLI: the CLI imports node:child_process,
+        // which must not load on a read path (no-heavy-io-on-read-path.test.ts, WI-6554700010030748).
+        const { loadPsuConnectionStore } = await import('../../../../apps/operator/scripts/psu-connection-store.mjs');
         const profiles = loadPsuConnectionStore().profiles as Array<{ kind: string; name: string; host?: string }>;
         sshProfiles = profiles.filter(profile => profile.kind === 'ssh').map(profile => ({
           id: profile.name, label: profile.name, host: profile.host,

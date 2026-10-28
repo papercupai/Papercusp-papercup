@@ -21,7 +21,8 @@ vi.mock('../connected-apps/remote-access', () => ({
 }));
 vi.mock('../own-tunnel/service', () => ({ ownTunnelStatus: H.ownTunnelStatus }));
 vi.mock('../remote-access/relay-opt-in', () => ({ portalRelayStatus: H.portalRelayStatus }));
-vi.mock('../../../../apps/operator/scripts/psu-connection-front-controller.mjs', () => ({ loadPsuConnectionStore: H.loadPsuConnectionStore }));
+// The resolver reads the store module directly, not the front-controller CLI (WI-6554700010030748).
+vi.mock('../../../../apps/operator/scripts/psu-connection-store.mjs', () => ({ loadPsuConnectionStore: H.loadPsuConnectionStore }));
 vi.mock('../workspace-host/observability-store', () => ({ readWorkspaceHostControl: H.readWorkspaceHostControl }));
 
 import { knownQueryNamesV2, resolveNamedQueryV2 } from './index';

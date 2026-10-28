@@ -1391,6 +1391,26 @@ export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform
     log?: undefined;
     footer?: undefined;
 };
+/** Run the synchronous proc/log snapshot away from the host's verdict event loop. */
+export function startCodexStartingStuckSnapshot({ ownerId, label, reason, rootPid, codexHome, startupOutput, screenDims, dir, timeoutMs, workerFactory, }?: {
+    dir?: string | undefined;
+    timeoutMs?: number | undefined;
+    workerFactory?: ((url: any, options: any) => Worker) | undefined;
+}): boolean;
+/** Record a terminal kickoff decision before scheduling its best-effort snapshot. */
+export function recordStartupTurnDrop({ ownerId, label, dropReason, attempts, budgetMs, elapsedMs, earlyStuck, snapshotArgs, dir, onDrop, writeDroppedLine, snapshotScheduler, }?: {
+    earlyStuck?: boolean | undefined;
+    snapshotArgs?: null | undefined;
+    dir?: string | undefined;
+    onDrop?: (() => void) | undefined;
+    writeDroppedLine?: (() => void) | undefined;
+    snapshotScheduler?: typeof startCodexStartingStuckSnapshot | undefined;
+}): {
+    earlyStuck?: boolean | undefined;
+    delivered: boolean;
+    reason: any;
+    attempts: any;
+};
 /** Small, non-secret error identity for durable host events. Exception messages can
  * contain command arguments or credentials; the local stderr keeps the full
  * diagnostic while the shared event store gets only a stable error class/code. */
@@ -6085,6 +6105,7 @@ export const KICKOFF_QUOTA_REJECTION_POLL_MS: 250;
  *  fail-soft. Mirrors IDENTITY_ACTIVATION_REFUSED_REASON in
  *  packages/operator-core/lib/cupboard/identity-activation-restart.ts. */
 export const IDENTITY_ACTIVATION_REFUSED_REASON: "identity-activation-refused";
+export const CODEX_STARTING_STUCK_SNAPSHOT_TIMEOUT_MS: 10000;
 /** WI-6554700010008431: the handoff's file suffix. It ALSO ends in `.json`, so it
  *  shares the directory with the `<key>.json` discovery records — see
  *  isDiscoveryRecordFileName for why that matters. */
@@ -6406,4 +6427,5 @@ export type McpReconnectMacroBudgets = {
 import { readSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { readdirSync } from 'node:fs';
+import { Worker } from 'node:worker_threads';
 import { stageAgentIdentityTty } from '../../../libs/papercusp-shared/src/agent/loopback-identity-tty.mjs';

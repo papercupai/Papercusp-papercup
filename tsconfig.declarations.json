@@ -330,6 +330,9 @@
     // BYOC P-014 — imported directly by the TypeScript-focused controller test and
     // by psu-launcher.mjs; keep its inferred surface generated and drift-checked.
     "apps/operator/scripts/psu-connection-front-controller.mjs",
+    // WI-6554700010030748 — the saved-profile store split out of the front controller;
+    // imported directly by sync-resolver/index.ts and re-exported by the controller.
+    "apps/operator/scripts/psu-connection-store.mjs",
     // WI-10006057 — imported by psu-launcher.mjs and its TypeScript test.
     "apps/operator/scripts/psu-operator-down-diagnosis.mjs",
     "apps/operator/scripts/psu-pty-host.mjs",

@@ -36,6 +36,7 @@
  */
 import { withWorkspace } from '@papercusp/db-org';
 import { registerDerivedRead } from './registry';
+import { HARNESS_PR_GIT_FACTS_KEY } from '../pr-host/pr-git-facts';
 
 // ── storage.usage (P-003) — measured 20.0s on the read path ──────────────────
 //
@@ -238,6 +239,43 @@ registerDerivedRead({
       )
     ).filter((report): report is NonNullable<typeof report> => report != null);
     return [{ hives: reports }];
+  },
+});
+
+// ── learning.dreamDecisionJournal (WI-6554700010030749) ─────────────────────
+//
+// `learning.dream { view: 'observations' }` ran `journalctl` inline on the sync
+// read path for the Dream action and Gym admission decision lines (the WI-5460
+// class; it also fails outright on a host with no journald). The scan runs here
+// instead: one bounded scan per unit covering both prefixes, and the resolver
+// serves the requested window out of the snapshot through sliceDecisionJournal
+// (dream/dream-decision-journal.ts), which reports a window the snapshot cannot
+// answer exactly as a journal error, never as an empty log.
+//
+// The only reader is the live observation instrument, so this is demand-driven
+// like learning.soakReport: zero reads means zero scans. The short TTL makes a
+// read whose window ends after the last scan trigger a fresh one behind it.
+registerDerivedRead({
+  key: 'learning.dreamDecisionJournal',
+  ttlMs: 60_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  excludeFromDefaultSweep: true,
+  refreshOnRead: true,
+  compute: async () => {
+    const [{ readJournal }, { DREAM_ACTION_DECISION_PREFIX }, { GYM_ADMISSION_DECISION_PREFIX }, snapshot] =
+      await Promise.all([
+        import('../journal-read'), import('../dream/dream-config'), import('../gym/autoloop-tick'),
+        import('../dream/dream-decision-journal'),
+      ]);
+    const startedAt = Date.now();
+    const since = `@${(startedAt - snapshot.DREAM_DECISION_JOURNAL_LOOKBACK_MS) / 1000}`;
+    return Promise.all(snapshot.dreamDecisionJournalUnits().map(async unit => snapshot.buildDreamDecisionJournalRow(
+      unit,
+      await readJournal({ units: [unit], since, until: `@${startedAt / 1000}`,
+        grep: `(?:${DREAM_ACTION_DECISION_PREFIX}|${GYM_ADMISSION_DECISION_PREFIX})`, limit: 1000 }),
+      startedAt,
+    )));
   },
 });
 
@@ -807,5 +845,28 @@ registerDerivedRead({
       // so — treat latency as advisory whenever loadPerCore is above ~1.
       host: report.host,
     };
+  },
+});
+
+// ── harnessPrs.gitFacts (WI-6554700010030747) — git off the PR pane's read path ─
+//
+// harnessPrs.byHarness and harnessPrs.detail spawned git on every read: the origin
+// remote fallback and the promoted refs/heads/main sha (see pr-host/pr-git-facts.ts).
+// Both are per-harness local facts, so `scope: 'harness'` matches the routine's
+// existing per-harness fan-out. The PR listing itself stays live: it is GitHub-backed
+// and per-number for the detail view, so a whole-payload snapshot would make the pane
+// TTL-stale for no subprocess saving.
+//
+// Two millisecond-scale git calls per harness, so this stays in the default sweep.
+// The promoted sha only feeds the detail view's merge-test status; the merge action
+// re-checks live. A pane may therefore lag a promotion by up to one tick.
+registerDerivedRead({
+  key: HARNESS_PR_GIT_FACTS_KEY,
+  ttlMs: 60_000,
+  producerVersion: 1,
+  scope: 'harness',
+  compute: async (ctx) => {
+    const { computeHarnessPrGitFacts } = await import('../pr-host/pr-git-facts-compute');
+    return computeHarnessPrGitFacts(ctx);
   },
 });

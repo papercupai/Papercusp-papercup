@@ -1,6 +1,14 @@
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { createServer, type AddressInfo, type Server } from 'node:net';
 import { isAbsolute } from 'node:path';
+// Package self-reference, not './aws-ssm-ssh-patterns.ts': psu-connection-front-controller.mjs
+// loads this module under plain node, and the declarations build refuses a `.ts` relative
+// import (tsconfig.declarations.json; gen-declarations-ts-extension-imports.test.ts).
+import {
+  AWS_CLI_PROFILE_PATTERN,
+  AWS_EC2_INSTANCE_ID_PATTERN,
+  AWS_REGION_PATTERN,
+} from '@papercusp/operator-core/lib/workspace-host/aws-ssm-ssh-patterns';
 
 import type { WorkspaceHostTransportProfile } from '@papercusp/deployment-driver';
 
@@ -199,12 +207,9 @@ export function quotePosixShellArg(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-/** An AWS region code (us-east-2, us-gov-west-1, …); also refuses anything shell-shaped. */
-export const AWS_REGION_PATTERN = /^[a-z]{2}(?:-gov|-iso[a-z]*)?-[a-z]+-[0-9]$/;
-/** An EC2 instance id, short (8 hex) or long (17 hex) form. */
-export const AWS_EC2_INSTANCE_ID_PATTERN = /^i-[0-9a-f]{8}(?:[0-9a-f]{9})?$/;
-/** A named AWS CLI profile (`--profile`). */
-export const AWS_CLI_PROFILE_PATTERN = /^[A-Za-z0-9_.+-]{1,64}$/;
+// The AWS identifier patterns live in a dependency-free module so a profile normalizer can use
+// them without importing this module's node:child_process (WI-6554700010030748).
+export { AWS_CLI_PROFILE_PATTERN, AWS_EC2_INSTANCE_ID_PATTERN, AWS_REGION_PATTERN };
 
 export interface AwsSsmProxyCommandSpec {
   region: string;

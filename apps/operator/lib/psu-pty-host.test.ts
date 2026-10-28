@@ -5,7 +5,8 @@
  * (spawn → socket-inject → cleanup) lives in psu-pty-host.integration.test.ts.
  */
 import { describe, it, expect, vi, afterAll } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as realHost from '../scripts/psu-pty-host.mjs';
@@ -8822,5 +8823,93 @@ describe('codex auth-failure detector (parked-agent-census P-004)', () => {
       .toEqual({ quotaRecovery: { ...q, cause: 'quota' } });
     expect(realHost.decodeQuotaRecovery({ ...base, quotaRecovery: q }))
       .toEqual({ quotaRecovery: { ...q, cause: 'quota' } });
+  });
+});
+
+describe('nonblocking Codex startup drop snapshots (EI-26700851462511102)', () => {
+  const readEvents = (ownerId: string, dir: string) => {
+    const path = realHost.eventLogPathForOwner(ownerId, dir);
+    if (!existsSync(path)) return [];
+    return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+  };
+
+  it('records the terminal verdict before the snapshot worker completes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'codex-startup-snapshot-'));
+    const ownerId = `su-startup-snapshot-${process.pid}-${Math.floor(performance.now())}`;
+    const worker = new EventEmitter() as EventEmitter & { unref: ReturnType<typeof vi.fn>; terminate: ReturnType<typeof vi.fn> };
+    worker.unref = vi.fn();
+    worker.terminate = vi.fn(() => Promise.resolve(0));
+    const order: string[] = [];
+
+    try {
+      const result = realHost.recordStartupTurnDrop({
+        ownerId,
+        label: 'launch kickoff',
+        dropReason: 'codex-startup-still-starting',
+        attempts: 1,
+        budgetMs: 2000,
+        elapsedMs: 2004,
+        snapshotArgs: {
+          rootPid: 123,
+          codexHome: '/tmp/codex-snapshot-test',
+          startupOutput: 'Starting',
+          screenDims: { rows: 24, cols: 80 },
+        },
+        dir,
+        onDrop: () => order.push('onDrop'),
+        writeDroppedLine: () => order.push('dropped-line'),
+        snapshotScheduler: args => realHost.startCodexStartingStuckSnapshot({
+          ...args,
+          workerFactory: (_url: URL, options: { workerData: unknown }) => {
+            expect(readEvents(ownerId, dir).map(row => row.kind)).toEqual(['startup-turn-dropped']);
+            expect(options.workerData).toMatchObject({ rootPid: 123, codexHome: '/tmp/codex-snapshot-test' });
+            order.push('worker-started');
+            return worker;
+          },
+        }),
+      });
+
+      expect(result).toEqual({ delivered: false, reason: 'codex-startup-still-starting', attempts: 1 });
+      expect(order).toEqual(['worker-started', 'onDrop', 'dropped-line']);
+      expect(readEvents(ownerId, dir)).toEqual([expect.objectContaining({
+        kind: 'startup-turn-dropped',
+        snapshotScheduled: true,
+      })]);
+
+      worker.emit('message', {
+        snapshot: { rootPid: 123, procs: [], procsTruncated: false, log: null, footer: null },
+        snapshotWallMs: 8,
+        snapshotCpuMs: 2,
+      });
+      expect(readEvents(ownerId, dir)[1]).toMatchObject({
+        kind: 'codex-starting-stuck-snapshot',
+        snapshotStatus: 'complete',
+        snapshotWorkerWallMs: 8,
+        snapshotWorkerCpuMs: 2,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs the actual snapshot collector in a worker and records its timing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'codex-startup-snapshot-worker-'));
+    const ownerId = `su-startup-snapshot-worker-${process.pid}-${Math.floor(performance.now())}`;
+    try {
+      expect(realHost.startCodexStartingStuckSnapshot({
+        ownerId,
+        label: 'launch kickoff',
+        reason: 'codex-startup-still-starting',
+        rootPid: -1,
+        dir,
+        timeoutMs: 5000,
+      })).toBe(true);
+      await vi.waitFor(() => {
+        expect(readEvents(ownerId, dir).find(row => row.kind === 'codex-starting-stuck-snapshot'))
+          .toMatchObject({ snapshotStatus: 'complete', snapshotWorkerWallMs: expect.any(Number), snapshotWorkerCpuMs: expect.any(Number) });
+      }, { timeout: 15_000 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

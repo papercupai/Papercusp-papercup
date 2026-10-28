@@ -31,128 +31,6 @@ export function parsePsuConnectionArgs(argv: any): {
     };
     forwardedArgv: any[];
 };
-/** Normalize the first supported remote profile. GCP deliberately defaults to IAP. */
-export function normalizeGcpIapProfile(input: any): {
-    name: string;
-    kind: string;
-    projectId: string;
-    zone: string;
-    instanceName: string;
-    sshUser: string;
-    endpoint: string;
-    target: string;
-    remoteOperatorPort: number;
-    supportedClientPlatforms: string[];
-    features: {
-        command: boolean;
-        pty: boolean;
-        tcpForward: boolean;
-        fileTransfer: boolean;
-    };
-    prerequisites: string[];
-    constraints: string[];
-    reconnect: string;
-    audited: boolean;
-};
-/**
- * Your own EC2 instance, reached by OpenSSH over an AWS Systems Manager
- * Session Manager tunnel — the AWS twin of the GCP IAP profile
- * (aws-byoc-gcp-parity-2026-10-01 P-009). Like IAP it needs no public IP and
- * no inbound port: the SSH stream rides an SSM session to port 22.
- */
-export function normalizeAwsSsmProfile(input: any): {
-    endpoint: string;
-    target: string;
-    remoteOperatorPort: number;
-    supportedClientPlatforms: string[];
-    features: {
-        command: boolean;
-        pty: boolean;
-        tcpForward: boolean;
-        fileTransfer: boolean;
-    };
-    prerequisites: string[];
-    constraints: string[];
-    reconnect: string;
-    audited: boolean;
-    awsProfile?: string | undefined;
-    name: string;
-    kind: string;
-    region: string;
-    instanceId: string;
-    sshUser: string;
-};
-/**
- * A Papercusp cloud portal origin. https only, except a loopback test server;
- * credentials in the URL are refused so a token can never be sent to a
- * look-alike host spelled inside the userinfo part.
- */
-export function normalizeHostedPortalOrigin(value: any): string;
-/** A customer-owned machine reached through their private network or OpenSSH config. */
-export function normalizeSshProfile(input: any): {
-    name: string;
-    kind: string;
-    host: string;
-    sshUser: string | null;
-    endpoint: string;
-    target: string;
-    remoteOperatorPort: number;
-    supportedClientPlatforms: string[];
-    features: {
-        command: boolean;
-        pty: boolean;
-        tcpForward: boolean;
-        fileTransfer: boolean;
-    };
-    prerequisites: string[];
-    constraints: string[];
-    reconnect: string;
-    audited: boolean;
-};
-export function hostedProfileName(origin: any): string;
-/**
- * A name for a new cloud sign-in that no saved profile uses. The first sign-in
- * at a portal is named for its host (so existing `--connect=<host>` keeps
- * working); another account or organization at the same portal gets the host
- * plus its organization's name, then the user id if that is still taken.
- */
-export function freeHostedProfileName(origin: any, identity: any, profiles: any): any;
-/**
- * A Papercusp cloud sign-in (WI-10002874, byoc D-412). One profile per portal
- * + organization + user (WI-10003910), so several accounts or organizations
- * can be signed in side by side; each reaches every hosted workspace that
- * person's organization role allows, through the workspace machine's own
- * outbound connector — the machine accepts no inbound connection, so there is
- * no SSH or IAP leg to configure.
- */
-export function normalizeHostedProfile(input: any): {
-    accessToken: string;
-    tokenId: string;
-    organizationId: string;
-    userId: string;
-    expiresAt: string;
-    supportedClientPlatforms: string[];
-    features: {
-        command: boolean;
-        pty: boolean;
-        tcpForward: boolean;
-        fileTransfer: boolean;
-    };
-    prerequisites: string[];
-    constraints: string[];
-    reconnect: string;
-    audited: boolean;
-    organizationName?: string | undefined;
-    name: string;
-    kind: string;
-    origin: string;
-};
-export function defaultPsuConnectionStorePath(home: any): string;
-export function loadPsuConnectionStore(path?: string): {
-    version: string;
-    profiles: any;
-};
-export function savePsuConnectionStore(store: any, path?: string): void;
 export function describePsuConnectionProfile(profile: any): string;
 export function describeHostedWorkspace(profile: any, workspace: any, now?: number): string;
 /**
@@ -203,10 +81,6 @@ export function runPsuConnectionFrontController(argv: any, overrides?: {}): Prom
     argv: string[];
     exitCode?: number;
 }>;
-export const PSU_CONNECTION_STORE_VERSION: "psu-connection-profiles-v1";
-export const DEFAULT_REMOTE_OPERATOR_PORT: 3070;
-/** The Papercusp cloud portal a bare `psu --connect-login` signs in to. */
-export const DEFAULT_HOSTED_PORTAL_ORIGIN: "https://app.papercusp.com";
 /** Picker value for "sign in to Papercusp cloud". Not a legal profile name, so it cannot collide. */
 export const HOSTED_LOGIN_CHOICE: ":login";
 /**
@@ -225,3 +99,4 @@ export const HOSTED_VIEWER_NOTICE: string;
  */
 export const HOSTED_RECONNECT_POLL_MS: 3000;
 export const HOSTED_RECONNECT_POLLS: 15;
+export { DEFAULT_HOSTED_PORTAL_ORIGIN, DEFAULT_REMOTE_OPERATOR_PORT, defaultPsuConnectionStorePath, freeHostedProfileName, hostedProfileName, loadPsuConnectionStore, normalizeAwsSsmProfile, normalizeGcpIapProfile, normalizeHostedPortalOrigin, normalizeHostedProfile, normalizeSshProfile, PSU_CONNECTION_STORE_VERSION, savePsuConnectionStore } from "./psu-connection-store.mjs";
