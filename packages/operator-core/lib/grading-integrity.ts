@@ -3667,6 +3667,11 @@ export async function reconcilePendingGradingAudits(
   input: DispatchPendingGradingAuditsInput,
   deps: DispatchPendingGradingAuditsDeps = {},
 ): Promise<PendingGradingAuditDispatchResult> {
+  // Dispatch is the repair path; settled-task and retained-runtime retirement
+  // are housekeeping. Run the dispatch first so a slow global cleanup scan
+  // cannot hold new pending auditors behind the routine's short observation
+  // deadline. Cleanup remains awaited and idempotent after the primary action.
+  const result = await dispatchPendingGradingAudits(input, deps);
   await retireSettledGradingAuditTasks(input, deps);
   if (input.ctx.workspaceId) await (deps.retireRuntimes ?? retireUnusedGradingAuditRuntimes)(
     input.ctx.workspaceId,
@@ -3681,7 +3686,6 @@ export async function reconcilePendingGradingAudits(
     undefined,
     input.targetIds,
   );
-  const result = await dispatchPendingGradingAudits(input, deps);
   const recertifications =
     input.recertifyStranded === false ? [] : await recertifyStrandedSpecAdequacyCards(input, result.receipts, deps);
   return recertifications.length > 0 ? { ...result, recertifications } : result;

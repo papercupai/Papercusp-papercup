@@ -6,6 +6,7 @@ import {
   awaitDependencyPrebuildState,
   dependencyGenerationRootRecord,
   dependencyPrebuildKey,
+  dependencyPrebuildRetentionLabel,
   dependencyPrebuildRequestFromQueuedState,
   enqueueDependencyPrebuild,
   emitDependencyPrebuildTerminal,
@@ -184,9 +185,14 @@ describe('dependency generation background prebuild', () => {
       args: [
         installSafeScript, '--repo-root', '/integration', '--exec-under-lock', '--', 'bash',
         generationScript, '--integration', '/integration', '--ensure-ref', CANDIDATE_A,
+        '--retain-as', dependencyPrebuildRetentionLabel(TARGET),
       ],
       options: expect.objectContaining({ cwd: '/tooling' }),
     });
+    expect(dependencyPrebuildRetentionLabel(TARGET)).toMatch(/^dependency-prebuild-[0-9a-f]{40}$/);
+    expect(dependencyPrebuildRetentionLabel(TARGET)).not.toBe(
+      dependencyPrebuildRetentionLabel({ ...TARGET, installSlug: 'other-install' }),
+    );
     expect(state).toMatchObject({
       status: 'ready',
       candidate: CANDIDATE_A,

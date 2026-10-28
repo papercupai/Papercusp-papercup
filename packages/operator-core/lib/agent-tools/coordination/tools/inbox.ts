@@ -70,13 +70,13 @@ import {
   CONTEXT_GAUGE_CRITICAL_PCT,
   CONTEXT_GAUGE_LOUD_PCT,
   CONTEXT_GAUGE_QUIET_PCT,
-  contextGaugeReadingSource,
+  renderContextUsageUnknownLine,
   type ContextGaugeReadingSource,
 } from "./inbox-context-usage";
 import { readFleetWindDownLoopEndAuthorization } from "./continuation-gate";
 import { readPriorRespawnOutcome, lostRespawnAmbientLine } from "../../../carry-respawn-outcome";
 import { classifyStaleClaims, renderFlushGateLine, FLUSH_GATE_PCT } from "./inbox-flush-gate";
-import { currentContextTokensForOwner } from "../../../compaction-usage";
+import { currentContextUsageForOwner } from "../../../compaction-usage";
 import { getContextUsage } from "../../../system-health/context-usage-cache";
 import { selfCompactionAvailabilityAsync } from "../../../events/await/psu-pty-discovery";
 import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
@@ -1890,18 +1890,17 @@ export default defineTool({
     let respawnLine: string | null = null;
     try {
       const pres = await readerPresence;
-      // WI-4154: derive the usage from the transcript's CURRENT state (anchored
-      // incremental read — cost is the append delta), never from the watchdog's
-      // point-in-time cache, which went stale across every compaction boundary and
-      // served false 126%/87% post-compaction alarms. The presence value remains
-      // only as the fallback for owners whose transcript can't be read here (the
-      // same sessions it was the only source for before).
-      const live = await measureInboxPhase(
+      // Read a current value together with its native-session identity. Codex's
+      // exact token_count is tied to the active rollout filename and event time.
+      // The presence cache has neither binding, so it is never used to calculate
+      // a current percentage or trigger a compaction action.
+      const contextUsage = await measureInboxPhase(
         "current-context-transcript-read",
-        () => currentContextTokensForOwner(identity.ownerId),
+        () => currentContextUsageForOwner(identity.ownerId),
       );
-      const tokens = live ?? pres?.contextTokens;
-      const readingSource: ContextGaugeReadingSource = contextGaugeReadingSource(live);
+      const live = contextUsage.reading;
+      const tokens = live?.tokens ?? null;
+      const readingSource: ContextGaugeReadingSource | undefined = live?.source;
       // WI-2143463: the watchdog mirrors the gateway's route-bound lowest
       // observed prompt into the existing hot cache. It is evidence about the
       // fixed-prefix ceiling / conservative usable runway, never a replacement
@@ -1941,6 +1940,14 @@ export default defineTool({
         cachedUsage?.observedPromptFloor ?? null,
         readingSource,
       );
+      if (
+        usageLine == null &&
+        (contextUsage.backend === "codex" || pres?.contextTokens != null)
+      ) {
+        usageLine = renderContextUsageUnknownLine(
+          contextUsage.unavailableReason ?? "active-session usage is unavailable",
+        );
+      }
       // flush-to-proceed-stretch-discipline-2026-07-04 P-002: near a compaction boundary,
       // surface any work-item claim whose checkpoint is stale (unflushed state) and NAME the
       // action (work_items:checkpoint) — the flush invariant enforced on the ONE surface in
@@ -1955,6 +1962,10 @@ export default defineTool({
           fleetWindDownLoopEndAuthorized,
           cachedUsage?.observedPromptFloor ?? null,
           readingSource,
+        );
+      } else if (tokens == null && pres?.contextTokens != null) {
+        contextGauge = renderContextUsageUnknownLine(
+          contextUsage.unavailableReason ?? "active-session usage is unavailable",
         );
       }
       if (pct != null && pct >= FLUSH_GATE_PCT) {
@@ -2038,7 +2049,12 @@ export default defineTool({
         try {
           respawnLine = lostRespawnAmbientLine(await measureInboxPhase(
             "prior-respawn-outcome-read",
-            () => readPriorRespawnOutcome(identity.ownerId),
+            () => readPriorRespawnOutcome(identity.ownerId, {
+              incarnation: {
+                nativeSessionId: contextUsage.nativeSessionId,
+                startedAtMs: contextUsage.sessionStartedAtMs,
+              },
+            }),
           ));
         } catch {
           respawnLine = null;

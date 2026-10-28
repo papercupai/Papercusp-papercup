@@ -118,7 +118,8 @@ which declares only \`name\`/\`args\`. Sending both reduces twice: inner, then w
 
 Common keyed envelopes keep fields under their emitted roots — copy the shape, not a
 generic field name:
-    projection: { pick: ["event_inspection.current_generation", "event_inspection.current_state", "active_awaits"] } // events:status
+    projection: { pick: ["event_inspection.current_generation", "event_inspection.current_state", "event_inspection.waiters"] } // events:status exact-event response
+    projection: { pick: ["active_awaits"] } // events:status generic or await_id response
     projection: { pick: ["results[].id", "results[].workItem.state", "results[].workItem.assignee", "results[].checkpoint"] } // work_items:get
 
 Path shape follows the BODY's root: a tool that returns a bare array (work_items:list,

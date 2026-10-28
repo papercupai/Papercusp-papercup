@@ -4,7 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
 import { readFileSync, writeSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { moduleRepoRoot } from '../../module-repo-root.ts';
@@ -218,7 +218,8 @@ try {
     WHERE workspace_id = ${workspace} AND owner_id = 'native-incident-private-owner' AND leg = 'incident'`;
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.subject, `failed-tests:${testPath}`);
-  assert.equal(rows[0]!.chars, delivered.text.length + 2);
+  // push-channel.ts records a fact's own block length (no join separator) since a40935b119.
+  assert.equal(rows[0]!.chars, delivered.text.length);
   const duplicate = await postIncident();
   assert(!duplicate.text.includes('Code intelligence (incident)'), duplicate.text);
   const [count] = await getOrgPg().sql<{ count: number }[]>`SELECT count(*)::int AS count
@@ -288,6 +289,11 @@ async function installedNativeDispatcher({ repo, root, endpoint, workspace, owne
   let processes = 0;
   return { installation: { hashes, stamp }, processes: () => processes,
     post: async (nativeEvent: Record<string, unknown>) => {
+      // core.mjs hookOutcomeTracer: names the branch that produced an empty answer.
+      const outcomeFile = join(tmpdir(), `papercusp-hook-outcome-${process.pid}-${randomUUID()}.jsonl`);
+      const hookOutcome = () => {
+        try { return readFileSync(outcomeFile, 'utf8').trim().split('\n').map(line => JSON.parse(line) as unknown); } catch { return null; }
+      };
       const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done, reject) => {
         const child = spawn(process.execPath, [join(installedDir, 'index.mjs'),
           '--client=codex', '--event=post-tool-use'], { cwd: root, env: { ...process.env,
@@ -295,6 +301,7 @@ async function installedNativeDispatcher({ repo, root, endpoint, workspace, owne
           PAPERCUSP_HOME: join(homedir(), '.papercusp'), PAPERCUSP_WORKSPACE: workspace,
           PAPERCUSP_HARNESS_SLUG: workspace, PAPERCUSP_OPERATOR_URL: endpoint.origin,
           PAPERCUSP_MCP_PROXY_PORT: endpoint.port, PAPERCUSP_MID_TURN_CONTEXT: 'on',
+          PAPERCUSP_HOOK_OUTCOME_FILE: outcomeFile,
         }, stdio: ['pipe', 'pipe', 'pipe'] });
         processes++;
         const stdout = createTextCollector(child.stdout), stderr = createTextCollector(child.stderr);
@@ -305,7 +312,7 @@ async function installedNativeDispatcher({ repo, root, endpoint, workspace, owne
       });
       assert.equal(result.status, 0, JSON.stringify(result));
       assert.equal(result.stderr, '', result.stderr);
-      if (!result.stdout.trim()) return { text: '', envelope: null };
+      if (!result.stdout.trim()) return { text: '', envelope: null, hookOutcome: hookOutcome() };
       const envelope = JSON.parse(result.stdout);
       assert.equal(envelope.hookSpecificOutput?.hookEventName, 'PostToolUse');
       assert.equal(typeof envelope.hookSpecificOutput?.additionalContext, 'string');
@@ -395,7 +402,8 @@ async function runNativeSnapshotJourney({ call, workspace, root, owner, repo, en
     WHERE workspace_id = ${workspace} AND owner_id = ${owner} AND leg = ${leg}`;
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.subject, leg === 'first-touch' ? target : 'firstTouchTarget');
-  assert.equal(rows[0]!.chars, delivered.text.length + 2);
+  // push-channel.ts records a fact's own block length (no join separator) since a40935b119.
+  assert.equal(rows[0]!.chars, delivered.text.length);
   const duplicate = await dispatcher.post(nativeEvent);
   assert(!duplicate.text.includes(heading), duplicate.text);
   let unresolvedSuppressed: boolean | undefined;

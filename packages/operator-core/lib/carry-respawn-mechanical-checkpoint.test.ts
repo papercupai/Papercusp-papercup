@@ -29,6 +29,9 @@ type SnapshotOptions = NonNullable<Parameters<typeof import('./work-item-checkpo
 beforeEach(() => {
   vi.clearAllMocks();
   notes.clear();
+  // readHeldWorkItems splices its issue-family kind list via sql.unsafe(...) (carry-brief.ts),
+  // so the fake client must expose it; the fragment value is opaque to this fake's row builder.
+  Object.assign(mocks.sql, { unsafe: (fragment: string) => fragment });
   mocks.sql.mockImplementation(async (_strings: TemplateStringsArray, ...values: unknown[]) => {
     const rows = Array.from(notes.keys(), (id) => ({ issue_id: id, title: id, body: '', scope: 'harness:papercusp',
       taken_by: input.ownerId, workspace_id: input.workspaceId,

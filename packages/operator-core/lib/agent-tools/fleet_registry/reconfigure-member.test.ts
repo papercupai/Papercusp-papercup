@@ -90,12 +90,26 @@ describe('fleet:reconfigure-member (P-007)', () => {
     );
     const p = parse(res);
     expect(p).toMatchObject({ ok: true, fleet: SLUG, member: MEMBER, invokedAs: 'leader' });
-    expect(setCompactionLimitForOwner).toHaveBeenCalledWith(expect.anything(), MEMBER, 200_000);
+    expect(setCompactionLimitForOwner).toHaveBeenCalledWith(expect.anything(), MEMBER, 200_000, { directiveRef: undefined });
     expect(setClaimSpec).toHaveBeenCalledWith(expect.objectContaining({ cupId: MEMBER, spec: validSpec, updatedBy: LEADER }));
     expect(sendMessage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: [MEMBER] }));
     expect(p.applied.compactionLimit.ok).toBe(true);
     expect(p.applied.claimSpec).toMatchObject({ ok: true, revision: 3 });
     expect(p.applied.brief).toMatchObject({ ok: true, msgId: 'm1' });
+  });
+
+  it('forwards directiveRef to the cross-session setter so an owner directive can lift the role cap (WI-6554700010042435)', async () => {
+    setCompactionLimitForOwner.mockResolvedValueOnce({
+      ok: true,
+      compactionLimit: 825_000,
+      invokedAs: 'leader',
+      ownerDirective: { id: 2560, excerpt: 'increase your papercusp context limit to the maximum' },
+    });
+    const res = await tool.handler({ member: MEMBER, compactionLimit: 825_000, directiveRef: 2560 } as never, {} as never);
+    const p = parse(res);
+    expect(setCompactionLimitForOwner).toHaveBeenCalledWith(expect.anything(), MEMBER, 825_000, { directiveRef: 2560 });
+    expect(p.ok).toBe(true);
+    expect(p.applied.compactionLimit).toMatchObject({ ok: true, compactionLimit: 825_000, ownerDirective: { id: 2560 } });
   });
 
   it('rejects an invalid claim spec per-lever (overall ok:false), without touching the store', async () => {

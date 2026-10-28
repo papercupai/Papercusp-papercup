@@ -125,7 +125,7 @@ process.exit(spawnSync(args[2],args.slice(3),{stdio:'inherit'}).status??1);
 `);
     write(f.root, 'apps/operator/bin/release/dependency-generation.sh', `#!/bin/bash
 set -eu
-[ "$1" = --integration ] && [ "$2" = "$PWD" ] && [ "$3" = --ensure-ref ] && [ "$4" = ${f.source.sourceCommit} ] || exit 95
+[ "$1" = --integration ] && [ "$2" = "$PWD" ] && [ "$3" = --ensure-ref ] && [ "$4" = ${f.source.sourceCommit} ] && [ "$5" = --retain-as ] && [ "$6" = blind-review-${f.source.sourceCommit.slice(0, 48)} ] || exit 95
 printf exact-ref > warm-marker
 exit ${exitCode}
 `);

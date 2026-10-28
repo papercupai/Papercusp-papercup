@@ -792,6 +792,94 @@ export interface ConditionStalenessDeps {
 }
 
 /**
+ * EI-27066473667693647: every fail-soft leg of the tick, named so a swallowed
+ * error is attributable. The tick still never throws — each leg degrades exactly
+ * as before — but the error is RECORDED in `failures` instead of discarded.
+ */
+export type ConditionStalenessStage =
+  | 'read-states'
+  | 'read-infra-health'
+  | 'read-git-sync-health'
+  | 'reconcile-broadcast'
+  | 'probe-emitter'
+  | 'one-shot-broadcast'
+  | 'absence-broadcast'
+  | 'list-open'
+  | 'resolve'
+  | 'bridge'
+  | 'held-owner-sweep'
+  | 'escalate';
+
+export interface ConditionStalenessFailure {
+  stage: ConditionStalenessStage;
+  error: string;
+}
+
+/** What the WI-6554700010029296 holder-side sweep did this tick. */
+export interface HeldOwnerSweepOutcome {
+  /** false when no sweep dep was injected, or the tick ended before reaching it. */
+  ran: boolean;
+  /** owning work-items the sweep released this tick. */
+  released: number;
+  /** of those, how many were settled (closed) rather than only released. */
+  settled: number;
+  /** the sweep's error message when it threw, else null. */
+  error: string | null;
+}
+
+export interface ConditionStalenessTickResult {
+  fired: StaleConditionSignal[];
+  signals: StaleConditionSignal[];
+  resolved: string[];
+  reconciled: string[];
+  /** P-003: what the condition→work-item bridge did this tick. */
+  bridged: ReconcileSummary;
+  heldOwnerSweep: HeldOwnerSweepOutcome;
+  /** Every leg that threw this tick, in order. Empty on a clean tick. */
+  failures: ConditionStalenessFailure[];
+}
+
+const NO_SWEEP: HeldOwnerSweepOutcome = { ran: false, released: 0, settled: 0, error: null };
+const FAILURE_SUMMARY_MAX_CHARS = 600;
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** One line naming every failed leg, bounded so it fits the timer's `lastError`. */
+export function formatConditionStalenessFailures(failures: readonly ConditionStalenessFailure[]): string {
+  const text =
+    `condition-staleness tick: ${failures.length} leg failure(s): ` +
+    failures.map((f) => `${f.stage}: ${f.error}`).join('; ');
+  return text.length > FAILURE_SUMMARY_MAX_CHARS ? `${text.slice(0, FAILURE_SUMMARY_MAX_CHARS - 1)}…` : text;
+}
+
+/**
+ * EI-27066473667693647: the production timer's outcome reporter. It reports
+ * through the managed-timer surface instead of a new ledger: a tick with any
+ * failed leg REJECTS, so `managedSetInterval` records it as `lastError` (visible
+ * in `schedule:inventory`) and logs it, and the next clean tick clears it. A
+ * held-owner sweep that released items logs one line, so its settles show up in
+ * the journal. Before this fix the timer discarded the result and any rejection,
+ * so `lastError` was always null and none of these were observable.
+ */
+export function reportConditionStalenessTick(
+  result: ConditionStalenessTickResult,
+  log: (line: string) => void = (line) => console.info(line),
+): void {
+  const sweep = result.heldOwnerSweep;
+  if (sweep.ran && sweep.released > 0) {
+    log(
+      `[condition-staleness-alarm] held-owner sweep released ${sweep.released} item(s) ` +
+        `(${sweep.settled} settled)`,
+    );
+  }
+  if (result.failures.length > 0) {
+    throw new Error(formatConditionStalenessFailures(result.failures));
+  }
+}
+
+/**
  * One tick: fold current condition envelopes → state, RECONCILE any open
  * source-verifiable row (`infra-liveness:*` or `git-sync-stall:*`) whose
  * underlying signal is verified healthy right now (EI-14072 guard #2 plus
@@ -808,14 +896,11 @@ export interface ConditionStalenessDeps {
  */
 export async function runConditionStalenessTick(
   deps: ConditionStalenessDeps = {},
-): Promise<{
-  fired: StaleConditionSignal[];
-  signals: StaleConditionSignal[];
-  resolved: string[];
-  reconciled: string[];
-  /** P-003: what the condition→work-item bridge did this tick. */
-  bridged: ReconcileSummary;
-}> {
+): Promise<ConditionStalenessTickResult> {
+  const failures: ConditionStalenessFailure[] = [];
+  const fail = (stage: ConditionStalenessStage, err: unknown): void => {
+    failures.push({ stage, error: errorText(err) });
+  };
   const now = (deps.now ?? Date.now)();
   const readStates =
     deps.readStates ?? (async () => computeConditionStates(await readConditionEnvelopes()));
@@ -875,12 +960,21 @@ export async function runConditionStalenessTick(
   let states: ConditionState[];
   try {
     states = await readStates();
-  } catch {
+  } catch (err) {
     // A read failure must never crash the request worker nor look like "all clear".
     // The bridge is deliberately NOT run: with no trustworthy states, an "absent"
     // condition is indistinguishable from a resolved one, and bridging on that
     // reading would SETTLE every owning work-item on a transient DB blip.
-    return { fired: [], signals: [], resolved: [], reconciled: [], bridged: { acquired: [], released: [], skipped: 0 } };
+    fail('read-states', err);
+    return {
+      fired: [],
+      signals: [],
+      resolved: [],
+      reconciled: [],
+      bridged: { acquired: [], released: [], skipped: 0 },
+      heldOwnerSweep: NO_SWEEP,
+      failures,
+    };
   }
 
   // Reconcile BEFORE staleness evaluation, so a condition we just healed this
@@ -900,13 +994,15 @@ export async function runConditionStalenessTick(
   let infraHealthByKey = new Map<string, boolean>();
   try {
     infraHealthByKey = await readHealthByKey(openInfraSnapshotKeys);
-  } catch {
+  } catch (err) {
+    fail('read-infra-health', err);
     infraHealthByKey = new Map();
   }
   let gitSyncHealthByKey = new Map<string, boolean>();
   try {
     gitSyncHealthByKey = await readGitSyncHealthByKey(openGitSyncKeys, now);
-  } catch {
+  } catch (err) {
+    fail('read-git-sync-health', err);
     gitSyncHealthByKey = new Map();
   }
   const healthByKey = new Map<string, boolean>([
@@ -923,8 +1019,9 @@ export async function runConditionStalenessTick(
           `verified healthy (no matching resolution had landed): ${toReconcileHealth.join(', ')}.`,
       });
       if (ok) reconciled.push(...toReconcileHealth);
-    } catch {
+    } catch (err) {
       /* a broadcast failure must never crash the request worker */
+      fail('reconcile-broadcast', err);
     }
     if (reconciled.length > 0) {
       const reconciledSet = new Set(reconciled);
@@ -943,7 +1040,8 @@ export async function runConditionStalenessTick(
     if (!state.open || state.one_shot !== true || !state.latest_emitter) continue;
     try {
       oneShotLiveness.set(state.condition_key, probeEmitter(state.latest_emitter));
-    } catch {
+    } catch (err) {
+      fail('probe-emitter', err);
       oneShotLiveness.set(state.condition_key, 'unknown');
     }
   }
@@ -962,8 +1060,9 @@ export async function runConditionStalenessTick(
         const deadSet = new Set(deadOneShotKeys);
         states = states.map((s) => (deadSet.has(s.condition_key) ? { ...s, open: false } : s));
       }
-    } catch {
+    } catch (err) {
       /* a broadcast failure must never crash the request worker */
+      fail('one-shot-broadcast', err);
     }
   }
 
@@ -989,8 +1088,9 @@ export async function runConditionStalenessTick(
         const absentSet = new Set(absentKeys);
         states = states.map((s) => (absentSet.has(s.condition_key) ? { ...s, open: false } : s));
       }
-    } catch {
+    } catch (err) {
       /* a broadcast failure must never crash the request worker */
+      fail('absence-broadcast', err);
     }
   }
 
@@ -1010,7 +1110,8 @@ export async function runConditionStalenessTick(
       if (list) list.push(rec);
       else openBySig.set(sig, [rec]);
     }
-  } catch {
+  } catch (err) {
+    fail('list-open', err);
     openBySig = new Map();
   }
 
@@ -1026,8 +1127,9 @@ export async function runConditionStalenessTick(
           `condition-staleness signal '${sig}' cleared (condition resolved or no longer stale)`,
         );
         resolved.push(rec.msg_id);
-      } catch {
+      } catch (err) {
         /* a resolve failure must never crash the request worker */
+        fail('resolve', err);
       }
     }
     lastAlertedAt.delete(sig);
@@ -1045,6 +1147,7 @@ export async function runConditionStalenessTick(
   // Fully fail-soft: bridging is additive bookkeeping, and no failure here may
   // affect the escalation verdict computed above.
   let bridged: ReconcileSummary = { acquired: [], released: [], skipped: 0 };
+  let heldOwnerSweep: HeldOwnerSweepOutcome = NO_SWEEP;
   if (deps.bridgeConditions) {
     let coveredKeys: ReadonlySet<string> = new Set();
     try {
@@ -1064,17 +1167,26 @@ export async function runConditionStalenessTick(
       bridged = await deps.bridgeConditions(bridgeStates, {
         workspaceId: coordScopeWorkspace(),
       });
-    } catch {
+    } catch (err) {
       /* a bridge failure must never crash the request worker */
+      fail('bridge', err);
     }
     if (deps.reconcileHeldOwners) {
       // WI-6554700010029296. Separate try: a sweep failure must not discard what
       // the bridge already did this tick.
       try {
         const swept = await deps.reconcileHeldOwners(coveredKeys);
+        heldOwnerSweep = {
+          ran: true,
+          released: swept.filter((r) => r.released !== null).length,
+          settled: swept.filter((r) => r.settled).length,
+          error: null,
+        };
         if (swept.length > 0) bridged = { ...bridged, released: [...bridged.released, ...swept] };
-      } catch {
+      } catch (err) {
         /* fail-soft; the next tick retries */
+        fail('held-owner-sweep', err);
+        heldOwnerSweep = { ran: true, released: 0, settled: 0, error: errorText(err) };
       }
     }
   }
@@ -1124,11 +1236,12 @@ export async function runConditionStalenessTick(
           [SELF_RECONCILING_META_KEY]: true,
         },
       });
-    } catch {
+    } catch (err) {
       /* an alarm-send failure must never crash the request worker */
+      fail('escalate', err);
     }
   }
-  return { fired, signals, resolved, reconciled, bridged };
+  return { fired, signals, resolved, reconciled, bridged, heldOwnerSweep, failures };
 }
 
 /**
@@ -1169,10 +1282,9 @@ export function startConditionStalenessAlarm(opts: { intervalMs?: number } = {})
             readKeyOpen: readExactConditionOpen,
             workspaceId: coordScopeWorkspace(),
           }),
-      }).then(
-        () => undefined,
-        () => undefined,
-      ),
+        // EI-27066473667693647: report, never discard. A failed leg rejects this
+        // promise so managedSetInterval records it as lastError and logs it.
+      }).then((result) => reportConditionStalenessTick(result)),
     { category: 'watchdog' },
   );
   return {

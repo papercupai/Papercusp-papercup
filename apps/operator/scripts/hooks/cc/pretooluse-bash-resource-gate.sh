@@ -5949,13 +5949,14 @@ _NONFILE_WRITE_RE = re.compile(
 )
 # Unambiguous on sight — any one of these alone means a file write.
 _WRITE_INDICATOR_RE = re.compile(
-    r'\bopen\s*\([^)]*,\s*[\'"][waxWAX][b+t]?[\'"]'        # open(path, 'w'/'a'/'x'[b/t/+])
-    r'|writeFileSync|appendFileSync|createWriteStream'      # node fs, common named forms
+    r'writeFileSync|appendFileSync|createWriteStream'        # node fs, common named forms
     r'|\bwrite_(?:text|bytes)\s*\('                         # pathlib Path.write_text/_bytes
     r'|\.save\s*\('                                        # common ORM/model .save(
     r'|(?:pickle|json|yaml)\.dump\s*\('                     # serialize-to-file idioms
     r'|shutil\.(?:copy|move)|os\.(?:rename|remove|replace)|unlink\s*\('
 )
+_OPEN_CALL_RE = re.compile(r'\bopen\s*\(')
+_OPEN_WRITE_MODE_ARG_RE = re.compile(r'''(['"])[waxWAX][b+t]?\1''')
 # Ambiguous alone — only a write indicator alongside a file-object construct.
 _BARE_WRITE_CALL_RE = re.compile(r'\bwrite\w*\s*\(')
 _FILE_OBJECT_RE = re.compile(
@@ -5963,12 +5964,81 @@ _FILE_OBJECT_RE = re.compile(
 )
 
 
-def _body_indicates_file_write(body):
+def _mask_python_literals(body):
+    """Length-preserving Python code mask; call sites use it, path args use raw text.
+
+    Inline serializers commonly carry source code inside Python string literals. Matching
+    those contents as executable code made a remote `artifacts.save(...)` look like a local
+    filesystem write. Keep offsets stable so the call scanner can match on this mask and
+    then inspect the corresponding raw arguments. The raw regexes are a cheap monotonic
+    prefilter: tokenize only a body that contains a possible write/file-object token.
+    """
+    if not (
+        _WRITE_INDICATOR_RE.search(body)
+        or _OPEN_CALL_RE.search(body)
+        or _BARE_WRITE_CALL_RE.search(body)
+        or _FILE_OBJECT_RE.search(body)
+    ):
+        return body
+
+    try:
+        import io
+        import tokenize
+
+        line_offsets = [0]
+        for line in body.splitlines(keepends=True):
+            line_offsets.append(line_offsets[-1] + len(line))
+        out = list(body)
+        for token in tokenize.generate_tokens(io.StringIO(body).readline):
+            if token.type not in (tokenize.STRING, tokenize.COMMENT):
+                continue
+            if token.type == tokenize.STRING:
+                prefix = re.match(r'''(?i)^([rubf]*)(''' + "'''|\\\"\\\"\\\"|'|\\\")", token.string)
+                # Python 3.11 tokenizes an entire f-string as STRING. Leave it visible so
+                # executable expressions inside `{...}` remain eligible for the guard.
+                if prefix and 'f' in prefix.group(1).lower():
+                    continue
+            start = line_offsets[token.start[0] - 1] + token.start[1]
+            end = line_offsets[token.end[0] - 1] + token.end[1]
+            for index in range(start, end):
+                if body[index] not in '\r\n':
+                    out[index] = ' '
+        return ''.join(out)
+    except Exception:
+        # An incomplete or malformed inline body cannot safely be tokenized. Preserve the
+        # old conservative scan rather than letting a mask error disable the guard.
+        return body
+
+
+def _has_literal_open_write(body, scan):
+    """Recognize open(path, 'w'/'a'/'x') with the call found outside Python literals."""
+    for match in _OPEN_CALL_RE.finditer(scan):
+        start = match.end() - 1
+        depth = 0
+        end = None
+        for index in range(start, len(scan)):
+            if scan[index] == '(':
+                depth += 1
+            elif scan[index] == ')':
+                depth -= 1
+                if depth == 0:
+                    end = index
+                    break
+        if end is None:
+            continue
+        args = _split_static_expression(body[start + 1:end], ',')
+        if len(args) > 1 and _OPEN_WRITE_MODE_ARG_RE.fullmatch(args[1].strip()):
+            return True
+    return False
+
+
+def _body_indicates_file_write(body, code_scan=None):
     # Non-file sinks are stripped FIRST: `sys.stdout.write(` must not satisfy
     # the bare-write test, and stripping it cannot hide a real write because
     # a real write is a separate call elsewhere in the body.
-    scan = _NONFILE_WRITE_RE.sub('', body)
-    if _WRITE_INDICATOR_RE.search(scan):
+    code_scan = code_scan if code_scan is not None and len(code_scan) == len(body) else body
+    scan = _NONFILE_WRITE_RE.sub('', code_scan)
+    if _WRITE_INDICATOR_RE.search(scan) or _has_literal_open_write(body, code_scan):
         return True
     return bool(_BARE_WRITE_CALL_RE.search(scan) and _FILE_OBJECT_RE.search(scan))
 _INTERPRETER_RE = re.compile(r'(?:^|[\s;&|(])(?:[\w./-]*/)?(python3?|node|perl|ruby|deno|bun)(?=\s|$)')
@@ -6126,23 +6196,43 @@ _PATH_ASSIGNMENT_PREFIX_RE = re.compile(
 )
 
 
-def _path_constructor_is_write_target(body, call_start, call_end, write_spans):
+def _path_open_write_suffix_is_code(body, code_scan, start, end):
+    """Check that the final `.open(...)` in a raw suffix is real code, not a string."""
+    suffix = body[start:end]
+    opens = list(re.finditer(r'\.\s*open\s*\(', suffix))
+    if not opens:
+        return False
+    # The regex being validated already requires its final `.open()` to be a
+    # write-mode call. Confirm that exact method token survived the literal mask.
+    method = re.search(r'open\s*\(', opens[-1].group(0))
+    if not method:
+        return False
+    absolute_start = start + opens[-1].start() + method.start()
+    expected = method.group(0)
+    return code_scan[absolute_start:absolute_start + len(expected)] == expected
+
+
+def _path_constructor_is_write_target(body, call_start, call_end, write_spans, code_scan=None):
+    code_scan = code_scan if code_scan is not None and len(code_scan) == len(body) else body
     # Direct receiver form: Path("tree/file").write_text(...), including
     # property/method chains whose final operation is a known write.
-    _suffix = body[call_end:]
-    if (_PATH_DIRECT_WRITE_SUFFIX_RE.match(_suffix)
-            or _PATH_DIRECT_OPEN_WRITE_SUFFIX_RE.match(_suffix)):
+    _suffix = code_scan[call_end:]
+    if _PATH_DIRECT_WRITE_SUFFIX_RE.match(_suffix):
+        return True
+    _direct_open = _PATH_DIRECT_OPEN_WRITE_SUFFIX_RE.match(body[call_end:])
+    if (_direct_open and _path_open_write_suffix_is_code(
+            body, code_scan, call_end, call_end + _direct_open.end())):
         return True
 
     # Preserve the common assigned-Path forms too: target = Path(...); then
     # target.write_text(...) or open(target, "w"). Follow only simple aliases
     # in statement-boundary assignments; this remains a literal static scan,
     # not language-level dataflow.
-    _lhs = _PATH_ASSIGNMENT_PREFIX_RE.search(body[:call_start])
+    _lhs = _PATH_ASSIGNMENT_PREFIX_RE.search(code_scan[:call_start])
     if not _lhs:
         return False
     _aliases = {_lhs.group(1)}
-    for _assignment in _SIMPLE_ASSIGN_RE.finditer(body, call_end):
+    for _assignment in _SIMPLE_ASSIGN_RE.finditer(code_scan, call_end):
         _name = _assignment.group(1)
         _value = _assignment.group(2).strip()
         if _value in _aliases:
@@ -6155,10 +6245,14 @@ def _path_constructor_is_write_target(body, call_start, call_end, write_spans):
         if re.search(
             _prefix + r'\s*\.\s*(?:write_(?:text|bytes)|unlink)\s*\(',
             _suffix,
-        ) or re.search(
-            _prefix + r'''\s*\.\s*open\s*\(\s*(['"])[waxWAX][b+t]?\1''',
-            _suffix,
         ):
+            return True
+        _open = re.search(
+            _prefix + r'''\s*\.\s*open\s*\(\s*(['"])[waxWAX][b+t]?\1''',
+            body[call_end:],
+        )
+        if (_open and _path_open_write_suffix_is_code(
+                body, code_scan, call_end + _open.start(), call_end + _open.end())):
             return True
         for _span in write_spans:
             _first = _first_call_arg_text(_span)
@@ -6167,22 +6261,23 @@ def _path_constructor_is_write_target(body, call_start, call_end, write_spans):
     return False
 
 
-def _write_call_arg_spans(body):
+def _write_call_arg_spans(body, code_scan=None):
     # The parenthesized argument list of each recognized write/file-construct
     # call, found by balanced-paren matching from the call site's `(` —
     # rather than a regex capture, since arguments can themselves contain
     # nested parens (`open(os.path.join(a, b), 'w')`). Skips a call whose
     # parens never balance (truncated body, unterminated construct) — there
     # is nothing safe to scan past a call site like that.
+    code_scan = code_scan if code_scan is not None and len(code_scan) == len(body) else body
     spans = []
     path_calls = []
-    for _m in _WRITE_CALL_SITE_RE.finditer(body):
+    for _m in _WRITE_CALL_SITE_RE.finditer(code_scan):
         _start = _m.end() - 1  # index of the call's opening '('
         _depth = 0
         _i = _start
-        _n = len(body)
+        _n = len(code_scan)
         while _i < _n:
-            _ch = body[_i]
+            _ch = code_scan[_i]
             if _ch == '(':
                 _depth += 1
             elif _ch == ')':
@@ -6196,7 +6291,8 @@ def _write_call_arg_spans(body):
                     break
             _i += 1
     for _call_start, _call_end, _span in path_calls:
-        if _path_constructor_is_write_target(body, _call_start, _call_end, spans):
+        if _path_constructor_is_write_target(
+                body, _call_start, _call_end, spans, code_scan):
             spans.append(_span)
     return spans
 
@@ -6257,9 +6353,10 @@ def _first_call_arg_has_no_literal(span):
     return not any(c in first_arg for c in ('\'', '"'))
 
 
-def _has_computed_write_path(body):
-    _variables = _literal_var_assignments(body)
-    for _span in _write_call_arg_spans(body):
+def _has_computed_write_path(body, code_scan=None):
+    code_scan = code_scan if code_scan is not None and len(code_scan) == len(body) else body
+    _variables = _literal_var_assignments(body, code_scan)
+    for _span in _write_call_arg_spans(body, code_scan):
         if _first_call_arg_has_no_literal(_span):
             return True
         _first_arg = _first_call_arg_text(_span)
@@ -6371,16 +6468,24 @@ def _static_path_expression(expr, variables, depth=0):
     return None
 
 
-def _literal_var_assignments(body):
+def _literal_var_assignments(body, code_scan=None):
     """{ varName: literalValue } for simple assignments in the body.
 
     Last assignment wins (top-to-bottom scan order). Static path expressions
     are reduced to one value; unsupported expressions are omitted, not guessed.
     """
+    code_scan = code_scan if code_scan is not None and len(code_scan) == len(body) else body
     out = {}
-    for _m in _SIMPLE_ASSIGN_RE.finditer(body):
+    for _m in _SIMPLE_ASSIGN_RE.finditer(code_scan):
         _name = _m.group(1)
-        _value = _static_path_expression(_m.group(2), out)
+        # The regex's optional whitespace can consume a masked string literal
+        # entirely, leaving group 2 empty. Use the masked match only to locate
+        # the assignment operator and statement boundary, then read that same
+        # span from the original body so literal values remain available.
+        _equals = code_scan.find('=', _m.end(1), _m.end())
+        if _equals < 0:
+            continue
+        _value = _static_path_expression(body[_equals + 1:_m.end()], out)
         if _value is None:
             out.pop(_name, None)
         else:
@@ -6418,7 +6523,7 @@ def _first_call_arg_bare_ident(span):
     return cand if _BARE_IDENT_RE.match(cand) else None
 
 
-def _payload_literal_tree_path(body, canon, cwd):
+def _payload_literal_tree_path(body, canon, cwd, code_scan=None):
     # Every quoted token inside the FIRST, top-level path argument of a
     # write-call span (see _write_call_arg_spans above — EI-18814109122347052)
     # that looks path-like (contains `/` or a dotted extension) and carries no
@@ -6426,8 +6531,9 @@ def _payload_literal_tree_path(body, canon, cwd):
     # literal-only way as _resolve_write_target. Later arguments are payloads,
     # not path operands; scanning them caused rationale prose such as
     # `wave-b-gate.test.ts` to manufacture a false in-tree hit (EI-21274601485463217).
+    code_scan = code_scan if code_scan is not None and len(code_scan) == len(body) else body
     _var_literals = None  # lazily built only if a bare-identifier arg needs it
-    for _span in _write_call_arg_spans(body):
+    for _span in _write_call_arg_spans(body, code_scan):
         _first_arg = _first_call_arg_text(_span)
         if _first_arg is None:
             continue  # unbalanced — nothing safe to scan
@@ -6440,7 +6546,7 @@ def _payload_literal_tree_path(body, canon, cwd):
         _bare = _first_call_arg_bare_ident(_span)
         if _bare:
             if _var_literals is None:
-                _var_literals = _literal_var_assignments(body)
+                _var_literals = _literal_var_assignments(body, code_scan)
             _val = _var_literals.get(_bare)
             if _val is not None and not any(ch in _val for ch in ('$', '`', '{', '}')):
                 for cand in _val.split():
@@ -6452,7 +6558,7 @@ def _payload_literal_tree_path(body, canon, cwd):
                         return cand
         _static_target = _static_path_expression(_first_arg, _var_literals or {})
         if _static_target is None and _var_literals is None:
-            _var_literals = _literal_var_assignments(body)
+            _var_literals = _literal_var_assignments(body, code_scan)
             _static_target = _static_path_expression(_first_arg, _var_literals)
         if _static_target is not None:
             if _looks_like_path_candidate(_static_target):
@@ -6568,10 +6674,11 @@ def _interpreter_write_guard():
     # guard cannot catch it.
     _saw_computed_write = False
     for _body in _bodies:
-        if not _body_indicates_file_write(_body):
+        _code_scan = _mask_python_literals(_body) if _interp in ('python', 'python3') else _body
+        if not _body_indicates_file_write(_body, _code_scan):
             continue  # a read, a stdout/stderr print, or no recognized file
             # I/O at all — nothing to gate (EI-18692070370140239)
-        _hit = _payload_literal_tree_path(_body, _canon, _eff_cwd)
+        _hit = _payload_literal_tree_path(_body, _canon, _eff_cwd, _code_scan)
         if _hit:
             # The scanned text here is the interpreter PAYLOAD, not the shell
             # command — showing it is what tells a confused reader which of the
@@ -6599,7 +6706,7 @@ def _interpreter_write_guard():
                     _scratch_remedy_for_target(_hit, _canon, _eff_cwd),
                 )
             )
-        elif _has_computed_write_path(_body):
+        elif _has_computed_write_path(_body, _code_scan):
             _saw_computed_write = True
     if _saw_computed_write and not ADVISORY:
         ADVISORY = (

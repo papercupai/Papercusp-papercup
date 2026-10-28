@@ -515,6 +515,34 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
     expect(parsed.error.issues.map((issue) => issue.message).join(' ')).toMatch(new RegExp(message, 'i'));
   });
 
+  it('accepts scenario-to-case proof only when it names declared scenarios and exact test cases', () => {
+    const valid = bindingSchema.safeParse({
+      ...measuredBinding,
+      details: {
+        adequacy: {
+          scenarioIds: ['correlated-tool-error'],
+          testCases: ['dispatch failure emits the correlated exception'],
+          scenarioTestCases: {
+            'correlated-tool-error': ['dispatch failure emits the correlated exception'],
+          },
+        },
+      },
+    });
+    expect(valid.success).toBe(true);
+
+    const unboundCase = bindingSchema.safeParse({
+      ...measuredBinding,
+      details: {
+        adequacy: {
+          scenarioIds: ['correlated-tool-error'],
+          testCases: ['exporter maps error spans'],
+          scenarioTestCases: { 'correlated-tool-error': ['unlisted dispatch case'] },
+        },
+      },
+    });
+    expect(unboundCase.success).toBe(false);
+  });
+
   it('rejects causal-pair ids on non-executable fixture evidence', () => {
     const parsed = bindingSchema.safeParse({
       ...measuredBinding,

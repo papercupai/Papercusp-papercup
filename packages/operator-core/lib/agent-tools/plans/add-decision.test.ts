@@ -91,6 +91,8 @@ import tool, {
   decisionCitedRuleAdvisory,
   stripLeadingDecisionId,
   titleIdPrefixAdvisory,
+  addDecisionArgsObject,
+  normalizeAddDecisionItemRefs,
 } from './add-decision';
 import { parsePlan } from './parser';
 
@@ -107,9 +109,13 @@ const HANDLER_PLAN = [
   '',
 ].join('\n');
 
+// SPEC-P-018: a decision write from an unattributable caller is refused, so the handler
+// fixture carries a caller identity (resolveAgentIdentity's superuser branch).
 const handlerContext = (harnessSlug = '*') => ({
   workspaceId: 'ws-add-decision',
   harnessSlug,
+  isSuperuser: true,
+  uiClientId: 'su-test-recorder',
   metadata: vi.fn(),
 });
 
@@ -150,8 +156,26 @@ describe('plans:add-decision — itemRefs alias for refs', () => {
     expect(parsed.success).toBe(true);
   });
 
-  it('documents the shared P-NNN namespace on the itemRefs alias', () => {
-    expect(tool.args.shape.itemRefs.description).toMatch(/same in-plan `P-NNN` reference format/i);
+  // WI-6554700010030925: itemRefs is folded into refs before parse (floor bytes), not declared.
+  it('folds itemRefs into refs at both levels, and refs wins when both are given', () => {
+    const single = tool.args.safeParse({ slug: 'some-plan', title: 'A decision', body: 'Body text.', itemRefs: ['P-008'] });
+    expect(single.success && single.data).toMatchObject({ refs: ['P-008'] });
+    expect(single.success && 'itemRefs' in single.data).toBe(false);
+    const both = tool.args.safeParse({ slug: 'some-plan', title: 'A', body: 'B', refs: ['P-001'], itemRefs: ['P-002'] });
+    expect(both.success && both.data).toMatchObject({ refs: ['P-001'] });
+    const bulk = tool.args.safeParse({
+      items: [
+        { slug: 'some-plan', title: 'A', body: 'B', itemRefs: ['P-003'] },
+        { slug: 'some-plan', title: 'C', body: 'D', refs: ['P-004'], itemRefs: ['P-005'] },
+      ],
+    });
+    expect(bulk.success && bulk.data.items).toEqual([
+      expect.objectContaining({ refs: ['P-003'] }),
+      expect.objectContaining({ refs: ['P-004'] }),
+    ]);
+    expect(bulk.success && bulk.data.items?.some((it) => 'itemRefs' in it)).toBe(false);
+    expect(normalizeAddDecisionItemRefs('not-an-object')).toBe('not-an-object');
+    expect('itemRefs' in addDecisionArgsObject.shape).toBe(false);
   });
 
   it('still rejects a genuinely unknown key (EI-10883 closed shape intact)', () => {
@@ -177,7 +201,7 @@ describe('plans:add-decision — itemRefs alias for refs', () => {
 
 describe('plans:add-decision — measure before you rule', () => {
   it('documents the tree-measurement contract on both the schema and tool guidance', () => {
-    expect(tool.args.shape.body.description).toContain('Measured:');
+    expect(addDecisionArgsObject.shape.body.description).toContain('Measured:');
     expect(tool.guidance?.when).toContain('open the tree');
     expect(tool.description).toContain('measurementAdvisory');
   });
@@ -323,11 +347,11 @@ describe('plans:add-decision — affects uses the cross-plan slug namespace', ()
     });
     expect(parsed.success).toBe(true);
 
-    const affectsSchema = tool.args.shape.affects;
+    const affectsSchema = addDecisionArgsObject.shape.affects;
     expect(affectsSchema.description).toMatch(/existing plan slugs of OTHER plans/i);
     const itemDescription = affectsSchema.unwrap().element.description;
     expect(itemDescription).toMatch(/not a surface label/i);
-    expect(itemDescription).toMatch(/refs\/itemRefs/i);
+    expect(itemDescription).toMatch(/use refs for in-plan/i);
   });
 
   it('rejects free-form surface labels instead of silently reporting unknown_affects after the write', () => {
@@ -737,6 +761,23 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
       ok: false,
       slug: 'handler-plan',
       error: 'provenance_owner_tag_without_owner_kind',
+    });
+  });
+
+  it('SPEC-P-018: an unattributable caller is refused before the write, so no decision lands without provenance', async () => {
+    const { isSuperuser: _su, uiClientId: _client, ...anonymous } = handlerContext();
+
+    const result = await handlerBody(
+      { harness: 'explicit-harness', slug: 'handler-plan', title: 'Anonymous ruling', body: 'No provenance shapes.' },
+      anonymous,
+    );
+
+    expect(handlerMocks.withPlanLock).not.toHaveBeenCalled();
+    expect(result.results[0]).toMatchObject({
+      ok: false,
+      slug: 'handler-plan',
+      error: 'provenance_unattributable',
+      field: 'provenance',
     });
   });
 

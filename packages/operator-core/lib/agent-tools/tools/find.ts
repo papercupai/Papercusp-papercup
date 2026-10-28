@@ -1590,12 +1590,8 @@ export default defineTool({
     z.object({
       /** What you want to do, in natural language or keywords. */
       query: z.string().min(1).max(400).optional(),
-      q: z
-        .string()
-        .min(1)
-        .max(400)
-        .optional()
-        .describe('Compatibility alias for `query`; explicit `query` wins when both are supplied.'),
+      // `q` is a FOLDED alias (accepted, not advertised — WI-6554700010030925, floor budget):
+      // normalizeToolsFindArgs maps it to `query` before parse; explicit `query` wins.
       /** Max results (default 8, hard maximum 25). */
       limit: z
         .number()

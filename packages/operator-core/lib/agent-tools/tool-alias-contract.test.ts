@@ -34,6 +34,9 @@ import inboxTool from './coordination/tools/inbox';
 import eventsCatalogTool from './events/catalog';
 import loopStatusTool from './loop/status';
 import bashTool from './capability/bash';
+import toolsFindTool from './tools/find';
+import orientTool from './coordination/tools/orient';
+import addDecisionTool from './plans/add-decision';
 
 type ParsableTool = { args: { safeParse(v: unknown): { success: boolean; data?: unknown; error?: unknown } } };
 /** The tool modules a FOLDED_ARG_ALIASES row may name — a row for any other tool fails loudly. */
@@ -46,6 +49,9 @@ const FOLDED_ALIAS_TOOLS: Record<string, ParsableTool> = {
   'events:catalog': eventsCatalogTool as unknown as ParsableTool,
   'loop:status': loopStatusTool as unknown as ParsableTool,
   'capability:bash': bashTool as unknown as ParsableTool,
+  'tools:find': toolsFindTool as unknown as ParsableTool,
+  'coord:orient': orientTool as unknown as ParsableTool,
+  'plans:add-decision': addDecisionTool as unknown as ParsableTool,
 };
 
 function liveScannableTools(): AliasScannableTool[] {

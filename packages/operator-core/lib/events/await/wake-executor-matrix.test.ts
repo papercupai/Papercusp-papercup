@@ -118,6 +118,14 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
       claimResume: async () => true,
       // WI-10002854: the real accountant writes the ledger row and adv pid to PG.
       accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
+      // EI-27228943258833551: the EI-203843 lifecycle gate is the FIRST delivery
+      // decision, and its production default reads the session brief from PG with
+      // failClosed:true. Left unstubbed, a slow or unreachable PG parks every row
+      // as "lifecycle custody is unknown" before it reaches the rung under test,
+      // so the killed-owner and retirement-race rows went red without exercising
+      // their guards. Model "no lifecycle record" here; rows that test the gate
+      // itself override it explicitly.
+      getSessionLifecycle: async () => null,
       ...over,
     };
   }
@@ -433,6 +441,9 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
       kind: 'park',
       reason:
         'psu-host deferred-carry-respawn-pending: the live host deferred this wake; parked for a durable retry, never a second process',
+      // parkOnHostDeferral marks a host-accepted deferral as host-owned so the
+      // pump's attempt ceiling and inbox fallback do not race the host re-arm.
+      hostCommitPending: true,
     });
     expect(injects).toBe(1);
     expect(spawns).toBe(0);

@@ -240,6 +240,15 @@ export interface CodexOAuthAdapterOptions {
    * tool here. Null ⇒ no account can serve the model; the refusal is forwarded truthfully.
    */
   selectAlternate?(exclude: ReadonlySet<string>): { accountId: string } | null;
+  /**
+   * WI-6554700010042440: the TRANSIENT-pause horizon for an `account-unavailable`
+   * pacing failure. Return the account that comes back soonest, and when, ONLY when
+   * no account can serve right now and that return is short (a burst 429's
+   * few-second reset). The adapter then re-routes to it behind a kernel
+   * `delayMs` instead of rotating onto usage-walled accounts and shedding a 429.
+   * Null ⇒ legacy rotation (a sibling can serve now, or nothing recovers soon).
+   */
+  transientRecovery?(): { accountId: string; recoverAt: number } | null;
   now?(): number;
 }
 
@@ -762,6 +771,20 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
     selectFailover(context) {
       if (context.lastError?.code === 'account-unavailable') {
         try {
+          // Every serviceable account is only briefly paused: wait out the
+          // soonest reset on that account rather than walking walled ones.
+          const recovery = opts.transientRecovery?.() ?? null;
+          if (recovery) {
+            const account = opts.accounts().find(candidate => candidate.accountId === recovery.accountId);
+            if (account) {
+              triedAccounts.add(account.accountId);
+              auth = undefined;
+              authAccount = '';
+              const route = routeFor(account, 'rotate', context.currentRoute?.value.modelMode ?? 'public');
+              // +50ms: land just after the pause lifts, not on the boundary tick.
+              return { ...route, delayMs: Math.max(0, recovery.recoverAt - now()) + 50 };
+            }
+          }
           const next = opts.pool?.active();
           if (!next || triedAccounts.has(next.accountId)) return null;
           const account = opts.accounts().find(candidate => candidate.accountId === next.accountId);

@@ -1860,6 +1860,9 @@ describe('wakeTurnText', () => {
     expect(t).toContain('not observed by your deadline');
     expect(t).toContain('may have fired since');
     expect(t).toContain('events:status');
+    expect(t).toContain('event_inspection.waiters');
+    expect(t).toContain('state "registered"');
+    expect(t).toContain('active_awaits only for generic or await_id status reads');
     expect(t).not.toContain('awaited source did NOT complete');
     // EI-20489286325396940: name the authoritative column so the reader never has
     // to open events:status to learn WHY the wake fired.

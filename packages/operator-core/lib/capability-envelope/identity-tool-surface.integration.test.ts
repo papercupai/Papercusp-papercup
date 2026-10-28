@@ -1,14 +1,77 @@
 import { fork } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { expect, it } from 'vitest';
+import { beforeAll, expect, it } from 'vitest';
 import {
   captureIsolatedWorker,
+  isolatedWorkerFailureDetail,
   isolatedWorkerOptions,
   recordIsolatedIntegrationProof,
 } from '../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../..');
+const parentBlueprintYaml = [
+  'id: parent',
+  'workItem:',
+  '  kind: feature',
+  'spine:',
+  '  edges:',
+  '    DONE:',
+  '      to: done',
+  'fleet:',
+  '  workerRoles:',
+  '    - id: su',
+  '      capabilities:',
+  '        - "work_items:write"',
+  '',
+].join('\n');
+const baseBlueprintYaml = 'id: sales-pot\nextends: parent\n';
+const governedBlueprintYaml = [
+  'id: sales-pot',
+  'extends: parent',
+  'fleet:',
+  '  workerRoles:',
+  '    - id: su',
+  '      capabilities:',
+  '        - "coord:read"',
+  '',
+].join('\n');
+
+beforeAll(async () => {
+  const fixtureRoot = mkdtempSync(join(tmpdir(), 'identity-tool-surface-preflight-'));
+  const sourceDir = join(fixtureRoot, '.papercusp');
+  const blueprintsDir = join(sourceDir, 'blueprints');
+  const parentDir = join(blueprintsDir, 'parent');
+  try {
+    mkdirSync(parentDir, { recursive: true });
+    writeFileSync(join(parentDir, 'blueprint.yaml'), parentBlueprintYaml);
+    writeFileSync(join(sourceDir, 'blueprint.yaml'), baseBlueprintYaml);
+    const [{ loadBlueprintFromFile }, { operatorResolveExtends }] = await Promise.all([
+      import('@papercusp/orchestrator/blueprint'),
+      import('../blueprint/installed-blueprints'),
+    ]);
+    const loaded = loadBlueprintFromFile(join(sourceDir, 'blueprint.yaml'),
+      operatorResolveExtends({ localDirs: [blueprintsDir] }));
+    expect(loaded.blueprint).toMatchObject({
+      workItem: { kind: 'feature' },
+      spine: { edges: { DONE: { to: 'done' } } },
+    });
+
+    // Check the chosen candidates' declarations without importing the complete
+    // agent-tool bootstrap (whose unrelated integrations can open operator PG).
+    for (const [path, name, capability] of [
+      ['packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts', 'coord:inbox', 'coord:read'],
+      ['packages/operator-core/lib/agent-tools/coordination/tools/feed.ts', 'coord:feed', 'audit:read'],
+    ]) {
+      const source = readFileSync(join(root, path), 'utf8');
+      expect(source).toMatch(new RegExp(`name:\\s*['\"]${name}['\"]`));
+      expect(source).toMatch(new RegExp(`capability:\\s*['\"]${capability}['\"]`));
+    }
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
 
 it('measures the production identity policy read in a private background runtime', async () => {
   const runId = await recordIsolatedIntegrationProof({
@@ -76,17 +139,9 @@ it('measures the production identity policy read in a private background runtime
         await mkdir(blueprintDir, { recursive: true });
         const parentBlueprintDir = join(blueprintDir, 'parent');
         await mkdir(parentBlueprintDir, { recursive: true });
-        await writeFile(join(parentBlueprintDir, 'blueprint.yaml'), [
-          'id: parent',
-          'fleet:',
-          '  workerRoles:',
-          '    - id: su',
-          '      capabilities:',
-          '        - "work_items:write"',
-          '',
-        ].join('\n'));
+        await writeFile(join(parentBlueprintDir, 'blueprint.yaml'), ${JSON.stringify(parentBlueprintYaml)});
         const blueprintPath = join(sourceDir, 'blueprint.yaml');
-        await writeFile(blueprintPath, 'id: sales-pot\nextends: parent\n');
+        await writeFile(blueprintPath, ${JSON.stringify(baseBlueprintYaml)});
 
         const registry = { projects: [
           { slug: 'sales', path: potPath, hive_slug: 'sales-pot' },
@@ -102,16 +157,7 @@ it('measures the production identity policy read in a private background runtime
           'an inherited worker role must not count as administrator authorization',
         );
 
-        await writeFile(blueprintPath, [
-          'id: sales-pot',
-          'extends: parent',
-          'fleet:',
-          '  workerRoles:',
-          '    - id: su',
-          '      capabilities:',
-          '        - "coord:read"',
-          '',
-        ].join('\n'));
+        await writeFile(blueprintPath, ${JSON.stringify(governedBlueprintYaml)});
 
         const projected = listAllProjectedTools();
         assert.ok(projected.length > 100, 'expected the production tool registry, got ' + projected.length);
@@ -120,8 +166,8 @@ it('measures the production identity policy read in a private background runtime
           assert.ok(tool, 'missing projected tool ' + name);
           return { name, capabilities: tool.capabilities };
         };
-        const candidates = [candidate('coord:feed'), candidate('work_items:complete'),
-          candidate('coord:orient'), candidate('work_items:get')];
+        const candidates = [candidate('coord:inbox'), candidate('coord:feed'),
+          candidate('work_items:complete'), candidate('coord:orient'), candidate('work_items:get')];
         const artifact = compileAgentSpecification({
           source: {
             id: 'identity-policy-background-proof',
@@ -143,6 +189,21 @@ it('measures the production identity policy read in a private background runtime
             specificationRevision: artifact.specificationRevision,
             stateRevision: 'identity-policy-background-proof',
             specificationArtifact: artifact,
+            acceptedOperation: {
+              kind: 'blueprint-operation-worker',
+              workItemId: 'WI-1',
+              operationId: 'identity-policy-read',
+              specificationRevision: artifact.specificationRevision,
+              requiredTools: ['coord:inbox'],
+              pin: {
+                kind: 'blueprint-operation',
+                harnessSlug: 'sales',
+                operationId: 'identity-policy-read',
+                specificationRevision: artifact.specificationRevision,
+                operationVersion: '1.0.0',
+                input: {},
+              },
+            },
           },
           identityLaunchRecordVersion: { sessionId: 'identity-policy-background-proof', rowVersion: '1' },
           controlGeneration: 1,
@@ -186,7 +247,8 @@ it('measures the production identity policy read in a private background runtime
         assert.equal(policyReadCount, 1, 'one policy read should serve the whole listed surface');
         assert.deepEqual(policy.ceilings[1], { allowCapabilities: ['coord:read'] });
         assert.ok(!policy.ceilings[1].allowCapabilities.includes('work_items:write'));
-        assert.ok(surface.admitted.has('coord:feed'));
+        assert.ok(surface.admitted.has('coord:inbox'));
+        assert.ok(!surface.admitted.has('coord:feed'));
         assert.ok(!surface.admitted.has('work_items:complete'));
 
         const sourcePaths = [
@@ -233,7 +295,8 @@ it('measures the production identity policy read in a private background runtime
       });
       observe(child);
       const result = await captureIsolatedWorker(child, evidenceDir, isolatedWorkerOptions(120_000));
-      expect(result, result.output.slice(-6000)).toMatchObject({
+      const failureDetail = isolatedWorkerFailureDetail(result.output);
+      expect(result, failureDetail).toMatchObject({
         code: 0,
         signal: null,
         timedOut: false,
@@ -241,7 +304,7 @@ it('measures the production identity policy read in a private background runtime
         stdioDrainTimedOut: false,
       });
       const line = result.output.split('\n').find(value => value.startsWith('IDENTITY_POLICY_BACKGROUND_RECEIPT '));
-      expect(line, result.output.slice(-6000)).toBeTruthy();
+      expect(line, failureDetail).toBeTruthy();
       const worker = JSON.parse(line!.slice('IDENTITY_POLICY_BACKGROUND_RECEIPT '.length));
       expect(worker).toMatchObject({
         environment: { backgroundWorkers: '1', workspaceId: expect.stringMatching(/^test-runtime-/) },

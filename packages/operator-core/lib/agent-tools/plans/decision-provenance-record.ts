@@ -36,27 +36,35 @@ import {
 } from '../../turn-provenance/turn-ref';
 import { resolveAgentIdentity } from '../coordination/identity';
 
-/** The tool argument. Omitted on add-decision means agent; omitted on set-decision-body keeps the row. */
-export const decisionProvenanceArg = z
-  .discriminatedUnion('kind', [
-    z.object({ kind: z.literal('agent') }).strict(),
-    z
-      .object({
-        kind: z.literal('owner'),
-        turnRef: z
-          .string()
-          .min(1)
-          .max(200)
-          .describe('the owner turn this ruling came from, as [turn:<session-prefix>@<iso-ts>]'),
-      })
-      .strict(),
-  ])
-  .describe(
-    "who this decision came from: { kind:'agent' } (default — the recording agent) or " +
-      "{ kind:'owner', turnRef:'[turn:<session>@<ts>]' } (refused unless that turn verifies as the owner). " +
-      'Replaces [owner:…] tags in the body.',
-  );
-export type DecisionProvenanceArg = z.infer<typeof decisionProvenanceArg>;
+/**
+ * The tool argument is a flat turn-ref string, not a {kind} union. plans:add-decision is a floor
+ * tool, so its schema counts against the 100_000 B tool-delivery seed (psu-launcher.test.ts
+ * BUDGET), and compactInputSchema drops descriptions, so the cost is the schema STRUCTURE.
+ * Measured 2026-10-28 (`npm run gen:tool-delivery -- --report`): a {kind} discriminated union,
+ * top-level plus per item, overran the seed by 548 B (EI-27076355939117314).
+ * The length bounds are enforced in {@link resolveDecisionProvenance} (OWNER_TURN_REF_MAX and the
+ * one-ref parse), not here: a schema-level min/max cost ~30 floor bytes and added no guard the
+ * resolver lacked (WI-6554700010030925, 2026-10-28).
+ */
+export const ownerTurnRefArg = z.string();
+
+/** Longest ownerTurnRef the resolver will parse; a longer value is refused as unparseable. */
+export const OWNER_TURN_REF_MAX = 200;
+
+/** The internal form {@link resolveDecisionProvenance} takes. Undefined means the recording agent. */
+export type DecisionProvenanceArg = { kind: 'agent' } | { kind: 'owner'; turnRef: string };
+
+/**
+ * Map the flat `ownerTurnRef` tool argument to the internal form. undefined → undefined
+ * (add-decision: the agent; set-decision-body: keep the stored row). null → the agent
+ * (set-decision-body only, to correct a mis-attributed owner decision). A string → owner,
+ * verified by {@link resolveDecisionProvenance}.
+ */
+export function provenanceFromOwnerTurnRef(ref: string | null | undefined): DecisionProvenanceArg | undefined {
+  if (ref === undefined) return undefined;
+  if (ref === null) return { kind: 'agent' };
+  return { kind: 'owner', turnRef: ref };
+}
 
 export type OwnerTurnVerdict = 'owner-typed' | 'owner-turn' | 'owner-dialog';
 
@@ -82,8 +90,6 @@ export interface DecisionProvenanceRefusal {
 
 export type DecisionProvenanceResolution =
   | { ok: true; provenance: ResolvedDecisionProvenance }
-  /** No identity and agent kind: the decision write proceeds, no row is recorded. */
-  | { ok: true; provenance: null; unrecordedReason: string }
   | DecisionProvenanceRefusal;
 
 export interface DecisionProvenanceDeps {
@@ -132,10 +138,10 @@ export async function resolveDecisionProvenance(
     return {
       ok: false,
       error: 'provenance_owner_tag_without_owner_kind',
-      field: 'provenance',
+      field: 'ownerTurnRef',
       message:
         `The body carries the owner tag ${tag}, but provenance is '${kind}'. Owner provenance is a field now: ` +
-        "pass provenance: { kind:'owner', turnRef:'[turn:<session>@<ts>]' } naming the owner's turn, or remove the tag " +
+        "pass ownerTurnRef:'[turn:<session>@<ts>]' naming the owner's turn, or remove the tag " +
         'if the ruling is your own. one-work-graph-structured-holds-2026-10-26#D-012.',
     };
   }
@@ -147,27 +153,36 @@ export async function resolveDecisionProvenance(
     agentId = null;
   }
 
-  if (!arg || arg.kind === 'agent') {
-    if (!agentId) return { ok: true, provenance: null, unrecordedReason: 'caller identity unresolvable' };
-    return { ok: true, provenance: { kind: 'agent', agentId } };
-  }
-
+  // SPEC-P-018: a decision write with no provenance is refused, never landed 'unrecorded'.
+  // Same contract as resolveAgentIdentity: a missing identity is a hard error, not an anonymous write.
   if (!agentId) {
     return {
       ok: false,
       error: 'provenance_unattributable',
       field: 'provenance',
-      message: 'Owner provenance needs a caller identity: the owner turn is verified against your own transcript chain.',
+      message:
+        kind === 'owner'
+          ? 'Owner provenance needs a caller identity: the owner turn is verified against your own transcript chain.'
+          : 'A decision records who made it, and this caller has no resolvable identity. Call it as an attributed ' +
+            'agent session (coord identity) so the decision lands with agent provenance. one-work-graph-structured-holds-2026-10-26#D-012.',
     };
   }
-  const wrapped = arg.turnRef.trim().startsWith('[') ? arg.turnRef.trim() : `[turn:${arg.turnRef.trim()}]`;
-  const refs = parseTurnRefs(wrapped);
+
+  if (!arg || arg.kind === 'agent') {
+    return { ok: true, provenance: { kind: 'agent', agentId } };
+  }
+  const trimmed = arg.turnRef.trim();
+  const wrapped = trimmed.startsWith('[') ? trimmed : `[turn:${trimmed}]`;
+  // The schema is a bare string (floor bytes), so empty and over-long values are refused here.
+  const refs = trimmed.length > 0 && arg.turnRef.length <= OWNER_TURN_REF_MAX ? parseTurnRefs(wrapped) : [];
   if (refs.length !== 1) {
     return {
       ok: false,
       error: 'provenance_owner_turn_unparseable',
-      field: 'provenance.turnRef',
-      message: `provenance.turnRef must be exactly one [turn:<session-prefix>@<iso-ts>] ref; got ${JSON.stringify(arg.turnRef)}.`,
+      field: 'ownerTurnRef',
+      message:
+        `ownerTurnRef must be exactly one [turn:<session-prefix>@<iso-ts>] ref of at most ${OWNER_TURN_REF_MAX} chars; ` +
+        `got ${JSON.stringify(arg.turnRef.slice(0, OWNER_TURN_REF_MAX))}${arg.turnRef.length > OWNER_TURN_REF_MAX ? '…' : ''}.`,
     };
   }
   let verdicts: TurnRefVerdict[] = [];
@@ -181,7 +196,7 @@ export async function resolveDecisionProvenance(
     return {
       ok: false,
       error: 'provenance_owner_turn_unverified',
-      field: 'provenance.turnRef',
+      field: 'ownerTurnRef',
       message:
         `Owner turn ${refs[0].raw} could not be ${v?.checked ? 'found in' : 'checked against'} your transcript chain. ` +
         'An owner claim needs positive evidence; cite a turn the turn-provenance ledger can resolve, or record the decision as agent.',
@@ -192,7 +207,7 @@ export async function resolveDecisionProvenance(
     return {
       ok: false,
       error: 'provenance_owner_turn_not_owner',
-      field: 'provenance.turnRef',
+      field: 'ownerTurnRef',
       message: `Turn ${refs[0].raw} resolved to verdict '${v.verdict ?? 'none'}', which is not the owner speaking. Record the decision as agent.`,
       verdict: v,
     };

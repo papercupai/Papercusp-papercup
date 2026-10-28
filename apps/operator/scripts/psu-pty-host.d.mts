@@ -2121,7 +2121,15 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     } | void>) | null | undefined;
     waitAtPrompt: any;
     recycle: any;
-    performDelivery?: null | undefined;
+    performDelivery?: ((message: any, ctx: {
+        drillId: string;
+        mode: string;
+        key: string;
+    }) => Promise<{
+        delivered: boolean;
+        reason?: string;
+        retryable?: boolean;
+    } | void>) | null | undefined;
     emitEvent: any;
     capMs?: number | undefined;
     maxProductionAttempts?: number | undefined;

@@ -349,6 +349,7 @@ const DEFAULT_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = 2 * 60 * 60_000;
 // pass move forward so a later fire can continue the remaining candidates.
 const DEFAULT_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS = 90_000;
 const GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS = 15_000;
+type GitSyncActionCleanupResult = 'complete' | 'incomplete' | 'timed-out';
 
 const positiveEnvMs = (name: string, fallback: number): number => {
   const value = Number(process.env[name]);
@@ -1060,13 +1061,13 @@ async function releaseAll(
   acquired: GitSyncLockRequest[],
   onExclusiveResourceReleased: (resource: string) => void = (resource) =>
     emitResourceReleasedEvent(resource, cd === '*' ? null : cd),
-): Promise<void> {
+): Promise<boolean> {
   // This fire is done with the lock either way — drop it from the in-flight set
   // FIRST, so that a release which fails below (TTL becomes the backstop, see the
   // warn) still leaves a row a later tick here can recognise as our orphan and
   // reclaim, instead of one that blocks this host for the full ten minutes.
   gitSyncLockState.inFlight.delete(owner);
-  if (acquired.length === 0) return;
+  if (acquired.length === 0) return true;
   try {
     // Every fire owns a unique token, so the store's existing owner-scoped bulk
     // release is exactly this cleanup operation. Use ONE workspace transaction
@@ -1089,6 +1090,7 @@ async function releaseAll(
     // Emit only after the transaction has removed each exclusive row so a
     // held_exclusive caller can await the truthful exact-resource boundary.
     for (const resource of released.exclusiveResources) onExclusiveResourceReleased(resource);
+    return true;
   } catch (error) {
     // The bulk release is transactional: either every owner-scoped row is gone
     // or none is. Keep the TTL as the final backstop, but make the missed release
@@ -1098,6 +1100,7 @@ async function releaseAll(
         isWorkspaceContended(error) ? 'contention retries' : 'an infrastructure error'
       }; locks will expire at TTL (${error instanceof Error ? error.message : String(error)})`,
     );
+    return false;
   }
 }
 
@@ -3768,6 +3771,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   const deferredResourceReleaseEvents = new Set<string>();
   const deferResourceReleaseEvent = (resource: string): void => {
     deferredResourceReleaseEvents.add(resource);
+    if (terminalActivityDurable) flushDeferredResourceReleaseEvents();
   };
   const flushDeferredResourceReleaseEvents = (): void => {
     for (const resource of deferredResourceReleaseEvents) {
@@ -3887,34 +3891,36 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // Error cleanup is single-flight. The timer callback and the owning finally
   // block can race: whichever notices expiry first must stop the heartbeat before
   // releasing the leases, while a late callback must never release a second time.
-  let lockCleanup: Promise<void> | null = null;
+  let lockCleanup: Promise<GitSyncActionCleanupResult> | null = null;
   let errorAwaitingGitExit = false;
-  const cleanupLocks = (): Promise<void> => {
+  const cleanupLocks = (): Promise<GitSyncActionCleanupResult> => {
     if (lockCleanup) return lockCleanup;
     lockCleanup = (async () => {
       // Keep renewing leases throughout SIGTERM/SIGKILL and exit verification.
       // The cleanup budget below bounds DB cleanup only; it cannot certify exit.
       while (activeGitExecutions.size > 0) await Promise.allSettled([...activeGitExecutions]);
-      await new Promise<void>((resolve) => {
+      return new Promise<GitSyncActionCleanupResult>((resolve) => {
         let finished = false;
-        const finish = (): void => {
+        const finish = (result: GitSyncActionCleanupResult): void => {
           if (finished) return;
           finished = true;
           if (timer) clearTimeout(timer);
-          resolve();
+          resolve(result);
         };
         const timer = setTimeout(() => {
           console.warn(
             `[git-sync] ${slug}: lock cleanup exceeded ${GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS}ms; ` +
               'the resource TTL remains the final backstop',
           );
-          finish();
+          finish('timed-out');
         }, GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS);
         timer.unref?.();
         void (async () => {
+          let complete = true;
           try {
             await stopLockHeartbeat();
           } catch (error) {
+            complete = false;
             console.warn(
               `[git-sync] ${slug}: lock heartbeat stop failed during cleanup: ${
                 error instanceof Error ? error.message : String(error)
@@ -3942,15 +3948,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             });
           }
           if (lock.state === 'acquired') {
-            try {
-              await releaseAll(cd, lockOwner, acquired, deferResourceReleaseEvent);
-            } catch (error) {
-              console.warn(
-                `[git-sync] ${slug}: lock release cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
-              );
-            }
+            if (!(await releaseAll(cd, lockOwner, acquired, deferResourceReleaseEvent))) complete = false;
           }
-          finish();
+          finish(complete ? 'complete' : 'incomplete');
         })();
       });
     })();
@@ -4338,6 +4338,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             const execution = runGitBounded(args, cwd, gitTimeoutMsFor(args), {
               // WI-10006705: forward the attributed commit's private GIT_INDEX_FILE.
               env: gitOptions?.env,
+              diagnosticTags: gitOptions?.diagnosticTags,
               signal: liveness.signal,
               onProgress: () => {
                 liveness.touch();
@@ -4448,12 +4449,33 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // Do not let a queued local-sync heartbeat land after the post-legs marker
     // and regress the durable phase back to local-sync.
     await guarded('flush-activity-heartbeat', () => activityHeartbeatWrite);
+    const cleanupResult = await cleanupLocks();
+    if (cleanupResult !== 'complete') {
+      throw new Error(`[git-sync] ${slug}: local lock cleanup did not complete (${cleanupResult})`);
+    }
   } catch (error) {
     if (isGitSyncYieldError(error)) {
       // WI-10007606: a cooperative yield is a SKIP, not a failure — no error streak,
       // no escalation, no counters touched (the pass measured nothing to the end).
       // Release the barrier FIRST: the waiting drain is the reason we stopped.
-      await cleanupLocks();
+      const cleanupResult = await cleanupLocks();
+      if (cleanupResult !== 'complete') {
+        activityTerminal = true;
+        await activityHeartbeatWrite.catch(() => {});
+        const failedAt = Date.now();
+        await writeActivity({
+          active: false,
+          phase: 'error',
+          started_at: activityStartedAt,
+          updated_at: failedAt,
+          completed_at: failedAt,
+          outcome_status: null,
+        }).then(() => {
+          terminalActivityDurable = true;
+          flushDeferredResourceReleaseEvents();
+        }).catch(() => {});
+        throw new Error(`[git-sync] ${slug}: lock cleanup did not complete after yield (${cleanupResult})`);
+      }
       activityTerminal = true;
       await activityHeartbeatWrite.catch(() => {});
       const yieldedAt = Date.now();

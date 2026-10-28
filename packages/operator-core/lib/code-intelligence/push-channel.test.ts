@@ -13,6 +13,8 @@ import { priorWorkReport, type PriorWorkLedgerRow } from './change-history';
 import { classifyShellLookup } from './native-adoption';
 import { cachedLegFollowThrough, formatPushFact, LEG_FOLLOW_THROUGH_REFRESH_MS, rankPushFacts, reachedTestsText, resetLegFollowThroughCache, withCallableSuggestion, type LegFollowThrough } from './push-channel';
 import { toolsetFromNames, UNKNOWN_TOOLSET } from './push-toolset';
+import { EMPTY_PUSH_NOTE_MS, noteEmptyPush, resetEmptyPushNotes } from './push-channel';
+import { pushSnapshotMissReason } from './push-snapshot';
 
 const now = Date.now();
 const raw = () => ({ schema: 'graph-dependency-snapshot-v1', index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) },
@@ -936,5 +938,60 @@ describe('P-005 compact pushes ranked by follow-through', () => {
       cachedLegFollowThrough('ws-ft', measure, 1_000 + LEG_FOLLOW_THROUGH_REFRESH_MS);
       await vi.waitFor(() => expect(measure).toHaveBeenCalledTimes(2));
     } finally { resetLegFollowThroughCache(); }
+  });
+});
+
+// WI-6554700010042393: an installed hook got '' from every whole-push early return with no
+// log line or ledger row. Each such return must now name its reason in the host log.
+describe('empty-push diagnostics', () => {
+  const noted = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.map(call => String(call[0]));
+  async function emptyReason(build: (d: PushChannelDeps) => PushChannelDeps, pushInput: PushInput = input) {
+    resetEmptyPushNotes();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      expect(await codeIntelPushText(pushInput, build(deps()))).toBe('');
+      return [...noted(warn), ...noted(info)].filter(line => line.startsWith('[code-intel-push] empty: '));
+    } finally { warn.mockRestore(); info.mockRestore(); resetEmptyPushNotes(); }
+  }
+
+  it('names each whole-push empty return', async () => {
+    expect(await emptyReason(d => d, { ...input, calls: [] })).toEqual(['[code-intel-push] empty: missing-input']);
+    expect(await emptyReason(d => ({ ...d, legs: () => new Map() }))).toEqual(['[code-intel-push] empty: no-legs']);
+    expect(await emptyReason(d => ({ ...d, snapshot: vi.fn(async () => null) }))).toEqual(['[code-intel-push] empty: no-snapshot']);
+    expect(await emptyReason(d => ({ ...d, legs: () => new Map([['first-touch', () => []]]) })))
+      .toEqual(['[code-intel-push] empty: no-candidates (legs on: first-touch)']);
+    expect(await emptyReason(d => ({ ...d, commit: vi.fn(async () => '') })))
+      .toEqual(['[code-intel-push] empty: commit-empty (1 ranked fact(s))']);
+  });
+
+  it('notes at info, never warn, so callers under vitest-fail-on-console stay green', () => {
+    resetEmptyPushNotes();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      noteEmptyPush('snapshot-loading', '/x/dependency-snapshot.json');
+      noteEmptyPush('harness-not-home', 'other != papercusp');
+      expect(warn).not.toHaveBeenCalled();
+      expect(noted(info)).toEqual(['[code-intel-push] empty: snapshot-loading (/x/dependency-snapshot.json)',
+        '[code-intel-push] empty: harness-not-home (other != papercusp)']);
+    } finally { warn.mockRestore(); info.mockRestore(); resetEmptyPushNotes(); }
+  });
+
+  it('notes each reason at most once per EMPTY_PUSH_NOTE_MS', () => {
+    resetEmptyPushNotes();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      noteEmptyPush('no-snapshot', '', 1_000);
+      noteEmptyPush('no-snapshot', '', 1_000 + EMPTY_PUSH_NOTE_MS - 1);
+      noteEmptyPush('push-error', 'gather: boom', 1_001);
+      expect(info).toHaveBeenCalledTimes(2);
+      noteEmptyPush('no-snapshot', '', 1_000 + EMPTY_PUSH_NOTE_MS);
+      expect(info).toHaveBeenCalledTimes(3);
+    } finally { info.mockRestore(); resetEmptyPushNotes(); }
+  });
+
+  it('reports why the snapshot cache answered null', () => {
+    expect(pushSnapshotMissReason('never-peeked-repo-wi-6554700010042393')).toBe('loading');
   });
 });

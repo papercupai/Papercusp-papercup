@@ -10,6 +10,7 @@ import {
   parseTrailLog,
   resolveOwningRepo,
   siblingTestFile,
+  submoduleChain,
   workItemOrigin,
   type ChangeTrailDeps,
   type TrailTestRun,
@@ -96,6 +97,9 @@ describe('buildChangeTrail against a real git repo', () => {
   let shaPlain: string;
   let shaSub: string;
   let shaTestOnly: string;
+  let shaSub2: string;
+  let shaPin1: string;
+  let shaPin2: string;
 
   const git = (cwd: string, ...args: string[]) =>
     execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -132,6 +136,21 @@ describe('buildChangeTrail against a real git repo', () => {
     git(nodePath.join(root, 'sub'), 'add', '.');
     git(nodePath.join(root, 'sub'), 'commit', '-q', '-m', 'sub commit\n\nPapercusp-Agent: su-beta');
     shaSub = git(nodePath.join(root, 'sub'), 'rev-parse', 'HEAD');
+    // The superproject pins it as a gitlink, the way it pins libs/papercusp.
+    git(root, '-c', 'advice.addEmbeddedRepo=false', 'add', 'sub');
+    git(root, 'commit', '-q', '-m', 'pin sub');
+    shaPin1 = git(root, 'rev-parse', 'HEAD');
+    // x.ts changes in the submodule, then a later submodule commit leaves it alone; pin that one.
+    fs.writeFileSync(nodePath.join(root, 'sub/x.ts'), 'x\ny\n');
+    git(nodePath.join(root, 'sub'), 'add', '.');
+    git(nodePath.join(root, 'sub'), 'commit', '-q', '-m', 'sub change');
+    shaSub2 = git(nodePath.join(root, 'sub'), 'rev-parse', 'HEAD');
+    fs.writeFileSync(nodePath.join(root, 'sub/other.ts'), 'o\n');
+    git(nodePath.join(root, 'sub'), 'add', '.');
+    git(nodePath.join(root, 'sub'), 'commit', '-q', '-m', 'sub other');
+    git(root, '-c', 'advice.addEmbeddedRepo=false', 'add', 'sub');
+    git(root, 'commit', '-q', '-m', 'pin sub again');
+    shaPin2 = git(root, 'rev-parse', 'HEAD');
   });
 
   afterAll(() => {
@@ -171,7 +190,9 @@ describe('buildChangeTrail against a real git repo', () => {
     expect(d.asked.paths).toEqual(['src/a.ts', 'src/a.test.ts']);
     expect(d.asked.since).toBe(trail.commits[trail.commits.length - 1].committedAt);
     expect(trail.commits.map((c) => c.sha)).toEqual([shaTrailer, shaPlain]);
-    expect(trail.notes).toEqual(['1 run sha(s) are not in this checkout, so their runs are not attributed']);
+    expect(trail.notes).toEqual([
+      '1 run sha(s) could not be resolved to a version of src/a.ts (sha not in this checkout), so their runs are not attributed',
+    ]);
 
     const [attributed, plain] = trail.commits;
     expect(attributed.attributionSource).toBe('trailer');
@@ -221,8 +242,30 @@ describe('buildChangeTrail against a real git repo', () => {
     expect(resolveOwningRepo(root, 'sub/x.ts')).toMatchObject({ repo: 'sub', relPath: 'x.ts', superRelPath: 'sub/x.ts' });
     const trail = await buildChangeTrail({ repoRoot: root, path: 'sub/x.ts' }, deps());
     expect(trail.repo).toBe('sub');
-    expect(trail.commits.map((c) => [c.sha, c.agent])).toEqual([[shaSub, 'su-beta']]);
-    expect(trail.notes.join(' ')).toMatch(/superproject HEAD/);
+    expect(trail.commits.map((c) => [c.sha, c.agent])).toEqual([
+      [shaSub2, undefined],
+      [shaSub, 'su-beta'],
+    ]);
+  });
+
+  it('follows a superproject run sha down the gitlink to the submodule file version it tested', async () => {
+    const atPin1 = { file: 'sub/x.ts', status: 'pass', commitSha: shaPin1, dirty: false, source: 'ci', finishedAt: null };
+    // shaPin2 pins a submodule commit that did not touch x.ts: it tested the shaSub2 version.
+    const atPin2 = { file: 'sub/x.ts', status: 'fail', commitSha: shaPin2, dirty: false, source: 'ci', finishedAt: null };
+    // shaPlain predates the gitlink, so it pins no submodule commit at all.
+    const beforePin = { file: 'sub/x.ts', status: 'pass', commitSha: shaPlain, dirty: false, source: 'ci', finishedAt: null };
+    const d = deps([atPin2, atPin1, beforePin]);
+    const trail = await buildChangeTrail({ repoRoot: root, path: 'sub/x.ts' }, d);
+    expect(d.asked.paths).toEqual(['sub/x.ts']);
+    expect(trail.commits.map((c) => [c.sha, c.testRuns])).toEqual([
+      [shaSub2, [atPin2]],
+      [shaSub, [atPin1]],
+    ]);
+    expect(trail.notes).toEqual([
+      '1 run sha(s) could not be resolved to a version of sub/x.ts (sha not in this checkout, or sub not pinned at it), so their runs are not attributed',
+    ]);
+    expect(submoduleChain(root, nodePath.join(root, 'sub'))).toEqual([{ parentDir: nodePath.resolve(root), pathInParent: 'sub' }]);
+    expect(submoduleChain(root, root)).toEqual([]);
   });
 
   it('refuses a path outside the repo root', async () => {

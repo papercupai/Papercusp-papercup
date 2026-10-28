@@ -43,6 +43,9 @@ vi.mock('../presence', async (original) => ({
 }));
 vi.mock('../../../adv-sessions', () => ({
   latestAdvSessionByCoordOwner: vi.fn(async () => null),
+  // lib/coord/couplings.ts reads this at module load (reached via
+  // derived-signal-census); without it the whole file fails to collect.
+  RECORDED_LIVE_MAX_AGE_MS: 12 * 60 * 60 * 1000,
 }));
 const orgPgSqlMock = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
 vi.mock('@papercusp/db-org', async (importOriginal) => {

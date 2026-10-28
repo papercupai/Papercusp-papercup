@@ -239,6 +239,42 @@ describe('targeted grading runtime cleanup (EI-26838521482108819)', () => {
     expect(result.receipts).toEqual([expect.objectContaining({ issueId: 'EI-target', state: 'launched' })]);
     expect(d.launch).toHaveBeenCalledTimes(1);
   });
+
+  it('dispatches before slow settled-task and runtime cleanup', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-target')]);
+    let releaseSettledScan!: () => void;
+    const settledScanGate = new Promise<void>(resolve => { releaseSettledScan = resolve; });
+    let releaseRuntimeCleanup!: () => void;
+    const runtimeCleanupGate = new Promise<void>(resolve => { releaseRuntimeCleanup = resolve; });
+    const settledScanStarted = vi.fn();
+    d.listTasks.mockImplementation(async filter => {
+      if (filter.launchedBy === GRADING_AUDIT_DISPATCH_ACTOR && filter.limit === 2_000) {
+        settledScanStarted();
+        await settledScanGate;
+      }
+      return [];
+    });
+    d.retireRuntimes.mockImplementation(async () => { await runtimeCleanupGate; });
+
+    const running = reconcilePendingGradingAudits({ ctx, harness: 'papercusp' }, d);
+    try {
+      await vi.waitFor(() => {
+        expect(d.launch).toHaveBeenCalledTimes(1);
+        expect(settledScanStarted).toHaveBeenCalledOnce();
+      });
+      expect(d.retireRuntimes).not.toHaveBeenCalled();
+      releaseSettledScan();
+      await vi.waitFor(() => expect(d.retireRuntimes).toHaveBeenCalledOnce());
+    } finally {
+      releaseSettledScan();
+      releaseRuntimeCleanup();
+      await running;
+    }
+
+    const result = await running;
+    expect(result.receipts).toEqual([expect.objectContaining({ issueId: 'EI-target', state: 'launched' })]);
+  });
 });
 
 describe('retained grading auditor lease delivery (EI-25289706163098558)', () => {

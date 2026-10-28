@@ -262,6 +262,13 @@
 #      copy-out RELOCATION that breaks the subject before any mutation is
 #      applied (the guard fails against an UNMUTATED relocated copy), or a
 #      harness error while running the mutant)
+#   *-ledger-unconfirmed (EI-27221342827374562): the test:file router exits 2
+#      when a finished Vitest run lacks an inserted test_runs receipt. The
+#      probe then reports the assertion outcome it can still read —
+#      verdict=survived-ledger-unconfirmed or caught-ledger-unconfirmed — and
+#      exits 1 when that outcome CONTRADICTS --expect (a survivor is a weak
+#      guard with or without a receipt), or 2 when it agrees (it is not
+#      ledger-backed proof, so it never earns exit 0)
 #   3  IN-TREE RESTORE FAILED — the tree may still be dirty; act immediately
 #
 # READING THE VERDICT
@@ -1318,21 +1325,77 @@ fi
 # deliberately conservative — a false positive costs one flag; a false negative
 # already cost ~370GB.
 # ---------------------------------------------------------------------------
+prepare_destructive_scan() {
+  local path="$1"
+  local extension="${path##*.}"
+  DESTRUCTIVE_SCAN_FILE="$path"
+
+  # For JS/TS source, blank lexical comments before the word scan. Keep every
+  # other byte (including strings that may hold shell commands) visible, and
+  # preserve newlines so refusal sites still point at the original line.
+  # If the repo-local TypeScript scanner is unavailable, retain the old raw
+  # scan: conservative refusal is safer than silently skipping this gate.
+  case "$extension" in
+    js|jsx|mjs|cjs|ts|tsx|mts|cts)
+      local source_script script_dir scanner_module masked
+      source_script="${MUTATION_PROBE_SOURCE_PATH:-${BASH_SOURCE[0]}}"
+      script_dir="$(cd -- "$(dirname -- "$source_script")" && pwd -P)" || return 1
+      scanner_module="$script_dir/../node_modules/typescript"
+      if [ ! -f "$scanner_module/package.json" ] || ! command -v node >/dev/null 2>&1; then
+        return 0
+      fi
+
+      masked="$(mktemp "${TMPDIR:-/tmp}/mutation-probe-scan.XXXXXX")" || return 1
+      if ! node - "$path" "$masked" "$scanner_module" <<'NODE'
+const fs = require('node:fs');
+const ts = require(process.argv[4]);
+const sourcePath = process.argv[2];
+const outputPath = process.argv[3];
+const bytes = fs.readFileSync(sourcePath);
+const source = bytes.toString('utf8');
+if (!Buffer.from(source, 'utf8').equals(bytes)) {
+  throw new Error('source is not valid UTF-8');
+}
+const jsx = /\.(?:jsx|tsx)$/i.test(sourcePath);
+const scanner = ts.createScanner(
+  ts.ScriptTarget.Latest,
+  false,
+  jsx ? ts.LanguageVariant.JSX : ts.LanguageVariant.Standard,
+  source,
+);
+const chars = source.split('');
+for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+  if (token !== ts.SyntaxKind.SingleLineCommentTrivia && token !== ts.SyntaxKind.MultiLineCommentTrivia) continue;
+  for (let i = scanner.getTokenPos(); i < scanner.getTextPos(); i += 1) {
+    if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = ' ';
+  }
+}
+fs.writeFileSync(outputPath, chars.join(''));
+NODE
+      then
+        rm -f -- "$masked"
+        return 1
+      fi
+      DESTRUCTIVE_SCAN_FILE="$masked"
+      ;;
+  esac
+  return 0
+}
+
 DESTRUCTIVE_ERE='\b(rm|rmdir|unlink|shred|truncate)\b|\bmkfs(\.[[:alnum:]]+)?\b|\bdd\b[^|;&()]*\bof=|\bfind\b[^|;&()]*-delete'
-SUBJ_HITS="$(grep -Eo "$DESTRUCTIVE_ERE" "$FILE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+prepare_destructive_scan "$FILE" || die "could not prepare a safe destructive-subject scan"
+SUBJ_SCAN_FILE="$DESTRUCTIVE_SCAN_FILE"
+SUBJ_HITS="$(grep -Eo "$DESTRUCTIVE_ERE" -- "$SUBJ_SCAN_FILE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+SUBJ_SITES="$(grep -nE "$DESTRUCTIVE_ERE" -- "$SUBJ_SCAN_FILE" 2>/dev/null | head -4 | cut -c1-160 || true)"
+[ "$SUBJ_SCAN_FILE" = "$FILE" ] || rm -f -- "$SUBJ_SCAN_FILE"
 HIST_SUBJ_HITS=""
 if [ "$HISTORICAL_MODE" -eq 1 ]; then
-  HIST_SUBJ_HITS="$(grep -Eo "$DESTRUCTIVE_ERE" "$HISTORICAL_SNAPSHOT" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+  prepare_destructive_scan "$HISTORICAL_SNAPSHOT" || die "could not prepare a safe historical destructive-subject scan"
+  HIST_SCAN_FILE="$DESTRUCTIVE_SCAN_FILE"
+  HIST_SUBJ_HITS="$(grep -Eo "$DESTRUCTIVE_ERE" -- "$HIST_SCAN_FILE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+  [ "$HIST_SCAN_FILE" = "$HISTORICAL_SNAPSHOT" ] || rm -f -- "$HIST_SCAN_FILE"
 fi
 CMD_HITS="$(printf '%s\n%s' "$TEST_CMD" "$CALIBRATION_CMD" | grep -Eo "$DESTRUCTIVE_ERE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
-# EI-22197950741786296: show WHERE it matched, not just WHICH token. The scan is a
-# deliberately blunt word match, so `truncate` in a comment refuses the file just as
-# hard as a real `rm -rf` call — and a bare token list gives the operator no way to
-# tell those apart, which is what makes a false positive feel arbitrary. The gate is
-# NOT narrowed (it exists because of a ~370GB loss, EI-20566003853444873, and the item's
-# own filer agreed narrowing it without a positive control would disarm it); instead the
-# refusal now quotes the site so a comment-only match is recognisable on sight.
-SUBJ_SITES="$(grep -nE "$DESTRUCTIVE_ERE" "$FILE" 2>/dev/null | head -4 | cut -c1-160 || true)"
 HISTORICAL_DESTRUCTIVE_HITS="$SUBJ_HITS$HIST_SUBJ_HITS$CMD_HITS"
 if [ -n "$HISTORICAL_DESTRUCTIVE_HITS" ] && [ "$HISTORICAL_MODE" -eq 1 ]; then
   log "historical mode: destructive primitives detected (current subject: ${SUBJ_HITS:-none}; historical subject: ${HIST_SUBJ_HITS:-none}; --test/--calibration: ${CMD_HITS:-none}); no mutant is produced, so allowing the unmutated historical source comparison. Use --fake-destructive or --i-know-this-deletes --sandbox-root if the guard itself executes deletion logic."
@@ -2378,6 +2441,61 @@ detect_assertion_failure_evidence() {
 # another runner. Both current-mutant and historical modes use the same rule.
 is_assertion_failure_exit() {
   [ "$1" -eq 1 ] || { [ "$1" -eq 101 ] && [ "$2" = cargo-libtest-failed-tests ]; }
+}
+
+# EI-27221342827374562 (measured 2026-10-28): the test:file router exits 2
+# (TEST_FILE_EXIT_NOT_MEASURED) whenever a recordable Vitest file lacks an
+# inserted test_runs receipt, even after Vitest finished and every assertion
+# PASSED with the mutant applied. Reading that exit 2 as a plain harness error
+# hid a SURVIVING mutant as an infrastructure flake, which is the wrong
+# conclusion: "re-run" instead of "my guard has a gap". This recovers the
+# assertion outcome from the router's own column-0 markers, but only for a run
+# that demonstrably FINISHED and whose exit 2 has exactly that one cause:
+#   * a TEST_FILE_LEDGER_RECEIPT_MISSING line exists;
+#   * no TEST_FILE_FINALIZATION_ERROR / ROUTE_ERROR / ALL_SKIPPED line exists;
+#   * at least one `TEST_FILE_PROGRESS state=finished` line, and every one of
+#     them reports signal=none with exitStatus 0 or 1.
+# Prints `passed` (every exit 0, no measured failure, a Vitest summary with at
+# least one passed test and none failed) or `failed` (an exit 1 plus measured
+# assertion-failure evidence) and returns 0. Anything else returns 1, so it
+# stays a harness error. The ledger gap itself is never erased: the verdict
+# names it and the exit code refuses to credit the expectation (see the end).
+classify_ledger_receipt_only_exit() {
+  local log="$1" statuses evidence summaries
+  grep -Eq '^TEST_FILE_LEDGER_RECEIPT_MISSING[[:space:]]' "$log" 2>/dev/null || return 1
+  if grep -Eq '^TEST_FILE_(FINALIZATION_ERROR|ROUTE_ERROR|ALL_SKIPPED)([[:space:]]|$)' "$log" 2>/dev/null; then
+    return 1
+  fi
+  # The leftmost exitStatus/signal pair is the router's own field: it precedes
+  # lastOutputLine, the only field that can quote arbitrary test output.
+  statuses="$(grep -E '^TEST_FILE_PROGRESS state=finished[[:space:]]' "$log" 2>/dev/null | awk '{
+    if (match($0, / exitStatus=[^ ]+ signal=[^ ]+/)) print substr($0, RSTART + 1, RLENGTH - 1)
+    else print "unparsed"
+  }')"
+  [ -n "$statuses" ] || return 1
+  if printf '%s\n' "$statuses" | grep -Evq '^exitStatus=[01] signal=none$'; then
+    return 1
+  fi
+  if printf '%s\n' "$statuses" | grep -q '^exitStatus=1 '; then
+    if evidence="$(detect_assertion_failure_evidence "$log")" \
+       && { [ "$evidence" = test-file-assertion-failure ] || [ "$evidence" = vitest-failed-tests ]; }; then
+      printf '%s' 'failed'
+      return 0
+    fi
+    return 1
+  fi
+  if evidence="$(detect_assertion_failure_evidence "$log")"; then
+    return 1
+  fi
+  [ "$evidence" = no-vitest-test-failures ] || return 1
+  summaries="$(sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$log" 2>/dev/null \
+    | grep -E '^[[:space:]]*Tests[[:space:]]+[0-9]+[[:space:]]+(passed|failed|skipped|todo|pending)([[:space:]]|$)')"
+  if printf '%s\n' "$summaries" | grep -Eq '(^|[[:space:]|])[1-9][0-9]*[[:space:]]+failed([[:space:]|]|$)'; then
+    return 1
+  fi
+  printf '%s\n' "$summaries" | grep -Eq '(^|[[:space:]|])[1-9][0-9]*[[:space:]]+passed([[:space:]|]|$)' || return 1
+  printf '%s' 'passed'
+  return 0
 }
 
 # EI-20451290782193791 (measured 2026-08-14, reproduced 2026-09-05): the
@@ -3634,6 +3752,22 @@ if [ "$TEST_RC" -eq 1 ] || [ "$TEST_RC" -eq 101 ]; then
   fi
 fi
 
+# EI-27221342827374562: an exit 2 whose ONLY cause is a missing test_runs
+# receipt still carries a finished Vitest run. Recover its assertion outcome so
+# a surviving mutant is reported as one, not hidden as a harness flake.
+LEDGER_UNCONFIRMED_OUTCOME=""
+if [ "$TEST_RC" -eq 2 ]; then
+  if LEDGER_UNCONFIRMED_OUTCOME="$(classify_ledger_receipt_only_exit "$MUTANT_LOG")"; then
+    if [ "$LEDGER_UNCONFIRMED_OUTCOME" = failed ]; then
+      MUTANT_ASSERTION_EVIDENCE="$(detect_assertion_failure_evidence "$MUTANT_LOG")" || MUTANT_ASSERTION_EVIDENCE='exit-code-only'
+    else
+      MUTANT_ASSERTION_EVIDENCE='no-vitest-test-failures'
+    fi
+  else
+    LEDGER_UNCONFIRMED_OUTCOME=""
+  fi
+fi
+
 # A passing copy-out test does not prove it ever imported the mutant. The repo
 # mirror symlinks test files/configs; Node/Vite can realpath a symlinked test
 # before resolving its relative imports, sending them back to the real tree.
@@ -3642,7 +3776,7 @@ fi
 # distinctive top-level throw and rerun the SAME command. Credit survival only
 # if this run fails AND prints the thrown marker: a generic runner error is not
 # evidence that the module was loaded. Never touch the tracked source.
-if [ "$TARGET_MODE" = "copy-out" ] && [ "$TEST_RC" -eq 0 ]; then
+if [ "$TARGET_MODE" = "copy-out" ] && { [ "$TEST_RC" -eq 0 ] || [ "$LEDGER_UNCONFIRMED_OUTCOME" = passed ]; }; then
   case "$FILE" in
     *.js|*.jsx|*.mjs|*.cjs|*.ts|*.tsx|*.mts|*.cts)
       LOAD_MARKER="PAPERCUSP_MUTATION_TARGET_LOADED_CHECK"
@@ -3691,6 +3825,15 @@ elif [ "$TEST_RC" -eq 0 ]; then
     # ORIGINAL subject. The overlay has no such route; say which one ran.
     log "⚠️  relocation=$RELOCATION_USED: a test that reaches the subject through a SIBLING module (or an alias/package specifier) loads the ORIGINAL file here, so this survival may be the relocation's, not the guard's. Re-run where bwrap can bind (--relocation overlay) or with the fenced --in-tree tier before calling the guard weak."
   fi
+elif [ "$LEDGER_UNCONFIRMED_OUTCOME" = passed ]; then
+  VERDICT="survived-ledger-unconfirmed"
+  log "VERDICT: MUTANT SURVIVED, LEDGER UNCONFIRMED (guard exited 2 only because a test_runs receipt is missing) — Vitest finished and every guard test PASSED with the mutant applied, so the guard does NOT constrain this mutation ✗. This is not an infrastructure flake to re-run away. No receipt exists, so do not bind this run as ledger evidence."
+  if [ "$RELOCATION_USED" = "mirror" ] || [ "$RELOCATION_USED" = "flat" ]; then
+    log "⚠️  relocation=$RELOCATION_USED: a test that reaches the subject through a SIBLING module (or an alias/package specifier) loads the ORIGINAL file here, so this survival may be the relocation's, not the guard's. Re-run where bwrap can bind (--relocation overlay) or with the fenced --in-tree tier before calling the guard weak."
+  fi
+elif [ "$LEDGER_UNCONFIRMED_OUTCOME" = failed ]; then
+  VERDICT="caught-ledger-unconfirmed"
+  log "VERDICT: MUTANT CAUGHT, LEDGER UNCONFIRMED (guard exited 2 only because a test_runs receipt is missing) — the guard's assertions failed on the mutant (${MUTANT_ASSERTION_EVIDENCE}), but this run is not ledger-backed proof. Reconcile the exact run group in the ledger, or re-run, before binding it."
 else
   VERDICT="harness-error"
   log "VERDICT: HARNESS ERROR (guard exited $TEST_RC) — no falsifiability verdict is sound"
@@ -3786,5 +3929,13 @@ REPLAY_RECORD="$(
 printf 'MUTATION_PROBE_EVIDENCE_JSON=%s\n' "$REPLAY_RECORD"
 
 [ "$VERDICT" = "harness-error" ] && exit 2
+# A ledger-unconfirmed outcome can DISPROVE an expectation (the assertions ran
+# and contradict it, with or without a receipt) but can never CREDIT one: an
+# agreeing outcome still lacks the measured test_runs evidence, so exit 2.
+case "$VERDICT" in
+  *-ledger-unconfirmed)
+    [ "${VERDICT%-ledger-unconfirmed}" = "$EXPECT" ] && exit 2
+    exit 1 ;;
+esac
 [ "$VERDICT" = "$EXPECT" ] || exit 1
 exit 0

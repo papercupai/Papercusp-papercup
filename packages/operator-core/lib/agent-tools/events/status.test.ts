@@ -51,6 +51,7 @@ vi.mock('../../events/await/compose-store', () => ({
 }));
 
 import status, { turnProofFields } from './status';
+import { TIMEOUT_WAKE_GUIDANCE } from '../../events/await/timeout-fallback';
 import {
   deliveryBacklogSummary,
   inspectEventKey,
@@ -62,6 +63,7 @@ import { listMyEventKeySubscriptions } from '../coordination/event-subscriptions
 import { hostAudienceResolvers } from '../coordination/audience-host';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
+import { mockResolvedOnceTyped } from '../../testing/typed-mock';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../../context-doors';
 import { applyResultDoorAsync, resetResultDoorAggregatesForTests, RESULT_DOOR_TOKENS, type DoorableResult } from '../../result-door';
 import { _resetScratchUsageForTests } from '../../scratch-gc';
@@ -557,6 +559,34 @@ describe('events:status projection', () => {
     expect(listMyEventKeySubscriptions).not.toHaveBeenCalled();
   });
 
+  it('keeps timeout re-arm guidance aligned with the exact-key registered waiter response', async () => {
+    const expiresTs = '2099-07-13T12:30:00.000Z';
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [],
+      waiters: [{
+        id: 32,
+        subscriberId: 'su-status',
+        policy: 'wake',
+        createdAt: '2026-07-13T12:00:00.000Z',
+        firedAt: null,
+        firedReason: null,
+        cancelledAt: null,
+        expiresTs,
+      }],
+      deliveries: [],
+    } as never);
+
+    const out = await call({ event: 'task:terminal:WI-7' });
+    expect(out.event_inspection.waiters).toMatchObject([
+      { await_id: 32, subscriber_id: 'su-status', state: 'registered', expires_ts: expiresTs },
+    ]);
+    expect(out).not.toHaveProperty('active_awaits');
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('event_inspection.waiters');
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('state: "registered"');
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('future expires_ts');
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('active_awaits instead');
+  });
+
   it('bounds hot exact-key history, keeps the newest rows, and reports omitted rows within the response budget', async () => {
     const longValue = 'x'.repeat(8_000);
     const announcements = Array.from({ length: 50 }, (_, index) => ({
@@ -905,9 +935,9 @@ describe('events:status projection', () => {
       deliveries: [],
     } as never);
     vi.mocked(hostAudienceResolvers.listFleetLeader).mockResolvedValueOnce(['su-ended']);
-    vi.mocked(resolveSessionStates).mockResolvedValueOnce(new Map([
-      ['su-ended', { ownerId: 'su-ended', sessionState: 'ended' }],
-    ]) as never);
+    mockResolvedOnceTyped(vi.mocked(resolveSessionStates), new Map([
+      ['su-ended', { ownerId: 'su-ended', sessionState: 'ended' as const, wakeable: false, liveTurn: false, confirmLiveness: false, heartbeatFresh: false }],
+    ]));
 
     const out = await call({ event: 'gate:fleet-owner' });
     expect(out.event_inspection.declarations[0]).toMatchObject({

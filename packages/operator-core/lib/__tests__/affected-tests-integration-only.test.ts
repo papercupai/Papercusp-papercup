@@ -31,6 +31,15 @@ import { RELATED_FILTER_LIST_ENV } from '../../../../scripts/lib/related-tests.m
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
 
+function captureIntegrationAdmissionRunner() {
+  const source = readFileSync(AFFECTED_TESTS, 'utf8');
+  const ast = ts.createSourceFile('affected-tests.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helper = ast.statements.find((n): n is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(n) && n.name?.text === 'runAfterIntegrationPgPreflight');
+  expect(helper?.body).toBeDefined();
+  return runInNewContext(`(${helper!.getText(ast)})`, {});
+}
+
 // Names a fresh VM context resolves by itself (JSON, String, undefined, ...). Node globals such as
 // `process` are NOT here, so a slice reading one must get it from the context below.
 const VM_BUILTINS = new Set<string>(runInNewContext('Object.getOwnPropertyNames(globalThis)', {}));
@@ -153,6 +162,67 @@ describe('runCapturedTask slice harness (WI-6554700010029777)', () => {
     // The key matches the overridden spawn script, so only the scriptOverride check can refuse it.
     expect(captureEnvironment({ script: 'test', qualificationTasks: ['@probe/core::test:x'], scriptOverride: 'test:x' })[
       EXECUTED_MAP_OUT_ENV]).toBeUndefined();
+  });
+});
+
+describe('integration PG preflight before shared admission (EI-26822117967607948)', () => {
+  it('awaits the integration PG preflight before starting admission', async () => {
+    const runAfterPreflight = captureIntegrationAdmissionRunner();
+    const calls: string[] = [];
+    const result = await runAfterPreflight({
+      script: 'test:integration',
+      preflight: async () => { calls.push('pg-preflight'); },
+      run: () => { calls.push('admission'); return 'started'; },
+    });
+    expect(calls).toEqual(['pg-preflight', 'admission']);
+    expect(result).toBe('started');
+  });
+
+  it('preserves preflight refusal and does not start admission; unit tasks skip preflight', async () => {
+    const runAfterPreflight = captureIntegrationAdmissionRunner();
+    const refusal = runInNewContext(
+      "new Error('TEST SUBSTRATE STORAGE LOW: test PG volume is below headroom')",
+      {},
+    );
+    let admitted = false;
+    const failure = await runAfterPreflight({
+      script: 'test:integration',
+      preflight: async () => { throw refusal; },
+      run: () => { admitted = true; },
+    }).catch(error => error);
+    expect(failure.message).toBe(refusal.message);
+    expect(failure.code).toBe('AFFECTED_TEST_PG_PREFLIGHT_FAILED');
+    expect(failure.cause).toBe(refusal);
+    expect(admitted).toBe(false);
+
+    let preflighted = false;
+    const result = await runAfterPreflight({
+      script: 'test',
+      preflight: async () => { preflighted = true; },
+      run: () => 'unit-started',
+    });
+    expect(preflighted).toBe(false);
+    expect(result).toBe('unit-started');
+  });
+
+  it('wires the original integration task through getTestPg before the existing attributed catch', () => {
+    const source = readFileSync(AFFECTED_TESTS, 'utf8');
+    const ast = ts.createSourceFile('affected-tests.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const runner = ast.statements.find((n): n is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(n) && n.name?.text === 'runCapturedTask');
+    const runExecution = runner?.body?.statements.find(n => ts.isVariableStatement(n)
+      && n.declarationList.declarations.some(d => d.name.getText(ast) === 'runExecution'));
+    const executionText = runExecution?.getText(ast) ?? '';
+    expect(executionText.indexOf('runAfterIntegrationPgPreflight')).toBeGreaterThanOrEqual(0);
+    expect(executionText.indexOf('runAfterIntegrationPgPreflight'))
+      .toBeLessThan(executionText.indexOf('runWithAdmissionDeferral'));
+    expect(executionText).toContain('script: context.t.script');
+    expect(executionText).toContain("../libs/test-config/src/pg-container.ts");
+    expect(executionText).toContain('await getTestPg()');
+    expect(executionText).not.toMatch(/process\.env\.PAPERCUSP_TEST_PG_ADMIN_URL\s*=|delete\s+process\.env\.PAPERCUSP_TEST_PG_ADMIN_URL/);
+    expect(runner?.body?.getText(ast)).toContain('return runExecution.catch((error) =>');
+    expect(runner?.body?.getText(ast)).toContain('__governedAdmissionError: isGovernedAdmissionFailure');
+    expect(runner?.body?.getText(ast)).toContain('if (isGovernedAdmissionFailure) observedAdmissionErrors++');
   });
 });
 

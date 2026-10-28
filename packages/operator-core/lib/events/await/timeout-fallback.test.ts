@@ -157,6 +157,14 @@ describe('timeout-wake guidance strings (P-004)', () => {
     expect(TIMEOUT_WAKE_GUIDANCE).toMatch(/re-orient/i);
     expect(TIMEOUT_WAKE_GUIDANCE).toMatch(/re-arm/i);
   });
+
+  it('uses the exact-event waiter shape and reserves active_awaits for generic or await_id reads', () => {
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('event_inspection.waiters');
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('subscriber_id matching your owner ID');
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('state: "registered"');
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('future expires_ts');
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('active_awaits instead');
+  });
 });
 
 describe('predicate timeout recovery', () => {

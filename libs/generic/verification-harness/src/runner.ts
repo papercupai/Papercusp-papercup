@@ -473,6 +473,91 @@ async function runIneligibility(
   return null;
 }
 
+async function preserveIncompleteRunDiagnostic(evidenceRoot: string, runId: string): Promise<boolean> {
+  const isInside = (root: string, target: string) => {
+    const relative = path.relative(root, target);
+    return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  };
+  try {
+    const root = await realpath(evidenceRoot);
+    const runDir = path.join(root, runId);
+    const runInfo = await lstat(runDir);
+    if (!runInfo.isDirectory() || runInfo.isSymbolicLink()) return false;
+    const runRoot = await realpath(runDir);
+    if (runRoot !== runDir || !isInside(root, runRoot)) return false;
+
+    const source = path.join(runRoot, 'result.json');
+    const sourceInfo = await lstat(source);
+    if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink() || sourceInfo.size > MAX_RETAINED_BYTES) return false;
+    const original = await readFile(source);
+    if (original.length > MAX_RETAINED_BYTES) return false;
+    const result = JSON.parse(original.toString('utf8')) as {
+      schemaVersion?: unknown;
+      harness?: unknown;
+      runId?: unknown;
+      endedAt?: unknown;
+    };
+    if (result?.schemaVersion !== 1 || result.runId !== runId || result.endedAt !== null) return false;
+
+    const ensureDirectory = async (directory: string) => {
+      await mkdir(directory, { recursive: true });
+      const info = await lstat(directory);
+      const resolved = await realpath(directory);
+      return info.isDirectory() && !info.isSymbolicLink() && resolved === directory && isInside(root, resolved);
+    };
+    const retainedRoot = path.join(root, 'retained');
+    const retainedRun = path.join(retainedRoot, runId);
+    const incompleteRoot = path.join(retainedRun, 'incomplete');
+    if (!(await ensureDirectory(retainedRoot)) || !(await ensureDirectory(retainedRun)) ||
+        !(await ensureDirectory(incompleteRoot))) return false;
+
+    const writeImmutable = async (destination: string, bytes: Buffer) => {
+      const parent = path.dirname(destination);
+      const resolvedParent = await realpath(parent);
+      if (resolvedParent !== parent || !isInside(root, resolvedParent)) return false;
+      const temporary = path.join(parent, `.no-verdict-${randomUUID()}.tmp`);
+      try {
+        await writeFile(temporary, bytes, { flag: 'wx' });
+        try { await link(temporary, destination); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return false;
+          const existing = await lstat(destination).catch(() => null);
+          if (!existing?.isFile() || existing.isSymbolicLink() || !(await readFile(destination)).equals(bytes)) return false;
+        }
+        const saved = await lstat(destination).catch(() => null);
+        return !!saved?.isFile() && !saved.isSymbolicLink() && (await readFile(destination)).equals(bytes);
+      } finally {
+        await rm(temporary, { force: true }).catch(() => undefined);
+      }
+    };
+
+    const sourceStillMatches = async () => {
+      const current = await lstat(source).catch(() => null);
+      if (!current?.isFile() || current.isSymbolicLink() || current.size > MAX_RETAINED_BYTES) return false;
+      return (await readFile(source)).equals(original);
+    };
+    const digest = createHash('sha256').update(original).digest('hex');
+    if (!(await writeImmutable(path.join(incompleteRoot, 'result.json'), original)) ||
+        !(await sourceStillMatches())) return false;
+
+    const manifest = Buffer.from(`${JSON.stringify({
+      schemaVersion: 1,
+      runId,
+      harness: typeof result.harness === 'string' ? result.harness : null,
+      terminalVerdict: false,
+      endedAt: null,
+      snapshot: { path: 'result.json', bytes: original.length, sha256: digest },
+    }, null, 2)}\n`);
+    if (!(await writeImmutable(path.join(incompleteRoot, 'no-terminal-verdict.json'), manifest)) ||
+        !(await sourceStillMatches())) return false;
+    return true;
+  } catch {
+    // Preservation is a prerequisite to deleting incomplete evidence. Any unsafe or
+    // unverified snapshot leaves the disposable run directory in place.
+    return false;
+  }
+}
+
 async function removeRunIfEligible(
   evidenceRoot: string, runId: string, now: number, requireTerminal: boolean,
   isPinned: (path: string) => boolean,
@@ -482,6 +567,18 @@ async function removeRunIfEligible(
   try {
     // Recheck both protections at the removal boundary; latest can move while another
     // run finalizes, and a caller may pin a run while this sweep is judging it.
+    if (await latestRunId(evidenceRoot) === runId || await hasKeepMarker(runDir)) return false;
+    // Aged incomplete results have no standard terminal receipt. Preserve their exact
+    // no-verdict bytes in a separate subtree before count or pressure retention removes them.
+    if (!(await hasTerminalResult(evidenceRoot, runId))) {
+      const incompleteResult = await lstat(path.join(runDir, 'result.json')).catch(error => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+      });
+      // Empty directories from a crash before the first result write have no diagnostic bytes
+      // to preserve; retain the established count-pruning behavior for those directories.
+      if (incompleteResult && !(await preserveIncompleteRunDiagnostic(evidenceRoot, runId))) return false;
+    }
     if (await latestRunId(evidenceRoot) === runId || await hasKeepMarker(runDir)) return false;
     await rm(runDir, { recursive: true, force: true });
     return true;

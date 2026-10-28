@@ -69,7 +69,7 @@ const statusArgs = z.union([
       .number()
       .int()
       .positive()
-      .describe('Filter active awaits and recent wake deliveries to the id returned by events:await. A targeted recent delivery includes its payload (capped at 2000 characters). Mutually exclusive with `event`.'),
+      .describe('Filter active awaits and recent wake deliveries to the id returned by events:await. The generic/await_id response lists registrations under active_awaits. A targeted recent delivery includes its payload (capped at 2000 characters). Mutually exclusive with `event`.'),
     event: z.never().optional().describe('Only valid for exact event-key inspection; mutually exclusive with `await_id`.'),
     after_generation: z.never().optional().describe('Only valid with an exact `event` key.'),
   }),
@@ -80,7 +80,7 @@ const statusArgs = z.union([
       .string()
       .min(1)
       .max(200)
-      .describe('Exact event key to inspect across declarations, waiter registrations, and wake outcomes. Mutually exclusive with `await_id`.'),
+      .describe('Exact event key to inspect across declarations, waiter registrations, and wake outcomes. Exact-key waiter rows are under event_inspection.waiters (with state and expires_ts), not active_awaits. Mutually exclusive with `await_id`.'),
     after_generation: z.number().int().nonnegative().optional().describe('Your cached declaration generation for `event`. The response says whether it is stale and how to resync.'),
   }),
   z.object({
@@ -345,9 +345,9 @@ export async function resolveAnnouncementOwnership(
 export default defineTool({
   name: 'events:status',
   description:
-    `Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Exact-key history is a bounded recent window; history_window reports omitted rows. Optionally include the fleet-wide wake meter. Evidence-only judges may inspect only their own awaits and recent wakes; exact-key inspection and the fleet-wide meter are unavailable. ${EVENTS_SCOPE_NOTE}`,
+    `Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Exact-key waiter rows are under event_inspection.waiters; generic and await_id responses use active_awaits. Exact-key history is a bounded recent window; history_window reports omitted rows. Optionally include the fleet-wide wake meter. Evidence-only judges may inspect only their own awaits and recent wakes; exact-key inspection and the fleet-wide meter are unavailable. ${EVENTS_SCOPE_NOTE}`,
   guidance: {
-    when: 'Checking what will reach or wake you (active wake awaits plus standing event-key inject subscriptions), whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true).',
+    when: 'Checking what will reach or wake you (active wake awaits plus standing event-key inject subscriptions), whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true). For exact event-key reads, inspect event_inspection.waiters; active_awaits belongs to generic or await_id reads.',
     notWhen: `Reading your message stream — that is coord:inbox. Following an area — topics:feed. ${EVENTS_SCOPE_NOTE}`,
     seeAlso: [
       'events:cancel (cancel an await you found here)',

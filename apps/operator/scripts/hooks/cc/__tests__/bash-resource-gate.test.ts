@@ -6252,6 +6252,40 @@ describe('interpreter write-indicator false positives (EI-18692070370140239)', (
   });
 });
 
+describe('interpreter write guard ignores inert serialized code strings (EI-26810819700181555)', () => {
+  const TREE_PATH = 'packages/operator-core/lib/foo.ts';
+
+  const serializedArtifactScript =
+    "tools.artifacts.save({slug: 'probe', rel_path: 'witness.json', content: 'ok'}); " +
+    "open('packages/operator-core/lib/foo.ts', 'w').write('x')";
+
+  it('allows a read-only serializer whose JSON string contains remote save and local-open code', () => {
+    const command = [
+      "python3 - <<'PY'",
+      'import json, sys',
+      `payload = {'script': ${JSON.stringify(serializedArtifactScript)}}`,
+      'sys.stdout.write(json.dumps(payload))',
+      'PY',
+    ].join('\n');
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('still denies a real in-tree open write when serialized code beside it names another target', () => {
+    const command = [
+      "python3 - <<'PY'",
+      'import json, sys',
+      `payload = {'script': ${JSON.stringify(serializedArtifactScript)}}`,
+      "open('packages/operator-core/lib/foo.ts', 'w').write('x')",
+      'sys.stdout.write(json.dumps(payload))',
+      'PY',
+    ].join('\n');
+    const reason = denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('EI-18691482279179647');
+    expect(reason).toContain(TREE_PATH);
+    expect(reason).not.toContain('witness.json');
+  });
+});
+
 // ── Substitution gate (bash-to-tool-substitution-2026-07-26, P-016) ─────────
 // Two distinct things are under test and they fail differently:
 //   1. the PRE-FILTER — does a command a registry rule could claim actually

@@ -16,7 +16,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -239,6 +239,15 @@ function absolutePath(value: unknown): string | null {
 
 export function dependencyPrebuildKey(candidate: string, inputFingerprint: string): string {
   return `${candidate.toLowerCase()}:${inputFingerprint.toLowerCase()}`;
+}
+
+/** One bounded ref pin per latest-state prebuild target. */
+export function dependencyPrebuildRetentionLabel(target: DependencyPrebuildTarget): string {
+  const targetHash = createHash('sha256')
+    .update(`${target.workspaceId}:${target.installSlug}`)
+    .digest('hex')
+    .slice(0, 40);
+  return `dependency-prebuild-${targetHash}`;
 }
 
 /** Strictly decode routine metadata. Malformed state is absence, never readiness. */
@@ -985,6 +994,8 @@ export async function runDependencyGenerationPrebuild(
       request.integrationRoot,
       '--ensure-ref',
       candidate,
+      '--retain-as',
+      dependencyPrebuildRetentionLabel(request),
     ],
     {
       cwd: request.toolingRoot,

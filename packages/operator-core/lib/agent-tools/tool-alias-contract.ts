@@ -100,8 +100,12 @@ const STRICT_ALIAS_RE = /\balias(?:es)?\s+(?:for|of)\s+`([A-Za-z_][A-Za-z0-9_]*)
  * Raising this after adding aliases is correct and expected. LOWERING it is the
  * thing to refuse: that is the class silently returning, which is exactly how it
  * reached 71 filings.
+ *
+ * 17 -> 16 on 2026-10-28 (WI-6554700010030925): plans:add-decision `itemRefs`
+ * was not removed. It moved from a declared alias to a fold, pinned in
+ * FOLDED_ARG_ALIASES (whose floor rose to match), to pay back floor bytes.
  */
-export const STRICT_ALIAS_DECLARATION_FLOOR = 17;
+export const STRICT_ALIAS_DECLARATION_FLOOR = 16;
 
 /**
  * FOLDED aliases (WI-6554700010029664, 2026-10-27) — spellings that are still ACCEPTED but no
@@ -145,10 +149,16 @@ export const FOLDED_ARG_ALIASES: readonly FoldedArgAlias[] = [
   { tool: 'events:catalog', alias: 'query', canonical: 'q', sample: 'gate' },
   { tool: 'loop:status', alias: 'owner', canonical: 'ownerId', sample: 'self' },
   { tool: 'capability:bash', alias: 'cmd', canonical: 'command', sample: 'true' },
+  // WI-6554700010030925 (2026-10-28): folded to pay back the P-018 provenance field's floor bytes.
+  { tool: 'tools:find', alias: 'q', canonical: 'query', sample: 'gate' },
+  { tool: 'coord:orient', alias: 'includeFleetCatchup', canonical: 'includeFleetCatchUp', sample: false },
+  { tool: 'coord:orient', alias: 'includeCatchup', canonical: 'includeFleetCatchUp', sample: false },
+  // Also folded per items[] entry; that half is pinned by plans/add-decision.test.ts.
+  { tool: 'plans:add-decision', alias: 'itemRefs', canonical: 'refs', sample: ['P-001'], base: { slug: 'some-plan', title: 't', body: 'b' } },
 ];
 
 /** The folded-alias population may only grow; see the note on FOLDED_ARG_ALIASES. */
-export const FOLDED_ALIAS_FLOOR = 13;
+export const FOLDED_ALIAS_FLOOR = 17;
 
 /** Adapt a projected catalog entry; returns null when there is nothing to scan. */
 export function toAliasScannableTool(tool: unknown): AliasScannableTool | null {

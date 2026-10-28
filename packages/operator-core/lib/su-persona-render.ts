@@ -262,6 +262,8 @@ export async function applySuPromptOverlays(opts: {
  */
 export interface SuLaunchSpecRecord {
   v: 1;
+  /** Task-ledger id of the agent task that launched this session, when bootstrap-su was given one. */
+  agentTaskId?: string;
   agent: string;
   workspaceId: string;
   harnessSlug: string | null;

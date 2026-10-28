@@ -1670,7 +1670,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.error).toContain('append:true requires a non-blank');
     });
 
-    it('append:true trims superseded prior tail while preserving the oldest baseline and newest addendum at the 32000-char cap', async () => {
+    it('append:true trims superseded prior tail only when confirmShrink is explicit', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       const prior = '## MEASURED BASELINE\n' + 'P'.repeat(31970);
       const addendum = '## LATEST PROGRESS\n' + 'A'.repeat(40);
@@ -1681,7 +1681,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         return { stored, priorLength: prior.length, blockedReason };
       });
       getWorkItemCheckpoint.mockImplementationOnce(async () => stored);
-      const r = await one({ id: 'WI-7', checkpoint: addendum, append: true });
+      const r = await one({ id: 'WI-7', checkpoint: addendum, append: true, confirmShrink: true });
       expect(r.ok).toBe(true);
       const storedArg = stored;
       expect(storedArg.length).toBeLessThanOrEqual(32000);
@@ -1691,6 +1691,33 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(storedArg).toContain('…[older checkpoint content truncated]…');
       // The newest addendum — the part the caller just wrote — remains complete.
       expect(storedArg.endsWith(addendum)).toBe(true);
+    });
+
+    it('EI-26833103898072347: refuses a capped append that retains the addendum but evicts prior narrative', async () => {
+      getWorkItem.mockResolvedValue({ id: 'EI-268331-PRIOR-BODY-OVERFLOW', harness: 'papercusp' });
+      const prior = '## VERIFIED HANDBACK\n' + 'P'.repeat(31970);
+      const addendum = '## FINAL DISPOSITION\n' + 'A'.repeat(40);
+      let stored = prior;
+      setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string, opts) => {
+        const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+        stored = blockedReason ? prior : opts?.transform?.(prior, text) ?? text;
+        return { stored, priorLength: prior.length, blockedReason };
+      });
+
+      const result = await one({ id: 'EI-268331-PRIOR-BODY-OVERFLOW', checkpoint: addendum, append: true });
+
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'append_prior_body_overflow',
+        appendPriorBodyOverflowDiagnostics: {
+          priorNarrativeChars: prior.length,
+          submittedAppendChars: addendum.length,
+          priorNarrativeRetained: false,
+          submittedAppendRetained: true,
+        },
+      });
+      expect(result.error).toContain('evict previously stored narrative');
+      expect(stored).toBe(prior);
     });
 
     it('EI-18665443723911343: the shorthand `append` accepts the literal string "true"/"false" identically to a real boolean', async () => {
@@ -2321,7 +2348,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
     it('EI-22801779900317365: append_body_overflow reports prose, check-row, submitted, and remaining-capacity chars separately', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-228017-DIAGNOSTIC', harness: 'papercup' });
-      const prior = withCarryNoteChecks('carried prose', [
+      // No prior narrative means this oversized append has no earlier body to evict;
+      // keep this fixture focused on the submitted-body overflow diagnostics.
+      const prior = withCarryNoteChecks('', [
         { claim: 'the carried check remains', recheck: 'read the carried evidence', verified: 'measured' },
       ]);
       getWorkItemCheckpoint.mockResolvedValue(prior);
@@ -4573,7 +4602,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             legacyChecksNormalization?: { truncatedFields: number; droppedRows: number };
           };
 
-          expect(r).toMatchObject({ ok: false, errorCode: 'append_body_overflow' });
+          expect(r).toMatchObject({ ok: false, errorCode: 'append_prior_body_overflow' });
           const current = readCurrent();
           expect(current).toBe(prior);
           if (current === null) throw new Error('legacy checkpoint write unexpectedly cleared');
@@ -5596,6 +5625,25 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
     expect(result.ok).toBe(true);
     expect(result).not.toHaveProperty('unreadRunLint');
     expect(setWorkItemCheckpointWithPrior).toHaveBeenCalled();
+  });
+
+  it('keeps a completed test log separate from a pending scorecard-repair output', async () => {
+    const body = [
+      'The focused test run completed and its output was read at /tmp/focused-tests.log, while a separate scorecards:repair process is still running;',
+      'Output: /tmp/scorecard-repair.log.',
+    ].join('\n');
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-MIXED-TEST-REPAIR', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-MIXED-TEST-REPAIR', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result.unreadRunLint).toMatchObject({
+      flagged: true,
+      signals: { inFlight: ['still running'], runRefs: ['/tmp/scorecard-repair.log'] },
+    });
+    expect(result.unreadRunLint.signals.runRefs).not.toContain('/tmp/focused-tests.log');
   });
 
   it('stays absent for an ordinary progress checkpoint', async () => {

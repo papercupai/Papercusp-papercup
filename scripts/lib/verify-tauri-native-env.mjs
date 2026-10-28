@@ -78,7 +78,7 @@ export function verifyDesktopPortalCandidateSpa(repoRoot, env = process.env, out
   if (hash(manifestBytes) !== digest) throw new Error('VERIFY_TAURI_SPA_UNBOUND: candidate manifest hash mismatch');
   const receipt = JSON.parse(manifestBytes.toString());
   const commitSha = execFileSync('git', ['rev-parse', env.VERIFY_TAURI_SOURCE_REF || 'HEAD'], {
-    cwd: repoRoot, encoding: 'utf8',
+    cwd: repoRoot, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384,
   }).trim();
   if (receipt.schemaVersion !== 'desktop-portal-private-candidate-v1'
     || receipt.desktopSource?.commitSha !== commitSha || receipt.desktopSource?.worktreeDirty !== false) {
@@ -154,7 +154,9 @@ export function nativeVerifierEnv(env, launch) {
     }
     // The invoked wrapper remains in the tested checkout. Pin its Git source
     // separately: changing REPO_DIR alone would copy the mutable donor's code.
-    const sourceRef = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
+    const sourceRef = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: source, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384,
+    }).trim();
     if (child.VERIFY_TAURI_SOURCE_REF && child.VERIFY_TAURI_SOURCE_REF !== sourceRef) {
       throw new Error('Native verifier source ref must match the invoked checkout');
     }

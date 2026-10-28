@@ -25,8 +25,10 @@ export interface MonitoredWorkflowReader {
   steps(id: string): Promise<readonly WorkflowStep[] | undefined>;
 }
 const workflows: MonitoredWorkflowReader = {
-  status: id => DBOS.getWorkflowStatus(id),
-  steps: id => DBOS.listWorkflowSteps(id, { limit: 129 }),
+  status: async id => DBOS.isInitialized() ? DBOS.getWorkflowStatus(id)
+    : (await (await import('../dbos/primary-dbos-client')).getPrimaryDbosClient()).getWorkflow(id).then(row => row ?? null),
+  steps: async id => DBOS.isInitialized() ? DBOS.listWorkflowSteps(id, { limit: 129 })
+    : (await (await import('../dbos/primary-dbos-client')).getPrimaryDbosClient()).listWorkflowSteps(id, { limit: 129 }),
 };
 export interface MonitoredRunReadOptions extends SqlMiningOptions { runId: string }
 export type MonitoredRunReadResult = { status: 'read'; evidence: MonitoredRunEvidence; refs: string[] }

@@ -525,16 +525,21 @@ export function resetSidecarFallbackStatsForTest(): void {
  * The sidecar owns the real kill-timeout; the client timeout is deliberately
  * slack so it cannot race a legitimate timeout RESPONSE coming back.
  */
+export interface SidecarDiagnosticTags {
+  runId: string;
+  commandClass: 'git' | 'other';
+}
+
 export async function runGitViaSpawnerSidecar(
   args: string[],
   cwd: string,
   timeoutMs: number,
   env: NodeJS.ProcessEnv,
-  opts: { idleTimeoutMs?: number; signal?: AbortSignal; onProgress?: () => void } = {},
+  opts: { idleTimeoutMs?: number; signal?: AbortSignal; onProgress?: () => void; diagnosticTags?: SidecarDiagnosticTags } = {},
 ): Promise<GitRunResult> {
   return runCommandViaSpawnerSidecar('git', args, {
     cwd, timeoutMs, env, idleTimeoutMs: opts.idleTimeoutMs,
-    signal: opts.signal, onProgress: opts.onProgress,
+    signal: opts.signal, onProgress: opts.onProgress, diagnosticTags: opts.diagnosticTags,
   });
 }
 
@@ -561,6 +566,7 @@ export async function runCommandViaSpawnerSidecar(
     cwd?: string; timeoutMs: number; env?: NodeJS.ProcessEnv; idleTimeoutMs?: number;
     signal?: AbortSignal; onProgress?: () => void;
     rpcTimeoutMs?: number;
+    diagnosticTags?: SidecarDiagnosticTags;
   },
 ): Promise<GitRunResult> {
   const aborted = (): GitRunResult => ({ code: -1, stdout: '', stderr: `${command} aborted before sidecar process start` });
@@ -615,6 +621,7 @@ export async function runCommandViaSpawnerSidecar(
         env: opts.env,
         timeoutMs: opts.timeoutMs,
         idleTimeoutMs: opts.idleTimeoutMs,
+        ...(opts.diagnosticTags ? { diagnosticTags: opts.diagnosticTags } : {}),
         ...(fence ? { fence } : {}),
       },
       {

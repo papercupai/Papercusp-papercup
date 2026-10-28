@@ -1102,12 +1102,48 @@ export function capturePassingTaskRuntimeIdentity({ root, cwd = root, environmen
  * Only a plain Vitest launch with the Node shebang has one known test interpreter. Composite
  * scripts, lifecycle hooks and unrecognized launchers run fresh until their actual runtime
  * topology has a measured binding; stamping npm's own Node identity would mislabel their proof.
+ *
+ * Measured bindings (WI-6554700010030941): leading `NAME=value` assignments, the repo's
+ * scripts/pc-heavy.sh admission wrapper (it exports only PC_HEAVY_* and `exec "$@"`), and
+ * `node <repo>/scripts/run-vitest-pure-lane.mjs` (it spawns the same PATH-resolved `vitest`)
+ * leave the test interpreter unchanged. Their bytes and the script text join the identity as
+ * `launcherDigests`, so editing a wrapper or the env prefix invalidates verdicts proved under it.
+ * A bare `vitest run` script keeps its pre-existing identity byte for byte.
  */
+const PLAIN_SCRIPT_ARGS = "(?:\\s+[^'\"`$;&|<>()\\r\\n\\\\]+)*";
+const VITEST_RUN_SCRIPT = new RegExp(`^vitest\\s+run${PLAIN_SCRIPT_ARGS}$`);
+const PURE_LANE_SCRIPT = new RegExp(`^node\\s+(\\S+)${PLAIN_SCRIPT_ARGS}$`);
+
+function unwrapNpmTestScript({ root, workspaceRoot, scriptText }) {
+  const original = scriptText ?? "";
+  if (VITEST_RUN_SCRIPT.test(original)) return { launcherDigests: null };
+  let rest = original.trim();
+  for (let env; (env = /^[A-Za-z_][A-Za-z0-9_]*=[^\s'"`$;&|<>()\\]*\s+/.exec(rest));) {
+    rest = rest.slice(env[0].length);
+  }
+  const repoFile = (operand, relPath) => resolve(workspaceRoot, operand) === join(resolve(root), relPath);
+  const launcherDigests = { script: sha256(original) };
+  const digest = (relPath) => { launcherDigests[relPath] = sha256(readFileSync(join(resolve(root), relPath))); };
+  const heavy = /^(\S+)\s+--\s+/.exec(rest);
+  if (heavy && repoFile(heavy[1], "scripts/pc-heavy.sh")) {
+    digest("scripts/pc-heavy.sh");
+    rest = rest.slice(heavy[0].length);
+  }
+  if (VITEST_RUN_SCRIPT.test(rest)) return { launcherDigests };
+  const pure = PURE_LANE_SCRIPT.exec(rest);
+  if (pure && repoFile(pure[1], "scripts/run-vitest-pure-lane.mjs")) {
+    digest("scripts/run-vitest-pure-lane.mjs");
+    return { launcherDigests };
+  }
+  return null;
+}
+
 export function captureNpmTaskRuntimeIdentity({ root, workspaceRoot, scriptText, environment,
   preScript, postScript }) {
-  if (preScript || postScript || process.platform === "win32"
-      || !/^vitest\s+run(?:\s+[^'"`$;&|<>()\r\n]+)*$/.test(scriptText ?? "")) return null;
+  if (preScript || postScript || process.platform === "win32" || !root || !workspaceRoot) return null;
   try {
+    const unwrapped = unwrapNpmTestScript({ root, workspaceRoot, scriptText });
+    if (!unwrapped) return null;
     const bins = [];
     for (let current = resolve(workspaceRoot); ; current = dirname(current)) {
       bins.push(join(current, "node_modules/.bin"));
@@ -1124,8 +1160,11 @@ export function captureNpmTaskRuntimeIdentity({ root, workspaceRoot, scriptText,
     if (!vitest || !/^#!\/usr\/bin\/env node\r?\n/.test(readFileSync(vitest, "utf8"))) return null;
     const childEnvironment = { ...environment };
     for (const key of pathKeys.length ? pathKeys : ["PATH"]) childEnvironment[key] = search.join(delimiter);
-    return capturePassingTaskRuntimeIdentity({ root, cwd: workspaceRoot,
+    const identity = capturePassingTaskRuntimeIdentity({ root, cwd: workspaceRoot,
       environment: childEnvironment, executable: "node" });
+    return identity && unwrapped.launcherDigests
+      ? { ...identity, launcherDigests: unwrapped.launcherDigests }
+      : identity;
   } catch {
     return null;
   }

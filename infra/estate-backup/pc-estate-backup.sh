@@ -77,17 +77,45 @@ STATEFUL_RE='postgres|clickhouse|redis|valkey|mysql|maria|mongo|kafka|redpanda|m
 
 FAILED=0
 ARTIFACTS=()
+ARTIFACT_ROWS="/tmp/pcbk-manifest-artifacts.$$"
+: > "$ARTIFACT_ROWS"
+trap 'rm -f "$ARTIFACT_ROWS"' EXIT
+CATALOG_LINES=()
 
 log()  { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 fail() { printf '[%s] !! FAIL: %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; FAILED=$((FAILED+1)); }
+
+clickhouse_catalog() {
+  local container="$1" label="$2" query="$3" output error detail=""
+  output="/tmp/pcch-catalog.$$.${RANDOM}"
+  error="${output}.err"
+  CATALOG_LINES=()
+  if ! docker exec "$container" clickhouse-client -q "$query" > "$output" 2> "$error"; then
+    detail=$(tr '\n' ' ' < "$error" | cut -c1-400)
+    if [ -n "$detail" ]; then
+      fail "$container: ${label} enumeration failed: ${detail}"
+    else
+      fail "$container: ${label} enumeration failed"
+    fi
+    rm -f "$output" "$error"
+    return 1
+  fi
+  if LC_ALL=C grep -q $'\r' "$output"; then
+    fail "$container: ${label} enumeration returned a carriage return; refusing malformed identifiers"
+    rm -f "$output" "$error"
+    return 1
+  fi
+  mapfile -t CATALOG_LINES < "$output"
+  rm -f "$output" "$error"
+}
 
 # record an artifact: path, logical name, kind
 emit() {
   local f="$1" name="$2" kind="$3" objs="${4:-}"
   local sz; sz=$(stat -c%s "$f")
   local sum; sum=$(sha256sum "$f" | cut -d' ' -f1)
-  local xj=""; [ -n "$objs" ] && xj=",\"objects\":${objs}"
-  ARTIFACTS+=("{\"name\":\"${name}\",\"kind\":\"${kind}\",\"path\":\"${f#$STAGE/}\",\"bytes\":${sz},\"sha256\":\"${sum}\"${xj}}")
+  ARTIFACTS+=("$name")
+  printf '%s\0' "$name" "$kind" "${f#$STAGE/}" "$sz" "$sum" "$objs" >> "$ARTIFACT_ROWS"
   log "  ok ${name} (${sz} bytes${objs:+, ${objs} objects})"
 }
 
@@ -178,14 +206,20 @@ done
 # metadata is a liability. Schema DDL + Native data restores onto a fresh node.
 for c in ${CH_CONTAINERS[@]+"${CH_CONTAINERS[@]}"}; do
   log "== clickhouse $c =="
-  mapfile -t CHDBS < <(docker exec "$c" clickhouse-client -q \
-    "SELECT name FROM system.databases WHERE name NOT IN ('system','INFORMATION_SCHEMA','information_schema','default')")
+  if ! clickhouse_catalog "$c" "database list" \
+    "SELECT name FROM system.databases WHERE name NOT IN ('system','INFORMATION_SCHEMA','information_schema','default')"; then
+    continue
+  fi
+  CHDBS=("${CATALOG_LINES[@]}")
   for db in "${CHDBS[@]}"; do
     mkdir -p "${STAGE}/ch/${db}/data"
     sf="${STAGE}/ch/${db}/schema.sql"
     : > "$sf"
-    mapfile -t TBLS < <(docker exec "$c" clickhouse-client -q \
-      "SELECT name FROM system.tables WHERE database='${db}' ORDER BY name")
+    if ! clickhouse_catalog "$c" "table list for database '${db}'" \
+      "SELECT name FROM system.tables WHERE database='${db}' ORDER BY name"; then
+      continue
+    fi
+    TBLS=("${CATALOG_LINES[@]}")
     for t in "${TBLS[@]}"; do
       docker exec "$c" clickhouse-client -q \
         "SELECT replaceOne(create_table_query,'CREATE ','CREATE OR REPLACE ') FROM system.tables WHERE database='${db}' AND name='${t}'" \
@@ -193,8 +227,11 @@ for c in ${CH_CONTAINERS[@]+"${CH_CONTAINERS[@]}"}; do
     done
     [ -s "$sf" ] && emit "$sf" "${db}/schema" "clickhouse_ddl"
     # data only from storage-bearing engines (Distributed/View/MV/Kafka/Dictionary hold none)
-    mapfile -t DTBLS < <(docker exec "$c" clickhouse-client -q \
-      "SELECT name FROM system.tables WHERE database='${db}' AND engine LIKE '%MergeTree' ORDER BY name")
+    if ! clickhouse_catalog "$c" "MergeTree table list for database '${db}'" \
+      "SELECT name FROM system.tables WHERE database='${db}' AND engine LIKE '%MergeTree' ORDER BY name"; then
+      continue
+    fi
+    DTBLS=("${CATALOG_LINES[@]}")
     for t in "${DTBLS[@]}"; do
       df="${STAGE}/ch/${db}/data/${t}.native.gz"
       # Keep clickhouse-client/docker stderr (outside $STAGE, which is uploaded wholesale)
@@ -242,24 +279,58 @@ for v in ${VOLUMES[@]+"${VOLUMES[@]}"}; do
 done
 
 # --- MANIFEST ---------------------------------------------------------------
-{
-  printf '{\n  "host": "%s",\n  "taken_at": "%s",\n  "plan_item": "hetzner-to-gcp-restore-2026-08-28/P-024",\n' "$HOST" "$TS"
-  printf '  "destination": "%s",\n  "failures": %d,\n' "$DEST" "$FAILED"
-  printf '  "excluded": {\n'
-  first=1
+if ! {
+  printf '%s\0' "$HOST" "$TS" "$DEST" "$FAILED" "${#EXCLUDED[@]}"
   if [ "${#EXCLUDED[@]}" -gt 0 ]; then
-    for k in "${!EXCLUDED[@]}"; do
-      [ $first -eq 0 ] && printf ',\n'; first=0
-      printf '    "%s": "%s"' "$k" "${EXCLUDED[$k]}"
-    done
+    for k in "${!EXCLUDED[@]}"; do printf '%s\0' "$k" "${EXCLUDED[$k]}"; done
   fi
-  printf '\n  },\n  "artifacts": [\n'
-  for i in "${!ARTIFACTS[@]}"; do
-    [ "$i" -gt 0 ] && printf ',\n'
-    printf '    %s' "${ARTIFACTS[$i]}"
-  done
-  printf '\n  ]\n}\n'
-} > "${STAGE}/MANIFEST.json"
+  printf '%s\0' "${#ARTIFACTS[@]}"
+  cat "$ARTIFACT_ROWS"
+} | python3 -c '
+import json
+import sys
+
+fields = sys.stdin.buffer.read().split(b"\0")
+index = 0
+
+def take():
+    global index
+    value = fields[index].decode("utf-8")
+    index += 1
+    return value
+
+host, taken_at, destination = take(), take(), take()
+failures = int(take())
+excluded = {}
+for _ in range(int(take())):
+    excluded[take()] = take()
+artifacts = []
+for _ in range(int(take())):
+    name, kind, path = take(), take(), take()
+    size, checksum, objects = int(take()), take(), take()
+    artifact = {"name": name, "kind": kind, "path": path, "bytes": size, "sha256": checksum}
+    if objects:
+        artifact["objects"] = int(objects)
+    artifacts.append(artifact)
+
+json.dump({
+    "host": host,
+    "taken_at": taken_at,
+    "plan_item": "hetzner-to-gcp-restore-2026-08-28/P-024",
+    "destination": destination,
+    "failures": failures,
+    "excluded": excluded,
+    "artifacts": artifacts,
+}, sys.stdout, ensure_ascii=True, indent=2)
+sys.stdout.write("\n")
+' > "${STAGE}/MANIFEST.json"; then
+  fail "manifest serialization failed; refusing to upload an unverified manifest"
+  exit 1
+fi
+if ! python3 -m json.tool "${STAGE}/MANIFEST.json" >/dev/null; then
+  fail "manifest JSON validation failed before upload"
+  exit 1
+fi
 
 log "== upload -> ${DEST} =="
 # `gcloud storage cp -r` ERRORS on an empty source directory ("matched no

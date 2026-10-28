@@ -316,7 +316,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
   // owner's wedge breaker, so a pool that can no longer begin is detected.
   const beginExecution = deps.beginExecution ?? beginSidecarProcessExecution;
   const observedBegin = observeAdmission(
-    (request) => beginExecution(request, deps.onAdmissionPhase),
+    (request: ExecParams) => beginExecution(request, deps.onAdmissionPhase),
     deps.admissionHealth,
   );
   const begin = async (request: ExecParams): Promise<GovernedExecution> => {

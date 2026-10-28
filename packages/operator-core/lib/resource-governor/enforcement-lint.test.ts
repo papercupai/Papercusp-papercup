@@ -600,6 +600,21 @@ describe('resource governor enforcement lint', () => {
       ['packages/operator-core/lib/memory/bench/tracked-evidence.ts', 'resource-start-outside-admission', false],
       ['scripts/agent-capacity/cost-model.ts', 'resource-start-outside-admission', true],
       ['packages/operator-core/lib/agent-tools/harness/create.ts', 'resource-start-outside-admission', false],
+      ['packages/operator-core/lib/release/admission-private-test-pg.ts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/release/checkpoint-qualification-command.ts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/release/operator-artifact.ts', 'resource-start-outside-admission', true],
+      ['scripts/check-code-health.ts', 'resource-start-outside-admission', true],
+      ['scripts/check-new-clones.mts', 'resource-start-outside-admission', true],
+      ['scripts/lib/runtime-compatibility-census.mjs', 'resource-start-outside-admission', true],
+      ['scripts/lib/runtime-compatibility-probes.mjs', 'resource-start-outside-admission', true],
+      ['scripts/lib/runtime-compatibility.mjs', 'resource-start-outside-admission', true],
+      ['scripts/lib/verify-tauri-native-env.mjs', 'resource-start-outside-admission', true],
+      ['scripts/lib/workspace-host-gcs-publication.mjs', 'resource-start-outside-admission', true],
+      ['scripts/verify-engineering-evidence-release.mjs', 'resource-start-outside-admission', true],
+      ['scripts/verify-engineering-evidence-tauri.mjs', 'resource-start-outside-admission', true],
+      ['scripts/verify-fleet-capacity-recovery.mts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs', 'resource-start-outside-admission', false],
+      ['packages/operator-core/lib/memory/bench/runtime-qualification-cli.ts', 'resource-start-outside-admission', false],
     ];
     for (const [path, code, p016] of startPins) {
       const source = readFileSync(ROOT + path, 'utf8');
@@ -609,6 +624,22 @@ describe('resource governor enforcement lint', () => {
       const addedStart = `${source}\nspawn('unreviewed-worker', []);`;
       expect(entry?.matchesSource?.(addedStart), path).toBe(false);
       expect(scanInventory([[path, addedStart]], p016 ? { migrations: ['P-016'] } : {})).toContain(`${path}:${code}`);
+    }
+
+    const timeoutPins: Array<[string, string]> = [
+      ['scripts/check-code-health.ts', 'timeout: 30_000'],
+      ['scripts/check-new-clones.mts', 'timeout: 30_000'],
+      ['scripts/lib/runtime-compatibility-census.mjs', 'timeout: 120_000'],
+      ['scripts/lib/verify-tauri-native-env.mjs', "cwd: repoRoot, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384"],
+      ['scripts/lib/verify-tauri-native-env.mjs', "cwd: source, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384"],
+      ['scripts/verify-fleet-capacity-recovery.mts', 'timeout: 30_000'],
+    ];
+    for (const [path, timeoutPin] of timeoutPins) {
+      const source = readFileSync(ROOT + path, 'utf8');
+      const unbounded = source.replace(timeoutPin, '');
+      expect(unbounded, path).not.toBe(source);
+      expect(scanInventory([[path, unbounded]], { migrations: ['P-016'] }), path)
+        .toContain(`${path}:resource-start-outside-admission`);
     }
 
     const queuePins: Array<[string, string, string, string, boolean]> = [

@@ -236,6 +236,53 @@ export function shadowEdgeKey(a: string, b: string, path: string, symbol: string
   return `${x}|${y}|${path}#${symbol}`;
 }
 
+export interface WindowEdge { a: string; b: string; path: string; symbol: string; firstTs: number; reason: string }
+export type WindowLineage = Pick<ShadowWindowInput, 'lineageOf' | 'implementerOwners' | 'implementerLineages'>;
+
+/** True when an owner is a plan implementer by owner OR by spawn lineage. */
+export function isImplementerIdentity(id: string, l: WindowLineage): boolean {
+  return l.implementerOwners.has(id) || l.implementerLineages.has(l.lineageOf.get(id) ?? id);
+}
+
+/**
+ * The window's edges and their counted judgments. One rule for the scorer, the judge list
+ * and the judge write, so a judgment the write accepts is one the scorer counts.
+ *
+ * EI-27217222854087146: R-12 measures edges from work items outside this plan. An edge
+ * with an implementer endpoint is excluded from the sample, the judgments, precision,
+ * note length, the minimum-sample checks and the dead-derivation rule. An endpoint is an
+ * implementer by owner OR by lineage, so a respawned implementer session is excluded too.
+ * The implementer set comes from resolvePlanImplementerIdentities, which returns every
+ * past holder of any of this plan's work items (taken_by, terminal_owner,
+ * last_released_by, worked_by_history), the plan's auditors and its code editors, so an
+ * edge with no such endpoint is outside the plan. Recall still searches every edge
+ * (`allEdges`): a breakage caught by any edge was caught. The latest outside-lineage
+ * judgment per edge wins; an implementer-lineage judgment never counts.
+ */
+export function windowEdges(
+  input: Pick<ShadowWindowInput, 'windowRows' | 'judgments'> & WindowLineage, windowStart: number,
+): { allEdges: Map<string, WindowEdge>; edges: Map<string, WindowEdge>; latestJudgment: Map<string, EdgeJudgment>; surfaced: number } {
+  const allEdges = new Map<string, WindowEdge>();
+  let surfaced = 0;
+  for (const r of input.windowRows) {
+    if (r.kind === 'edge' && r.a && r.b) {
+      if (r.mode !== 'shadow') surfaced += 1;
+      const key = shadowEdgeKey(r.a, r.b, r.path, r.symbol);
+      const prior = allEdges.get(key);
+      if (!prior || r.ts < prior.firstTs) {
+        allEdges.set(key, { a: r.a, b: r.b, path: r.path, symbol: r.symbol, firstTs: r.ts, reason: r.reason ?? prior?.reason ?? '' });
+      }
+    }
+  }
+  const edges = new Map([...allEdges].filter(([, e]) => !isImplementerIdentity(e.a, input) && !isImplementerIdentity(e.b, input)));
+  const latestJudgment = new Map<string, EdgeJudgment>();
+  for (const j of [...input.judgments].sort((x, y) => x.ts - y.ts)) {
+    if (!edges.has(j.edgeKey) || j.ts < windowStart || isImplementerIdentity(j.judgeOwnerId, input)) continue;
+    latestJudgment.set(j.edgeKey, j);
+  }
+  return { allEdges, edges, latestJudgment, surfaced };
+}
+
 /**
  * The ts-ordered sequence of fingerprint CHANGES. Every change opens a new epoch and
  * counts as a restart, including a change back to an earlier value: A→B→A (a revert or
@@ -279,7 +326,6 @@ export function scoreShadowWindow(input: ShadowWindowInput): ShadowWindowScore {
   }
 
   const days = (input.now - latest.firstTs) / DAY_MS;
-  const allEdges = new Map<string, { a: string; b: string; firstTs: number; reason: string }>();
   // D-020 unknown share. The numerator comes from the SAME source, unit and population as the
   // eligible count: edit_attribution_ledger rows (one per dispatch call and file) whose
   // interface verdict is unknown, by owners outside the implementer lineages
@@ -288,38 +334,9 @@ export function scoreShadowWindow(input: ShadowWindowInput): ShadowWindowScore {
   // keys each row by an hour bucket and inserts ON CONFLICT DO NOTHING, so N same-hour
   // unknown edits leave one row, and one evidence row is re-emitted every hour it is read.
   const unknownEdits = input.interfaceLeg?.unknown ?? null;
-  let surfaced = 0;
-  for (const r of input.windowRows) {
-    if (r.kind === 'edge' && r.a && r.b) {
-      if (r.mode !== 'shadow') surfaced += 1;
-      const key = shadowEdgeKey(r.a, r.b, r.path, r.symbol);
-      const prior = allEdges.get(key);
-      if (!prior || r.ts < prior.firstTs) allEdges.set(key, { a: r.a, b: r.b, firstTs: r.ts, reason: r.reason ?? prior?.reason ?? '' });
-    }
-  }
-  // EI-27217222854087146: R-12 measures edges from work items outside this plan. An edge
-  // with an implementer endpoint is excluded from the sample, the judgments, precision,
-  // note length, the minimum-sample checks and the dead-derivation rule. An endpoint is an
-  // implementer by owner OR by lineage, so a respawned implementer session is excluded too.
-  // The implementer set comes from resolvePlanImplementerIdentities, which returns every
-  // past holder of any of this plan's work items (taken_by, terminal_owner,
-  // last_released_by, worked_by_history), the plan's auditors and its code editors, so an
-  // edge with no such endpoint is outside the plan. Recall still searches every edge: a
-  // breakage caught by any edge was caught.
-  const isImplementer = (id: string) =>
-    input.implementerOwners.has(id) || input.implementerLineages.has(input.lineageOf.get(id) ?? id);
-  const edges = new Map([...allEdges].filter(([, e]) => !isImplementer(e.a) && !isImplementer(e.b)));
+  const { allEdges, edges, latestJudgment, surfaced } = windowEdges(input, latest.firstTs);
   const agents = new Set([...edges.values()].flatMap(e => [e.a, e.b]));
   const lineages = new Set([...agents].map(id => input.lineageOf.get(id) ?? id));
-
-  const latestJudgment = new Map<string, EdgeJudgment>();
-  for (const j of [...input.judgments].sort((x, y) => x.ts - y.ts)) {
-    const edge = edges.get(j.edgeKey);
-    if (!edge || j.ts < latest.firstTs) continue;
-    const judgeLineage = input.lineageOf.get(j.judgeOwnerId) ?? j.judgeOwnerId;
-    if (input.implementerOwners.has(j.judgeOwnerId) || input.implementerLineages.has(judgeLineage)) continue;
-    latestJudgment.set(j.edgeKey, j);
-  }
   const relevant = [...latestJudgment.values()].filter(j => j.relevant).length;
 
   let recallState: RecallState = 'reader-unavailable';
@@ -528,9 +545,118 @@ export async function readShadowWindowInput(
     return edgeKey && judgeOwnerId && typeof r.details.relevant === 'boolean'
       ? [{ ts: Number(r.ts), edgeKey, judgeOwnerId, relevant: r.details.relevant }] : [];
   });
-  // No cross-agent breakage ledger exists yet (gate/lint red per held file joined to
-  // the import graph, D-014): recall stays reader-unavailable, so enabling is refused.
+  // Breakages come from a separate reader (cross-agent-breakages.ts, D-037), joined in
+  // codeIntelCouplingShadowRescore; this read alone leaves recall reader-unavailable.
   return { now, epochs, windowRows, unstampedRows, offPlaneRows, judgments, breakages: null };
+}
+
+/** The plan-implementer and spawn-lineage lookups R-12 excludes by. Injected in tests. */
+export interface ImplementerLineageSource {
+  implementers(workspaceId: string): Promise<string[]>;
+  lineageOf(ownerIds: string[], workspaceId: string): Promise<ReadonlyMap<string, string>>;
+}
+
+async function defaultLineageSource(): Promise<ImplementerLineageSource> {
+  const identity = await import('../acceptance-author-identity');
+  return {
+    implementers: workspaceId => identity.resolvePlanImplementerIdentities(COUPLING_SHADOW_SUBJECT_PLAN, { workspaceId }),
+    lineageOf: (ownerIds, workspaceId) => identity.lineagePartyKeys(ownerIds, { workspaceId }),
+  };
+}
+
+/** Resolve the implementer owners and lineages, keyed over the plan implementers plus `ids`. */
+export async function resolveWindowLineage(
+  source: ImplementerLineageSource, workspaceId: string, ids: Iterable<string>,
+): Promise<WindowLineage> {
+  const implementers = await source.implementers(workspaceId);
+  const lineageOf = await source.lineageOf([...new Set([...implementers, ...ids])], workspaceId);
+  return {
+    lineageOf, implementerOwners: new Set(implementers),
+    implementerLineages: new Set(implementers.map(id => lineageOf.get(id) ?? id)),
+  };
+}
+
+function windowEndpointIds(read: Pick<ShadowWindowInput, 'windowRows' | 'judgments'>): string[] {
+  const ids = new Set<string>();
+  for (const r of read.windowRows) for (const id of [r.a, r.b, r.editorOwnerId]) if (id) ids.add(id);
+  for (const j of read.judgments) ids.add(j.judgeOwnerId);
+  return [...ids];
+}
+
+export type JudgeShadowEdgeError =
+  'window_not_open' | 'edge_not_in_window' | 'edge_has_implementer_endpoint' | 'judge_in_implementer_lineage';
+export type JudgeShadowEdgeResult =
+  | { ok: true; edgeKey: string; fingerprint: string; relevant: boolean; judgeOwnerId: string }
+  | { ok: false; error: JudgeShadowEdgeError; detail: string };
+
+/**
+ * Record one relevance judgment of a shadow edge (WI-6554700010030879 part b): the
+ * precision input of R-12. It writes the audit_log row readShadowWindowInput reads, and
+ * refuses every judgment the scorer would drop, so no write is silently uncounted: no
+ * open window, an edge absent from the current window, an edge with an implementer
+ * endpoint, or a judge inside the implementer lineage. One row per (fingerprint, edge,
+ * judge): re-judging replaces that judge's verdict, and the latest judgment of any
+ * outside-lineage judge is the one the scorer counts. Writing a judgment never surfaces
+ * or couples anything; enabling stays a separate, recorded decision.
+ */
+export async function judgeShadowEdge(
+  sql: Sql,
+  args: { workspaceId: string; judgeOwnerId: string; a: string; b: string; path: string; symbol: string;
+    relevant: boolean; note?: string | null; now: number },
+  source?: ImplementerLineageSource,
+): Promise<JudgeShadowEdgeResult> {
+  const read = await readShadowWindowInput(sql, args.workspaceId, args.now);
+  const latest = read.epochs[read.epochs.length - 1];
+  if (!latest) {
+    return { ok: false, error: 'window_not_open', detail: `no fingerprint-stamped shadow rows on ${SHADOW_WINDOW_PLANE}, so there is no window to judge` };
+  }
+  const edgeKey = shadowEdgeKey(args.a, args.b, args.path, args.symbol);
+  const lineage = await resolveWindowLineage(source ?? await defaultLineageSource(), args.workspaceId,
+    [args.a, args.b, args.judgeOwnerId]);
+  if (isImplementerIdentity(args.judgeOwnerId, lineage)) {
+    return { ok: false, error: 'judge_in_implementer_lineage',
+      detail: `${args.judgeOwnerId} is in the implementer lineage of ${COUPLING_SHADOW_SUBJECT_PLAN}; the scorer drops its judgments, so R-12 needs a judge outside that lineage` };
+  }
+  const { allEdges, edges } = windowEdges({ ...read, ...lineage }, latest.firstTs);
+  if (!allEdges.has(edgeKey)) {
+    return { ok: false, error: 'edge_not_in_window',
+      detail: `edge ${edgeKey} has no shadow row in the current window (fingerprint ${latest.fingerprint}); list the judgeable edges first` };
+  }
+  if (!edges.has(edgeKey)) {
+    return { ok: false, error: 'edge_has_implementer_endpoint',
+      detail: `edge ${edgeKey} has an implementer endpoint, so R-12 excludes it from the sample` };
+  }
+  const id = `ccd-judge-${createHash('sha256').update(`${args.workspaceId}\0${latest.fingerprint}\0${edgeKey}\0${args.judgeOwnerId}`).digest('hex').slice(0, 32)}`;
+  const details = { edgeKey, relevant: args.relevant, judgeOwnerId: args.judgeOwnerId, fingerprint: latest.fingerprint,
+    a: args.a, b: args.b, path: args.path, symbol: args.symbol, note: args.note ?? null };
+  await sql`
+    INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+    VALUES (${id}, ${args.now}, ${args.judgeOwnerId}, ${COUPLING_EDGE_JUDGMENT_ACTION},
+            ${`coupling-shadow-edge#${edgeKey}`}, ${sql.json(details)}, ${args.workspaceId})
+    ON CONFLICT (id) DO UPDATE SET ts = EXCLUDED.ts, details = EXCLUDED.details`;
+  return { ok: true, edgeKey, fingerprint: latest.fingerprint, relevant: args.relevant, judgeOwnerId: args.judgeOwnerId };
+}
+
+/**
+ * The current window's judgeable edges (outside the implementer lineage), unjudged first,
+ * each with the judgment the scorer currently counts. Bounded by `limit`; `total` and
+ * `unjudged` are over the whole window, never the returned page.
+ */
+export async function listJudgeableShadowEdges(
+  sql: Sql, args: { workspaceId: string; now: number; limit: number }, source?: ImplementerLineageSource,
+): Promise<{ fingerprint: string | null; windowStart: number | null; total: number; unjudged: number;
+  edges: (WindowEdge & { edgeKey: string; judged: { relevant: boolean; judgeOwnerId: string; ts: number } | null })[] }> {
+  const read = await readShadowWindowInput(sql, args.workspaceId, args.now);
+  const latest = read.epochs[read.epochs.length - 1];
+  if (!latest) return { fingerprint: null, windowStart: null, total: 0, unjudged: 0, edges: [] };
+  const lineage = await resolveWindowLineage(source ?? await defaultLineageSource(), args.workspaceId, windowEndpointIds(read));
+  const { edges, latestJudgment } = windowEdges({ ...read, ...lineage }, latest.firstTs);
+  const all = [...edges].map(([edgeKey, e]) => {
+    const j = latestJudgment.get(edgeKey);
+    return { edgeKey, ...e, judged: j ? { relevant: j.relevant, judgeOwnerId: j.judgeOwnerId, ts: j.ts } : null };
+  }).sort((x, y) => Number(x.judged !== null) - Number(y.judged !== null) || x.firstTs - y.firstTs);
+  return { fingerprint: latest.fingerprint, windowStart: latest.firstTs, total: all.length,
+    unjudged: all.filter(e => !e.judged).length, edges: all.slice(0, Math.max(0, args.limit)) };
 }
 
 async function recordWindow(sql: Sql, workspaceId: string, now: number, score: ShadowWindowScore): Promise<void> {
@@ -570,25 +696,25 @@ export function codeIntelCouplingShadowRescore() {
     scope: 'workspace' as const,
     resolve: async (window: { workspaceId: string; windowStart: string; windowEnd: string }) => {
       if (!window.workspaceId.trim()) return { verdict: 'unknown' as const, detail: 'Exact workspace required.' };
-      const [{ getOrgPg }, identity] = await Promise.all([
-        import('@papercusp/db-org'), import('../acceptance-author-identity'),
+      const [{ getOrgPg }, lineageSource, { readCrossAgentBreakages }] = await Promise.all([
+        import('@papercusp/db-org'), defaultLineageSource(), import('./cross-agent-breakages'),
       ]);
       const sql = getOrgPg().sql as unknown as Sql;
       const now = Date.now();
       const read = await readShadowWindowInput(sql, window.workspaceId, now);
-      const implementers = await identity.resolvePlanImplementerIdentities(COUPLING_SHADOW_SUBJECT_PLAN, { workspaceId: window.workspaceId });
       const latest = read.epochs[read.epochs.length - 1];
       // A failed read is unmeasured (null interfaceLeg), which keeps any close at unknown.
       const ifaceRows = latest ? await readInterfaceEligibility(sql, window.workspaceId, latest.firstTs, now).catch(() => null) : null;
-      const endpoints = new Set<string>(implementers);
-      for (const r of read.windowRows) for (const id of [r.a, r.b, r.editorOwnerId]) if (id) endpoints.add(id);
-      for (const j of read.judgments) endpoints.add(j.judgeOwnerId);
-      for (const r of ifaceRows ?? []) if (r.owner) endpoints.add(r.owner);
-      const lineageOf = await identity.lineagePartyKeys([...endpoints], { workspaceId: window.workspaceId });
-      const implementerOwners = new Set(implementers);
-      const implementerLineages = new Set(implementers.map(id => lineageOf.get(id) ?? id));
+      // Recall input (D-037). The reader never throws; any error or truncating cap is
+      // breakages: null, which keeps recall reader-unavailable and refuses enable.
+      const breakageRead = latest ? await readCrossAgentBreakages(sql, window.workspaceId, latest.firstTs, now) : null;
+      const endpoints = windowEndpointIds(read);
+      for (const r of ifaceRows ?? []) if (r.owner) endpoints.push(r.owner);
+      const { lineageOf, implementerOwners, implementerLineages } = await resolveWindowLineage(lineageSource, window.workspaceId, endpoints);
       const interfaceLeg = ifaceRows ? summarizeInterfaceEligibility(ifaceRows, lineageOf, implementerOwners, implementerLineages) : null;
-      const score = scoreShadowWindow({ ...read, interfaceLeg, lineageOf, implementerOwners, implementerLineages });
+      const score = scoreShadowWindow({ ...read, breakages: breakageRead?.breakages ?? null,
+        interfaceLeg, lineageOf, implementerOwners, implementerLineages });
+      if (breakageRead) score.reasons.push(`breakage reader: ${breakageRead.reason}`);
       return recordAndReport(score, () => recordWindow(sql, window.workspaceId, now, score));
     },
   };

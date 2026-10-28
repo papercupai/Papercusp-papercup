@@ -538,6 +538,64 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
     expect(statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
   });
 
+  // WI-6554700010030504: the scheduled routine (release-actions.ts) and the manual checkpoint-run
+  // both call beginStoredQualification WITHOUT nowMs. The reconciliation fails closed on a missing
+  // clock, so an EXPIRED dispatch reservation used to fence every successor as dispatch-reserved
+  // (6 consecutive begin-stage conflicts measured 2026-10-27 13:23-19:09Z). These cases omit nowMs
+  // on purpose and drive the clock through Date.now(), exactly as production does.
+  describe('dispatch-reservation expiry with no caller-supplied clock', () => {
+    const productionSuccessor = {
+      attemptId: successor.attemptId,
+      requiredAncestorSha: successor.requiredAncestorSha,
+      declaredPaths: successor.declaredPaths,
+      candidate: successor.candidate,
+    };
+    const reservedAwaitingFixer = (expiresAtMs: number) => ({
+      ...markFrozenCandidateVerificationRed(safeQueue(), { failingTests: ['broken.test.ts'], nowMs: 150 }),
+      dispatchReservation: { token: 'abandoned-dispatch', claimedAtMs: 4_000, expiresAtMs },
+    });
+    async function beginAt(systemTimeMs: number, queue: ReturnType<typeof reservedAwaitingFixer>) {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(systemTimeMs);
+      try {
+        const harness = transactionHarness({ qualificationTransaction: terminalQualification(), repair_queue: queue });
+        const result = await beginStoredQualification(target, productionSuccessor, {
+          reconcileTerminalRepairQueueForSuccessor: true,
+        });
+        return { result, ...harness };
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+
+    it('hands an expired reservation\'s queue to the successor instead of fencing it', async () => {
+      expect(productionSuccessor).not.toHaveProperty('nowMs');
+      const { result, statements } = await beginAt(5_000, reservedAwaitingFixer(4_999));
+
+      expect(result).toMatchObject({
+        status: 'updated',
+        transaction: { attemptId: 'attempt-2', previousAttemptId: 'attempt-1', createdAtMs: 5_000 },
+        repairQueueReconciliation: { status: 'preserved', reason: 'awaiting-unassigned-fixer' },
+      });
+      const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
+      expect(update.text).toContain("'{repair_queue,qualificationAttemptId}'");
+    });
+
+    it('still fences an unexpired reservation as dispatch-reserved and writes nothing', async () => {
+      const { result, statements } = await beginAt(5_000, reservedAwaitingFixer(5_001));
+
+      expect(result).toMatchObject({
+        status: 'conflict',
+        repairQueueReconciliation: {
+          status: 'blocked',
+          reason: 'queue-not-safe-unstarted',
+          fence: 'dispatch-reserved',
+        },
+      });
+      expect(statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+    });
+  });
+
   it('installs the successor without deleting a matching untested repair head', async () => {
     const current = terminalQualification();
     const redCandidate = markFrozenCandidateVerificationRed(safeQueue(), {

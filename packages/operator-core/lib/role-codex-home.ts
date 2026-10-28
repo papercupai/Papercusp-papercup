@@ -2093,6 +2093,8 @@ export async function ensureSuCodexHomeConfigAsync(
 }
 
 type WriteSuCodexHomeOptions = {
+  /** Task-ledger id of the launching agent task, stamped into the session's activity identity. */
+  agentTaskId?: string;
   capabilityPolicy?: SuCodexConfigInput['capabilityPolicy'];
   /** Same host-owned context ceiling consulted by bootstrap and MCP. */
   denyAmbientContext?: true;

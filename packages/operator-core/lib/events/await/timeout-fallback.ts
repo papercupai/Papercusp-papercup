@@ -31,7 +31,7 @@ export const TIMEOUT_WAKE_GUIDANCE =
   // EI-21925527092611786: a stale/delayed delivery of an EARLIER, already-retired timeout on the
   // SAME key can surface here even though a re-armed registration on that key is still live and
   // not yet expired. Guard the re-arm behind a mechanical check rather than trusting this wake.
-  'BEFORE re-arming, check events:status for this event key: if it appears in active_awaits with a future expires_ts, THIS wake is stale — do NOT re-arm (that would RETIRE the live registration and silently reset its deadline). Re-arm only when the key is genuinely absent from active_awaits.';
+  'BEFORE re-arming, check events:status for this event key. With the exact event selector, inspect event_inspection.waiters for your own row (subscriber_id matching your owner ID) with state: "registered" and a future expires_ts; if its await_id is newer than the timeout await_id, THIS wake is stale — do NOT re-arm (that would RETIRE the live registration and silently reset its deadline). In generic or await_id reads, use active_awaits instead. Re-arm only when your current live registration is absent.';
 
 export interface PredicateTimeoutSpec {
   tool: string;

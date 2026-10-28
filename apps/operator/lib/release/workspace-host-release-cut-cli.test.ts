@@ -131,7 +131,7 @@ describe('workspace host source dependency preparation', () => {
       'test "$1" = --integration; shift 2',
       'case "$1" in',
       ` --fingerprint-ref) test "$2" = "${SHA}"; echo 'DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=${SHA} input=${input}' ;;`,
-      ` --ensure-ref) test "$2" = "${SHA}"; printf exact > "$0.prewarmed" ;;`,
+      ` --ensure-ref) test "$2" = "${SHA}"; test "$3" = --retain-as; test "$4" = "workspace-cut-${SHA.slice(0, 48)}"; printf exact > "$0.prewarmed" ;;`,
       ' --select-inputs-from)',
       '  test -f "$0.prewarmed"; test "$3" = --lease-owner-pid; test "$4" -gt 0',
       selection === 'failed' ? '  exit 74' :

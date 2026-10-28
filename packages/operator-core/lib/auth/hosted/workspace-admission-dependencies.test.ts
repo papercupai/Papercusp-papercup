@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HostedWorkspaceProvisioningRequest } from './workspace-admission';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const h = vi.hoisted(() => ({
   confidence: 'estimated' as 'estimated' | 'unknown', monthly: 1.234, architecture: 'x86_64',
@@ -60,8 +61,9 @@ describe('server-owned hosted pool requirements', () => {
     const original = { ...input, desiredSpec: { ...input.desiredSpec, target,
       provider: { provisioningModel: 'spot', preserveSetting: 'same' } } };
     const receipt = { operationId: input.operationId, hostId: input.hostId, placement: { kind: 'provision' } } as any;
-    vi.mocked(readWorkspaceHostConnection).mockResolvedValue({ ...stored,
-      connection: { ...stored.connection, target } } as any);
+    mockResolvedTyped(vi.mocked(readWorkspaceHostConnection), {
+      id: 'conn-fixture', target, status: 'connected',
+      connection: { ...stored.connection, target } });
     vi.mocked(readHostedLifecycleAdmission).mockResolvedValueOnce(null).mockResolvedValueOnce(receipt);
     vi.mocked(admitHostedLifecycleJob).mockResolvedValueOnce(receipt);
     const quote = vi.fn(async (_request: HostedWorkspaceProvisioningRequest) => ({ pool: { minimum: { cpuCount: 4, memoryMiB: 8192 } },

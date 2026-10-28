@@ -42,7 +42,8 @@ import {
   hasConcreteDecisionMeasurement,
 } from './decision-provenance';
 import {
-  decisionProvenanceArg,
+  ownerTurnRefArg,
+  provenanceFromOwnerTurnRef,
   recordDecisionProvenance,
   resolveDecisionProvenance,
   type DecisionProvenanceArg,
@@ -71,15 +72,38 @@ const REFS = z
   .array(z.string().regex(/^P-\d{3,}$/))
   .describe('Item IDs this decision relates to. Appear in the body as P-NNN tokens.');
 
-const ITEM_REFS_ALIAS_DESC =
-  'Alias for `refs` (EI-18735663944089262) — plans:get returns a decision\'s item refs under this exact name (itemRefs), so accepting it here means a read-then-write roundtrip does not need a field rename. Both fields enforce the same in-plan `P-NNN` reference format; work-item/issue ids are not accepted. Prefer `refs`; if both are given, `refs` wins.';
+/**
+ * `itemRefs` is a FOLDED spelling of `refs` (EI-18735663944089262): plans:get returns a decision's
+ * item refs under that exact name, so a read-then-write roundtrip must still parse. It is folded
+ * before parse rather than declared as a sibling field, because plans:add-decision is a floor tool
+ * and each declared alias costs compact-schema bytes on every seeded turn (WI-6554700010030925).
+ * Folded at the top level and on each `items[]` entry; `refs` wins when both are given. Pinned by
+ * FOLDED_ARG_ALIASES in tool-alias-contract.ts and by add-decision.test.ts.
+ */
+function foldItemRefs(o: Record<string, unknown>): Record<string, unknown> {
+  if (!('itemRefs' in o)) return o;
+  const { itemRefs, ...rest } = o;
+  return rest.refs === undefined && itemRefs !== undefined ? { ...rest, refs: itemRefs } : rest;
+}
+
+export function normalizeAddDecisionItemRefs(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const top = foldItemRefs(raw as Record<string, unknown>);
+  if (!Array.isArray(top.items)) return top;
+  return {
+    ...top,
+    items: top.items.map((it: unknown) =>
+      it && typeof it === 'object' && !Array.isArray(it) ? foldItemRefs(it as Record<string, unknown>) : it,
+    ),
+  };
+}
 
 const AFFECTED_PLAN_SLUG = z
   .string()
   .min(1)
   .regex(VALID_PLAN_SLUG, 'existing plan slug (filename stem)')
   .describe(
-    'An existing OTHER plan slug (the plan filename stem). This is not a surface label, work-item/issue id, or P-NNN item reference; use refs/itemRefs for in-plan P-NNN references.',
+    'An existing OTHER plan slug (the plan filename stem). This is not a surface label, work-item/issue id, or P-NNN item reference; use refs for in-plan P-NNN references.',
   );
 
 const AFFECTS = z.array(AFFECTED_PLAN_SLUG).max(20);
@@ -96,14 +120,13 @@ const itemSpec = z.object({
   title: hardText(LIMITS.SHORT_TITLE),
   body: hardText(5000).describe(DECISION_BODY_DESC),
   refs: REFS.optional(),
-  itemRefs: REFS.optional().describe(ITEM_REFS_ALIAS_DESC),
   affects: AFFECTS.optional().describe(AFFECTS_DESC),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
-  provenance: decisionProvenanceArg.optional(),
 });
 
-const argsSchema = z
+/** The parsed object schema, exported so tests can read field descriptions through `.shape`. */
+export const addDecisionArgsObject = z
   .object({
     slug: z.string().min(1).optional(),
     promotedFrom: promotedFromSchema.optional(),
@@ -111,9 +134,10 @@ const argsSchema = z
     title: hardText(LIMITS.SHORT_TITLE).optional(),
     body: hardText(5000).optional().describe(DECISION_BODY_DESC),
     refs: REFS.optional(),
-    itemRefs: REFS.optional().describe(ITEM_REFS_ALIAS_DESC),
     affects: AFFECTS.optional().describe(AFFECTS_DESC),
-    provenance: decisionProvenanceArg.optional(),
+    ownerTurnRef: ownerTurnRefArg
+      .optional()
+      .describe("'[turn:<session>@<ts>]' of the verified owner turn that ruled this (all items); omit = your own ruling"),
     items: z
       .array(itemSpec)
       .min(1)
@@ -131,6 +155,8 @@ const argsSchema = z
     (a) => (a.items?.length ?? 0) > 0 || (Boolean(a.slug) && Boolean(a.title) && Boolean(a.body)),
     { message: 'pass { slug, title, body } for one, or items:[{ slug, title, body }] for many' },
   );
+
+const argsSchema = z.preprocess(normalizeAddDecisionItemRefs, addDecisionArgsObject);
 
 export interface NewDecision {
   promotedFrom?: PromotionSource[];
@@ -671,7 +697,6 @@ export async function addDecisionOne(
       ? { workspaceId: lockScope.workspaceId, harnessSlug: lockScope.harnessSlug, planSlug: it.slug, decisionId }
       : null,
     provenanceResolution.provenance,
-    'unrecordedReason' in provenanceResolution ? provenanceResolution.unrecordedReason : undefined,
   );
 
   return {
@@ -702,7 +727,7 @@ export async function addDecisionOne(
 export default defineTool({
   name: 'plans:add-decision',
   description:
-    "Append one or many decisions to a plan. Allocates the next D-NNN inside a lock and bumps frontmatter `updated:`; concurrent calls stay collision-free. Single: `{ slug, title, body }`; bulk: `items:[{ slug, title, body, refs?, affects? }]`. `itemRefs` aliases `refs` (refs wins). Tree-fact decisions require `Measured: <file:line or command + result>`; without it, source-like paths return `measurementAdvisory` and a ruling resting on another decision as authority returns `citedRuleAdvisory`. CITE `ref` (`<slug>#D-NNN`) anywhere the decision is quoted onward — a bare `D-NNN` is allocated per-plan, so it is not a reference: `D-001` names 904 different rulings in this harness. Exact `{ title, body }` retries dedupe against the plan's most recent decision instead of appending.",
+    "Append one or many decisions to a plan. Allocates the next D-NNN inside a lock and bumps frontmatter `updated:`; concurrent calls stay collision-free. Single: `{ slug, title, body }`; bulk: `items:[{ slug, title, body, refs?, affects? }]`. Tree-fact decisions require `Measured: <file:line or command + result>`; without it, source-like paths return `measurementAdvisory` and a ruling resting on another decision as authority returns `citedRuleAdvisory`. CITE `ref` (`<slug>#D-NNN`) anywhere the decision is quoted onward — a bare `D-NNN` is allocated per-plan, so it is not a reference: `D-001` names 904 different rulings in this harness. Exact `{ title, body }` retries dedupe against the plan's most recent decision instead of appending.",
   guidance: {
     returns:
       '`{ ok, results:[{ ok, slug, decisionId, ref, deduped?, propagated_to?, measurementAdvisory?, citedRuleAdvisory?, absenceLint? | error }], counts }`. Correlate each result by `decisionId`; one failure never fails the rest. Three advisories, all non-blocking: `measurementAdvisory` (names source-like paths with no `Measured:` line), `citedRuleAdvisory` (the body leans on a cited decision as authority with no `Measured:` line — a cited decision is design authority, not tree evidence; an overruling citation such as "supersedes D-003" is exempt), and `absenceLint` (an uncovered absence premise).',
@@ -710,7 +735,7 @@ export default defineTool({
     notWhen:
       'Adding work units — use plans:add-item. Flipping status — plans:set-status. Updating overall state — plans:set-now.',
     chaining:
-      'Declare refs/itemRefs:["P-NNN"] for the items this decision governs; sharing a plan or mentioning an ID in prose does not establish applicability. affects:[planSlug] is broader plan context. plans:add-decision → graph:query { op:"evidence", plan, item } to inspect applicability; optionally plans:set-now referencing the new D-NNN in **State:**.',
+      'Declare refs:["P-NNN"] for the items this decision governs; sharing a plan or mentioning an ID in prose does not establish applicability. affects:[planSlug] is broader plan context. plans:add-decision → graph:query { op:"evidence", plan, item } to inspect applicability; optionally plans:set-now referencing the new D-NNN in **State:**.',
     seeAlso: [
       'plans:set-decision-body (edit an existing decision\'s body)',
       'plans:set-now (reference the new D-NNN in the Now)',
@@ -728,22 +753,22 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    // `itemRefs` is a declared alias of `refs` (EI-18735663944089262):
-    // plans:get echoes a decision's refs back under that exact name, so
-    // accept it here too instead of rejecting the read-shape field name.
-    // `refs` wins when both are given on the same object.
-    const batchRefs = args.refs ?? args.itemRefs;
+    // `itemRefs` (EI-18735663944089262) was already folded into `refs` before parse,
+    // at both levels, by normalizeAddDecisionItemRefs.
+    const batchRefs = args.refs;
+    // P-018: a flat turn-ref arg, top-level only (EI-27076355939117314 — floor-seed budget).
+    const provenance = provenanceFromOwnerTurnRef(args.ownerTurnRef);
     const list: NewDecision[] = args.items?.length
       ? args.items.map((it) => ({
           slug: it.slug,
           title: it.title,
           body: it.body,
           promotedFrom: it.promotedFrom ?? args.promotedFrom,
-          refs: it.refs ?? it.itemRefs ?? batchRefs,
+          refs: it.refs ?? batchRefs,
           affects: it.affects ?? args.affects,
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
-          provenance: it.provenance ?? args.provenance,
+          provenance,
         }))
       : [
           {
@@ -755,7 +780,7 @@ export default defineTool({
             affects: args.affects,
             harness: args.harness,
             rationale: args.rationale,
-            provenance: args.provenance,
+            provenance,
           },
         ];
     const env = await runBulk(list, (it) => addDecisionOne(it, ctx), {

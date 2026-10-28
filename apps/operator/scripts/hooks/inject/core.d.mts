@@ -100,7 +100,8 @@ export function baseRequest({ port, client, owner, cwd, env }: {
  * @param {InjectionPort} port
  * @param {InjectionRequest} body
  * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number,
- *   onTurnStartOutcome?: (outcome: object) => void }} [opts]
+ *   onTurnStartOutcome?: (outcome: object) => void,
+ *   onHookOutcome?: (outcome: object) => void }} [opts]
  * @returns {Promise<{ text: string, deliveryToken: string | null } | null>} the text
  *   to inject plus the turn-start orientation delivery token (delivery-ledger.mjs),
  *   or null to inject nothing
@@ -110,6 +111,7 @@ export function postInjection(port: InjectionPort, body: InjectionRequest, opts?
     fetchImpl?: typeof fetch;
     now?: () => number;
     onTurnStartOutcome?: (outcome: object) => void;
+    onHookOutcome?: (outcome: object) => void;
 }): Promise<{
     text: string;
     deliveryToken: string | null;
@@ -242,6 +244,19 @@ export function runInjection({ adapter, nativeEvent, event, env, fetchImpl, open
     fetchImpl?: typeof fetch | undefined;
     openDeliveryLedger?: ((owner: string, env: NodeJS.ProcessEnv) => import("./delivery-ledger.mjs").DeliveryLedger | null) | undefined;
 }): Promise<string | null>;
+/**
+ * Opt-in, diagnostic-only trace of why ONE hook invocation emitted what it did.
+ * PAPERCUSP_HOOK_OUTCOME_FILE names an absolute JSONL path; unset (the default)
+ * means no I/O at all. Every silent "emit nothing" exit of runInjection looks the
+ * same on stdout, so without this an abort during local collection reads exactly
+ * like an empty server answer (WI-6554700010042393). Writes one line per call and
+ * never throws.
+ *
+ * @param {NodeJS.ProcessEnv | undefined} env
+ * @param {object} base fields stamped on every record
+ * @returns {((record: object) => void) | null}
+ */
+export function hookOutcomeTracer(env: NodeJS.ProcessEnv | undefined, base: object): ((record: object) => void) | null;
 export type InjectionPort = import("./ports.mjs").InjectionPort;
 export type InjectionClient = "claude" | "codex" | "omp";
 export type InjectionRequest = {

@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest';
 import {
   summarizeInterfaceEligibility, readShadowWindowInput, summarizeShadowWindow, SHADOW_WINDOW_PLANE,
   SHADOW_WINDOW_BOUNDS, derivationFingerprint, fingerprintEpochs, recordAndReport, scoreShadowWindow, shadowEdgeKey,
-  type ShadowRow, type ShadowWindowInput,
+  judgeShadowEdge, listJudgeableShadowEdges, COUPLING_EDGE_JUDGMENT_ACTION,
+  type ImplementerLineageSource, type ShadowRow, type ShadowWindowInput,
 } from './coupling-shadow-window';
 import { codeDependencyShadowRowId } from '../agent-tools/coordination/coupling-sources';
 
@@ -393,5 +394,80 @@ describe('readShadowWindowInput (R-12 D-036 serving plane)', () => {
     expect([s.status, s.verdict, s.offPlaneRows]).toEqual(['not-open', 'unknown', 9]);
     expect(summarizeShadowWindow(s)).toContain('offPlane=9');
     expect(s.reasons.join(' ')).toContain(SHADOW_WINDOW_PLANE);
+  });
+});
+
+describe('judgeShadowEdge / listJudgeableShadowEdges (R-12 precision input, WI-6554700010030879 b)', () => {
+  function fakeSql(answers: { match: RegExp; rows: unknown[] }[]) {
+    const calls: { text: string; values: unknown[] }[] = [];
+    const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('$?');
+      calls.push({ text, values });
+      return Promise.resolve(answers.find(a => a.match.test(text))?.rows ?? []);
+    };
+    return { sql: Object.assign(tag, { json: (x: unknown) => x }) as unknown as Sql, calls };
+  }
+  const row = (a: string, b: string, path: string, ts = T0 + 1000) => ({ ts: String(ts), details: { kind: 'edge', a, b, symbol: 's', path } });
+  const answers = (judged: unknown[] = []) => [
+    { match: /lag\(details->>'fingerprint'\)/, rows: [{ fingerprint: 'fp-a', first_ts: String(T0) }] },
+    { match: /AS off_plane/, rows: [{ unstamped: '0', off_plane: '0' }] },
+    { match: /LIMIT 50000/, rows: [row('ag-1', 'ag-2', 'p.ts'), row('ag-1', 'impl-x', 'q.ts'), row('ag-3', 'ag-4', 'r.ts', T0 + 500)] },
+    { match: /LIMIT 5000$/, rows: judged },
+  ];
+  // impl-1 is a plan implementer; impl-x shares impl-1's spawn lineage.
+  const source: ImplementerLineageSource = {
+    implementers: async () => ['impl-1'],
+    lineageOf: async ids => new Map(ids.map(id => [id, id === 'impl-x' ? 'impl-1' : id])),
+  };
+  const base = { workspaceId: 'ws-1', a: 'ag-2', b: 'ag-1', path: 'p.ts', symbol: 's', relevant: true, now: T0 + DAY };
+  const inserts = <C extends { text: string }>(calls: C[]) => calls.filter(c => c.text.includes('INSERT INTO harness_shared.audit_log'));
+
+  it('writes the row the reader parses, keyed so the scorer counts it', async () => {
+    const { sql, calls } = fakeSql(answers());
+    const r = await judgeShadowEdge(sql, { ...base, judgeOwnerId: 'judge-9', note: 'mattered' }, source);
+    expect(r).toEqual({ ok: true, edgeKey: shadowEdgeKey('ag-1', 'ag-2', 'p.ts', 's'), fingerprint: 'fp-a', relevant: true, judgeOwnerId: 'judge-9' });
+    const [ins] = inserts(calls);
+    expect(ins?.values).toContain(COUPLING_EDGE_JUDGMENT_ACTION);
+    const details = ins?.values.find(v => typeof v === 'object' && v !== null && 'edgeKey' in v) as Record<string, unknown>;
+    expect([details.edgeKey, details.relevant, details.judgeOwnerId]).toEqual([shadowEdgeKey('ag-1', 'ag-2', 'p.ts', 's'), true, 'judge-9']);
+    const read = await readShadowWindowInput(fakeSql(answers([{ ts: String(T0 + 2000), details }])).sql, 'ws-1', T0 + DAY);
+    const s = scoreShadowWindow({ ...read, interfaceLeg: null, lineageOf: new Map([['impl-x', 'impl-1']]),
+      implementerOwners: new Set(['impl-1']), implementerLineages: new Set(['impl-1']) });
+    expect([s.sample, s.judged, s.precision]).toEqual([2, 1, 0.5]);
+  });
+
+  it('refuses every judgment the scorer would drop, and writes nothing', async () => {
+    const cases: [Partial<typeof base> & { judgeOwnerId: string }, string][] = [
+      [{ judgeOwnerId: 'impl-x' }, 'judge_in_implementer_lineage'],
+      [{ judgeOwnerId: 'judge-9', path: 'nope.ts' }, 'edge_not_in_window'],
+      // The fixture row is ag-1|impl-x on q.ts: an edge that IS in the window, with an implementer endpoint.
+      [{ judgeOwnerId: 'judge-9', a: 'ag-1', b: 'impl-x', path: 'q.ts' }, 'edge_has_implementer_endpoint'],
+    ];
+    for (const [over, error] of cases) {
+      const { sql, calls } = fakeSql(answers());
+      const r = await judgeShadowEdge(sql, { ...base, ...over }, source);
+      expect(r.ok ? 'ok' : r.error).toBe(error);
+      expect(inserts(calls)).toHaveLength(0);
+    }
+    const { sql, calls } = fakeSql([{ match: /AS off_plane/, rows: [{ unstamped: '0', off_plane: '3' }] }]);
+    const r = await judgeShadowEdge(sql, { ...base, judgeOwnerId: 'judge-9' }, source);
+    expect(r.ok ? 'ok' : r.error).toBe('window_not_open');
+    expect(inserts(calls)).toHaveLength(0);
+  });
+
+  it('lists outside-lineage edges unjudged first, with whole-window counts', async () => {
+    const key34 = shadowEdgeKey('ag-3', 'ag-4', 'r.ts', 's');
+    const judged = [
+      { ts: String(T0 + 3000), details: { edgeKey: key34, relevant: false, judgeOwnerId: 'judge-9' } },
+      // An implementer-lineage judgment never counts, so ag-1|ag-2 stays unjudged.
+      { ts: String(T0 + 3000), details: { edgeKey: shadowEdgeKey('ag-1', 'ag-2', 'p.ts', 's'), relevant: true, judgeOwnerId: 'impl-x' } },
+    ];
+    const { sql } = fakeSql(answers(judged));
+    const l = await listJudgeableShadowEdges(sql, { workspaceId: 'ws-1', now: T0 + DAY, limit: 1 }, source);
+    expect([l.fingerprint, l.total, l.unjudged, l.edges.length]).toEqual(['fp-a', 2, 1, 1]);
+    expect([l.edges[0]?.path, l.edges[0]?.judged]).toEqual(['p.ts', null]);
+    const all = await listJudgeableShadowEdges(fakeSql(answers(judged)).sql, { workspaceId: 'ws-1', now: T0 + DAY, limit: 10 }, source);
+    expect(all.edges.map(e => [e.edgeKey, e.judged?.relevant ?? null])).toEqual([
+      [shadowEdgeKey('ag-1', 'ag-2', 'p.ts', 's'), null], [key34, false]]);
   });
 });

@@ -31,7 +31,7 @@ const MATCHERS = {
 
 function git(root, args, options = {}) {
   return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, ...options });
+    maxBuffer: 256 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, ...options, timeout: 120_000 });
 }
 
 /** Exact blobs and pinned gitlinks, with unavailable checkouts explicitly retained. */

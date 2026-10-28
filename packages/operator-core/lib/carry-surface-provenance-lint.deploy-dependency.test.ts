@@ -51,6 +51,17 @@ describe('unprobed-deploy-dependency', () => {
     expect(kinds(line)).not.toContain('unprobed-deploy-dependency');
   });
 
+  it('does not treat a main.rs source path as the release branch or its probe', () => {
+    expect(
+      kinds('Acceptance is blocked by the dirty source file apps/operator/src/main.rs while sync progresses.'),
+    ).not.toContain('unprobed-deploy-dependency');
+
+    const note =
+      'Acceptance is pending deployment before grading.\n' +
+      'The only probe was an inspection of apps/operator/src/main.rs.';
+    expect(kinds(note)).toContain('unprobed-deploy-dependency');
+  });
+
   it('does not mistake a deployed-artifact code task for a release dependency', () => {
     const line = 'AgenticMail and VirtualBox remediation sources are outside this repo; Kopia backup-lock/RPO work remains on WI-10004971. Do not attribute any of these failed services to the host freeze. Need implement a Papercusp-side deployed model-path prerequisite check with a recurrence guard; the unrelated host artifacts remain unresolved.';
     expect(kinds(line)).not.toContain('unprobed-deploy-dependency');

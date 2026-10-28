@@ -63,7 +63,13 @@ export default defineTool({
         .min(20_000)
         .max(900_000)
         .optional()
-        .describe("New soft compaction limit (tokens) for the member — rejected with ok:false when above ITS model+fleet-role ceiling (a member's leaner [1m] cap), not yours; no clamped write is made."),
+        .describe("New soft compaction limit (tokens) for the member — rejected with ok:false when above ITS model+fleet-role ceiling (a member's leaner [1m] cap), not yours; no clamped write is made. Pass directiveRef to lift the role cap."),
+      directiveRef: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Owner directive id authorizing a compactionLimit above the member role cap (up to its model-window ceiling). Must be an OPEN, owner-typed directive addressed to the member or to you; otherwise ok:false 'directive_unverified', no write."),
       claimSpec: z
         .record(z.string(), z.unknown())
         .optional()
@@ -95,8 +101,11 @@ export default defineTool({
 
     if (args.compactionLimit != null) {
       // Reuse the P-006 cross-session setter (rejects requests above the MEMBER's
-      // spec+role ceiling before writing).
-      applied.compactionLimit = await setCompactionLimitForOwner(ctx, memberOwnerId, args.compactionLimit);
+      // spec+role ceiling before writing; a verified owner directive lifts the role
+      // cap to the window ceiling — WI-6554700010042435).
+      applied.compactionLimit = await setCompactionLimitForOwner(ctx, memberOwnerId, args.compactionLimit, {
+        directiveRef: args.directiveRef,
+      });
     }
 
     if (args.claimSpec != null) {

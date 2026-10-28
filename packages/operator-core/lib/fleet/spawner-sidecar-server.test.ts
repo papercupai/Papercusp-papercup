@@ -113,9 +113,11 @@ describe('spawner sidecar health', () => {
     const socketPath = join(directory, 'server.sock');
     vi.stubEnv('PAPERCUSP_SPAWNER_IPC_SOCKET', socketPath);
     const logs = vi.spyOn(console, 'info').mockImplementation(() => {});
+    let executedParams: Record<string, unknown> | undefined;
     const server = runSpawnerSidecarServer({
       slowExecMs: 0,
-      executeProcess: async (_params, deps) => {
+      executeProcess: async (params, deps) => {
+        executedParams = params as unknown as Record<string, unknown>;
         const ticket = beginAcquire('org-app');
         await new Promise((resolve) => setTimeout(resolve, 5));
         ticket.acquired();
@@ -127,10 +129,12 @@ describe('spawner sidecar health', () => {
       },
     });
     const client = new SpawnerIpcClient(socketPath);
+    const runId = '35118a11-cd1d-4470-8652-e59592c0197c';
     try {
       await once(server, 'listening');
       await expect(client.call('process:exec', {
         command: 'node', args: ['-e', '0'], cwd: directory,
+        diagnosticTags: { runId, commandClass: 'git', argv: ['secret'], env: { PRIVATE: 'secret' }, paths: ['/private'] },
       })).resolves.toMatchObject({ code: 0, stdout: '', stderr: '' });
 
       const stageLines = logs.mock.calls
@@ -147,6 +151,7 @@ describe('spawner sidecar health', () => {
         requestId: expect.anything(),
         clientConnectionId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
         diagnosticRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+        diagnosticTags: { runId, commandClass: 'git' },
         admissionPhases: [{ phase: 'enqueue', state: 'fulfilled', elapsedMs: 5 }],
         poolAcquisitionContext: {
           requestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
@@ -155,8 +160,55 @@ describe('spawner sidecar health', () => {
         poolAcquisitions: [{ pool: 'org-app', outcome: 'acquired' }],
         poolAcquisitionsOmitted: 0,
       });
+      expect(settled?.diagnosticTags).toEqual({ runId, commandClass: 'git' });
+      expect(JSON.stringify(settled)).not.toMatch(/secret|PRIVATE|paths|argv|\/private/);
+      expect(executedParams).not.toHaveProperty('diagnosticTags');
       expect(settled?.poolAcquisitionContext).toMatchObject({ requestId: settled?.diagnosticRequestId });
       expect((settled?.poolAcquisitions as Array<{ elapsedMs: number }>)[0]?.elapsedMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      client.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      logs.mockRestore();
+      vi.unstubAllEnvs();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores malformed diagnostic tags and still executes process:exec', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'sidecar-exec-diagnostic-validation-'));
+    const socketPath = join(directory, 'server.sock');
+    vi.stubEnv('PAPERCUSP_SPAWNER_IPC_SOCKET', socketPath);
+    const logs = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const executedParams: Array<Record<string, unknown>> = [];
+    const server = runSpawnerSidecarServer({
+      slowExecMs: 0,
+      executeProcess: async (params) => {
+        executedParams.push(params as unknown as Record<string, unknown>);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    const client = new SpawnerIpcClient(socketPath);
+    try {
+      await once(server, 'listening');
+      const malformed = [
+        { runId: 'not-a-uuid', commandClass: 'git' },
+        { runId: '35118a11-cd1d-4470-8652-e59592c0197c', commandClass: 'git-sync' },
+      ];
+      for (const diagnosticTags of malformed) {
+        await expect(client.call('process:exec', {
+          command: 'node', args: ['-e', '0'], cwd: directory, diagnosticTags,
+        })).resolves.toMatchObject({ code: 0, stdout: '', stderr: '' });
+      }
+
+      const settled = logs.mock.calls
+        .filter(([message]) => message === '[spawner-process-exec-stage]')
+        .map(([, detail]) => JSON.parse(String(detail)) as Record<string, unknown>)
+        .filter((detail) => detail.event === 'request-settled');
+      expect(settled).toHaveLength(2);
+      expect(settled.every((detail) => !Object.hasOwn(detail, 'diagnosticTags'))).toBe(true);
+      expect(executedParams).toHaveLength(2);
+      expect(executedParams.every((params) => !Object.hasOwn(params, 'diagnosticTags'))).toBe(true);
     } finally {
       client.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));

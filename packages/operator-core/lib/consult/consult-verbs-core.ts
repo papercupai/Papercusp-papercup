@@ -721,6 +721,14 @@ export async function consultReplyCore(
       payload: { conversation_id: req.conversationId, responder: req.authorId, kind: req.kind, post_id: postId },
       to: [row.requester_id],
     });
+    if (req.kind === 'answer') {
+      await deps.emitReplyEvent({
+        key: `consult:answer-posted:${req.conversationId}`,
+        summary: `consult ${req.conversationId}: answer posted by ${req.authorId}`,
+        payload: { conversation_id: req.conversationId, responder: req.authorId, kind: req.kind, post_id: postId },
+        to: [],
+      });
+    }
   }
 
   let woke = 0;
@@ -1231,7 +1239,24 @@ export async function consultCloseCore(
       payload: { conversation_id: req.conversationId, responder: req.authorId, kind: 'close', post_id: postId, state },
       to: [row.requester_id],
     });
+    if (req.outcome === 'answered') {
+      await deps.emitReplyEvent({
+        key: `consult:answer-posted:${req.conversationId}`,
+        summary: `consult ${req.conversationId}: answer posted by ${req.authorId}`,
+        payload: { conversation_id: req.conversationId, responder: req.authorId, kind: 'close', post_id: postId, state },
+        to: [],
+      });
+    }
   }
+
+  // The close transaction has committed, including the coarse conversation
+  // projection. Independent subscribers also observe requester-authored closes.
+  await deps.emitReplyEvent({
+    key: `consult:closed:${req.conversationId}`,
+    summary: `consult ${req.conversationId}: ${state} by ${req.authorId}`,
+    payload: { conversation_id: req.conversationId, closed_by: req.authorId, kind: 'close', post_id: postId, state },
+    to: [],
+  });
 
   return {
     ok: true,

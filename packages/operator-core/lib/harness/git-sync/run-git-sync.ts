@@ -45,7 +45,7 @@ import { isUnderAnyPath, unpublishedNestedPotCheckouts } from './nested-pot-chec
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { scanProcForOpenFile } from './proc-open-file-scan';
 import { projectDirForSlug } from '../../operator-notes';
-import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
+import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitViaSpawnerSidecar, type SidecarDiagnosticTags } from '../../fleet/git-via-sidecar';
 import { gitReplayIsSafe, isSidecarPostDispatchFault, sidecarPostDispatchUnknownResult } from '../../fleet/sidecar-dispatch-fault';
 import {
   detectContentOffenders,
@@ -95,6 +95,8 @@ import { attributionScopeLabel, resolveAttributionRepo } from './attribution-rep
  */
 export interface GitRunOptions {
   env?: Readonly<Record<string, string>>;
+  /** Safe correlation context for the sidecar's bounded slow-exec stage record. */
+  diagnosticTags?: SidecarDiagnosticTags;
 }
 
 export type RunGit = (
@@ -225,6 +227,8 @@ export interface GitRunExecutionOptions {
   signal?: AbortSignal;
   /** Extra environment for the git child (WI-10006705: a private GIT_INDEX_FILE). */
   env?: Readonly<Record<string, string>>;
+  /** Safe correlation context for the sidecar's bounded slow-exec stage record. */
+  diagnosticTags?: SidecarDiagnosticTags;
 }
 
 export interface GitProgressTimerHandle {
@@ -492,6 +496,7 @@ const runGitBoundedUnchecked = async (
         idleTimeoutMs: network ? timeoutMs : undefined,
         signal: options.signal,
         onProgress: options.onProgress,
+        diagnosticTags: options.diagnosticTags,
       });
       options.onProgress?.();
       return result;
@@ -519,7 +524,10 @@ const runGitBoundedUnchecked = async (
 
 /** Spawn `git <args>` in `cwd` with the default per-subcommand ceiling (never throws). */
 const defaultRunGit: RunGit = (args, cwd, options) =>
-  runGitBounded(args, cwd, gitTimeoutMsFor(args), { env: options?.env });
+  runGitBounded(args, cwd, gitTimeoutMsFor(args), {
+    env: options?.env,
+    diagnosticTags: options?.diagnosticTags,
+  });
 
 /** No Git child ran on a sidecar admission refusal; do not diagnose a Git merge conflict. */
 export function gitSyncPreDispatchError(result: Awaited<ReturnType<RunGit>>): string | null {
@@ -8596,13 +8604,18 @@ async function runGitSyncPass(
       }
     }
     timing.setupMs = Math.round(performance.now() - phaseStartedAt);
+    const runGitForSubmodule: RunGit = (args, cwd, options) =>
+      runGit(args, cwd, {
+        ...(options ?? {}),
+        diagnosticTags: { runId: timing.runId, commandClass: 'git' },
+      });
     const syncSubmodule = (s: string): Promise<RepoSyncResult> =>
       // P-004: a submodule's last-resort default is its own 'main' (resolved via
       // origin/HEAD first), never the superproject's branch (cfg.branch = 'staging').
       // EI-18689553108460319: submodules push under `doSubPush`, NOT the superproject's
       // `doPush` — a bridged/p2p-only hive's push:false must not silently strand every
       // submodule's commits too (see GitSyncConfig.pushSubmoduleOrigins).
-      syncOneRepo(runGit, join(repo, s), {
+      syncOneRepo(runGitForSubmodule, join(repo, s), {
         ...repoO,
         scope: s,
         doPush: doSubPush,

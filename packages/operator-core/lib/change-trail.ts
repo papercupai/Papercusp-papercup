@@ -13,7 +13,9 @@
  *   3. per work-item: title, state, and its ORIGIN per D-001 — directive, else plan item, else
  *      link, else none;
  *   4. test_runs rows of the path and its sibling test file, each attached to the file version
- *      it tested (the last commit that changed the path as of the run's recorded sha).
+ *      it tested (the last commit that changed the path as of the run's recorded sha). A run
+ *      records a SUPERPROJECT sha, so for a submodule path it is followed down the gitlink
+ *      chain to the submodule commit it pinned first (D-007, WI-6554700010030797).
  * A commit with no trailer reports `attributionSource: 'none'` rather than a guessed match.
  *
  * The core is pure over injected deps so it is testable against a real fixture repo with no PG.
@@ -173,6 +175,28 @@ export function resolveOwningRepo(
   return { repoDir: dir, repo, relPath, superRelPath };
 }
 
+/**
+ * The gitlink hops from `repoRoot` down to `repoDir`, outermost first: each names the repo that
+ * pins the next one and the submodule's path inside it. Empty for the superproject itself.
+ */
+export function submoduleChain(
+  repoRoot: string,
+  repoDir: string,
+  exists: (p: string) => boolean = fs.existsSync,
+): Array<{ parentDir: string; pathInParent: string }> {
+  const root = nodePath.resolve(repoRoot);
+  const repos: string[] = [];
+  for (let d = nodePath.resolve(repoDir); d.startsWith(root + nodePath.sep); d = nodePath.dirname(d)) {
+    if (exists(nodePath.join(d, '.git'))) repos.unshift(d);
+  }
+  let parentDir = root;
+  return repos.map((dir) => {
+    const hop = { parentDir, pathInParent: nodePath.relative(parentDir, dir).split(nodePath.sep).join('/') };
+    parentDir = dir;
+    return hop;
+  });
+}
+
 /** The sibling test file a source file is judged by (`x.ts` → `x.test.ts`), when it exists. */
 export function siblingTestFile(superRelPath: string, exists: (rel: string) => boolean): string | null {
   if (/\.test\.[cm]?[tj]sx?$/.test(superRelPath)) return null;
@@ -218,22 +242,31 @@ export async function buildChangeTrail(input: ChangeTrailInput, deps: ChangeTrai
   // A run records the superproject HEAD it ran at, which is almost never the commit that changed
   // the file (measured 2026-10-28: 50 runs of edit-attribution.{ts,test.ts} over 28 shas, none at a
   // changing commit). So each run is attached to the file VERSION it tested: the last commit that
-  // changed the path as of the run's sha (`git log -1 <runSha> -- <path>`).
+  // changed the path as of the run's sha (`git log -1 <runSha> -- <path>`). A run sha is a
+  // SUPERPROJECT sha, so for a submodule path it is first followed down the gitlink chain
+  // (`git rev-parse <sha>:<submodule>` per level) to the submodule commit it pinned.
   const runsByCommit = new Map<string, TrailTestRun[]>();
-  if (raw.length && owner.repo !== 'superproject') {
-    notes.push(
-      `${owner.superRelPath} lives in submodule ${owner.repo}; test_runs.commit_sha records the superproject HEAD, so runs cannot be matched to these submodule commits`,
-    );
-  } else if (raw.length) {
+  if (raw.length) {
     const oldest = raw[raw.length - 1].committedAt;
     const runs = await deps.readTestRuns(testFiles, oldest);
     const runShas = [...new Set(runs.map((r) => r.commitSha))];
     const resolvable = runShas.slice(0, CHANGE_TRAIL_MAX_RUN_SHAS);
+    const hops = submoduleChain(input.repoRoot, owner.repoDir, exists);
     const versionOf = new Map<string, string>();
+    const versionAtPin = new Map<string, string>();
     let unresolved = 0;
     for (const runSha of resolvable) {
       try {
-        const v = (await deps.git(['log', '-1', '--format=%H', runSha, '--', owner.relPath], owner.repoDir)).trim();
+        let pin = runSha;
+        for (const hop of hops) {
+          pin = (await deps.git(['rev-parse', `${pin}:${hop.pathInParent}`], hop.parentDir)).trim();
+          if (!pin) throw new Error('no_gitlink');
+        }
+        let v = versionAtPin.get(pin);
+        if (v === undefined) {
+          v = (await deps.git(['log', '-1', '--format=%H', pin, '--', owner.relPath], owner.repoDir)).trim();
+          versionAtPin.set(pin, v);
+        }
         if (v) versionOf.set(runSha, v);
       } catch {
         unresolved += 1;
@@ -244,7 +277,11 @@ export async function buildChangeTrail(input: ChangeTrailInput, deps: ChangeTrai
       if (!v) continue;
       runsByCommit.set(v, [...(runsByCommit.get(v) ?? []), r]);
     }
-    if (unresolved) notes.push(`${unresolved} run sha(s) are not in this checkout, so their runs are not attributed`);
+    if (unresolved) {
+      notes.push(
+        `${unresolved} run sha(s) could not be resolved to a version of ${owner.superRelPath} (sha not in this checkout${hops.length ? `, or ${owner.repo} not pinned at it` : ''}), so their runs are not attributed`,
+      );
+    }
     if (runShas.length > resolvable.length) {
       notes.push(`runs at ${runShas.length - resolvable.length} older sha(s) were not attributed (cap ${CHANGE_TRAIL_MAX_RUN_SHAS})`);
     }

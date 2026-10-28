@@ -4003,6 +4003,62 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       expect(second.stderr).toContain('untracked source fingerprint incomplete');
     });
 
+    it('bounds an untracked-source fingerprint and never replays after its time budget expires', () => {
+      const repo = gitRepo();
+      writeFileSync(join(repo, 'src.ts'), 'baseline');
+      commitAll(repo);
+      writeFileSync(join(repo, 'generated.d.mts'), 'untracked source');
+
+      const slowBin = join(dir, 'slow-hasher-bin');
+      mkdirSync(slowBin, { recursive: true });
+      const slowHasher = join(slowBin, 'sha1sum');
+      const hashStarted = join(dir, 'slow-hash-started');
+      const hashCompleted = join(dir, 'slow-hash-completed');
+      const childRuns = join(dir, 'fresh-child-runs');
+      const realSha1sum = execSync('command -v sha1sum', { encoding: 'utf8' }).trim();
+      writeFileSync(
+        slowHasher,
+        [
+          '#!/usr/bin/env bash',
+          'if [ ! -e "$PC_HEAVY_TEST_HASH_STARTED" ]; then',
+          '  : > "$PC_HEAVY_TEST_HASH_STARTED"',
+          '  sleep 4',
+          '  : > "$PC_HEAVY_TEST_HASH_COMPLETED"',
+          'fi',
+          'exec ' + JSON.stringify(realSha1sum) + ' "$@"',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+
+      const args = ['bash', '-c', 'printf x >> "$PC_HEAVY_TEST_CHILD_RUNS"; printf fresh-run'];
+      const env = {
+        PATH: [slowBin, process.env.PATH ?? ''].join(':'),
+        PC_HEAVY_TEST_HASH_STARTED: hashStarted,
+        PC_HEAVY_TEST_HASH_COMPLETED: hashCompleted,
+        PC_HEAVY_TEST_CHILD_RUNS: childRuns,
+        PC_HEAVY_SLOTS: '2',
+        PC_HEAVY_COALESCE_SEC: '30',
+        PC_HEAVY_UNTRACKED_MAX_SEC: '1',
+      };
+
+      const first = runSync(args, env, repo);
+      expect(first.error).toBeUndefined();
+      expect(first.status, first.stderr).toBe(0);
+      expect(first.stdout).toBe('fresh-run');
+      expect(first.stderr).toContain('fingerprint timed out');
+      expect(first.stderr).not.toContain('coalesced:');
+      expect(existsSync(hashStarted)).toBe(true);
+      expect(existsSync(hashCompleted)).toBe(false);
+
+      const second = runSync(args, env, repo);
+      expect(second.error).toBeUndefined();
+      expect(second.status, second.stderr).toBe(0);
+      expect(second.stdout).toBe('fresh-run');
+      expect(second.stderr).not.toContain('coalesced:');
+      expect(readFileSync(childRuns, 'utf8')).toBe('xx');
+    });
+
     it('does not read or write cached results when Git cannot produce a tracked-source fingerprint', () => {
       const repo = gitRepo(); // deliberately has no HEAD commit
       writeFileSync(join(repo, 'generated.d.mts'), 'v1');

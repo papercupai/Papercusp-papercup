@@ -22,7 +22,8 @@ import { interfaceSignatureEdits, readInterfacePeerContext, recordInterfaceDepen
   type InterfacePeerContext } from './peer-edit-impact';
 import type { TaskBrief } from './task-brief';
 import { shellSearchPatterns } from './native-adoption';
-import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushProofSource, type PushSnapshot, type SnapshotSymbol } from './push-snapshot';
+import { corroboratePushSources, peekPushSnapshot, pushSnapshotMissReason, safeSnapshotPath, type PushProofSource, type PushSnapshot, type SnapshotSymbol } from './push-snapshot';
+import { dependencySnapshotPath } from './dependency-snapshot-path';
 import { callableSuggestion, canCall, readRecipientToolset, UNKNOWN_TOOLSET, type RecipientToolset } from './push-toolset';
 import { FACT_FILE_ANCHOR_PREFIX, foldCodeNotesForPaths, isCodeNoteKey, isFactFileAnchor, type AgentFact } from '../agent-facts/store';
 import type { FactDependencyStaleness } from '../agent-tools/facts/dependency-staleness';
@@ -1405,18 +1406,37 @@ async function measureLegFollowThrough(workspace: string): Promise<ReadonlyMap<s
     : [[leg, { rate: stats.actedOn.rate, measured: stats.actedOn.measured }] as const]));
 }
 
+/** WI-6554700010042393: every whole-push empty return names its reason in the host log,
+ * once per reason per EMPTY_PUSH_NOTE_MS. Before, six paths returned '' without a log
+ * line or a ledger row, so an installed hook that delivered nothing could only be
+ * attributed by bisecting. Info, not warn: most reasons are expected (another harness,
+ * no candidate), and 13 test files reach these returns under vitest-fail-on-console. */
+export const EMPTY_PUSH_NOTE_MS = 60_000;
+const emptyPushNotes = pinModuleState('@papercusp/operator-core.code-intel-empty-push-notes', () => ({ at: new Map<string, number>() }));
+export function noteEmptyPush(reason: string, detail = '', now = Date.now()): void {
+  const last = emptyPushNotes.at.get(reason);
+  if (last !== undefined && now - last < EMPTY_PUSH_NOTE_MS) return;
+  emptyPushNotes.at.set(reason, now);
+  console.info(`[code-intel-push] empty: ${reason}${detail ? ` (${detail.slice(0, 200)})` : ''}`);
+}
+export function resetEmptyPushNotes(): void { emptyPushNotes.at.clear(); }
+
 const defaults: PushChannelDeps = {
   research: async input => (await import('./research-trail')).recordResearchBatch(input),
   snapshot: async input => {
     // Only the registered home repository currently has the maintained producer.
     // Never use the operator's snapshot for a different harness/workspace.
     const home = operatorHomeHarnessSlug();
-    if (input.workspace !== activeWorkspaceId() || input.harness !== home) return null;
+    if (input.workspace !== activeWorkspaceId()) return noteEmptyPush('workspace-not-served', input.workspace), null;
+    if (input.harness !== home) return noteEmptyPush('harness-not-home', `${input.harness ?? '(none)'} != ${home}`), null;
     const registry = await loadHarnessRegistry(input.workspace);
     const project = registry.projects.find(project => project.slug === home && project.path);
-    if (!project) return null;
+    if (!project) return noteEmptyPush('no-home-project', home), null;
     input.root = project.path;
-    return peekPushSnapshot('papercusp');
+    const snapshot = peekPushSnapshot('papercusp');
+    const miss = snapshot ? null : pushSnapshotMissReason('papercusp');
+    if (miss) noteEmptyPush(`snapshot-${miss}`, dependencySnapshotPath('papercusp'));
+    return snapshot;
   },
   enabled: flag => getFlag(flag, 'system'),
   legs: () => state.legs,
@@ -1503,7 +1523,8 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
       timeoutMs: 100, fallback: undefined, label: 'code-intel-research-trail',
     });
   }
-  if (!input.owner || !input.workspace || !input.calls.length || !deps.legs().size) return '';
+  if (!input.owner || !input.workspace || !input.calls.length) return noteEmptyPush('missing-input'), '';
+  if (!deps.legs().size) return noteEmptyPush('no-legs'), '';
   // WI-6554700010018441: every leg classifies the call a `tools:invoke` wrapper dispatched.
   input = { ...input, calls: input.calls.map(normalizePushCall) };
   const requestBudget = CODE_INTEL_PUSH_TURN_CHARS;
@@ -1526,7 +1547,8 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
       ? deps.toolset(input).catch((): RecipientToolset => ({ status: 'unknown', reason: 'read-failed' }))
       : null;
     const snapshot = await deps.snapshot(input);
-    if (!snapshot || signal.aborted) return '';
+    if (signal.aborted) return noteEmptyPush('aborted-before-gather'), '';
+    if (!snapshot) return noteEmptyPush('no-snapshot'), '';
     phase = 'gather';
     if (toolsetRead) {
       input.recipientToolset = (await withBoundedTimeout(toolsetRead, { timeoutMs: Math.min(PUSH_TOOLSET_READ_MS, gatherLeft()),
@@ -1658,13 +1680,21 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
     // still commits, to record the skips.
     // P-005: the budget goes to the legs agents act on most, not to whichever leg ran first.
     const ranked = rankPushFacts(facts, deps.legFollowThrough?.(input.workspace) ?? null);
-    return (ranked.length || dropped.length || notRun.length) && !signal.aborted
-      ? deps.commit(input, snapshot, ranked, requestBudget, signal, dropped, notRun) : '';
+    if (signal.aborted) return noteEmptyPush('aborted-before-commit', `${facts.length} fact(s)`), '';
+    if (!ranked.length && !dropped.length && !notRun.length) {
+      const enabled = legs.filter(([id]) => on.get(id)).map(([id]) => id);
+      return noteEmptyPush('no-candidates', `legs on: ${enabled.join(',') || 'none'}`), '';
+    }
+    const text = await deps.commit(input, snapshot, ranked, requestBudget, signal, dropped, notRun);
+    if (!text && ranked.length) noteEmptyPush('commit-empty', `${ranked.length} ranked fact(s)`);
+    return text;
   }, { timeoutMs: CODE_INTEL_PUSH_WALL_MS, fallback: '', label: 'code-intel-push' });
   // Names the phase the wall cut, so a remaining loss is attributable: 'snapshot' or
   // 'commit' now, since the gather itself ends by its deadline.
   if (result.reason === 'timeout') {
     console.warn(`[code-intel-push] wall fired during ${phase} after ${result.elapsedMs}ms with ${gathered} fact(s) gathered`);
+  } else if (result.reason === 'error') {
+    noteEmptyPush('push-error', `${phase}: ${result.errorMessage ?? 'unknown'}`);
   }
   return result.value;
 }

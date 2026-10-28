@@ -144,6 +144,19 @@ describe('describeUnreadRun', () => {
     expect(describeUnreadRun(body, 0)).toBeNull();
   });
 
+  it('does not pair completed test logs with a separate launched publisher command (EI-26820577365848014)', () => {
+    const body = 'Read /tmp/unit.log (73 passed), /tmp/integration.log (52 passed), and ' +
+      '/tmp/tsc.log (exit0), and a separate publisher command was launched.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+    expect(naiveUnreadRun(body, 0)).not.toBeNull();
+  });
+
+  it('keeps a separately launched publisher command tied to its own output', () => {
+    const body = 'Read /tmp/unit.log (73 passed), and a separate publisher command was ' +
+      'launched at /tmp/publish.log.';
+    expect(describeUnreadRun(body, 0)?.signals.runRefs).toEqual(['/tmp/publish.log']);
+  });
+
   it.each(['output at', 'output:', 'log:', 'Handle:'])(
     'preserves an explicitly attached unread output clause introduced by %s', (label) => {
       const body = `The typecheck is still running; ${label} /tmp/types.log.`;
@@ -284,10 +297,40 @@ describe('describeUnreadRun', () => {
   });
 
   it('recognises the other unread-run artifacts an agent actually writes', () => {
-    for (const ref of ['bash_id abc123', 'run_in_background', 'capability:bash_output', 'build.log']) {
+    for (const ref of [
+      'bash_id abc123',
+      'run_in_background:true; bash_id:abc123',
+      'capability:bash_output { task_id: "task0mvljxl3t1qday5smb1" }',
+      'build.log',
+    ]) {
       const body = `Kicked it off, results pending. Handle: ${ref}.`;
       expect(describeUnreadRun(body, 0), ref).not.toBeNull();
     }
+  });
+
+  it('ignores JSON source manifests and bare bash_output mentions as run references', () => {
+    const manifest = JSON.stringify({
+      source: '45c9ca0be6f3e570',
+      files: ['packages/operator-core/lib/agent-tools/work_items/checkpoint.test.ts'],
+      jobs: [
+        { task_id: 'task0mvljxl3t1qday5smb1', log: '/tmp/source-manifest.log', status: 'read' },
+        { task_id: 'task0mvlk0kvd1c5otvs1j0', status: 'read' },
+      ],
+    });
+    const body = [
+      'The current verification suite is still running; both managed job statuses were read via capability:bash_output.',
+      `JSON source manifest: ${manifest}`,
+    ].join('\n');
+
+    expect(describeUnreadRun(body, 0)).toBeNull();
+    // A genuine output path outside the manifest still supplies the run reference.
+    expect(describeUnreadRun(`${body}\nThe current suite is still running; output at /tmp/current.log.`, 0)
+      ?.signals.runRefs).toEqual(['/tmp/current.log']);
+    // The tool name by itself is not a run/task identifier.
+    expect(describeUnreadRun(
+      'The current suite is still running; the prior status read used capability:bash_output.',
+      0,
+    )).toBeNull();
   });
 
   it('caps the echoed signals so the advisory stays one readable line', () => {

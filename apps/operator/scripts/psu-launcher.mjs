@@ -15316,10 +15316,10 @@ async function launchResume(
  */
 export function forkBootstrapBody(
   session,
-  account = null,
-  launchMode = null,
-  ownerId = null,
-  launchArgs = null,
+  account = /** @type {string | null} */ (null),
+  launchMode = /** @type {string | null} */ (null),
+  ownerId = /** @type {string | null} */ (null),
+  launchArgs = /** @type {Record<string, any> | null} */ (null),
 ) {
   // A fork bootstraps a fresh row, but its provenance is the actual resume/fork
   // invocation. Reuse the normal launch record so the parent, owner pin and
@@ -15554,9 +15554,9 @@ export function freshSuBootstrapBody(
   args,
   {
     brain = false,
-    bootstrapIdempotencyKey = null,
+    bootstrapIdempotencyKey = /** @type {string | null} */ (null),
     mcpBaseUrl = launcherOperatorTarget().url,
-    agentTaskId = null,
+    agentTaskId = /** @type {string | null} */ (null),
   } = {},
 ) {
   bootstrapIdempotencyKey ||= args.bootstrapIdempotencyKey || null;
@@ -19194,7 +19194,7 @@ export async function launchFreshSu(selections, args, {
   apiImpl = api,
   runLaunchPreflightImpl = runLaunchPreflight,
   runWrapperImpl = runWrapper,
-  agentTaskId = null,
+  agentTaskId = /** @type {string | null} */ (null),
 } = {}) {
   args = inheritFreshCodexConfiguredModel(selections.agent, args);
   if (

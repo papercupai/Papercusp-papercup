@@ -3989,17 +3989,17 @@ export function codexActiveWriterMessage(session: any, holder: any): string;
  * MUST run in that same cwd). Codex bootstrap prepares and registers its native
  * fork before returning; Claude retains its caller-chosen native id.
  */
-export function forkBootstrapBody(session: any, account?: null, launchMode?: null, ownerId?: null, launchArgs?: null): {
+export function forkBootstrapBody(session: any, account?: string | null, launchMode?: string | null, ownerId?: string | null, launchArgs?: Record<string, any> | null): {
     mode_owner_directed?: boolean | undefined;
     mode_instructions?: any;
     mode_subject?: any;
     mode?: any;
-    account?: undefined;
+    account?: string | undefined;
     headless?: boolean | undefined;
     launched_by?: any;
     launch_argv?: string[] | undefined;
     bootstrap_idempotency_key?: any;
-    owner_id?: undefined;
+    owner_id?: string | undefined;
     native_fork_source?: {
         advSessionId: number;
         nativeSessionId: any;
@@ -4066,9 +4066,9 @@ export function psuLaunchArgvRecord(selections: any, args: any, { brain }?: {
 }): string[];
 export function freshSuBootstrapBody(selections: any, args: any, { brain, bootstrapIdempotencyKey, mcpBaseUrl, agentTaskId, }?: {
     brain?: boolean | undefined;
-    bootstrapIdempotencyKey?: null | undefined;
+    bootstrapIdempotencyKey?: string | null | undefined;
     mcpBaseUrl?: any;
-    agentTaskId?: null | undefined;
+    agentTaskId?: string | null | undefined;
 }): {
     session_port_protocol?: any;
     session_port_transform_version?: any;
@@ -4101,9 +4101,9 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain, bootst
     auto?: boolean | undefined;
     carry?: any;
     headless?: boolean | undefined;
-    agent_task_id?: undefined;
+    agent_task_id?: string | undefined;
     launch_argv: string[];
-    bootstrap_idempotency_key?: undefined;
+    bootstrap_idempotency_key?: string | undefined;
     mcp_base_url?: any;
     agent: any;
     workspace: any;
@@ -4776,7 +4776,7 @@ export function launchFreshSu(selections: any, args: any, { brain, preflightCode
     apiImpl?: typeof api | undefined;
     runLaunchPreflightImpl?: typeof runLaunchPreflight | undefined;
     runWrapperImpl?: typeof runWrapper | undefined;
-    agentTaskId?: null | undefined;
+    agentTaskId?: string | null | undefined;
 }): Promise<void>;
 export const AGENTS: string[];
 /** The caller/origin marker used when PUI invokes the real PSU picker. */

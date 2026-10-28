@@ -366,6 +366,22 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(cellTranscriptionHint(text)).toBeNull();
   });
 
+  it('keeps a coord:send fixture blob SHA from becoming a pipeline hint when the fixture label follows it', async () => {
+    const sentText = [
+      'Received your final proof; I preserved your changes and strengthened the existing correlation fixture. Current full-file validation is running.',
+      'Your a7f1c994 fixture now has my additional positive complete-success control plus the wrong-request-only negative. Its full-file blob will therefore differ when git-sync lands. Native57437 runs all49 tests; I will send its final receipt/current blob so you can reconcile proposed settlement using exact newer evidence rather than wait for the superseded a7 bytes. Server production bytes remain b9f2cbaff466.',
+    ].join('\n');
+
+    // This is the exact summary + body composed by coord:send for the reported message.
+    expect(await cellTranscriptionHintResolvingCommits(sentText, async () => true)).toBeNull();
+
+    // Keep the suffix-labeled fixture artifact quiet even when a nearby live-state
+    // claim and a colliding commit resolver would otherwise classify it as a SHA.
+    const statefulFixture = ':3170 is serving a7f1c994 fixture';
+    expect(detectCellTranscriptions(statefulFixture, { resolvesToCommit: () => true })).toEqual([]);
+    expect(await cellTranscriptionHintResolvingCommits(statefulFixture, async () => true)).toBeNull();
+  });
+
   it('does not classify a checkpoint hash from a coord summary with unrelated live-lock context', () => {
     const summary = 'WI-40905 checkpoint 721014582be1: waiting on two live Vite locks before final rebuild';
     const body =

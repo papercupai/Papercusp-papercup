@@ -281,7 +281,8 @@ export async function prepareRuntimeSourceImage(options: {
       await runVerifierDependencyCommand(process.execPath,
         [join(repositoryRoot, 'scripts/npm-install-safe.mjs'), '--exec-under-lock', '--', '/bin/bash',
           join(repositoryRoot, 'apps/operator/bin/release/dependency-generation.sh'),
-          '--integration', repositoryRoot, '--ensure-ref', options.sourceCommit],
+          '--integration', repositoryRoot, '--ensure-ref', options.sourceCommit,
+          '--retain-as', `blind-review-${options.sourceCommit.slice(0, 48)}`],
         { cwd: repositoryRoot, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, signal: options.signal });
       options.signal?.throwIfAborted();
     }

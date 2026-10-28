@@ -24,7 +24,8 @@ import { setCompactionLimit, getPresence } from '../coordination/presence';
 import { estimateContextWindowForOwner, resolveModelSpecForOwner } from '../../compaction-usage';
 import { clampCompactionLimit, selfSetCeilingForSpec, selfSetCeilingForWindow } from '../../agent-config-constants';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
-import { setCompactionLimitForOwner } from './set-compaction-limit-core';
+import { setCompactionLimitForOwner, verifyOwnerCapLiftDirective } from './set-compaction-limit-core';
+import { resolveFleetCaller } from '../fleet_registry/_shared';
 
 /** Soft limit applied when a session has set none. Read-time default (P-007).
  *  Superseded by the model-aware `defaultCompactionLimitForSpec` (context-
@@ -62,13 +63,46 @@ export default defineTool({
       .describe(
         "P-006: the TARGET session to set (default: yourself). Setting ANOTHER session requires you to be the recorded leader of ITS fleet (or the queen / owner) — requests above THAT session's model + fleet-role ceiling are rejected with no write. Use to set a member's limit directly instead of asking it to.",
       ),
+    directiveRef: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'Open owner-typed directive # (addressed to you or the target) asking for a larger limit. Lifts the fleet-member role cap up to the model-window ceiling; an unverifiable directive refuses with no write.',
+      ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     // P-006: cross-session set — a leader/queen/owner sets a MEMBER's limit directly.
     if (args.ownerId && args.ownerId !== identity.ownerId) {
-      const result = await setCompactionLimitForOwner(ctx, args.ownerId, args.limit);
+      const result = await setCompactionLimitForOwner(ctx, args.ownerId, args.limit, {
+        directiveRef: args.directiveRef,
+      });
       return { data: result };
+    }
+    // WI-6554700010042435: an owner directive lifts the member role cap on the self path too.
+    let ownerDirective: { id: number; excerpt: string } | undefined;
+    if (args.directiveRef != null) {
+      const { workspaceId } = resolveFleetCaller(ctx);
+      const verdict = await verifyOwnerCapLiftDirective({
+        directiveRef: args.directiveRef,
+        targetOwnerId: identity.ownerId,
+        callerOwnerId: identity.ownerId,
+        workspaceId,
+      });
+      if (!verdict.ok) {
+        return {
+          data: {
+            ok: false,
+            ownerId: identity.ownerId,
+            requested: args.limit,
+            error: 'directive_unverified',
+            message: `${verdict.reason}; no change was made. Omit directiveRef to set within the role ceiling.`,
+          },
+        };
+      }
+      ownerDirective = { id: verdict.directiveId, excerpt: verdict.excerpt };
     }
     // Clamp to the caller's model-derived ceiling (context-trimming-tiers D-001):
     // `limit × 1.2 ≤ window − margin`, i.e. limit ≤ defaultCompactionLimitForSpec(spec).
@@ -99,7 +133,7 @@ export default defineTool({
       identity.ownerId,
     );
     const selfRole: string | null = selfFleet?.fleetRole ?? null;
-    const fleetMember = selfRole != null && selfRole !== 'leader';
+    const fleetMember = ownerDirective == null && selfRole != null && selfRole !== 'leader';
     const cap =
       measuredWindow != null
         ? selfSetCeilingForWindow(measuredWindow, { fleetMember })
@@ -145,6 +179,7 @@ export default defineTool({
         ok: persisted != null,
         ownerId: identity.ownerId,
         compactionLimit: persisted,
+        ...(ownerDirective ? { ownerDirective } : {}),
         ...(persisted == null ? { note: 'no live presence row for this session — limit not persisted' } : {}),
       },
     };

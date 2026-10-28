@@ -4,6 +4,7 @@ import { parseAsString, useQueryStates } from "nuqs";
 import { useEffect } from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import { getBrowserMachineId, setBrowserMachineId } from "@papercusp/operator-core/lib/browser-workspace";
+import { navigateClient } from "@papercusp/operator-core/lib/client-navigation";
 import { Select } from "@/app/harness/Select";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { LOCAL_DESKTOP_HOST } from "./local-desktop-protocol";
@@ -53,15 +54,23 @@ function AuthorizedMachineSwitcher({ localMode, onSelect, connectHref }: Machine
       setBrowserMachineId(hostId);
       // The viewer, pins and filter belong to the old machine. No shared registry
       // default or agent lifecycle is written; each window keeps its own URL.
-      const updated = setTarget(desktopMachineSelection(hostId));
+      const selection = desktopMachineSelection(hostId);
       // Batch portal navigation with the target so surface-param isolation
       // never sees a target belonging to a different app.
-      if (onSelect) onSelect(hostId);
-      else void updated.then(() => {
-          const url = new URL(window.location.href);
-          url.pathname = "/desktops";
-          window.location.assign(url.toString());
-      });
+      if (onSelect) {
+        void setTarget(selection);
+        onSelect(hostId);
+      } else {
+        // Commit target and route in one navigation. Pushing the target first
+        // leaves an intermediate history entry that Back restores instead.
+        const url = new URL(window.location.href);
+        url.pathname = "/desktops";
+        for (const [key, value] of Object.entries(selection)) {
+          if (value === null) url.searchParams.delete(key);
+          else url.searchParams.set(key, value);
+        }
+        navigateClient(url.toString(), { hard: true });
+      }
     }}
   />;
 }

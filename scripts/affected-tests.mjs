@@ -7330,6 +7330,23 @@ const TASK_CONTEXT_SHARD_PLAN = planAffectedTaskShards(taskContexts, {
 const durationHistory = readDurationHistory(TASK_DURATION_HISTORY_PATH);
 const MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
 
+async function runAfterIntegrationPgPreflight({ script, preflight, run }) {
+  if (script === "test:integration") {
+    try {
+      await preflight();
+    } catch (error) {
+      const message = error && typeof error === "object" && "message" in error
+        ? String(error.message)
+        : String(error);
+      throw Object.assign(
+        new Error(message),
+        { code: "AFFECTED_TEST_PG_PREFLIGHT_FAILED", cause: error },
+      );
+    }
+  }
+  return run();
+}
+
 /**
  * Async captured child runner. `spawn` keeps the parent event loop free so the scheduler can
  * overlap tasks, while buffering lets the reporting loop below replay whole task records in
@@ -7811,7 +7828,16 @@ function runCapturedTask(
   };
   const runExecution = runGroupGuardFailure
     ? Promise.reject(runGroupGuardFailure)
-    : runWithAdmissionDeferral({
+    : runAfterIntegrationPgPreflight({
+      // Keep the original task script here: integration retries may spawn `test` with a
+      // narrowed file list, but still need the same PG preflight before shared admission.
+      script: context.t.script,
+      preflight: async () => {
+        // Reuse the framework's maintained PG selection, storage guard, and private-admin URL.
+        const { getTestPg } = await import("../libs/test-config/src/pg-container.ts");
+        await getTestPg();
+      },
+      run: () => runWithAdmissionDeferral({
       delaysMs: ADMISSION_DEFER_DELAYS_MS,
       sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
       onDefer: ({ attempt, of, delayMs, reason }) =>
@@ -8217,11 +8243,14 @@ function runCapturedTask(
     });
     }),
   ),
-    });
+    }),
+  });
   return runExecution.catch((error) => {
     const isRunGroupGuardFailure = error?.code === "AFFECTED_TEST_RUN_GROUP_GUARD";
-    // Admission/loader failures are attributed to this task rather than
-    // rejecting the scheduler shard and losing the terminal run marker.
+    const isPgPreflightFailure = error?.code === "AFFECTED_TEST_PG_PREFLIGHT_FAILED";
+    const isGovernedAdmissionFailure = !isRunGroupGuardFailure && !isPgPreflightFailure;
+    // Preflight/admission failures are attributed to this task rather than rejecting the
+    // scheduler shard and losing the terminal run marker.
     const message = error instanceof Error ? error.message : String(error);
     const result = {
       status: 1,
@@ -8229,7 +8258,11 @@ function runCapturedTask(
       stdout: "",
       stderr: "",
       error: Object.assign(new Error(message), {
-        code: isRunGroupGuardFailure ? "AFFECTED_TEST_RUN_GROUP_GUARD" : "GOVERNED_ADMISSION_FAILED",
+        code: isRunGroupGuardFailure
+          ? "AFFECTED_TEST_RUN_GROUP_GUARD"
+          : isPgPreflightFailure
+            ? "AFFECTED_TEST_PG_PREFLIGHT_FAILED"
+            : "GOVERNED_ADMISSION_FAILED",
       }),
       __elapsedMs: 0,
       __timeoutMs: taskTimeoutMs,
@@ -8239,7 +8272,7 @@ function runCapturedTask(
       __watchdogTimedOut: false,
       __watchdogDeadlineMs: taskTimeoutMs,
       __watchdogKillReason: null,
-      __governedAdmissionError: !isRunGroupGuardFailure,
+      __governedAdmissionError: isGovernedAdmissionFailure,
       __admissionDeferrals: Number(error?.admissionDeferrals ?? 0),
       ...(cacheDecision
         ? {
@@ -8257,9 +8290,9 @@ function runCapturedTask(
     // pre-empted — leaving a verdict of failed=0 while this admission error sat in the log
     // three lines above it.
     observedNonzeroExits++;
-    if (!isRunGroupGuardFailure) observedAdmissionErrors++;
+    if (isGovernedAdmissionFailure) observedAdmissionErrors++;
     rawErrSync(
-      `AFFECTED_TASK_PROGRESS state=${isRunGroupGuardFailure ? "run-group-guard-error" : "governed-admission-error"} task=${JSON.stringify(taskKey(spawnTask))} ` +
+      `AFFECTED_TASK_PROGRESS state=${isRunGroupGuardFailure ? "run-group-guard-error" : isPgPreflightFailure ? "pg-preflight-error" : "governed-admission-error"} task=${JSON.stringify(taskKey(spawnTask))} ` +
         `elapsedSec=0 capturedBytes=0 stalledForSec=0 timeoutMs=${taskTimeoutMs} ` +
         `timeoutSource=${taskTimeoutSource} durationEstimateMs=${taskDurationMs ?? "unknown"} ` +
         `exitStatus=1 signal=none reason=${JSON.stringify(message)}`,

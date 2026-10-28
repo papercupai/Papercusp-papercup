@@ -415,7 +415,9 @@ async function withRetentionSafeCheckpoint<T>(
     options: { timeoutMs: number; intent: string },
   ) => {
     const { withRetentionMutex } = await import('../../storage/retention-census-walk');
-    return withRetentionMutex(callback, options);
+    // The fs-mutex options carry no `intent` field; the intent stays on the
+    // injectable runner contract for callers/tests, the real mutex gets the wait bound.
+    return withRetentionMutex(callback, { timeoutMs: options.timeoutMs });
   });
   return run(action, {
     timeoutMs: STALE_EXECUTOR_RETENTION_CHECKPOINT_WAIT_MS,

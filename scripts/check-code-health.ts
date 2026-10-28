@@ -9,7 +9,7 @@ import { compareCodeHealth, measureCodeHealth, type HealthLineage, type HealthSn
 
 const args = process.argv.slice(2);
 const value = (name: string) => args.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
-const git = (...command: string[]) => execFileSync('git', command, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+const git = (...command: string[]) => execFileSync('git', command, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 30_000 });
 const base = value('base') ?? 'HEAD';
 const paths = value('paths')?.split(',') ?? git('diff', '--name-only', '-z', base, '--', '*.ts', '*.tsx').split('\0').filter(Boolean);
 const lineage: HealthLineage[] = value('lineage') ? JSON.parse(readFileSync(value('lineage')!, 'utf8')) : [];

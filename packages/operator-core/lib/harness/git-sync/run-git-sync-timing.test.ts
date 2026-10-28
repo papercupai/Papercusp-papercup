@@ -7,10 +7,12 @@ function fixture() {
   let clock = 0;
   vi.spyOn(performance, 'now').mockImplementation(() => clock);
   const calls: string[] = [];
+  const diagnosticCalls: Array<{ cwd: string; diagnosticTags?: { runId: string; commandClass: 'git' | 'other' } }> = [];
   const logs: string[] = [];
   const recorded = new Map<string, any>();
-  const runGit: RunGit = async (args, cwd) => {
+  const runGit: RunGit = async (args, cwd, options) => {
     calls.push(cwd);
+    if (cwd.startsWith('/fake/libs/')) diagnosticCalls.push({ cwd, diagnosticTags: options?.diagnosticTags });
     clock += cwd.endsWith('/slow') ? 100 : 1;
     await Promise.resolve();
     if (args[0] === 'symbolic-ref') return { code: 0, stdout: 'main', stderr: '' };
@@ -22,7 +24,7 @@ function fixture() {
     recorded.set(name, JSON.parse(JSON.stringify(value)));
     return value;
   };
-  return { calls, logs, recorded, opts: {
+  return { calls, diagnosticCalls, logs, recorded, opts: {
     repoPath: '/fake', runGit, step, log: (line: string) => logs.push(line),
     config: { push: false, pushSubmoduleOrigins: false },
   } };
@@ -43,6 +45,9 @@ describe('git-sync submodule timing evidence', () => {
     expect(child.repositories[0].durationMs).toBeGreaterThan(parent.repositories[0].durationMs);
     expect(parent.startOffsetMs).toBeGreaterThanOrEqual(child.startOffsetMs + child.durationMs);
     expect(f.logs.some((line) => line.includes('repository-settled') && line.includes(timing.runId))).toBe(true);
+    expect(f.diagnosticCalls.length).toBeGreaterThan(0);
+    expect(f.diagnosticCalls.every(({ diagnosticTags }) =>
+      diagnosticTags?.runId === timing.runId && diagnosticTags.commandClass === 'git')).toBe(true);
 
     const before = f.calls.length;
     const replay: GitSyncStepRunner = async (name, fn) => f.recorded.has(name) ? f.recorded.get(name) : fn();
@@ -53,11 +58,16 @@ describe('git-sync submodule timing evidence', () => {
 
   it('bounds retained batches and keeps completed evidence when the next batch yields', async () => {
     const f = fixture();
-    let probes = 0;
     await expect(runGitSync('timing-test', {
       ...f.opts,
       submodulePaths: Array.from({ length: 261 }, (_, i) => `libs/r${i}`),
-      shouldYield: async () => ++probes === 66 ? 'drain requested' : null,
+      shouldYield: async () => {
+        // Several safe yield probes run during setup and the early root commit.
+        // Anchor this test to the submodule batch boundary it is asserting.
+        return f.logs.some((line) => line.includes('"event":"batch-settled"') && line.includes('"index":64'))
+          ? 'drain requested'
+          : null;
+      },
     })).rejects.toBeInstanceOf(GitSyncYieldError);
     const timing = f.recorded.get('git-sync:submodules').submoduleTiming;
     expect(timing.batches).toHaveLength(64);

@@ -417,6 +417,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
   it('records effective automatic export when the caller leaves it unset', () => {
     const result = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}"],
       { ...process.env, PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: undefined,
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '0',
         // This control measures automatic export with an unavailable reader;
         // an explicit URL otherwise requires a bindable descriptor by default.
         PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0',
@@ -446,6 +447,7 @@ process.stderr.write('bounded reader diagnostic fixture');
 process.exit(${exit});
 `, { mode: 0o755 });
     const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '0',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:3170/api/health',
       PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto' };
     if (readerRequired === null) delete env.PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED;
@@ -455,7 +457,7 @@ process.exit(${exit});
     ], env, dir);
     expect(code, out).toBe(2);
     const diagnostic = JSON.parse(out.match(/^MUTATION_PROBE_READER_HTTP_JSON=(.+)$/m)![1]!);
-    expect(diagnostic).toEqual({ curlExit: exit, httpStatus: status, elapsedSeconds: '0.125', reason,
+    expect(diagnostic).toEqual({ curlExit: exit, httpStatus: status, elapsedSeconds: '0.125', attempts: 1, reason,
       sha: reason === null ? 'abcdef0123' : null });
     expect(out).toContain(reason === null ? 'has no resolvable libs/test-config gitlink' : 'build sha is unreadable');
     expect(out).not.toContain('running baseline guard');
@@ -475,6 +477,7 @@ process.exit(28);
       '--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}",
     ], { ...process.env, PATH: `${bin}:${process.env.PATH}`,
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:3170/api/health',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '0',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0', PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto' }, dir);
     expect(code, out).toBe(0);
     expect(out).toContain('mutation descriptor withheld');
@@ -3288,6 +3291,39 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
     expect(read()).toBe(commentOnlySubject);
   });
 
+  it('ignores TypeScript documentation comments but still refuses a destructive call', () => {
+    const typedSubject = join(dir, 'subject.ts');
+    const commentOnly = [
+      '/** Documentation: truncate the marker after writing it. */',
+      'export const marker = "beta";',
+      '',
+    ].join('\n');
+    const args = [
+      '--file', typedSubject,
+      '--mutate', 's/beta/BETA/',
+      '--test', 'grep -q beta {}',
+    ];
+
+    writeFileSync(typedSubject, commentOnly);
+    const safe = runProbeIO(args);
+    expect(safe.code, safe.out).toBe(0);
+    expect(safe.out).toMatch(/MUTATION_PROBE_RESULT verdict=caught/);
+    expect(readFileSync(typedSubject, 'utf8')).toBe(commentOnly);
+
+    const destructiveCall = [
+      '/* a real call remains guarded */',
+      'export function clean(path: string) { truncate(path); }',
+      'export const marker = "beta";',
+      '',
+    ].join('\n');
+    writeFileSync(typedSubject, destructiveCall);
+    const refused = runProbeIO(args);
+    expect(refused.code).toBe(2);
+    expect(refused.out).toMatch(/current subject:.*truncate/);
+    expect(refused.out).toMatch(/2:\s*export function clean/);
+    expect(readFileSync(typedSubject, 'utf8')).toBe(destructiveCall);
+  });
+
   it('warns but allows an unmutated historical source containing rm', () => {
     const repo = join(dir, 'historical-destructive-repo');
     mkdirSync(repo);
@@ -3724,6 +3760,99 @@ printf 'TEST_FILE_RESULT requested=1 executed=1 status=passed\\n'
     expect(code).toBe(0);
     expect(out).toContain('verdict=caught');
     expect(out).toContain('assertion_evidence=test-file-assertion-failure');
+    expect(read()).toBe(ORIGINAL);
+  });
+});
+
+/**
+ * EI-27221342827374562 — the test:file router exits 2 when a FINISHED Vitest run
+ * lacks an inserted test_runs receipt. Scored as a plain harness error, that hid
+ * a mutant whose every guard test PASSED (a weak guard) behind "re-run, flake".
+ * The probe must name the assertion outcome, disprove a contradicted expectation
+ * (exit 1), and still never credit an agreeing one without the ledger (exit 2).
+ */
+describe('mutation-probe.sh — a missing ledger receipt cannot hide the assertion outcome (EI-27221342827374562)', () => {
+  const finished = (exitStatus: number, signal = 'none', lastOutputLine = 'done') =>
+    `TEST_FILE_PROGRESS state=finished cwd="packages/operator-core" elapsedMs=10 capturedBytes=10 ` +
+    `completedFiles=["fixture.test.ts"] pendingFiles=[] timeoutMs=600000 exitStatus=${exitStatus} ` +
+    `signal=${signal} lastOutputLine="${lastOutputLine}"`;
+  const receiptMissing = 'TEST_FILE_LEDGER_RECEIPT_MISSING requested=1 missing=1 status=not-measured '
+    + 'paths=["fixture.test.ts"] receiptDiagnostics=[] detail="one or more recordable Vitest files lack an inserted ledger receipt"';
+  const passedRun = [finished(0), ' Test Files  1 passed (1)', '      Tests  4 passed (4)', receiptMissing];
+  const failedRun = [
+    finished(1),
+    'TEST_FILE_ASSERTION_FAILURE file="fixture.test.ts" name="behavior" message="AssertionError"',
+    ' Test Files  1 failed (1)', '      Tests  1 failed | 3 passed (4)', receiptMissing,
+  ];
+  // The mutant leg prints the router's markers and exits 2 exactly like the
+  // real router's TEST_FILE_EXIT_NOT_MEASURED; the controls pass normally.
+  const routerGuard = (name: string, mutantLines: string[]) => {
+    const guard = join(dir, name);
+    writeFileSync(guard, `#!/usr/bin/env bash
+if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then
+  printf '%s\\n' ${mutantLines.map(line => `'${line}'`).join(' ')}
+  exit 2
+fi
+printf 'TEST_FILE_RESULT requested=1 executed=1 status=passed\\n'
+`);
+    return `bash ${guard} {}`;
+  };
+  const probe = (guard: string, expectation?: 'caught' | 'survived') => runProbeIO([
+    '--file', subject, '--mutate', 's/beta/BETA/', '--test', guard,
+    ...(expectation ? ['--expect', expectation] : []),
+  ]);
+
+  it('reports a passing mutant run as survived-ledger-unconfirmed and fails a caught expectation', () => {
+    const { code, out } = probe(routerGuard('survivor.sh', passedRun));
+    expect(code, out).toBe(1);
+    expect(out).toMatch(/^MUTATION_PROBE_RESULT verdict=survived-ledger-unconfirmed expected=caught .* guard_exit=2 .*assertion_evidence=no-vitest-test-failures /m);
+    expect(out).toContain('VERDICT: MUTANT SURVIVED, LEDGER UNCONFIRMED');
+    expect(out).not.toContain('VERDICT: HARNESS ERROR');
+    expect(out).toContain('"verdict":"survived-ledger-unconfirmed"');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('never credits an agreeing survived expectation without the ledger receipt', () => {
+    const { code, out } = probe(routerGuard('survivor-expected.sh', passedRun), 'survived');
+    expect(code, out).toBe(2);
+    expect(out).toMatch(/^MUTATION_PROBE_RESULT verdict=survived-ledger-unconfirmed expected=survived /m);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('reports a failing mutant run as caught-ledger-unconfirmed without crediting the catch', () => {
+    const { code, out } = probe(routerGuard('caught.sh', failedRun));
+    expect(code, out).toBe(2);
+    expect(out).toMatch(/^MUTATION_PROBE_RESULT verdict=caught-ledger-unconfirmed expected=caught .* guard_exit=2 .*assertion_evidence=test-file-assertion-failure /m);
+    expect(out).toContain('VERDICT: MUTANT CAUGHT, LEDGER UNCONFIRMED');
+    expect(out).not.toContain('the guard is falsifiable ✓');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('lets a caught-ledger-unconfirmed outcome disprove a survived expectation', () => {
+    const { code, out } = probe(routerGuard('caught-unexpected.sh', failedRun), 'survived');
+    expect(code, out).toBe(1);
+    expect(out).toMatch(/^MUTATION_PROBE_RESULT verdict=caught-ledger-unconfirmed expected=survived /m);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it.each([
+    ['a run that never finished', [
+      finished(0).replace('state=finished', 'state=running'), '      Tests  4 passed (4)', receiptMissing,
+    ]],
+    ['a finished run with a finalization error', [
+      finished(0), '      Tests  4 passed (4)', receiptMissing, 'TEST_FILE_FINALIZATION_ERROR detail="custody"',
+    ]],
+    ['a run killed by a signal', [finished(0, 'SIGTERM'), '      Tests  4 passed (4)', receiptMissing]],
+    ['a run that executed no passing test', [finished(0), '      Tests  4 skipped (4)', receiptMissing]],
+    ['an exit 2 with no receipt marker', [finished(0), '      Tests  4 passed (4)']],
+    ['an exit-1 run whose lastOutputLine quotes a passing status', [
+      finished(1, 'none', 'exitStatus=0 signal=none'), '      Tests  4 passed (4)', receiptMissing,
+    ]],
+  ])('keeps %s a harness error', (_label, lines) => {
+    const { code, out } = probe(routerGuard('unfinished.sh', lines));
+    expect(code, out).toBe(2);
+    expect(out).toMatch(/^MUTATION_PROBE_RESULT verdict=harness-error /m);
+    expect(out).not.toContain('LEDGER UNCONFIRMED');
     expect(read()).toBe(ORIGINAL);
   });
 });

@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { controlPlaneTempCandidates } from '../control-plane-temp.mjs';
 import { consumeKickoffPromptFile, INLINE_KICKOFF_MAX_BYTES, KICKOFF_PROMPT_FILE_ENV, prepareKickoffEnvironment } from './prompt-transport.mjs';
 
@@ -36,6 +36,18 @@ describe('free-form kickoff file transport', () => {
     expect(consumeKickoffPromptFile(path)).toBe(large);
     expect(existsSync(path)).toBe(false);
     expect(() => consumeKickoffPromptFile(path)).toThrow();
+  });
+
+  it('clears the fallback cleanup timer when the prompt is consumed', () => {
+    vi.useFakeTimers();
+    try {
+      const next = prepareKickoffEnvironment({ PAPERCUSP_KICKOFF_PROMPT: large });
+      expect(vi.getTimerCount()).toBe(1);
+      expect(consumeKickoffPromptFile(next[KICKOFF_PROMPT_FILE_ENV])).toBe(large);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.skipIf(process.platform !== 'linux')('crosses the kernel exec boundary without an oversized argv or environment entry', () => {

@@ -84,6 +84,41 @@ export interface PriorRespawn {
   capMs?: number | null;
 }
 
+export interface RespawnIncarnation {
+  nativeSessionId: string | null;
+  startedAtMs: number | null;
+}
+
+/** Keep owner-log history from a prior native child out of the current banner. */
+export function deriveCurrentIncarnationRespawnOutcome(
+  rows: ColdBootDrillHostEvent[],
+  incarnation: RespawnIncarnation,
+  opts: { now?: number } = {},
+): PriorRespawn {
+  const nativeId = incarnation.nativeSessionId;
+  const matchingBirthTimes = nativeId
+    ? rows
+        .filter((row) =>
+          (row.kind === 'respawned' || row.kind === 'respawn-carry-delivered') &&
+          row.nativeId === nativeId,
+        )
+        .map((row) => typeof row.ts === 'string' ? Date.parse(row.ts) : NaN)
+        .filter(Number.isFinite)
+    : [];
+  const startMs = Number.isFinite(incarnation.startedAtMs) ? incarnation.startedAtMs : null;
+  const birthMs = matchingBirthTimes.length ? Math.min(...matchingBirthTimes) : null;
+  const boundaryMs = startMs == null ? birthMs : birthMs == null ? startMs : Math.max(startMs, birthMs);
+  if (boundaryMs == null) return { outcome: 'none' };
+
+  const scopedRows = rows.filter((row) => {
+    const at = typeof row.ts === 'string' ? Date.parse(row.ts) : NaN;
+    if (!Number.isFinite(at) || at < boundaryMs) return false;
+    if (row.nativeId != null && (!nativeId || row.nativeId !== nativeId)) return false;
+    return true;
+  });
+  return deriveLastRespawnOutcome(scopedRows, opts);
+}
+
 /**
  * PURE: given this owner's host event rows (oldest→newest, as the log is
  * appended), decide what happened to the MOST RECENT carry-respawn.
@@ -143,11 +178,18 @@ export function deriveLastRespawnOutcome(
  *  session that has never respawned. */
 export async function readPriorRespawnOutcome(
   ownerId: string,
-  opts: { dir?: string; now?: number; requireComplete?: boolean } = {},
+  opts: {
+    dir?: string;
+    now?: number;
+    requireComplete?: boolean;
+    incarnation?: RespawnIncarnation;
+  } = {},
 ): Promise<PriorRespawn> {
   try {
     const rows = await readOwnerHostEvents(ownerId, opts.dir, { requireComplete: opts.requireComplete });
-    return deriveLastRespawnOutcome(rows, { now: opts.now });
+    return opts.incarnation
+      ? deriveCurrentIncarnationRespawnOutcome(rows, opts.incarnation, { now: opts.now })
+      : deriveLastRespawnOutcome(rows, { now: opts.now });
   } catch {
     return { outcome: 'none' };
   }

@@ -183,8 +183,10 @@ function readSingleFileImportsWithTypeScript(path: string, repoRoot: string): Ty
   } catch (error) {
     return { ok: false, reason: `TypeScript fallback parse failed: ${error instanceof Error ? error.message : String(error)}` };
   }
-  if (sourceFile.parseDiagnostics.length > 0) {
-    const detail = ts.flattenDiagnosticMessageText(sourceFile.parseDiagnostics[0]!.messageText, ' ');
+  // `parseDiagnostics` is populated by ts.createSourceFile but is not on the public SourceFile type.
+  const parseDiagnostics = (sourceFile as ts.SourceFile & { readonly parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
+  if (parseDiagnostics.length > 0) {
+    const detail = ts.flattenDiagnosticMessageText(parseDiagnostics[0]!.messageText, ' ');
     return { ok: false, reason: `TypeScript fallback parse failed: ${detail}` };
   }
 

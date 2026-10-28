@@ -47,6 +47,7 @@ import {
   type PresenceObservation,
 } from '../../presence-transition-emitter';
 import { gatherCommitmentsOn } from '../../presence-transition-commitments';
+import { listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
@@ -61,6 +62,13 @@ const PRESENCE_ALERT_IDENTITY: AgentIdentity = {
   userId: null,
 };
 
+type ParkedAwait = Awaited<ReturnType<typeof listParkedAwaitsForSubscribers>>[number];
+
+interface DeferredPresenceNotice {
+  notice: PresenceNotice;
+  resumeAtMs: number;
+}
+
 /**
  * The previous sweep's observations, keyed by agentId — PINNED to the realm
  * (EI-21904761023329235), not a bare module-scoped `let`. `previousObservations`
@@ -74,14 +82,21 @@ const PRESENCE_ALERT_IDENTITY: AgentIdentity = {
  * many times this module is evaluated, so state lives on `.previousObservations`
  * of that object and is mutated in place (or the property reassigned), never the
  * module-level binding itself. Best-effort by design — see the header note. */
-const presenceSweepState = pinModuleState<{ previousObservations: Map<string, PresenceObservation> }>(
+const presenceSweepState = pinModuleState<{
+  previousObservations: Map<string, PresenceObservation>;
+  deferredNotices: Map<string, DeferredPresenceNotice>;
+}>(
   '@papercusp/operator-core.presence-transition-sweep-action.previousObservations',
-  () => ({ previousObservations: new Map<string, PresenceObservation>() }),
+  () => ({
+    previousObservations: new Map<string, PresenceObservation>(),
+    deferredNotices: new Map<string, DeferredPresenceNotice>(),
+  }),
 );
 
 /** Test-only: forget the previous snapshot so cases don't cross-contaminate. */
 export function __resetPresenceTransitionSnapshotForTests(): void {
   presenceSweepState.previousObservations = new Map();
+  presenceSweepState.deferredNotices = new Map();
 }
 
 /**
@@ -148,7 +163,27 @@ export interface PresenceTransitionSweepDeps {
    * notice because a failed read is not evidence that the edge recovered.
    */
   currentObservation?: (agentId: string) => Promise<Pick<PresenceObservation, 'sessionState'> | null>;
+  /** Active deliberate parks for suspect subjects; the default read returns composed deadlines. */
+  listParkedAwaits?: typeof listParkedAwaitsForSubscribers;
+  /** Clock seam for deterministic bounded-wait tests. */
+  now?: () => number;
   deliver?: (notice: PresenceNotice) => Promise<void>;
+}
+
+/** Earliest future deadline that will wake this subscriber from a one-shot park. */
+function earliestOneShotWakeDeadline(
+  rows: readonly ParkedAwait[],
+  subscriberId: string,
+  nowMs: number,
+): number | null {
+  let earliest: number | null = null;
+  for (const row of rows) {
+    if (row.subscriberId !== subscriberId || !row.once || row.timeoutBehavior !== 'wake' || !row.expiresTs) continue;
+    const expiresAt = Date.parse(row.expiresTs);
+    if (!Number.isFinite(expiresAt) || expiresAt <= nowMs) continue;
+    if (earliest === null || expiresAt < earliest) earliest = expiresAt;
+  }
+  return earliest;
 }
 
 /**
@@ -207,28 +242,74 @@ export async function runPresenceTransitionSweep(deps: PresenceTransitionSweepDe
         `(first tick if moduleEvaluations<=1; otherwise state was unexpectedly empty)`,
     );
   }
-  // The overwhelmingly common case: nothing crossed. Cost stops here — no
-  // commitment read, no write, nothing on anyone's rail.
-  if (edges.length === 0) return 0;
+  // The overwhelmingly common case: nothing crossed and no deferred alert is
+  // waiting on its deadline. Cost stops here — no commitment read or write.
+  if (edges.length === 0 && presenceSweepState.deferredNotices.size === 0) return 0;
 
-  const commitments = await gatherCommitments(edges.map((e) => e.agentId));
+  const commitments = edges.length > 0 ? await gatherCommitments(edges.map((e) => e.agentId)) : [];
   const notices = selectPresenceNotices(edges, commitments);
+  const nowMs = (deps.now ?? Date.now)();
+  const suspectSubjectIds = [...new Set(
+    notices.filter((notice) => notice.edge.to === 'suspect').map((notice) => notice.subjectId),
+  )];
+  const listParkedAwaits = deps.listParkedAwaits ?? listParkedAwaitsForSubscribers;
+  let parkedAwaits: ParkedAwait[] = [];
+  if (suspectSubjectIds.length > 0) {
+    try {
+      parkedAwaits = await listParkedAwaits(suspectSubjectIds);
+    } catch {
+      // A failed park read is not grounds to suppress an existing alert.
+    }
+  }
+  const wakeDeadlineBySubject = new Map<string, number>();
+  for (const subjectId of suspectSubjectIds) {
+    const deadline = earliestOneShotWakeDeadline(parkedAwaits, subjectId, nowMs);
+    if (deadline !== null) wakeDeadlineBySubject.set(subjectId, deadline);
+  }
+
+  const deferredNotices = presenceSweepState.deferredNotices;
+  const noticesToDeliver: PresenceNotice[] = [];
+  for (const notice of notices) {
+    const key = `${notice.receiverId}\0${notice.subjectId}`;
+    const resumeAtMs = notice.edge.to === 'suspect' ? wakeDeadlineBySubject.get(notice.subjectId) : undefined;
+    if (resumeAtMs !== undefined) {
+      deferredNotices.set(key, { notice, resumeAtMs });
+    } else {
+      // In particular, an `ended` edge supersedes any earlier deferred suspect alert.
+      deferredNotices.delete(key);
+      noticesToDeliver.push(notice);
+    }
+  }
+
+  const currentObservationBySubject = new Map(observations.map((observation) => [observation.agentId, observation]));
+  for (const [key, deferred] of deferredNotices) {
+    const current = currentObservationBySubject.get(deferred.notice.subjectId);
+    if (!current || (current.sessionState !== null && current.sessionState !== 'suspect')) {
+      deferredNotices.delete(key);
+      continue;
+    }
+    if (nowMs >= deferred.resumeAtMs) {
+      deferredNotices.delete(key);
+      noticesToDeliver.push(deferred.notice);
+    }
+  }
+
   const currentObservation = deps.currentObservation ?? gatherCurrentPresenceObservation;
-  const currentBySubject = new Map<string, Promise<Pick<PresenceObservation, 'sessionState'> | null | undefined>>();
+  const currentRechecksBySubject = new Map<string, Promise<Pick<PresenceObservation, 'sessionState'> | null | undefined>>();
   const recheck = (subjectId: string) => {
-    const existing = currentBySubject.get(subjectId);
+    const existing = currentRechecksBySubject.get(subjectId);
     if (existing) return existing;
     const current = Promise.resolve()
       .then(() => currentObservation(subjectId))
       // A degraded recheck must preserve the original notice: an unknown read
       // is not evidence that a liveness edge recovered.
       .catch(() => undefined);
-    currentBySubject.set(subjectId, current);
+    currentRechecksBySubject.set(subjectId, current);
     return current;
   };
 
   let delivered = 0;
-  for (const notice of notices) {
+  for (const notice of noticesToDeliver) {
     const current = await recheck(notice.subjectId);
     // Suppress stale notices when the subject changed state after edge detection.
     // The next sweep observes that new state and can emit a fresh, correctly

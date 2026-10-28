@@ -2112,7 +2112,9 @@ describe('resume + fork (D-004/D-007)', () => {
     it.each(['live', 'unterminated', 'writer', 'changed-binding', 'changed-profile'])('refuses %s custody', async (failure) => {
       if (failure === 'live') resolveResumeTargetMock.mockResolvedValue({ ...source, live: true });
       if (failure === 'unterminated') resolveResumeTargetMock.mockResolvedValue({ ...source, endedAt: null, endedBy: null });
-      if (failure === 'writer') codexThreadWriterHolderMock.mockReturnValue({ held: true, reason: 'held' } as never);
+      if (failure === 'writer') codexThreadWriterHolderMock.mockReturnValue({
+        held: true, pid: null, lockPath: null, sessionId: null, reason: 'held',
+      });
       if (failure === 'changed-binding') resolveResumeTargetMock.mockResolvedValueOnce(source).mockResolvedValue({
         ...source, binding: { ...source.binding, startedAt: 'changed' } });
       if (failure === 'changed-profile') readAdvSessionLaunchRecordByOwnerMock.mockResolvedValueOnce(record)

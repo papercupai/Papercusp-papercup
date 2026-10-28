@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { INBOX_WAKE_KEY_PREFIX } from './store';
 import {
   evaluateTurnEndHeldWorkStop,
+  isFreshPendingCarryRespawn,
   turnEndHeldWorkStopText,
   TURN_END_HELD_WORK_LISTED_CAP,
   type TurnEndHeldWorkDeps,
@@ -38,6 +39,7 @@ function deps(over: Partial<TurnEndHeldWorkDeps> = {}): Partial<TurnEndHeldWorkD
     listParkedAwaits: async () => [inboxKeepalive],
     readAwaitTargets: async () => new Map(),
     hasPendingDeliberateWakeDelivery: async () => false,
+    hasFreshPendingCarryRespawn: async () => false,
     armRewake: async () => ({ kind: 'armed', attempt: 1, timeoutSec: 900 }),
     cancelRewake: async () => undefined,
     ...over,
@@ -112,6 +114,7 @@ describe('turn-end rewake timer (WI-6554700010018567)', () => {
       { readHeldWorkItems: async () => [] },
       { getLoopActive: async () => true },
       { hasPendingDeliberateWakeDelivery: async () => true },
+      { hasFreshPendingCarryRespawn: async () => true },
       {
         listParkedAwaits: async () => [
           inboxKeepalive,
@@ -224,6 +227,35 @@ describe('turn-end held-work guard (WI-6554700010015550)', () => {
       deps: deps({ hasPendingDeliberateWakeDelivery: async () => true }),
     });
     expect(text).toBe('');
+  });
+
+  it('lets the turn end when a recent accepted carry-respawn is pending for this owner', async () => {
+    const owners: string[] = [];
+    const spy = rewakeSpy();
+    const text = await evaluateTurnEndHeldWorkStop({
+      ownerId: OWNER,
+      workspaceId: WS,
+      deps: deps({
+        ...spy.deps,
+        hasFreshPendingCarryRespawn: async (ownerId) => {
+          owners.push(ownerId);
+          return true;
+        },
+      }),
+    });
+    expect(text).toBe('');
+    expect(owners).toEqual([OWNER]);
+    expect(spy.calls.cancelled).toBe(1);
+    expect(spy.calls.armed).toHaveLength(0);
+  });
+
+  it('does not treat stale or undated pending carry-respawns as a wake source', () => {
+    const capMs = 5 * 60_000;
+    expect(isFreshPendingCarryRespawn({ outcome: 'pending', ageMs: 1_000, capMs })).toBe(true);
+    expect(isFreshPendingCarryRespawn({ outcome: 'pending', ageMs: capMs + 120_001, capMs })).toBe(false);
+    expect(isFreshPendingCarryRespawn({ outcome: 'pending', ageMs: null, capMs })).toBe(false);
+    expect(isFreshPendingCarryRespawn({ outcome: 'dropped', ageMs: 1_000, capMs })).toBe(false);
+    expect(isFreshPendingCarryRespawn({ outcome: 'delivered', ageMs: 1_000, capMs })).toBe(false);
   });
 
   it('never refuses on an unknown loop status or a failed read (positive-finding-only)', async () => {

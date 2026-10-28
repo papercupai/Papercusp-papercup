@@ -73,6 +73,12 @@ export const ALLOW_PREFIXES = [
   // ascii-escape pass legitimately emits raw \x01-\x1f inside minified string tables, and
   // hand-editing a regenerated bundle is pointless — it is not hand-authored source.
   'apps/operator/dist-sidecar/',
+  // WI-10006055 (frozen candidate 63442ecf round 1): `.papercusp/state/text-artifacts/evidence_*`
+  // are verbatim captures of native tool/test output stored as evidence (vitest's ANSI colour
+  // codes included). They are machine-written, not hand-authored source, and escaping the ESC
+  // bytes would rewrite the captured evidence. Same reasoning as GENERATED_EVALUATOR_EVIDENCE_RE
+  // below. Only the `evidence_` captures are exempt; any other file in that tree stays covered.
+  '.papercusp/state/text-artifacts/evidence_',
 ];
 
 // Native host parity fixtures are emitted by the maintained bundle producer into a

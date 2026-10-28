@@ -22,11 +22,29 @@ function harness(rounds: PresenceObservation[][], commitments: Commitment[] = []
   const deps: PresenceTransitionSweepDeps = {
     gather: async () => rounds[Math.min(round++, rounds.length - 1)] ?? [],
     gatherCommitments,
+    // Preserve the production seam's fail-open behavior without falling through
+    // to the real fleet-assignment/PG reader in cases that do not need a state
+    // transition recheck.
+    currentObservation: async () => ({ sessionState: null }),
     deliver: async (n) => {
       delivered.push(n);
     },
   };
   return { deps, delivered, gatherCommitments };
+}
+
+function parkedAwait(expiresAtMs: number) {
+  return {
+    subscriberId: 'peer',
+    eventKey: 'dependency:ready',
+    note: null,
+    expiresTs: new Date(expiresAtMs).toISOString(),
+    timeoutBehavior: 'wake' as const,
+    createdAt: new Date(expiresAtMs - 1_000).toISOString(),
+    rootId: null,
+    boundTo: null,
+    once: true,
+  };
 }
 
 beforeEach(() => {
@@ -49,6 +67,48 @@ describe('runPresenceTransitionSweep', () => {
     expect(await runPresenceTransitionSweep(deps)).toBe(1); // the crossing
     expect(delivered).toHaveLength(1);
     expect(delivered[0].receiverId).toBe('me');
+    expect(delivered[0].summary).toContain('is DEAD');
+  });
+
+  it('defers a suspect notice through a declared one-shot wake deadline, then alerts', async () => {
+    const { deps, delivered } = harness(
+      [[obs('peer', 'live')], [obs('peer', 'suspect')], [obs('peer', 'suspect')], [obs('peer', 'suspect')]],
+      [{ receiverId: 'me', subjectId: 'peer', kind: 'awaiting-reply', detail: 'msg-1' }],
+    );
+    const deadlineMs = 3_000;
+    let nowMs = 1_000;
+    deps.now = () => nowMs;
+    deps.listParkedAwaits = vi.fn(async (subscriberIds) => {
+      expect(subscriberIds).toEqual(['peer']);
+      return [parkedAwait(deadlineMs)];
+    });
+    deps.currentObservation = async () => ({ sessionState: 'suspect' });
+
+    expect(await runPresenceTransitionSweep(deps)).toBe(0); // baseline
+    expect(await runPresenceTransitionSweep(deps)).toBe(0); // deferred
+    expect(delivered).toEqual([]);
+    nowMs = deadlineMs - 1;
+    expect(await runPresenceTransitionSweep(deps)).toBe(0); // still before timeout
+    expect(delivered).toEqual([]);
+    nowMs = deadlineMs;
+    expect(await runPresenceTransitionSweep(deps)).toBe(1); // timeout reached
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].summary).toContain('NOT RESPONDING');
+  });
+
+  it('keeps ended alerts immediate even when the subject has a bounded wake wait', async () => {
+    const { deps, delivered } = harness(
+      [[obs('peer', 'live')], [obs('peer', 'ended')]],
+      [{ receiverId: 'me', subjectId: 'peer', kind: 'awaiting-reply', detail: 'msg-1' }],
+    );
+    const listParkedAwaits = vi.fn(async () => [parkedAwait(Date.now() + 60_000)]);
+    deps.listParkedAwaits = listParkedAwaits;
+    deps.currentObservation = async () => ({ sessionState: 'ended' });
+
+    expect(await runPresenceTransitionSweep(deps)).toBe(0); // baseline
+    expect(await runPresenceTransitionSweep(deps)).toBe(1);
+    expect(listParkedAwaits).not.toHaveBeenCalled();
+    expect(delivered).toHaveLength(1);
     expect(delivered[0].summary).toContain('is DEAD');
   });
 

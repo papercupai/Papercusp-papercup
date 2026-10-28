@@ -9,6 +9,7 @@ export const INLINE_KICKOFF_MAX_BYTES = 16 * 1024;
 const PREFIX = 'papercusp-kickoff-transport-';
 const FILENAME = 'prompt.txt';
 const CLEANUP_MS = 10 * 60 * 1000;
+const cleanupTimers = new Map();
 
 /** Keep large prompts out of both the shell argv and its inherited environment. */
 export function prepareKickoffEnvironment(env) {
@@ -25,10 +26,12 @@ export function prepareKickoffEnvironment(env) {
   // The consumer removes it immediately. Bound debris from a launch that never
   // reaches PSU without racing the launcher's admission/boot window.
   const timer = setTimeout(() => {
+    cleanupTimers.delete(directory);
     try { rmSync(directory, { recursive: true, force: true }); }
     catch (error) { console.warn('kickoff transport cleanup failed:', error); }
   }, CLEANUP_MS);
   timer.unref?.();
+  cleanupTimers.set(directory, timer);
   const next = { ...env, [KICKOFF_PROMPT_FILE_ENV]: path };
   delete next.PAPERCUSP_KICKOFF_PROMPT;
   return next;
@@ -48,6 +51,11 @@ export function consumeKickoffPromptFile(path) {
     throw new Error('Invalid private kickoff prompt transport file');
   }
   const text = readFileSync(absolute, 'utf8');
+  const cleanupTimer = cleanupTimers.get(directory);
+  if (cleanupTimer) {
+    clearTimeout(cleanupTimer);
+    cleanupTimers.delete(directory);
+  }
   rmSync(directory, { recursive: true, force: true });
   return text;
 }

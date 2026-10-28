@@ -110,4 +110,22 @@ describe('unsignalled process:exec transport failures', () => {
 
     expect(isSidecarPostDispatchFault(error)).toBe(false);
   });
+
+  it('forwards only the supplied safe diagnostic correlation tags with the process exec request', async () => {
+    const runId = '35118a11-cd1d-4470-8652-e59592c0197c';
+    let sentParams: unknown;
+    mock.call.mockImplementation((method: string, params: unknown, opts?: { onRequestId?: (id: number, connectionId: string) => void }) => {
+      if (method !== 'process:exec') throw new Error(`unexpected RPC ${method}`);
+      sentParams = params;
+      opts?.onRequestId?.(44, 'client-connection-44');
+      return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+    });
+
+    await expect(runCommandViaSpawnerSidecar('git', ['fetch'], {
+      cwd: '/tmp', timeoutMs: 5000,
+      diagnosticTags: { runId, commandClass: 'git' },
+    })).resolves.toMatchObject({ code: 0, stdout: '', stderr: '' });
+
+    expect(sentParams).toMatchObject({ diagnosticTags: { runId, commandClass: 'git' } });
+  });
 });

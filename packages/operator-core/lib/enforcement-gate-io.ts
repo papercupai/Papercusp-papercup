@@ -11,6 +11,7 @@
  * before the caller may queue a cut, and a failed save leaves the session intact.
  */
 import { withBoundedTimeout } from './bounded-timeout';
+import { observeFallback } from './degradation/fallback-observations';
 import {
   decideFlushGate,
   detectFlushTripwires,
@@ -378,6 +379,13 @@ export async function runFlushGate(input: {
     // Emit one richer line below instead of the generic bounded-timeout warning.
     warn: false,
   });
+  if (result.reason === 'timeout' || result.reason === 'error') {
+    // Condition rail (degradation-signals-on-condition-rail-2026-10-11 P-013): a fail-open
+    // degrade to `clear` silently drops enforcement, so record it as a fallback decision and a
+    // recurring degrade becomes a keyed condition instead of only a log line. Degraded batches
+    // only: the passing path is not recorded, so no test that drives a clean gate enqueues telemetry.
+    observeFallback('flush-gate', { eligible: 1, applied: 0, reason: result.reason, scope: input.boundary });
+  }
   if (result.reason === 'timeout') {
     const completedPhases = phaseTrace.completed
       .map(({ phase, elapsedMs }) => `${phase}:${elapsedMs}ms`)

@@ -20,8 +20,9 @@
  */
 
 import { PORTS, killSwitchState, specFor } from './ports.mjs';
-import { resolve, relative } from 'node:path';
+import { isAbsolute, resolve, relative } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { appendFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
@@ -189,7 +190,8 @@ export function baseRequest({ port, client, owner, cwd, env = process.env }) {
  * @param {InjectionPort} port
  * @param {InjectionRequest} body
  * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number,
- *   onTurnStartOutcome?: (outcome: object) => void }} [opts]
+ *   onTurnStartOutcome?: (outcome: object) => void,
+ *   onHookOutcome?: (outcome: object) => void }} [opts]
  * @returns {Promise<{ text: string, deliveryToken: string | null } | null>} the text
  *   to inject plus the turn-start orientation delivery token (delivery-ledger.mjs),
  *   or null to inject nothing
@@ -228,10 +230,28 @@ export async function postInjection(port, body, opts = {}) {
     } catch { /* optional per-request evidence never changes hook delivery */ }
   };
   const startedAt = now();
+  // Diagnostic only (WI-6554700010042393): which branch of this exchange produced
+  // the answer. Every failure below returns the same empty finish(), so without
+  // this an abort during local collection is indistinguishable from an empty
+  // server answer. Reported once; a throwing callback never changes delivery.
+  let collectMs = null;
+  const collectErrors = [];
+  let hookOutcomeReported = false;
+  const reportHookOutcome = (stage, extra = {}) => {
+    if (hookOutcomeReported || typeof opts.onHookOutcome !== 'function') return;
+    hookOutcomeReported = true;
+    try {
+      opts.onHookOutcome({
+        port, stage, timeoutMs: spec.timeoutMs, elapsedMs: Math.max(0, now() - startedAt), collectMs,
+        ...(collectErrors.length ? { collectErrors } : {}), ...extra,
+      });
+    } catch { /* diagnostic only */ }
+  };
 
   const { off, mode } = killSwitchState(port, env);
   if (off && mode === 'suppress') {
     reportTurnStartOutcome('suppressed');
+    reportHookOutcome('suppressed');
     return null;
   }
 
@@ -249,9 +269,19 @@ export async function postInjection(port, body, opts = {}) {
   try {
     // Collect locally, where the edited file and its owning repo exist. Never run
     // the parser/compiler on the shared operator's 250ms snapshot push path.
-    if (port === 'mid-turn') await Promise.all([collectInterfaceEdits(body, undefined, env), collectAntipatternEdits(body), collectCloneEdits(body)]);
+    // A collector that rejects outright (e.g. its helper module is missing from an
+    // installed hook dir) costs only its own enrichment, never the server's answer.
+    if (port === 'mid-turn') {
+      const collectStartedAt = now();
+      const settled = await Promise.allSettled([collectInterfaceEdits(body, undefined, env), collectAntipatternEdits(body), collectCloneEdits(body)]);
+      collectMs = Math.max(0, now() - collectStartedAt);
+      for (const result of settled) {
+        if (result.status === 'rejected') collectErrors.push(String(result.reason?.message ?? result.reason).slice(0, 300));
+      }
+    }
     if (controller.signal.aborted || typeof fetchImpl !== 'function') {
       reportTurnStartOutcome('request-failed');
+      reportHookOutcome(controller.signal.aborted ? 'wall-before-fetch' : 'no-fetch');
       return finish();
     }
     // wallMs: what is LEFT of this hook's own wall when the request leaves, so the
@@ -284,20 +314,25 @@ export async function postInjection(port, body, opts = {}) {
     }
     if (!res || !res.ok) {
       reportTurnStartOutcome(res ? 'http-error' : 'request-failed');
+      reportHookOutcome(res ? 'http-error' : 'unreachable', res ? { status: res.status } : {});
       return finish();
     }
     const payload = await res.json();
     if (!payload || typeof payload !== 'object') {
       reportTurnStartOutcome('invalid-response');
+      reportHookOutcome('invalid-response');
       return finish();
     }
     reportTurnStartOutcome('response-received', payload);
     const { text, deliveryToken } = payload;
+    reportHookOutcome('response-received', { textChars: typeof text === 'string' ? text.length : 0 });
     return finish(typeof text === 'string' ? text : '', typeof deliveryToken === 'string' && deliveryToken ? deliveryToken : null);
-  } catch {
+  } catch (err) {
     // Timeout, connection refused, malformed JSON, operator restarting mid-call.
     // All of it is "inject nothing" — never an error the turn can see.
     reportTurnStartOutcome('request-failed');
+    reportHookOutcome(controller.signal.aborted ? 'wall-during-fetch' : 'request-failed',
+      { error: String(err?.message ?? err).slice(0, 300) });
     return finish();
   } finally {
     clearTimeout(timer);
@@ -615,20 +650,26 @@ export function clampPrompt(prompt) {
  * @returns {Promise<string | null>}
  */
 export async function runInjection({ adapter, nativeEvent, event, env = process.env, fetchImpl, openDeliveryLedger }) {
+  const trace = hookOutcomeTracer(env, { client: adapter?.client ?? null, nativeEvent: nativeEvent ?? null });
+  let post = null;
+  const done = (stage, value = null, extra = {}) => {
+    trace?.({ stage, ...(post ? { post } : {}), ...extra });
+    return value;
+  };
   try {
     const owner = sessionId(env);
-    if (!owner) return null;
+    if (!owner) return done('no-owner');
 
     const port = adapter.portForEvent(nativeEvent);
-    if (!port || !specFor(port)) return null;
+    if (!port || !specFor(port)) return done('no-port');
 
     const { off, mode } = killSwitchState(port, env);
-    if (off && mode === 'suppress') return null;
+    if (off && mode === 'suppress') return done('suppressed', null, { port });
 
     // parse() returning null means "no signal in this event" — e.g. an empty
     // batch, a blank prompt. Spend nothing: no request, no output.
     const partial = adapter.parse(port, event);
-    if (!partial) return null;
+    if (!partial) return done('no-signal', null, { port });
 
     const detectorSessionKey =
       typeof env.PAPERCUSP_FAILURE_LOOP_SESSION_KEY === 'string' &&
@@ -655,12 +696,13 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
       env,
       fetchImpl,
       ...(ledger ? { onTurnStartOutcome: outcome => ledger.recordOutcome(outcome) } : {}),
+      ...(trace ? { onHookOutcome: outcome => { post = outcome; } } : {}),
     });
     const safeText = fenceControlTransition(response?.text ?? null, owner);
-    if (!safeText) return null;
+    if (!safeText) return done(response?.text ? 'fenced-empty' : 'no-text', null, { port });
 
     const payload = adapter.render(port, safeText, event);
-    if (typeof payload !== 'string' || payload.length === 0) return null;
+    if (typeof payload !== 'string' || payload.length === 0) return done('render-empty', null, { port });
     if (ledger && response?.deliveryToken) ledger.offer(response.deliveryToken, {
       payload: payload + '\n',
       client: adapter.client,
@@ -668,9 +710,31 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
         : adapter.client === 'codex' ? env.CODEX_THREAD_ID : null,
       control: controlTransitionBlock(safeText)?.payload ?? null,
     });
-    return payload;
-  } catch {
+    return done('emitted', payload, { port, payloadChars: payload.length });
+  } catch (err) {
     // Invariant 1, final backstop: an adapter bug must cost silence, not a turn.
-    return null;
+    return done('runner-threw', null, { error: String(err?.message ?? err).slice(0, 300) });
   }
+}
+
+/**
+ * Opt-in, diagnostic-only trace of why ONE hook invocation emitted what it did.
+ * PAPERCUSP_HOOK_OUTCOME_FILE names an absolute JSONL path; unset (the default)
+ * means no I/O at all. Every silent "emit nothing" exit of runInjection looks the
+ * same on stdout, so without this an abort during local collection reads exactly
+ * like an empty server answer (WI-6554700010042393). Writes one line per call and
+ * never throws.
+ *
+ * @param {NodeJS.ProcessEnv | undefined} env
+ * @param {object} base fields stamped on every record
+ * @returns {((record: object) => void) | null}
+ */
+export function hookOutcomeTracer(env, base) {
+  const file = typeof env?.PAPERCUSP_HOOK_OUTCOME_FILE === 'string' ? env.PAPERCUSP_HOOK_OUTCOME_FILE.trim() : '';
+  if (!file || !isAbsolute(file)) return null;
+  return record => {
+    try {
+      appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...base, ...record }) + '\n');
+    } catch { /* diagnostic only */ }
+  };
 }

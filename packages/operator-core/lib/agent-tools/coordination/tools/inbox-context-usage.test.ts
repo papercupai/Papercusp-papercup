@@ -8,6 +8,7 @@ import {
   contextGaugeBand,
   renderBandedContextGauge,
   renderContextUsageLine,
+  renderContextUsageUnknownLine,
   usableRunwayFromObservedPromptFloor,
 } from './inbox-context-usage';
 
@@ -56,6 +57,17 @@ describe('renderContextUsageLine (WI-1795 compaction affordance)', () => {
   it('labels the live transcript-size estimate used by the inbox gauge', () => {
     const line = renderContextUsageLine(152_825, 250_000, null, null, null, 'live-transcript-bytes/4');
     expect(line).toContain('count source: live transcript-size estimate (bytes/4)');
+  });
+
+  it('labels Codex usage as the current rollout token_count', () => {
+    const line = renderContextUsageLine(152_825, 250_000, null, null, null, 'codex-last-token-usage');
+    expect(line).toContain('count source: current Codex rollout token_count');
+  });
+
+  it('discloses unknown current usage without promoting the watchdog cache', () => {
+    expect(renderContextUsageUnknownLine('active Codex token_count sample is stale')).toBe(
+      'context: unknown — active Codex token_count sample is stale; the watchdog cache is not bound to the current native session and was not used.',
+    );
   });
 
   it('labels the watchdog cache fallback used when the live transcript is unavailable', () => {

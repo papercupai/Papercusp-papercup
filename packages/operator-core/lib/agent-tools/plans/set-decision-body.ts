@@ -18,8 +18,9 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { decisionProvenance, FALSIFIED_OWNER_ANCHOR_NOTE } from './decision-provenance';
 import {
-  decisionProvenanceArg,
   findOwnerTag,
+  ownerTurnRefArg,
+  provenanceFromOwnerTurnRef,
   recordDecisionProvenance,
   resolveDecisionProvenance,
 } from './decision-provenance-record';
@@ -111,8 +112,13 @@ const argsSchema = z.object({
   rationale: softText(LIMITS.ANNOTATION)
     .optional()
     .describe('Optional — why the decision body changed (a correction, an added caveat). Stored on the plan revision (D-009). Auto-truncated to 2000 chars if longer.'),
-  // P-018: omitted keeps the decision's stored provenance row unchanged.
-  provenance: decisionProvenanceArg.optional(),
+  // P-018: the same flat arg as plans:add-decision; null additionally re-records it as yours.
+  ownerTurnRef: ownerTurnRefArg
+    .nullable()
+    .optional()
+    .describe(
+      "omit = keep the stored provenance; '[turn:<session>@<ts>]' = a verified owner turn ruled it; null = your own ruling (corrects a mis-attributed owner decision)",
+    ),
 });
 
 type SetDecisionBodyValue =
@@ -205,8 +211,9 @@ export default defineTool({
     // P-018 (#D-012): explicit provenance resolves exactly as plans:add-decision does. Omitted
     // keeps the stored row; a body [owner:…] tag is then checked under the lock against the
     // prior body, so a pre-P-019 decision that already carried the tag stays editable.
-    const provenanceResolution = args.provenance
-      ? await resolveDecisionProvenance(args.provenance, args.body, ctx)
+    const provenanceArg = provenanceFromOwnerTurnRef(args.ownerTurnRef);
+    const provenanceResolution = provenanceArg
+      ? await resolveDecisionProvenance(provenanceArg, args.body, ctx)
       : null;
     if (provenanceResolution && !provenanceResolution.ok) {
       return text(
@@ -221,7 +228,7 @@ export default defineTool({
         true,
       );
     }
-    const newOwnerTag = args.provenance ? null : findOwnerTag(args.body);
+    const newOwnerTag = provenanceArg ? null : findOwnerTag(args.body);
 
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
@@ -259,7 +266,7 @@ export default defineTool({
               code: 'provenance_owner_tag_without_owner_kind',
               reason:
                 `The new body adds the owner tag ${newOwnerTag}. Owner provenance is a field: pass ` +
-                "provenance: { kind:'owner', turnRef:'[turn:<session>@<ts>]' }, or remove the tag. " +
+                "ownerTurnRef:'[turn:<session>@<ts>]', or remove the tag. " +
                 'one-work-graph-structured-holds-2026-10-26#D-012.',
             },
           };
@@ -324,7 +331,6 @@ export default defineTool({
           ? { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, planSlug: args.slug, decisionId: args.decisionId }
           : null,
         provenanceResolution.provenance,
-        'unrecordedReason' in provenanceResolution ? provenanceResolution.unrecordedReason : undefined,
       );
     }
 

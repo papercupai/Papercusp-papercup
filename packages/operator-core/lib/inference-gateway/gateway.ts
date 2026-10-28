@@ -4331,6 +4331,27 @@ export function createInferenceGateway(deps: GatewayDeps) {
           : hintRecoveryAt(a.accountId, at),
     });
   };
+  /** WI-6554700010042440: the longest a Codex request waits for a TRANSIENT account pause (an
+   *  upstream burst 429 with a few-second reset) instead of being shed with a gateway 429. */
+  const CODEX_TRANSIENT_RECOVERY_WAIT_MAX_MS = 15_000;
+  /** When NO codex account can serve now but one returns within the transient bound, name it and
+   *  its return instant. Null when a sibling is serviceable now (legacy rotation is correct) or
+   *  every return is far off (a usage wall: shedding with retry-after is correct). */
+  const codexTransientRecovery = (
+    source: AccountPool | null | undefined,
+    at: number,
+    maxWaitMs = CODEX_TRANSIENT_RECOVERY_WAIT_MAX_MS,
+  ): { accountId: string; recoverAt: number } | null => {
+    const entries = source?.entries?.() ?? [];
+    if (entries.some((account) => accountHealthKey(account, at) < Infinity)) return null;
+    let best: { accountId: string; recoverAt: number } | null = null;
+    for (const account of entries) {
+      const recoverAt = hintRecoveryAt(account.accountId, at);
+      if (recoverAt === undefined || recoverAt - at > maxWaitMs) continue;
+      if (!best || recoverAt < best.recoverAt) best = { accountId: account.accountId, recoverAt };
+    }
+    return best;
+  };
   /** Render a pool horizon for the response header / log line. */
   const describePoolRecovery = (poolRecoveryAt: number, at: number): string =>
     poolRecoveryAt === Infinity ? 'unknown' : poolRecoveryAt > at ? new Date(poolRecoveryAt).toISOString() : 'now';
@@ -9297,6 +9318,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
         initialAccount: cli,
         accounts: () => codexCliAccounts(),
         pool: codexCliPool ? healthAwareCodexPool(codexCliPool) : undefined,
+        transientRecovery: () => {
+          const recovery = codexTransientRecovery(codexCliPool, Date.now());
+          if (recovery) {
+            log('warn', `inference-gateway: every Codex account is briefly paused → holding for '${recovery.accountId}' (${Math.max(0, recovery.recoverAt - Date.now())}ms) instead of shedding 429`);
+          }
+          return recovery;
+        },
         upstreamUrl: codexBackendUrl(url),
         method: req.method ?? 'POST',
         requestHeaders: req.headers,

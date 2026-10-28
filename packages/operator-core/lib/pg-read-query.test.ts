@@ -2953,10 +2953,9 @@ describe('buildCorpusNamespaceAdvisory — a tenant predicate on a corpus table 
     const query = `SELECT r.id, w.id AS delivery_id
       FROM harness_shared.routines AS r
       LEFT JOIN harness_shared.event_wake_deliveries AS w
-        ON w.subscriber_id = r.action_config->>'ownerId'
-        AND w.source = 'routine'
-        AND w.created_at >= r.created_at
-      WHERE r.workspace_id = 'papercusp-workspace' AND r.name LIKE 'loop:%'`;
+        ON w.subscriber_id = r.target_owner_id
+        AND w.source = 'loop:' || r.id
+      WHERE r.workspace_id = 'papercusp-workspace' AND r.target_owner_id = 'test-owner'`;
     expect(buildCorpusNamespaceAdvisory(query)).toBeNull();
     expect(buildCorpusNamespaceAdvisory(query + " AND w.workspace_id = 'papercusp-workspace'"))
       .toContain('event_wake_deliveries');

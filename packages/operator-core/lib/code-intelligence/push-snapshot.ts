@@ -269,6 +269,16 @@ export function peekPushSnapshot(repo: string, now = Date.now()): PushSnapshot |
   return entry.snapshot && now - entry.snapshot.generatedMs <= PUSH_SNAPSHOT_MAX_AGE_MS ? entry.snapshot : null;
 }
 
+/** Why peekPushSnapshot(repo) answered null, so an empty push names its cause
+ * (WI-6554700010042393). `loading`: the first read only started the load.
+ * `unavailable`: the last load found no file or an unparsable one. `stale`: older
+ * than PUSH_SNAPSHOT_MAX_AGE_MS. Null when the snapshot would be served. */
+export function pushSnapshotMissReason(repo: string, now = Date.now()): 'loading' | 'unavailable' | 'stale' | null {
+  const entry = state.entries.get(repo);
+  if (!entry?.snapshot) return !entry || entry.loading ? 'loading' : 'unavailable';
+  return now - entry.snapshot.generatedMs > PUSH_SNAPSHOT_MAX_AGE_MS ? 'stale' : null;
+}
+
 /** Reuse the push index for positive read queries. A miss is a compiler fallback,
  * never evidence of absence. Registry/root checks and source corroboration share
  * one wall budget; a cold index starts its existing cooperative loader only.

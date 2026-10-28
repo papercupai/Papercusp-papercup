@@ -863,6 +863,7 @@ import './coordination/tools/mark-terminal';
 // ruling — coupling decides RELEVANCE, never access.
 import './coordination/tools/couple';
 import './coordination/tools/decouple';
+import './coordination/tools/judge-coupling-edge';
 import './coordination/tools/thread';
 import './coordination/tools/read';
 // L3 escalations + handoffs (Phase C)

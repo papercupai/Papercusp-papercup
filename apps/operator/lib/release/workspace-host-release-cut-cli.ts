@@ -667,6 +667,7 @@ export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Pr
       join(plan.repoRoot, 'scripts/npm-install-safe.mjs'),
       '--repo-root', plan.repoRoot, '--exec-under-lock', '--',
       'bash', generationScript, '--integration', plan.repoRoot, '--ensure-ref', sourceSha,
+      '--retain-as', `workspace-cut-${sourceSha.slice(0, 48)}`,
     ], { cwd: plan.repoRoot, logFile: logFor('dependency-prewarm') });
     const selectionOutput = join(paths.logs, 'dependency-selection.txt');
     await runStep('dependency-select', 'bash', [

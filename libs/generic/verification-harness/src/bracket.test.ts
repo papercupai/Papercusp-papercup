@@ -10,6 +10,7 @@ import {
   readdirSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -397,6 +398,22 @@ describe('pruneRuns (evidence retention)', () => {
       }));
     }
   };
+  const mkIncompleteRun = (root: string, name: string, now = Date.now()) => {
+    mkRun(root, name, false);
+    const bytes = Buffer.from(`${JSON.stringify({
+      schemaVersion: 1,
+      harness: 'receipt-custody',
+      runId: name,
+      startedAt: '2026-01-01T00:00:00.000Z',
+      endedAt: null,
+      verdict: 'fail',
+      phases: [],
+    })}\n`);
+    writeFileSync(path.join(root, name, 'result.json'), bytes);
+    const old = new Date(now - 48 * 60 * 60 * 1000);
+    utimesSync(path.join(root, name), old, old);
+    return bytes;
+  };
 
   it('keeps the newest runs, never the one latest points at, never one still in progress', async () => {
     const root = tmp();
@@ -417,6 +434,93 @@ describe('pruneRuns (evidence retention)', () => {
     for (const kept of ['20260101T000000Z-1', '20260104T000000Z-4', '20260105T000000Z-5', '20250101T000000Z-9', 'not-a-run']) {
       expect(existsSync(path.join(root, kept))).toBe(true);
     }
+  });
+
+  it('retains an immutable no-verdict diagnostic before count pruning an aged incomplete run', async () => {
+    const root = tmp();
+    const now = Date.now();
+    const incomplete = '20250101T000000Z-8';
+    const newer = '20260101T000000Z-9';
+    const original = mkIncompleteRun(root, incomplete, now);
+    mkRun(root, newer);
+
+    const removed = await pruneRuns(root, 1, now, {
+      measureDisk: async () => ({ totalBytes: 1_000, availableBytes: 500 }),
+      reserveBytes: () => 400,
+    });
+
+    expect(removed).toContain(incomplete);
+    expect(existsSync(path.join(root, incomplete))).toBe(false);
+    const retained = path.join(root, 'retained', incomplete, 'incomplete');
+    expect(readFileSync(path.join(retained, 'result.json'))).toEqual(original);
+    expect(JSON.parse(readFileSync(path.join(retained, 'no-terminal-verdict.json'), 'utf8'))).toEqual({
+      schemaVersion: 1,
+      runId: incomplete,
+      harness: 'receipt-custody',
+      terminalVerdict: false,
+      endedAt: null,
+      snapshot: {
+        path: 'result.json',
+        bytes: original.length,
+        sha256: createHash('sha256').update(original).digest('hex'),
+      },
+    });
+    expect(existsSync(path.join(root, 'retained', incomplete, 'result.json'))).toBe(false);
+  });
+
+  it('keeps an aged incomplete source when its retained diagnostic conflicts with different bytes', async () => {
+    const root = tmp();
+    const now = Date.now();
+    const incomplete = '20250101T000000Z-8';
+    mkIncompleteRun(root, incomplete, now);
+    mkRun(root, '20260101T000000Z-9');
+    const destination = path.join(root, 'retained', incomplete, 'incomplete', 'result.json');
+    mkdirSync(path.dirname(destination), { recursive: true });
+    const conflicting = Buffer.from('different immutable diagnostic\n');
+    writeFileSync(destination, conflicting);
+
+    const removed = await pruneRuns(root, 1, now, {
+      measureDisk: async () => ({ totalBytes: 1_000, availableBytes: 500 }),
+      reserveBytes: () => 400,
+    });
+
+    expect(removed).not.toContain(incomplete);
+    expect(existsSync(path.join(root, incomplete))).toBe(true);
+    expect(readFileSync(destination)).toEqual(conflicting);
+  });
+
+  it('keeps an aged incomplete source when its retained diagnostic crosses a symlink boundary', async () => {
+    const root = tmp(), outside = tmp();
+    const now = Date.now();
+    const incomplete = '20250101T000000Z-8';
+    mkIncompleteRun(root, incomplete, now);
+    mkRun(root, '20260101T000000Z-9');
+    symlinkSync(outside, path.join(root, 'retained'));
+
+    const removed = await pruneRuns(root, 1, now, {
+      measureDisk: async () => ({ totalBytes: 1_000, availableBytes: 500 }),
+      reserveBytes: () => 400,
+    });
+
+    expect(removed).not.toContain(incomplete);
+    expect(existsSync(path.join(root, incomplete))).toBe(true);
+  });
+
+  it('keeps an aged incomplete source when its no-verdict snapshot exceeds the retained size limit', async () => {
+    const root = tmp();
+    const now = Date.now();
+    const incomplete = '20250101T000000Z-8';
+    mkIncompleteRun(root, incomplete, now);
+    truncateSync(path.join(root, incomplete, 'result.json'), 64 * 1024 * 1024 + 1);
+    mkRun(root, '20260101T000000Z-9');
+
+    const removed = await pruneRuns(root, 1, now, {
+      measureDisk: async () => ({ totalBytes: 1_000, availableBytes: 500 }),
+      reserveBytes: () => 400,
+    });
+
+    expect(removed).not.toContain(incomplete);
+    expect(existsSync(path.join(root, incomplete))).toBe(true);
   });
 
   it('VH_KEEP_RUNS=0 disables pruning; junk falls back to the default', async () => {

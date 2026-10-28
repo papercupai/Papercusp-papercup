@@ -80,6 +80,16 @@ import { forkserverContainmentIdentity, prepareForkserverContainment } from './f
 const SAFE_PROCESS_EXEC_CALLER_LABELS = new Set<ProcessExecCallerLabel>(
   Object.values(PROCESS_EXEC_CALLER_LABELS),
 );
+const SAFE_DIAGNOSTIC_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+type SafeProcessExecDiagnosticTags = { runId: string; commandClass: 'git' | 'other' };
+
+function safeProcessExecDiagnosticTags(value: unknown): SafeProcessExecDiagnosticTags | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.runId !== 'string' || !SAFE_DIAGNOSTIC_RUN_ID.test(candidate.runId) ||
+      (candidate.commandClass !== 'git' && candidate.commandClass !== 'other')) return null;
+  return { runId: candidate.runId.toLowerCase(), commandClass: candidate.commandClass };
+}
 
 // JSON-RPC 2.0 response builders
 function rpcResult(result: unknown, id: number | string): object {
@@ -335,7 +345,7 @@ export function runSpawnerSidecarServer(deps: {
           write(rpcError(-32600, 'process:exec requires an id', null));
           return;
         }
-        const params = (req.params ?? {}) as ExecParams;
+        const params = (req.params ?? {}) as ExecParams & { diagnosticTags?: unknown };
         if (params.fence && (params.fence.serverGeneration !== serverGeneration || params.fence.connectionId !== connectionId ||
             !Object.hasOwn(params.fence, 'forkserverIdentity'))) {
           write(rpcResult({ code: -1, stdout: '', stderr: 'spawner sidecar execution fence mismatch before spawn' }, id));
@@ -355,6 +365,7 @@ export function runSpawnerSidecarServer(deps: {
         if (callerLabel && SAFE_PROCESS_EXEC_CALLER_LABELS.has(callerLabel)) {
           requestCallerLabels.set(id, callerLabel);
         }
+        const diagnosticTags = safeProcessExecDiagnosticTags(params.diagnosticTags);
         // WI-6554700010010703: PID notification alone cannot distinguish a child
         // stall from admission/settlement IO. Reuse the request's exact RPC identity
         // and emit bounded static milestones only for slow executions. Fast reads
@@ -379,6 +390,7 @@ export function runSpawnerSidecarServer(deps: {
                 clientConnectionId: connection.clientConnectionId,
                 requestId: id, diagnosticRequestId, method: 'process:exec', sidecarPid: processExecIdentity.pid,
                 ...(requestCallerLabels.has(id) ? { callerLabel: requestCallerLabels.get(id) } : {}),
+                ...(diagnosticTags ? { diagnosticTags } : {}),
                 childPid, stage, elapsedMs: elapsedMs(), stageMs: { ...stageMs },
                 admissionPhases: Array.from(admissionPhases, ([phase, timing]) => ({
                   phase,
@@ -405,6 +417,7 @@ export function runSpawnerSidecarServer(deps: {
           try {
             const executionParams = { ...params };
             delete executionParams.callerLabel;
+            delete executionParams.diagnosticTags;
             const execution = (deps.executeProcess ?? execProcess)(executionParams, {
               signal: controller.signal,
               onStage: (nextStage) => {

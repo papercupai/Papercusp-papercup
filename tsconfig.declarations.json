@@ -508,6 +508,10 @@
     "scripts/with-documenso-sandbox.mjs",
     // Desktop portal acceptance shares parent/child native budgets with TypeScript.
     "scripts/lib/verify-tauri-native-env.mjs",
-    "scripts/lib/verify-tauri-deadline.mjs"
+    "scripts/lib/verify-tauri-deadline.mjs",
+    // WI-6554700010042408: test-imported .mjs modules need emitted .d.mts for lint:tsc:scripts.
+    "scripts/lib/runtime-compatibility-census.mjs",
+    "scripts/lib/workspace-host-gcs-publication.mjs",
+    "papercusp-desktop/bin/recover-release.mjs"
   ]
 }

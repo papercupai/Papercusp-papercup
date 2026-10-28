@@ -15,7 +15,7 @@
  * first N data exports with the exact 10-05 error text; every other leg (PG, Redis,
  * volumes, upload) is allowed to fail, and the assertions read only the ClickHouse leg.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -40,10 +40,16 @@ c="$1"; shift
 [ "$c" = posthog-clickhouse-1 ] || exit 1
 q="\${@: -1}"
 case "$q" in
-  *system.databases*) echo posthog ;;
-  *"engine LIKE"*) echo t1 ;;
+  *system.databases*)
+    if [ "\${SHIM_CH_ENUM_FAIL:-}" = databases ]; then printf 'cannot exec in a stopped state\r\n'; exit 1; fi
+    printf '%s\n' "\${SHIM_CH_DB:-posthog}" ;;
+  *"engine LIKE"*)
+    if [ "\${SHIM_CH_ENUM_FAIL:-}" = data_tables ]; then printf 'cannot exec in a stopped state\r\n'; exit 1; fi
+    printf '%s\n' "\${SHIM_CH_TABLE:-t1}" ;;
   *create_table_query*) echo "CREATE TABLE posthog.t1 (x UInt8) ENGINE = MergeTree ORDER BY x" ;;
-  *"FROM system.tables"*) echo t1 ;;
+  *"FROM system.tables"*)
+    if [ "\${SHIM_CH_ENUM_FAIL:-}" = tables ]; then printf 'cannot exec in a stopped state\r\n'; exit 1; fi
+    printf '%s\n' "\${SHIM_CH_TABLE:-t1}" ;;
   *"FORMAT Native"*)
     echo "$*" >>"$SHIM_ROOT/ch-export-args.log"
     n=$(( $(cat "$SHIM_ROOT/ch-attempts" 2>/dev/null || echo 0) + 1 ))
@@ -60,7 +66,7 @@ afterEach(() => {
   roots = [];
 });
 
-function runBackup(opts: { chFails: number; sendTimeout?: string }) {
+function runBackup(opts: { chFails: number; sendTimeout?: string; enumFail?: string; dbName?: string; tableName?: string }) {
   const root = mkdtempSync(join(tmpdir(), 'estate-backup-ch-'));
   roots.push(root);
   const bin = join(root, 'bin');
@@ -77,16 +83,23 @@ function runBackup(opts: { chFails: number; sendTimeout?: string }) {
     SHIM_ROOT: root,
     SHIM_CH_FAILS: String(opts.chFails),
     SHIM_CH_ERROR: SOCKET_TIMEOUT,
+    SHIM_CH_ENUM_FAIL: opts.enumFail ?? '',
+    SHIM_CH_DB: opts.dbName ?? 'posthog',
+    SHIM_CH_TABLE: opts.tableName ?? 't1',
   };
   if (opts.sendTimeout !== undefined) env.PC_BACKUP_CH_SEND_TIMEOUT = opts.sendTimeout;
   const run = spawnSync('bash', [SCRIPT], { encoding: 'utf8', env, timeout: 60_000 });
   const attemptsPath = join(root, 'ch-attempts');
   const argsPath = join(root, 'ch-export-args.log');
+  const stageRoot = join(root, 'stage');
+  const snapshot = existsSync(stageRoot) ? readdirSync(stageRoot)[0] : undefined;
+  const manifestPath = snapshot ? join(stageRoot, snapshot, 'MANIFEST.json') : undefined;
   return {
     stdout: run.stdout ?? '',
     stderr: run.stderr ?? '',
     attempts: existsSync(attemptsPath) ? Number(readFileSync(attemptsPath, 'utf8').trim()) : 0,
     exportArgs: existsSync(argsPath) ? readFileSync(argsPath, 'utf8').split('\n').filter(Boolean) : [],
+    manifestText: manifestPath && existsSync(manifestPath) ? readFileSync(manifestPath, 'utf8') : undefined,
   };
 }
 
@@ -124,5 +137,29 @@ describe('pc-estate-backup.sh ClickHouse export (WI-10006330)', () => {
     const tuned = runBackup({ chFails: 0, sendTimeout: '77' });
     expect(tuned.exportArgs).toHaveLength(1);
     expect(tuned.exportArgs[0]).toContain('--send_timeout=77');
+  });
+
+  it.each(['databases', 'tables', 'data_tables'])(
+    'rejects failed %s enumeration instead of treating its CR-terminated error as an identifier',
+    (enumFail) => {
+      const r = runBackup({ chFails: 0, enumFail });
+      expect(r.attempts).toBe(0);
+      expect(r.stdout).toContain('enumeration failed');
+      expect(r.manifestText).toBeDefined();
+      const manifest = JSON.parse(r.manifestText!);
+      expect(manifest.artifacts.some((artifact: { name: string }) => artifact.name.includes('cannot exec'))).toBe(false);
+      expect(manifest.failures).toBeGreaterThan(0);
+    },
+  );
+
+  it('serializes catalog identifiers safely and validates the manifest before upload', () => {
+    const dbName = 'posthog"db\\name';
+    const tableName = 't"1\\name';
+    const r = runBackup({ chFails: 0, dbName, tableName });
+    expect(r.manifestText).toBeDefined();
+    const manifest = JSON.parse(r.manifestText!);
+    expect(manifest.artifacts.some((artifact: { name: string }) => artifact.name === dbName + '/schema')).toBe(true);
+    expect(manifest.artifacts.some((artifact: { name: string }) => artifact.name === dbName + '.' + tableName)).toBe(true);
+    expect(r.stderr).not.toContain('manifest JSON validation failed');
   });
 });

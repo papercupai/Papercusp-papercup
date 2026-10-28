@@ -59,6 +59,8 @@ export interface CodexContextSnapshot {
   tokens: number;
   /** Codex's effective model window (272k × 95% = 258400 on gpt-5.6). */
   modelContextWindow: number | null;
+  /** Timestamp on the token_count event that supplied tokens. */
+  observedAtMs: number | null;
 }
 
 /** The fast path reads one bounded tail. If a large tool result displaced the
@@ -170,6 +172,7 @@ export function codexContextSnapshotFromText(text: string): CodexContextSnapshot
       }
       const evt = parsed as {
         type?: string;
+        timestamp?: unknown;
         payload?: {
           type?: string;
           info?: {
@@ -190,9 +193,11 @@ export function codexContextSnapshotFromText(text: string): CodexContextSnapshot
       const tokens = Number.isFinite(total) && total >= 0 ? total : fallback;
       if (!Number.isFinite(tokens) || tokens < 0) continue;
       const rawWindow = Number(evt.payload.info?.model_context_window);
+      const observedAtMs = typeof evt.timestamp === 'string' ? Date.parse(evt.timestamp) : NaN;
       return {
         tokens: Math.floor(tokens),
         modelContextWindow: Number.isFinite(rawWindow) && rawWindow > 0 ? Math.floor(rawWindow) : null,
+        observedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : null,
       };
     }
     return null;
@@ -808,6 +813,98 @@ export async function estimateContextWindowForOwner(
   return servedWindowForRoute(served);
 }
 
+export interface CurrentContextUsage {
+  backend: string | null;
+  /** Native session id resolved from the active session row or rollout filename. */
+  nativeSessionId: string | null;
+  sessionStartedAtMs: number | null;
+  reading: {
+    tokens: number;
+    observedAtMs: number;
+    source: 'codex-last-token-usage' | 'live-transcript-bytes/4';
+  } | null;
+  unavailableReason: string | null;
+}
+
+/**
+ * Read context usage with the identity of the active native session attached.
+ * Codex has no byte-based live reader: its exact token_count must come from the
+ * rollout bound to the active adv-session row and carry a recent event timestamp.
+ * A watchdog cache is intentionally not promoted into a current reading.
+ */
+export async function currentContextUsageForOwner(
+  ownerId: string,
+  deps: EstimateContextDeps = {},
+): Promise<CurrentContextUsage> {
+  const ref = await (deps.resolveRef ?? resolveSessionRefReconciled)(ownerId);
+  const base = {
+    backend: ref?.agent ?? null,
+    nativeSessionId: ref?.sessionId ?? null,
+    sessionStartedAtMs: ref?.startedAtMs ?? null,
+  };
+  if (!ref) return { ...base, reading: null, unavailableReason: 'active native session is unresolved' };
+  if (ref.agent === 'omp') {
+    return { ...base, reading: null, unavailableReason: 'OMP context usage is not measured' };
+  }
+  if (ref.agent === 'codex') {
+    if (ref.sessionKey == null) {
+      return { ...base, reading: null, unavailableReason: 'active Codex session has no rollout key' };
+    }
+    let rolloutPath: string | null = null;
+    try {
+      rolloutPath = await resolveCodexRolloutPathForRef(ref, ownerId, deps);
+    } catch {
+      rolloutPath = null;
+    }
+    if (!rolloutPath) {
+      return { ...base, reading: null, unavailableReason: 'active Codex rollout is unavailable' };
+    }
+    const rolloutSessionId = codexRolloutSessionId(rolloutPath);
+    if (!rolloutSessionId || (ref.sessionId && rolloutSessionId !== ref.sessionId)) {
+      return { ...base, reading: null, unavailableReason: 'Codex rollout does not match the active native session' };
+    }
+    const snapshot = await codexContextSnapshotFromRollout(rolloutPath);
+    if (!snapshot || snapshot.observedAtMs == null) {
+      return {
+        ...base,
+        nativeSessionId: rolloutSessionId,
+        reading: null,
+        unavailableReason: 'active Codex rollout has no timestamped token_count sample',
+      };
+    }
+    const ageMs = Date.now() - snapshot.observedAtMs;
+    if (ageMs < -30_000 || ageMs > CODEX_ACTIVE_ROLLOUT_FRESH_MS) {
+      return {
+        ...base,
+        nativeSessionId: rolloutSessionId,
+        reading: null,
+        unavailableReason: 'active Codex token_count sample is stale',
+      };
+    }
+    return {
+      ...base,
+      nativeSessionId: rolloutSessionId,
+      reading: {
+        tokens: snapshot.tokens,
+        observedAtMs: snapshot.observedAtMs,
+        source: 'codex-last-token-usage',
+      },
+      unavailableReason: null,
+    };
+  }
+  if (!ref.sessionId) {
+    return { ...base, reading: null, unavailableReason: 'active native session id is unavailable' };
+  }
+  const tokens = await currentContextTokensForOwner(ownerId, { sessionRef: ref });
+  return tokens == null
+    ? { ...base, reading: null, unavailableReason: 'active transcript usage is unavailable' }
+    : {
+        ...base,
+        reading: { tokens, observedAtMs: Date.now(), source: 'live-transcript-bytes/4' },
+        unavailableReason: null,
+      };
+}
+
 /** The inference gateway's SERVED route for one owner — GET `/admin/route?owner=` (gateway.ts). */
 export interface GatewayServedRoute {
   account: string | null;
@@ -1351,7 +1448,10 @@ const PATH_REVERIFY_MS = 30_000;
  *  lookup + the P-016 stale-session-id fallback), or null when untracked
  *  (OMP/Codex/unresolvable). Shared by the initial seed and the periodic
  *  re-verify so both paths make the SAME "what is live right now" call. */
-async function resolveLiveTranscriptPath(ownerId: string): Promise<string | null> {
+async function resolveLiveTranscriptPath(
+  ownerId: string,
+  knownRef?: SessionRef | null,
+): Promise<string | null> {
   // EI-13477: use the RECONCILED ref (WI-5075 rung 3), not the raw DB row. A
   // same-pid claude self-relaunch (TUI re-exec / update relaunch) writes a
   // brand-new native session id that `adv_sessions.session_id` is never
@@ -1366,7 +1466,7 @@ async function resolveLiveTranscriptPath(ownerId: string): Promise<string | null
   // estimateContextTokensForOwner for the carry-respawn case; this wires the
   // anchored "live" hot path (what the PostToolUse gauge + loop:checkpoint's
   // continuation gate actually read) into the same reconciliation.
-  const ref = await resolveSessionRefReconciled(ownerId);
+  const ref = knownRef === undefined ? await resolveSessionRefReconciled(ownerId) : knownRef;
   if (!ref || ref.agent === 'omp' || ref.agent === 'codex') return null;
   let p: string | null = null;
   if (ref.sessionId) {
@@ -1400,14 +1500,17 @@ async function resolveLiveTranscriptPath(ownerId: string): Promise<string | null
  */
 export async function currentContextTokensForOwner(
   ownerId: string,
-  opts: { reseed?: boolean } = {},
+  opts: { reseed?: boolean; sessionRef?: SessionRef | null } = {},
 ): Promise<number | null> {
   const a = anchors.get(ownerId);
-  if (a && !opts.reseed) {
+  const anchorMatchesRef =
+    opts.sessionRef?.sessionId == null ||
+    path.basename(a?.path ?? '') === `${opts.sessionRef.sessionId}.jsonl`;
+  if (a && !opts.reseed && anchorMatchesRef) {
     try {
       if (advanceAnchor(a) === 'ok') {
         if (Date.now() - a.verifiedAt <= PATH_REVERIFY_MS) return anchorTokens(a);
-        const livePath = await resolveLiveTranscriptPath(ownerId);
+        const livePath = await resolveLiveTranscriptPath(ownerId, opts.sessionRef);
         if (livePath === a.path) {
           a.verifiedAt = Date.now();
           return anchorTokens(a);
@@ -1433,7 +1536,7 @@ export async function currentContextTokensForOwner(
       /* rotated/unreadable — fall through to reseed */
     }
   }
-  const p = await resolveLiveTranscriptPath(ownerId);
+  const p = await resolveLiveTranscriptPath(ownerId, opts.sessionRef);
   if (!p) return null;
   const seeded = seedAnchorFromFile(p);
   if (!seeded) return null;

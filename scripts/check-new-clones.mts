@@ -51,7 +51,7 @@ export function runCloneLint(args: string[]) {
   if (seed && shrink) throw new Error('Choose either --seed or --shrink');
   const baselineFile = resolve(root, baselinePath);
   const git = (cwd: string, ...argv: string[]) => execFileSync('git', argv,
-    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 * 1024 * 1024 });
+    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 * 1024 * 1024, timeout: 30_000 });
   const coverage = listFilesIncludingUntracked(root);
   if (coverage.unscanned.length) throw new Error(`Clone corpus incomplete: ${coverage.unscanned.join(', ')}`);
   const index = new CloneIndex(), digest = createHash('sha256');

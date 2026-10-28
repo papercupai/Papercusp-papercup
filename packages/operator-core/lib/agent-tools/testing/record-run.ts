@@ -52,7 +52,12 @@ const mutationProbeReplaySchema = z.object({
   cwd: z.string().trim().min(1).max(400),
   argv: z.array(z.string().min(1).max(10_000)).min(2).max(50),
   result: z.object({
-    verdict: z.enum(['caught', 'survived', 'harness-error', 'inconclusive']),
+    // scripts/mutation-probe.sh emits the *-ledger-unconfirmed verdicts when the
+    // router's only exit-2 cause is a missing test_runs receipt (EI-27221342827374562).
+    verdict: z.enum([
+      'caught', 'survived', 'harness-error', 'inconclusive',
+      'survived-ledger-unconfirmed', 'caught-ledger-unconfirmed',
+    ]),
     expected: z.enum(['caught', 'survived']),
     target: z.string().trim().min(1).max(100),
     baselineExit: z.number().int(),

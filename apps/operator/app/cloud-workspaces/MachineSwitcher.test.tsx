@@ -8,7 +8,9 @@ import { getBrowserMachineId } from "@papercusp/operator-core/lib/browser-worksp
 import type { WorkspaceHostControlRow } from "./workspace-view-model";
 
 const query = vi.hoisted(() => vi.fn());
+const navigate = vi.hoisted(() => vi.fn());
 vi.mock("@papercusp/sync", () => ({ useSyncQuery: query }));
+vi.mock("@papercusp/operator-core/lib/client-navigation", () => ({ navigateClient: navigate }));
 vi.mock("@/app/harness/Select", () => ({
   Select: ({ value, options, onChange, ariaLabel, disabled, placeholder }: {
     value: string; options: { value: string; label: string }[];
@@ -102,6 +104,31 @@ describe("persistent machine selection", () => {
     await vi.waitFor(() => expect(update).toHaveBeenCalled());
     const transitions = update.mock.calls.map(([event]) => event.searchParams as URLSearchParams);
     expect(transitions.every((params) => params.get("app") === "desktops" && params.get("desktopHost") === "b")).toBe(true);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("navigates the standalone shell once without pushing an intermediate machine target", async () => {
+    query.mockReturnValue({ data: rows, loading: false, error: null });
+    const previous = window.location.href;
+    const update = vi.fn();
+    window.history.replaceState({}, "", "/settings/remote-access?ws=own&desktopHost=a&host=a&desktop=watch:old&desktopPins=old&desktopFilter=old");
+    try {
+      render(<MachineSwitcher />, { wrapper: withNuqsTestingAdapter({
+        searchParams: window.location.search, onUrlUpdate: update,
+      }) });
+      fireEvent.change(screen.getByRole("combobox"), { target: { value: "b" } });
+      await vi.waitFor(() => expect(navigate).toHaveBeenCalledExactlyOnceWith(expect.any(String), { hard: true }));
+      expect(update).not.toHaveBeenCalled();
+      const target = new URL(navigate.mock.calls[0]![0]);
+      expect(target.pathname).toBe("/desktops");
+      expect(target.searchParams.get("ws")).toBe("own");
+      expect(target.searchParams.get("desktopHost")).toBe("b");
+      expect(target.searchParams.get("host")).toBe("b");
+      for (const key of ["desktop", "desktopPins", "desktopFilter"]) expect(target.searchParams.has(key)).toBe(false);
+      expect(window.location.pathname).toBe("/settings/remote-access");
+    } finally {
+      window.history.replaceState({}, "", previous);
+    }
   });
 
   it("opens the shared Remote access setup without requiring a hosted workspace", async () => {

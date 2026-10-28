@@ -52,7 +52,7 @@ describe('effective SU launch preparation', () => {
     process.argv = ['node', 'psu'];
     const controller = vi.fn(async () => {
       expect(process.env.PAPERCUSP_AGENT_TASK_ID).toBeUndefined();
-      return { handled: true, exitCode: 0 };
+      return { handled: true, argv: [], exitCode: 0 };
     });
     try {
       await main({ connectionFrontController: controller });
@@ -96,7 +96,7 @@ describe('effective SU launch preparation', () => {
       });
       expect(effective).toMatchObject(boot.envelopeEnv);
       expect(effective.ANTHROPIC_API_KEY).toBeUndefined();
-      expect(readFileSync(effective.PAPERCUSP_LAUNCH_CONTEXT_FILE, 'utf8')).toBe('Chosen persona, authority and memory inputs');
+      expect(readFileSync(String(effective.PAPERCUSP_LAUNCH_CONTEXT_FILE), 'utf8')).toBe('Chosen persona, authority and memory inputs');
       if (agent === 'claude') {
         expect(actual.args).toContain(persona);
         expect(actual.args).toContain('--dangerously-skip-permissions');
@@ -136,7 +136,7 @@ describe('effective SU launch preparation', () => {
     } else {
       expect(native.modelArgs).toEqual(['--model', 'claude-sonnet-4-6', '--effort', 'high']);
       expect(native.args).toContain('--system-prompt-file');
-      expect(native.args.some(arg => arg.includes('Task,Agent'))).toBe(true);
+      expect(native.args.some(arg => arg?.includes('Task,Agent') === true)).toBe(true);
     }
   });
 
@@ -378,6 +378,6 @@ describe('effective SU launch preparation', () => {
     expect(fresh.args).toContain('--session-id');
     expect(resumed.args).not.toContain('--session-id');
     expect(resumed.extraArgs.slice(-2)).toEqual(['-r', 'existing-native-id']);
-    expect(resumed.args.some(arg => arg.includes('Task,Agent'))).toBe(false);
+    expect(resumed.args.some(arg => arg?.includes('Task,Agent') === true)).toBe(false);
   });
 });

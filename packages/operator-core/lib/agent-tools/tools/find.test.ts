@@ -464,8 +464,10 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     // tools:find takes { query, limit? } → its arg-schema text mentions the query arg.
     expect(self?.argSchema).toContain('query');
     expect(self?.argSchema).toContain('query?:');
-    expect(self?.argSchema).toContain('q');
-    expect(self?.argSchema).toContain('Compatibility alias for `query`');
+    // `q` is folded into `query` before validation (pinned in FOLDED_ARG_ALIASES),
+    // so it is no longer a projected field and costs no schema bytes.
+    expect(self?.argSchema).not.toContain('q?:');
+    expect(self?.argSchema).not.toContain('Compatibility alias for `query`');
     // The embed text folds name + description + arg schema.
     const text = embedText.get('tools:find');
     expect(text).toContain('tools:find');

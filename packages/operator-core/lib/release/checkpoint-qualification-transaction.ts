@@ -2708,6 +2708,11 @@ export function beginStoredQualification(
           successorInput: (context) => ({
             ...input,
             attemptId: resolveQualificationAttemptId(input, context.rawRepairQueue),
+            // WI-6554700010030504: the reconciliation judges dispatch-reservation expiry against
+            // `successor.nowMs` and treats a missing clock as "reservation live". Every scheduled
+            // and manual begin omits nowMs, so an EXPIRED reservation fenced every successor as
+            // dispatch-reserved. Stamp the clock here, under the row lock, as the begin itself does.
+            nowMs: input.nowMs ?? Date.now(),
           }),
         }
       : {},

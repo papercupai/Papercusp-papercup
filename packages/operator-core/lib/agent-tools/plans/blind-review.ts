@@ -230,6 +230,19 @@ export default defineTool({
         message: 'The review is saved idempotently, but its session receipt did not persist. Retry the same post; do not mint or repost with a new session.' }, true);
     }
 
+    if (args.op === 'post') {
+      // A post is observable only after both the review and its session receipt
+      // persist. This signals a posted review, not that the acceptance door passed.
+      await import('../../events/await/engine').then(({ emitAwaitedEvent }) => emitAwaitedEvent({
+        key: `plan:blind-review-posted:${args.slug}`,
+        workspaceId,
+        source: createdBy,
+        summary: `Blind review ${written.id} posted for ${args.slug} (${args.outcome})`,
+        payload: { slug: args.slug, harness: harnessSlug, reviewId: written.id,
+          activationAuditSeq: written.activationAuditSeq, reviewerOwnerId: createdBy, outcome: args.outcome },
+      })).catch(() => {});
+    }
+
     // D-050 (5): the reviewer's scratch plans are done with once its gaps are recorded.
     // Best-effort: a cleanup failure is reported and never voids the recorded review.
     let scratchPlans: Record<string, unknown> | null = null;

@@ -419,7 +419,9 @@ try {
     }
     // The expected bytes come from the native run's immutable commit, not from
     // binder-authored details. The canonical reader also requires HEAD equality.
-    const bytes = execFileSync('git', ['show', native.commitSha + ':' + native.filePath], { cwd: root, maxBuffer: 4 * 1024 * 1024 });
+    const bytes = execFileSync('git', ['show', native.commitSha + ':' + native.filePath], {
+      cwd: root, timeout: 30_000, maxBuffer: 4 * 1024 * 1024,
+    });
     const artifact = await inspectCommittedOperationalEvidence(root, native.filePath, createHash('sha256').update(bytes).digest('hex'));
     if (artifact.artifact.exitCode !== 0 || artifact.artifact.assertions.some(a => !a.passed)) throw new Error('failed-operational-artifact');
     if (phase === 'recovery' || phase === 'diagnostic') {

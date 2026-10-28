@@ -106,7 +106,7 @@ export async function withHookInstallLock<T>(
       inWorkspaceTxn(
         coordinationDomain,
         owner,
-        (tx) => tryAcquire(tx, acquireParams),
+        (tx) => tryAcquire(tx, { ...acquireParams, ownerLabel: acquireParams.ownerLabel ?? null }),
         { paths },
       ),
     remote: {

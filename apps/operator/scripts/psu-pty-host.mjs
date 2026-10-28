@@ -5607,8 +5607,7 @@ export function makeCarryRearmController({
   //
   // Defaulting to null preserves the existing unit callers that construct this
   // controller with `recycle` alone.
-  /** @type {null | ((message: any, ctx: {drillId: string, mode: string, key: string}) => Promise<{delivered: boolean, reason?: string, retryable?: boolean} | void>)} */
-  performDelivery = null,
+  performDelivery = /** @type {null | ((message: any, ctx: {drillId: string, mode: string, key: string}) => Promise<{delivered: boolean, reason?: string, retryable?: boolean} | void>)} */ (null),
   emitEvent, // (kind, extra) => void — writes BOTH the per-owner host log + shared ledger
   capMs = TURN_INJECT_BUSY_CAP_MS * 2,
   maxProductionAttempts = Number.POSITIVE_INFINITY,

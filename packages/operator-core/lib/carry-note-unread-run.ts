@@ -74,7 +74,7 @@ const RUN_SUBJECT_AFTER_IN_FLIGHT_RE =
  * A concrete execution log or tool run identifier. Arbitrary /tmp files
  * (source diffs, read captures, and similar artifacts) are not run references.
  */
-const RUN_REF_RE = /(?:\S+?\.(?:log|out|err|stdout|stderr)\b|\b(?:bash_id|run_in_background|bash_output)\b)/gi;
+const RUN_REF_RE = /(?:\S+?\.(?:log|out|err|stdout|stderr)\b|\b(?:bash_id|task_id|taskId)\s*[:=]?\s*["'`]?[_a-z0-9][\w.-]{2,})/gi;
 
 /** Cap on how many matched fragments are echoed back, so the note stays one line. */
 const MAX_SIGNALS = 3;
@@ -111,6 +111,60 @@ function withoutHistoricalQuotations(text: string): string {
       ? ' '.repeat(quote.length)
       : quote;
   });
+}
+
+/**
+ * JSON manifests are structured metadata, not prose references to a run output.
+ * Blank valid inline JSON values before the lexical matcher sees filenames or
+ * task handles embedded in their `files`/`jobs` fields. Preserve newlines and
+ * offsets so the surrounding sentence matching remains unchanged.
+ */
+function withoutJsonValues(text: string): string {
+  const chars = text.split('');
+  for (let start = 0; start < text.length; start++) {
+    const opener = text[start];
+    if (opener !== '{' && opener !== '[') continue;
+
+    const stack: string[] = [opener];
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (let index = start + 1; index < text.length; index++) {
+      const char = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === '{' || char === '[') {
+        stack.push(char);
+        continue;
+      }
+      if (char !== '}' && char !== ']') continue;
+      const expected = char === '}' ? '{' : '[';
+      if (stack.pop() !== expected) break;
+      if (stack.length === 0) {
+        end = index;
+        break;
+      }
+    }
+    if (end < 0) continue;
+    try {
+      JSON.parse(text.slice(start, end + 1));
+    } catch {
+      continue;
+    }
+    for (let index = start; index <= end; index++) {
+      if (chars[index] !== '\n' && chars[index] !== '\r') chars[index] = ' ';
+    }
+    start = end;
+  }
+  return chars.join('');
 }
 
 export interface UnreadRunSignals {
@@ -170,7 +224,11 @@ function isRunScopedInFlight(text: string, index: number, length: number): boole
   return RUN_SUBJECT_BEFORE_IN_FLIGHT_RE.test(before) || RUN_SUBJECT_AFTER_IN_FLIGHT_RE.test(after);
 }
 
-const SENTENCE_BOUNDARY_RE = /[\n;]|[.!?](?=\s|$)/g;
+// Adversative clauses can introduce another operation without a run-like noun
+// (`...test log was read, while scorecards:repair is still running`). Keep the
+// completed operation's artifact out of the pending operation's reference range.
+const SENTENCE_BOUNDARY_RE =
+  /[\n;]|\b(?:but|while|whereas|however)\b|,(?=\s+(?:(?:and|but|while|whereas|however)\s+)?(?:\w+\s+){0,4}(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b)|[.!?](?=\s|$)/g;
 const RUN_SUBJECT_AFTER_LAUNCH_RE =
   /^\W*(?:(?:a|an|the|my|our|this|that|full|affected|verification|separate)\W+){0,3}\b(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b/i;
 
@@ -207,8 +265,13 @@ function runReferenceRange(text: string, index: number, length: number): { start
   const separator = /^[.!?;]?\s*/.exec(text.slice(range.end))?.[0] ?? '';
   const nextStart = range.end + separator.length;
   if (!/^(?:handle|output|log)(?:\s*:|\s+at\b)/i.test(text.slice(nextStart))) return null;
-  const next = sentenceRange(text, nextStart, 0);
-  return hasReference(text.slice(nextStart, next.end)) ? { start: range.start, end: next.end } : null;
+  // A labeled tool handle can contain semicolon-separated fields, e.g.
+  // `Handle: run_in_background:true; bash_id:abc123`. Keep that explicit
+  // metadata together even though semicolons otherwise delimit clauses.
+  const attachedTail = text.slice(nextStart);
+  const terminal = /[\n]|[.!?](?=\s|$)/.exec(attachedTail);
+  const nextEnd = terminal ? nextStart + terminal.index : text.length;
+  return hasReference(text.slice(nextStart, nextEnd)) ? { start: range.start, end: nextEnd } : null;
 }
 
 /** Negation immediately governing this status is not an unread admission.
@@ -260,7 +323,7 @@ export function describeUnreadRun(
   const text = (body ?? '').trim();
   if (!text) return null;
 
-  const inFlightText = withoutHistoricalQuotations(text);
+  const inFlightText = withoutJsonValues(withoutHistoricalQuotations(text));
   const scopedMatches = [...inFlightText.matchAll(new RegExp(IN_FLIGHT_RE.source, IN_FLIGHT_RE.flags))]
     .filter((match) => {
       const index = match.index ?? 0;

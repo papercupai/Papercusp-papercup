@@ -5,6 +5,13 @@ const autoCheckpointStaleHeldItems = vi.hoisted(() => vi.fn(async () => [] as Ar
 vi.mock('./turn-end-tracking-io', () => ({ autoCheckpointStaleHeldItems }));
 const setLoopCarryNote = vi.hoisted(() => vi.fn());
 vi.mock('./carry-note', () => ({ setLoopCarryNote }));
+// The gate records fail-open degrades on the condition rail; stub the writer so no
+// deferred telemetry flush opens a Postgres pool from a unit test.
+const observeFallback = vi.hoisted(() => vi.fn(() => true));
+vi.mock('./degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./degradation/fallback-observations')>()),
+  observeFallback,
+}));
 vi.mock('./flush-refusal-marker', () => ({
   REFUSAL_MARKER_TTL_MS: 10 * 60_000,
   wasRecentlyRefused: async (boundary: string, ownerId: string, nowMs = Date.now()) =>
@@ -326,6 +333,10 @@ describe('runFlushGate — cold-successor-no-progress wiring', () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(
         'elapsedMs=4000 activePhase=count-agent-tool-calls-since-note activePhaseElapsedMs=4000 completedPhases=none',
       ));
+      // The fail-open degrade is recorded on the condition rail, not only logged.
+      expect(observeFallback).toHaveBeenCalledWith('flush-gate', {
+        eligible: 1, applied: 0, reason: 'timeout', scope: 'compaction',
+      });
     } finally {
       // Finish the observed in-flight read so the unit test leaves no dangling work.
       resolveCount(0);

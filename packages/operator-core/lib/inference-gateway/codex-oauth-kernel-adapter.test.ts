@@ -905,6 +905,54 @@ describe('codex OAuth kernel adapter — model refusal fails over without parkin
   });
 });
 
+describe('codex OAuth kernel adapter — a transient pool-wide pause holds instead of shedding (WI-6554700010042440)', () => {
+  const pausedThenFree = (seen: string[]) => {
+    let calls = 0;
+    return (context: { route: { accountId?: string | null } }) => {
+      seen.push(String(context.route.accountId));
+      if (calls++ === 0) {
+        throw new GatewayRequestKernelError('codex account paused during pacing', {
+          code: 'account-unavailable', outcome: 'shed', status: 429, retryable: true,
+        });
+      }
+      return () => undefined;
+    };
+  };
+
+  it('re-routes an account-unavailable pacing failure to the soonest-recovering account after its reset', async () => {
+    const seen: string[] = [];
+    const { options, started } = harness(async () => upstream(200, {}, sseBody('data: hi\n\n')), {
+      accounts: [cli('pro-a'), cli('pro-b')],
+      extra: { transientRecovery: () => ({ accountId: 'pro-b', recoverAt: Date.now() + 150 }) },
+    });
+    options.admission = { ...options.admission, acquireAttempt: pausedThenFree(seen) };
+    const t0 = Date.now();
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result).toMatchObject({ status: 200, attempts: 2 });
+    expect(seen).toEqual(['pro-a', 'pro-b']);
+    expect(started[0]?.metadata.accountId).toBe('pro-b');
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(150);
+  });
+
+  it('still sheds the 429 when no account recovers within the transient bound', async () => {
+    const seen: string[] = [];
+    const { options, started } = harness(async () => upstream(200, {}, sseBody('ok')), {
+      accounts: [cli('pro-a'), cli('pro-b')],
+      extra: { transientRecovery: () => null },
+    });
+    options.admission = { ...options.admission, acquireAttempt: pausedThenFree(seen) };
+
+    const error = await executeGatewayRequestKernel(options).catch((e) => e);
+
+    expect(error).toBeInstanceOf(GatewayRequestKernelError);
+    expect(error.code).toBe('account-unavailable');
+    expect(seen).toEqual(['pro-a']);
+    expect(started).toEqual([]);
+  });
+});
+
 describe('Codex OAuth quota errors inside successful HTTP streams', () => {
   it('rotates an account-wide usage wall before spending the retry budget on sibling IPs', async () => {
     const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];

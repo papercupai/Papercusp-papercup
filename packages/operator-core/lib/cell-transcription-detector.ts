@@ -204,13 +204,14 @@ const SESSION_ID_VALUE_PREFIX =
 
 /**
  * Git blob object ids are hex-shaped, but a blob is an object artifact rather than
- * a commit or pipeline position. Keep this exclusion anchored to the value: the
- * reported `InboxPane staging blob <sha>` shape must stay quiet even though
- * `staging` is a valid pipeline context word nearby, while an unrelated `blob`
- * mention elsewhere cannot suppress a real deployment claim.
+ * a commit or pipeline position. Keep this exclusion anchored to the value: both
+ * `InboxPane staging blob <sha>` and `<sha> fixture` shapes must stay quiet even
+ * when pipeline context appears nearby, while unrelated blob/fixture mentions
+ * elsewhere cannot suppress a real deployment claim.
  */
 const GIT_BLOB_VALUE_PREFIX =
   /\b(?:git\s+)?blob(?:[-\s]+(?:id|identifier|hash|sha|oid)){0,2}\s*(?:[:=]\s*)?$/i;
+const GIT_BLOB_VALUE_SUFFIX = /^\s+(?:(?:final|test|source)\s+)*fixture\b/i;
 
 /**
  * coord:send prepends these exact generated lines to over-cap message parts. The
@@ -267,9 +268,11 @@ function isExplicitSessionIdentifier(haystack: string, valueStart: number): bool
   return SESSION_ID_VALUE_PREFIX.test(before);
 }
 
-function isGitBlobHash(haystack: string, valueStart: number): boolean {
+function isGitBlobHash(haystack: string, valueStart: number, valueLength: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
-  return GIT_BLOB_VALUE_PREFIX.test(before);
+  const afterStart = valueStart + valueLength;
+  const after = haystack.slice(afterStart, Math.min(haystack.length, afterStart + CONTEXT_WINDOW));
+  return GIT_BLOB_VALUE_PREFIX.test(before) || GIT_BLOB_VALUE_SUFFIX.test(after);
 }
 
 function isUnlinkedSourceHeadCitation(haystack: string, valueStart: number, valueLength: number): boolean {
@@ -465,7 +468,7 @@ export function detectCellTranscriptions(text: unknown, options: DetectOptions =
             isUnlinkedHistoricalCommitCitation(haystack, m.index, m[0].length) ||
             isStagingOnlyCommitCitation(haystack, m.index, m[0].length) ||
             isCheckpointMetadataValue(haystack, m.index) ||
-            isGitBlobHash(haystack, m.index)))
+            isGitBlobHash(haystack, m.index, m[0].length)))
       ) {
         continue;
       }

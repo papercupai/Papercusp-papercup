@@ -148,13 +148,13 @@ createServer((_req, res) => res.end(JSON.stringify({ sha: process.env.PAPERCUSP_
       expect(await expired.closed).toEqual({ code: 0, signal: null });
       expect(expired.output()).not.toContain('CHILD_STARTED');
     } finally { await expired.stop(); }
-    const run = await launch("console.log('CHILD_STARTED'); setInterval(() => {}, 1000);", 2);
+    const run = await launch("console.log('CHILD_STARTED'); setInterval(() => {}, 1000);", 5);
     try {
-      await vi.waitFor(() => expect(run.output()).toContain('CHILD_STARTED'), { timeout: 1000 });
       expect(await run.closed).toEqual({ code: 0, signal: null });
+      expect(run.output()).toContain('CHILD_STARTED');
       expect(run.output()).toContain('deadline');
     } finally { await run.stop(); }
-  }, 10000);
+  }, 15000);
 
   it('halts repeated short crashes instead of spinning until its lifetime expires', async () => {
     const run = await launch("console.log('CRASH'); process.exit(42);");

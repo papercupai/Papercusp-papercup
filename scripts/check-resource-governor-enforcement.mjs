@@ -2564,11 +2564,246 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
         source.includes("timeoutMs = 15000");
     },
   },
+  {
+    path: "packages/operator-core/lib/release/admission-private-test-pg.ts",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for admission-private-test-pg.ts: admission-fix-precheck-managed owns this child as part of the registered admission-precheck test-run. It launches only the maintained with-test-pg wrapper into a private UUID scratch root, validates the loopback endpoint receipt, and owns the whole process group through exit and cleanup. Bootstrap and stop deadlines remain explicit; the fixture never borrows product database pins.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("ADMISSION_TEST_ENVIRONMENT = 'pinned-private-pg-test-mode-v4'") &&
+      source.includes("const wrapper = join(root, 'scripts/with-test-pg.mjs');") &&
+      source.includes("spawn(process.execPath,\n    [wrapper, '--', process.execPath, '-e', childCode],") &&
+      source.includes("processGroupLifetime(child,") &&
+      source.includes("options.timeoutMs ?? 20 * 60_000") &&
+      source.includes("options.stopTimeoutMs ?? 30_000") &&
+      source.includes("await lifetime.waitForExit({ timeoutMs: 10_000 });") &&
+      source.includes("if (groupExited) rmSync(fixtureTmp, { recursive: true, force: true });"),
+  },
+  {
+    path: "packages/operator-core/lib/release/checkpoint-qualification-command.ts",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for checkpoint-qualification-command.ts: the single child is launched only after the qualification owner records its exact scope enrollment. managedSpawn requires the task-run registration and OS confinement, inherits the attempt deadline, and cleanup verifies scope death before releasing custody.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("recordStoredQualificationChildScope") &&
+      source.includes("const launch = deps.spawn(command, argv.slice(1), {") &&
+      source.includes("class: 'test-run', title: 'Frozen qualification command'") &&
+      source.includes("launchedBy: 'green-checkpoint:qualification'") &&
+      source.includes("requireConfinement: true, requireRegistration: true") &&
+      source.includes("deadlineEpochMs: options.deadlineEpochMs") &&
+      source.includes("await bounded(managed.waitForCompletion());"),
+  },
+  {
+    path: "packages/operator-core/lib/release/operator-artifact.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for operator-artifact.ts: its only child site is the synchronous local Git reader used to bind bundle inputs to exact commit blobs. The read has a 60-second timeout and 8 MiB output cap, is repeated sequentially, and leaves no worker or resident queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("const gitRead: GitRead = (root, args) => execFileSync('git', ['-C', root, ...args], {") &&
+      source.includes("timeout: 60_000, maxBuffer: 8 * 1024 * 1024") &&
+      source.includes("git(root, ['ls-tree', '-rz', '--full-tree', sha])") &&
+      source.includes("operatorArtifactSource(root, git) !== input.sourceSha") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
+  {
+    path: "scripts/check-code-health.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for check-code-health.ts: this advisory CLI performs one synchronous Git reader for the caller-selected diff and source blobs, then computes health in-process. Its captured output is capped at 32 MiB and each Git command has a 30-second timeout; it creates no service, detached process, or resident queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("const git = (...command: string[]) => execFileSync('git', command, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 30_000 })") &&
+      source.includes("git('diff', '--name-only', '-z', base, '--', '*.ts', '*.tsx')") &&
+      source.includes("compareCodeHealth(merge(snapshots.before), merge(snapshots.after), lineage)") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
+  {
+    path: "scripts/check-new-clones.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for check-new-clones.mts: this manually invoked advisory ratchet uses one synchronous Git helper to reconstruct the selected baseline and changed paths, with a 32 MiB output cap and a 30-second per-command timeout. Clone analysis is in-process and any baseline write is the explicit --seed path; no worker remains after the CLI returns.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("const git = (cwd: string, ...argv: string[]) => execFileSync('git', argv,") &&
+      source.includes("maxBuffer: 32 * 1024 * 1024, timeout: 30_000") &&
+      source.includes("const scopes = [{ prefix: '', cwd: root, ref: base }, ...declaredSubmodules(root).map(") &&
+      source.includes("if (seed && shrink) throw new Error('Choose either --seed or --shrink');") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
+  {
+    path: "scripts/lib/runtime-compatibility-census.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for runtime-compatibility-census.mjs: the two synchronous child sites read committed Git objects and ELF metadata for an attended, one-shot installed-artifact census. Git commands have a 120-second per-command timeout; ELF inspection has a 10-second timeout and 1 MiB output cap; neither site leaves work resident.",
+    matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+      source.includes("function git(root, args, options = {})") &&
+      source.includes("execFileSync('git', ['-C', root, ...args], { encoding: 'utf8',") &&
+      source.includes("maxBuffer: 256 * 1024 * 1024") &&
+      source.includes("...options, timeout: 120_000") &&
+      source.includes("const inspectElf = (path) => execFileSync('readelf', ['--file-header', '--dynamic', '--wide', '--', path],") &&
+      source.includes("timeout: 10_000, maxBuffer: 1024 * 1024") &&
+      source.includes("export function readCommittedSources(") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
+  {
+    path: "scripts/lib/runtime-compatibility-probes.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for runtime-compatibility-probes.mjs: its three worker starts and two process starts are explicit protocol probes selected by capability id. Each uses a private temporary fixture, joins the child or worker, and terminates it in finally; none opens application data or starts a background owner.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      const workerStarts = [...code.matchAll(new RegExp(START_NON_VERB.source, "g"))].length;
+      return resourceStartCallCount(source) === 2 && workerStarts === 3 &&
+        source.includes("const worker = new Worker(script, { execArgv: [] });") &&
+        source.includes("worker = new Worker(script, { execArgv: [] });") &&
+        source.includes("workerData: { ortPath }") &&
+        source.includes("child = fork(script, [], { execPath: process.execPath, execArgv: [],") &&
+        source.includes("if (child && child.exitCode === null) child.kill('SIGKILL');") &&
+        source.includes("finally { data.dispose(); terminal.kill(); }") &&
+        source.includes("await rm(directory, { recursive: true, force: true });");
+    },
+  },
+  {
+    path: "scripts/lib/runtime-compatibility.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for runtime-compatibility.mjs: its two child sites are a synchronous runtime identity probe and an isolated semantic probe. The identity read has a 30-second timeout and 16 KiB output cap; the child probe has a validated 1–60 second deadline, a 1 MiB output ceiling, process-group kill, and terminal close handling.",
+    matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+      source.includes("execFileSync(executable, ['--input-type=module', '-e', RUNTIME_PROBE], {") &&
+      source.includes("timeout: 30_000, maxBuffer: 16_384") &&
+      source.includes("const child = spawn(resolved, ['--input-type=module', '-e', CHILD, nonce, capabilityId, probePath ?? ''], {") &&
+      source.includes("timeoutMs > 60_000") &&
+      source.includes("maxOutputBytes > 1024 * 1024") &&
+      source.includes("process.kill(-child.pid, 'SIGKILL')") &&
+      source.includes("child.on('close', (code, signal) => {") &&
+      source.includes("clearTimeout(timer);"),
+  },
+  {
+    path: "scripts/lib/verify-tauri-native-env.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for verify-tauri-native-env.mjs: its two synchronous Git source-pin reads each have a 30-second deadline and 16 KiB output cap; the census preflight is bounded at 120 seconds, and the exact-checkout TypeScript verifier service and command have startup/stop deadlines plus a 120-second checker timeout and 8 MiB output cap.",
+    matchesSource: (source) => resourceStartCallCount(source) === 5 &&
+      source.includes("execFileSync('git', ['rev-parse', env.VERIFY_TAURI_SOURCE_REF || 'HEAD']") &&
+      source.includes("cwd: repoRoot, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384,") &&
+      source.includes("execFileSync('git', ['rev-parse', 'HEAD']") &&
+      source.includes("cwd: source, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384,") &&
+      source.includes("preflightNativeVerifier(repoRoot, env, spawn = spawnSync)") &&
+      source.includes("timeout: 120_000, maxBuffer: 1024 * 1024") &&
+      source.includes("const child = spawn(process.execPath, [join(root, 'scripts/tsc-service/server.mjs')],") &&
+      source.includes("Native TypeScript service startup timed out") &&
+      source.includes("setTimeout(() => child.kill('SIGKILL'), 10_000)") &&
+      source.includes("timeout: 120_000, maxBuffer: 8 * 1024 * 1024") &&
+      source.includes("await child;"),
+  },
+  {
+    path: "scripts/lib/workspace-host-gcs-publication.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for workspace-host-gcs-publication.mjs: its two gcloud start sites belong to the existing journaled release adoption/publication consumer. The command and private-byte read have explicit 30-minute and 15-minute deadlines; byte verification binds the exact digest and size, metadata mutation requires the original journal, and direct publication is stage-only.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      const gcloudStarts = childProcessVerbCallCount(code) +
+        [...code.matchAll(/\bspawnImpl\s*\(/g)].length;
+      return gcloudStarts === 2 &&
+        source.includes("const exec = promisify(execFile);") &&
+        source.includes("const runGcloud = async (args) => (await exec('gcloud', args, {") &&
+        source.includes("maxBuffer: 4 * 1024 * 1024, timeout: 1800_000") &&
+        source.includes("spawnImpl('gcloud', ['storage', 'cat', uri], {") &&
+        source.includes("timeout: 900_000") &&
+        source.includes("child.kill()") &&
+        source.includes("if (!stageOnly) throw new Error('Direct GCS publication is private staging only;");
+    },
+  },
+  {
+    path: "scripts/verify-engineering-evidence-release.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for verify-engineering-evidence-release.mjs: its two synchronous children are the selected current-build integration receipt and the maintained headless Tauri browser journey. Each receives the remaining admitTaskDeadline budget and bounded output; the script retains phase receipts and starts no independent service.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      const runCalls = [...code.matchAll(/\brun\s*\(/g)].length;
+      const unexpectedStarts = childProcessVerbCallCount(code) +
+        [...code.matchAll(/\bspawnImpl\s*\(/g)].length;
+      return runCalls === 2 && unexpectedStarts === 0 &&
+        source.includes("run = spawnSync") &&
+        source.includes("ENGINEERING_RELEASE_BUDGET_MS = 45 * 60_000") &&
+        source.includes("const tests = run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--',") &&
+        source.includes("const child = run('bash', [join(root, 'scripts/verify-tauri-headless.sh'), '--',") &&
+        source.includes("timeout: budget.childCutoffEpochMs - nowMs") &&
+        source.includes("maxBuffer: 16 * 1024 * 1024") &&
+        source.includes("maxBuffer: 4 * 1024 * 1024") &&
+        source.includes("admitTaskDeadline({ env: childEnv, nowMs })");
+    },
+  },
+  {
+    path: "scripts/verify-engineering-evidence-tauri.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for verify-engineering-evidence-tauri.mjs: the single synchronous child helper is used for finite checks inside the Tauri verifier owned by verify-tauri-headless.sh. Every command has a 90-second timeout and 8 MiB output cap, and each result is retained as evidence before the next check.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("function child(label, command, args, options = {})") &&
+      source.includes("spawnSync(command, args, { env, encoding: 'utf8', timeout: 90_000,") &&
+      source.includes("maxBuffer: 8 * 1024 * 1024") &&
+      source.includes("assert(!result.error && !result.signal && result.status === 0") &&
+      source.includes("const wait = (label, expression) => child(label, 'bash', [env.VERIFY_TAURI_POLL,"),
+  },
+  {
+    path: "scripts/verify-fleet-capacity-recovery.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for verify-fleet-capacity-recovery.mts: its only child reads the exact native evidence blob from the run's immutable Git commit with a 30-second deadline and 4 MiB output ceiling. The verifier then checks that blob in-process and emits a read-only semantic result; no worker or queue is created.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("execFileSync('git', ['show', native.commitSha + ':' + native.filePath], {") &&
+      source.includes("cwd: root, timeout: 30_000, maxBuffer: 4 * 1024 * 1024,") &&
+      source.includes("inspectCommittedOperationalEvidence(root, native.filePath, createHash('sha256').update(bytes).digest('hex'))") &&
+      source.includes("This is a one-shot, read-only CLI.") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
 ]);
 
-// Supplemental reviewed rows join the shared scanner registry without
-// inflating P016_DISPOSITION_REGISTRY or its exact lane census.
+// Supplemental reviewed rows join the shared scanner registry. Rows with explicit
+// P-016 reviewed provenance also enter the P-016 exact-lane census.
 const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
+  {
+    path: "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-015 reviewed bypass disposition for tool-delivery-clean-cohort.mjs: this prospective acceptance verifier makes one bounded read-only ptool code:run authority read and uses one synchronous Git helper to pin source and fixture bytes. It starts no serving process, detached child, or retained queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+      source.includes("export async function main(argv = process.argv.slice(2))") &&
+      source.includes("JSON.parse(execFileSync('ptool', ['code:run'") &&
+      source.includes("timeout: 180_000, maxBuffer: 1024 * 1024") &&
+      source.includes("const gitAt = (base, args, directory) => execFileSync('git', args,") &&
+      source.includes("timeout: 10_000, maxBuffer: 64 * 1024 * 1024") &&
+      source.includes("claimCleanCohort(directory,"),
+  },
+  {
+    path: "packages/operator-core/lib/memory/bench/runtime-qualification-cli.ts",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-015 reviewed upstream disposition for runtime-qualification-cli.ts: its only child is the local strace wrapper required to capture runtime file opens. The CLI is explicitly restricted to the governed task/pc-heavy route, writes private write-once outputs, waits for the exact child exit, shuts down the embedder, and records a terminal receipt.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("Run under the governed task/pc-heavy route; outputs are private/write-once.") &&
+      source.includes("const processChild = spawn('/usr/bin/strace',runtimeFileTraceArguments(outputs['file-opens.log'],[") &&
+      source.includes("processChild.on('close',(code,signal)=>resolve({code,signal}));") &&
+      source.includes("stopObserving();") &&
+      source.includes("await shutdownLocalEmbedder();") &&
+      source.includes("fs.closeSync(outFd);fs.closeSync(errFd);"),
+  },
   {
     path: "apps/operator/scripts/psu-carry-fence.mjs",
     code: "unbounded-resident-queue",
@@ -2776,7 +3011,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "unbounded-resident-queue",
     disposition: "semantic",
     reason:
-      "The queue and detachedQueue are local graph traversals over the already-parsed symbol population. queued prevents duplicate pending symbols and detached prevents duplicate propagation; this analysis creates no background work.",
+      "P-016 reviewed semantic disposition: the queue and detachedQueue are local graph traversals over the already-parsed symbol population. queued prevents duplicate pending symbols and detached prevents duplicate propagation; this analysis creates no background work.",
     matchesSource: (source) => {
       const start = source.indexOf("const reverse = new Map();");
       const end = source.indexOf("const occurrences = new Map();", start);
@@ -2798,7 +3033,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "unbounded-resident-queue",
     disposition: "semantic",
     reason:
-      "The local queue computes reverse-dependency closure for one route selection. Every discovered workspace enters affected before enqueue, so each finite graph node is processed at most once; it starts no resident work.",
+      "P-016 reviewed semantic disposition: the local queue computes reverse-dependency closure for one route selection. Every discovered workspace enters affected before enqueue, so each finite graph node is processed at most once; it starts no resident work.",
     matchesSource: (source) => {
       const start = source.indexOf("export function expandAffectedWorkspaceNames(");
       const end = source.indexOf("\n}", start);
@@ -2820,7 +3055,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "unbounded-resident-queue",
     disposition: "semantic",
     reason:
-      "This per-invocation queue partitions the finite plan.order file list into slices. A timeout replaces one slice with disjoint sub-slices from that same list, and a single-file hang is terminal, so queued file count is conserved and no persistent service queue is created.",
+      "P-016 reviewed semantic disposition: this per-invocation queue partitions the finite plan.order file list into slices. A timeout replaces one slice with disjoint sub-slices from that same list, and a single-file hang is terminal, so queued file count is conserved and no persistent service queue is created.",
     matchesSource: (source) => {
       const start = source.indexOf("  const queue = [];");
       const end = source.indexOf("\n  summary.state = \"done\";", start);
@@ -2843,7 +3078,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "unbounded-resident-queue",
     disposition: "semantic",
     reason:
-      "The pending array is a local traversal of the pinned ELF dependency graph. realpath inspection and traversed sets deduplicate nodes, while maxLibraries is validated as a positive safe integer and bounds the inspected population; no resident service work is queued.",
+      "P-016 reviewed semantic disposition: the pending array is a local traversal of the pinned ELF dependency graph. realpath inspection and traversed sets deduplicate nodes, while maxLibraries is validated as a positive safe integer and bounds the inspected population; no resident service work is queued.",
     matchesSource: (source) => {
       const start = source.indexOf("const libraries = [], edges = [], unresolved = [], inspected = new Map(), pending = [], traversed = new Set();");
       const end = source.indexOf("const result = { schema: 'papercusp-elf-library-candidates-v1'", start);
@@ -2865,7 +3100,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "unbounded-resident-queue",
     disposition: "semantic",
     reason:
-      "takeTscServiceProjectBatch drains the caller-owned queue into a local snapshot, removes cancelled entries, returns one project batch, and puts only the unchanged remaining entries back. Queue cardinality cannot grow in this helper; the actual service queue has its own upstream disposition.",
+      "P-016 reviewed semantic disposition: takeTscServiceProjectBatch drains the caller-owned queue into a local snapshot, removes cancelled entries, returns one project batch, and puts only the unchanged remaining entries back. Queue cardinality cannot grow in this helper; the actual service queue has its own upstream disposition.",
     matchesSource: (source) => {
       const start = source.indexOf("export function takeTscServiceProjectBatch(queue)");
       const end = source.indexOf("\n}", start);
@@ -2886,7 +3121,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "unbounded-resident-queue",
     disposition: "semantic",
     reason:
-      "The parser worklist contains only suffixes of one finite shell command after comment newlines. Each pushed suffix consumes a newline from its parent, so this is local tokenization state, not queued resource work.",
+      "P-016 reviewed semantic disposition: the parser worklist contains only suffixes of one finite shell command after comment newlines. Each pushed suffix consumes a newline from its parent, so this is local tokenization state, not queued resource work.",
     matchesSource: (source) => {
       const start = source.indexOf("const pending = [command];");
       const end = source.indexOf("\n    if (hasPlaywrightTest(tokens))", start);
@@ -2948,9 +3183,35 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
       source.includes("child.once('error', release);") &&
       source.includes("await reservation?.finish().catch(() => console.warn('[hosted-agent-admission] settlement_failed_charge_retained'));"),
   },
+  {
+    path: "scripts/lib/runtime-compatibility-admission.mjs",
+    code: "missing-admission-context-or-release",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition: this isolated runtime-compatibility fixture validates both admission outcomes. On the admitted gateway path it checks outcome.kind before passing that same outcome.context to governor.release; on the enqueue path it reports the queued receipt without claiming or releasing execution capacity. The context is the runtime Governor result contract, although this JavaScript fixture has no TypeScript AdmissionContext token for the lexical checker.",
+    matchesSource: (source) => {
+      const admit = source.indexOf("outcome = await governor.admit({ idempotencyKey: 'same-request'");
+      const admittedGuard = source.indexOf(
+        "if (outcome.kind !== 'admitted') throw new Error('Gateway did not return an admitted receipt');",
+        admit,
+      );
+      const release = source.indexOf("const released = await governor.release(outcome.context);", admittedGuard);
+      return admit >= 0 && admittedGuard > admit && release > admittedGuard &&
+        source.includes("const result = await new Governor(driver, { now: () => nowMs }).admit({") &&
+        source.includes("return { queued: result.kind === 'queued' };") &&
+        source.includes("return { admitted: true, stateAfterCompetitor: status.state, released: released.released };");
+    },
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
-  P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason, matchesSource }) => [
+  [
+    ...P016_REVIEWED_DISPOSITIONS,
+    ...SUPPLEMENTAL_REVIEWED_DISPOSITIONS.filter(({ path, reason }) =>
+      reason.startsWith("P-016 reviewed") &&
+      RESOURCE_GOVERNOR_INVENTORY.some(({ migration, paths }) =>
+        migration === "P-016" && paths.some((prefix) => path.startsWith(prefix))),
+    ),
+  ].map(({ path, code, disposition, reason, matchesSource }) => [
     `${path}::${code}`,
     { disposition, reason, ...(matchesSource ? { matchesSource } : {}) },
   ]),
@@ -3819,26 +4080,6 @@ export const BYPASS_REGISTRY = new Map([
         source.includes("server.children.delete(m.id)") &&
         source.includes("server.pending.clear()") &&
         source.includes("server.children.clear()"),
-    },
-  ],
-  [
-    "scripts/lib/runtime-compatibility-admission.mjs::missing-admission-context-or-release",
-    {
-      disposition: "semantic",
-      reason:
-        "This isolated runtime-compatibility fixture validates both admission outcomes. On the admitted gateway path it checks outcome.kind before passing that same outcome.context to governor.release; on the enqueue path it reports the queued receipt without claiming or releasing execution capacity. The context is the runtime Governor result contract, although this JavaScript fixture has no TypeScript AdmissionContext token for the lexical checker.",
-      matchesSource: (source) => {
-        const admit = source.indexOf("outcome = await governor.admit({ idempotencyKey: 'same-request'");
-        const admittedGuard = source.indexOf(
-          "if (outcome.kind !== 'admitted') throw new Error('Gateway did not return an admitted receipt');",
-          admit,
-        );
-        const release = source.indexOf("const released = await governor.release(outcome.context);", admittedGuard);
-        return admit >= 0 && admittedGuard > admit && release > admittedGuard &&
-          source.includes("const result = await new Governor(driver, { now: () => nowMs }).admit({") &&
-          source.includes("return { queued: result.kind === 'queued' };") &&
-          source.includes("return { admitted: true, stateAfterCompetitor: status.state, released: released.released };");
-      },
     },
   ],
 ]);

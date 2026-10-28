@@ -36,6 +36,13 @@ const BELOW_GATE_TOKENS = 60_000;
 const M = vi.hoisted(() => ({
   readPriorRespawnOutcome: vi.fn(async () => ({ outcome: "none" }) as unknown),
   getPresence: vi.fn(async () => null as unknown),
+  currentContextUsageForOwner: vi.fn(async () => ({
+    backend: "codex",
+    nativeSessionId: "native-current",
+    sessionStartedAtMs: Date.now() - 60_000,
+    reading: null,
+    unavailableReason: "active Codex rollout is unavailable",
+  }) as unknown),
   selfCompactionAvailability: vi.fn((_ownerId?: string) => ({ available: false })),
   readFleetWindDownLoopEndAuthorization: vi.fn(async () => null as boolean | null),
 }));
@@ -78,10 +85,10 @@ vi.mock("../../../coord-schema", () => ({ renderInjection: () => "" }));
 vi.mock("../../../cache", () => ({
   cachedRead: async (_ctx: unknown, _key: unknown, fn: () => Promise<unknown>) => fn(),
 }));
-// The live transcript read is the PRIMARY usage source; returning null makes the
-// handler fall back to the presence value, which is what these cases control.
+// Current usage carries its native-session provenance; presence values below are
+// deliberately only an unbound-cache control for the unknown-reading case.
 vi.mock("../../../compaction-usage", () => ({
-  currentContextTokensForOwner: vi.fn(async () => null),
+  currentContextUsageForOwner: M.currentContextUsageForOwner,
 }));
 vi.mock("../../../events/await/psu-pty-discovery", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../events/await/psu-pty-discovery")>();
@@ -120,6 +127,13 @@ const atPct = (tokens: number) => {
   M.getPresence.mockImplementation(
     async () => ({ contextTokens: tokens, compactionLimit: LIMIT }) as unknown,
   );
+  M.currentContextUsageForOwner.mockResolvedValue({
+    backend: "codex",
+    nativeSessionId: "native-current",
+    sessionStartedAtMs: Date.now() - 60_000,
+    reading: { tokens, observedAtMs: Date.now(), source: "codex-last-token-usage" },
+    unavailableReason: null,
+  } as unknown);
 };
 const prior = (p: PriorRespawn) => {
   M.readPriorRespawnOutcome.mockImplementation(async () => p as unknown);
@@ -150,6 +164,12 @@ describe("coord:inbox — dropped carry-respawn ambient line (EI-193263315018497
     expect(injection).toContain("continuation was not delivered");
     expect(injection).not.toContain("NEVER CUT");
     expect(injection).toContain("session:request-compaction");
+    expect(M.readPriorRespawnOutcome).toHaveBeenCalledWith("owner-a", {
+      incarnation: {
+        nativeSessionId: "native-current",
+        startedAtMs: expect.any(Number),
+      },
+    });
   });
 
   it("runtime wiring: critical no-PTY authorization reaches both coord:inbox renderers", async () => {
@@ -202,6 +222,24 @@ describe("coord:inbox — dropped carry-respawn ambient line (EI-193263315018497
     prior({ ...DROPPED_2H, ageMs: 7 * 60 * 60 * 1000 });
     const out = await callInbox();
     expect(String(out.injection ?? "")).not.toContain("carry-respawn DROPPED");
+  });
+
+  it("withholds a cached percentage when the current Codex rollout sample is unavailable", async () => {
+    atPct(95_000);
+    M.currentContextUsageForOwner.mockResolvedValue({
+      backend: "codex",
+      nativeSessionId: "native-current",
+      sessionStartedAtMs: Date.now() - 60_000,
+      reading: null,
+      unavailableReason: "active Codex token_count sample is stale",
+    } as unknown);
+    const out = await callInbox();
+    const injection = String(out.injection ?? "");
+    expect(injection).toContain("context: unknown — active Codex token_count sample is stale");
+    expect(injection).toContain("watchdog cache is not bound to the current native session");
+    expect(injection).not.toContain("95000/100000");
+    expect(injection).not.toContain("request-compaction");
+    expect(String(out.context_gauge ?? "")).toContain("context: unknown");
   });
 
   it("a failing event-log read never breaks the inbox (own try/catch)", async () => {

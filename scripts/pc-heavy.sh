@@ -281,8 +281,9 @@
 #                         (default "best-effort 7"; UNSET uses the default,
 #                         set-but-EMPTY skips ionice)
 #   PC_HEAVY_COALESCE     "1"(default)/"0" — coalesce genuinely-CONCURRENT
-#                         identical invocations (see below). off/false/no also
-#                         disable.
+#                         identical invocations when fd 0 is /dev/null (see
+#                         below). Other stdin sources disable coalescing.
+#                         off/false/no also disable.
 #   PC_HEAVY_COALESCE_SEC result-freshness window in seconds (default 90) —
 #                         how long an ALREADY-FINISHED result may be replayed.
 #                         This is NOT how long a follower waits for a running
@@ -292,6 +293,12 @@
 #                         files (defaults 10000 / 268435456). If either bound
 #                         or a file read is exceeded, coalescing fails closed
 #                         and the command runs fresh.
+#   PC_HEAVY_UNTRACKED_MAX_SEC
+#                         wall-clock budget for the full untracked Git source
+#                         fingerprint across the root and recursive submodules
+#                         (default 30). On expiry coalescing is disabled and
+#                         the command runs fresh without reading or writing a
+#                         cached result.
 #   PC_HEAVY_FRESH_AFTER  epoch-seconds watermark. Replay a cached run only if
 #                         it STARTED at/after this instant, and drop the
 #                         tree-state token from the coalescing key. For a caller
@@ -360,6 +367,11 @@
 # tree content: it is thundering-herd coalescing, not a content-addressed
 # result cache — we do NOT want a second, home-rolled version of the tsc
 # `--incremental` staleness bug EI-487 already burned this team on.
+#
+# Cache reuse is safe only when fd 0 resolves to /dev/null. A pipe, file, or
+# terminal can carry result-affecting input that is absent from argv; consuming
+# or buffering it here would change stdin's streaming behavior, so those runs
+# bypass coalescing and execute normally.
 #
 # A slow leader is never blocked on by a follower forever — but "is the leader
 # still alive?" is answered by OBSERVING it, never by a timeout. See the
@@ -3122,9 +3134,17 @@ _do_cache_write=0
 case "${PC_HEAVY_COALESCE:-1}" in
   0|off|OFF|false|FALSE|no|NO) ;;
   *)
-    _coalesce_dir="$_dir/coalesce"
-    if command -v sha1sum >/dev/null 2>&1 && mkdir -p "$_coalesce_dir" 2>/dev/null; then
-      _coalesce_enabled=1
+    _coalesce_stdin_target=""
+    if command -v readlink >/dev/null 2>&1; then
+      _coalesce_stdin_target="$(readlink "/proc/$$/fd/0" 2>/dev/null || true)"
+    fi
+    if [ "$_coalesce_stdin_target" != "/dev/null" ]; then
+      echo "[pc-heavy] coalescing disabled — stdin is not verifiably /dev/null" >&2
+    else
+      _coalesce_dir="$_dir/coalesce"
+      if command -v sha1sum >/dev/null 2>&1 && mkdir -p "$_coalesce_dir" 2>/dev/null; then
+        _coalesce_enabled=1
+      fi
     fi
     ;;
 esac
@@ -3343,8 +3363,9 @@ if [ "$_coalesce_enabled" = 1 ]; then
   _pc_heavy_git_untracked_token() {
     local _repo="${1:-.}" _max_files="${2:-${PC_HEAVY_UNTRACKED_MAX_FILES:-10000}}"
     local _max_bytes="${3:-${PC_HEAVY_UNTRACKED_MAX_BYTES:-268435456}}"
-    local _paths_file="" _digest_file="" _path="" _file=""
+    local _fingerprint_dir="${4:-}" _paths_file="" _digest_file="" _path="" _file=""
     local _digest="" _tree_hash="" _size="" _count=0 _bytes=0 _remaining=0
+    [ -n "$_fingerprint_dir" ] || return 1
     case "$_max_files" in ''|*[!0-9]*) return 1 ;; esac
     case "$_max_bytes" in ''|*[!0-9]*) return 1 ;; esac
     [ "${#_max_files}" -le 6 ] && [ "$_max_files" -le 100000 ] || return 1
@@ -3353,14 +3374,17 @@ if [ "$_coalesce_enabled" = 1 ]; then
     command -v sha1sum >/dev/null 2>&1 || return 1
     command -v wc >/dev/null 2>&1 || return 1
 
-    _paths_file="$(mktemp "$_coalesce_dir/.untracked-token.XXXXXX" 2>/dev/null)" || return 1
-    _digest_file="$(mktemp "$_coalesce_dir/.untracked-token.XXXXXX" 2>/dev/null)" || {
+    _paths_file="$(mktemp "$_fingerprint_dir/paths.XXXXXX" 2>/dev/null)" || return 1
+    _digest_file="$(mktemp "$_fingerprint_dir/digests.XXXXXX" 2>/dev/null)" || {
       rm -f "$_paths_file" 2>/dev/null || true
       return 1
     }
     if ! git -C "$_repo" ls-files --others --exclude-standard -z > "$_paths_file" 2>/dev/null; then
       rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
       return 1
+    fi
+    if [ -s "$_paths_file" ]; then
+      echo "[pc-heavy] fingerprinting untracked Git source files" >&2
     fi
 
     while IFS= read -r -d '' _path; do
@@ -3425,6 +3449,46 @@ if [ "$_coalesce_enabled" = 1 ]; then
     printf '%s:%s:%s' "$_count" "$_bytes" "$_tree_hash"
   }
 
+  _pc_heavy_now_ms() {
+    local _clock="${EPOCHREALTIME:-}" _seconds="" _fraction=""
+    case "$_clock" in
+      *.*)
+        _seconds="${_clock%%.*}"
+        _fraction="${_clock#*.}000"
+        _fraction="${_fraction:0:3}"
+        printf '%s' "$((_seconds * 1000 + 10#$_fraction))"
+        ;;
+      *)
+        date +%s%3N
+        ;;
+    esac
+  }
+
+  # The exported helper runs in a separate Bash so GNU timeout can terminate
+  # the whole count/byte bounded fingerprint, including a stuck hasher. Each
+  # invocation gets a private scratch directory that the parent removes even
+  # when timeout kills the worker.
+  _pc_heavy_git_untracked_token_timed() {
+    local _repo="$1" _max_files="$2" _max_bytes="$3" _deadline_ms="$4"
+    local _now_ms="" _remaining_ms=0 _duration="" _scratch="" _rc=0
+    command -v timeout >/dev/null 2>&1 || return 125
+    _now_ms="$(_pc_heavy_now_ms)" || return 1
+    _remaining_ms=$(( _deadline_ms - _now_ms ))
+    [ "$_remaining_ms" -gt 0 ] || return 124
+    printf -v _duration '%d.%03ds' "$(( _remaining_ms / 1000 ))" "$(( _remaining_ms % 1000 ))"
+    _scratch="$(mktemp -d "$_coalesce_dir/.untracked-fingerprint.XXXXXX" 2>/dev/null)" || return 1
+    export -f _pc_heavy_git_untracked_token
+    if timeout --signal=TERM --kill-after=1s "$_duration" \
+      bash -c '_pc_heavy_git_untracked_token "$@"' _ \
+        "$_repo" "$_max_files" "$_max_bytes" "$_scratch"; then
+      _rc=0
+    else
+      _rc=$?
+    fi
+    rm -rf "$_scratch" 2>/dev/null || true
+    return "$_rc"
+  }
+
   _pwd_for_key="$PWD"
   _tree_token=""
   _coalesce_fingerprint_complete=1
@@ -3443,23 +3507,51 @@ if [ "$_coalesce_enabled" = 1 ]; then
          _git_diff="$(git diff --no-ext-diff --binary HEAD -- 2>/dev/null)"; then
         _untracked_max_files="${PC_HEAVY_UNTRACKED_MAX_FILES:-10000}"
         _untracked_max_bytes="${PC_HEAVY_UNTRACKED_MAX_BYTES:-268435456}"
-        if _git_untracked_result="$(_pc_heavy_git_untracked_token "$PWD" "$_untracked_max_files" "$_untracked_max_bytes" 2>/dev/null)"; then
-          _git_untracked_files="${_git_untracked_result%%:*}"
-          _git_untracked_rest="${_git_untracked_result#*:}"
-          _git_untracked_bytes="${_git_untracked_rest%%:*}"
-          _git_untracked_state="${_git_untracked_rest#*:}"
-          if [ -n "$_git_untracked_state" ]; then
-            _git_state="$(printf '%s\0%s\0%s' "$_git_status" "$_git_diff" "$_git_untracked_state" | sha1sum | cut -d' ' -f1)"
-          else
-            # Preserve the pre-content-fingerprint key population for clean
-            # worktrees; only untracked source bytes add a new key component.
-            _git_state="$(printf '%s\0%s' "$_git_status" "$_git_diff" | sha1sum | cut -d' ' -f1)"
-          fi
-          [ -n "$_git_state" ] && _tree_token="$_tree_token|git:$_git_state"
-        else
-          echo "[pc-heavy] coalescing disabled — untracked source fingerprint incomplete" >&2
+        _untracked_max_sec="${PC_HEAVY_UNTRACKED_MAX_SEC:-30}"
+        case "$_untracked_max_sec" in
+          ''|*[!0-9]*)
+            _untracked_budget_valid=0
+            ;;
+          *)
+            if [ "${#_untracked_max_sec}" -le 4 ] &&
+               [ "$_untracked_max_sec" -ge 1 ] &&
+               [ "$_untracked_max_sec" -le 600 ]; then
+              _untracked_budget_valid=1
+            else
+              _untracked_budget_valid=0
+            fi
+            ;;
+        esac
+        if [ "$_untracked_budget_valid" != 1 ]; then
+          echo "[pc-heavy] coalescing disabled — invalid PC_HEAVY_UNTRACKED_MAX_SEC" >&2
           _coalesce_enabled=0
           _coalesce_fingerprint_complete=0
+        else
+          _untracked_deadline_ms=$(( $(_pc_heavy_now_ms) + _untracked_max_sec * 1000 ))
+          if _git_untracked_result="$(_pc_heavy_git_untracked_token_timed "$PWD" "$_untracked_max_files" "$_untracked_max_bytes" "$_untracked_deadline_ms")"; then
+            _git_untracked_files="${_git_untracked_result%%:*}"
+            _git_untracked_rest="${_git_untracked_result#*:}"
+            _git_untracked_bytes="${_git_untracked_rest%%:*}"
+            _git_untracked_state="${_git_untracked_rest#*:}"
+            if [ -n "$_git_untracked_state" ]; then
+              _git_state="$(printf '%s\0%s\0%s' "$_git_status" "$_git_diff" "$_git_untracked_state" | sha1sum | cut -d' ' -f1)"
+            else
+              # Preserve the pre-content-fingerprint key population for clean
+              # worktrees; only untracked source bytes add a new key component.
+              _git_state="$(printf '%s\0%s' "$_git_status" "$_git_diff" | sha1sum | cut -d' ' -f1)"
+            fi
+            [ -n "$_git_state" ] && _tree_token="$_tree_token|git:$_git_state"
+          else
+            _untracked_fingerprint_rc=$?
+            if [ "$_untracked_fingerprint_rc" -eq 124 ] ||
+               [ "$_untracked_fingerprint_rc" -eq 137 ]; then
+              echo "[pc-heavy] coalescing disabled — untracked source fingerprint timed out after ${_untracked_max_sec}s" >&2
+            else
+              echo "[pc-heavy] coalescing disabled — untracked source fingerprint incomplete" >&2
+            fi
+            _coalesce_enabled=0
+            _coalesce_fingerprint_complete=0
+          fi
         fi
       else
         echo "[pc-heavy] coalescing disabled — git source fingerprint incomplete" >&2
@@ -3495,12 +3587,21 @@ if [ "$_coalesce_enabled" = 1 ]; then
           _coalesce_fingerprint_complete=0
         else
           _submodule_fingerprint_failed=0
+          _submodule_fingerprint_timed_out=0
           while IFS= read -r -d '' _submodule_path; do
             _submodule_repo="$_pwd_for_key/$_submodule_path"
             _remaining_files=$(( _untracked_max_files - _git_untracked_files ))
             _remaining_bytes=$(( _untracked_max_bytes - _git_untracked_bytes ))
-            if ! _submodule_untracked_result="$(_pc_heavy_git_untracked_token "$_submodule_repo" "$_remaining_files" "$_remaining_bytes" 2>/dev/null)"; then
+            if _submodule_untracked_result="$(_pc_heavy_git_untracked_token_timed "$_submodule_repo" "$_remaining_files" "$_remaining_bytes" "$_untracked_deadline_ms")"; then
+              :
+            else
+              _submodule_untracked_rc=$?
               _submodule_fingerprint_failed=1
+              if [ "$_submodule_untracked_rc" -eq 124 ] ||
+                 [ "$_submodule_untracked_rc" -eq 137 ]; then
+                echo "[pc-heavy] coalescing disabled — submodule untracked source fingerprint timed out after ${_untracked_max_sec}s" >&2
+                _submodule_fingerprint_timed_out=1
+              fi
               break
             fi
             _submodule_untracked_files="${_submodule_untracked_result%%:*}"
@@ -3517,7 +3618,9 @@ if [ "$_coalesce_enabled" = 1 ]; then
           done < "$_submodule_paths_file"
 
           if [ "$_submodule_fingerprint_failed" = 1 ]; then
-            echo "[pc-heavy] coalescing disabled — submodule untracked fingerprint incomplete" >&2
+            if [ "$_submodule_fingerprint_timed_out" != 1 ]; then
+              echo "[pc-heavy] coalescing disabled — submodule untracked fingerprint incomplete" >&2
+            fi
             _coalesce_enabled=0
             _coalesce_fingerprint_complete=0
           elif [ -s "$_submodule_untracked_file" ]; then

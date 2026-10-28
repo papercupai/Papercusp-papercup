@@ -3291,6 +3291,23 @@ export async function bindOrientOutputResult<T extends Record<string, unknown>>(
   return result;
 }
 
+/** Folded spellings of includeFleetCatchUp: accepted, not advertised (WI-6554700010030925 floor budget). */
+const ORIENT_CATCHUP_ALIASES = ['includeFleetCatchup', 'includeCatchup'] as const;
+
+export function normalizeOrientCatchUpAliases(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const r = raw as Record<string, unknown>;
+  if (!ORIENT_CATCHUP_ALIASES.some((key) => r[key] !== undefined)) return raw;
+  const rest: Record<string, unknown> = { ...r };
+  let canonical = rest.includeFleetCatchUp;
+  for (const key of ORIENT_CATCHUP_ALIASES) {
+    const value = rest[key];
+    delete rest[key];
+    if (canonical === undefined && value !== undefined) canonical = value;
+  }
+  return canonical === undefined ? rest : { ...rest, includeFleetCatchUp: canonical };
+}
+
 export default defineTool({
   name: 'coord:orient',
   description:
@@ -3343,7 +3360,7 @@ export default defineTool({
   // bootstrap behind the same pool pressure it is meant to diagnose.
   skipWorkspaceTx: true,
   agentRoles: [...COORD_READ_ROLES],
-  args: z.object({
+  args: z.preprocess(normalizeOrientCatchUpAliases, z.object({
     harness: z
       .string()
       .max(80)
@@ -3468,18 +3485,6 @@ export default defineTool({
       .describe(
         "Fold a bounded catch-up of YOUR fleet's audience-history when you're in a named fleet (default true).",
       ),
-    includeFleetCatchup: z
-      .boolean()
-      .optional()
-      .describe(
-        'Deprecated alias for includeFleetCatchUp; accepted for compatibility with stale guidance using the older camelcase spelling.',
-      ),
-    includeCatchup: z
-      .boolean()
-      .optional()
-      .describe(
-        'Deprecated alias for includeFleetCatchUp; accepted for compatibility with older launch/checkpoint guidance.',
-      ),
     fleetCatchUpLimit: z
       .number()
       .int()
@@ -3499,7 +3504,7 @@ export default defineTool({
       .describe(
         'Pass true on your FIRST orient after a compaction: folds a recovery block — your held work-items’ checkpoints, armed-loop status, staleness_warnings (presence/fleet/claims that changed AFTER your summary was written — the summary’s view of them is stale), and the self-recall pointer (pre-compaction turns are searchable via sessions:search { session:’self’ }).',
       ),
-  }),
+  })),
   // Orient is a deliberately broad bootstrap aggregate. Keep its structured
   // result open-ended while naming stable roots consumed by callers.
   result: z

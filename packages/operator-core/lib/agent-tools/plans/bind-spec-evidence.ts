@@ -74,6 +74,14 @@ const proofCoverageIds = z
   .min(1)
   .max(100)
   .refine((ids) => new Set(ids).size === ids.length, 'proof coverage ids must be unique');
+const scenarioTestCasesSchema = z
+  .record(z.string(), z.array(z.string().trim().min(1).max(2000)).min(1).max(100))
+  .refine(
+    (mapping) => Object.keys(mapping).length > 0 &&
+      Object.entries(mapping).every(([scenario, cases]) =>
+        SPEC_PROOF_OBLIGATION_ID_RE.test(scenario) && new Set(cases).size === cases.length),
+    'scenario mappings require stable ids and unique test cases',
+  );
 const coverageRungsSchema = z
   .object({
     l1: z.boolean().optional(),
@@ -100,11 +108,27 @@ const adequacyBindingDetailsSchema = z
       .optional(),
     coverageRungs: coverageRungsSchema.optional(),
     scenarioIds: proofCoverageIds.optional(),
+    scenarioTestCases: scenarioTestCasesSchema.optional().describe(
+      'Map each scenario id to exact passing case titles also listed in adequacy.testCases.',
+    ),
     causalPairIds: proofCoverageIds.optional(),
     provisionalProofBase: z.boolean().optional(),
     disclosedGap: z.union([z.string(), z.array(z.string())]).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (details) => !details.scenarioTestCases || (
+      details.scenarioIds !== undefined &&
+      details.testCases !== undefined &&
+      Object.entries(details.scenarioTestCases).every(([scenario, cases]) =>
+        details.scenarioIds!.includes(scenario) && cases.every((caseTitle) => details.testCases!.includes(caseTitle)),
+      )
+    ),
+    {
+      message: 'scenarioTestCases must map declared scenarioIds to exact adequacy.testCases titles',
+      path: ['scenarioTestCases'],
+    },
+  );
 // Keep the evaluator's adequacy vocabulary out of the free-form details
 // namespace. `spec-test-adequacy` reads these keys only below
 // `details.adequacy`; accepting them at the top level creates a successful,
@@ -123,6 +147,7 @@ const ADEQUACY_DETAIL_KEYS = new Set([
   'targeted',
   'coverageRungs',
   'scenarioIds',
+  'scenarioTestCases',
   'causalPairIds',
   'provisionalProofBase',
 ]);
@@ -219,7 +244,7 @@ export const bindingSchema = z
     fixtureFingerprint: fingerprint.nullable().optional(),
     rubricFingerprint: fingerprint.nullable().optional(),
     environmentFingerprint: fingerprint.nullable().optional().describe(
-      "Live environment; validated ledger-only proof may omit runtimeUnits.",
+      "Live runtime/environment; validated ledger-only proof may omit runtimeUnits.",
     ),
     coverageEvidenceRef: z.number().int().positive().nullable().optional(),
     testRunId: z.number().int().positive().nullable().optional(),
@@ -229,7 +254,7 @@ export const bindingSchema = z
         "File/row hashes; changes stale.",
       ),
     details: bindingDetailsSchema.optional().describe(
-      "Nest adequacy; evidencePlane falls back to adequacy.evidencePlane; live needs environmentFingerprint.",
+      "Nest adequacy; required scenarios map through adequacy.scenarioTestCases to exact passing adequacy.testCases; details.evidencePlane falls back to adequacy.evidencePlane; live needs environmentFingerprint.",
     ),
     observedAt: z.string().datetime({ offset: true }).optional(),
     verifiesBindingId: z

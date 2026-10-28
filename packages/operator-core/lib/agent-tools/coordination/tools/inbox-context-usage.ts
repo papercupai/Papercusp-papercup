@@ -20,7 +20,10 @@ export interface ObservedPromptFloor {
 }
 
 /** Provenance for the numerator used by the live inbox gauge. */
-export type ContextGaugeReadingSource = 'live-transcript-bytes/4' | 'watchdog-cache';
+export type ContextGaugeReadingSource =
+  | 'live-transcript-bytes/4'
+  | 'codex-last-token-usage'
+  | 'watchdog-cache';
 
 /** The live transcript estimate wins; the watchdog value is used only when it cannot be read. */
 export function contextGaugeReadingSource(
@@ -62,10 +65,19 @@ function renderContextFact(
     : `; observed-input floor ${Math.floor(observedPromptFloor.tokens)} (${observedPromptFloor.observations} sample${observedPromptFloor.observations === 1 ? '' : 's'}), conservative usable runway ${runway}`;
   const source = readingSource === 'live-transcript-bytes/4'
     ? '; count source: live transcript-size estimate (bytes/4)'
+    : readingSource === 'codex-last-token-usage'
+      ? '; count source: current Codex rollout token_count'
     : readingSource === 'watchdog-cache'
       ? '; count source: watchdog-cached estimate'
       : '';
   return `context: ${contextTokens}/${compactionLimit} (${pct}%)${measured}${source}`;
+}
+
+/** Explain why no current-session percentage is shown when only an unbound cache
+ *  remains. The cached number itself is withheld so it cannot trigger a false action. */
+export function renderContextUsageUnknownLine(reason: string): string {
+  return 'context: unknown — ' + reason +
+    '; the watchdog cache is not bound to the current native session and was not used.';
 }
 
 /**

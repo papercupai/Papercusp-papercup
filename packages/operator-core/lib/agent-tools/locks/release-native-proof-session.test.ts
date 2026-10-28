@@ -5,7 +5,7 @@
  * on a retained (attest-only) hold. The arg schema must keep the field, not strip it.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mockResolvedTyped } from '../../testing/typed-mock';
+import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('./identity', () => {
   const identity = vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' }));
@@ -53,9 +53,22 @@ const proof = { success: true, source: 'claude', tool: 'Edit', paths: ['a.ts'], 
 
 /** One live hold on a.ts by the caller, as the retained-hold check reads it. */
 function mockHeldA(): void {
-  vi.mocked(readQueue).mockResolvedValueOnce({
-    active_locks: [{ owner: 'me', coordination_domain: 'dom', path: 'a.ts' }],
-  } as never);
+  mockResolvedOnceTyped(vi.mocked(readQueue), {
+    active_locks: [
+      {
+        lock_id: LOCK,
+        path: 'a.ts',
+        owner: 'me',
+        owner_label: 'Me',
+        intent: 'edit a.ts',
+        goal_ref: null,
+        acquired_ts: new Date(0),
+        expires_ts: new Date(Date.now() + 60_000),
+        coordination_domain: 'dom',
+      },
+    ],
+    waiting: [],
+  });
 }
 
 beforeEach(() => {

@@ -411,11 +411,11 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     bucket.push(row);
     byReference.set(key, bucket);
   }
-  // Scenario, causal-pair, and test-case ids are set-valued coverage metadata. When a re-bind
-  // changes only that metadata, the newest immutable row must retain the union from
-  // earlier rows for the same proof and causal pair; otherwise latestLogicalEvidence silently hides
-  // coverage the unchanged run already established. A new run or changed fingerprint
-  // remains a new proof identity and starts a new metadata set.
+  // Scenario, causal-pair, and test-case ids plus scenario-to-case associations are
+  // set-valued coverage metadata. When a re-bind changes only that metadata, the newest
+  // immutable row must retain the union from earlier rows for the same proof and causal
+  // pair; otherwise latestLogicalEvidence silently hides coverage the unchanged run
+  // already established. A new run or changed fingerprint remains a new proof identity.
   const reconciled = latest.map((row) => {
     const rawAdequacy = row.details.adequacy;
     if (
@@ -443,6 +443,35 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
       if (values.length === 0) continue;
       mergedAdequacy[key] = values;
       changed = true;
+    }
+    if (!ownDetails.contractMetadataIssues?.includes('scenarioTestCases:invalid')) {
+      const casesByScenario = new Map<string, Set<string>>();
+      for (const candidate of sameProofRows) {
+        const details = detailsOf(candidate);
+        if (details.contractMetadataIssues?.includes('scenarioTestCases:invalid')) continue;
+        for (const [scenario, titles] of Object.entries(details.scenarioTestCases ?? {})) {
+          const cases = casesByScenario.get(scenario) ?? new Set<string>();
+          for (const title of titles) cases.add(title);
+          casesByScenario.set(scenario, cases);
+        }
+      }
+      const mergedScenarioTestCases: Record<string, string[]> = Object.fromEntries(
+        [...casesByScenario.entries()]
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([scenario, titles]) => [scenario, [...titles].sort((left, right) => left.localeCompare(right))] as const),
+      );
+      const ownScenarioTestCases = Object.fromEntries(
+        Object.entries(ownDetails.scenarioTestCases ?? {})
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([scenario, titles]) => [scenario, [...titles].sort((left, right) => left.localeCompare(right))] as const),
+      );
+      if (
+        Object.keys(mergedScenarioTestCases).length > 0 &&
+        JSON.stringify(mergedScenarioTestCases) !== JSON.stringify(ownScenarioTestCases)
+      ) {
+        mergedAdequacy.scenarioTestCases = mergedScenarioTestCases;
+        changed = true;
+      }
     }
     if (!changed) return row;
     const supportingBindingIds = [...new Set(sameProofRows
@@ -541,6 +570,7 @@ interface AdequacyDetails {
   targeted?: boolean | string;
   coverageRungs?: Partial<Record<'l1' | 'l2' | 'l3' | 'l4', boolean>>;
   scenarioIds?: string[];
+  scenarioTestCases?: Record<string, string[]>;
   causalPairIds?: string[];
   testCases?: string[];
   contractMetadataIssues?: string[];
@@ -1047,6 +1077,36 @@ function detailsOf(evidence: Pick<SpecEvidenceForAdequacy, 'details' | 'provisio
       contractMetadataIssues.push('testCases:invalid');
     }
   }
+  let scenarioTestCases: Record<string, string[]> | undefined;
+  if (raw.scenarioTestCases !== undefined) {
+    const rawMapping = raw.scenarioTestCases;
+    const entries = rawMapping && typeof rawMapping === 'object' && !Array.isArray(rawMapping)
+      ? Object.entries(rawMapping as Record<string, unknown>)
+      : null;
+    const declaredScenarios = new Set(scenarioIds ?? []);
+    const declaredCases = new Set(testCases ?? []);
+    const normalized: Record<string, string[]> = {};
+    const valid = entries !== null &&
+      entries.length > 0 &&
+      entries.length <= MAX_RECORDED_PASSED_CASES &&
+      scenarioIds !== undefined &&
+      testCases !== undefined &&
+      entries.every(([scenario, cases]) => {
+        if (
+          !SPEC_PROOF_OBLIGATION_ID_RE.test(scenario) ||
+          !declaredScenarios.has(scenario) ||
+          !Array.isArray(cases) ||
+          cases.length === 0 ||
+          cases.length > MAX_RECORDED_PASSED_CASES ||
+          !cases.every((caseTitle) => isRecordedCaseTitle(caseTitle) && declaredCases.has(caseTitle)) ||
+          new Set(cases).size !== cases.length
+        ) return false;
+        normalized[scenario] = [...cases] as string[];
+        return true;
+      });
+    if (valid) scenarioTestCases = normalized;
+    else contractMetadataIssues.push('scenarioTestCases:invalid');
+  }
   const targeted =
     typeof raw.targeted === 'boolean'
       ? raw.targeted
@@ -1076,6 +1136,7 @@ function detailsOf(evidence: Pick<SpecEvidenceForAdequacy, 'details' | 'provisio
         }
       : {}),
     ...(scenarioIds ? { scenarioIds } : {}),
+    ...(scenarioTestCases ? { scenarioTestCases } : {}),
     ...(causalPairIds ? { causalPairIds } : {}),
     ...(testCases ? { testCases } : {}),
     ...(contractMetadataIssues.length > 0 ? { contractMetadataIssues } : {}),
@@ -3748,12 +3809,27 @@ export function evaluateSpecTestAdequacy(input: {
   let scenarioRating: CorrectLayerEvidencePart | null = null;
   if (requiredScenarios.length > 0) {
     const malformedScenarioRows = evidence.filter((row) =>
-      detailsOf(row).contractMetadataIssues?.includes('scenarioIds:invalid'),
+      detailsOf(row).contractMetadataIssues?.some((issue) =>
+        issue === 'scenarioIds:invalid' || issue === 'scenarioTestCases:invalid',
+      ),
     );
     const successfulScenarioRows = evidence.filter(
       (row) => isSuccessfulExecutableEvidence(row) && detailsOf(row).pathReachable === true,
     );
-    const covered = new Set(successfulScenarioRows.flatMap((row) => detailsOf(row).scenarioIds ?? []));
+    const covered = new Set(successfulScenarioRows.flatMap((row) => {
+      const details = detailsOf(row);
+      const declaredScenarios = new Set(details.scenarioIds ?? []);
+      const declaredCases = new Set(details.testCases ?? []);
+      return Object.entries(details.scenarioTestCases ?? {}).flatMap(([scenario, caseTitles]) =>
+        requiredScenarios.includes(scenario) &&
+        declaredScenarios.has(scenario) &&
+        caseTitles.some((caseTitle) =>
+          declaredCases.has(caseTitle) && hasPassingRequiredLayerCase(row, caseTitle),
+        )
+          ? [scenario]
+          : [],
+      );
+    }));
     const missing = requiredScenarios.filter((scenario) => !covered.has(scenario));
     scenarioRating =
       missing.length > 0
@@ -3761,7 +3837,7 @@ export function evaluateSpecTestAdequacy(input: {
             'fail',
             `Canonical acceptance scenario(s) are not covered by successful ledger-backed path proof for ${clauseIdentity(clause)}: ${missing.join(', ')}. Required scenarios: ${requiredScenarios.join(', ')}.`,
             successfulScenarioRows,
-            'Bind successful executed proof whose adequacy.scenarioIds cover every falsifier.requiredScenarios id.',
+            'Bind successful executed proof whose adequacy.scenarioTestCases maps every falsifier.requiredScenarios id to exact passing adequacy.testCases titles from the canonical ledger.',
           )
         : malformedScenarioRows.length > 0
           ? boundCorrectLayerPart(
@@ -4115,6 +4191,9 @@ export function evaluateSpecTestAdequacy(input: {
               const partiallyServerMeasured = unknownEvidence.filter(
                 (row) => row.currentness.provenance === 'partially-server-measured',
               );
+              const unknownReasons = unknownEvidence.flatMap((row) =>
+                row.currentness.unknownReasons.map((reason) => `${row.evidenceRef}: ${reason}`),
+              );
               return partiallyServerMeasured.length > 0
                 ? `Repository fingerprints were server-measured, but applicable non-repository dimensions ` +
                     `were only caller-attested and cannot establish freshness for: ${partiallyServerMeasured
@@ -4126,7 +4205,9 @@ export function evaluateSpecTestAdequacy(input: {
                     ? `Current fingerprints were supplied by a replayed snapshot and MATCHED the stored values; a replayed tuple is not an independent measurement, so freshness is unknown for this replay input—nothing is missing and nothing is stale. Re-run so the server measures each binding's own persisted measurement basis. Awaiting independent measurement for: ${refs}.`
                     : callerOmittedCurrent
                       ? `Current fingerprints were not supplied by this call (current[] was omitted), so freshness is unknown for this replay input—not evidence that stored bindings are stale. If replaying a rerunRecipe, pass rerunRecipe.current.fingerprints. Missing comparison for: ${refs}.`
-                      : `Current fingerprints are missing for: ${refs}.`;
+                      : unknownReasons.length > 0
+                        ? `Freshness is unknown because the currentness probe reported: ${unknownReasons.join(', ')}.`
+                        : `Current fingerprints are missing for: ${refs}.`;
             })(),
             evidence.filter((row) => row.currentness.overall === 'unknown'),
           ),

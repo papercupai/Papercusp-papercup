@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  deriveCurrentIncarnationRespawnOutcome,
   deriveLastRespawnOutcome,
   priorRespawnNote,
   lostRespawnAmbientLine,
@@ -172,6 +173,51 @@ describe('deriveLastRespawnOutcome', () => {
     expect(out.outcome).toBe('dropped');
     expect(out.ageMs).toBeNull();
     expect(out.ts).toBeUndefined();
+  });
+});
+
+describe('deriveCurrentIncarnationRespawnOutcome', () => {
+  it('ignores a dropped request from before the current native session began', () => {
+    const rows = [
+      { ts: '2026-10-28T12:00:00.000Z', kind: 'respawn-carry-dropped', reason: 'carry-stale' },
+    ];
+    expect(deriveCurrentIncarnationRespawnOutcome(rows, {
+      nativeSessionId: 'current-native',
+      startedAtMs: Date.parse('2026-10-28T12:10:00.000Z'),
+    }, { now: Date.parse('2026-10-28T12:20:00.000Z') })).toEqual({ outcome: 'none' });
+  });
+
+  it('keeps the matching managed-carry delivery as the positive control', () => {
+    const rows = [
+      { ts: '2026-10-28T12:00:00.000Z', kind: 'respawn-carry-dropped', reason: 'carry-stale' },
+      {
+        ts: '2026-10-28T12:10:00.000Z',
+        kind: 'respawned',
+        mode: 'carry-respawn',
+        nativeId: 'current-native',
+      },
+      {
+        ts: '2026-10-28T12:10:02.000Z',
+        kind: 'respawn-carry-delivered',
+        nativeId: 'current-native',
+      },
+    ];
+    const out = deriveCurrentIncarnationRespawnOutcome(rows, {
+      nativeSessionId: 'current-native',
+      startedAtMs: Date.parse('2026-10-28T12:10:00.000Z'),
+    }, { now: Date.parse('2026-10-28T12:20:00.000Z') });
+    expect(out).toMatchObject({ outcome: 'delivered', ts: '2026-10-28T12:10:02.000Z' });
+    expect(lostRespawnAmbientLine(out)).toBeNull();
+  });
+
+  it('retains a failed carry that belongs to the current incarnation', () => {
+    const out = deriveCurrentIncarnationRespawnOutcome([
+      { ts: '2026-10-28T12:11:00.000Z', kind: 'respawn-carry-dropped', reason: 'carry-stale' },
+    ], {
+      nativeSessionId: 'current-native',
+      startedAtMs: Date.parse('2026-10-28T12:10:00.000Z'),
+    }, { now: Date.parse('2026-10-28T12:20:00.000Z') });
+    expect(out).toMatchObject({ outcome: 'dropped', reason: 'carry-stale' });
   });
 });
 

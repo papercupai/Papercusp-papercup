@@ -2973,10 +2973,66 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     releaseAllResourcesForOwnerMock.mockRejectedValue(new Error('release transaction failed'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      await action(ctx);
+      await expect(action(ctx)).rejects.toThrow('local lock cleanup did not complete (incomplete)');
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock-set release failed'));
       expect(emitResourceReleasedEventMock).not.toHaveBeenCalled();
+      expect(gitSyncActivityPatches().some((activity) => activity.phase === 'post-legs')).toBe(false);
     } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not enter post-legs or emit a release wake before delayed lock cleanup completes', async () => {
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '60000');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', '120000');
+    vi.useFakeTimers();
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    let releaseStarted!: () => void;
+    const started = new Promise<void>((resolve) => { releaseStarted = resolve; });
+    let allowRelease!: () => void;
+    const pendingRelease = new Promise<void>((resolve) => { allowRelease = resolve; });
+    let releaseEventEmitted!: () => void;
+    const releaseEvent = new Promise<void>((resolve) => { releaseEventEmitted = resolve; });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let releaseCommitted = false;
+    releaseAllResourcesForOwnerMock.mockImplementationOnce(async () => {
+      releaseStarted();
+      await pendingRelease;
+      releaseCommitted = true;
+      return { released: 3, exclusiveResources: ['git-sync:papercup'], waiters: {} };
+    });
+    emitResourceReleasedEventMock.mockImplementation(() => {
+      expect(releaseCommitted).toBe(true);
+      releaseEventEmitted();
+    });
+
+    const running = action(ctx).then(() => null, (error: unknown) => error);
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(15_000);
+      const error = await running;
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('local lock cleanup did not complete (timed-out)');
+      expect(gitSyncActivityPatches().some((activity) => activity.phase === 'post-legs')).toBe(false);
+      expect(emitResourceReleasedEventMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock cleanup exceeded 15000ms'));
+
+      allowRelease();
+      vi.useRealTimers();
+      const eventObserved = await Promise.race([
+        releaseEvent.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_000)),
+      ]);
+      expect(eventObserved).toBe(true);
+      expect(releaseCommitted).toBe(true);
+      expect(emitResourceReleasedEventMock).toHaveBeenCalledOnce();
+    } finally {
+      allowRelease();
+      await running;
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
       warn.mockRestore();
     }
   });
@@ -3911,6 +3967,24 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       vi.useRealTimers();
       vi.unstubAllEnvs();
     }
+  });
+
+  it('forwards git-sync runId tags to sidecar process execution', async () => {
+    const diagnosticTags = {
+      runId: '6a2d9e86-5234-4d93-bae1-1b6c9476fcff',
+      commandClass: 'git' as const,
+    };
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      const opts = raw as unknown as RunGitSyncOpts;
+      await opts.runGit!(['status', '--porcelain'], repoDir, { diagnosticTags });
+      return syncedOutcome;
+    });
+
+    await action(ctx);
+
+    const taggedCall = runGitBoundedMock.mock.calls.find((args) =>
+      (args[3] as { diagnosticTags?: unknown } | undefined)?.diagnosticTags !== undefined);
+    expect(taggedCall?.[3]).toMatchObject({ diagnosticTags });
   });
 
   it('bounds concurrent command diagnostics, omits private argv, and clears settled commands', async () => {

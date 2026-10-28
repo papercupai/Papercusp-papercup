@@ -11,7 +11,10 @@ import {
   selectDeadOneShotConditions,
   toBridgeConditionStates,
   _resetConditionStalenessDebounce,
+  reportConditionStalenessTick,
+  formatConditionStalenessFailures,
 } from './condition-staleness-alarm';
+import type { ConditionStalenessTickResult } from './condition-staleness-alarm';
 import type { ConditionState } from '../agent-tools/coordination/tools/conditions';
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';
 import { PANEL_ORDER } from './types';
@@ -752,6 +755,9 @@ describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors li
       resolved: [],
       reconciled: [],
       bridged: { acquired: [], released: [], skipped: 0 },
+      heldOwnerSweep: { ran: false, released: 0, settled: 0, error: null },
+      // EI-27066473667693647: the no-op is fail-soft, but the failure is RECORDED.
+      failures: [{ stage: 'read-states', error: 'db unavailable' }],
     });
   });
 
@@ -1399,6 +1405,93 @@ describe('runConditionStalenessTick — bridge wiring', () => {
       },
     });
     expect(res.bridged).toEqual({ acquired: [], released: [], skipped: 3 });
+    // EI-27066473667693647: the swallowed sweep error is now reported, not lost.
+    expect(res.heldOwnerSweep).toEqual({ ran: true, released: 0, settled: 0, error: 'sweep down' });
+    expect(res.failures).toEqual([{ stage: 'held-owner-sweep', error: 'sweep down' }]);
+  });
+
+  it('EI-27066473667693647: counts the held-owner sweep releases and settles on a clean tick', async () => {
+    const res = await runConditionStalenessTick({
+      readStates: async () => [mkState({ condition_key: 'green-stall:papercusp' })],
+      listOpen: async () => [],
+      escalate: async () => undefined,
+      homeHarness: () => 'papercusp',
+      bridgeConditions: async () => ({ acquired: [], released: [], skipped: 0 }),
+      reconcileHeldOwners: async () => [
+        { conditionKey: 'alarm:a', released: 'WI-1', settled: true },
+        { conditionKey: 'alarm:b', released: 'WI-2', settled: false },
+        { conditionKey: 'alarm:c', released: null, settled: false },
+      ],
+    });
+    expect(res.heldOwnerSweep).toEqual({ ran: true, released: 2, settled: 1, error: null });
+    expect(res.failures).toEqual([]);
+  });
+
+  it('EI-27066473667693647: records every failed leg in order without throwing', async () => {
+    const res = await runConditionStalenessTick({
+      // Pinned clock: 60m open (stale past 45m) but last seen inside the absence
+      // window, so the condition escalates instead of auto-resolving as absent.
+      now: () => Date.parse('2026-07-05T01:00:00.000Z'),
+      staleMs: 45 * 60_000,
+      readStates: async () => [mkState({ condition_key: 'green-stall:papercusp' })],
+      listOpen: async () => {
+        throw new Error('escalation read down');
+      },
+      escalate: async () => {
+        throw new Error('send refused');
+      },
+      homeHarness: () => 'papercusp',
+      bridgeConditions: async () => {
+        throw new Error('bridge exploded');
+      },
+    });
+    expect(res.failures.map((f) => f.stage)).toEqual(['list-open', 'bridge', 'escalate']);
+    expect(res.failures.map((f) => f.error)).toEqual(['escalation read down', 'bridge exploded', 'send refused']);
+  });
+
+  describe('reportConditionStalenessTick — the production timer outcome (EI-27066473667693647)', () => {
+  const clean = (over: Partial<ConditionStalenessTickResult> = {}): ConditionStalenessTickResult => ({
+    fired: [],
+    signals: [],
+    resolved: [],
+    reconciled: [],
+    bridged: { acquired: [], released: [], skipped: 0 },
+    heldOwnerSweep: { ran: false, released: 0, settled: 0, error: null },
+    failures: [],
+    ...over,
+  });
+
+  it('a clean tick neither throws nor logs', () => {
+    const lines: string[] = [];
+    expect(() => reportConditionStalenessTick(clean(), (l) => lines.push(l))).not.toThrow();
+    expect(lines).toEqual([]);
+  });
+
+  it('a failed leg rejects the tick so managedSetInterval records lastError', () => {
+    const result = clean({
+      heldOwnerSweep: { ran: true, released: 0, settled: 0, error: 'sweep down' },
+      failures: [{ stage: 'held-owner-sweep', error: 'sweep down' }],
+    });
+    expect(() => reportConditionStalenessTick(result, () => undefined)).toThrow(
+      'condition-staleness tick: 1 leg failure(s): held-owner-sweep: sweep down',
+    );
+  });
+
+  it('logs the sweep settle counts when it released items', () => {
+    const lines: string[] = [];
+    reportConditionStalenessTick(clean({ heldOwnerSweep: { ran: true, released: 3, settled: 2, error: null } }), (l) =>
+      lines.push(l),
+    );
+    expect(lines).toEqual(['[condition-staleness-alarm] held-owner sweep released 3 item(s) (2 settled)']);
+  });
+
+  it('bounds the failure summary so it fits lastError', () => {
+    const text = formatConditionStalenessFailures(
+      Array.from({ length: 50 }, () => ({ stage: 'escalate' as const, error: 'x'.repeat(40) })),
+    );
+    expect(text.length).toBe(600);
+    expect(text.endsWith('…')).toBe(true);
+  });
   });
 
   it('a bridge failure never crashes the tick', async () => {

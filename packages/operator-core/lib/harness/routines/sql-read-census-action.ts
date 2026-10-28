@@ -305,7 +305,7 @@ export interface SqlIntentCensusDeps extends SqlMiningDeps {
   repairMeasurement?: (review: Awaited<ReturnType<typeof submitSqlCandidateReview>>) => Promise<SqlRepairMeasurement | null>;
 }
 export const SQL_CENSUS_REVIEW_LIMIT = 10;
-function censusMiningOptions(opts: Omit<SqlMiningOptions, 'scope' | 'authorize'> &
+export function censusMiningOptions(opts: Omit<SqlMiningOptions, 'scope' | 'authorize'> &
   Partial<Pick<SqlMiningOptions, 'scope' | 'authorize'>>): SqlMiningOptions {
   const epoch = new Date(opts.now ?? Date.now()).toISOString().slice(0, 7);
   return { ...opts, scope: opts.scope ?? { workspaceId: opts.workspaceId, sourceBoundary: 'authorized-tool-ledger', epoch,

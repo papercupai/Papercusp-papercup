@@ -23,6 +23,44 @@ import { clampCompactionLimit, selfSetCeilingForSpec, selfSetCeilingForWindow } 
 import { classifyFleetControlInvoker } from '../fleet_registry/fleet-auth';
 import { resolveFleetCaller } from '../fleet_registry/_shared';
 import { ADMIN_COORD_UI_OWNER, type ResolveIdentityCtx } from '../coordination/identity';
+import { verifyOwnerForceDirective, type OwnerForceDirectiveRow } from '../work_items/release-force-guard';
+
+/**
+ * Owner-directive role-cap lift (WI-6554700010042435, owner directive #2560,
+ * 2026-10-28: "increase your papercusp context limit to the maximum").
+ *
+ * The fleet-member role cap (COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP) is a
+ * spend default. Without a lift, no caller could honor an explicit owner
+ * request to raise a member's limit: self, leader, Overwatch and owner were all
+ * refused at the member cap. An OWNER-TYPED directive lifts the role cap to
+ * the window-derived self-set ceiling. The model window still binds.
+ *
+ * Reuses the claim-force verifier (one notion of "the owner said so"): the
+ * directive must exist in this workspace, have been captured from an
+ * owner-typed turn (never orders:record), be open, and be recent. It must be
+ * addressed to the TARGET session (the owner told that session to raise its
+ * own limit, so its leader may execute it) or to the CALLER.
+ */
+export type OwnerCapLiftVerdict =
+  | { ok: true; directiveId: number; excerpt: string }
+  | { ok: false; directiveId: number; reason: string };
+
+export async function verifyOwnerCapLiftDirective(
+  input: { directiveRef: number; targetOwnerId: string; callerOwnerId: string; workspaceId: string },
+  deps: { getDirective?: (id: number) => Promise<OwnerForceDirectiveRow | null>; now?: () => number } = {},
+): Promise<OwnerCapLiftVerdict> {
+  const addressees = [...new Set([input.targetOwnerId, input.callerOwnerId])];
+  let lastReason = `directive #${input.directiveRef} could not be verified`;
+  for (const addressee of addressees) {
+    const verdict = await verifyOwnerForceDirective(
+      { directiveId: input.directiveRef, callerOwnerId: addressee, workspaceId: input.workspaceId },
+      deps,
+    );
+    if (verdict.ok) return { ok: true, directiveId: verdict.directiveId, excerpt: verdict.excerpt };
+    lastReason = verdict.reason;
+  }
+  return { ok: false, directiveId: input.directiveRef, reason: lastReason };
+}
 
 export interface CrossSessionLimitResult {
   ok: boolean;
@@ -41,6 +79,8 @@ export interface CrossSessionLimitResult {
   targetRole?: string | null;
   /** How the caller was authorized. */
   invokedAs?: 'leader' | 'queen' | 'owner';
+  /** The verified owner directive that lifted the member role cap, when one was passed. */
+  ownerDirective?: { id: number; excerpt: string };
   error?: string;
   message?: string;
   note?: string;
@@ -56,6 +96,10 @@ export async function setCompactionLimitForOwner(
   ctx: ResolveIdentityCtx,
   targetOwnerId: string,
   limit: number,
+  opts: {
+    directiveRef?: number;
+    directiveDeps?: Parameters<typeof verifyOwnerCapLiftDirective>[1];
+  } = {},
 ): Promise<CrossSessionLimitResult> {
   const { ownerId: callerId, workspaceId } = resolveFleetCaller(ctx);
 
@@ -118,7 +162,28 @@ export async function setCompactionLimitForOwner(
 
   // 3. Validate against the TARGET's model-spec + role ceiling (a member's leaner
   //    [1m] cap when the target is a non-leader fleet member) before persisting.
-  const fleetMember = targetRole != null && targetRole !== 'leader';
+  //    A verified owner directive lifts the role cap (window ceiling still binds).
+  let ownerDirective: { id: number; excerpt: string } | undefined;
+  if (opts.directiveRef != null) {
+    const verdict = await verifyOwnerCapLiftDirective(
+      { directiveRef: opts.directiveRef, targetOwnerId, callerOwnerId: callerId, workspaceId },
+      opts.directiveDeps,
+    );
+    if (!verdict.ok) {
+      return {
+        ok: false,
+        targetOwnerId,
+        fleet: fleetSlug,
+        targetRole,
+        invokedAs,
+        requested: limit,
+        error: 'directive_unverified',
+        message: `${verdict.reason}; no change was made. Omit directiveRef to set within the role ceiling.`,
+      };
+    }
+    ownerDirective = { id: verdict.directiveId, excerpt: verdict.excerpt };
+  }
+  const fleetMember = ownerDirective == null && targetRole != null && targetRole !== 'leader';
   // Prefer the target's measured effective window when available. A Codex
   // rollout can expose a smaller window than its launch spec implies; accepting
   // the spec-derived ceiling would report success and leave the watchdog to
@@ -179,6 +244,7 @@ export async function setCompactionLimitForOwner(
     fleet: fleetSlug,
     targetRole,
     invokedAs,
+    ...(ownerDirective ? { ownerDirective } : {}),
     ...(persisted == null
       ? { note: `no live presence row for ${targetOwnerId} — limit not persisted (it may have ended)` }
       : {}),

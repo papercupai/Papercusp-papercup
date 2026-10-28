@@ -21,6 +21,7 @@ import {
   codexContextSnapshotFromRollout,
   codexContextSnapshotFromText,
   codexRolloutSessionId,
+  currentContextUsageForOwner,
   estimateContextTokens,
   estimateContextWindowForOwner,
   fallbackTranscriptFresh,
@@ -168,6 +169,7 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     expect(await codexContextSnapshotFromRollout(rollout)).toEqual({
       tokens: 156_981,
       modelContextWindow: 258_400,
+      observedAtMs: null,
     });
     expect(
       await estimateContextTokens(
@@ -252,7 +254,7 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
       }) + '\n',
     );
     const snapshot = await codexContextSnapshotFromRollout(rollout);
-    expect(snapshot).toEqual({ tokens: 12_345, modelContextWindow: 828_400 });
+    expect(snapshot).toEqual({ tokens: 12_345, modelContextWindow: 828_400, observedAtMs: null });
     expect(snapshot!.modelContextWindow).toBeGreaterThan(400_000);
   });
 
@@ -276,6 +278,7 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     expect(await codexContextSnapshotFromRollout(rollout)).toEqual({
       tokens: 40_321,
       modelContextWindow: 258_400,
+      observedAtMs: null,
     });
   });
 
@@ -301,6 +304,7 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     expect(await codexContextSnapshotFromRollout(rollout)).toEqual({
       tokens: 123_456,
       modelContextWindow: 258_400,
+      observedAtMs: null,
     });
     expect(
       await estimateContextTokens(
@@ -331,8 +335,8 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
       const p = join(dir, 'memo-unchanged.jsonl');
       writeFileSync(p, tokenLine(111_111));
       const { ops, open } = countingOps();
-      expect(await codexContextSnapshotFromRollout(p, ops)).toEqual({ tokens: 111_111, modelContextWindow: 258_400 });
-      expect(await codexContextSnapshotFromRollout(p, ops)).toEqual({ tokens: 111_111, modelContextWindow: 258_400 });
+      expect(await codexContextSnapshotFromRollout(p, ops)).toEqual({ tokens: 111_111, modelContextWindow: 258_400, observedAtMs: null });
+      expect(await codexContextSnapshotFromRollout(p, ops)).toEqual({ tokens: 111_111, modelContextWindow: 258_400, observedAtMs: null });
       expect(open).toHaveBeenCalledTimes(1);
     });
 
@@ -388,6 +392,75 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     it('returns null for a missing rollout', async () => {
       expect(await codexContextSnapshotFromRollout(join(dir, 'memo-missing.jsonl'))).toBeNull();
     });
+  });
+
+  it('reads current Codex usage only from a fresh token_count bound to the active native rollout', async () => {
+    const sessionId = '01a16b18-5d7e-75a2-9648-1b466516b75b';
+    const currentRollout = join(dir, `rollout-2026-10-28T13-00-00-${sessionId}.jsonl`);
+    const observedAtMs = Date.now() - 1_000;
+    writeFileSync(currentRollout, JSON.stringify({
+      type: 'event_msg',
+      timestamp: new Date(observedAtMs).toISOString(),
+      payload: {
+        type: 'token_count',
+        info: {
+          last_token_usage: { input_tokens: 351_220, output_tokens: 2_082, total_tokens: 353_302 },
+          model_context_window: 828_400,
+        },
+      },
+    }) + '\n');
+
+    const result = await currentContextUsageForOwner('owner-current', {
+      resolveRef: async () => ({
+        agent: 'codex',
+        sessionId,
+        sessionKey: 14795,
+        startedAtMs: observedAtMs - 60_000,
+      }),
+      findCodexRollout: async () => currentRollout,
+    });
+    expect(result).toEqual({
+      backend: 'codex',
+      nativeSessionId: sessionId,
+      sessionStartedAtMs: observedAtMs - 60_000,
+      reading: {
+        tokens: 353_302,
+        observedAtMs,
+        source: 'codex-last-token-usage',
+      },
+      unavailableReason: null,
+    });
+  });
+
+  it('discloses a stale or mismatched Codex sample as unavailable', async () => {
+    const currentId = '01a16b18-5d7e-75a2-9648-1b466516b75b';
+    const stalePath = join(dir, `rollout-2026-10-28T13-01-00-${currentId}.jsonl`);
+    writeFileSync(stalePath, JSON.stringify({
+      type: 'event_msg',
+      timestamp: new Date(Date.now() - 11 * 60_000).toISOString(),
+      payload: {
+        type: 'token_count',
+        info: { last_token_usage: { total_tokens: 353_302 }, model_context_window: 828_400 },
+      },
+    }) + '\n');
+    const stale = await currentContextUsageForOwner('owner-current', {
+      resolveRef: async () => ({ agent: 'codex', sessionId: currentId, sessionKey: 14795 }),
+      findCodexRollout: async () => stalePath,
+    });
+    expect(stale.reading).toBeNull();
+    expect(stale.unavailableReason).toBe('active Codex token_count sample is stale');
+
+    const mismatchedPath = join(dir, 'rollout-2026-10-28T13-00-00-01a04228-cb53-7af1-ac58-0b3f7a5cf79b.jsonl');
+    const mismatched = await currentContextUsageForOwner('owner-current', {
+      resolveRef: async () => ({ agent: 'codex', sessionId: currentId, sessionKey: 14795 }),
+      findCodexRollout: async () => mismatchedPath,
+      findCodexRolloutByUuid: async () => null,
+      codexSiblingSessionKeys: async () => [],
+      findCodexRolloutForSessionKey: async () => null,
+      statMtimeMs: () => null,
+    });
+    expect(mismatched.reading).toBeNull();
+    expect(mismatched.unavailableReason).toBe('Codex rollout does not match the active native session');
   });
 
   it('exposes the rollout window for the watchdog limit clamp', async () => {

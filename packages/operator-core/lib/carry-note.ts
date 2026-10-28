@@ -499,6 +499,22 @@ function verificationRelationTerms(text: string): Set<string> {
   return terms;
 }
 
+const VERIFICATION_PHASE_PATTERNS: ReadonlyArray<{ phase: string; pattern: RegExp }> = [
+  {
+    phase: 'spec-certification',
+    pattern: /\b(?:spec(?:ification)?|requirements?|certif(?:ication|y|ied)|conformance)\b/i,
+  },
+  {
+    phase: 'grading-audit',
+    pattern: /\b(?:grading\s*audit|gradingaudit|grading|grades?|scorecards?|audits?|repairs?)\b/i,
+  },
+];
+
+/** Identify explicit lifecycle phases so a shared plan id cannot join their evidence. */
+function verificationPhases(text: string): Set<string> {
+  return new Set(VERIFICATION_PHASE_PATTERNS.filter(({ pattern }) => pattern.test(text)).map(({ phase }) => phase));
+}
+
 /** Return the small predicate clause containing a contradiction marker. */
 function verificationEvidenceClause(text: string, match: RegExpExecArray): string {
   let start = 0;
@@ -524,7 +540,17 @@ function verificationConflictRelatesToClaim(
   if (typeof claim !== 'string' || !claim.trim()) return true;
   const claimTerms = verificationRelationTerms(claim);
   if (!claimTerms.size) return true;
-  const evidenceTerms = verificationRelationTerms(verificationEvidenceClause(text, match));
+  const evidenceClause = verificationEvidenceClause(text, match);
+  const claimPhases = verificationPhases(claim);
+  const evidencePhases = verificationPhases(evidenceClause);
+  if (
+    claimPhases.size > 0 &&
+    evidencePhases.size > 0 &&
+    ![...claimPhases].some((phase) => evidencePhases.has(phase))
+  ) {
+    return false;
+  }
+  const evidenceTerms = verificationRelationTerms(evidenceClause);
   if (!evidenceTerms.size) return true;
   return [...claimTerms].some((term) => evidenceTerms.has(term));
 }

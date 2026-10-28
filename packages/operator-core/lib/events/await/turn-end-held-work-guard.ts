@@ -23,6 +23,11 @@
 import { getLoopStatus } from '../../harness/routines/loop';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
+import {
+  isDelayedPendingRespawn,
+  readPriorRespawnOutcome,
+  type PriorRespawn,
+} from '../../carry-respawn-outcome';
 import { hasPendingDeliberateWakeDelivery, INBOX_WAKE_KEY_PREFIX, listParkedAwaitsForSubscribers } from './store';
 import {
   armTurnEndRewake,
@@ -42,6 +47,18 @@ import {
 
 /** How many held ids the refusal names before summarising the rest. */
 export const TURN_END_HELD_WORK_LISTED_CAP = 8;
+
+/** A known, recent pending host receipt is an accepted continuation boundary. */
+export function isFreshPendingCarryRespawn(prior: PriorRespawn): boolean {
+  return (
+    prior.outcome === 'pending' &&
+    prior.ageMs !== null &&
+    prior.ageMs !== undefined &&
+    Number.isFinite(prior.ageMs) &&
+    prior.ageMs >= 0 &&
+    !isDelayedPendingRespawn(prior)
+  );
+}
 
 /** Everything the verdict depends on, already read. */
 export interface TurnEndHeldWorkFacts {
@@ -86,6 +103,8 @@ export interface TurnEndHeldWorkDeps {
   listParkedAwaits: (ownerId: string) => Promise<WakeSourceAwait[]>;
   readAwaitTargets: (awaits: WakeSourceAwait[]) => Promise<WorkItemAwaitTargets>;
   hasPendingDeliberateWakeDelivery: (ownerId: string) => Promise<boolean>;
+  /** A recent host-ledger receipt says this owner has an accepted carry-respawn in flight. */
+  hasFreshPendingCarryRespawn: (ownerId: string) => Promise<boolean>;
   /** Arm this session's rewake timer for a refused stop (turn-end-rewake.ts). */
   armRewake: (input: { ownerId: string; held: readonly HeldWorkItem[] }) => Promise<TurnEndRewakeOutcome>;
   /** Drop this session's pending rewake timer once a stop is known safe. */
@@ -103,6 +122,9 @@ const defaultDeps: TurnEndHeldWorkDeps = {
     (await listParkedAwaitsForSubscribers([ownerId])).map((a) => ({ ...a, subscriberId: ownerId })),
   readAwaitTargets: (awaits) => readWorkItemAwaitTargets(awaits),
   hasPendingDeliberateWakeDelivery: (ownerId) => hasPendingDeliberateWakeDelivery(ownerId),
+  hasFreshPendingCarryRespawn: async (ownerId) => {
+    return isFreshPendingCarryRespawn(await readPriorRespawnOutcome(ownerId));
+  },
   armRewake: (input) => armTurnEndRewake(input),
   cancelRewake: (ownerId) => cancelTurnEndRewake({ ownerId }),
 };
@@ -136,11 +158,12 @@ export async function evaluateTurnEndHeldWorkStop(input: {
     // An unreadable loop status is unknown, and unknown never refuses (nor cancels anything).
     if (loopActive === null) return '';
     if (loopActive) return safeStop();
-    const [parked, pendingDelivery] = await Promise.all([
+    const [parked, pendingDelivery, pendingCarryRespawn] = await Promise.all([
       deps.listParkedAwaits(ownerId),
       deps.hasPendingDeliberateWakeDelivery(ownerId),
+      deps.hasFreshPendingCarryRespawn(ownerId),
     ]);
-    if (pendingDelivery) return safeStop();
+    if (pendingDelivery || pendingCarryRespawn) return safeStop();
     // The gate's own rewake timer is a backstop for a stop the gate refused, not a wake source the
     // agent chose: counting it would silence the refusal on every later stop.
     const chosen = parked.filter((a) => !isTurnEndRewakeKey(a.eventKey));

@@ -3392,6 +3392,25 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(written).not.toContain('- ⚠ ');
     });
 
+    it('keeps spec certification VERIFIED when a separate grading audit is pending for the same plan', async () => {
+      const plan = 'benchmark-coverage-frontierswe-v2-2026-10-10';
+      const claim = `R-3 spec certification passed for plan ${plan}`;
+      const evidence = `Spec certification passed for plan ${plan}; a separate gradingAudit remains pending for plan ${plan}.`;
+      const b = body(
+        await call({
+          did: 'recorded the completed R-3 certification while a later audit remains pending',
+          checks: [{ claim, recheck: `read the R-3 spec certification for ${plan}`, verified: evidence }],
+        }),
+      );
+
+      expect(b.ok).toBe(true);
+      expect(b.repairs).toBeUndefined();
+      const [, written] = setLoopCarryNote.mock.calls.at(-1) as [unknown, string];
+      expect(withoutRowIds(written)).toContain('- ✓ ');
+      expect(written).toContain(evidence);
+      expect(written).not.toContain('- ⚠ ');
+    });
+
     it('keeps clean verification evidence as VERIFIED', async () => {
       const b = body(
         await call({

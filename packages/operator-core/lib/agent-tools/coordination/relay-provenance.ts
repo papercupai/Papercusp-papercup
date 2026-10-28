@@ -193,7 +193,7 @@ export function renderRelayQuoteSuffix(stamp: RelayProvenanceStamp): string {
  * widens the leading `\bowner` boundary, so `landowner`/`downer` stay quiet.
  */
 const OWNER_CLAIM_RE =
-  /\bowner[\s-]+directive\b|\bowner[\s-]+(?:said|says|asked|wants|approved|verified|told|directed|ordered)\b|\bper\s+the\s+owner\b/i;
+  /\bowner[\s-]+directive\b|\bowner[\s-]+(?:said|says|asked|wants|approved|told|directed|ordered)\b|\bowner[\s-]+verified[\s-]+directive\b|\bper\s+the\s+owner\b/i;
 const QUEEN_CLAIM_RE =
   /\bqueen[\s-]+directive\b|\bqueen[\s-]+(?:said|says|approved|verified|ordered)\b/i;
 

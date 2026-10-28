@@ -1852,7 +1852,9 @@ export function wakeTurnText(d: DeliveryWork): string {
     ? ` [TIMEOUT (fired_reason: timeout, await_id: ${d.awaitId}) — the event was not observed by your deadline;` +
       ' it may have fired since. Check events:status for this exact key before treating the source as pending.' +
       ' If a re-arm on this key already created a NEWER await_id,' +
-      ' cross-check events:status active_awaits before re-arming again — this delivery is only about' +
+      ' cross-check events:status for this exact key in event_inspection.waiters: find your own row' +
+      ' (subscriber_id matching your owner ID) with state "registered" and a future expires_ts.' +
+      ' Use active_awaits only for generic or await_id status reads — this delivery is only about' +
       ` await_id ${d.awaitId}]`
     : '';
   // EI-16648: an always-armed inbox-wake (`coord:inbox-wake:<owner>`) can be
