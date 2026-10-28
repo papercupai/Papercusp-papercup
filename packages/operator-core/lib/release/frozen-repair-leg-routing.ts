@@ -28,6 +28,12 @@ export interface FrozenRepairLegRoutingDeps {
     repairHead: string;
     entries: readonly string[];
   }): Promise<Map<string, string>>;
+  /**
+   * Entries whose LATEST clean CI row at `repairHead` is a pass: the fix landed and only
+   * awaits re-verify, so no owner item may be minted for them (EI-27221104393614066).
+   * Optional + best-effort: absent or throwing = no evidence, route as before.
+   */
+  readPassedAtRepairHead?(input: { repairHead: string; entries: readonly string[] }): Promise<Set<string>>;
   broadcastOpen(ev: { conditionKey: string; summary: string; body: string }): Promise<boolean>;
   broadcastResolved(res: { conditionKeys: string[]; summary: string; body?: string }): Promise<boolean>;
 }
@@ -81,11 +87,23 @@ export async function routeFrozenRepairLegs(
         // Best-effort: an item without its tail still names the leg and the admit call.
       }
     }
+    let passedAtRepairHead: Set<string> | undefined;
+    if (deps.readPassedAtRepairHead) {
+      try {
+        passedAtRepairHead = await deps.readPassedAtRepairHead({
+          repairHead: req.queue.repairHead,
+          entries: firstPass.open.map((o) => o.entry),
+        });
+      } catch {
+        // Best-effort: without evidence, route as before.
+      }
+    }
     plan = planFrozenRepairLegRouting({
       pipeline: req.pipeline,
       queue: req.queue,
       openLegKeys,
       failureTails: tails,
+      passedAtRepairHead,
     });
   }
   const opened: string[] = [];
@@ -138,6 +156,26 @@ export function productionFrozenRepairLegRoutingDeps(): FrozenRepairLegRoutingDe
          ORDER BY file_path, finished_at DESC
       `;
       for (const r of rows) if (r.output_tail) out.set(r.file_path, r.output_tail);
+      return out;
+    },
+    async readPassedAtRepairHead({ repairHead, entries }) {
+      const out = new Set<string>();
+      if (entries.length === 0) return out;
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { sql } = getOrgPg();
+      // Latest clean gate row per file AT repairHead; only a pass there counts, so a later
+      // fail on the same sha keeps the leg routed.
+      const rows = await sql<{ file_path: string; status: string }[]>`
+        SELECT DISTINCT ON (file_path) file_path, status
+          FROM harness_shared.test_runs
+         WHERE source = 'ci'
+           AND worktree_dirty = false
+           AND commit_sha = ${repairHead}
+           AND file_path = ANY(${[...entries]})
+           AND status IN ('pass', 'fail', 'error')
+         ORDER BY file_path, finished_at DESC
+      `;
+      for (const r of rows) if (r.status === 'pass') out.add(r.file_path);
       return out;
     },
     async broadcastOpen(ev) {

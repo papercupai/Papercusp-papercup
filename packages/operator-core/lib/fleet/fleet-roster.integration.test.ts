@@ -142,6 +142,31 @@ describe('--fleet launch registration → real fleetSlug + roster grouping (WI-1
     expect(assignmentEntry!.fleetRole).toBe('member');
   });
 
+  it('keeps all recent respawn-style member identities in the canonical fleet roster', async () => {
+    const fleetSlug = 'fr-test-fleet-respawned';
+    const ownerIds = [
+      'su-respawn-63bfff47ddf3583f5111e499fb21db10',
+      'su-respawn-a0591f4fa7c5fb461e434592f28b4d7d',
+      'su-respawn-ebb0fbe43e480e827420268a317e294b',
+    ];
+
+    for (const ownerId of ownerIds) {
+      await appendFleetMembershipIfAbsent({
+        workspaceId: WS,
+        ownerId,
+        ownerLabel: ownerId,
+        fleetSlug,
+        fleetRole: 'member',
+      });
+      await writePresence(memberIdentity(ownerId), { intent: 'resumed with current work' }, null);
+    }
+
+    const roster = await listFleetRoster({ fleetSlug, workspaceId: WS });
+
+    expect(roster.map((entry) => entry.agentId)).toEqual(expect.arrayContaining(ownerIds));
+    expect(roster.filter((entry) => ownerIds.includes(entry.agentId))).toHaveLength(3);
+  });
+
   it('a direct member launch with --fleet (bootstrap-role path) also lands a non-null fleetSlug', async () => {
     // Mirrors bootstrap-role.ts's own boot-time membership stamp keyed by
     // spec.sid — a historically SEPARATE bug from bootstrap-su's, per the

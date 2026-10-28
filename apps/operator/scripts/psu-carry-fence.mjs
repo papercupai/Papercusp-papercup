@@ -17,9 +17,12 @@ export function carryFenceIdentityMatches(request, current) {
 
 /** Pure state machine; the host owns the synchronous effect boundary. */
 export function createPendingCarryFence({ identity, canFence = () => true, now = Date.now }) {
-  const pending = new Set();
+  const pending = new WeakSet();
+  let pendingLegacyCount = 0;
   const fenced = new Map();
   const committed = new Set();
+  const isWeakKey = value => value !== null &&
+    (typeof value === 'object' || typeof value === 'function');
   const text = value => typeof value === 'string' && value.trim() === value && value.length > 0 && value.length <= 200;
   const refusal = reason => ({ ok: false, reason });
   const deliveryRefusal = message => {
@@ -35,10 +38,16 @@ export function createPendingCarryFence({ identity, canFence = () => true, now =
   return {
     admit(message) {
       const reason = deliveryRefusal(message);
-      if (!reason && message?.mode === 'carry-respawn') pending.add(message);
+      if (!reason && message?.mode === 'carry-respawn' && message?.carryNonce === undefined &&
+          isWeakKey(message) && !pending.has(message)) {
+        pending.add(message);
+        pendingLegacyCount += 1;
+      }
       return reason;
     },
-    end(message) { pending.delete(message); },
+    end(message) {
+      if (isWeakKey(message) && pending.delete(message)) pendingLegacyCount -= 1;
+    },
     isFenced(message) { return fenced.has(message?.carryNonce); },
     deliveryRefusal,
     begin(message) {
@@ -54,7 +63,7 @@ export function createPendingCarryFence({ identity, canFence = () => true, now =
       if (!carryFenceIdentityMatches(request, current)) return refusal('stale-carry-fence-target');
       if (committed.has(request.nonce)) return refusal('carry-already-committed');
       if (!canFence()) return refusal('carry-fence-effect-in-flight');
-      if ([...pending].some(message => message.carryNonce === undefined)) return refusal('carry-nonce-unavailable');
+      if (pendingLegacyCount > 0) return refusal('carry-nonce-unavailable');
       const prior = fenced.get(request.nonce);
       if (prior && prior !== request.fenceId) return refusal('carry-fence-conflict');
       fenced.set(request.nonce, request.fenceId);

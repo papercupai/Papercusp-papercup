@@ -313,7 +313,7 @@ export async function resolveAnnouncementOwnership(
     try {
       verdicts = await resolveSessionStates(
         [...candidateIds].map((ownerId) => ({ ownerId })),
-        { hydratePerId: true },
+        { hydratePerId: true, psuHostPositiveAuthority: true },
       );
     } catch {
       verdicts = new Map();

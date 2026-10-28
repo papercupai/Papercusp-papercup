@@ -14,7 +14,15 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { classifyTaskExit, isGatingFailure } from '../../../../scripts/lib/task-exit-class.mjs';
+import {
+  ADMISSION_DEFERRAL_DELAYS_MS,
+  classifyTaskExit,
+  formatAdmissionDeferralLine,
+  isGatingFailure,
+  isTransientAdmissionPersistFailure,
+  parseAdmissionDeferralDelays,
+  runWithAdmissionDeferral,
+} from '../../../../scripts/lib/task-exit-class.mjs';
 
 // The caller's mirror (scripts/affected-tests.mjs), passed in as a parameter so this module
 // stays import-free — see the module header for why that coupling is deliberate.
@@ -180,5 +188,117 @@ describe('isGatingFailure — the retry decision (EI-20107132436867486)', () => 
     // Reported as "examined NOTHING — not gating", and NOT retried. One honest message
     // instead of a scary one plus a pointless re-run.
     expect(isGatingFailure(cls)).toBe(false);
+  });
+});
+
+// EI-21878448249294823: the message the governor emitted on drill run 2026-10-28T10-19-19
+// for @papercusp/web, @papercusp/desktop and @papercusp/operator-vite while migration 1601
+// held AccessExclusive on work_items for ~12 minutes.
+const ADMISSION_PERSIST_55P03 =
+  'durable admission record could not be persisted after 4 attempts (transient pg contention did not clear): ' +
+  'operator write timed out waiting for a row/advisory lock (pg 55P03 lock_timeout) — retry shortly';
+
+describe('admission-persist deferral (EI-21878448249294823)', () => {
+  it('recognizes only the admission-time persist refusal as transient', () => {
+    expect(isTransientAdmissionPersistFailure(ADMISSION_PERSIST_55P03)).toBe(true);
+    expect(isTransientAdmissionPersistFailure('durable admission record could not be persisted')).toBe(true);
+    expect(isTransientAdmissionPersistFailure('resource governor refused: over budget')).toBe(false);
+    expect(isTransientAdmissionPersistFailure(undefined)).toBe(false);
+  });
+
+  it('classifies a never-admitted task as admission-deferred, ahead of every forgiving flag', () => {
+    const cls = classifyTaskExit({
+      status: 1,
+      notCheckedExitCode: EXIT_NOT_CHECKED,
+      notCheckedIsNonGating: true,
+      quarantined: true,
+      capturedBytes: 0,
+      elapsedMs: 0,
+      admissionErrorMessage: ADMISSION_PERSIST_55P03,
+    });
+    expect(cls).toBe('admission-deferred');
+    // Not retried by the flake-absorption pass: the deferral already ran at admission.
+    expect(isGatingFailure(cls)).toBe(false);
+  });
+
+  it('leaves an unrelated admission refusal on its existing classification', () => {
+    expect(
+      classifyTaskExit({
+        status: 1,
+        notCheckedExitCode: EXIT_NOT_CHECKED,
+        admissionErrorMessage: 'resource governor refused: over budget',
+      }),
+    ).toBe('failed');
+  });
+
+  it('re-runs after a wall-clock delay until admission succeeds', async () => {
+    const slept: number[] = [];
+    const deferred: number[] = [];
+    let calls = 0;
+    const result = await runWithAdmissionDeferral({
+      delaysMs: [30_000, 60_000, 120_000],
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+      onDefer: ({ attempt }) => deferred.push(attempt),
+      run: async () => {
+        calls++;
+        if (calls < 3) throw new Error(ADMISSION_PERSIST_55P03);
+        return 'ran';
+      },
+    });
+    expect(result).toBe('ran');
+    expect(calls).toBe(3);
+    expect(slept).toEqual([30_000, 60_000]);
+    expect(deferred).toEqual([1, 2]);
+  });
+
+  it('propagates the last refusal, with the deferral count, once the window is exhausted', async () => {
+    let calls = 0;
+    const failure = await runWithAdmissionDeferral({
+      delaysMs: [10, 20],
+      sleep: async () => {},
+      run: async () => {
+        calls++;
+        throw new Error(ADMISSION_PERSIST_55P03);
+      },
+    }).catch((error: Error & { admissionDeferrals?: number }) => error);
+    expect(calls).toBe(3);
+    expect((failure as Error).message).toBe(ADMISSION_PERSIST_55P03);
+    expect((failure as Error & { admissionDeferrals?: number }).admissionDeferrals).toBe(2);
+  });
+
+  it('never defers a different failure', async () => {
+    let calls = 0;
+    const sleep = async () => {
+      throw new Error('must not sleep');
+    };
+    await expect(
+      runWithAdmissionDeferral({
+        delaysMs: [10],
+        sleep,
+        run: async () => {
+          calls++;
+          throw new Error('run-group guard failed');
+        },
+      }),
+    ).rejects.toThrow('run-group guard failed');
+    expect(calls).toBe(1);
+  });
+
+  it('parses the override: default, off, explicit list, and garbage keeps the default', () => {
+    expect(parseAdmissionDeferralDelays(undefined)).toBe(ADMISSION_DEFERRAL_DELAYS_MS);
+    expect(parseAdmissionDeferralDelays('off')).toEqual([]);
+    expect(parseAdmissionDeferralDelays('0')).toEqual([]);
+    expect(parseAdmissionDeferralDelays('1000, 2000')).toEqual([1000, 2000]);
+    expect(parseAdmissionDeferralDelays('1000,abc')).toBe(ADMISSION_DEFERRAL_DELAYS_MS);
+    // The default window must outlast the measured 12-minute migration lock.
+    expect(ADMISSION_DEFERRAL_DELAYS_MS.reduce((a, b) => a + b, 0)).toBeGreaterThan(12 * 60_000);
+  });
+
+  it('renders one greppable deferral line', () => {
+    expect(
+      formatAdmissionDeferralLine({ task: '@papercusp/web :: test', attempt: 1, of: 5, delayMs: 30_000, reason: 'x' }),
+    ).toBe('AFFECTED_ADMISSION_DEFERRED task="@papercusp/web :: test" attempt=1/5 delayMs=30000 reason="x"');
   });
 });

@@ -279,6 +279,10 @@ describe('transcript wire fixtures still match the live wire', () => {
         // completion echoes, injected scaffolding. Listed rather than inferred,
         // so adding one is a visible decision.
         const IGNORED = new Set([
+          // Claude Code's timestamp-less captures of the outgoing API request
+          // body (EI-27188648844771651). They re-carry messages already recorded
+          // as user/assistant rows, so reading them would duplicate conversation.
+          'api-request-blob/assistant', 'api-request-blob/system', 'api-request-blob/user',
           'event_msg/token_count', 'event_msg/task_started', 'event_msg/task_complete',
           'event_msg/item_completed', 'event_msg/thread_settings_applied', 'event_msg/error',
           // Codex's usage telemetry has a `payload`, but no conversational field the

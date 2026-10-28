@@ -62,6 +62,36 @@ describe("plans:get { heading } narrowing (EI-19478970139996135)", () => {
     expect(JSON.stringify(out)).not.toContain(NOW_STATE);
   });
 
+  it("uses the resolved structured Now note instead of the frozen content section", () => {
+    const warning = "The stored state conflicts with current item status.";
+    const currentRaw = "**State:** Current structured state.\n\n**Next:** P-003.";
+    const base = {
+      ...makeBase(),
+      now: {
+        state: "Current structured state.",
+        next: "P-003.",
+        raw: currentRaw,
+        stateDerivation: { warning },
+      },
+    };
+    const frozenSection: Sec = {
+      heading: "Now",
+      level: 2,
+      chars: 45,
+      body: "State: old frozen state.\n\nNext: P-002.",
+    };
+
+    const out = narrowHeadingPayload(base, "Now", frozenSection);
+
+    expect(out.section).toEqual({
+      heading: "Now",
+      level: 2,
+      body: `${warning}\n\n${currentRaw}`,
+    });
+    expect(JSON.stringify(out)).not.toContain("old frozen state");
+    expect(out).not.toHaveProperty("now");
+  });
+
   it("keeps identity + the CAS baseline, so a caller can edit what it just read", () => {
     const out = narrowHeadingPayload(makeBase(), "Phase B", HIT);
     expect(out.slug).toBe("a-plan-2026-08-03");

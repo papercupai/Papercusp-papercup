@@ -231,7 +231,20 @@ import { testConfigMainProcessFiles } from "../libs/test-config/src/main-process
 // '/tmp/<nanoid>/ssr'` — the gate counted that as red #20 and froze every agent's deploys.
 // This is the gate's own entrypoint, so it is the single highest-value call site.
 ensurePapercuspTmpdir();
-import { classifyTaskExit, isGatingFailure } from "./lib/task-exit-class.mjs";
+import {
+  classifyTaskExit,
+  formatAdmissionDeferralLine,
+  isGatingFailure,
+  parseAdmissionDeferralDelays,
+  runWithAdmissionDeferral,
+} from "./lib/task-exit-class.mjs";
+
+// EI-21878448249294823: wall-clock deferral between governed-admission attempts when the
+// admission record cannot be persisted (a long-held PG lock). Override with a comma list of
+// ms, or `off`. See runWithAdmissionDeferral.
+const ADMISSION_DEFER_DELAYS_MS = parseAdmissionDeferralDelays(
+  process.env.AFFECTED_ADMISSION_DEFER_DELAYS_MS,
+);
 import { formatTaskOutcomeFields } from "./lib/task-progress-line.mjs";
 import {
   classifyResidualFailure,
@@ -7798,7 +7811,12 @@ function runCapturedTask(
   };
   const runExecution = runGroupGuardFailure
     ? Promise.reject(runGroupGuardFailure)
-    : runGovernedTestProcess(
+    : runWithAdmissionDeferral({
+      delaysMs: ADMISSION_DEFER_DELAYS_MS,
+      sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
+      onDefer: ({ attempt, of, delayMs, reason }) =>
+        rawErrSync(formatAdmissionDeferralLine({ task: taskKey(spawnTask), attempt, of, delayMs, reason })),
+      run: () => runGovernedTestProcess(
     governedOptions,
     (_admissionContext, governedEnv, { inherited }) => new Promise((resolveRun) => {
     const admissionRunGroupGuardFailure = ciTestRunGroupGuardFailure({
@@ -8198,7 +8216,8 @@ function runCapturedTask(
       resolveRun(result);
     });
     }),
-  );
+  ),
+    });
   return runExecution.catch((error) => {
     const isRunGroupGuardFailure = error?.code === "AFFECTED_TEST_RUN_GROUP_GUARD";
     // Admission/loader failures are attributed to this task rather than
@@ -8221,6 +8240,7 @@ function runCapturedTask(
       __watchdogDeadlineMs: taskTimeoutMs,
       __watchdogKillReason: null,
       __governedAdmissionError: !isRunGroupGuardFailure,
+      __admissionDeferrals: Number(error?.admissionDeferrals ?? 0),
       ...(cacheDecision
         ? {
             __cacheStatus: "miss",
@@ -8873,6 +8893,7 @@ for (const scheduled of initialPool.results) {
         capturedBytes: r.__capturedBytes,
         elapsedMs: r.__elapsedMs,
         durationEstimateMs: r.__durationEstimateMs,
+        admissionErrorMessage: r.__governedAdmissionError ? r.error?.message : undefined,
       }),
     )
   )
@@ -9233,14 +9254,20 @@ for (const scheduled of initialPool.results) {
       capturedBytes: r.__capturedBytes,
       elapsedMs: r.__elapsedMs,
       durationEstimateMs: r.__durationEstimateMs,
+      admissionErrorMessage: r.__governedAdmissionError ? r.error?.message : undefined,
     });
-    if (exitClass === "undetermined") {
+    if (exitClass === "undetermined" || exitClass === "admission-deferred") {
       undeterminedTasks++;
       const taskName = `${t.ws.name} :: ${t.script}`;
       undeterminedTaskNames.push(taskName);
       errSync(
-        `\n  ⚠ ${taskName} UNDETERMINED — the child did not establish a trustworthy test verdict; ` +
-          `not retrying and keeping the affected-tests run non-green.`,
+        exitClass === "admission-deferred"
+          ? `\n  ⚠ ${taskName} UNDETERMINED (admission-deferred) — the task NEVER RAN: its governed ` +
+              `admission could not be persisted after ${r.__admissionDeferrals ?? 0} wall-clock deferral(s) ` +
+              `(PG lock contention outlasted the window; EI-21878448249294823). Zero tests measured; ` +
+              `keeping the affected-tests run non-green.`
+          : `\n  ⚠ ${taskName} UNDETERMINED — the child did not establish a trustworthy test verdict; ` +
+              `not retrying and keeping the affected-tests run non-green.`,
       );
     } else if (exitClass === "not-checked") {
       // "I could not look" is not "I found a violation" — see EXIT_NOT_CHECKED above. Reported

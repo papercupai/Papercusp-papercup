@@ -108,6 +108,7 @@ type DerivedStatus = {
 };
 type BriefResult = {
   items: Array<{ id: string; effectiveStatus: string; phase: string | null }>;
+  section?: { heading: string; level: number; body: string } | null;
   acceptanceRubric?: unknown;
   lifecycle?: { verdict: string; acceptance?: { rubricActive: boolean; rubricRef: string | null } };
   derivedStatus?: DerivedStatus;
@@ -363,5 +364,15 @@ describe('plans:get wiring for blind review #14 (real PG) — derived-status-not
       basis: 'events-after-note',
       transitionsSinceNote: 0,
     });
+  });
+
+  it('G-3: heading Now returns the structured note instead of the frozen content section', async () => {
+    const result = await read({ heading: 'Now' }, NOTE_PLAN);
+
+    expect(result.section?.heading).toBe('Now');
+    expect(result.section?.body).toContain('Stored note state.');
+    expect(result.section?.body).toContain('P-002.');
+    expect(result.section?.body).not.toContain('proving the plan brief.');
+    expect(result).not.toHaveProperty('now');
   });
 });

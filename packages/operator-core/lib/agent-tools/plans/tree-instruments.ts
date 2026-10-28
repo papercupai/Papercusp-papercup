@@ -20,7 +20,7 @@
  * set is not a basis a later read can reproduce.
  */
 import { createHash } from 'node:crypto';
-import { lstat } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { join, posix } from 'node:path';
 import { z } from 'zod';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -241,6 +241,7 @@ function isNotificationInput(path: string): boolean {
 async function notificationCensusAtCommit(root: string, commit: string, deps: CommittedTreeDeps): Promise<unknown> {
   const git = deps.git ?? defaultGitRunner;
   const pending = [{ repo: '.', commit }];
+  const visitedRepos = new Set<string>();
   const files: CommittedTreeFile[] = [];
   const submodules: string[] = [];
   const declared: string[] = [];
@@ -252,6 +253,9 @@ async function notificationCensusAtCommit(root: string, commit: string, deps: Co
         : await lstat(join(dir, '.git')).then(entry => entry.isFile() || entry.isDirectory(), () => false);
       if (!available) throw new Error(`tree_instrument_submodule_unavailable:${next.repo}`);
     }
+    const repoKey = JSON.stringify([await realpath(dir), next.commit]);
+    if (visitedRepos.has(repoKey)) throw new Error('tree_instrument_submodule_cycle_or_alias:' + next.repo);
+    visitedRepos.add(repoKey);
     const entries = parseLsTreeLong(await git(dir, ['ls-tree', '-r', '-z', '-l', next.commit]));
     if (entries.some(entry => entry.path === '.gitmodules' && entry.type === 'blob')) {
       // Read Git's own parser from this commit, never the working .gitmodules.

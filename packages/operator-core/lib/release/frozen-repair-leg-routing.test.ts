@@ -47,6 +47,27 @@ describe('planFrozenRepairLegRouting (P-013 / D-029)', () => {
     expect(plan.open).toEqual([]);
   });
 
+  it('a leg already passing clean CI at the repair head is not opened, and its open item resolves (EI-27221104393614066)', () => {
+    const plan = planFrozenRepairLegRouting({
+      pipeline: 'papercusp',
+      queue: queue(['packages/a/x.test.ts', 'lint:tsc', 'packages/b/y.test.ts']),
+      openLegKeys: [key('packages/a/x.test.ts')],
+      passedAtRepairHead: new Set(['packages/a/x.test.ts', 'packages/b/y.test.ts']),
+    });
+    expect(plan.open.map((o) => o.entry)).toEqual(['lint:tsc']);
+    expect(plan.resolve).toEqual([key('packages/a/x.test.ts')]);
+  });
+
+  it('CONTROL: without pass-at-repair-head evidence the same queue routes every leg', () => {
+    const plan = planFrozenRepairLegRouting({
+      pipeline: 'papercusp',
+      queue: queue(['packages/a/x.test.ts', 'lint:tsc', 'packages/b/y.test.ts']),
+      openLegKeys: [key('packages/a/x.test.ts')],
+    });
+    expect(plan.open.map((o) => o.entry)).toEqual(['lint:tsc', 'packages/b/y.test.ts']);
+    expect(plan.resolve).toEqual([]);
+  });
+
   it('a gone queue (null) resolves every open leg of the pipeline', () => {
     const plan = planFrozenRepairLegRouting({
       pipeline: 'papercusp',
@@ -144,6 +165,32 @@ describe('routeFrozenRepairLegs', () => {
     });
     const out = await routeFrozenRepairLegs({ pipeline: 'papercusp', queue: queue(['a/b.test.ts']) }, deps);
     expect(out.opened).toEqual([key('a/b.test.ts')]);
+  });
+
+  it('a new leg already passing at the repair head mints nothing (EI-27221104393614066)', async () => {
+    const readPassedAtRepairHead = vi.fn(async () => new Set(['a/b.test.ts']));
+    const deps = fakeDeps([], { readPassedAtRepairHead });
+    const out = await routeFrozenRepairLegs({ pipeline: 'papercusp', queue: queue(['a/b.test.ts']) }, deps);
+    expect(readPassedAtRepairHead).toHaveBeenCalledWith({ repairHead: HEAD, entries: ['a/b.test.ts'] });
+    expect(deps.broadcastOpen).not.toHaveBeenCalled();
+    expect(out.opened).toEqual([]);
+  });
+
+  it('a throwing pass-at-repair-head read still opens the item', async () => {
+    const deps = fakeDeps([], {
+      readPassedAtRepairHead: vi.fn(async () => {
+        throw new Error('pg down');
+      }),
+    });
+    const out = await routeFrozenRepairLegs({ pipeline: 'papercusp', queue: queue(['a/b.test.ts']) }, deps);
+    expect(out.opened).toEqual([key('a/b.test.ts')]);
+  });
+
+  it('a steady-state tick does not read pass-at-repair-head evidence', async () => {
+    const readPassedAtRepairHead = vi.fn(async () => new Set<string>());
+    const deps = fakeDeps([key('lint:tsc')], { readPassedAtRepairHead });
+    await routeFrozenRepairLegs({ pipeline: 'papercusp', queue: queue(['lint:tsc']) }, deps);
+    expect(readPassedAtRepairHead).not.toHaveBeenCalled();
   });
 
   it('a lost broadcast is not reported as opened, so the next tick retries it', async () => {

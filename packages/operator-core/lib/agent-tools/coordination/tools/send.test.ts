@@ -139,10 +139,12 @@ vi.mock('../messages', () => ({
   getUnresolvedAudienceSelectors: vi.fn(() => []),
   getUnreachableAudienceSelectors: vi.fn(() => []),
 }));
-// The dispatch-advisory leg dynamically imports the work-item store only when
-// a directed action message names a WI-/EI- id. Keep this unit suite DB-free;
-// the production lookup is covered by the work-item store tests.
-vi.mock('../../../work-items', () => ({ getWorkItem: getWorkItemMock }));
+// Keep work-item reads DB-free while preserving exports consumed by transitive
+// importers such as scheduler/get-next during module collection.
+vi.mock('../../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../work-items')>()),
+  getWorkItem: getWorkItemMock,
+}));
 vi.mock('../recipient-liveness', () => ({ describeMissedRecipients: vi.fn(async () => []) }));
 // WI-41323: the relay resolver is real IO (coord log + session transcripts). No
 // test here passed relayOf/relayQuote before, so this mock is unreachable except
@@ -2131,6 +2133,30 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
     });
 
     expect(getWorkItemM.mock.calls.map(([id]) => id)).toEqual(['WI-10007462']);
+    expect(b.results[0].dispatchAdvisory).toBeUndefined();
+  });
+
+  it('does not promote contextual mentions when the structured target already attaches the recipient', async () => {
+    getWorkItemM.mockImplementation(async (id: string) =>
+      id === 'EI-26534393051795127'
+        ? { id, state: 'blocked', assignee: 'bee-1' }
+        : { id, state: 'open', assignee: 'me' },
+    );
+
+    const b = await body({
+      to: ['bee-1'],
+      summary: 'Continue EI-26534393051795127; related context is EI-26741845666383086',
+      expects: 'action',
+      body: [
+        {
+          text: 'Please drive the blocked primary repair EI-26534393051795127.',
+          forYouBecause: { relation: 'owns', ref: 'EI-26534393051795127', note: 'you own this repair' },
+        },
+        { text: 'EI-26741845666383086 is included only as sender-owned context.' },
+      ],
+    });
+
+    expect(getWorkItemM).not.toHaveBeenCalled();
     expect(b.results[0].dispatchAdvisory).toBeUndefined();
   });
 

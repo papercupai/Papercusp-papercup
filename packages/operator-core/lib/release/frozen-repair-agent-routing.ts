@@ -101,6 +101,14 @@ export interface FrozenRepairLegRoutingInput {
   openLegKeys: readonly string[];
   /** Recorded failure output per failing entry, best-effort; absent entries say so. */
   failureTails?: ReadonlyMap<string, string>;
+  /**
+   * Entries with a CLEAN (non-dirty) CI pass recorded AT `queue.repairHead`. Such an entry's
+   * fix already landed and only awaits the queue's re-verify, so routing it would mint an
+   * owner item that can only be closed as "already passing" — and closing it would re-mint
+   * it next tick (EI-27221104393614066). Excluded from the routed window; an open leg for it
+   * is resolved. Omitted/empty = no evidence, route as before.
+   */
+  passedAtRepairHead?: ReadonlySet<string>;
 }
 
 export interface FrozenRepairLegOpen {
@@ -151,6 +159,7 @@ export function planFrozenRepairLegRouting(
       const entry = raw.trim();
       if (!entry || seen.has(entry)) continue;
       seen.add(entry);
+      if (input.passedAtRepairHead?.has(entry)) continue;
       routed.push(entry);
       if (routed.length >= MAX_ROUTED_LEGS) break;
     }

@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import type { Sql } from 'postgres';
 import * as ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import {
-  summarizeInterfaceEligibility,
+  summarizeInterfaceEligibility, readShadowWindowInput, summarizeShadowWindow, SHADOW_WINDOW_PLANE,
   SHADOW_WINDOW_BOUNDS, derivationFingerprint, fingerprintEpochs, recordAndReport, scoreShadowWindow, shadowEdgeKey,
   type ShadowRow, type ShadowWindowInput,
 } from './coupling-shadow-window';
@@ -135,6 +136,19 @@ describe('scoreShadowWindow (R-12)', () => {
     const s = scoreShadowWindow(input({ windowRows: rows, judgments: judgeAll(rows, true, 'impl-1'),
       breakages: [{ ts: T0 + DAY, editorOwnerId: 'ag-1', holderOwnerId: 'ag-2' }] }));
     expect([s.judged, s.precision, s.verdict]).toEqual([0, 0, 'unknown']);
+  });
+
+  it('counts only edges outside the plan: an implementer endpoint, by owner or by respawned lineage, leaves the sample (EI-27217222854087146)', () => {
+    const outsideRows = edgeRows(20);
+    const implRows = edgeRows(10, { start: T0 + 100_000 }).map((r, i) => ({
+      ...r, a: i % 2 ? 'impl-1' : 'impl-1-respawn', symbol: `isym${i}`, path: `src/i${i}.ts`,
+    }));
+    const lineageOf = new Map<string, string>([...agents.map(a => [a, `lin-${a}`] as [string, string]), ['impl-1-respawn', 'lin-impl-1']]);
+    const rows = [...outsideRows, ...implRows];
+    const s = scoreShadowWindow(input({ lineageOf, windowRows: rows, judgments: judgeAll(rows, true) }));
+    // 30 edges in all, but only 20 lie outside the plan: the window stays open below the
+    // 30-edge sample, and judgments and precision count the outside edges only.
+    expect([s.status, s.sample, s.judged, s.precision]).toEqual(['open', 20, 20, 1]);
   });
 
   it('keeps shadow when the mean note exceeds 500 characters', () => {
@@ -319,5 +333,65 @@ describe('recordAndReport (R-12 disposition write)', () => {
     const r = await recordAndReport(enabled(), async () => { throw new Error('audit_log insert refused'); });
     expect(r.verdict).toBe('unknown');
     expect(r.detail).toContain('disposition write failed (audit_log insert refused)');
+  });
+});
+
+describe('readShadowWindowInput (R-12 D-036 serving plane)', () => {
+  // A tagged-template stand-in for postgres.js: records each query's static text and bound
+  // values, and answers by matching the text.
+  function fakeSql(answers: { match: RegExp; rows: unknown[] }[]) {
+    const calls: { text: string; values: unknown[] }[] = [];
+    const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('$?');
+      calls.push({ text, values });
+      return Promise.resolve(answers.find(a => a.match.test(text))?.rows ?? []);
+    };
+    return { sql: tag as unknown as Sql, calls };
+  }
+  const CHANGE = /lag\(details->>'fingerprint'\)/;
+  const COUNTS = /AS off_plane/;
+  const WINDOW = /LIMIT 50000/;
+  const PLANE_PREDICATE = "details->>'servingHost' = $?";
+  const answers = () => [
+    { match: CHANGE, rows: [{ fingerprint: 'fp-a', first_ts: String(T0) }] },
+    { match: COUNTS, rows: [{ unstamped: '2', off_plane: '5' }] },
+    { match: WINDOW, rows: [{ ts: String(T0 + 1000), details: { kind: 'edge', a: 'ag-1', b: 'ag-2', symbol: 's', path: 'p.ts' } }] },
+  ];
+  const only = (calls: { text: string; values: unknown[] }[], re: RegExp) => {
+    const hits = calls.filter(c => re.test(c.text));
+    expect(hits).toHaveLength(1);
+    return hits[0] as { text: string; values: unknown[] };
+  };
+
+  it('restricts the change points and the window rows to the deployed plane and counts the rest', async () => {
+    const { sql, calls } = fakeSql(answers());
+    const r = await readShadowWindowInput(sql, 'ws-1', T0 + DAY);
+    expect(SHADOW_WINDOW_PLANE).toBe('port-3070');
+    for (const re of [CHANGE, WINDOW]) {
+      const q = only(calls, re);
+      expect(q.text).toContain(PLANE_PREDICATE);
+      expect(q.values).toContain(SHADOW_WINDOW_PLANE);
+    }
+    expect(only(calls, COUNTS).values).toContain(SHADOW_WINDOW_PLANE);
+    expect([r.unstampedRows, r.offPlaneRows, r.epochs.map(e => e.fingerprint), r.windowRows.length]).toEqual([2, 5, ['fp-a'], 1]);
+  });
+
+  it('binds a caller-named plane in every shadow-row query', async () => {
+    const { sql, calls } = fakeSql(answers());
+    await readShadowWindowInput(sql, 'ws-1', T0 + DAY, 'port-3170');
+    for (const re of [CHANGE, COUNTS, WINDOW]) {
+      expect(only(calls, re).values).toContain('port-3170');
+      expect(only(calls, re).values).not.toContain(SHADOW_WINDOW_PLANE);
+    }
+  });
+
+  it('with no stamped rows on the plane, reports off-plane rows and stays not-open', async () => {
+    const { sql, calls } = fakeSql([{ match: COUNTS, rows: [{ unstamped: '0', off_plane: '9' }] }]);
+    const read = await readShadowWindowInput(sql, 'ws-1', T0 + DAY);
+    expect(calls.some(c => WINDOW.test(c.text))).toBe(false);
+    const s = scoreShadowWindow({ ...read, interfaceLeg: null, lineageOf: new Map(), implementerOwners: new Set(), implementerLineages: new Set() });
+    expect([s.status, s.verdict, s.offPlaneRows]).toEqual(['not-open', 'unknown', 9]);
+    expect(summarizeShadowWindow(s)).toContain('offPlane=9');
+    expect(s.reasons.join(' ')).toContain(SHADOW_WINDOW_PLANE);
   });
 });

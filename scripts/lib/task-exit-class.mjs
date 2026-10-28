@@ -24,8 +24,110 @@
 // affected-tests-repo-wide-invariant-guards.test.ts), so this adds no third copy of the 2.
 
 /**
- * @typedef {'pass' | 'not-checked' | 'undetermined' | 'quarantined' | 'failed'} TaskExitClass
+ * @typedef {'pass' | 'not-checked' | 'undetermined' | 'admission-deferred' | 'quarantined' | 'failed'} TaskExitClass
  */
+
+// EI-21878448249294823: a task whose governed-process ADMISSION could not be persisted never
+// spawned a child. The resource governor's own retry (queue.ts LOCK_CONTENTION_BACKOFFS_MS) is
+// seconds-scale, so a long-held table lock — measured 2026-10-28: migration 1601 held
+// AccessExclusive on work_items for ~12 minutes — exhausts it and the task "fails" with zero
+// tests measured. Before this, affected-tests classified that as `undetermined` and never
+// re-ran it, so one migration spoiled a whole gate verdict (three test legs on drill run
+// 2026-10-28T10-19-19). The answer is a WALL-CLOCK deferral at admission, long enough to
+// outlast a lock, after which the task genuinely runs; only if contention outlasts the whole
+// window does the task end `admission-deferred` (no verdict, kept non-green).
+const ADMISSION_PERSIST_FAILURE = /durable admission record could not be persisted/i;
+
+/** Default wall-clock deferrals between admission attempts (sum 13.5 min > a 12 min lock). */
+export const ADMISSION_DEFERRAL_DELAYS_MS = Object.freeze([30_000, 60_000, 120_000, 240_000, 360_000]);
+
+/**
+ * Is this error message the governor's transient admission-persist refusal?
+ *
+ * Deliberately narrow: only the admission-time phrase qualifies, so a failure after the child
+ * ran (or any other governor refusal) can never be re-run under this rule.
+ *
+ * @param {string | null | undefined} message
+ * @returns {boolean}
+ */
+export function isTransientAdmissionPersistFailure(message) {
+  return typeof message === 'string' && ADMISSION_PERSIST_FAILURE.test(message);
+}
+
+/**
+ * Parse an `AFFECTED_ADMISSION_DEFER_DELAYS_MS` override: a comma-separated list of
+ * non-negative millisecond delays. Unset/blank keeps the default; `off` or `0` disables.
+ * Anything unparseable keeps the default rather than silently disabling the deferral.
+ *
+ * @param {string | null | undefined} value
+ * @returns {readonly number[]}
+ */
+export function parseAdmissionDeferralDelays(value) {
+  if (typeof value !== 'string' || value.trim() === '') return ADMISSION_DEFERRAL_DELAYS_MS;
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === 'off' || trimmed === '0') return [];
+  const delays = trimmed.split(',').map((part) => Number(part.trim()));
+  if (delays.length === 0 || delays.some((ms) => !Number.isInteger(ms) || ms < 0)) {
+    return ADMISSION_DEFERRAL_DELAYS_MS;
+  }
+  return delays;
+}
+
+/**
+ * Render one greppable deferral line.
+ *
+ * @param {object} opts
+ * @param {string} opts.task task key
+ * @param {number} opts.attempt 1-based deferral number
+ * @param {number} opts.of total deferrals available
+ * @param {number} opts.delayMs wall-clock wait before the next admission attempt
+ * @param {string} opts.reason the refusal message
+ * @returns {string}
+ */
+export function formatAdmissionDeferralLine({ task, attempt, of, delayMs, reason }) {
+  return (
+    `AFFECTED_ADMISSION_DEFERRED task=${JSON.stringify(task)} attempt=${attempt}/${of} ` +
+    `delayMs=${delayMs} reason=${JSON.stringify(String(reason).slice(0, 240))}`
+  );
+}
+
+/**
+ * Run `run()` (one governed admission + execution), re-attempting after a wall-clock delay
+ * while it rejects with a transient admission-persist failure. Any other rejection, and the
+ * last one once `delaysMs` is exhausted, propagates unchanged — with the number of deferrals
+ * spent attached as `admissionDeferrals` so the report can say how long it waited.
+ *
+ * @template T
+ * @param {object} opts
+ * @param {() => Promise<T>} opts.run
+ * @param {readonly number[]} [opts.delaysMs]
+ * @param {(ms: number) => Promise<void>} opts.sleep
+ * @param {(info: { attempt: number, of: number, delayMs: number, reason: string }) => void} [opts.onDefer]
+ * @returns {Promise<T>}
+ */
+export async function runWithAdmissionDeferral({
+  run,
+  delaysMs = ADMISSION_DEFERRAL_DELAYS_MS,
+  sleep,
+  onDefer,
+}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await run();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (!isTransientAdmissionPersistFailure(reason) || attempt >= delaysMs.length) {
+        if (attempt > 0 && error && typeof error === 'object') {
+          try { error.admissionDeferrals = attempt; } catch { /* frozen error: count is advisory */ }
+        }
+        throw error;
+      }
+      const delayMs = delaysMs[attempt];
+      onDefer?.({ attempt: attempt + 1, of: delaysMs.length, delayMs, reason });
+      await sleep(delayMs);
+    }
+  }
+}
 
 // A task that was estimated to take this long but ended almost immediately without
 // producing any bytes likely never reached its test runner. These bounds are deliberately
@@ -140,6 +242,8 @@ function hasConservativeNeverStartedEvidence({ capturedBytes, elapsedMs, duratio
  * @param {number} [opts.capturedBytes] bytes captured from the child process
  * @param {number} [opts.elapsedMs] elapsed time before the child exited
  * @param {number} [opts.durationEstimateMs] historical duration estimate for this task
+ * @param {string} [opts.admissionErrorMessage] the governed-admission refusal, when the task
+ *   never spawned because admission failed (EI-21878448249294823)
  * @returns {TaskExitClass}
  */
 export function classifyTaskExit({
@@ -153,8 +257,13 @@ export function classifyTaskExit({
   capturedBytes,
   elapsedMs,
   durationEstimateMs,
+  admissionErrorMessage,
 }) {
   if (status === 0) return 'pass';
+  // The task never ran: its admission could not be persisted even after the wall-clock
+  // deferral. That is no verdict at all, and must not be forgiven by any registration flag —
+  // it stays visible (and non-green) exactly like `undetermined`, but with its own cause.
+  if (isTransientAdmissionPersistFailure(admissionErrorMessage)) return 'admission-deferred';
   // A fork-starved child has not produced a trustworthy test verdict. This check intentionally
   // precedes the existing not-checked/quarantine buckets: an explicit process-launch failure
   // must remain visible as uncertainty even when another registration flag would otherwise

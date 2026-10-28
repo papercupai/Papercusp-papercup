@@ -45,6 +45,7 @@ import { fetchFleetSupervisionRows } from './presence-fleet';
 import { fetchPresencePathInterests } from './presence-snapshot';
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import { readPlanBySlug } from '../plans/source';
+import { getServingHostIdentity } from '../../serving-host-identity';
 
 /** How far back a directed message still counts as a live working relationship.
  *  Deliberately short: this is "who am I working with RIGHT NOW", not history. */
@@ -785,12 +786,16 @@ export async function logCodeDependencyShadow(selfOwnerId: string, result: CodeD
   try {
     const sql = coordSql();
     const ws = coordWorkspaceId();
+    // R-12 D-036: stamp the serving plane, because :3070 and :3170 write to the same
+    // workspace from different builds. The window counts only the deployed plane's rows.
+    const serving = getServingHostIdentity();
     let written = 0;
     for (const r of rows) {
+      const details = { ...r.details, fingerprint, servingHost: serving.host, servingBuild: serving.buildSha };
       const inserted = await sql`
         INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
         VALUES (${r.id}, ${at}, ${self}, ${CODE_DEPENDENCY_SHADOW_ACTION}, ${r.subject},
-                ${sql.json(JSON.parse(JSON.stringify({ ...r.details, fingerprint })))}, ${ws})
+                ${sql.json(JSON.parse(JSON.stringify(details)))}, ${ws})
         ON CONFLICT (id) DO NOTHING`;
       written += inserted.count;
     }

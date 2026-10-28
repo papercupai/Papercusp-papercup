@@ -866,7 +866,7 @@ describe('events:status projection', () => {
     expect(resolveLiveRoleHolders).toHaveBeenCalledWith('release-fixer', { workspaceId: 'ws-x' });
     expect(resolveSessionStates).toHaveBeenCalledWith(
       [{ ownerId: 'su-ended' }, { ownerId: 'su-successor' }],
-      { hydratePerId: true },
+      { hydratePerId: true, psuHostPositiveAuthority: true },
     );
     expect(out.event_inspection.declarations[0]).toMatchObject({
       bound_to: { kind: 'role', ref: 'release-fixer' },

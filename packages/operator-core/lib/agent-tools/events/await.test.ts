@@ -922,6 +922,38 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
     expect(out.await_id).toBe(99);
   });
 
+  it.each([
+    {
+      event: 'task:terminal:task-probe',
+      emitter: 'task-manager terminal bridge (packages/operator-core/lib/task-manager/task-terminal-events.ts)',
+    },
+    {
+      event: 'conversation:answered:conversation-probe',
+      emitter: 'conversations:answer (packages/operator-core/lib/agent-tools/coordination/conversations.ts)',
+    },
+  ])('reports the catalogued emitter in the pending brief for $event', async ({ event, emitter }) => {
+    vi.mocked(registerAwait).mockResolvedValueOnce({
+      id: 99,
+      eventKey: event,
+      policy: 'wake',
+      once: true,
+      timeoutBehavior: 'wake',
+      expiresTs: '2030-01-01T00:00:00.000Z',
+      wakeHandle: null,
+      firedAt: null,
+      cancelledAt: null,
+      createdAt: '2026-09-22T00:00:00.000Z',
+    } as AwaitRow);
+    const out = await call({ event });
+
+    expect(out.operational_brief.owner).toEqual({
+      status: 'known',
+      value: emitter,
+      source: 'events:catalog emitter',
+    });
+    expect(out.operational_brief.nextAction.value).toContain(`check that ${emitter} is progressing`);
+  });
+
   it('keeps a catalog probe failure distinct from confirmed absence in the pending wait brief', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(readInstalledUnitEvents).mockRejectedValueOnce(new Error('catalog read failed'));

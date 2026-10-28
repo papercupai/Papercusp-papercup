@@ -456,10 +456,15 @@ export function narrowHeadingPayload(
   // A heading read omits `now`, so its raw Now section would otherwise bypass
   // the same current-item warning that protects the structured read. Preserve
   // the requested section verbatim beneath the warning and keep CAS unchanged.
-  const now = base.now as { stateDerivation?: Omit<NowStateReconciliation, 'state'> } | null | undefined;
-  const warning = sec?.heading.toLowerCase() === 'now' ? now?.stateDerivation?.warning : null;
+  const now = base.now as { raw?: string; stateDerivation?: Omit<NowStateReconciliation, 'state'> } | null | undefined;
+  const isNow = sec?.heading.toLowerCase() === 'now';
+  const warning = isNow ? now?.stateDerivation?.warning : null;
+  // The content `## Now` is frozen once a structured note exists. The parsed
+  // `now.raw` is already resolved from that note (or from content for legacy
+  // plans), so use it for the narrowed section instead of returning stale prose.
+  const sectionBody = isNow && typeof now?.raw === 'string' ? now.raw : sec?.body ?? '';
   out.section = sec
-    ? { heading: sec.heading, level: sec.level, body: warning ? `${warning}\n\n${sec.body}` : sec.body }
+    ? { heading: sec.heading, level: sec.level, body: warning ? `${warning}\n\n${sectionBody}` : sectionBody }
     : null;
   return out;
 }

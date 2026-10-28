@@ -155,4 +155,49 @@ describe("fresh preparation preserves inherited active-run authority (R4)", () =
       expect(existsSync(checkpointRunLockDir(f.cfg.checkpointLogDir, f.integration))).toBe(false);
     }
   }, 180_000);
+
+  // The inherited refire COUNT is the second exhaustion bound beside the clock: a refire that
+  // re-enters preparation must charge the run's prior refires (totalRefires, else the legacy
+  // refireAttempts) plus its own replans against refireAbsoluteCeiling. These cases leave the
+  // clock unpressured, so only the inherited count can exhaust the run (default cap 2 → ceiling 6).
+  it.each([
+    { name: "refuses before preparing when the inherited totalRefires already reaches the ceiling",
+      opts: { totalRefires: 6 }, loseFirstCas: false, expected: "refused", commits: 0, reads: 0 },
+    { name: "falls back to the inherited legacy refireAttempts when totalRefires is absent",
+      opts: { refireAttempts: 6 }, loseFirstCas: false, expected: "refused", commits: 0, reads: 0 },
+    { name: "charges a replan after a lost commit CAS on top of the inherited count",
+      opts: { totalRefires: 5 }, loseFirstCas: true, expected: "refused", commits: 1, reads: 1 },
+    { name: "commits when the inherited count stays below the ceiling",
+      opts: { totalRefires: 5 }, loseFirstCas: false, expected: "ready", commits: 1, reads: 1 },
+  ] as const)("$name", async ({ opts: inherited, loseFirstCas, expected, commits, reads }) => {
+    const f = await fixture();
+    vi.stubEnv("PAPERCUSP_GATE_AUTO_REFIRE_CAP", "2");
+    vi.stubEnv("PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS", String(60 * 60_000));
+    let commitAttempts = 0;
+    f.deps.commitPreparedCheckpointSelection = async (record) => {
+      f.observedAttempts.push(record.attemptId);
+      commitAttempts += 1;
+      return !(loseFirstCas && commitAttempts === 1);
+    };
+    let readAttempts = 0;
+    const read = f.deps.readPreparedCheckpointSelection!;
+    f.deps.readPreparedCheckpointSelection = async (authority) => { readAttempts += 1; return read(authority); };
+    const opts: CheckpointOpts = { runStartedAtMs: Date.now(), noPush: true, ...inherited };
+    const outcome = await beginCheckpointPreflight(f.cfg, f.tip, f.exec, {
+      target: null, checkpointSelection: { deps: f.deps, opts },
+    }).then((result) => {
+      if (result.kind === "ready") onTestFinished(() => { if (result.lock.acquired) result.lock.release(); });
+      return { result, error: null };
+    }, (error: unknown) => ({ result: null, error }));
+    expect(commitAttempts).toBe(commits);
+    expect(readAttempts).toBe(reads);
+    if (expected === "ready") {
+      expect(outcome.error).toBeNull();
+      expect(outcome.result?.kind).toBe("ready");
+    } else {
+      expect(outcome.result).toBeNull();
+      expect(String(outcome.error)).toMatch(/prepared selection authority churn exhausted run deadline\/refire budget/);
+      expect(existsSync(checkpointRunLockDir(f.cfg.checkpointLogDir, f.integration))).toBe(false);
+    }
+  }, 180_000);
 });

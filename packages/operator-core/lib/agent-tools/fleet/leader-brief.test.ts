@@ -1946,6 +1946,26 @@ describe('selectLeaderBriefMembers (EI-11840)', () => {
     expect(members.map((member) => member.agentId)).toEqual(['su-live-working', 'su-live-idle']);
   });
 
+  it('keeps all recently active respawned members with current work claims', () => {
+    const ids = [
+      'su-respawn-63bfff47ddf3583f5111e499fb21db10',
+      'su-respawn-a0591f4fa7c5fb461e434592f28b4d7d',
+      'su-respawn-ebb0fbe43e480e827420268a317e294b',
+    ];
+    const entries = ids.map((agentId, index) => baseAgent({
+      agentId,
+      sessionState: 'live',
+      alive: true,
+      lastActiveAt: new Date(NOW - (15_000 + index * 12_000)).toISOString(),
+      claims: [{ type: 'work-item', id: `WI-${index + 1}` }] as never,
+    }));
+
+    const { rows, census } = selectLeaderBriefMembers(entries, 'p2p-git');
+
+    expect(rows.map((member) => member.agentId)).toEqual(ids);
+    expect(census).toMatchObject({ candidates: 3, counted: 3, withheld: 0 });
+  });
+
   it('includes stale canonical roster entries only when explicitly requested', () => {
     const stale = baseAgent({ agentId: 'su-stale', alive: false, claims: [] });
     expect(selectLeaderBriefMembers([stale], 'p2p-git').rows).toEqual([]);

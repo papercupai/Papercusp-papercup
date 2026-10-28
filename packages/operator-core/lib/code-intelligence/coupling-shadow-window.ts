@@ -279,7 +279,7 @@ export function scoreShadowWindow(input: ShadowWindowInput): ShadowWindowScore {
   }
 
   const days = (input.now - latest.firstTs) / DAY_MS;
-  const edges = new Map<string, { a: string; b: string; firstTs: number; reason: string }>();
+  const allEdges = new Map<string, { a: string; b: string; firstTs: number; reason: string }>();
   // D-020 unknown share. The numerator comes from the SAME source, unit and population as the
   // eligible count: edit_attribution_ledger rows (one per dispatch call and file) whose
   // interface verdict is unknown, by owners outside the implementer lineages
@@ -293,13 +293,24 @@ export function scoreShadowWindow(input: ShadowWindowInput): ShadowWindowScore {
     if (r.kind === 'edge' && r.a && r.b) {
       if (r.mode !== 'shadow') surfaced += 1;
       const key = shadowEdgeKey(r.a, r.b, r.path, r.symbol);
-      const prior = edges.get(key);
-      if (!prior || r.ts < prior.firstTs) edges.set(key, { a: r.a, b: r.b, firstTs: r.ts, reason: r.reason ?? prior?.reason ?? '' });
+      const prior = allEdges.get(key);
+      if (!prior || r.ts < prior.firstTs) allEdges.set(key, { a: r.a, b: r.b, firstTs: r.ts, reason: r.reason ?? prior?.reason ?? '' });
     }
   }
-  const outside = [...edges.values()].filter(e => !input.implementerOwners.has(e.a) && !input.implementerOwners.has(e.b));
-  const agents = new Set(outside.flatMap(e => [e.a, e.b]));
-  const lineages = new Set([...agents].map(id => input.lineageOf.get(id) ?? id).filter(l => !input.implementerLineages.has(l)));
+  // EI-27217222854087146: R-12 measures edges from work items outside this plan. An edge
+  // with an implementer endpoint is excluded from the sample, the judgments, precision,
+  // note length, the minimum-sample checks and the dead-derivation rule. An endpoint is an
+  // implementer by owner OR by lineage, so a respawned implementer session is excluded too.
+  // The implementer set comes from resolvePlanImplementerIdentities, which returns every
+  // past holder of any of this plan's work items (taken_by, terminal_owner,
+  // last_released_by, worked_by_history), the plan's auditors and its code editors, so an
+  // edge with no such endpoint is outside the plan. Recall still searches every edge: a
+  // breakage caught by any edge was caught.
+  const isImplementer = (id: string) =>
+    input.implementerOwners.has(id) || input.implementerLineages.has(input.lineageOf.get(id) ?? id);
+  const edges = new Map([...allEdges].filter(([, e]) => !isImplementer(e.a) && !isImplementer(e.b)));
+  const agents = new Set([...edges.values()].flatMap(e => [e.a, e.b]));
+  const lineages = new Set([...agents].map(id => input.lineageOf.get(id) ?? id));
 
   const latestJudgment = new Map<string, EdgeJudgment>();
   for (const j of [...input.judgments].sort((x, y) => x.ts - y.ts)) {
@@ -318,7 +329,7 @@ export function scoreShadowWindow(input: ShadowWindowInput): ShadowWindowScore {
     if (!inWindow.length) recallState = 'insufficient-data';
     else {
       recallState = 'measured';
-      const caught = inWindow.filter(x => [...edges.values()].some(e => e.firstTs <= x.ts
+      const caught = inWindow.filter(x => [...allEdges.values()].some(e => e.firstTs <= x.ts
         && ((e.a === x.editorOwnerId && e.b === x.holderOwnerId) || (e.b === x.editorOwnerId && e.a === x.holderOwnerId)))).length;
       recall = caught / inWindow.length;
     }
