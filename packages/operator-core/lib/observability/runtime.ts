@@ -8,7 +8,8 @@ import type { DispatchProjectedDeps } from '@papercusp/agent-mcp';
 import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
 import { createTracing } from './tracing';
 import { PosthogSpanExporter } from './posthog-exporter';
-import { measureBootOperatorArtifact, type OperatorArtifactIdentity } from '../release/operator-artifact';
+import { measureBootOperatorArtifact, type OperatorArtifactIdentity,
+  type OperatorArtifactParentExpectation } from '../release/operator-artifact';
 import { getBuildInfo } from '../build-info';
 
 type DispatchStart = Parameters<NonNullable<DispatchProjectedDeps['onDispatchStart']>>[0];
@@ -83,6 +84,7 @@ const state = pinModuleState('@papercusp/operator-core.otel-runtime', () => ({
   exporter: null as PosthogSpanExporter | null,
   observerFailures: 0,
   artifact: null as OperatorArtifactIdentity | null,
+  artifactParent: undefined as string | undefined,
   registration: null as ReturnType<ReturnType<typeof createTracing>['register']> | null,
   boundaryContext: new AsyncLocalStorage<BoundaryContext>(),
   boundaryReceipts: new Map<string, ExecutionBoundaryReceipt[]>(),
@@ -101,8 +103,17 @@ function runtime() {
 }
 
 /** Called during host boot before DBOS can install a competing global provider. */
-export function initializeRuntimeObservability(): void {
-  if (!state.artifact) state.artifact = measureBootOperatorArtifact(process.argv[1] ?? '', getBuildInfo().sha);
+export function initializeRuntimeObservability(parent?: OperatorArtifactParentExpectation): void {
+  const parentPin = parent === undefined ? undefined : JSON.stringify(parent);
+  // A later invocation cannot relabel an already initialized legacy process or
+  // replace the original inherited input. Qualification belongs to fresh boot.
+  if (state.artifact && state.artifactParent !== parentPin) throw Error('BG boot parent expectation changed');
+  if (!state.artifact) {
+    const artifact = measureBootOperatorArtifact(process.argv[1] ?? '', getBuildInfo().sha, undefined, parent);
+    if (parent !== undefined && artifact.status !== 'measured') throw Error('BG boot parent artifact unqualified');
+    state.artifact = artifact;
+    state.artifactParent = parentPin;
+  }
   try { runtime(); } catch { state.observerFailures++; }
 }
 

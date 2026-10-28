@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010025563",
+  "operationId": "f1637ed4-4aa2-4f74-918f-4f1c1553eeaa",
+  "sha256": "32ca78f18750923d787925f72139b7446f93efc9615b1f70eeb95bb01416e6e9",
+  "sizeBytes": 70,
+  "at": "2026-10-28T21:57:04.323Z",
+  "sourceHashesBefore": {
+    "scripts/lib/workspace-host-gcs-publication.mjs": "57fb36c16ee49674c19322295ff880727b46f714e9be0f977bdc07c06c86e8c6",
+    "scripts/lib/workspace-host-gcs-publication.d.mts": "04831f5f06a6811c5805a71500098685c6deec7cdde473d231f8917dd62f6456",
+    "scripts/publish-workspace-host-artifacts.test.ts": "479fb8a301b4dd9d1b932a990fc4614b35fb76f482fd00a66821b029da437d28",
+    "packages/operator-core/lib/remote-runtime-identity.ts": "bce5fe298e733b4c3a8d3f8b9957eb6285854a3cb2f40a99793d1f9de4a94f14"
+  },
+  "runtimeUnit": "cloudflare-worker:f896982ea2f6d507e4f29eeecbd26e94/papercusp-cupboard",
+  "observedRuntimeBefore": "d3629e7844c8dda7bfef030946753469d0850e7d05b646dc1c5e970b89ffacb9"
+}

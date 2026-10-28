@@ -544,6 +544,22 @@ describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
     expect(classifyGitSyncFailingLeg('failed to push some refs to origin', 'push')).toBe('push');
   });
 
+  it('does not classify a negated force-push statement as a push failure', () => {
+    const actual =
+      'github-bridge divergence: 1 origin branch rewrote history; Origin was never force-pushed and hive canonical refs are unchanged';
+    expect(classifyGitSyncFailingLeg(actual, 'push')).toBe('unknown');
+
+    const decision = decideGitSyncEscalation({
+      ...base,
+      status: 'error',
+      consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS,
+      errors: [{ scope: 'github-bridge', message: actual }],
+    });
+    expect(decision.reasons).toEqual(['sync-failure']);
+    expect(decision.broadcast).toContain('cause unclassified — read that routine\'s last_error');
+    expect(decision.broadcast).not.toContain('commits NOT reaching origin');
+  });
+
   it.each([
     'git-sync publication refused: serving unavailable (unknown: lazy serving recovery failed: migration gate failed: snapshot admission)',
     'git-sync publication refused: serving capability has no usable device actor',

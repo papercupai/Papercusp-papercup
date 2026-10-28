@@ -1398,7 +1398,10 @@ function statePlaneCall(toolName: string, args: unknown): { tool: string; args: 
 // value next to its pipeline subject, in prose or in a structured content field.
 const PIPELINE_QUOTE_PATTERNS: readonly RegExp[] = [
   /\b(?:(?:gate\.greenCheckpoint\.)?candidate(?:[\s._-]*sha)?|deploy(?:ed)?(?:\.3070)?(?:[\s._-]*sha)?)\s*(?:is\s+|[:=]\s*)?[`"' ]*(?:[a-f0-9]{7,40}|unknown|null|absent)\b/i,
-  /\b(?:gate(?:[\s._-]*verdict)?|gate\.greenCheckpoint\.verdict)\s*(?:is\s+|[:=]\s*)?[`"' ]*(?:green|red|running|passed|failed|blocked|unknown|stale|null)\b/i,
+  // Require the verdict label in prose: "test gate failed to start" is ordinary
+  // fixture/harness narration, not a quote of the live green-checkpoint verdict.
+  // Structured gateVerdict / gate.greenCheckpoint.verdict fields are handled below.
+  /\b(?:gate[\s._-]*verdict|gate\.greenCheckpoint\.verdict)\s*(?:is\s+|[:=]\s*)?[`"' ]*(?:green|red|running|passed|failed|blocked|unknown|stale|null)\b/i,
   /\b(?:git\.)?main[\s._-]*behind[\s._-]*staging\s*(?:is\s+|[:=]\s*)?[`"' ]*(?:true|false|\d+|unknown|null)\b/i,
   /\bmain\s+(?:is\s+)?\d+\s+commits?\s+behind\s+staging\b/i,
 ];

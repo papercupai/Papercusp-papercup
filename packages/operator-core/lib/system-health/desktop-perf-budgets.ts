@@ -73,6 +73,10 @@ export const DESKTOP_PERF_BUDGETS: DesktopPerfBudgets = {
     // legs behind it are ~25ms, so anything approaching 1.5s is client-side
     // regression worth failing on.
     'learning-view-switch': 1500,
+    // Deterministic report-card fixture: first committed render and the queued
+    // task that represents the next opportunity for keyboard input.
+    'report-markdown-first-mount': 1500,
+    'report-markdown-input-delay': 200,
   },
 };
 

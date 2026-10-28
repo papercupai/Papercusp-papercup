@@ -16,6 +16,8 @@ describe('DESKTOP_PERF_BUDGETS', () => {
     expect(DESKTOP_PERF_BUDGETS.interactions['command-palette-open']).toBe(400);
     expect(DESKTOP_PERF_BUDGETS.interactions['conversation-thread-load']).toBe(1500);
     expect(DESKTOP_PERF_BUDGETS.interactions['harness-dock-open']).toBe(1500);
+    expect(DESKTOP_PERF_BUDGETS.interactions['report-markdown-first-mount']).toBe(1500);
+    expect(DESKTOP_PERF_BUDGETS.interactions['report-markdown-input-delay']).toBe(200);
   });
 
   it('evaluates each P-006 interaction against its own budget', () => {

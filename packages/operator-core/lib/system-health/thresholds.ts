@@ -361,11 +361,11 @@ export function watchdogStatus(d: WatchdogHealth): PanelStatus {
   return 'ok';
 }
 
-/** Consecutive failed git-sync ticks that red the deploy panel — mirrors
- *  PUSH_FAILURE_ESCALATION_TICKS in git-sync-escalation.ts (EI-18: ~30 min of the
- *  push not reaching origin). Kept as a sibling constant so the standing health
- *  signal and the escalation fire on the same threshold. */
-export const GIT_SYNC_PUSH_FAIL_CRIT = 3;
+/** Consecutive git-sync error ticks that red the deploy panel when the push backlog
+ *  is nonzero or unmeasured. Mirrors the EI-18 generic error-streak threshold. */
+export const GIT_SYNC_ERROR_CRIT = 3;
+/** @deprecated Use GIT_SYNC_ERROR_CRIT; this threshold covers every git-sync error leg. */
+export const GIT_SYNC_PUSH_FAIL_CRIT = GIT_SYNC_ERROR_CRIT;
 
 /** Grace after a deploy before a not-yet-restarted bg-host is a WARNING rather than
  *  a restart still in flight. A deploy legitimately leaves the old process up for a
@@ -376,17 +376,16 @@ export const GIT_SYNC_PUSH_FAIL_CRIT = 3;
 export const BG_HOST_STALE_CODE_GRACE_MS = 20 * 60_000;
 
 /**
- * Deploy. crit = git-sync push FAILING (>= GIT_SYNC_PUSH_FAIL_CRIT consecutive ticks:
- * local commits are NOT reaching origin — the EI-18 silent-failure class, the one
- * deploy condition severe enough to red the system; the ref-based checks below are
- * blind to it because new local commits keep `lastCommitAtMs` fresh). unknown = no
+ * Deploy. crit = git-sync has >= GIT_SYNC_ERROR_CRIT consecutive error ticks and
+ * the push backlog is nonzero or unknown. This can be a failure before publication;
+ * the failing leg is described separately from last_error. unknown = no
  * refs resolved (a box without the release checkout). warn = git-sync erroring or
  * excluding oversized blobs, git-sync lag (no recent staging commit), the live host
  * far behind staging, or bg-host still running PRE-DEPLOY code past the grace window.
  * ok otherwise.
  */
 export function deployStatus(d: DeployHealth, now: number): PanelStatus {
-  if (d.gitSyncConsecutiveErrorTicks >= GIT_SYNC_PUSH_FAIL_CRIT && d.gitSyncPushBacklog !== 0) return 'crit';
+  if (d.gitSyncConsecutiveErrorTicks >= GIT_SYNC_ERROR_CRIT && d.gitSyncPushBacklog !== 0) return 'crit';
   if (d.deployedShortSha === null && d.lastCommitAtMs === null) return 'unknown';
   if (
     d.gitSyncStatus === 'error' ||

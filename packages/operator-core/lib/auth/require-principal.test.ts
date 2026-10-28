@@ -38,7 +38,7 @@ vi.mock('../device-store', async (orig) => ({
   isRevoked: vi.fn(async () => false),
 }));
 
-import { PrincipalCheckError, requirePrincipal, tryResolvePrincipal } from './require-principal';
+import { PrincipalCheckError, requirePrincipal, tryResolvePrincipal, retainRequestPrincipal } from './require-principal';
 import { getSessionUser } from '../auth';
 import { verifyDeviceToken } from '../device-jwt';
 import { isRevoked } from '../device-store';
@@ -57,6 +57,54 @@ afterEach(() => {
 });
 
 const h = (init: Record<string, string> = {}) => new Headers(init);
+
+describe('retained host request principal', () => {
+  const user = (capabilities = ['tasks:read']) => ({ id: 'launch-user', username: 'launch',
+    display_name: 'Launch', has_password: true, workspace_id: 'ws-active', capabilities });
+
+  it('retains original headers privately and re-resolves the same authenticated identity', async () => {
+    vi.mocked(getSessionUser).mockResolvedValue(user());
+    const headers = h({ cookie: 'papercusp_session=original' });
+    const resolve = await retainRequestPrincipal(headers, 'ws-active');
+    headers.set('cookie', 'papercusp_session=changed');
+    expect(await resolve!()).toMatchObject({ slug: 'launch-user', capabilities: new Set(['tasks:read']) });
+    expect(vi.mocked(getSessionUser).mock.calls.at(-1)![0]!.get('cookie')).toBe('papercusp_session=original');
+    vi.mocked(getSessionUser).mockResolvedValue({ ...user(), id: 'different-user' });
+    expect(await resolve!()).toBeNull();
+  });
+
+  it('does not retain a forwarded descriptor, unverified loopback, or another workspace', async () => {
+    expect(await retainRequestPrincipal(null, 'ws-active')).toBeUndefined();
+    vi.mocked(isLoopbackRequest).mockReturnValue(true);
+    expect(await retainRequestPrincipal(h(), 'ws-active')).toBeUndefined();
+    vi.mocked(getSessionUser).mockResolvedValue(user());
+    expect(await retainRequestPrincipal(h(), 'different-workspace')).toBeUndefined();
+    expect(await retainRequestPrincipal(h(), '*')).toBeUndefined();
+  });
+
+  it('refuses revoked credentials and authentication fall-through to a different principal', async () => {
+    vi.mocked(getSessionUser).mockResolvedValue(user());
+    vi.mocked(isLoopbackRequest).mockReturnValue(true);
+    vi.mocked(isValidSuperuserBearer).mockReturnValue(true);
+    const resolve = await retainRequestPrincipal(h({ authorization: 'Bearer fixture' }), 'ws-active');
+    vi.mocked(getSessionUser).mockResolvedValue(null);
+    expect(await resolve!()).toBeNull(); // cookie revocation cannot acquire superuser authority
+    vi.mocked(isValidSuperuserBearer).mockReturnValue(false);
+    expect(await resolve!()).toBeNull();
+  });
+
+  it('intersects live capability changes with the original launch ceiling', async () => {
+    vi.mocked(getSessionUser).mockResolvedValue(user(['tasks:read', 'tasks:write']));
+    const resolve = await retainRequestPrincipal(h(), 'ws-active');
+    vi.mocked(getSessionUser).mockResolvedValue(user(['tasks:read', 'new:grant']));
+    expect((await resolve!())!.capabilities).toEqual(new Set(['tasks:read']));
+    vi.mocked(getSessionUser).mockResolvedValue(user(['*']));
+    const snapshot = await resolve!();
+    expect(snapshot!.capabilities).toEqual(new Set(['tasks:read', 'tasks:write']));
+    (snapshot!.capabilities as Set<string>).add('*');
+    expect((await resolve!())!.capabilities.has('*')).toBe(false);
+  });
+});
 
 describe('requirePrincipal — resolver order', () => {
   it('cookie wins over mobile JWT when both are present', async () => {

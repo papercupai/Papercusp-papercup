@@ -117,8 +117,8 @@ export function checkpointUnitForRoot(root: string): string {
 /** Wall-clock ceiling for the detached suite's systemd backstop.
  *
  * WI-6554700010042457: this is NO LONGER applied to the unit (the manual argv carries no
- * RuntimeMaxSec). It survives only as the reference for the `eta_sec` estimate, which phase 1b
- * of that item revisits because it now counts down to a ceiling that does not exist.
+ * RuntimeMaxSec), and `eta_sec` no longer counts down to it (phase 1b: eta_sec is null with
+ * eta_basis 'no-ceiling'). Remaining importers use it only as a long await/lease horizon.
  */
 export const CHECKPOINT_MAX_RUNTIME_SEC = 3 * 60 * 60;
 
@@ -388,14 +388,14 @@ export interface ActiveCheckpointCheck {
   current_activity?: string;
   /** WI-6554700010029556: the leg in flight, 1-based `index` of `total`, when published. */
   current_leg?: { label: string; index: number; total: number };
-  /** Seconds remaining before the systemd backstop (CHECKPOINT_MAX_RUNTIME_SEC)
-   *  would kill it — a rough "how much longer" estimate, not a promise. Null when the
-   *  run has reached `delivering`: the backstop remainder is no longer an honest estimate
-   *  of time to verdict, and no bounded delivery-phase duration is published. */
+  /** Always null (WI-6554700010042457 phase 1b). It used to be the seconds left before the
+   *  systemd RuntimeMaxSec backstop, but the gate run no longer has any run-level wall clock,
+   *  so no bounded time-to-verdict exists. Judge a live run by current_phase / current_leg /
+   *  progress_at instead. Kept as a field so callers that read it get an explicit null. */
   eta_sec?: number | null;
-  /** What `eta_sec` measures. `full-suite` is the systemd backstop remainder; `delivery-phase`
-   *  deliberately carries a null `eta_sec` until the run publishes a bounded verdict estimate. */
-  eta_basis?: 'full-suite' | 'delivery-phase';
+  /** Why `eta_sec` is null: `no-ceiling` while the suite runs (no run-level wall clock exists),
+   *  `delivery-phase` once the suite is done and the run is delivering its verdict. */
+  eta_basis?: 'no-ceiling' | 'delivery-phase';
   /** EI-11667 / WI-6554700010042457: set when a `replaceStale:true` request found the run stale
    *  but SILENT for less than REPLACE_STALE_MIN_SILENCE_SEC (or its silence is unmeasurable) —
    *  the stop was refused (a progressing stale run is healthy on a busy tree, not wedged; see
@@ -1126,15 +1126,14 @@ export function readCheckpointRunPhaseCheap(
  *  time-to-verdict. There is no bounded delivery estimate to substitute, so return null rather
  *  than a number that invites callers to kill a healthy self-healing run. */
 function checkpointEta(
-  elapsedSec: number | null,
   delivering: boolean,
-): { eta_sec: number | null; eta_basis: 'full-suite' | 'delivery-phase' } {
-  return delivering
-    ? { eta_sec: null, eta_basis: 'delivery-phase' }
-    : {
-        eta_sec: elapsedSec != null ? Math.max(0, CHECKPOINT_MAX_RUNTIME_SEC - elapsedSec) : null,
-        eta_basis: 'full-suite',
-      };
+): { eta_sec: null; eta_basis: 'no-ceiling' | 'delivery-phase' } {
+  // WI-6554700010042457 phase 1b: the gate run has no run-level wall clock any more (no
+  // RuntimeMaxSec, no suite-timeout kill), so "seconds until the backstop" counts down to a
+  // ceiling that does not exist and reads 0 on a healthy long run, inviting a kill. Nothing
+  // bounds time-to-verdict, so report no number; progress is current_phase / current_leg /
+  // progress_at, and wedge detection is the no-progress (silence) check.
+  return { eta_sec: null, eta_basis: delivering ? 'delivery-phase' : 'no-ceiling' };
 }
 
 /**
@@ -1693,7 +1692,7 @@ export function checkActiveCheckpointRun(
         phaseAt: runPhase?.at,
         startedAtMs: timestampMs(lockHeld.started_at),
       });
-      const eta = checkpointEta(lockHeld.elapsed_sec ?? null, runPhase?.phase === 'delivering');
+      const eta = checkpointEta(runPhase?.phase === 'delivering');
       // EI-18695275971973546: resolve the REAL in-flight candidate from the isolated
       // checkpoint checkout's own HEAD (see checkpointRootMirror's doc comment) instead of
       // reporting `candidate: null` — a null here was being misread as "this run's candidate
@@ -1774,7 +1773,7 @@ export function checkActiveCheckpointRun(
     phaseAt: runPhase?.at,
     startedAtMs: Number.isFinite(startedMs) ? startedMs : null,
   });
-  const eta = checkpointEta(elapsedSec, runPhase?.phase === 'delivering');
+  const eta = checkpointEta(runPhase?.phase === 'delivering');
   return {
     active: true,
     unit,

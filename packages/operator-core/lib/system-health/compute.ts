@@ -1852,7 +1852,7 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
         if (!Number.isNaN(ls) && (gitSyncLastSyncedAtMs === null || ls > gitSyncLastSyncedAtMs)) gitSyncLastSyncedAtMs = ls;
         if (Array.isArray(md.last_oversized)) gitSyncOversizedCount += md.last_oversized.length;
         // P-009 (ex-P-010): cadence-relative starvation. A failing install is excluded because
-        // the push-failure escalation already owns it; this measure is for 'not firing at all'.
+        // the git-sync error escalation already owns it; this measure is for 'not firing at all'.
         const missed = typeof derived.freshness.missed_intervals === 'number' ? derived.freshness.missed_intervals : null;
         const lastStatus = typeof md.last_status === 'string' ? md.last_status : null;
         // WI-10006867: a vanished checkout skips every fire with `no_path` while last_synced_at

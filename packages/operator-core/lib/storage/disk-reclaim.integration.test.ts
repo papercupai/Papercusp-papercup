@@ -15,7 +15,7 @@ import { readDiskAlarmContext, runDiskSpaceAlarmOnce } from './disk-space-alarm'
 import { writeCensusRun } from './disk-consumer-census';
 import type { AttentionNotifyInput } from '../attention-notify';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { createWorkspaceHostCutRetentionDelegate, drainScheduledDiskReclaim, nativeRetentionCommand, readReclaimReceipt, removePrivilegedRetentionEntry, runDiskReclaimOnce, writeReclaimAudit, type DiskReclaimReceipt, type NativeRetentionTiming, type ReclaimSql, type RetentionEntry } from './disk-reclaim';
+import { createWorkspaceHostCutRetentionDelegate, drainScheduledDiskReclaim, nativeRetentionCommand, readReclaimReceipt, removePrivilegedRetentionEntry, runDiskReclaimOnce, runScheduledDiskReclaimWithFailureReceipt, writeReclaimAudit, type DiskReclaimReceipt, type NativeRetentionTiming, type ReclaimSql, type RetentionEntry } from './disk-reclaim';
 import { CACHEDIR_TAG_SIGNATURE, type RetentionClass } from './retention-policy';
 import { inspectRetentionTrees } from './disk-consumer-census';
 import { awaitRetentionCensusCompletion, inspectDetachedRetentionTrees, withRetentionMutex } from './retention-census-walk';
@@ -2453,6 +2453,45 @@ describe('retention on a real fixture tree', () => {
       expect((await readDiskHeadroomSoakEvidence(db.sql, workspace, requirements)).assessment.soakStatus).toBe('unknown');
     } finally { await db.cleanup(); }
   }, 120_000);
+  it('retains removed fixture effects in the latest durable scheduled receipt after holder cleanup fails', async () => {
+    const db = await createFreshPgDb('reclaim-cleanup-receipt');
+    try {
+      await db.sql.unsafe('CREATE TABLE harness_shared.audit_log (id text PRIMARY KEY, ts bigint, actor text, action text, subject text, details jsonb, workspace_id text)');
+      const { root, options } = await setup();
+      const path = join(root, 'expired');
+      await writeFile(path, 'removed before holder finalization');
+      let runId = '';
+      let measured!: DiskReclaimReceipt;
+      let original!: DiskReclaimReceipt;
+      const sql = db.sql as unknown as ReclaimSql;
+      const receipt = await runScheduledDiskReclaimWithFailureReceipt(async () => {
+        measured = await runDiskReclaimOnce({ ...options, record: async (phase, detail) => {
+          if (phase === 'started') runId = (detail as DiskReclaimReceipt).id;
+          await writeReclaimAudit(sql, 'fixture-workspace', runId, phase, detail);
+        } });
+        original = structuredClone(measured);
+        return measured;
+      }, new Date().toISOString(), {
+        finalize: async () => {
+          await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+          expect(await readReclaimReceipt(sql, 'fixture-workspace', runId)).toEqual(original);
+          throw new Error('fixture holder ledger completion deadline');
+        },
+        persistFailureReceipt: result => writeReclaimAudit(sql, 'fixture-workspace', result.id, 'receipt', result),
+      });
+      expect(original.complete).toBe(true);
+      expect(measured).toEqual(original);
+      expect(receipt).toEqual({ ...original, complete: false, policyExhausted: null,
+        errors: ['finalize:fixture holder ledger completion deadline'], finishedAt: receipt.finishedAt });
+      expect(receipt.entries).toContainEqual(expect.objectContaining({ path, status: 'removed' }));
+      expect(await readReclaimReceipt(sql, 'fixture-workspace', runId, receipt)).toEqual(receipt);
+      expect(await readReclaimReceipt(sql, 'fixture-workspace')).toEqual(receipt);
+      const rows = await db.sql`SELECT details FROM harness_shared.audit_log
+        WHERE subject = ${runId} AND action = 'disk-retention:receipt' ORDER BY ts, id`;
+      expect(rows.map(row => row.details)).toEqual([original, receipt]);
+    } finally { await db.cleanup(); }
+  });
+
   it('persists start, exact removal intent, removed path and final receipt in real Postgres', async () => {
     const adminUri = await getTestPg();
     const name = 'reclaim_' + randomBytes(5).toString('hex');

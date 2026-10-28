@@ -31,6 +31,8 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import { registerAccount, normalizeAccountProvider, type AccountProvider } from './account-pool';
 import { updateAccountPool, accountStatus, type AccountStatusRow } from './account-pool-store';
 import { papercuspPath } from '../papercusp-root';
+import { activeWorkspaceId } from '../workspace-registry';
+import { runWithWorkspace } from '../workspace-als';
 import { trackDetached } from '../detached-imports';
 import { resolveAgentBinarySync } from '../agent-bin-detect';
 import { WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN } from '@papercusp/deployment-driver';
@@ -187,6 +189,8 @@ function readUntil(
 }
 
 interface PendingCliLink {
+  workspaceId: string;
+  scope: string;
   /** A recovered approved Codex home has no surviving PTY. */
   pty: IPty | null;
   owner: LinkOwner;
@@ -224,22 +228,22 @@ function finalizeClaudeToken(
   linkId: string,
   l: PendingCliLink,
   token: string,
-  workspace: string | undefined,
+  _workspace: string | undefined,
   deps: CompleteCliLinkDeps,
 ): Promise<CompleteCliLinkResult> {
   if (l.done) return Promise.resolve(l.done);
-  l.finalizing ??= (async () => {
+  l.finalizing ??= runWithWorkspace(l.workspaceId, async () => {
     try {
-      const held = await readStoredCliLink(linkId, cliLinkScope());
+      const held = await readStoredCliLink(linkId, l.scope);
       if (held?.owner.nonce !== l.owner.nonce) throw new Error('link custody changed');
-      const credPath = papercuspPath('deploy-credentials', l.accountId);
+      const credPath = `${l.scope}/${l.accountId}`;
       await mkdir(dirname(credPath), { recursive: true });
       await writeFile(credPath, token, { mode: 0o600 });
       await chmod(credPath, 0o600);
       const credentialRef = `token:${credPath}`;
-      await updateAccountPool((p) => registerAccount(p, { id: l.accountId, credentialRef, label: l.label }, Date.now()), workspace);
-      const account = (await accountStatus(workspace)).find((a) => a.id === l.accountId) ?? null;
-      if (!await finishStoredCliLink(linkId, cliLinkScope(), l.owner.nonce, 'completed')) {
+      await updateAccountPool((p) => registerAccount(p, { id: l.accountId, credentialRef, label: l.label }, Date.now()), l.workspaceId);
+      const account = (await accountStatus(l.workspaceId)).find((a) => a.id === l.accountId) ?? null;
+      if (!await finishStoredCliLink(linkId, l.scope, l.owner.nonce, 'completed')) {
         throw new Error('link custody changed');
       }
       l.done = { ok: true, account };
@@ -259,7 +263,7 @@ function finalizeClaudeToken(
     l.reaper = setTimeout(() => links.delete(linkId), DONE_GRACE_MS);
     (deps.notify ?? defaultNotify)();
     return l.done;
-  })();
+  });
   return l.finalizing;
 }
 
@@ -278,7 +282,8 @@ function localCliLinkStatus(linkId: string): CliLinkStatus {
 
 /** Read on the PTY owner, rather than treating a sibling's empty Map as expiry. */
 export async function getCliLinkStatus(linkId: string): Promise<CliLinkStatus> {
-  if (links.has(linkId)) return localCliLinkStatus(linkId);
+  const local = links.get(linkId);
+  if (local) return local.workspaceId === activeWorkspaceId() ? localCliLinkStatus(linkId) : { status: 'unknown' };
   const owner = await locateOwnerRpcResource(CLI_LINK_RPC_KIND, linkId, cliLinkScope());
   if (!owner.ok) {
     // A lookup miss includes unknown/expired ids. A timeout proves neither expiry
@@ -289,7 +294,7 @@ export async function getCliLinkStatus(linkId: string): Promise<CliLinkStatus> {
   }
   const ownerPid = (owner.result as { ownerPid: number }).ownerPid;
   if (ownerPid === process.pid) return storedCliLinkStatus(linkId);
-  const result = await callOwnerProcess({ targetPid: ownerPid, kind: CLI_LINK_RPC_KIND, payload: { op: 'status', linkId } });
+  const result = await callOwnerProcess({ targetPid: ownerPid, kind: CLI_LINK_RPC_KIND, payload: { op: 'status', linkId, workspaceId: activeWorkspaceId() } });
   if (result.ok) {
     const status = result.result as CliLinkStatus;
     return status.status === 'unknown' ? storedCliLinkStatus(linkId) : status;
@@ -306,6 +311,7 @@ async function storedCliLinkStatus(linkId: string): Promise<CliLinkStatus> {
       return { status: 'completed', account: (await accountStatus()).find(a => a.id === row.accountId) ?? null };
     }
     if (row.outcome === 'failed') return { status: 'failed', error: `account link ${row.failure ?? 'interrupted'} — complete the link to retry an approved Codex login` };
+    if (row.expiresAt <= Date.now()) return { status: 'failed', error: 'account link expired — complete the link to recover an approved Codex login' };
     if (linkOwnerLiveness(row.owner) === 'dead') return { status: 'failed', error: 'account link owner interrupted — complete the link to recover an approved Codex login' };
     return { status: 'pending' };
   } catch {
@@ -353,6 +359,8 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
     return { ok: false, error: 'accountId required (allowed: A-Za-z0-9 . _ -)' };
   }
   const provider = normalizeAccountProvider(input.provider);
+  const workspaceId = activeWorkspaceId();
+  const scope = cliLinkScope();
   const linkId = randomUUID();
   // Establish custody BEFORE launching the CLI: a relay failure must not create
   // an orphan login, or delete a completed credential while trying to unwind it.
@@ -407,6 +415,8 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
     return { ok: false, error: `couldn't launch the ${providerLabel(provider)} CLI: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}` };
   }
   const entry: PendingCliLink = {
+    workspaceId,
+    scope,
     pty,
     owner: linkOwner,
     buf: '',
@@ -517,7 +527,7 @@ async function completeCodexCliLink(
   } catch {
     return { ok: false, error: 'Codex login produced an invalid credential file' };
   }
-  const durableHome = papercuspPath('deploy-credentials', `${l.accountId}.codex-cli`);
+  const durableHome = `${l.scope}/${l.accountId}.codex-cli`;
   const durableAuthPath = `${durableHome}/auth.json`;
   try {
     await rm(durableHome, { recursive: true, force: true });
@@ -541,12 +551,12 @@ async function completeCodexCliLink(
           label: l.label,
         },
         Date.now(),
-      ),
+      ), l.workspaceId,
     );
   } catch (e) {
     return { ok: false, error: `failed to persist the Codex CLI credential: ${(e as Error).message}` };
   }
-  const account = (await accountStatus()).find((a) => a.id === l.accountId) ?? null;
+  const account = (await accountStatus(l.workspaceId)).find((a) => a.id === l.accountId) ?? null;
   return {
     ok: true,
     account,
@@ -563,17 +573,17 @@ function finalizeCodexCliLink(
   if (l.done?.ok) return Promise.resolve(l.done);
   l.done = undefined;
   if (l.finalizing) return l.finalizing;
-  const attempt = Promise.resolve().then(async (): Promise<CompleteCliLinkResult> => {
-    const held = await readStoredCliLink(linkId, cliLinkScope());
+  const attempt = runWithWorkspace(l.workspaceId, () => Promise.resolve().then(async (): Promise<CompleteCliLinkResult> => {
+    const held = await readStoredCliLink(linkId, l.scope);
     if (held?.owner.nonce !== l.owner.nonce) return { ok: false, error: 'account-link custody changed; approved credentials were preserved' };
     return completeCodexCliLink(linkId, l, { linkId, ...input }, deps);
   })
     .then(async (result) => {
       if (!result.ok) {
-        await finishStoredCliLink(linkId, cliLinkScope(), l.owner.nonce, 'failed', 'registration-failed');
+        await finishStoredCliLink(linkId, l.scope, l.owner.nonce, 'failed', 'registration-failed');
         return result;
       }
-      if (!await finishStoredCliLink(linkId, cliLinkScope(), l.owner.nonce, 'completed')) {
+      if (!await finishStoredCliLink(linkId, l.scope, l.owner.nonce, 'completed')) {
         return { ok: false, error: 'account-link custody changed; approved credentials were preserved' } as CompleteCliLinkResult;
       }
       l.done = result;
@@ -585,7 +595,7 @@ function finalizeCodexCliLink(
       return result;
     })
     .catch((): CompleteCliLinkResult => ({ ok: false, error: 'failed to finalize the Codex login' }))
-    .finally(() => { if (l.finalizing === attempt) l.finalizing = undefined; });
+    .finally(() => { if (l.finalizing === attempt) l.finalizing = undefined; }));
   l.finalizing = attempt;
   return attempt;
 }
@@ -604,6 +614,7 @@ function reapCliLink(linkId: string): void {
 async function expireCliLink(linkId: string): Promise<void> {
   const l = links.get(linkId);
   if (!l) return;
+  return runWithWorkspace(l.workspaceId, async () => {
   if (l.provider === 'codex') {
     const result = await finalizeCodexCliLink(linkId, l, {}, {});
     if (result.ok) return;
@@ -615,8 +626,9 @@ async function expireCliLink(linkId: string): Promise<void> {
       return;
     } catch { /* no completed login to preserve */ }
   }
-  await finishStoredCliLink(linkId, cliLinkScope(), l.owner.nonce, 'failed', 'expired');
+  await finishStoredCliLink(linkId, l.scope, l.owner.nonce, 'failed', 'expired');
   cleanup(linkId);
+  });
 }
 
 /** Feed the pasted code into the held CLI when needed, capture the credential, write + register it. */
@@ -703,7 +715,12 @@ async function completeLocalCliLink(input: CompleteCliLinkInput, deps: CompleteC
 
 /** Completion must write to the same PTY that started the provider handshake. */
 export async function completeCliLink(input: CompleteCliLinkInput, deps: CompleteCliLinkDeps = {}): Promise<CompleteCliLinkResult> {
-  if (links.has(input.linkId)) return completeLocalCliLink(input, deps);
+  const local = links.get(input.linkId);
+  const workspaceId = activeWorkspaceId();
+  if (input.workspace && input.workspace !== workspaceId) return { ok: false, error: 'account-link workspace mismatch' };
+  if (local) return local.workspaceId === workspaceId
+    ? runWithWorkspace(local.workspaceId, () => completeLocalCliLink(input, deps))
+    : { ok: false, error: 'account-link workspace mismatch' };
   const owner = await locateOwnerRpcResource(CLI_LINK_RPC_KIND, input.linkId, cliLinkScope());
   if (!owner.ok) return owner.code === 'owner_gone' || owner.code === 'not_clustered'
     ? recoverStoredCliLink(input, deps)
@@ -712,7 +729,7 @@ export async function completeCliLink(input: CompleteCliLinkInput, deps: Complet
   if (ownerPid === process.pid) return recoverStoredCliLink(input, deps);
   const result = await callOwnerProcess({
     targetPid: ownerPid, kind: CLI_LINK_RPC_KIND,
-    payload: { op: 'complete', ...input }, timeoutMs: COMPLETE_TIMEOUT_MS + 5_000,
+    payload: { op: 'complete', ...input, workspaceId }, timeoutMs: COMPLETE_TIMEOUT_MS + 5_000,
   });
   if (result.ok) return result.result as CompleteCliLinkResult;
   return result.code === 'owner_gone' ? recoverStoredCliLink(input, deps)
@@ -736,6 +753,7 @@ async function recoverStoredCliLink(input: CompleteCliLinkInput, deps: CompleteC
   catch { return { ok: false, error: 'account-link recovery custody unavailable; retry completion' }; }
   if (!claimed) return { ok: false, error: 'account-link recovery already has a custodian' };
   const l: PendingCliLink = {
+    workspaceId: activeWorkspaceId(), scope: claimed.scope,
     pty: null, buf: '', accountId: claimed.accountId, label: claimed.label,
     provider: claimed.provider, configDir: claimed.configDir, owner: claimed.owner,
     reaper: setTimeout(() => reapCliLink(input.linkId), LINK_TTL_MS),
@@ -747,16 +765,21 @@ async function recoverStoredCliLink(input: CompleteCliLinkInput, deps: CompleteC
 }
 
 registerOwnerRpcHandler(CLI_LINK_RPC_KIND, async (payload) => {
-  const p = payload as Partial<CompleteCliLinkInput> & { op?: unknown } | null;
+  const p = payload as Partial<CompleteCliLinkInput> & { op?: unknown; workspaceId?: unknown } | null;
   if (!p || typeof p.linkId !== 'string' || !p.linkId ||
       (p.op !== 'status' && p.op !== 'complete') ||
       (p.code !== undefined && typeof p.code !== 'string') ||
-      (p.workspace !== undefined && typeof p.workspace !== 'string')) {
+      (p.workspace !== undefined && typeof p.workspace !== 'string') ||
+      typeof p.workspaceId !== 'string') {
     throw new Error('invalid account link operation');
   }
   // Never re-route here: a stale mapping must not cause a forwarding loop.
-  return p.op === 'status' ? localCliLinkStatus(p.linkId)
-    : completeLocalCliLink({ linkId: p.linkId, code: p.code, workspace: p.workspace });
+  const local = links.get(p.linkId);
+  if (!local || local.workspaceId !== p.workspaceId || (p.workspace && p.workspace !== local.workspaceId)) {
+    return p.op === 'status' ? { status: 'unknown' } : { ok: false, error: 'account-link workspace mismatch' };
+  }
+  return runWithWorkspace(local.workspaceId, () => p.op === 'status' ? localCliLinkStatus(p.linkId!)
+    : completeLocalCliLink({ linkId: p.linkId!, code: p.code, workspace: local.workspaceId }));
 });
 
 /** Test-only: drop all held links (kills the ptys). */

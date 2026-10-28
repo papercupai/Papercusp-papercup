@@ -72,7 +72,9 @@ const PAYLOAD_FLAG_KEYS = {
  * wake that no fire can prove.
  */
 const PAYLOAD_MERGE_RESERVED_KEYS: ReadonlySet<string> = new Set([
+  'agentReview',
   'externalBlockers',
+  'implementationReadiness',
   'reporterRelease',
   'reporterAnswer',
   'reporterQuestion',
@@ -449,12 +451,16 @@ export default defineTool({
             ok: false as const,
             id: it.id,
             error:
-              `payload: refused reserved key(s) ${reserved.join(', ')} — these carry admission ` +
-              `identity or claim state that the scheduler and claim floors read as authority, and ` +
-              `writing them without their side-effects (the plan-item coverage edge, the legacy-key ` +
-              `unsets) produces a row that admits or holds on a stamp nothing else agrees with. Use ` +
-              `the dedicated args instead: plan_item, needsTwoMachineRig, needsHuman. Keys prefixed ` +
+              `payload: refused reserved key(s) ${reserved.join(', ')} — these carry workflow ` +
+              `authority or claim state that the scheduler and lifecycle tools read as canonical. ` +
+              `Writing them through a generic shallow merge can bypass validation and strand or admit ` +
+              `work on a stamp nothing else agrees with. Use the owning workflow tools instead. ` +
+              `The dedicated args are plan_item, needsTwoMachineRig, needsHuman. Keys prefixed ` +
               `"_" are system-written bookkeeping and are never caller-writable.` +
+              (reserved.some((key) => key === 'agentReview' || key === 'implementationReadiness')
+                ? ` agentReview and implementationReadiness are written by the agent-review lifecycle ` +
+                  `and its canonical grade path; no fields were written.`
+                : '') +
               (reserved.includes('externalBlockers')
                 ? ` externalBlockers is written only by work_items:set_blocker { id, kind, ref, summary, ` +
                   `nextVerb } (clear with { id, ref, clear:true, evidence }): it refuses event/gate refs no ` +

@@ -1780,21 +1780,73 @@ function jsonPointerSegment(value: string): string {
   return value.replace(/~/g, '~0').replace(/\//g, '~1');
 }
 
+type EvidencePickSegment =
+  | { kind: 'key'; value: string }
+  | { kind: 'index'; value: number }
+  | { kind: 'array' };
+
+function evidencePickSegments(path: string): EvidencePickSegment[] {
+  const segments: EvidencePickSegment[] = [];
+  for (const token of path.split('.')) {
+    if (!token) continue;
+    const head = token.replace(/(\[\d*\])+$/, '');
+    if (head) segments.push({ kind: 'key', value: head });
+    const brackets = token.slice(head.length).match(/\[\d*\]/g) ?? [];
+    for (const bracket of brackets) {
+      const index = bracket.slice(1, -1);
+      segments.push(index === '' ? { kind: 'array' } : { kind: 'index', value: Number(index) });
+    }
+  }
+  return segments;
+}
+
+function evidencePointerSegments(pointer: string): string[] {
+  return pointer.split('/').slice(1).map((segment) => segment.replace(/~1/g, '/').replace(/~0/g, '~'));
+}
+
+function evidencePickCanReachPointer(pick: readonly EvidencePickSegment[], pointer: readonly string[]): boolean {
+  const shared = Math.min(pick.length, pointer.length);
+  for (let index = 0; index < shared; index += 1) {
+    const expected = pick[index]!;
+    const actual = pointer[index]!;
+    if (expected.kind === 'key' && expected.value !== actual) return false;
+    if (expected.kind === 'index' && String(expected.value) !== actual) return false;
+    if (expected.kind === 'array' && !/^\d+$/.test(actual)) return false;
+  }
+  // Equal paths and either prefix direction are relevant: a selected object
+  // can contain evidence below it, while a parent object must be traversed to
+  // reach a selected nested evidence field.
+  return true;
+}
+
+function evidencePickCoversPointer(pick: readonly EvidencePickSegment[], pointer: readonly string[]): boolean {
+  if (pick.length > pointer.length) return false;
+  return evidencePickCanReachPointer(pick, pointer);
+}
+
 /** Discover evidence groups in script-authored JSON without coupling the door
  * to one script schema. Only explicit field names count; values are never
  * guessed from IDs or prose. */
-export function detectResultEvidence(content: readonly unknown[]): Array<{
+export function detectResultEvidence(
+  content: readonly unknown[],
+  selectedPaths?: readonly string[],
+): Array<{
   evidenceClass: OutputEvidenceClass;
   contentIndex: number;
   jsonPointers: string[];
 }> {
   const found = new Map<string, { evidenceClass: OutputEvidenceClass; contentIndex: number; jsonPointers: string[] }>();
+  const selectedSegments = selectedPaths?.map(evidencePickSegments);
   const visit = (value: unknown, contentIndex: number, pointer: string, depth: number): void => {
     if (depth > 12 || value === null || typeof value !== 'object') return;
+    const pointerSegments = evidencePointerSegments(pointer);
+    if (selectedSegments && !selectedSegments.some((path) => evidencePickCanReachPointer(path, pointerSegments))) return;
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
       const childPointer = `${pointer}/${jsonPointerSegment(key)}`;
+      const childPointerSegments = evidencePointerSegments(childPointer);
       const evidenceClass = EVIDENCE_KEY_CLASS[key.toLowerCase().replace(/[^a-z0-9]/g, '')];
-      if (evidenceClass) {
+      const selected = !selectedSegments || selectedSegments.some((path) => evidencePickCoversPointer(path, childPointerSegments));
+      if (evidenceClass && selected) {
         const mapKey = `${evidenceClass}:${contentIndex}`;
         const row = found.get(mapKey) ?? { evidenceClass, contentIndex, jsonPointers: [] };
         if (!row.jsonPointers.includes(childPointer)) row.jsonPointers.push(childPointer);
@@ -2033,7 +2085,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   let spillErrorSummary: string | null = null;
   let manifest: ScratchReferenceManifest | null = null;
   let volatileFallback: NonNullable<ReturnType<typeof storeVolatileScratchReference>> | null = null;
-  const evidence = detectResultEvidence(input.result.content);
+  const evidence = detectResultEvidence(input.result.content, input.opts.preservePaths);
   try {
     if (input.opts.scratchWriteFailure) throw input.opts.scratchWriteFailure.error;
     const parts = scratchParts(input.opts);
@@ -3368,7 +3420,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // non-'full' mode is a client-reconstructed patch that a text cap would corrupt.
     const deltaMeta = (result._meta as { delta?: { mode?: unknown } } | undefined)?.delta;
     if (deltaMeta != null && deltaMeta.mode !== 'full') return result;
-    const items = result.content;
+    let items = result.content;
     if (!Array.isArray(items)) return result;
 
     // P-023: the effective resultEach door for THIS caller (workspace defaults ⟵
@@ -3399,6 +3451,33 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           }
         | undefined
     )?.payloadProjection;
+    // `tools:invoke` unwraps a nested projection to its selected JSON body, but
+    // intentionally keeps the projection report in `_meta`. If the nested
+    // report is the only remaining copy of the upstream-truncation warning,
+    // restore that warning before byte accounting and before the under-budget
+    // fast path. Otherwise a small selected read is needlessly sent through a
+    // synchronous scratch spill because the warning's metadata is not in-band.
+    const projectionReport = (
+      result._meta as {
+        resultProjection?: { applied?: unknown; spec?: unknown; notes?: unknown };
+      } | undefined
+    )?.resultProjection;
+    const projectionSpec = isJsonObject(projectionReport?.spec) ? projectionReport.spec : null;
+    const explicitProjectionApplied = projectionReport?.applied === true && projectionSpec !== null &&
+      (Array.isArray(projectionSpec.pick) || Array.isArray(projectionSpec.pipe));
+    const upstreamWarning = Array.isArray(projectionReport?.notes)
+      ? projectionReport.notes.find((note): note is string =>
+          typeof note === 'string' && note.includes('ALREADY TRUNCATED'))
+      : undefined;
+    const warningAlreadyVisible = upstreamWarning !== undefined && items.some(
+      (item) => isTextItem(item) && item.text.includes(`⚠ ${upstreamWarning}`),
+    );
+    if (upstreamProjection?.truncated === true && explicitProjectionApplied &&
+      upstreamWarning !== undefined && !warningAlreadyVisible) {
+      const warningText = upstreamWarning.startsWith('⚠') ? upstreamWarning : `⚠ ${upstreamWarning}`;
+      result = { ...result, content: [{ type: 'text', text: warningText }, ...items] } as T;
+      items = result.content;
+    }
     // EI-22167228731928620: an EXPLICIT payloadTier:'full' (or an equivalent
     // transport-cap exemption) skipped payload-tier.ts's own tier shaper AND
     // its hard-ceiling force-shape — `data` is the tool's true raw output.
@@ -3583,7 +3662,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // outer result door caps a JSON `work_items:get` response; without the index,
     // capability:read's evidence_class selector sees a valid scratch reference
     // but cannot resolve its work-item/event/fleet evidence (EI-22586299911603348).
-    const spillEvidence = detectResultEvidence(items);
+    const spillEvidence = detectResultEvidence(items, opts.preservePaths);
     // WI-36047 (borrow item 9, opencode/OMP research): THE SPILL GETS ITS OWN
     // FAIL-SOFT BOUNDARY, SEPARATE FROM THE CAP.
     //

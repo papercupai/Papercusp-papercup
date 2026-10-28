@@ -2048,13 +2048,154 @@ mutation_descriptor_subject_path() {
   printf '%s' "$FILE"
 }
 
+# Classify committed-source notices from the structured loader channel. The
+# test-run reporter has one private Git-reader worker: its committed-source
+# receipt can appear beside a test child that really loaded committed product
+# code. Exempt only that exact executable after verifying its committed imports
+# and reporter call sites; every other notice or an incomplete receipt fails
+# closed.
+child_source_notices_are_classifiable() {
+  local notice_file="$1" output_file="$2" subject="$3" repo_root="$4"
+  node --input-type=module - "$notice_file" "$output_file" "$subject" "$repo_root" <<'JS'
+import { execFileSync } from 'node:child_process';
+import { readFileSync, realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+
+const [noticeFile, outputFile, subjectInput, repoRootInput] = process.argv.slice(2);
+function fail(reason) {
+  console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES verdict=unclassified reason=' + reason);
+  process.exit(1);
+}
+function canonical(path) {
+  const absolute = resolve(path);
+  try { return realpathSync(absolute); } catch { return absolute; }
+}
+function within(parent, child) {
+  const rel = relative(parent, child);
+  return rel === '' || (rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel));
+}
+
+let output;
+let noticeText;
+try {
+  output = readFileSync(outputFile, 'utf8');
+  noticeText = readFileSync(noticeFile, 'utf8');
+} catch {
+  fail('receipt-unreadable');
+}
+
+const reportedCounts = [];
+for (const line of output.split(/\r?\n/)) {
+  if (line.startsWith('TEST_FILE_CHILD_SUBSTITUTED ')) {
+    const count = line.match(/\bcount=(\d+)\b/);
+    const malformed = line.match(/\bmalformed=(\d+)\b/);
+    if (!count || (malformed && Number(malformed[1]) > 0)) fail('runner-count-unknown-or-malformed');
+    reportedCounts.push(Number(count[1]));
+  }
+  if (line.startsWith('TEST_FILE_RESULT ')) {
+    const field = line.split(/\s+/).find((part) => part.startsWith('childSubstituted='));
+    if (field) {
+      const value = field.slice('childSubstituted='.length);
+      if (!/^\d+$/.test(value)) fail('runner-result-count-unknown');
+      reportedCounts.push(Number(value));
+    }
+  }
+  if (line.includes('COMMITTED_SOURCE notice-unrecorded')) fail('loader-notice-write-failed');
+}
+
+const repoRoot = canonical(repoRootInput);
+const rawLines = noticeText.split(/\r?\n/).filter((line) => line.length > 0);
+const parsedRecords = rawLines.map((line) => {
+  try { return JSON.parse(line); } catch { fail('malformed-jsonl'); }
+});
+const records = [];
+for (const record of parsedRecords) {
+  if (record?.schemaVersion !== 'committed-source-notice-v1'
+    || typeof record.rel !== 'string' || typeof record.top !== 'string') {
+    fail('malformed-notice-record');
+  }
+  // Match test-files.mjs: a test's own external scratch checkout does not
+  // describe the source tree measured by this probe.
+  if (within(repoRoot, canonical(record.top))) records.push(record);
+}
+if (reportedCounts.some((count) => count !== records.length)) fail('runner-count-mismatch');
+if (records.length === 0) {
+  console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=0 gitReaders=0 unclassified=0');
+  process.exit(0);
+}
+
+const testConfigRoot = canonical(resolve(repoRoot, 'libs/test-config'));
+const expectedWorker = canonical(resolve(testConfigRoot, 'src/git-read-worker.mjs'));
+const subject = canonical(subjectInput);
+if (!within(repoRoot, testConfigRoot) || within(testConfigRoot, subject)) {
+  fail('test-config-subject-or-root-boundary');
+}
+
+let verifiedWorkerSource;
+let verifiedReporterSource;
+try {
+  verifiedWorkerSource = execFileSync('git', ['-C', testConfigRoot, 'show', 'HEAD:src/git-read-worker.mjs'], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  verifiedReporterSource = execFileSync('git', ['-C', testConfigRoot, 'show', 'HEAD:src/admin-test-runs-reporter.ts'], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  execFileSync('git', ['-C', testConfigRoot, 'diff', '--quiet', 'HEAD', '--',
+    'src/git-read-worker.mjs', 'src/admin-test-runs-reporter.ts'], { stdio: 'ignore' });
+} catch {
+  fail('committed-reader-source-unavailable-or-dirty');
+}
+
+const imports = [...verifiedWorkerSource.matchAll(/^\s*import\s+(?:.*?\s+from\s+)?['"]([^'"]+)['"]\s*;?\s*$/gm)]
+  .map((match) => match[1]);
+if (imports.length === 0 || imports.some((specifier) => !specifier.startsWith('node:'))
+  || /\bimport\s*\(|\brequire\s*\(/.test(verifiedWorkerSource)) {
+  fail('git-reader-dependency-not-builtins-only');
+}
+const runGitCalls = [...verifiedReporterSource.matchAll(/^\s*runGit\(\s*(['"])([^'"]+)\1/gm)]
+  .map((match) => match[2]);
+const runGitOccurrences = [...verifiedReporterSource.matchAll(/\brunGit\s*\(/g)].length;
+if (!verifiedReporterSource.includes("new Worker(new URL('./git-read-worker.mjs', import.meta.url)")
+  || !verifiedReporterSource.includes('workerData: { cmd, cwd, timeoutMs }, execArgv: []')
+  || runGitCalls.length === 0 || runGitOccurrences !== runGitCalls.length + 1
+  || runGitCalls.some((command) => !/^git(?:\s|$)/.test(command))) {
+  fail('git-reader-command-provenance-unverified');
+}
+
+for (const record of records) {
+  if (record?.schemaVersion !== 'committed-source-notice-v1'
+    || !['substituted', 'refused'].includes(record.kind)
+    || !['esm', 'cjs'].includes(record.via)
+    || typeof record.top !== 'string' || !isAbsolute(record.top)
+    || typeof record.rel !== 'string' || isAbsolute(record.rel) || record.rel.includes('\\')
+    || typeof record.entry !== 'string'
+    || !Number.isSafeInteger(record.pid) || record.pid < 1) {
+    fail('malformed-notice-record');
+  }
+  const top = canonical(record.top);
+  const sourcePath = canonical(resolve(top, record.rel));
+  const entryPath = canonical(isAbsolute(record.entry) ? record.entry : resolve(top, record.entry));
+  if (!within(repoRoot, top) || !within(top, sourcePath) || !within(repoRoot, entryPath)) {
+    fail('notice-path-outside-repository');
+  }
+  const exactGitReader = record.kind === 'substituted' && record.via === 'esm'
+    && top === testConfigRoot && sourcePath === expectedWorker && entryPath === expectedWorker
+    && record.rel === 'src/git-read-worker.mjs' && record.entry === 'src/git-read-worker.mjs';
+  if (!exactGitReader) fail('subject-dependent-or-unknown-child');
+}
+
+console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=' + records.length
+  + ' gitReaders=' + records.length + ' unclassified=0');
+JS
+}
+
 # Run a guard in an interruptible child and preserve its output for the
 # machine-readable verdict below. The phase marker lets a guard's own test
 # fixture skip an intentionally slow baseline setup without weakening the
 # production command shape; it is also useful to test that the baseline and
 # mutant really went through the same invocation path.
 run_guard() {
-  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed npm_lock_wrapper guard_cwd guard_repo_root guard_output custody_reason
+  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed npm_lock_wrapper guard_cwd guard_repo_root guard_output custody_reason child_source_notice_file
   guard_cwd="$(pwd -P)" || die "could not resolve the guard working directory"
   guard_repo_root="$(git -C "$guard_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
   guard_repo_root="${guard_repo_root:-$RUNNER_ROOT}"
@@ -2064,6 +2205,9 @@ run_guard() {
     log "running $label: $cmd"
     # A retried attempt must not inherit the first attempt's receipts.
     rm -f "$(test_run_receipt_file "$phase")"
+    child_source_notice_file="$SCRATCH/child-source-notices.$phase.jsonl"
+    rm -f "$child_source_notice_file"
+    : > "$child_source_notice_file" || die "could not create the $label child-source notice receipt"
     # WI-6554700010018048: a partially contained leg is checked afterwards for
     # writes to the uncovered checkout entries, against this stamp.
     rm -f "$SCRATCH/contain-abort"
@@ -2078,6 +2222,10 @@ run_guard() {
     (
       export PAPERCUSP_MUTATION_PHASE="$phase"
       export PAPERCUSP_TEST_RUN_RECEIPT_FILE="$(test_run_receipt_file "$phase")"
+      # Own a complete machine-readable notice channel for this leg. The
+      # human summary remains captured below but cannot distinguish receipt
+      # infrastructure from a child whose committed bytes affect the subject.
+      export PAPERCUSP_COMMITTED_SOURCE_NOTICES="$child_source_notice_file"
       # A deliberate baseline/mutant result is falsifiability evidence, not a
       # measurement of the repository's health. Keep the marker scoped to the
       # supervised child so it reaches every test process without leaking into
@@ -2257,11 +2405,11 @@ run_guard() {
     # test-spawned child with HEAD. Its router notice means this leg measured
     # different bytes, even when a parent module-load control sees the overlay.
     # Refuse before either exit code can become a falsifiability verdict.
-    if grep -Eq '^TEST_FILE_RESULT[[:space:]].*childSubstituted=[1-9][0-9]*([[:space:]]|$)|^TEST_FILE_CHILD_SUBSTITUTED count=[1-9][0-9]*([[:space:]]|$)' "$output"; then
+    if ! child_source_notices_are_classifiable "$child_source_notice_file" "$output" "$FILE" "$RUNNER_ROOT"; then
       cat "$output"
       printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=-1 guard_exit=%d child_source_substituted=yes phase=%s\n' \
         "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$rc" "$phase"
-      die "the $label run substituted committed source in a test-spawned child. This leg did not exercise the requested source bytes; neither caught nor survived is established. Keep the committed-source boundary and use a guard that directly exercises the subject."
+      die "the $label run had an unclassified or incomplete committed-source notice. This leg may depend on bytes other than the requested subject; neither caught nor survived is established."
     fi
     # The private integration verifier freezes HEAD before starting its worker.
     # That route can discard an overlay without a childSubstituted notice: the

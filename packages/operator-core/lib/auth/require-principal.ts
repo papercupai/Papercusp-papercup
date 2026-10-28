@@ -116,6 +116,39 @@ export async function requirePrincipal(
   return principal;
 }
 
+/** Host-local capability retained from an actual authenticated request. Never
+ * serialize this closure or reconstruct it from a session descriptor. Each use
+ * re-resolves the original credentials; neither resolver fall-through nor a
+ * later grant may widen the authority the launching request actually held. */
+export type HostRequestPrincipalResolver = () => Promise<Principal | null>;
+export async function retainRequestPrincipal(
+  headers: Headers | null, workspaceId: string,
+): Promise<HostRequestPrincipalResolver | undefined> {
+  if (!headers || !workspaceId || workspaceId === '*') return undefined;
+  const credentials = new Headers(headers);
+  const resolve = () => requirePrincipal(credentials, { trust: ['trusted', 'verified'] });
+  const original = await resolve().catch(() => null);
+  if (!original || original.workspaceId !== workspaceId) return undefined;
+  const ceiling = structuredClone(original);
+  const intersect = (current: ReadonlySet<string>, prior: ReadonlySet<string>) =>
+    new Set([...current].filter(value => prior.has('*') || prior.has(value)));
+  return async () => {
+    const current = await resolve().catch(() => null);
+    if (!current || current.slug !== ceiling.slug || current.kind !== ceiling.kind
+      || current.workspaceId !== ceiling.workspaceId || current.authMethod !== ceiling.authMethod
+      || current.trust !== ceiling.trust) return null;
+    return { ...current,
+      capabilities: current.capabilities.has('*') ? new Set(ceiling.capabilities)
+        : intersect(current.capabilities, ceiling.capabilities),
+      roles: new Set([...current.roles ?? []].filter(role => ceiling.roles?.has(role))),
+      allowedTools: ceiling.allowedTools === undefined
+        ? current.allowedTools && new Set(current.allowedTools)
+        : current.allowedTools === undefined ? new Set(ceiling.allowedTools)
+          : new Set([...current.allowedTools].filter(name => ceiling.allowedTools!.has(name))),
+    };
+  };
+}
+
 /**
  * Test-only convenience: resolve a principal with no requirements, return
  * null instead of throwing on missing auth. Lets test harnesses probe

@@ -34,7 +34,7 @@
 // `LOCK_TREE_DEFECT<TAB><kind><TAB><path><TAB><detail>` lines (at most MAX_DEFECTS).
 // Exit 0 = complete, 3 = defects found, 2 = misuse / unreadable input.
 
-import { lstatSync, readFileSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, posix, resolve } from 'node:path';
 
@@ -167,7 +167,7 @@ function enclosingWorkspaceOwner(lockDir, auditedLocks) {
  * known before its workspace members. `lockfiles[]` in the result records each decision:
  * status audited | not-installed | workspace-member (with `owner`).
  */
-export function auditTree({ treeRoot, lockRoot, lockfiles, fs = defaultFs() }) {
+export function auditTree({ treeRoot, lockRoot, lockfiles, installedTrees = [], fs = defaultFs() }) {
   const summary = {
     lockfiles: lockfiles.length,
     audited: 0,
@@ -180,10 +180,16 @@ export function auditTree({ treeRoot, lockRoot, lockfiles, fs = defaultFs() }) {
     (a, b) => a.split('/').length - b.split('/').length || (a < b ? -1 : a > b ? 1 : 0),
   );
   const auditedLocks = [];
+  const lockedPaths = new Set();
   for (const rel of ordered) {
     const lock = fs.readJson(join(lockRoot, rel));
     if (lock === null) throw new Error(`unreadable lockfile: ${join(lockRoot, rel)}`);
     const lockDir = lockDirOf(rel);
+    // Supplemental member locks can bind physically installed nested paths even
+    // when their vestigial full graph is not an installation obligation.
+    for (const key of Object.keys(lock.packages ?? {})) {
+      if (key.includes('node_modules/')) lockedPaths.add(posix.join(lockDir, key));
+    }
     const owner = enclosingWorkspaceOwner(lockDir, auditedLocks);
     if (owner !== null) {
       summary.skipped += 1;
@@ -207,6 +213,27 @@ export function auditTree({ treeRoot, lockRoot, lockfiles, fs = defaultFs() }) {
       defects: result.defects.length,
     });
   }
+  // Forward completeness alone admits arbitrary extra packages. Reuse the
+  // publisher's exact tree population instead of walking emitted build copies.
+  const scan = (tree) => {
+    for (const name of readdirSync(join(treeRoot, tree)).sort()) {
+      if (name.startsWith('.')) continue; // Existing hidden-entry/loaded-module guards own these.
+      const names = name.startsWith('@')
+        ? readdirSync(join(treeRoot, tree, name)).filter(child => !child.startsWith('.')).map(child => `${name}/${child}`)
+        : [name];
+      for (const name of names) {
+        const path = posix.join(tree, name);
+        if (!lockedPaths.has(path)) summary.defects.push({ kind: 'unlocked', path, detail: 'installed package has no input lock entry' });
+        const physical = join(treeRoot, path);
+        if (!lstatSync(physical).isSymbolicLink() && fs.exists(join(physical, 'node_modules'))) scan(posix.join(path, 'node_modules'));
+      }
+    }
+  };
+  for (const tree of installedTrees) {
+    if (!tree || tree.startsWith('/') || tree.split('/').some(part => !part || part === '.' || part === '..')
+        || /[\\\x00-\x1f]/.test(tree) || posix.basename(tree) !== 'node_modules') throw new Error('invalid installed tree path');
+    scan(tree);
+  }
   return summary;
 }
 
@@ -215,7 +242,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 2) {
     const flag = argv[i];
     const value = argv[i + 1];
-    if (!['--tree-root', '--lock-root', '--manifest'].includes(flag) || value === undefined) {
+    if (!['--tree-root', '--lock-root', '--manifest', '--installed-trees'].includes(flag) || value === undefined) {
       throw new Error(`unknown or incomplete argument: ${flag}`);
     }
     out[flag.slice(2)] = value;
@@ -232,7 +259,8 @@ function main(argv) {
   try {
     args = parseArgs(argv);
     const lockfiles = lockfilesFromManifest(readFileSync(args.manifest, 'utf8'));
-    summary = auditTree({ treeRoot: args['tree-root'], lockRoot: args['lock-root'], lockfiles });
+    const installedTrees = args['installed-trees'] ? readFileSync(args['installed-trees'], 'utf8').split('\n').filter(Boolean) : [];
+    summary = auditTree({ treeRoot: args['tree-root'], lockRoot: args['lock-root'], lockfiles, installedTrees });
   } catch (error) {
     process.stderr.write(`dependency-lock-tree-audit: ${error.message}\n`);
     return 2;

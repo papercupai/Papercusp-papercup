@@ -5662,6 +5662,7 @@ describe('EI-18 repeated-failure escalation (git-sync-error)', () => {
       consecutive_error_ticks: 3,
       errors: [{ scope: 'superproject', message: 'push failed: HTTP 500' }],
     });
+    expect(ups[0].body.detail).toContain('push failed 3 consecutive ticks');
     // the conditional DO UPDATE: an open git-sync-conflict row always wins
     expect(ups[0].text).toContain('WHERE harness_escalations.escalation IS NULL');
     expect(ups[0].params[5]).toBe('git-sync-error');
@@ -5688,6 +5689,37 @@ describe('EI-18 repeated-failure escalation (git-sync-error)', () => {
         detail: expect.objectContaining({ consecutiveErrorTicks: 3 }),
       }),
     );
+    warn.mockRestore();
+  });
+
+  it('persists a generic sync-failure reason for pre-push fetch admission errors', async () => {
+    const fetchError =
+      'fetch failed; submodule remote state could not be verified before superproject publication: mark-running admission timed out';
+    runGitSyncMock.mockResolvedValue({
+      ...errorOutcome,
+      errors: [{ scope: 'libs/generic/rate-limit', message: fetchError }],
+    });
+    counterRows = [{ et: 2, lo: [] }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    const ups = escalationUpserts();
+    expect(ups).toHaveLength(1);
+    expect(ups[0].body).toMatchObject({
+      kind: 'git-sync-error',
+      reasons: ['sync-failure'],
+      consecutive_error_ticks: 3,
+      errors: [{ scope: 'libs/generic/rate-limit', message: fetchError }],
+    });
+    expect(ups[0].body.detail).toContain('3 consecutive git-sync error ticks');
+    expect(ups[0].body.detail).not.toContain('push failed');
+    expect(ups[0].body.detail).not.toContain('commits NOT reaching origin');
+
+    const [, msg] = sendMessageMock.mock.calls[0];
+    expect((msg as { summary: string }).summary).toContain('cause unclassified');
+    expect((msg as { summary: string }).summary).not.toContain('commits NOT reaching origin');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cause unclassified'));
     warn.mockRestore();
   });
 });

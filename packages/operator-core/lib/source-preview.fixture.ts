@@ -10,8 +10,10 @@
  * derived from audit-release-bundle.py, heavy excludes, non-allowlisted tops).
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { ROOT as SOURCE_ROOT, prepareBgVerifierSource, captureVerifierDependencies } from '../../../scripts/source-preview.mjs';
 
 const GIT_ID = ['-c', 'user.name=Fixture Author', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false'];
 
@@ -163,4 +165,57 @@ export function makeSuperproject(root: string): Superproject {
   git(repo, ['submodule', 'add', '-q', subSrc, 'libs/papercusp']);
   git(repo, ['commit', '-q', '-m', 'fixture superproject']);
   return { repo, subSrc, commit: git(repo, ['rev-parse', 'HEAD']), subCommit };
+}
+
+export const BG_INPUTS = ['apps/operator/src/index.ts', 'libs/papercusp/package.json'];
+
+/** The same inherited-input fixture serves source and artifact acceptance cases. */
+export function makeBgCandidate(base: string) {
+  const fixture = makeSuperproject(base);
+  git(fixture.repo, ['commit', '--allow-empty', '-qm', 'BG selected child']);
+  const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+  const members = { [BG_INPUTS[0]!]: git(fixture.repo, ['rev-parse', `${ref}:${BG_INPUTS[0]}`]),
+    [BG_INPUTS[1]!]: git(fixture.subSrc, ['rev-parse', `${fixture.subCommit}:package.json`]) };
+  const path = join(base, 'original-parent-manifest.json');
+  const bytes = JSON.stringify({ schemaVersion: 1, sourceBlobs: members });
+  writeFileSync(path, bytes);
+  return { fixture, options: { repo: fixture.repo, ref, dest: join(base, 'selected'), inputs: [...BG_INPUTS],
+    acceptedManifest: { path, evidenceRef: 'fixture:original-parent-P002',
+      sha256: createHash('sha256').update(bytes).digest('hex'), schemaVersion: 1 as const, members } } };
+}
+
+/** Real compiler inputs, retained independently of the suite registering a case. */
+export async function makeBgCompilerCandidate(base: string, {
+  artifactInputs = false, cliHarness = false, trace = (_stage: string) => {},
+} = {}) {
+  trace('compiler-fixture:start');
+  const c = makeBgCandidate(base);
+  git(c.fixture.repo, ['rm', '-rf', '--', 'node_modules', 'apps/operator/node_modules']);
+  for (const path of ['papercusp-desktop/bin/lib/pinned-deps.sh', 'apps/operator/bin/release/dependency-generation.sh',
+    'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'])
+    write(c.fixture.repo, path, readFileSync(join(SOURCE_ROOT, path), 'utf8'));
+  if (cliHarness) write(c.fixture.repo, 'scripts/source-preview.mjs',
+    `const { runCli } = await import(${JSON.stringify(new URL('../../../scripts/source-preview.mjs', import.meta.url).href)});\nprocess.exitCode = await runCli(process.argv.slice(2));\n`);
+  write(c.fixture.repo, BG_INPUTS[0]!, "export { y } from '../../../packages/core/index'; export { default as dep } from 'fixture-dependency';\n");
+  git(c.fixture.repo, ['add', '-A']);
+  git(c.fixture.repo, ['commit', '-qm', 'BG compiler input custody fixture']);
+  c.options.ref = git(c.fixture.repo, ['rev-parse', 'HEAD']);
+  c.options.acceptedManifest.members[BG_INPUTS[0]!] = git(c.fixture.repo, ['rev-parse', `${c.options.ref}:${BG_INPUTS[0]}`]);
+  if (artifactInputs) {
+    c.options.inputs = [BG_INPUTS[0]!, 'packages/core/index.ts'];
+    c.options.acceptedManifest.members = Object.fromEntries(c.options.inputs.map(path =>
+      [path, git(c.fixture.repo, ['rev-parse', `${c.options.ref}:${path}`])])) as typeof c.options.acceptedManifest.members;
+  }
+  const manifest = JSON.stringify({ schemaVersion: 1, sourceBlobs: c.options.acceptedManifest.members });
+  writeFileSync(c.options.acceptedManifest.path, manifest);
+  c.options.acceptedManifest.sha256 = createHash('sha256').update(manifest).digest('hex');
+  const prepared = await prepareBgVerifierSource(c.options);
+  trace('compiler-fixture:source-ready');
+  write(prepared.root, 'node_modules/fixture-dependency/package.json', '{"name":"fixture-dependency","main":"index.js"}');
+  write(prepared.root, 'node_modules/fixture-dependency/index.js', 'export default 41;\n');
+  write(prepared.root, 'node_modules/fixture-package-manager/cli.js', '// fixture package-manager identity\n');
+  write(prepared.root, 'node_modules/fixture-compiler/cli.js', '// fixture compiler identity\n');
+  const dependencies = captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source });
+  trace('compiler-fixture:dependencies-ready');
+  return { c, prepared, dependencies };
 }

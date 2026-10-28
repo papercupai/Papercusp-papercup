@@ -792,6 +792,13 @@ export async function verifyDepsExtracted({
       ? shrinkwrapPath
       : join(realWorkspacePath, "package-lock.json");
     if (!existsSync(lockPath)) return [];
+    // Match the publisher's input census: an ignored, untracked member lock
+    // is install residue, not an independently pinned install. Reifying it
+    // with ci can reject current manifests or reinstall obsolete dependencies.
+    // Run from the member so a submodule answers for its own tracked files.
+    if (existsSync(join(repoRoot, ".git")) && spawnSync("git", [
+      "check-ignore", "-q", "--", lockPath,
+    ], { cwd: realWorkspacePath, stdio: "ignore" }).status === 0) return [];
     const lock = JSON.parse(readFileSync(lockPath, "utf8"));
     const audit = auditLockfile({ lock, lockDir: workspace, treeRoot: repoRoot });
     if (!audit.installed || audit.defects.length === 0) return [];

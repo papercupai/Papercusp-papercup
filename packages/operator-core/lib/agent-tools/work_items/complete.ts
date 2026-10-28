@@ -1046,6 +1046,11 @@ function isPlanGateRejection(error: string): boolean {
   return /linked plan-item .* is STILL effectively /i.test(error);
 }
 
+/** The announced-event preflight throws before the state writer persists completion evidence. */
+function isCompletionGateUnavailable(error: string): boolean {
+  return /completion gate unavailable for work_item\b/i.test(error);
+}
+
 const closeAssumptionsField = z
   .preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional())
   .describe('Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.')
@@ -5830,7 +5835,9 @@ async function completeOneTracked(
   // `state` (exactly the fix the reporter applied). Also fires when an explicit `state` write failed
   // (stateError) or landed on a non-terminal state — in every case the item is still claimable.
   const finalState = (workItem?.state ?? existing.state ?? '').toLowerCase();
-  const completionReturnedOnly = Boolean(stateError && isPlanGateRejection(stateError))
+  const completionReturnedOnly = Boolean(
+    stateError && (isPlanGateRejection(stateError) || isCompletionGateUnavailable(stateError)),
+  )
     && !TERMINAL_WORK_ITEM_STATES.has(finalState);
   setContractRequirement('plan-item-lane', closeIntentRequested,
     stateError && isPlanGateRejection(stateError) ? stateError : undefined);

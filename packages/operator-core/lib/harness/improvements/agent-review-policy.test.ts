@@ -17,6 +17,7 @@ import {
   LEGACY_AGENT_REVIEW_SUBMITTER,
   isStrictOwnerActionCapability,
   readAgentReviewState,
+  readAgentReviewRecoverySnapshot,
   agentReviewIsReproductionValidation,
   readImplementationReadiness,
   readStructuredOwnerAsk,
@@ -682,6 +683,33 @@ describe('readAgentReviewState', () => {
       .toEqual({ ...base, status: 'revision-requested' });
     expect(agentReviewIsReproductionValidation({ agentReview: { ...base, status: 'pending', revisionKind: 'reproduction' } }))
       .toBe(false);
+  });
+
+  it('accepts only an independent, complete revision-request recovery snapshot', () => {
+    const snapshot = {
+      id: 'WI-7',
+      harness: 'papercusp',
+      review: {
+        status: 'revision-requested' as const,
+        submittedBy: 'su-filer',
+        ledgerIdeaId: 'WI-7',
+        round: 2,
+        revisionKind: 'content' as const,
+      },
+      reviewer: 'su-reviewer',
+      grade: 2,
+      feedback: 'Add the missing regression case.',
+      parties: { reporters: ['su-filer'], implementers: ['su-implementer'] },
+    };
+    expect(readAgentReviewRecoverySnapshot(snapshot)).toEqual(snapshot);
+    expect(readAgentReviewRecoverySnapshot({ ...snapshot, reviewer: 'su-filer' })).toBeNull();
+    expect(readAgentReviewRecoverySnapshot({ ...snapshot, grade: 4 })).toBeNull();
+    expect(readAgentReviewRecoverySnapshot({ ...snapshot, review: { ...snapshot.review, status: 'approved' } }))
+      .toBeNull();
+    expect(readAgentReviewRecoverySnapshot({ ...snapshot, parties: { reporters: [], implementers: [] } }))
+      .toBeNull();
+    expect(readAgentReviewRecoverySnapshot({ ...snapshot, parties: { reporters: ['su-filer'], implementers: ['su-reviewer'] } }))
+      .toBeNull();
   });
 
   it('preserves only a well-formed reviewer-visible source revision pin', () => {

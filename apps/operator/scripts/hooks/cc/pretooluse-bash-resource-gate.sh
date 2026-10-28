@@ -6353,9 +6353,9 @@ def _first_call_arg_has_no_literal(span):
     return not any(c in first_arg for c in ('\'', '"'))
 
 
-def _has_computed_write_path(body, code_scan=None):
+def _has_computed_write_path(body, code_scan=None, allow_node_tmpdir=True):
     code_scan = code_scan if code_scan is not None and len(code_scan) == len(body) else body
-    _variables = _literal_var_assignments(body, code_scan)
+    _variables = _literal_var_assignments(body, code_scan, allow_node_tmpdir)
     for _span in _write_call_arg_spans(body, code_scan):
         if _first_call_arg_has_no_literal(_span):
             return True
@@ -6401,6 +6401,23 @@ _SIMPLE_ASSIGN_RE = re.compile(
 )
 _BARE_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 _STATIC_PATH_JOIN_RE = re.compile(r'(?:(?:path|os\.path)\.)join\s*\((.*)\)$')
+_NODE_OS_MODULES_KEY = '__papercusp_node_os_module_aliases__'
+_NODE_OS_REQUIRE_RE = re.compile(r'''require\s*\(\s*(['"])(?:node:)?os\1\s*\)''')
+_NODE_OS_TMPDIR_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\.tmpdir\(\)$')
+_NODE_MKDTEMP_RE = re.compile(
+    r'(?:[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*)?mkdtempSync\s*\((.*)\)$',
+    re.DOTALL,
+)
+_NODE_TEMP_CONTEXT_CHANGE_RE = re.compile(
+    r'\b(?:TMPDIR|TMP|TEMP)\s*=(?!=)'
+    r'|\bunset\s+(?:TMPDIR|TMP|TEMP)\b'
+    r'|\benv\b[^;&|]*\s(?:-u|--unset)(?:=|\s+)(?:TMPDIR|TMP|TEMP)\b'
+    r'|\bprocess\s*\.\s*env(?:\s*(?:\.\s*[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]+\]))?\s*(?:\+=|=(?!=))'
+    r'|\bObject\s*\.\s*assign\s*\(\s*process\s*\.\s*env\b'
+    r'|\b[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*tmpdir\s*=(?!=)'
+    r"""|\b[A-Za-z_$][A-Za-z0-9_$]*\s*\[\s*['"]tmpdir['"]\s*\]\s*=(?!=)"""
+    r"""|\bObject\s*\.\s*defineProperty\s*\(\s*[A-Za-z_$][A-Za-z0-9_$]*\s*,\s*['"]tmpdir['"]"""
+)
 
 
 def _split_static_expression(expr, delimiter):
@@ -6440,6 +6457,30 @@ def _static_path_expression(expr, variables, depth=0):
     if not expr:
         return None
 
+    _tmpdir_call = _NODE_OS_TMPDIR_RE.fullmatch(expr)
+    if (_tmpdir_call
+            and _tmpdir_call.group(1) in variables.get(_NODE_OS_MODULES_KEY, set())):
+        # Node's os.tmpdir() observes the same environment as this hook. Resolve
+        # it now so _resolve_write_target can still detect a temp root symlinked
+        # into the canonical tree instead of assuming every /tmp-like path is
+        # external.
+        _tmpdir = (
+            os.environ.get('TMPDIR')
+            or os.environ.get('TMP')
+            or os.environ.get('TEMP')
+            or '/tmp'
+        )
+        _tmpdir = os.path.realpath(_tmpdir)
+        return _tmpdir if os.path.isdir(_tmpdir) else None
+
+    _mkdtemp = _NODE_MKDTEMP_RE.fullmatch(expr)
+    if _mkdtemp:
+        # mkdtempSync appends a unique suffix to its statically known prefix.
+        # The suffix is unknown, but containment is not: resolve a synthetic
+        # child of the prefix, preserving the prefix's realpath provenance.
+        _prefix = _static_path_expression(_mkdtemp.group(1), variables, depth + 1)
+        return _prefix + '__pc_unique_temp__' if _prefix is not None else None
+
     _literal = _QUOTED_LITERAL_RE.fullmatch(expr)
     if _literal:
         value = _literal.group(1) if _literal.group(1) is not None else _literal.group(2)
@@ -6468,14 +6509,14 @@ def _static_path_expression(expr, variables, depth=0):
     return None
 
 
-def _literal_var_assignments(body, code_scan=None):
+def _literal_var_assignments(body, code_scan=None, allow_node_tmpdir=True):
     """{ varName: literalValue } for simple assignments in the body.
 
     Last assignment wins (top-to-bottom scan order). Static path expressions
     are reduced to one value; unsupported expressions are omitted, not guessed.
     """
     code_scan = code_scan if code_scan is not None and len(code_scan) == len(body) else body
-    out = {}
+    out = {_NODE_OS_MODULES_KEY: set()}
     for _m in _SIMPLE_ASSIGN_RE.finditer(code_scan):
         _name = _m.group(1)
         # The regex's optional whitespace can consume a masked string literal
@@ -6485,7 +6526,14 @@ def _literal_var_assignments(body, code_scan=None):
         _equals = code_scan.find('=', _m.end(1), _m.end())
         if _equals < 0:
             continue
-        _value = _static_path_expression(body[_equals + 1:_m.end()], out)
+        _expression = body[_equals + 1:_m.end()].strip()
+        if _NODE_OS_REQUIRE_RE.fullmatch(_expression):
+            if allow_node_tmpdir:
+                out[_NODE_OS_MODULES_KEY].add(_name)
+            out.pop(_name, None)
+            continue
+        out[_NODE_OS_MODULES_KEY].discard(_name)
+        _value = _static_path_expression(_expression, out)
         if _value is None:
             out.pop(_name, None)
         else:
@@ -6523,7 +6571,7 @@ def _first_call_arg_bare_ident(span):
     return cand if _BARE_IDENT_RE.match(cand) else None
 
 
-def _payload_literal_tree_path(body, canon, cwd, code_scan=None):
+def _payload_literal_tree_path(body, canon, cwd, code_scan=None, allow_node_tmpdir=True):
     # Every quoted token inside the FIRST, top-level path argument of a
     # write-call span (see _write_call_arg_spans above — EI-18814109122347052)
     # that looks path-like (contains `/` or a dotted extension) and carries no
@@ -6546,7 +6594,7 @@ def _payload_literal_tree_path(body, canon, cwd, code_scan=None):
         _bare = _first_call_arg_bare_ident(_span)
         if _bare:
             if _var_literals is None:
-                _var_literals = _literal_var_assignments(body, code_scan)
+                _var_literals = _literal_var_assignments(body, code_scan, allow_node_tmpdir)
             _val = _var_literals.get(_bare)
             if _val is not None and not any(ch in _val for ch in ('$', '`', '{', '}')):
                 for cand in _val.split():
@@ -6558,7 +6606,7 @@ def _payload_literal_tree_path(body, canon, cwd, code_scan=None):
                         return cand
         _static_target = _static_path_expression(_first_arg, _var_literals or {})
         if _static_target is None and _var_literals is None:
-            _var_literals = _literal_var_assignments(body, code_scan)
+            _var_literals = _literal_var_assignments(body, code_scan, allow_node_tmpdir)
             _static_target = _static_path_expression(_first_arg, _var_literals)
         if _static_target is not None:
             if _looks_like_path_candidate(_static_target):
@@ -6653,7 +6701,17 @@ def _interpreter_write_guard():
     if not (_has_heredoc or _has_inline_flag):
         return  # e.g. a plain `node script.js` — the code lives in a real
         # file, which Edit already locks; nothing new for this guard to see.
-    _bodies = _extract_quoted_flag_bodies(command) + _extract_heredoc_bodies(command)
+    # A Python heredoc is already scanned below as Python code, with its string
+    # literals masked. Searching its raw body for shell -c/-e syntax mistakes
+    # serialized evidence (for example, a report describing a Node write) for
+    # executable inline code. Keep the shell command for flag extraction and
+    # let the heredoc body go through the language-aware scanner once.
+    _quoted_flag_source = (
+        _strip_heredoc_bodies(command)
+        if _interp in ('python', 'python3')
+        else command
+    )
+    _bodies = _extract_quoted_flag_bodies(_quoted_flag_source) + _extract_heredoc_bodies(command)
     # EI-18828866497684686: a write whose PATH ARGUMENT is COMPUTED (joined
     # from a parsed log, a loop variable, an env var, string concatenation —
     # anything that is not a plain quoted literal) is structurally invisible
@@ -6673,12 +6731,21 @@ def _interpreter_write_guard():
     # paths; a computed one inside the tree still bypasses locking and this
     # guard cannot catch it.
     _saw_computed_write = False
+    _node_tmpdir_context_changed = bool(
+        _NODE_TEMP_CONTEXT_CHANGE_RE.search(_clean[:_interp_m.start()])
+    )
     for _body in _bodies:
         _code_scan = _mask_python_literals(_body) if _interp in ('python', 'python3') else _body
+        _node_tmpdir_allowed = (
+            not _node_tmpdir_context_changed
+            and not _NODE_TEMP_CONTEXT_CHANGE_RE.search(_code_scan)
+        )
         if not _body_indicates_file_write(_body, _code_scan):
             continue  # a read, a stdout/stderr print, or no recognized file
             # I/O at all — nothing to gate (EI-18692070370140239)
-        _hit = _payload_literal_tree_path(_body, _canon, _eff_cwd, _code_scan)
+        _hit = _payload_literal_tree_path(
+            _body, _canon, _eff_cwd, _code_scan, _node_tmpdir_allowed
+        )
         if _hit:
             # The scanned text here is the interpreter PAYLOAD, not the shell
             # command — showing it is what tells a confused reader which of the
@@ -6706,7 +6773,7 @@ def _interpreter_write_guard():
                     _scratch_remedy_for_target(_hit, _canon, _eff_cwd),
                 )
             )
-        elif _has_computed_write_path(_body, _code_scan):
+        elif _has_computed_write_path(_body, _code_scan, _node_tmpdir_allowed):
             _saw_computed_write = True
     if _saw_computed_write and not ADVISORY:
         ADVISORY = (

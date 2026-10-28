@@ -1010,8 +1010,8 @@ export default defineTool({
     .passthrough(),
   shape: {
     contract: { rows: 'results', fields: ['id'], preserve: ['ok', 'counts', 'read'] },
-    standard: (data) => shapeWorkItemsGet(data, 'standard'),
-    trimmed: (data) => shapeWorkItemsGet(data, 'trimmed'),
+    standard: (data, shaperCtx) => shapeWorkItemsGet(data, 'standard', shaperCtx.sourceProjection),
+    trimmed: (data, shaperCtx) => shapeWorkItemsGet(data, 'trimmed', shaperCtx.sourceProjection),
   },
   async handler(args, ctx) {
     const ids = mergeIds(args.id, args.ids);

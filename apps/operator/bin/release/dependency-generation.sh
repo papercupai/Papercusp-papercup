@@ -484,6 +484,49 @@ dependency_generation_configure_workspace_dirs() {
 # their writers do not hold the source-install reader/writer lock.
 # The broker's captured driver is also emitted output. Its complete bytes are
 # measured by the generated closure, never as a newly installed source tree.
+# An ignored standalone install lock cannot bind a frozen source generation.
+# Keep its private tree out of the snapshot too; never delete the donor's files.
+# npm-shrinkwrap takes precedence, just as it does for the install itself.
+dependency_generation_is_ignored_install_tree() {
+  local root="$1" tree="$2" name ignored=0
+  [ "$tree" != "$root/node_modules" ] || return 1
+  for name in npm-shrinkwrap.json package-lock.json; do
+    [ -f "${tree%/node_modules}/$name" ] || continue
+    dependency_generation_is_ignored_input "$root" "${tree%/node_modules}/$name" || return 1
+    ignored=1
+    break
+  done
+  # Install cleanup may have removed the ignored lock while leaving its tree.
+  # Git's ignore rule still describes that uncommittable input; an existing
+  # tracked/nonignored lock above always wins over this absent-file check.
+  for name in npm-shrinkwrap.json package-lock.json; do
+    dependency_generation_is_ignored_input "$root" "${tree%/node_modules}/$name" && ignored=1
+  done
+  [ "$ignored" = 1 ] || return 1
+  # A workspace's ignored local lock does not supersede its enclosing install.
+  # Retain trees with exact package paths in a nonignored ancestor lock.
+  "${DEPENDENCY_GENERATION_NODE:-node}" --input-type=module - "$root" "$tree" <<'JS'
+import {readFileSync, existsSync} from 'node:fs';
+import {dirname, join, relative, resolve} from 'node:path';
+import {spawnSync} from 'node:child_process';
+const [root, tree] = process.argv.slice(2).map(p => resolve(p));
+for (let dir = dirname(dirname(tree)); dir === root || dir.startsWith(root + '/'); dir = dirname(dir)) {
+  for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
+    const file = join(dir, name);
+    if (!existsSync(file)) continue;
+    if (spawnSync('git', ['-C', dir, 'check-ignore', '-q', '--', name]).status === 0) break;
+    try {
+      const lock = JSON.parse(readFileSync(file, 'utf8'));
+      const prefix = relative(dir, tree).split('\\').join('/') + '/';
+      if (Object.keys(lock.packages ?? {}).some(key => key.startsWith(prefix))) process.exit(1);
+    } catch { process.exit(1); } // Unreadable custody is never permission to omit a tree.
+    break;
+  }
+  if (dir === root) break;
+}
+JS
+}
+
 dependency_generation_enumerate_node_modules() {
   local root="$1" dir
   # WI-10006855: emitted desktop payloads copy dependencies from source trees;
@@ -494,7 +537,8 @@ dependency_generation_enumerate_node_modules() {
     for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
       case "$dir" in .next|.next/*|*/.next|*/.next/*|apps/operator/dist-verify|apps/operator/dist-verify/*) continue ;; esac
       if { [ -d "$root/$dir/node_modules" ] || [ -L "$root/$dir/node_modules" ]; } \
-        && ! dependency_generation_is_foreign_checkout "$root" "$root/$dir/node_modules"; then
+        && ! dependency_generation_is_foreign_checkout "$root" "$root/$dir/node_modules" \
+        && ! dependency_generation_is_ignored_install_tree "$root" "$root/$dir/node_modules"; then
         printf '%s\n' "$root/$dir/node_modules"
       fi
     done
@@ -513,6 +557,7 @@ dependency_generation_enumerate_node_modules() {
     \( \( -type d -o -type l \) -name node_modules -prune -print \) \
     | while IFS= read -r dir; do
         dependency_generation_is_foreign_checkout "$root" "$dir" && continue
+        dependency_generation_is_ignored_install_tree "$root" "$dir" && continue
         printf '%s\n' "$dir"
       done
 }
@@ -1213,11 +1258,23 @@ dependency_generation_write_owner() {
 # A PID alone is not an identity: the kernel can recycle it while a selector
 # lease survives. Linux start ticks are stable for that process's lifetime;
 # ps lstart supplies the same discriminator on hosts without procfs.
-dependency_generation_process_start() {
-  local pid="$1" value
+dependency_generation_read_proc_stat() {
+  local pid="$1" target="$2" stat_line
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  if [ -r "/proc/$pid/stat" ]; then
-    value="$(sed -E 's/^.*\) //' "/proc/$pid/stat" | awk '{ print $20 }')"
+  # The process may exit after any caller-side existence check. Put stderr
+  # on /dev/null before opening procfs so a failed open/read stays unmeasured,
+  # rather than leaking Bash's transient "No such process" diagnostic.
+  IFS= read -r stat_line 2>/dev/null < "/proc/$pid/stat" || return 1
+  printf -v "$target" '%s' "$stat_line"
+}
+
+dependency_generation_process_start() {
+  local pid="$1" value record
+  local -a fields
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  if dependency_generation_read_proc_stat "$pid" record; then
+    read -ra fields <<< "${record##*) }"
+    value="${fields[19]:-}"
     case "$value" in ''|*[!0-9]*) return 1 ;; esac
     printf 'proc:%s\n' "$value"
     return 0
@@ -2593,20 +2650,17 @@ dependency_generation_copy_with_progress() (
   dependency_generation_stop_copy_child() {
     local node="$1" expected="$2" record children child epoch
     local -a fields
-    [ -r "/proc/$node/stat" ] || return 0
-    read -r record < "/proc/$node/stat" || return 0
+    dependency_generation_read_proc_stat "$node" record || return 0
     read -ra fields <<< "${record##*) }"
     [ "${fields[19]:-}" = "$expected" ] || return 0
     children="$(cat "/proc/$node/task/$node/children" 2>/dev/null || true)"
     for child in $children; do
-      [ -r "/proc/$child/stat" ] || continue
-      read -r record < "/proc/$child/stat" || continue
+      dependency_generation_read_proc_stat "$child" record || continue
       read -ra fields <<< "${record##*) }"
       epoch="${fields[19]:-}"
       [ -n "$epoch" ] && dependency_generation_stop_copy_child "$child" "$epoch"
     done
-    [ -r "/proc/$node/stat" ] || return 0
-    read -r record < "/proc/$node/stat" || return 0
+    dependency_generation_read_proc_stat "$node" record || return 0
     read -ra fields <<< "${record##*) }"
     [ "${fields[19]:-}" != "$expected" ] || kill -KILL "$node" 2>/dev/null || true
   }
@@ -2630,8 +2684,7 @@ dependency_generation_copy_with_progress() (
     cp -a "$src" "$dest" &
   fi
   pid=$!
-  if [ -r "/proc/$pid/stat" ]; then
-    read -r record < "/proc/$pid/stat" || true
+  if dependency_generation_read_proc_stat "$pid" record; then
     read -ra fields <<< "${record##*) }"
     copy_epoch="${fields[19]:-}"
   fi
@@ -3147,16 +3200,20 @@ dependency_generation_snapshot_lockfiles() {
 # whose inputs key the generation. Logs the helper's summary + defect lines; returns 0
 # complete, non-zero otherwise.
 dependency_generation_audit_lock_tree() {
-  local tree="$1" lock_root="$2" manifest_file rc=0 output line
+  local tree="$1" lock_root="$2" manifest_file rc=0 output line nm
   local helper="${DEPENDENCY_GENERATION_LOCK_TREE_AUDIT:-$(dirname "${BASH_SOURCE[0]}")/dependency-lock-tree-audit.mjs}"
   manifest_file="$(mktemp)" || return 1
   dependency_generation_input_manifest "$lock_root" > "$manifest_file" || {
     rm -f -- "$manifest_file"
     return 1
   }
+  : > "$manifest_file.trees"
+  while IFS= read -r nm; do
+    printf '%s\n' "${nm#"$tree"/}" >> "$manifest_file.trees"
+  done < <(dependency_generation_enumerate_node_modules "$tree")
   output="$("${DEPENDENCY_GENERATION_NODE:-node}" "$helper" \
-    --tree-root "$tree" --lock-root "$lock_root" --manifest "$manifest_file")" || rc=$?
-  rm -f -- "$manifest_file"
+    --tree-root "$tree" --lock-root "$lock_root" --manifest "$manifest_file" --installed-trees "$manifest_file.trees")" || rc=$?
+  rm -f -- "$manifest_file" "$manifest_file.trees"
   while IFS= read -r line; do
     case "$line" in
       LOCK_TREE_AUDIT*|LOCK_TREE_DEFECT*) dependency_generation_log "$line" ;;

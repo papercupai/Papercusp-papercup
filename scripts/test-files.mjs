@@ -3756,6 +3756,12 @@ export async function main(
         const receiptPath = join(receiptDir, 'verifier-source.json');
         const sourceArgs = new Map(testFiles.map((file, index) => [file, relative(repoRoot, routes[index].absolute)]));
         console.error(`TEST_FILE_VERIFIER_SOURCE ref=${ref} receipt=${receiptPath}`);
+        const verifierEnv = { ...process.env,
+          ...(preemptMarkerPaths.readyFile ? { PC_HEAVY_PREEMPT_READY_FILE: preemptMarkerPaths.readyFile } : {}),
+          ...(preemptMarkerPaths.finalizationFile ? { PC_HEAVY_PSI_FINALIZATION_FILE: preemptMarkerPaths.finalizationFile } : {}) };
+        // The private PG URL belongs to the post-dependency callback only.
+        // A parent's ambient admin URL must not bypass that ordering.
+        delete verifierEnv.HARNESS_ADMIN_DATABASE_URL;
         try {
           return await runPrivateVerifierImpl({ repo: repoRoot, ref, receiptPath, inputs,
             releaseParentPrivatePg: Boolean(process.env[PRIVATE_TEST_PG_RELEASE_TOKEN_ENV]),
@@ -3766,9 +3772,7 @@ export async function main(
               const privatePg = await preflightPrivateIntegrationPgImpl();
               return privatePg?.url ? { HARNESS_ADMIN_DATABASE_URL: privatePg.url } : {};
             },
-            env: { ...process.env,
-              ...(preemptMarkerPaths.readyFile ? { PC_HEAVY_PREEMPT_READY_FILE: preemptMarkerPaths.readyFile } : {}),
-              ...(preemptMarkerPaths.finalizationFile ? { PC_HEAVY_PSI_FINALIZATION_FILE: preemptMarkerPaths.finalizationFile } : {}) },
+            env: verifierEnv,
             command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs',
               ...argv.map(arg => sourceArgs.get(arg) ?? arg)] });
         } finally {

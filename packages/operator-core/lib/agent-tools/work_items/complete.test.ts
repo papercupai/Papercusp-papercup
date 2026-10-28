@@ -1928,6 +1928,24 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
+    it('reports an announced-event preflight failure as returned-only, not persisted evidence', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      const refusal = "completion gate unavailable for work_item 'WI-1': could not verify announced event gates before closing (db-call-deadline); no terminal state transition was written.";
+      setWorkItemStateWithAliasInfo.mockRejectedValue(new Error(refusal));
+
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it', tests: '5 green' } });
+
+      expect(r).toMatchObject({
+        ok: false,
+        stateError: refusal,
+        completionEvidenceStored: false,
+        completionReturnedOnly: true,
+      });
+      expect(r.stateWarning).toMatch(/returned a completion, but it was not persisted/i);
+      expect(r.stateWarning).not.toMatch(/recorded a completion/i);
+      expect(r.completion).toMatchObject({ summary: 'fixed it' });
+    });
+
     it('a state write that THROWS (peer HOLD-OPEN) returns ok:false — but still records + carries the completion (EI-24)', async () => {
       getWorkItem.mockResolvedValue(issue);
       setWorkItemStateWithAliasInfo.mockRejectedValue(

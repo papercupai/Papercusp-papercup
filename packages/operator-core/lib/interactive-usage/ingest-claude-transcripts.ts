@@ -651,8 +651,8 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
       try {
         const { size } = await fs.stat(file).catch(async (error: NodeJS.ErrnoException) => {
           if (error.code !== 'ENOENT' || !opts.historical) throw error;
-          const { readArchivedTranscriptSource } = await import('./replay-transcripts');
-          const archived = await readArchivedTranscriptSource(file, adapter.name);
+          const { readArchivedTranscriptSource, transcriptSourceKindForAdapter } = await import('./replay-transcripts');
+          const archived = await readArchivedTranscriptSource(file, transcriptSourceKindForAdapter(adapter.name));
           if (!archived) throw error;
           return { size: archived.length };
         });

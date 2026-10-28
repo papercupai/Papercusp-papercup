@@ -3718,6 +3718,67 @@ fi
     expect(out).not.toContain('child_source_substituted=yes');
     expect(read()).toBe(ORIGINAL);
   });
+
+  it('accepts only the verified built-ins-only Git reader receipt while still catching the mutant', () => {
+    const guard = join(dir, 'git-reader-router.sh');
+    const top = resolve(__dirname, '../../../libs/test-config');
+    const readerNotice = JSON.stringify({
+      schemaVersion: 'committed-source-notice-v1',
+      kind: 'substituted',
+      via: 'esm',
+      rel: 'src/git-read-worker.mjs',
+      top,
+      pid: 42,
+      entry: 'src/git-read-worker.mjs',
+    });
+    const lines = [
+      '#!/usr/bin/env bash',
+      "printf '%s\\n' '" + readerNotice + "' >> \"$PAPERCUSP_COMMITTED_SOURCE_NOTICES\"",
+      "printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=1 skippedTests=0\\n'",
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then',
+      "  printf 'TEST_FILE_ASSERTION_FAILURE file=\"fixture.test.ts\" name=\"behavior\" message=\"AssertionError\"\\n'",
+      '  exit 1',
+      'fi',
+    ];
+    writeFileSync(guard, lines.join('\n'));
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', 'bash ' + guard + ' {}',
+    ]);
+    expect(code, out).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=1 gitReaders=1 unclassified=0');
+    expect(out).toContain('verdict=caught');
+    expect(out).not.toContain('child_source_substituted=yes');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('still refuses a structured product-child substitution', () => {
+    const guard = join(dir, 'product-child-router.sh');
+    const top = resolve(__dirname, '../../../');
+    const productNotice = JSON.stringify({
+      schemaVersion: 'committed-source-notice-v1',
+      kind: 'substituted',
+      via: 'esm',
+      rel: 'packages/operator-core/lib/mutation-probe-script.test.ts',
+      top,
+      pid: 43,
+      entry: 'scripts/test-files.mjs',
+    });
+    const lines = [
+      '#!/usr/bin/env bash',
+      "printf '%s\\n' '" + productNotice + "' >> \"$PAPERCUSP_COMMITTED_SOURCE_NOTICES\"",
+      "printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=1 skippedTests=0\\n'",
+    ];
+    writeFileSync(guard, lines.join('\n'));
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', 'bash ' + guard + ' {}',
+    ]);
+    expect(code, out).toBe(2);
+    expect(out).toContain('subject-dependent-or-unknown-child');
+    expect(out).toContain('verdict=harness-error');
+    expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
+    expect(out).not.toContain('VERDICT: MUTANT SURVIVED');
+    expect(read()).toBe(ORIGINAL);
+  });
 });
 
 describe('mutation-probe.sh — aborted test routers cannot certify a catch', () => {

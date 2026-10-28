@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerProjectedTool, unregisterProjectedToolsForPlugin, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
-import { dispatchNativeMcpTargetOnOwner, normalizeNativeMcpOwnerSpawn, recordMcpPreflightFailure, runNativeMcpTargetOnOwner, type BuiltSpawnContext } from './_mcp-host';
+import { dispatchNativeMcpTargetOnOwner, normalizeNativeMcpOwnerSpawn, recordMcpPreflightFailure, runNativeMcpTargetOnOwner,
+  retainNativeRequestPrincipalForDispatch, type BuiltSpawnContext } from './_mcp-host';
+import { nativeInstalledPerUseTurns } from '../../../agent-tools/per-use-chokepoint';
 import type { SuNativeToolAddress } from '../../../su-session-owner-routing';
 const telemetry = vi.hoisted(() => ({ recordInvocation: vi.fn() }));
 const nativeOwnerRouting = vi.hoisted(() => ({ run: vi.fn() }));
@@ -46,6 +48,7 @@ function target(fn: (args: unknown, ctx: UnifiedToolContext) => Promise<unknown>
     ...extra, fn } as ProjectedTool);
 }
 afterEach(() => {
+  vi.restoreAllMocks();
   unregisterProjectedToolsForPlugin('native-fixture');
   telemetry.recordInvocation.mockClear();
   nativeOwnerRouting.run.mockReset();
@@ -60,6 +63,50 @@ beforeEach(() => {
 });
 
 describe('D-063 owner rebuild of native MCP targets', () => {
+  it('retains the genuine principal only via the local exact-call registry capability', async () => {
+    target(vi.fn());
+    const principal = { kind: 'system' as const, slug: 'system:superuser', workspaceId: address.workspaceId,
+      authMethod: 'bearer-token' as const, trust: 'trusted' as const, capabilities: new Set(['*']) };
+    const resolve = vi.spyOn(nativeInstalledPerUseTurns, 'resolveRequestPrincipal').mockResolvedValue(principal);
+    const r = request();
+    const enriched = await retainNativeRequestPrincipalForDispatch(r.spawn, r.toolName, r.args, 'private-runtime-bearer');
+    expect(resolve).toHaveBeenCalledExactlyOnceWith({ workspaceId: address.workspaceId, advSessionId: 77,
+      ownerId: address.ownerId, nativeSessionFingerprint: fingerprint, callIdFingerprint: 'a'.repeat(64),
+      toolName: r.toolName, arguments: r.args, runtimeBearer: 'private-runtime-bearer' });
+    expect(enriched.authenticatedPrincipal).toBe(principal);
+    expect(enriched.isSuperuser).toBe(true);
+    expect(JSON.stringify(enriched)).not.toContain('private-runtime-bearer');
+    expect(() => normalizeNativeMcpOwnerSpawn(enriched)).toThrow('native_tool_owner_unsupported_capability');
+  });
+
+  it('removes synthetic bypass when the retained original principal has narrower capabilities', async () => {
+    target(vi.fn());
+    const principal = { kind: 'user' as const, slug: 'actual-user', workspaceId: address.workspaceId,
+      authMethod: 'cookie-session' as const, trust: 'verified' as const, capabilities: new Set(['tasks:read']) };
+    vi.spyOn(nativeInstalledPerUseTurns, 'resolveRequestPrincipal').mockResolvedValue(principal);
+    const enriched = await retainNativeRequestPrincipalForDispatch(spawn, 'native-fixture:run', {}, 'runtime-bearer');
+    expect(enriched).toMatchObject({ authenticatedPrincipal: principal, isSuperuser: false, isPowerUser: false });
+  });
+
+  it('grants no retained authority when the local registry or independent possession is unavailable', async () => {
+    target(vi.fn());
+    const resolve = vi.spyOn(nativeInstalledPerUseTurns, 'resolveRequestPrincipal').mockResolvedValue(null);
+    expect(await retainNativeRequestPrincipalForDispatch(spawn, 'native-fixture:run', {}, 'runtime-bearer')).toBe(spawn);
+    expect(await retainNativeRequestPrincipalForDispatch(spawn, 'native-fixture:run', {}, '')).toBe(spawn);
+    const ordinary = { ...spawn, requestOrigin: undefined };
+    expect(await retainNativeRequestPrincipalForDispatch(ordinary, 'native-fixture:run', {}, 'runtime-bearer')).toBe(ordinary);
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(spawn.authenticatedPrincipal).toBeUndefined();
+  });
+
+  it('preserves installed funding bindings and grants nothing for an unloaded target', async () => {
+    const resolve = vi.spyOn(nativeInstalledPerUseTurns, 'resolveRequestPrincipal').mockResolvedValue(null);
+    target(vi.fn(), { pluginInstallation: { version: '1.0.0', path: '/installed', source: 'project' } });
+    expect(await retainNativeRequestPrincipalForDispatch(spawn, 'native-fixture:run', {}, 'runtime-bearer')).toBe(spawn);
+    expect(await retainNativeRequestPrincipalForDispatch(spawn, 'not-loaded:run', {}, 'runtime-bearer')).toBe(spawn);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it('uses the owning loaded handler and preserves materialization and native call lineage', async () => {
     const fn = vi.fn(async (_args, ctx: UnifiedToolContext) => {
       expect(ctx.requestOrigin).toEqual(spawn.requestOrigin);

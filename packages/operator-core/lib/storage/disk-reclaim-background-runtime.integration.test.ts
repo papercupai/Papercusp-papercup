@@ -196,6 +196,10 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
     expectedReclaimCases: selectedCount + buildSelectedCount + specialSelectedCount + receiptSelectedCount, census: true,
     observedSources: ['packages/operator-core/lib/storage/usage.ts'] }, context),
   options.testTimeoutMs);
+it('retains measured scheduled effects after cleanup failure in the observed private background runtime',
+  context => runSelection({ reclaimTitles: [
+    'retains removed fixture effects in the latest durable scheduled receipt after holder cleanup fails',
+  ], expectedReclaimCases: 1, census: false }, context), options.testTimeoutMs);
 it('persists bounded delegate diagnostics in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['persists delegate phases before the delegate ends', 'bounds delegate phase receipts and persisted writes'], expectedReclaimCases: 2, census: false }, context),
   options.testTimeoutMs);
@@ -249,23 +253,24 @@ it('reuses enclosing release usage admission in the observed private background 
   observedSources: [usageSource] }, context), options.testTimeoutMs);
 it('supervises release usage progress and refuses incomplete measurement in the observed private background runtime',
   context => runSelection({ assertion: releaseAssertion, source: releaseSource, reclaimTitles: [
-    'finishes a productive usage walk past ten seconds',
+    'finishes a quiet multi-root usage walk past ten seconds and counts only complete root totals',
     ...['missing-root', 'duplicate-root', 'malformed', 'outside-root', 'partial'].map(kind => `refuses ${kind} usage evidence before any removal`),
     'stops a still-productive usage walk at the existing shared run deadline',
-    'does not let partial records or stderr noise renew an idle usage walk',
+    'retains diagnostics when an idle usage walk reaches its run deadline',
     'measures allocated bytes for descendant paths containing tabs and newlines',
     'charges shared hardlink allocation to pins before unpinned cuts',
     'waits for a pin writer before its final protection read',
-  ], expectedReclaimCases: 11, census: false }, context), options.testTimeoutMs);
+  ], expectedReclaimCases: 12, census: false }, context), options.testTimeoutMs);
 it('adopts scheduled release usage without overlapping workers and refreshes guards in the observed private background runtime',
   context => runSelection({ assertion: releaseAssertion, source: releaseSource, observedSources: [usageSource], reclaimTitles: [
     'adopts the same scheduled usage worker after a bounded wait and refuses a live changed population',
     ...['authored', 'published', 'lease', 'holder'].map(kind => `rechecks ${kind} protection after scheduled measurement before any removal`),
-    'retires a terminal obsolete population before launching its replacement',
-    'keeps a failed terminal measurement unknown and permits a fresh worker on the next call',
+    'retires a dead obsolete population before launching its replacement',
+    'keeps a failed dead measurement unknown and permits a fresh worker',
+    'consumes an exhausted dead worker without an exit marker before admitting a fresh measurement',
     'invalidates adopted usage before effects and measures the remaining pinned hardlinks in a fresh worker',
     'refuses a stale scheduled terminal receipt instead of assigning cap totals',
     'retains every cut when its execution deadline has already expired',
     ...['holder', 'archive'].map(phase => `rechecks its execution deadline after the ${phase} phase before admitting a removal`),
     'finishes an admitted cut removal but leaves the next cut for a fresh guarded plan after the shared deadline',
-  ], expectedReclaimCases: 13, census: false }, context), options.testTimeoutMs);
+  ], expectedReclaimCases: 16, census: false }, context), options.testTimeoutMs);

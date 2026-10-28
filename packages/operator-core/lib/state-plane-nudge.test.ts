@@ -110,6 +110,14 @@ describe('state-plane nudge — ACT/QUOTE rule', () => {
     expect(call('coord:send', 5_000, S, args)).toBeNull();
   });
 
+  it('does not mistake incidental test-gate failure prose in a checkpoint for a pipeline verdict', () => {
+    call('dev:pipeline_position', 0);
+    expect(call('work_items:checkpoint', 5_000, S, {
+      id: 'EI-26901083742481393',
+      checkpoint: 'The test gate failed to start after the harness timed out; fixture repair passed.',
+    })).toBeNull();
+  });
+
   it.each([
     { summary: 'Candidate sha abcdef1234567' },
     { body: [{ text: 'Gate verdict is green.' }] },

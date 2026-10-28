@@ -60,6 +60,7 @@ import {
   agentReviewEligibility,
   agentReviewPendingSelectorSql,
   acceptanceSourceRevision,
+  AGENT_REVIEW_MAX_REVISION_GRADE,
   createImplementationReadiness,
   evaluateImplementationAcceptance,
   type ImplementationAcceptanceContract,
@@ -69,6 +70,7 @@ import {
   mintAgentReviewClaimAdmission,
   mintAgentReviewRevisionAdoptionAdmission,
   readAgentReviewState,
+  readAgentReviewRecoverySnapshot,
   readImplementationReadiness,
   type AgentReviewState,
   type ImplementationReadinessState,
@@ -108,7 +110,7 @@ import { compileFilter } from '../../scheduler/get-next';
 import { claimSpecSubjectFromWorkItem, matchesClaimSpecFilter } from '../../scheduler/claim-spec-match';
 
 import { ISSUE_FAMILY_KINDS_SQL_LIST } from '../../work-nature/agent-work-predicate';
-export const AGENT_REVIEW_MAX_REVISION_GRADE = 3;
+export { AGENT_REVIEW_MAX_REVISION_GRADE };
 
 export interface AgentReviewLedgerGrade {
   ideaId: string;
@@ -1036,6 +1038,85 @@ async function recordAdoptionProbe(
   }
 }
 
+async function recoverMalformedAgentReview(
+  workItem: WorkItem,
+  deps: AgentReviewDeps,
+): Promise<AgentReviewState | null> {
+  const payload = record(workItem.payload);
+  if (!Object.hasOwn(payload, 'agentReview') || readAgentReviewState(payload)) return null;
+  const readiness = readImplementationReadiness(payload);
+  const readinessReview = record(readiness?.evidence?.review);
+  const round = readinessReview.round;
+  if (
+    readiness?.status !== 'not-ready' || readiness.source !== 'agent-review' ||
+    readiness.reason !== 'agent-review-revision-requested' ||
+    typeof readinessReview.submittedBy !== 'string' || !readinessReview.submittedBy.trim() ||
+    typeof readinessReview.reviewer !== 'string' || !readinessReview.reviewer.trim() ||
+    !Number.isSafeInteger(round) || Number(round) < 1 ||
+    !Number.isSafeInteger(readinessReview.grade) || Number(readinessReview.grade) < 1 ||
+    Number(readinessReview.grade) > AGENT_REVIEW_MAX_REVISION_GRADE
+  ) return null;
+
+  const detail = await deps.getWorkItemDetail(workItem.id, workItem.harness ?? undefined);
+  const posts = record(detail).posts;
+  if (!Array.isArray(posts)) return null;
+  const matching: Array<{ body: string; markerAt: number; author: string; snapshot: Record<string, unknown> }> = [];
+  for (const rawPost of posts) {
+    const post = record(rawPost);
+    const body = typeof post.body === 'string' ? post.body : '';
+    const markerAt = body.indexOf(AGENT_REVIEW_ROUND_COMMENT_MARKER);
+    if (markerAt < 0) continue;
+    try {
+      const snapshot = record(JSON.parse(body.slice(markerAt + AGENT_REVIEW_ROUND_COMMENT_MARKER.length)));
+      const snapshotReview = record(snapshot.review);
+      if (
+        snapshot.id === workItem.id && (snapshot.harness ?? null) === (workItem.harness ?? null) &&
+        snapshotReview.round === round
+      ) {
+        const authorValue = post.author_id ?? post.authorId ?? post.author;
+        matching.push({ body, markerAt, author: typeof authorValue === 'string' ? authorValue : '', snapshot });
+      }
+    } catch {
+      // An unreadable marker cannot prove the malformed lifecycle state.
+    }
+  }
+  if (matching.length !== 1) return null;
+
+  const receipt = matching[0];
+  const snapshot = readAgentReviewRecoverySnapshot(receipt.snapshot);
+  if (
+    !snapshot || snapshot.id !== workItem.id || snapshot.harness !== (workItem.harness ?? null) ||
+    snapshot.review.round !== round || snapshot.review.submittedBy !== readinessReview.submittedBy ||
+    snapshot.reviewer !== readinessReview.reviewer || snapshot.grade !== readinessReview.grade ||
+    snapshot.reviewer !== receipt.author
+  ) return null;
+  const expectedSummary =
+    `Agent review round ${round}: revision requested by ${snapshot.reviewer} (grade ${snapshot.grade}/5).\n\n` +
+    snapshot.feedback +
+    (snapshot.repeatJustification ? `\n\nRepeat justification: ${snapshot.repeatJustification}` : '');
+  if (receipt.body.slice(0, receipt.markerAt) !== expectedSummary) return null;
+
+  const restoredPayload = { ...payload, agentReview: snapshot.review };
+  const currentParties = verificationParties({ ...workItem, payload: restoredPayload });
+  const sameIds = (left: readonly string[], right: readonly string[]) => {
+    const a = [...left].sort();
+    const b = [...right].sort();
+    return a.length === b.length && a.every((id, index) => id === b[index]);
+  };
+  if (
+    !sameIds(currentParties.reporters, snapshot.parties.reporters) ||
+    !sameIds(currentParties.implementers, snapshot.parties.implementers)
+  ) return null;
+
+  const ledger = await deps.readLedgerGrade(snapshot.review.ledgerIdeaId);
+  if (
+    !ledger || ledger.ideaId !== snapshot.review.ledgerIdeaId || ledger.workItemId !== workItem.id ||
+    ledger.grade !== snapshot.grade || ledger.gradedBy !== snapshot.reviewer ||
+    typeof ledger.feedback !== 'string' || ledger.feedback.trim() !== snapshot.feedback.trim()
+  ) return null;
+  return snapshot.review;
+}
+
 export async function resubmitAgentReview(
   input: {
     id: string;
@@ -1052,8 +1133,25 @@ export async function resubmitAgentReview(
 ): Promise<{ resubmitted: boolean; state?: AgentReviewState; reason?: string }> {
   const workItem = await deps.getWorkItem(input.id);
   if (!workItem) return { resubmitted: false, reason: 'not-found' };
-  const current = readAgentReviewState(workItem.payload);
-  if (!current) return { resubmitted: false, reason: 'not-agent-review' };
+  let current = readAgentReviewState(workItem.payload);
+  if (!current) {
+    const recovered = await recoverMalformedAgentReview(workItem, deps);
+    if (!recovered) return { resubmitted: false, reason: 'malformed-agent-review-recovery-unproven' };
+    const originalPayload = record(workItem.payload);
+    const restored = await deps.mergeWorkItemPayload(
+      workItem.id,
+      { agentReview: recovered },
+      workItem.harness ? { harness: workItem.harness } : {},
+    );
+    if (!restored) return { resubmitted: false, reason: 'malformed-agent-review-restore-failed' };
+    const reread = await deps.getWorkItem(workItem.id, workItem.harness ?? undefined);
+    if (
+      !reread || reread.harness !== workItem.harness ||
+      !isDeepStrictEqual(readAgentReviewState(reread.payload), recovered) ||
+      !isDeepStrictEqual(record(reread.payload).implementationReadiness, originalPayload.implementationReadiness)
+    ) return { resubmitted: false, reason: 'malformed-agent-review-restore-raced' };
+    return resubmitAgentReview(input, deps);
+  }
   let suppliedReceipt: BugReproductionReceipt | null = null;
   if (input.reproduction !== undefined) {
     if (workItem.kind !== 'bug' || current.status !== 'revision-requested' || current.revisionKind !== 'reproduction') {

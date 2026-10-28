@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseCodexChunk, parseOmpChunk } from './ingest-adapters';
 import { parseTranscriptChunk } from './ingest-claude-transcripts';
-import { replayTranscriptPrefix } from './replay-transcripts';
+import { replayTranscriptPrefix, transcriptSourceKindForAdapter } from './replay-transcripts';
 
 const roots: string[] = [];
 const line = (value: unknown) => JSON.stringify(value) + '\n';
@@ -29,6 +29,13 @@ afterEach(async () => {
 const codex = { name: 'codex', parse: parseCodexChunk };
 
 describe('read-only historical transcript replay', () => {
+  it('normalizes isolated adapter ids to the archive source family and leaves unknown ids unfiltered', () => {
+    expect(transcriptSourceKindForAdapter('codex-iso-261')).toBe('codex');
+    expect(transcriptSourceKindForAdapter('claude-iso-9')).toBe('claude');
+    expect(transcriptSourceKindForAdapter('omp')).toBe('omp');
+    expect(transcriptSourceKindForAdapter('custom-adapter')).toBeUndefined();
+  });
+
   it('reconstructs model state, deduplicates cumulative updates and excludes bytes beyond the committed frontier', async () => {
     const source = context('gpt-6-luna') + codexUsage(1000, 100) + codexUsage(1000, 100) +
       context('gpt-6-sol') + codexUsage(2000, 0);

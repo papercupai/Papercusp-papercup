@@ -53,6 +53,8 @@ describe("PERF_INTERACTIONS registry", () => {
       "conversation-thread-load",
     );
     expect(PERF_INTERACTIONS.harnessDockOpen).toBe("harness-dock-open");
+    expect(PERF_INTERACTIONS.reportMarkdownFirstMount).toBe("report-markdown-first-mount");
+    expect(PERF_INTERACTIONS.reportMarkdownInputDelay).toBe("report-markdown-input-delay");
   });
 
   it("every registered interaction has a DESKTOP_PERF_BUDGETS entry (no unbudgeted instrumentation)", () => {
@@ -69,6 +71,8 @@ describe("PERF_INTERACTIONS registry", () => {
       PERF_INTERACTIONS.commandPaletteOpen,
       PERF_INTERACTIONS.conversationThreadLoad,
       PERF_INTERACTIONS.harnessDockOpen,
+      PERF_INTERACTIONS.reportMarkdownFirstMount,
+      PERF_INTERACTIONS.reportMarkdownInputDelay,
     ]) {
       resetTimeline();
       // no-op unless a matching begin ran — safe on shared render paths

@@ -109,6 +109,9 @@ export const FAIL_OPEN_ACTOR = `system:${WORK_ITEM_ADMISSION_FAIL_OPEN}`;
 export const DEFAULT_PROMOTER_BATCH_SIZE = 20;
 /** Bound the deterministic quick-action update so one tick cannot monopolize its protected lane. */
 export const DEFAULT_FAIL_OPEN_BATCH_SIZE = 100;
+// Indexed work-item writes can cost hundreds of milliseconds per row. Keep the
+// run's throughput cap separate from each bounded statement's write budget.
+const FAIL_OPEN_STATEMENT_BATCH_SIZE = 5;
 /** Process-local throttle for the work-scope `held` ledger line (one per harness). */
 const scopeHeldHarnessesNoted = new Set<string>();
 /**
@@ -2880,6 +2883,10 @@ async function finishRun(
            tokens_out = ${input.tokensOut},
            latency_ms = ${input.latencyMs},
            detail = (${detail}::text::jsonb - 'producingRuntime') ||
+             CASE WHEN detail ? 'committedItems'
+               THEN jsonb_build_object('committedItems', detail->'committedItems',
+                 'announcedCount', detail->'announcedCount')
+               ELSE '{}'::jsonb END ||
              CASE WHEN detail ? 'producingRuntime'
                THEN jsonb_build_object('producingRuntime', detail->'producingRuntime')
                ELSE '{}'::jsonb END
@@ -2893,6 +2900,7 @@ async function failRun(
   error: unknown,
   latencyMs: number,
   usage?: { modelId: string | null; tokensIn: number; tokensOut: number; modelCostUsd: number | null },
+  committedItemIds?: readonly string[],
 ): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
   const detail = JSON.stringify({
@@ -2900,13 +2908,14 @@ async function failRun(
     mode,
     error: message,
     ...(usage ? { modelCostUsd: usage.modelCostUsd } : {}),
+    ...(committedItemIds ? { committedItemIds } : {}),
     outcome: {
       unit: 'items',
       attempted: null,
-      successful: null,
+      successful: committedItemIds?.length ?? null,
       rolledBack: null,
       unchanged: null,
-      uniqueRowsChanged: null,
+      uniqueRowsChanged: committedItemIds?.length ?? null,
       failureReason: message,
       blockedReason: null,
     } satisfies AdmissionRunOutcome,
@@ -2918,7 +2927,12 @@ async function failRun(
            tokens_in = ${usage?.tokensIn ?? 0},
            tokens_out = ${usage?.tokensOut ?? 0},
            latency_ms = ${latencyMs},
+           auto_promoted_unreviewed = COALESCE(${committedItemIds?.length ?? null}::int, auto_promoted_unreviewed),
            detail = (${detail}::text::jsonb - 'producingRuntime') ||
+             CASE WHEN detail ? 'committedItems'
+               THEN jsonb_build_object('committedItems', detail->'committedItems',
+                 'announcedCount', detail->'announcedCount')
+               ELSE '{}'::jsonb END ||
              CASE WHEN detail ? 'componentScreening'
                THEN jsonb_build_object('componentScreening', detail->'componentScreening')
                ELSE '{}'::jsonb END ||
@@ -6405,8 +6419,43 @@ export async function runWorkItemAdmissionFailOpen(opts: {
   const tickMinutes = opts.tickMinutes ?? DEFAULT_PROMOTER_TICK_MINUTES;
   const staleMinutes = opts.staleMinutes ?? DEFAULT_PROMOTER_LIVENESS_MINUTES;
   const scope: AdmissionFailOpenScope = opts.scope ?? 'harness';
+  const rows: Array<{ feature_id: string; harness_slug: string }> = [];
   await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode: 'fail-open' });
   try {
+    // DBOS can replay this exact run after a later chunk failed. Restore the
+    // journal from the run's primary-key row, never by scanning work-item JSON.
+    const [prior] = await sql<Array<{ mode: string; committed: unknown; announced: unknown }>>`
+      SELECT detail->>'mode' AS mode, detail->'committedItems' AS committed,
+             detail->'announcedCount' AS announced
+        FROM harness_shared.admission_runs
+       WHERE id = ${runId} AND workspace_id = ${opts.workspaceId}
+         AND harness_slug = ${opts.harnessSlug}`;
+    if (!prior || prior.mode !== 'fail-open') throw new Error('fail-open run scope mismatch');
+    const saved = prior.committed ?? [];
+    if (!Array.isArray(saved) || saved.length > DEFAULT_FAIL_OPEN_BATCH_SIZE || saved.some((row) =>
+      !row || typeof row.feature_id !== 'string' || typeof row.harness_slug !== 'string') ||
+      new Set(saved.map((row) => `${row.harness_slug}\0${row.feature_id}`)).size !== saved.length) {
+      throw new Error('fail-open committed progress journal is malformed');
+    }
+    rows.push(...saved);
+    const savedAnnounced = prior.announced ?? 0;
+    if (typeof savedAnnounced !== 'number' || !Number.isSafeInteger(savedAnnounced) ||
+      savedAnnounced < 0 || savedAnnounced > rows.length) throw new Error('fail-open announcement cursor is malformed');
+    let announcedCount = savedAnnounced;
+    const announcePending = async () => {
+      const pending = rows.slice(announcedCount);
+      if (pending.length === 0) return;
+      await (opts.onNewlyAdmitted ?? announceNewlyAdmittedWorkItems)(
+        pending.map((row) => ({ id: row.feature_id, harness: row.harness_slug })),
+      );
+      // At-least-once notification: a crash after delivery but before this cursor
+      // write may repeat the wake, but never loses an admitted row's notification.
+      announcedCount = rows.length;
+      await sql`UPDATE harness_shared.admission_runs
+        SET detail = jsonb_set(detail, '{announcedCount}', ${JSON.stringify(announcedCount)}::text::jsonb)
+        WHERE id = ${runId} AND workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug}`;
+    };
+    await announcePending();
     const cutoffMs = startedAt - 2 * tickMinutes * 60_000;
     // workspace-work-scope-policy-2026-09-04 P-006: the workspace-wide fail-open never
     // admits an out-of-scope harness's rows either — they stay `pending`, reversible the
@@ -6487,9 +6536,15 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     // this must-never-starve action quick when a workspace has a large pending backlog.
     // The workspace_id predicate is NEVER dropped: a workspace sweep widens across harnesses
     // inside one tenant, never across tenants. The selected batch and update share one bounded
-    // transaction; SKIP LOCKED lets a concurrent clearer make progress without waiting here.
-    const rows = await boundedOrgTxn(
-      (tx) => tx<Array<{ feature_id: string; harness_slug: string }>>`
+    // transaction per small chunk; SKIP LOCKED lets a concurrent clearer make progress.
+    // One 100-row statement used to exceed the write deadline and roll back EVERY
+    // admission. Commit and announce each chunk before starting the next one, so
+    // later failures preserve both progress and the exact producer receipt.
+    while (rows.length < DEFAULT_FAIL_OPEN_BATCH_SIZE) {
+      const chunkLimit = Math.min(FAIL_OPEN_STATEMENT_BATCH_SIZE, DEFAULT_FAIL_OPEN_BATCH_SIZE - rows.length);
+      const chunk = await boundedOrgTxn(
+        async (tx) => {
+          const admitted = await tx<Array<{ feature_id: string; harness_slug: string }>>`
       WITH pending_batch AS (
         SELECT feature_id, harness_slug
           FROM harness_shared.work_items
@@ -6498,7 +6553,7 @@ export async function runWorkItemAdmissionFailOpen(opts: {
            ${scopePredicate}
            AND ${pendingEligibility}
          ORDER BY created_ts ASC, feature_id ASC
-         LIMIT ${DEFAULT_FAIL_OPEN_BATCH_SIZE}
+         LIMIT ${chunkLimit}
          FOR UPDATE SKIP LOCKED
       )
       UPDATE harness_shared.work_items AS wi
@@ -6537,12 +6592,24 @@ export async function runWorkItemAdmissionFailOpen(opts: {
        WHERE wi.workspace_id = ${opts.workspaceId}
          AND wi.harness_slug = pending_batch.harness_slug
          AND wi.feature_id = pending_batch.feature_id
-       RETURNING wi.feature_id, wi.harness_slug`,
-      opts.sql ? { client: opts.sql } : undefined,
-    );
-    await (opts.onNewlyAdmitted ?? announceNewlyAdmittedWorkItems)(
-      rows.map((row) => ({ id: row.feature_id, harness: row.harness_slug })),
-    );
+       RETURNING wi.feature_id, wi.harness_slug`;
+          // The admission and its exact replay journal commit together. A failed
+          // journal write must roll back this chunk's admissions too.
+          const committed = [...rows, ...admitted];
+          await tx`UPDATE harness_shared.admission_runs
+            SET auto_promoted_unreviewed = ${committed.length},
+                detail = detail || jsonb_build_object(
+                  'committedItems', ${JSON.stringify(committed)}::text::jsonb,
+                  'announcedCount', ${announcedCount}::int)
+            WHERE id = ${runId} AND workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug}`;
+          return admitted;
+        },
+        opts.sql ? { client: opts.sql } : undefined,
+      );
+      rows.push(...chunk);
+      await announcePending();
+      if (chunk.length < chunkLimit) break;
+    }
     const autoPromoted = rows.map((row) => row.feature_id).sort();
     const autoPromotedByHarness: Record<string, string[]> = {};
     for (const row of rows) (autoPromotedByHarness[row.harness_slug] ??= []).push(row.feature_id);
@@ -6649,7 +6716,8 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     });
     return { runId, autoPromoted, autoPromotedByHarness, heldByScope, scope, liveness, reviewDebt, reviewMoot, dedupRescreen };
   } catch (error) {
-    await failRun(sql, runId, 'fail-open', error, Math.max(0, now() - startedAt));
+    await failRun(sql, runId, 'fail-open', error, Math.max(0, now() - startedAt), undefined,
+      rows.map((row) => row.feature_id));
     throw error;
   }
 }

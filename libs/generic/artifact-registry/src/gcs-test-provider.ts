@@ -74,7 +74,7 @@ export function gcsTestProvider() {
     return json(describeObject(key, o));
   }) as typeof fetch;
   const store = gcsObjectStore({ bucket: 'test-bucket', accessToken: async () => 'test-token', fetchImpl });
-  return { store, objects, requests, seed, setDenied: () => { denied = true; },
+  return { store, fetchImpl, objects, requests, seed, setDenied: () => { denied = true; },
     loseNextCommitResponse: () => { loseResponse = true; }, vanishBeforeMedia: () => { vanishBeforeMedia = true; },
     beforeUploadCommit: (f: () => void) => { beforeUploadCommit = f; } };
 }

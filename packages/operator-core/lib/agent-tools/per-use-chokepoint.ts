@@ -1,6 +1,8 @@
 /** P-007 shared target-bound admission. Hosted verification and funding belong
  * to the authenticated turn host, including current authority before dispatch. */
 import type { DispatchProjectedDeps } from '@papercusp/agent-mcp';
+import type { Principal } from '@papercusp/agent-mcp';
+import { verifyNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning';
 import { listAllProjectedTools, resolveMcpName, type ProjectedTool } from '@papercusp/tooldef';
 import { createHash } from 'node:crypto';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -13,6 +15,8 @@ import type { FundedToolTurnHost } from '../cupboard/funded-turn-host';
 import type { FundedToolTurnBinding, FundedToolTurnResult } from '../cupboard/funded-tool-turn-store';
 import type { InstalledPluginProvenance } from '../cupboard/types';
 import type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from '../su-session-usage';
+import { nativeToolArguments } from '../su-session-usage';
+import type { HostRequestPrincipalResolver } from '../auth/require-principal';
 import { declareMeter, LocalMeteredTurnRefusedError, type LocalMeteredTurn } from '../p2p/metered-invocation';
 
 type Request = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
@@ -28,6 +32,7 @@ type NativePlan = {
 };
 type NativeLifecycleDeps = {
   identityLifecycle: SuCodexTurnLifecycle;
+  resolveRequestPrincipal?: HostRequestPrincipalResolver;
   resolvePlan(context: NativeAdmissionContext): Promise<NativePlan>;
   recordFailure(input: { context: NativeAdmissionContext; turnIds: readonly string[];
     phase: Parameters<SuCodexTurnAdmission['reconcile']>[0]['phase']; message: string }): Promise<void>;
@@ -223,7 +228,6 @@ export class NativeInstalledPerUseTurns {
         deps.recordFailure({ context: structuredClone(context), turnIds: admissions.map(value => value.turnId), ...failure });
       try {
         plan = await deps.resolvePlan(structuredClone(context));
-        if (plan.installations.length === 0 && !plan.freeAdmissions?.length) return identity;
         if (plan.installations.length + (plan.freeAdmissions?.length ?? 0) > 1000)
           throw new Error('Native installed population exceeds the admission bound');
         for (const installation of plan.installations) {
@@ -233,7 +237,8 @@ export class NativeInstalledPerUseTurns {
           if (!admitted.ok) throw new Error(admitted.code + ': ' + admitted.detail);
           admissions.push(admitted);
         }
-        hooks = this.register({ ...plan.context, ...context, admissions, freeAdmissions: plan.freeAdmissions });
+        hooks = this.register({ ...plan.context, ...context, admissions, freeAdmissions: plan.freeAdmissions,
+          resolveRequestPrincipal: deps.resolveRequestPrincipal });
       } catch (error) {
         // No lookup was published and native delivery has not begun. Only known
         // successful local handles can be closed as unserved; an uncertain
@@ -317,14 +322,15 @@ export class NativeInstalledPerUseTurns {
   register(input: NativeInstalledTurnContext & {
     admissions: readonly FundedInstalledAdmission[];
     freeAdmissions?: readonly VerifiedFreeToolAdmission[];
+    resolveRequestPrincipal?: HostRequestPrincipalResolver;
   }): Pick<SuCodexTurnAdmission, 'bindNativeTurn' | 'observeToolCall'> & { withdraw(): Promise<void> } {
-    const { admissions: original, freeAdmissions: originalFree = [], ...rawContext } = input;
+    const { admissions: original, freeAdmissions: originalFree = [], resolveRequestPrincipal, ...rawContext } = input;
     const context = structuredClone(rawContext);
     const boundedId = (value: string) => /^[A-Za-z0-9._:-]{1,256}$/.test(value);
     if ([context.workspaceId, context.ownerId, context.principalId, context.nativeSessionId,
       context.ownerTurnId, context.mcpServer].some(value => !boundedId(value)) ||
       context.nativeSessionId.length > 128 || !Number.isSafeInteger(context.advSessionId) || context.advSessionId <= 0 ||
-      original.length + originalFree.length === 0 || original.length + originalFree.length > 1000 ||
+      original.length + originalFree.length > 1000 ||
       Object.entries(context.nativeTools).some(([name, target]) => !boundedId(name) || !boundedId(target))) {
       throw new Error('Exact authenticated native turn context and bounded tool bindings are required');
     }
@@ -357,8 +363,8 @@ export class NativeInstalledPerUseTurns {
     }
     const key = this.key(context.workspaceId, context.advSessionId, fingerprint(context.nativeSessionId));
     if (this.turns.has(key)) throw new Error('The native execution already has a host admission');
-    const entry = { context, admissions, freeAdmissions, nativeTurnId: null as string | null, withdrawn: false,
-      observations: new Map<string, { toolName: string; consumed: boolean }>() };
+    const entry: NativeInstalledTurnEntry = { context, admissions, freeAdmissions, resolveRequestPrincipal,
+      nativeTurnId: null, withdrawn: false, observations: new Map() };
     this.turns.set(key, entry);
     return {
       bindNativeTurn: async nativeTurnId => {
@@ -367,22 +373,64 @@ export class NativeInstalledPerUseTurns {
         }
         entry.nativeTurnId = nativeTurnId;
       },
-      observeToolCall: async ({ nativeTurnId, callId, server, tool }) => {
+      observeToolCall: async ({ nativeTurnId, callId, server, tool, arguments: rawArguments }) => {
         if (entry.withdrawn || entry.nativeTurnId === null || entry.nativeTurnId !== nativeTurnId || !boundedId(callId)) {
           throw new Error('Native call observation requires its original active bound turn');
         }
         if (server !== context.mcpServer || !Object.hasOwn(context.nativeTools, tool)) return;
         const toolName = context.nativeTools[tool]!;
+        const args = nativeToolArguments(rawArguments);
         const callKey = fingerprint(callId), prior = entry.observations.get(callKey);
         if (prior) {
-          if (prior.toolName !== toolName) throw new Error('Native call observation changed its target');
+          if (prior.toolName !== toolName) {
+            entry.withdrawn = true;
+            throw new Error('Native call observation changed its target');
+          }
+          if (canonicalJson(prior.arguments) !== canonicalJson(args)) {
+            entry.withdrawn = true;
+            throw new Error('Native call observation changed its arguments');
+          }
           return;
         }
         if (entry.observations.size >= 1000) throw new Error('Native turn call population exceeds the admission bound');
-        entry.observations.set(callKey, { toolName, consumed: false });
+        entry.observations.set(callKey, { toolName, arguments: args, consumed: false, principalClaimed: false });
       },
       withdraw: () => this.withdrawEntry(key, entry),
     };
+  }
+
+  /** Only a direct, exact call observed by this process's live native engine
+   * can use its original request principal. Runtime possession is independently
+   * checked without a cache. This is NOT a resource ACL or capture receipt: the
+   * existing dispatcher must still authorize the exact input with this principal.
+   * Wrappers, legacy observations, forwarded JSON and completed turns grant none. */
+  async resolveRequestPrincipal(input: {
+    workspaceId: string; advSessionId: number; ownerId: string;
+    nativeSessionFingerprint: string; callIdFingerprint: string;
+    toolName: string; arguments: unknown; runtimeBearer: string;
+  }): Promise<Principal | null> {
+    if (!/^[a-f0-9]{64}$/.test(input.nativeSessionFingerprint)
+      || !/^[a-f0-9]{64}$/.test(input.callIdFingerprint)
+      || ['tools:invoke', 'code:run'].includes(input.toolName)) return null;
+    const key = this.key(input.workspaceId, input.advSessionId, input.nativeSessionFingerprint);
+    const entry = this.turns.get(key);
+    if (!entry || entry.withdrawn || entry.nativeTurnId === null || !entry.resolveRequestPrincipal
+      || entry.context.ownerId !== input.ownerId) return null;
+    const observed = entry.observations.get(input.callIdFingerprint), args = nativeToolArguments(input.arguments);
+    if (!observed || observed.principalClaimed || observed.consumed || observed.arguments === null || args === null
+      || observed.toolName !== input.toolName || canonicalJson(observed.arguments) !== canonicalJson(args)) return null;
+    // Reserve synchronously before either awaited check, even when it refuses.
+    observed.principalClaimed = true;
+    const active = () => this.turns.get(key) === entry && !entry.withdrawn && entry.nativeTurnId !== null
+      && entry.observations.get(input.callIdFingerprint) === observed;
+    try {
+      if (!await verifyNativeRuntimeBearer(input.runtimeBearer, { workspaceId: entry.context.workspaceId,
+        advSessionId: entry.context.advSessionId, ownerId: entry.context.ownerId, provider: 'codex' }) || !active()) return null;
+      const principal = await entry.resolveRequestPrincipal();
+      if (!active() || !principal || principal.workspaceId !== entry.context.workspaceId
+        || !['trusted', 'verified'].includes(principal.trust)) return null;
+      return structuredClone(principal);
+    } catch { return null; }
   }
 
   /** Synchronous claim at the dispatch seat. No handler/input/output cohort can
@@ -402,6 +450,22 @@ export class NativeInstalledPerUseTurns {
     const observed = entry.observations.get(native.callIdFingerprint);
     if (!observed || observed.consumed || (observed.toolName === 'tools:invoke'
       ? request.ctx.indirectDispatch !== true : observed.toolName !== request.toolName || request.ctx.indirectDispatch === true)) return null;
+    // Match the retained host observation before consuming it or selecting an
+    // installation. The native call id identifies one argument payload, not a
+    // reusable permission to dispatch the same tool with different resources.
+    // Legacy hosts can omit arguments for monetary admission; such observations
+    // still provide no exact-call scope authority for native capture.
+    if (observed.arguments !== null) {
+      let expected: Readonly<Record<string, unknown>> | null = observed.arguments;
+      if (observed.toolName === 'tools:invoke') {
+        const name = observed.arguments.name;
+        if (typeof name !== 'string' ||
+          (resolveMcpName(name)?.expose.mcp?.name ?? name) !== request.toolName) return null;
+        expected = nativeToolArguments(Object.hasOwn(observed.arguments, 'args') ? observed.arguments.args : {});
+      }
+      const actual = nativeToolArguments(request.input);
+      if (expected === null || actual === null || canonicalJson(expected) !== canonicalJson(actual)) return null;
+    }
     const installation = request.tool.pluginInstallation;
     if (!installation) return null;
     const admitted = entry.admissions.find(value => value.admission.provenance.name === request.tool.pluginName &&
@@ -450,11 +514,13 @@ export class NativeInstalledPerUseTurns {
 
 interface NativeInstalledTurnEntry {
   context: NativeInstalledTurnContext;
+  resolveRequestPrincipal?: HostRequestPrincipalResolver;
   nativeTurnId: string | null;
   withdrawn: boolean;
   admissions: readonly FundedInstalledAdmission[];
   freeAdmissions: readonly VerifiedFreeToolAdmission[];
-  observations: Map<string, { toolName: string; consumed: boolean }>;
+  observations: Map<string, { toolName: string; arguments: Readonly<Record<string, unknown>> | null;
+    consumed: boolean; principalClaimed: boolean }>;
 }
 
 interface NativeInstalledTurnContext {
@@ -487,6 +553,7 @@ export interface AttachedInstalledToolFunding {
 export function attachedInstalledToolLifecycle(deps: {
   session: { workspaceId: string; ownerId: string; advSessionId: number; principalId: string };
   identityLifecycle: SuCodexTurnLifecycle;
+  resolveRequestPrincipal?: HostRequestPrincipalResolver;
   readNativeToolNames(): Promise<readonly string[]>;
   recordFailure: NativeLifecycleDeps['recordFailure'];
   funding?: AttachedInstalledToolFunding;
@@ -513,6 +580,7 @@ export function attachedInstalledToolLifecycle(deps: {
     };
     return (deps.registry ?? nativeInstalledPerUseTurns).nativeLifecycleFromCatalog({
       identityLifecycle: deps.identityLifecycle, recordFailure: deps.recordFailure,
+      resolveRequestPrincipal: deps.resolveRequestPrincipal,
       readProvenance: deps.readProvenance, readTools: () => catalog,
       resolveInstallation: async input => {
         funding ??= await deps.resolveFunding?.();

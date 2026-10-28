@@ -7,6 +7,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { delimiter, dirname } from 'node:path';
 import type { OwnerRpcOutcome } from '../cluster-owner-rpc';
 import type { StoredCliLink } from './account-link-state';
+import { runWithWorkspace, currentRequestWorkspaceId } from '../workspace-als';
 
 const h = vi.hoisted(() => {
   const state = {
@@ -100,6 +101,7 @@ vi.mock('node:fs', async (orig) => {
   return { ...actual, accessSync: (...a: unknown[]) => (fsProbe.accessSync ?? real)(...a) };
 });
 vi.mock('../papercusp-root', () => ({ papercuspPath: (...p: string[]) => '/tmp/test/' + p.join('/') }));
+vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => currentRequestWorkspaceId() ?? 'link-workspace' }));
 vi.mock('./account-pool', () => ({
   registerAccount: h.registerAccount,
   normalizeAccountProvider: (provider: unknown) => (provider === 'codex' ? 'codex' : 'claude'),
@@ -165,6 +167,45 @@ afterEach(() => {
 });
 
 describe('account-link-cli — CLI-driven OAuth link', () => {
+  it('pins callback completion to the originating workspace after its request has ended', async () => {
+    h.state.mode = 'codex';
+    const started = await runWithWorkspace('original-workspace', () => startCliLink({ accountId: 'callback-workspace', provider: 'codex' }));
+    expect(started.ok).toBe(true);
+    h.state.exitCbs.forEach(cb => cb({ exitCode: 0 }));
+    await vi.waitFor(() => expect(h.updateAccountPool).toHaveBeenCalledWith(expect.any(Function), 'original-workspace'));
+    expect(h.accountStatus).toHaveBeenCalledWith('original-workspace');
+    expect(durable.finish).toHaveBeenCalledWith(expect.any(String), '/tmp/test/deploy-credentials', 'new-owner', 'completed');
+  });
+
+  it('rejects a foreign workspace even when its process shares the local link map', async () => {
+    const started = await runWithWorkspace('original-workspace', () => startCliLink({ accountId: 'workspace-fence' }));
+    if (!started.ok) throw new Error(started.error);
+    expect(await runWithWorkspace('foreign-workspace', () => getCliLinkStatus(started.linkId))).toEqual({ status: 'unknown' });
+    expect(await runWithWorkspace('foreign-workspace', () => completeCliLink({ linkId: started.linkId, code: 'code' }))).toMatchObject({ ok: false, error: expect.stringContaining('workspace mismatch') });
+    const handler = rpc.handlers.get('account-cli-link')!;
+    expect(await handler({ op: 'status', linkId: started.linkId, workspaceId: 'foreign-workspace' })).toEqual({ status: 'unknown' });
+    expect(await handler({ op: 'complete', linkId: started.linkId, workspaceId: 'foreign-workspace' })).toMatchObject({ ok: false });
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.updateAccountPool).not.toHaveBeenCalled();
+  });
+
+  it('reports an elapsed durable login TTL without writing or stealing the live owner', async () => {
+    lostLink({ expiresAt: Date.now() - 1 });
+    expect(await getCliLinkStatus('lost-link')).toMatchObject({ status: 'failed', error: expect.stringContaining('expired') });
+    expect(durable.finish).not.toHaveBeenCalled();
+    expect(durable.claim).not.toHaveBeenCalled();
+  });
+
+  it('restores workspace context when the owner handles a forwarded completion', async () => {
+    h.state.mode = 'codex';
+    const started = await runWithWorkspace('original-workspace', () => startCliLink({ accountId: 'forwarded-workspace', provider: 'codex' }));
+    if (!started.ok) throw new Error(started.error);
+    const handler = rpc.handlers.get('account-cli-link')!;
+    expect(await handler({ op: 'status', linkId: started.linkId, workspaceId: 'original-workspace' })).toEqual({ status: 'pending' });
+    expect(await handler({ op: 'complete', linkId: started.linkId, workspaceId: 'original-workspace' })).toMatchObject({ ok: true });
+    expect(h.updateAccountPool).toHaveBeenCalledWith(expect.any(Function), 'original-workspace');
+  });
+
   function lostLink(overrides: Partial<StoredCliLink> = {}): StoredCliLink {
     const row: StoredCliLink = {
       linkId: 'lost-link', scope: '/tmp/test/deploy-credentials', accountId: 'recovered',
@@ -294,7 +335,7 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     rpc.call.mockResolvedValueOnce({ ok: true, result: { status: 'pending' } });
     expect(await getCliLinkStatus('sibling-link')).toEqual({ status: 'pending' });
     expect(rpc.call).toHaveBeenCalledWith(expect.objectContaining({
-      targetPid: process.pid + 1, kind: 'account-cli-link', payload: { op: 'status', linkId: 'sibling-link' },
+      targetPid: process.pid + 1, kind: 'account-cli-link', payload: { op: 'status', linkId: 'sibling-link', workspaceId: 'link-workspace' },
     }));
     expect(h.spawn).not.toHaveBeenCalled();
   });
@@ -304,7 +345,7 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     rpc.call.mockResolvedValueOnce({ ok: true, result: { ok: true, account: null } });
     expect(await completeCliLink({ linkId: 'sibling-link', code: 'code#state' })).toEqual({ ok: true, account: null });
     expect(rpc.call).toHaveBeenCalledWith(expect.objectContaining({
-      payload: { op: 'complete', linkId: 'sibling-link', code: 'code#state' },
+      payload: { op: 'complete', linkId: 'sibling-link', code: 'code#state', workspaceId: 'link-workspace' },
       timeoutMs: 65_000,
     }));
     expect(h.spawn).not.toHaveBeenCalled();
@@ -325,8 +366,8 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
   it('serves forwarded operations locally and rejects unsupported payloads without relaying again', async () => {
     const handler = rpc.handlers.get('account-cli-link');
     expect(handler).toBeTypeOf('function');
-    expect(await handler?.({ op: 'status', linkId: 'absent' })).toEqual({ status: 'unknown' });
-    expect(await handler?.({ op: 'complete', linkId: 'absent', code: 'c' })).toMatchObject({ ok: false });
+    expect(await handler?.({ op: 'status', linkId: 'absent', workspaceId: 'link-workspace' })).toEqual({ status: 'unknown' });
+    expect(await handler?.({ op: 'complete', linkId: 'absent', code: 'c', workspaceId: 'link-workspace' })).toMatchObject({ ok: false });
     await expect(handler?.({ op: 'spawn', linkId: 'absent' })).rejects.toThrow('invalid account link operation');
     expect(rpc.locate).not.toHaveBeenCalled();
     expect(rpc.call).not.toHaveBeenCalled();

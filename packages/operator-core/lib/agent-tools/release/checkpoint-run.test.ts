@@ -844,8 +844,8 @@ describe('release:checkpoint-run', () => {
         elapsed_sec: 8700, // OLD run — the EI-9672 wedged case (the launcher, mocked here, makes the decision)
         progress_at: '2026-07-02T11:00:00Z',
         current_phase: 'suite',
-        eta_sec: 2100,
-        eta_basis: 'full-suite',
+        eta_sec: null,
+        eta_basis: 'no-ceiling',
       },
     }));
     vi.doMock('../../release-checkpoint-launch', async (orig) => ({
@@ -883,8 +883,8 @@ describe('release:checkpoint-run', () => {
       elapsed_sec: 8700,
       progress_at: '2026-07-02T11:00:00Z',
       current_phase: 'suite',
-      eta_sec: 2100,
-      eta_basis: 'full-suite',
+      eta_sec: null,
+      eta_basis: 'no-ceiling',
     });
     expect(String(b.note)).toMatch(/replaceStale:true/);
   });
@@ -915,8 +915,8 @@ describe('release:checkpoint-run', () => {
         elapsed_sec: 300, // 5 min — a healthy in-progress run on a busy tree
         progress_at: new Date(fixtureNow - 5_000).toISOString(),
         current_phase: 'suite',
-        eta_sec: 10500,
-        eta_basis: 'full-suite',
+        eta_sec: null,
+        eta_basis: 'no-ceiling',
         replace_refused_progressing: true,
       },
     }));
@@ -935,7 +935,7 @@ describe('release:checkpoint-run', () => {
       replace_refused_progressing: true,
       elapsed_sec: 300,
       current_phase: 'suite',
-      eta_basis: 'full-suite',
+      eta_basis: 'no-ceiling',
     });
     expect(Date.parse(String(b.progress_at))).toBeGreaterThan(fixtureNow - 60_000);
     expect(String(b.note)).not.toMatch(/Pass replaceStale:true/);
@@ -1030,7 +1030,7 @@ describe('release:checkpoint-run', () => {
         candidate_stale: false,
         started_at: new Date(Date.now() - 5 * 60_000).toISOString(),
         elapsed_sec: 300,
-        eta_sec: 10500,
+        eta_sec: null,
         held_externally: true,
       },
     }));
@@ -1072,7 +1072,7 @@ describe('release:checkpoint-run', () => {
         candidate_stale: false,
         started_at: new Date(Date.now() - 5 * 60_000).toISOString(),
         elapsed_sec: 300,
-        eta_sec: 10500,
+        eta_sec: null,
         held_externally: true,
       },
     }));
@@ -1320,7 +1320,7 @@ describe('release:checkpoint-run', () => {
         candidate_stale: false,
         started_at: new Date(Date.now() - 5 * 60_000).toISOString(),
         elapsed_sec: 300,
-        eta_sec: 10500,
+        eta_sec: null,
         held_externally: true,
       },
     }));

@@ -33,6 +33,7 @@ import {
 import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 export const AGENT_REVIEW_STATUSES = ['pending', 'revision-requested', 'approved'] as const;
 export type AgentReviewStatus = (typeof AGENT_REVIEW_STATUSES)[number];
+export const AGENT_REVIEW_MAX_REVISION_GRADE = 3;
 
 /**
  * Migration 864 cannot recover an originating principal for every legacy park.
@@ -1169,6 +1170,57 @@ export function readAgentReviewState(payload: unknown): AgentReviewState | null 
       (AGENT_REVIEW_REVISION_KINDS as readonly unknown[]).includes(row.revisionKind)
       ? { revisionKind: row.revisionKind as AgentReviewRevisionKind }
       : {}),
+  };
+}
+
+export interface AgentReviewRecoverySnapshot {
+  id: string;
+  harness: string | null;
+  review: AgentReviewState;
+  reviewer: string;
+  grade: number;
+  feedback: string;
+  repeatJustification?: string;
+  parties: VerificationParties;
+}
+
+/** Read the narrowly recoverable revision receipt stored in an agent-review round comment. */
+export function readAgentReviewRecoverySnapshot(value: unknown): AgentReviewRecoverySnapshot | null {
+  const snapshot = record(value);
+  const review = readAgentReviewState({ agentReview: snapshot.review });
+  const reviewer = typeof snapshot.reviewer === 'string' ? snapshot.reviewer.trim() : '';
+  const feedback = typeof snapshot.feedback === 'string' ? snapshot.feedback : '';
+  const repeatJustification = snapshot.repeatJustification;
+  const partiesValue = record(snapshot.parties);
+  const readPartyList = (input: unknown): string[] | null => {
+    if (!Array.isArray(input)) return null;
+    const ids = input.map((id) => typeof id === 'string' ? id.trim() : '');
+    if (ids.some((id) => !id) || new Set(ids).size !== ids.length) return null;
+    return ids;
+  };
+  const reporters = readPartyList(partiesValue.reporters);
+  const implementers = readPartyList(partiesValue.implementers);
+  if (
+    typeof snapshot.id !== 'string' || !snapshot.id.trim() ||
+    (snapshot.harness !== null && (typeof snapshot.harness !== 'string' || !snapshot.harness.trim())) ||
+    !review || review.status !== 'revision-requested' ||
+    !reviewer || !Number.isSafeInteger(snapshot.grade) ||
+    Number(snapshot.grade) < 1 || Number(snapshot.grade) > AGENT_REVIEW_MAX_REVISION_GRADE ||
+    !feedback.trim() ||
+    (repeatJustification !== undefined &&
+      (typeof repeatJustification !== 'string' || !repeatJustification.trim())) ||
+    !reporters || !implementers || !reporters.includes(review.submittedBy) ||
+    verificationConflict({ reporters, implementers }, reviewer) !== null
+  ) return null;
+  return {
+    id: snapshot.id,
+    harness: snapshot.harness as string | null,
+    review,
+    reviewer,
+    grade: Number(snapshot.grade),
+    feedback,
+    ...(typeof repeatJustification === 'string' ? { repeatJustification } : {}),
+    parties: { reporters, implementers },
   };
 }
 

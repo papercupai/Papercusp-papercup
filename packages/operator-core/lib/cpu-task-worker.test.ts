@@ -20,7 +20,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Worker } from 'node:worker_threads';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -525,6 +525,39 @@ describe('cpu-task-worker — transient-failure recovery (WI-37688)', () => {
     // holding the loop open, or a one-off process never exits.
     expect(m.getCpuWorkerState()).toMatchObject({ alive: true, keepAlive: false });
   });
+
+  it('filters stdin-only input-type flags before spawning file workers', () => {
+    const modulePath = resolve(__dirname, 'cpu-task-worker.ts');
+    const source =
+      `const { serializeJsonResponse, OFFLOAD_MIN_ITEMS, getCpuWorkerState, _resetCpuWorker } = ` +
+      `await import(${JSON.stringify(modulePath)});\n` +
+      `const rows = Array.from({ length: OFFLOAD_MIN_ITEMS + 1 }, (_, id) => ({ id }));\n` +
+      `await serializeJsonResponse({ rows }, rows.length);\n` +
+      `console.log(JSON.stringify(getCpuWorkerState()));\n` +
+      `await _resetCpuWorker();\n`;
+
+    for (const inputTypeArgs of [['--input-type=module'], ['--input-type', 'module']]) {
+      const child = spawnSync(
+        process.execPath,
+        ['--import', 'tsx', ...inputTypeArgs],
+        {
+          cwd: resolve(__dirname, '../../../'),
+          // The test runner injects committed-source-loader through NODE_OPTIONS;
+          // this child must import the working-tree module under test.
+          env: { ...process.env, NODE_OPTIONS: '' },
+          input: source,
+          encoding: 'utf8',
+          timeout: 120_000,
+        },
+      );
+      expect(child.error, child.stderr).toBeUndefined();
+      expect(child.status, child.stderr).toBe(0);
+      const state = JSON.parse(child.stdout.trim());
+      expect(state.servedByWorker).toBeGreaterThan(0);
+      expect(state.eligibleFallbacks).toBe(0);
+      expect(state.consecutiveCrashes).toBe(0);
+    }
+  }, 180_000);
 
   it('lets a host whose event loop is otherwise idle EXIT on its own (child process)', async () => {
     // Ground truth for the test above. `keepAlive` reports what the module

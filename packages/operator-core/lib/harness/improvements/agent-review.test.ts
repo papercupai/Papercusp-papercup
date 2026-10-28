@@ -1587,6 +1587,98 @@ describe('agent-review grading lifecycle', () => {
  * session was reaped (the COMMON case: review routinely outlives the filing session) the
  * row was excluded from the claim floor with nobody alive able to free it.
  */
+describe('resubmitAgentReview recovers malformed legacy review state', () => {
+  const review = {
+    status: 'revision-requested' as const,
+    submittedBy: 'su-filer',
+    ledgerIdeaId: 'WI-7',
+    round: 1,
+    revisionKind: 'content' as const,
+  };
+  const feedback = 'Add the missing regression case.';
+  const readiness = createImplementationReadiness({
+    status: 'not-ready',
+    source: 'agent-review',
+    reason: 'agent-review-revision-requested',
+    evidence: { review: { submittedBy: 'su-filer', reviewer: 'su-reviewer', round: 1, grade: 2 } },
+  });
+
+  function recoveredCase(overrides: Partial<WorkItem> = {}) {
+    const item = issue({
+      assignee: 'su-filer',
+      payload: {
+        agentReview: { status: 'revision-submitted', round: 1, note: 'legacy malformed replacement' },
+        implementationReadiness: readiness,
+      },
+      ...overrides,
+    });
+    const h = harness(item);
+    const original = issue({ payload: { agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 } } });
+    const body = agentReviewRoundComment(
+      `Agent review round 1: revision requested by su-reviewer (grade 2/5).\n\n${feedback}`,
+      original,
+      review,
+      2,
+      'su-reviewer',
+      { feedback },
+    );
+    h.state.posts.push({ body, author: 'su-reviewer' });
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 2, feedback, gradedBy: 'su-reviewer' };
+    return { h, body, original };
+  }
+
+  it('restores the exact prior round before clearing its ledger and uses normal resubmission', async () => {
+    const { h } = recoveredCase();
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: true,
+      state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 2 },
+    });
+
+    expect(h.deps.mergeWorkItemPayload).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(h.deps.mergeWorkItemPayload).mock.calls[0][1]).toEqual({ agentReview: review });
+    expect(vi.mocked(h.deps.mergeWorkItemPayload).mock.invocationCallOrder[0])
+      .toBeLessThan(h.clearLedgerGrade.mock.invocationCallOrder[0]);
+    expect(h.state.issue.payload).toMatchObject({ agentReview: { status: 'pending', round: 2 } });
+    expect(h.state.ledger).toMatchObject({ grade: null, feedback: null, gradedBy: null });
+  });
+
+  it('fails closed when the current ledger grade no longer matches the round snapshot', async () => {
+    const { h } = recoveredCase();
+    h.state.ledger = { ...h.state.ledger!, grade: 3 };
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps)).resolves.toEqual({
+      resubmitted: false,
+      reason: 'malformed-agent-review-recovery-unproven',
+    });
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(h.clearLedgerGrade).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when more than one round-bound snapshot exists', async () => {
+    const { h, body } = recoveredCase();
+    h.state.posts.push({ body, author: 'su-reviewer' });
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'malformed-agent-review-recovery-unproven',
+    });
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(h.clearLedgerGrade).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the recorded reviewer is also a current implementer', async () => {
+    const { h } = recoveredCase({ terminalOwner: 'su-reviewer' });
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'malformed-agent-review-recovery-unproven',
+    });
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(h.clearLedgerGrade).not.toHaveBeenCalled();
+  });
+});
+
 describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-41689)', () => {
   function orphanRow(overrides: Partial<WorkItem> = {}): WorkItem {
     return issue({

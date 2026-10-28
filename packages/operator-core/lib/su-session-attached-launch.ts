@@ -35,6 +35,7 @@ import { prepareStructuredSuResume } from './su-session-resume';
 import { resolveCodexModelSelection } from './model-context-budget.mjs';
 import { grantSuClientLease, suClientLeaseConfig, superviseSuClientLease } from './su-session-client-lease';
 import { normalizeModelSpecForAgent } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { retainRequestPrincipal } from './auth/require-principal';
 
 const state = pinModuleState('@papercusp/operator-core.su-attached-launch', () => ({
   starting: new Map<string, Promise<Record<string, unknown>>>(),
@@ -397,7 +398,9 @@ export async function launchAttachedSuSession(
           let active: ClaudeSuEngine | SuRpcEngine | undefined;
           try {
             const options = { ...resume.options, host: restored, beforeReady: resume.beforeReady,
-              onExit: resume.onExit, toolApproval: 'prompt' as const };
+              onExit: resume.onExit, toolApproval: 'prompt' as const,
+              resolveRequestPrincipal: record.backend === 'codex'
+                ? await retainRequestPrincipal(request?.headers ?? null, workspaceId) : undefined };
             active = record.backend === 'claude'
               ? startClaudeSuEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'claude' },
                 { nativeSession: resume.nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
@@ -555,7 +558,9 @@ export async function launchAttachedSuSession(
           { nativeSession: nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
           { ...options, forkFrom: claudeForkSource, identity: await engineIdentityForLaunch(workspaceId, result.cwd) })
         : startSuRpcEngine(result, binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
-          { ...options, identity: await engineIdentityForLaunch(workspaceId, result.cwd) });
+          { ...options, identity: await engineIdentityForLaunch(workspaceId, result.cwd),
+            resolveRequestPrincipal: result.agent === 'codex'
+              ? await retainRequestPrincipal(request.headers, workspaceId) : undefined });
       state.engines.set(key, engine);
       observeReadiness(engine);
       // WI-10003879: recorded before the launch returns, so PUI's very first

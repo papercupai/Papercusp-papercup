@@ -67,7 +67,7 @@ import {
   releasesPageUrl,
   sourceYear,
 } from '../../../scripts/source-preview.mjs';
-import { DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
+import { BG_INPUTS, DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeBgCandidate, makeBgCompilerCandidate, makeSuperproject, write, type Superproject } from './source-preview.fixture';
 import { captureTestSourceSnapshot } from './testing-worktree';
 import { measureBootOperatorArtifact } from './release/operator-artifact';
 import { cleanupEndedVerifierDirectories, verifierSourceFiles, writeVerifierTaskReceipt } from './verifier-source';
@@ -2261,23 +2261,12 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
 });
 
 describe('BG inherited manifest and original source boundaries', () => {
-  const inputs = ['apps/operator/src/index.ts', 'libs/papercusp/package.json'];
+  const inputs = BG_INPUTS;
   const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
   let serial = 0;
 
   function candidate() {
-    const base = join(tmp, `bg-source-${++serial}`);
-    const fixture = makeSuperproject(base);
-    git(fixture.repo, ['commit', '--allow-empty', '-qm', 'BG selected child']);
-    const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
-    const members = { [inputs[0]!]: git(fixture.repo, ['rev-parse', `${ref}:${inputs[0]}`]),
-      [inputs[1]!]: git(fixture.subSrc, ['rev-parse', `${fixture.subCommit}:package.json`]) };
-    const path = join(base, 'original-parent-manifest.json');
-    const bytes = JSON.stringify({ schemaVersion: 1, sourceBlobs: members });
-    writeFileSync(path, bytes);
-    return { fixture, options: { repo: fixture.repo, ref, dest: join(base, 'selected'), inputs: [...inputs],
-      acceptedManifest: { path, evidenceRef: 'fixture:original-parent-P002', sha256: digest(bytes),
-        schemaVersion: 1 as const, members } } };
+    return makeBgCandidate(join(tmp, `bg-source-${++serial}`));
   }
 
   it('preserves inherited literal inputs and recursive pins while unrelated canonical source changes', async () => {
@@ -2424,79 +2413,8 @@ describe('BG inherited manifest and original source boundaries', () => {
   });
 
   async function compilerCandidate(artifactInputs = false, cliHarness = false) {
-    bgFixtureTrace('compiler-fixture:start');
-    const c = candidate();
-    git(c.fixture.repo, ['rm', '-rf', '--', 'node_modules', 'apps/operator/node_modules']);
-    for (const path of ['papercusp-desktop/bin/lib/pinned-deps.sh', 'apps/operator/bin/release/dependency-generation.sh',
-      'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'])
-      write(c.fixture.repo, path, readFileSync(join(SOURCE_ROOT, path), 'utf8'));
-    if (cliHarness) write(c.fixture.repo, 'scripts/source-preview.mjs',
-      `const { runCli } = await import(${JSON.stringify(new URL('../../../scripts/source-preview.mjs', import.meta.url).href)});\nprocess.exitCode = await runCli(process.argv.slice(2));\n`);
-    write(c.fixture.repo, inputs[0]!, "export { y } from '../../../packages/core/index'; export { default as dep } from 'fixture-dependency';\n");
-    git(c.fixture.repo, ['add', '-A']);
-    git(c.fixture.repo, ['commit', '-qm', 'BG compiler input custody fixture']);
-    c.options.ref = git(c.fixture.repo, ['rev-parse', 'HEAD']);
-    c.options.acceptedManifest.members[inputs[0]!] = git(c.fixture.repo, ['rev-parse', `${c.options.ref}:${inputs[0]}`]);
-    if (artifactInputs) {
-      c.options.inputs = [inputs[0]!, 'packages/core/index.ts'];
-      c.options.acceptedManifest.members = Object.fromEntries(c.options.inputs.map(path =>
-        [path, git(c.fixture.repo, ['rev-parse', `${c.options.ref}:${path}`])])) as typeof c.options.acceptedManifest.members;
-    }
-    const manifest = JSON.stringify({ schemaVersion: 1, sourceBlobs: c.options.acceptedManifest.members });
-    writeFileSync(c.options.acceptedManifest.path, manifest);
-    c.options.acceptedManifest.sha256 = digest(manifest);
-    const prepared = await prepareBgVerifierSource(c.options);
-    bgFixtureTrace('compiler-fixture:source-ready');
-    write(prepared.root, 'node_modules/fixture-dependency/package.json', '{"name":"fixture-dependency","main":"index.js"}');
-    write(prepared.root, 'node_modules/fixture-dependency/index.js', 'export default 41;\n');
-    write(prepared.root, 'node_modules/fixture-package-manager/cli.js', '// fixture package-manager identity\n');
-    write(prepared.root, 'node_modules/fixture-compiler/cli.js', '// fixture compiler identity\n');
-    const dependencies = captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source });
-    bgFixtureTrace('compiler-fixture:dependencies-ready');
-    return { c, prepared, dependencies };
+    return makeBgCompilerCandidate(join(tmp, `bg-source-${++serial}`), { artifactInputs, cliHarness, trace: bgFixtureTrace });
   }
-
-  for (const kind of ['source', 'dependency'] as const) {
-    const selector = `bg-r1-compiler-${kind}-transient-substitution-restored rejects selected ${kind} changed during real compiler consumption then restored before final fence`;
-    it(selector, async () => {
-      const { prepared, dependencies } = await compilerCandidate();
-      const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
-      const { build } = await import('esbuild');
-      const local = kind === 'source' ? 'packages/core/index.ts' : 'node_modules/fixture-dependency/index.js';
-      const target = join(prepared.root, local), original = readFileSync(target);
-      let substituted = false, restored = false;
-      const result = build({ absWorkingDir: prepared.root, entryPoints: [inputs[0]!], bundle: true,
-        format: 'esm', platform: 'node', write: false, logLevel: 'silent',
-        plugins: [custody.plugin, { name: 'independent-transient-substitution', setup(builder) {
-          builder.onResolve({ filter: kind === 'source' ? /core\/index$/ : /^fixture-dependency$/ }, () => {
-            writeFileSync(target, kind === 'source' ? 'export const y = 99;\n' : 'export default 99;\n');
-            substituted = true;
-            return { path: target };
-          });
-          builder.onEnd(() => { writeFileSync(target, original); restored = true; });
-        } }] });
-      await expect(result).rejects.toThrow(`BG compiler consumed bytes mismatch: ${local}`);
-      expect({ substituted, restored }).toEqual({ substituted: true, restored: true });
-      expect(readFileSync(target)).toEqual(original);
-      expect(verifyBgVerifierSource(prepared, 'before-publication')).toBe(prepared);
-      expect(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source })).toEqual(dependencies);
-    });
-  }
-
-  it('bg-r1-compiler-immutable-input-positive-control qualifies ordinary real compilation from the frozen accepted source and dependency bytes', async () => {
-    const { prepared, dependencies } = await compilerCandidate();
-    const originalReceipt = readFileSync(join(prepared.root, '.verifier-source.json'));
-    const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
-    const { build } = await import('esbuild');
-    const result = await build({ absWorkingDir: prepared.root, entryPoints: [inputs[0]!], bundle: true,
-      format: 'esm', platform: 'node', write: false, logLevel: 'silent', plugins: [custody.plugin] });
-    const imported = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0]!.contents).toString('base64'));
-    expect({ y: imported.y, dep: imported.dep }).toEqual({ y: 2, dep: 41 });
-    expect(custody.verifyBeforePublication().map(row => row.path)).toEqual([
-      inputs[0]!, 'node_modules/fixture-dependency/index.js', 'packages/core/index.ts',
-    ]);
-    expect(readFileSync(join(prepared.root, '.verifier-source.json'))).toEqual(originalReceipt);
-  });
 
   it('bg-r1-compiler-resolver-metadata-transient-restored refuses publication after real resolution used changed package metadata then restored it', async () => {
     const { prepared } = await compilerCandidate();
@@ -2626,33 +2544,6 @@ describe('BG inherited manifest and original source boundaries', () => {
       } }],
     })).rejects.toThrow(kind === 'stdin'
       ? 'BG compiler stdin is outside original census' : 'BG compiler virtual input is outside original census');
-  });
-
-  async function invocationDefect(boundary: typeof boundaries[number], defect: 'builder-configuration' | 'toolchain-identity') {
-    const { prepared, dependencies } = await compilerCandidate();
-    const invocation = { builder: join(prepared.root, 'apps/operator/bin/bundle-host.sh'),
-      argv: ['--bundle', '--platform=node', '--target=node22'], node: process.execPath,
-      compiler: join(prepared.root, 'node_modules/fixture-dependency/index.js'),
-      packageManager: join(prepared.root, 'node_modules/fixture-package-manager/cli.js'),
-      configuration: [join(prepared.root, 'package-lock.json')], environment: { NODE_OPTIONS: '', NODE_PATH: '', PATH: '/fixture/bin' } };
-    const originalReceipt = readFileSync(join(prepared.root, '.verifier-source.json'));
-    const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation });
-    const recordBytes = JSON.stringify(record);
-    expect(verifyBgVerifierBuildRecord(record, invocation, boundary)).toBe(record);
-    if (defect === 'builder-configuration') invocation.argv.push('--target=node23');
-    else invocation.node = invocation.packageManager;
-    expect(() => verifyBgVerifierBuildRecord(record, invocation, boundary))
-      .toThrow('BG builder configuration or toolchain identity changed');
-    expect(JSON.stringify(record)).toBe(recordBytes);
-    expect(readFileSync(join(prepared.root, '.verifier-source.json'))).toEqual(originalReceipt);
-  }
-
-  for (const boundary of boundaries) for (const defect of ['builder-configuration', 'toolchain-identity'] as const) {
-    it(`bg-r1-${defect}-${boundary} rejects changed ${defect} ${boundary}`, () => invocationDefect(boundary, defect));
-  }
-  it('BG-PREP-EXACT-SELECTION rejects changed builder configuration or toolchain identity', async () => {
-    for (const boundary of boundaries) for (const defect of ['builder-configuration', 'toolchain-identity'] as const)
-      await invocationDefect(boundary, defect);
   });
 
   async function outputCandidate() {

@@ -14,7 +14,30 @@ import {
   codexPlanCall,
   codexTokenUsage,
   ompMessageUsage,
+  nativeToolArguments,
 } from './su-session-usage';
+
+describe('native exact argument snapshots', () => {
+  it('retains empty objects and freezes independent nested JSON values', () => {
+    expect(nativeToolArguments({})).toEqual({});
+    const input = { nested: [{ key: 'original' }], nullable: null };
+    const copy = nativeToolArguments(input)!;
+    input.nested[0]!.key = 'changed';
+    expect(copy).toEqual({ nested: [{ key: 'original' }], nullable: null });
+    expect(Object.isFrozen((copy.nested as object[])[0])).toBe(true);
+  });
+  it.each([undefined, null, [], 'text', { value: undefined }, { value: NaN },
+    { value: Infinity }, { value: 1n }, { value: () => {} }, { value: Symbol('x') },
+    { value: 'x'.repeat(256_001) }])('refuses absent or inexact JSON arguments', input => {
+    expect(nativeToolArguments(input)).toBeNull();
+  });
+  it('refuses cycles and excessive nesting', () => {
+    const cycle: Record<string, unknown> = {}; cycle.self = cycle;
+    expect(nativeToolArguments(cycle)).toBeNull();
+    let nested: unknown = {}; for (let i = 0; i < 66; i++) nested = { nested };
+    expect(nativeToolArguments(nested)).toBeNull();
+  });
+});
 
 describe('Claude usage', () => {
   it('sums a root assistant message into the context it filled', () => {

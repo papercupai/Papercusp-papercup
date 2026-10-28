@@ -1368,6 +1368,33 @@ const COMPACT_IDENTITY_WORK_ITEM_FIELDS = new Set([
   "assignee",
 ]);
 
+type CompactIdentityProjection = {
+  rowFields: Set<string>;
+  workItemFields: Set<string>;
+};
+
+function compactIdentityProjection(sourceProjection: unknown): CompactIdentityProjection {
+  const selected: CompactIdentityProjection = { rowFields: new Set(), workItemFields: new Set() };
+  if (!sourceProjection || typeof sourceProjection !== "object" || Array.isArray(sourceProjection)) return selected;
+  const picks = (sourceProjection as { pick?: unknown }).pick;
+  if (!Array.isArray(picks)) return selected;
+
+  for (const pick of picks) {
+    if (typeof pick !== "string") continue;
+    const match = /^results(?:\[\]|\[\d+\])\.(.+)$/.exec(pick.trim());
+    if (!match) continue;
+    const parts = match[1]!.split(".");
+    if (parts.length === 1) selected.rowFields.add(parts[0]!);
+    else if (parts.length === 2 && parts[0] === "workItem") selected.workItemFields.add(parts[1]!);
+  }
+  return selected;
+}
+
+function isCompactIdentityScalar(value: unknown): boolean {
+  return value === null || typeof value === "string" || typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value));
+}
+
 /**
  * Keep a multi-row overflow rung useful as a candidate index. The ordinary
  * projector deliberately retains checkpoint qualifiers and read-side details;
@@ -1376,22 +1403,37 @@ const COMPACT_IDENTITY_WORK_ITEM_FIELDS = new Set([
  * recoverable with an exact single-item read, while terminal authority and the
  * completion-presence bit stay in band.
  */
-function compactIdentityRow(sourceRow: Row, row: Row, dropped: Set<string>): Row {
+function compactIdentityRow(
+  sourceRow: Row,
+  row: Row,
+  dropped: Set<string>,
+  projection: CompactIdentityProjection,
+): Row {
   if (row.ok === false || row._stub === true || row.reportAttachments !== undefined) return row;
 
+  const keptRowFields = new Set(COMPACT_IDENTITY_ROW_FIELDS);
+  for (const key of projection.rowFields) {
+    if (Object.prototype.hasOwnProperty.call(row, key) && isCompactIdentityScalar(row[key])) keptRowFields.add(key);
+  }
   for (const key of Object.keys(row)) {
-    if (!COMPACT_IDENTITY_ROW_FIELDS.has(key)) dropped.add(key);
+    if (!keptRowFields.has(key)) dropped.add(key);
   }
 
   const rawWorkItem = row.workItem;
   let workItem: unknown = rawWorkItem;
   if (rawWorkItem && typeof rawWorkItem === "object" && !Array.isArray(rawWorkItem)) {
     const source = rawWorkItem as Row;
+    const keptWorkItemFields = new Set(COMPACT_IDENTITY_WORK_ITEM_FIELDS);
+    for (const key of projection.workItemFields) {
+      if (Object.prototype.hasOwnProperty.call(source, key) && isCompactIdentityScalar(source[key])) {
+        keptWorkItemFields.add(key);
+      }
+    }
     for (const key of Object.keys(source)) {
-      if (!COMPACT_IDENTITY_WORK_ITEM_FIELDS.has(key)) dropped.add(`workItem.${key}`);
+      if (!keptWorkItemFields.has(key)) dropped.add(`workItem.${key}`);
     }
     workItem = Object.fromEntries(
-      Object.entries(source).filter(([key]) => COMPACT_IDENTITY_WORK_ITEM_FIELDS.has(key)),
+      Object.entries(source).filter(([key]) => keptWorkItemFields.has(key)),
     );
   }
 
@@ -1404,9 +1446,20 @@ function compactIdentityRow(sourceRow: Row, row: Row, dropped: Set<string>): Row
     hasCompletionEvidence(sourceWorkItem?.terminalCompletionEvidence);
   const completionRelevant = hasEvidence || ANY_FAMILY_TERMINAL_STATES.includes(state);
 
+  const selectedRowScalars = Object.fromEntries(
+    [...projection.rowFields]
+      .filter((key) =>
+        !COMPACT_IDENTITY_ROW_FIELDS.has(key) &&
+        keptRowFields.has(key) &&
+        Object.prototype.hasOwnProperty.call(row, key),
+      )
+      .map((key) => [key, row[key]]),
+  );
+
   return {
     ok: row.ok ?? true,
     id: row.id ?? null,
+    ...selectedRowScalars,
     ...(row.availability !== undefined ? { availability: row.availability } : {}),
     ...(row.workItem !== undefined ? { workItem } : {}),
     ...(completionRelevant
@@ -1519,7 +1572,7 @@ function shapeCheckpointOnly(data: Row): unknown {
   };
 }
 
-export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknown {
+export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier, sourceProjection?: unknown): unknown {
   const d = data as ({ results?: unknown[] } & Row) | null | undefined;
   if (!d || !Array.isArray(d.results)) return data;
   if (d.__resumeOnly === true) {
@@ -1530,6 +1583,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
   if (d.__checksOnly === true) return shapeChecksOnly(d, tier);
   const caps = FIELD_CAPS[tier];
   const rows = d.results.map((r) => (r && typeof r === "object" ? (r as Row) : ({} as Row)));
+  const selectedIdentityFields = compactIdentityProjection(sourceProjection);
   const ladder = DEGRADATION_LADDER[tier];
   const target = TIER_TARGET_CHARS[tier];
 
@@ -1678,7 +1732,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
           const identity = shaped.workItem as Row | null | undefined;
           const hasCandidateLabel = typeof identity?.title === "string" && identity.title.trim().length > 0;
           return hasCandidateLabel
-            ? compactIdentityRow(r, shaped, dropped)
+            ? compactIdentityRow(r, shaped, dropped, selectedIdentityFields)
             : stubRow(r, dropped, stubCompletionEvidenceIds);
         }
         return shaped;

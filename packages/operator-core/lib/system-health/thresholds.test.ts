@@ -37,7 +37,7 @@ import {
   SYNC_LAG_WARN_MS,
   DEPLOY_BEHIND_WARN,
   BG_HOST_STALE_CODE_GRACE_MS,
-  GIT_SYNC_PUSH_FAIL_CRIT,
+  GIT_SYNC_ERROR_CRIT,
   POOL_PROJECTION_STALE_WARN_MS,
   POOL_PROJECTION_STALE_CRIT_MS,
   MCP_PROXY_HARD_FAIL_CRIT,
@@ -391,19 +391,18 @@ describe('deployStatus', () => {
   it('ok when fresh + caught up', () => {
     expect(deployStatus(dp(), now)).toBe('ok');
   });
-  // EI-18 git-sync UPSTREAM-delivery signal (F3/P-032): a failing push is the deploy
-  // panel's ONLY crit path — local commits silently not reaching origin.
-  it('crit when git-sync push has failed >= the escalation threshold (commits not reaching origin)', () => {
-    expect(deployStatus(dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_PUSH_FAIL_CRIT }), now)).toBe('crit');
+  // EI-18: a sustained error streak with backlog not proven empty is deploy-critical.
+  it('crit when git-sync errors cross the threshold and backlog is unknown', () => {
+    expect(deployStatus(dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_ERROR_CRIT }), now)).toBe('crit');
   });
-  it('warns, not crit, when a live git check proves the push-failure counter is stale', () => {
-    expect(deployStatus(dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_PUSH_FAIL_CRIT + 20, gitSyncPushBacklog: 0 }), now)).toBe('warn');
+  it('warns, not crit, when a live git check proves the error backlog is empty', () => {
+    expect(deployStatus(dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_ERROR_CRIT + 20, gitSyncPushBacklog: 0 }), now)).toBe('warn');
   });
   it('keeps crit when the live git check still sees commits waiting to reach origin', () => {
-    expect(deployStatus(dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_PUSH_FAIL_CRIT, gitSyncPushBacklog: 2 }), now)).toBe('crit');
+    expect(deployStatus(dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_ERROR_CRIT, gitSyncPushBacklog: 2 }), now)).toBe('crit');
   });
-  it('crit on push-failure even with no release refs (push-fail outranks unknown)', () => {
-    expect(deployStatus(dp({ deployedShortSha: null, lastCommitAtMs: null, gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_PUSH_FAIL_CRIT + 2 }), now)).toBe('crit');
+  it('crit on a sustained git-sync error streak even with no release refs', () => {
+    expect(deployStatus(dp({ deployedShortSha: null, lastCommitAtMs: null, gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_ERROR_CRIT + 2 }), now)).toBe('crit');
   });
 
   // WI-1258129 RUNNING-CODE freshness. Every other case in this describe keys on a
@@ -449,7 +448,7 @@ describe('deployStatus', () => {
   // pass just as happily against a deployStatus that ignores bgHostCodeStale
   // entirely — which is the only way to know the tests above test anything.
   const preFix = (d: DeployHealth, at: number): PanelStatus => {
-    if (d.gitSyncConsecutiveErrorTicks >= GIT_SYNC_PUSH_FAIL_CRIT && d.gitSyncPushBacklog !== 0) return 'crit';
+    if (d.gitSyncConsecutiveErrorTicks >= GIT_SYNC_ERROR_CRIT && d.gitSyncPushBacklog !== 0) return 'crit';
     if (d.deployedShortSha === null && d.lastCommitAtMs === null) return 'unknown';
     if (d.gitSyncStatus === 'error' || d.gitSyncStatus === 'degraded' || d.gitSyncOversizedCount > 0) return 'warn';
     if (d.lastCommitAtMs !== null && at - d.lastCommitAtMs > SYNC_LAG_WARN_MS) return 'warn';
@@ -468,7 +467,7 @@ describe('deployStatus', () => {
     for (const c of [dp(), dp({ lastCommitAtMs: now - SYNC_LAG_WARN_MS - 1 }),
       dp({ deployedBehindStaging: DEPLOY_BEHIND_WARN + 1 }),
       dp({ deployedShortSha: null, lastCommitAtMs: null }),
-      dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_PUSH_FAIL_CRIT })]) {
+      dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_ERROR_CRIT })]) {
       expect(preFix(c, now)).toBe(deployStatus(c, now));
     }
   });

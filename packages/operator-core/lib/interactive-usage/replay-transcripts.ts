@@ -113,6 +113,16 @@ export async function readArchivedTranscriptSource(filePath: string, sourceKind?
   return null;
 }
 
+/** Adapter names may include an isolation suffix (for example `codex-iso-261`),
+ * while archive rows are keyed by the stable source family. Unknown adapter names
+ * intentionally return undefined so the archive reader retains its bounded search
+ * across all supported families instead of silently treating the archive as absent.
+ */
+export function transcriptSourceKindForAdapter(adapterName: string): 'codex' | 'claude' | 'omp' | undefined {
+  const family = /^(codex|claude|omp)(?:-|$)/.exec(adapterName)?.[1];
+  return family === 'codex' || family === 'claude' || family === 'omp' ? family : undefined;
+}
+
 /**
  * Reuse the production parsers from byte zero, preserving their state between chunks.
  * A missing/unreplayable source produces no invented observations. The digest covers
@@ -133,7 +143,7 @@ export async function replayTranscriptPrefix(options: ReplayOptions): Promise<Tr
   let archived: Buffer | null = null;
   try { handle = await fs.open(filePath, 'r'); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    archived = await readArchivedTranscriptSource(filePath, adapter.name);
+    archived = await readArchivedTranscriptSource(filePath, transcriptSourceKindForAdapter(adapter.name));
     if (!archived) return unavailable('missing');
   }
   try {

@@ -988,6 +988,49 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       },
     },
     {
+      id: 'interaction-report-markdown-responsiveness',
+      label: 'Report markdown responsiveness',
+      run: async () => {
+        await clearPerfRecorder(ctx);
+        const firstMount = await measureInteraction(ctx, {
+          name: 'report-markdown-first-mount',
+          setup: "const state = history.state || {}; const index = typeof state.__TSR_index === 'number' ? state.__TSR_index : 0; history.pushState({ ...state, __TSR_index: index + 1 }, '', '/admin/report-markdown-perf');",
+          triggerSelector: '[data-testid="report-markdown-perf-trigger"]',
+          settleTimeoutMs: 10_000,
+        });
+        const firstBudget = DESKTOP_PERF_BUDGETS.interactions['report-markdown-first-mount'];
+        const inputDelayBudget = DESKTOP_PERF_BUDGETS.interactions['report-markdown-input-delay'];
+        const expected = 'A representative report commits within ' + firstBudget + 'ms and yields to queued input within ' + inputDelayBudget + 'ms.';
+        if (!firstMount.ok) {
+          return fail(
+            expected,
+            'Could not measure report markdown responsiveness: ' + firstMount.detail,
+            ['Open /admin/report-markdown-perf in the packaged Tauri shell and confirm its trigger and report fixture render.'],
+          );
+        }
+        const inputDelay = await readLatestInteractionMeasure(ctx, 'report-markdown-input-delay');
+        if (!inputDelay.ok) {
+          return fail(
+            expected,
+            'Could not measure report input delay: ' + inputDelay.detail,
+            ['The report fixture should emit report-markdown-input-delay from its queued task after the click.'],
+          );
+        }
+        const firstVerdict = evaluateInteractionBudget('report-markdown-first-mount', firstMount.measuredMs);
+        const inputVerdict = evaluateInteractionBudget('report-markdown-input-delay', inputDelay.measuredMs);
+        return statusResult(
+          firstVerdict.ok && inputVerdict.ok,
+          expected,
+          'report-markdown-first-mount=' + firstMount.measuredMs + 'ms; report-markdown-input-delay=' + inputDelay.measuredMs + 'ms.',
+          undefined,
+          [
+            { key: 'interaction:report-markdown-first-mount', value: firstMount.measuredMs, unit: 'ms', budget: firstVerdict.budgetMs, ok: firstVerdict.ok },
+            { key: 'interaction:report-markdown-input-delay', value: inputDelay.measuredMs, unit: 'ms', budget: inputVerdict.budgetMs, ok: inputVerdict.ok },
+          ],
+        );
+      },
+    },
+    {
       id: 'interaction-inbox-bulk-report-open',
       label: 'Inbox bulk report open interaction',
       run: async () => {

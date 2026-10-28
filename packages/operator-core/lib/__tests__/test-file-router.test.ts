@@ -346,6 +346,7 @@ describe('test-files router', () => {
     const oldOptions = process.env.NODE_OPTIONS;
     const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
     const oldPrivatePgReleaseToken = process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN;
+    const oldAdminDatabaseUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
     const list = vi.fn(), run = vi.fn(); let receiptDir: string | undefined;
     const stages: string[] = [];
     const preflight = vi.fn(async () => {
@@ -357,6 +358,7 @@ describe('test-files router', () => {
     try {
       process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
       process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN = 'parent-release-token';
+      process.env.HARNESS_ADMIN_DATABASE_URL = 'postgresql://ambient:test-only@127.0.0.1:54321/parent';
       delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
       const frozen = vi.fn(async options => {
         stages.push('verifier-dependencies-ready');
@@ -366,11 +368,12 @@ describe('test-files router', () => {
         });
         stages.push('child-environment-ready'); receiptDir = join(options.receiptPath, '..'); return 7;
       });
-      expect(await main([resolve(REPO_ROOT, file), '--', '--testNamePattern=private Create'], {
+      const result = await main([resolve(REPO_ROOT, file), '--', '--testNamePattern=private Create'], {
         preflightPrivateIntegrationPgImpl: preflight,
         restrictedHoldPreflightImpl: restricted,
         runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
-      })).toBe(7);
+      });
+      expect(result, warning.mock.calls.map(([message]) => String(message)).join('\n')).toBe(7);
       expect(stages).toEqual(['restricted-preflight', 'verifier-dependencies-ready', 'pg-preflight',
         'child-environment-ready']);
       expect(restricted).toHaveBeenCalledExactlyOnceWith({ repoRoot: REPO_ROOT, files: [resolve(REPO_ROOT, file)] });
@@ -389,6 +392,8 @@ describe('test-files router', () => {
       else process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT = oldAdmission;
       if (oldPrivatePgReleaseToken === undefined) delete process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN;
       else process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN = oldPrivatePgReleaseToken;
+      if (oldAdminDatabaseUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+      else process.env.HARNESS_ADMIN_DATABASE_URL = oldAdminDatabaseUrl;
       warning.mockRestore(); if (receiptDir) rmSync(receiptDir, { recursive: true, force: true });
     }
   });

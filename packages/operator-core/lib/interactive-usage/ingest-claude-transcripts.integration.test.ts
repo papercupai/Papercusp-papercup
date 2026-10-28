@@ -33,7 +33,7 @@ const usage = (total: number, input = 1000) => line({ type: 'event_msg', payload
     last_token_usage: { input_tokens: input, cached_input_tokens: 600, cache_write_input_tokens: 250, output_tokens: 40 },
   },
 } });
-const adapter = () => [{ name: 'codex', root, parse: parseCodexChunk, replayStateFromPrefix: true, sessionIdForFile: codexSessionIdForFile }];
+const adapter = (name = 'codex') => [{ name, root, parse: parseCodexChunk, replayStateFromPrefix: true, sessionIdForFile: codexSessionIdForFile }];
 const migrationsDir = new URL('../../../../libs/papercusp/libs/db/sql/', import.meta.url);
 const readMigration = (name: string) => fs.readFile(new URL(name, migrationsDir), 'utf8')
   .catch(() => fs.readFile(new URL(name + '.DRAFT', migrationsDir), 'utf8'));
@@ -142,23 +142,24 @@ describe('persistent transcript accounting', () => {
     const approval = { filePath: file, byteOffset: Buffer.byteLength(source), backupSnapshotId: backupId,
       legacyFingerprint: await legacyUsageFingerprint(sql, WS, sessionId) };
     const [original] = await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
-    const live = await replayTranscriptPrefix({ ...approval, adapter: adapter()[0] });
+    const isolatedCodexAdapter = adapter('codex-iso-261')[0];
+    const live = await replayTranscriptPrefix({ ...approval, adapter: isolatedCodexAdapter });
     expect((await archiveSession({ sourceKind: 'codex', sessionId, sessionRoot: root }, pgSessionArchiveStore())).ok).toBe(true);
     await fs.unlink(file);
-    const archived = await replayTranscriptPrefix({ ...approval, adapter: adapter()[0] });
+    const archived = await replayTranscriptPrefix({ ...approval, adapter: isolatedCodexAdapter });
     expect(archived).toMatchObject({ ...live, sourceLocation: 'archive' });
     await expect(fs.stat(file)).rejects.toMatchObject({ code: 'ENOENT' }); // no rematerialization into a live home
     await expect(markUnavailableTranscriptUsage(approval)).rejects.toThrow('archive');
     expect(await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`).toEqual([original]);
     if (archived.status !== 'available') throw new Error(archived.reason);
     const historical = { ...approval, sourceSha256: archived.sourceSha256 };
-    expect((await ingestInteractiveUsage({ adapters: adapter(), historical })).errors).toEqual([]);
+    expect((await ingestInteractiveUsage({ adapters: [isolatedCodexAdapter], historical })).errors).toEqual([]);
     const corrected = await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
     expect(corrected).toHaveLength(1);
     expect(corrected[0].model).toBe('gpt-6-luna');
     expect(corrected[0].usage_provenance.reconciliation.sourceLocation).toBe('archive');
     expect(corrected[0].usage_provenance.reconciliation.originalRows[0]).toMatchObject({ model: 'gpt-5.5', cost_usd: 123 });
-    expect((await ingestInteractiveUsage({ adapters: adapter(), historical })).samples).toBe(0);
+    expect((await ingestInteractiveUsage({ adapters: [isolatedCodexAdapter], historical })).samples).toBe(0);
     expect(await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`).toEqual(corrected);
     await expect(fs.stat(file)).rejects.toMatchObject({ code: 'ENOENT' });
   });

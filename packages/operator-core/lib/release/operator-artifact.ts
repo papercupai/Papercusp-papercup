@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import type { BgAcceptedManifest } from '../../../../scripts/source-preview.mjs';
 
 const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const DIGEST = /^[a-f0-9]{64}$/;
@@ -31,6 +32,51 @@ export type OperatorArtifactIdentity =
   | { status: 'measured'; sourceSha: string; bundleSha256: string; manifestSha256: string;
       sourceBlobs: Record<string, string>; evidenceRef: string }
   | { status: 'unknown'; reason: string };
+
+/** Inherited attempt input, captured before candidate preparation. This is not
+ * reconstructed from the candidate's artifact manifest at boot. */
+export interface OperatorArtifactParentExpectation {
+  sourceRoot: string;
+  acceptedManifest: BgAcceptedManifest | null;
+}
+
+function verifyBootParentManifest(
+  parent: OperatorArtifactParentExpectation, artifact: OperatorArtifactManifest,
+  entry: string, existedBeforeNs: bigint,
+): void {
+  const expected = parent.acceptedManifest;
+  if (!expected || typeof expected.evidenceRef !== 'string' || !expected.evidenceRef.trim() ||
+    /^(?:unknown|absent|unresolved)$/i.test(expected.evidenceRef.trim())) throw Error('parent-authority-unknown');
+  if (expected.schemaVersion !== 1) throw Error('parent-schema-mismatch');
+  if (!DIGEST.test(expected.sha256)) throw Error('parent-digest-missing');
+  if (!isAbsolute(parent.sourceRoot) || realpathSync(parent.sourceRoot) !== parent.sourceRoot ||
+    !isAbsolute(expected.path) || realpathSync(expected.path) !== expected.path) throw Error('parent-path-invalid');
+  // A candidate-local file cannot become the original parent's authority even
+  // if its digest and source map happen to equal the accepted bytes.
+  for (const root of [parent.sourceRoot, dirname(entry)]) {
+    const rel = relative(root, expected.path);
+    if (rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith('../'))) {
+      throw Error('parent-authority-candidate-derived');
+    }
+  }
+  const bytes = stableFile(expected.path, existedBeforeNs);
+  if (bytes.length > 8 * 1024 * 1024 || hash(bytes) !== expected.sha256) throw Error('parent-digest-mismatch');
+  const manifest = JSON.parse(bytes.toString('utf8')) as OperatorArtifactManifest;
+  if (manifest.schemaVersion !== expected.schemaVersion) throw Error('parent-schema-mismatch');
+  const members = expected.members;
+  if (!members || typeof members !== 'object' || Array.isArray(members) || !Object.keys(members).length ||
+    Object.entries(members).some(([path, sha]) => !normalized(path) || path.includes('\0') || !SHA.test(sha))) {
+    throw Error('parent-members-invalid');
+  }
+  const equalMembers = (actual: unknown): boolean => {
+    if (!actual || typeof actual !== 'object' || Array.isArray(actual)) return false;
+    const rows = Object.entries(actual);
+    return rows.length === Object.keys(members).length && rows.every(([path, sha]) =>
+      Object.hasOwn(members, path) && members[path] === sha);
+  };
+  if (!equalMembers(manifest.sourceBlobs) || !equalMembers(artifact.sourceBlobs)) throw Error('parent-members-mismatch');
+  if (!stableFile(expected.path, existedBeforeNs).equals(bytes)) throw Error('parent-changed');
+}
 
 /** Capture before build and recheck after it. The release checkout is governed
  * by the existing deployment drain; a changing/dirty checkout cannot be stamped. */
@@ -134,6 +180,7 @@ export function writeOperatorArtifactManifest(input: {
  * an older process with newer bytes. Missing legacy manifests stay unknown. */
 export function measureBootOperatorArtifact(
   entry: string, bakedSourceSha: string | null, processStartedAtMs = performance.timeOrigin,
+  parent?: OperatorArtifactParentExpectation,
 ): OperatorArtifactIdentity {
   try {
     if (!Number.isFinite(processStartedAtMs) || processStartedAtMs <= 0) throw Error('unidentified-process-start');
@@ -158,6 +205,7 @@ export function measureBootOperatorArtifact(
       !Object.keys(m.sourceBlobs).length || Object.entries(m.sourceBlobs).some(([path, sha]) => !normalized(path) || !SHA.test(sha))) {
       throw Error('manifest-mismatch');
     }
+    if (parent !== undefined) verifyBootParentManifest(parent, m, actualEntry, existedBeforeNs);
     if (!stableFile(actualEntry, existedBeforeNs).equals(bytes)) throw Error('entry-changed');
     return { status: 'measured', sourceSha: m.sourceSha, bundleSha256, manifestSha256: hash(raw),
       sourceBlobs: { ...m.sourceBlobs }, evidenceRef: file };

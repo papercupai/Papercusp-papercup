@@ -36,6 +36,7 @@ export function isZeroAttribution(t: Pick<AttributionTally, 'agentGroupCount' | 
 /** Consecutive error ticks before the failure escalates (3 ticks ≈ 30 min).
  *  NOTE the name is historical: this counts ANY failing leg, not just pushes
  *  (EI-19275994927087666). */
+/** Historical export name; this threshold counts consecutive git-sync error ticks, not only pushes. */
 export const PUSH_FAILURE_ESCALATION_TICKS = 3;
 
 /**
@@ -166,7 +167,11 @@ export function classifyGitSyncFailingLeg(
   if (e.includes('conflict')) return 'conflict';
   if (e.includes('could not lock config file') && e.includes('config')) return 'config-lock';
   if (e.includes('commit failed') || e.includes('commit error')) return 'commit';
-  if (e.includes('push')) return 'push';
+  // Require positive evidence that a push attempt failed. A bare substring match
+  // misclassified phrases such as "Origin was never force-pushed" as push failures.
+  if (/\bpush (?:failed|fails|was rejected|is rejected)\b|\b(?:failed|unable|could not|cannot) to push\b/.test(e)) {
+    return 'push';
+  }
   // No usable error text: a commit-only member still cannot have push-failed.
   if (pushMode?.startsWith('commit-only')) return 'commit';
   return 'unknown';
@@ -257,6 +262,7 @@ export interface EscalationInput {
 
 export type EscalationReason =
   | 'push-failure'
+  | 'sync-failure'
   | 'oversized-blobs'
   | 'publish-refused'
   | 'attribution-failed'
@@ -312,11 +318,14 @@ export function effectivePublishRefusal(
 
 export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision {
   const reasons: EscalationReason[] = [];
-  if (i.consecutiveErrorTicks >= PUSH_FAILURE_ESCALATION_TICKS) reasons.push('push-failure');
+  const errorLeg = classifyGitSyncFailingLeg(i.errors.map((e) => e.message).join('; ') || null, i.pushMode ?? null);
+  if (i.consecutiveErrorTicks >= PUSH_FAILURE_ESCALATION_TICKS) {
+    reasons.push(errorLeg === 'push' ? 'push-failure' : 'sync-failure');
+  }
   if (i.oversized.length > 0) reasons.push('oversized-blobs');
   // EI-21230011589307899: a refused own-head publish freezes this device's egress
   // outright and CANNOT self-clear (the offending blob is already in history), so it
-  // escalates on sight — no consecutive-tick threshold like `push-failure`, which
+  // escalates on sight — no consecutive-tick threshold like `sync-failure`, which
   // exists to absorb transient network flakes this condition never has.
   const publishRefused = i.publishRefusal?.refused ? i.publishRefusal : null;
   if (publishRefused) reasons.push('publish-refused');
@@ -332,9 +341,8 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
     // EI-19275994927087666: say WHICH leg failed. This used to hardcode "push has
     // FAILED … local commits are NOT reaching origin" for every failure, including
     // commit-leg faults that never reached the network.
-    const leg = classifyGitSyncFailingLeg(i.errors.map((e) => e.message).join('; ') || null, i.pushMode ?? null);
     parts.push(
-      `⚠ git-sync on ${i.installSlug} has FAILED ${i.consecutiveErrorTicks} consecutive ticks — ${gitSyncLegPhrase(leg)}${detail ? ` (${detail})` : ''}`,
+      `⚠ git-sync on ${i.installSlug} has FAILED ${i.consecutiveErrorTicks} consecutive ticks — ${gitSyncLegPhrase(errorLeg)}${detail ? ` (${detail})` : ''}`,
     );
   }
   const newOversized = i.oversized.filter((f) => !i.prevOversizedKeys.includes(oversizedKey(f)));

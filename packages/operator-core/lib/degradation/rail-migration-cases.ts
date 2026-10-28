@@ -1679,8 +1679,9 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
   rowIds: [],
   run: async () => {
     const { expect } = await import('vitest');
-    const { runGoalDrainFleetSweepOnce, readActiveFleetPullStallAlerts, resolveGoalDrainPullRecovery,
-      goalDrainPullConditionKey } = await import('../system-health/goal-drain-fleet-watchdog');
+    const { GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS, runGoalDrainFleetSweepOnce,
+      readActiveFleetPullStallAlerts, resolveGoalDrainPullRecovery, goalDrainPullConditionKey } =
+      await import('../system-health/goal-drain-fleet-watchdog');
     const at = 1_900_000_000_000;
     const openedKeys: string[] = [], resolvedKeys: string[] = [], open = new Set<string>();
     const fleet = { workspaceId: 'fixture', fleetSlug: 'drain' };
@@ -1692,7 +1693,12 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
     } };
     await runGoalDrainFleetSweepOnce(null as unknown as import('postgres').Sql, {
       flagEnabled: async () => true, readGoals: async () => ({ goals: [], holders: [] }), rail,
-      readPullStallAlerts: async () => [{ ...fleet, liveMemberIds: ['worker'], stalledForMs: 900_000 }],
+      readPullStallAlerts: async () => [{
+        ...fleet,
+        liveMemberIds: ['worker'],
+        observationWindowMs: GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS,
+        oldestLiveMemberTenureMs: GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS + 1,
+      }],
       escalatePullStall: async () => { expect(open.has(key)).toBe(true); },
     });
     expect(open.size).toBe(1);

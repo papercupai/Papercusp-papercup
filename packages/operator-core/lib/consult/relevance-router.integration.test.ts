@@ -697,16 +697,24 @@ describe('routeConsult — routing + blend', () => {
   });
 
   it('requires supported evidence for every resolved anchor and fails closed on incomplete documents', async () => {
-    const owners = ['manual-anchor-complete', 'manual-anchor-partial'];
+    const owners = ['manual-anchor-complete', 'manual-anchor-partial', 'manual-anchor-unrelated'];
     const subjectRefs = ['src/billing.ts', 'src/backup.ts'];
     const question = 'Review the public manual source anchors for billing and backup behavior.';
     try {
-      await insertTurn(owners[0]!, 0.1, DAY, { text: 'Reviewed billing reconciliation and backup recovery in production.' });
-      await insertTurn(owners[1]!, 0.12, DAY, { text: 'Reviewed billing reconciliation in production.' });
+      await insertTurn(owners[0]!, 0.1, DAY, {
+        text: 'Reviewed src/billing.ts reconciliation and src/backup.ts recovery in production.',
+      });
+      await insertTurn(owners[1]!, 0.12, DAY, { text: 'Reviewed src/billing.ts billing reconciliation in production.' });
+      await insertTurn(owners[2]!, 0.11, DAY, {
+        text: 'Reviewed scorecards emit, Vite, and stale runtime cache; no hosted launch procedure.',
+      });
 
-      const scoreCoverage = async (subject: string, texts: string[]) => {
-        const topic = subject === 'src/billing.ts' ? 'billing' : 'backup';
-        return texts.map(text => text.includes(topic) ? 0.95 : 0.1);
+      const scoredTexts: string[] = [];
+      const scoreCoverage = async (_subject: string, texts: string[]) => {
+        scoredTexts.push(...texts);
+        // A semantic scorer can return a high score for an unrelated passage;
+        // explicit refs must first be anchored in the actual transcript text.
+        return texts.map(() => 0.95);
       };
       const covered = await routeConsult({ ...baseParams, question, subjectRefs }, deps(0, {
         scoreSubjectEvidence: scoreCoverage,
@@ -714,16 +722,31 @@ describe('routeConsult — routing + blend', () => {
 
       expect(covered.snapshot.subjectRefs).toEqual(subjectRefs);
       expect(covered.qualified.map(candidate => candidate.ownerId)).toEqual(['manual-anchor-complete']);
-      expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-complete')?.subjectEvidenceCoverage)
-        .toMatchObject({ status: 'supported', required: subjectRefs, unresolved: [] });
+      const complete = covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-complete')?.subjectEvidenceCoverage;
+      expect(complete).toMatchObject({
+        status: 'supported',
+        required: subjectRefs,
+        unresolved: [],
+        evidence: [
+          { subject: 'src/billing.ts', status: 'supported', anchor: { ref: 'src/billing.ts', exact: true } },
+          { subject: 'src/backup.ts', status: 'supported', anchor: { ref: 'src/backup.ts', exact: true } },
+        ],
+      });
+      expect(complete?.evidence.every(row => row.anchor?.sessionId && Number.isInteger(row.anchor.turnIdx))).toBe(true);
       expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-partial')?.subjectEvidenceCoverage)
         .toMatchObject({
-          status: 'mismatch',
+          status: 'unmeasured',
           evidence: [
             { subject: 'src/billing.ts', status: 'supported' },
-            { subject: 'src/backup.ts', status: 'mismatch' },
+            { subject: 'src/backup.ts', status: 'unmeasured', score: null },
           ],
         });
+      expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-unrelated')?.subjectEvidenceCoverage)
+        .toMatchObject({
+          status: 'unmeasured',
+          evidence: subjectRefs.map(subject => ({ subject, status: 'unmeasured', score: null })),
+        });
+      expect(scoredTexts.some(text => text.includes('scorecards emit'))).toBe(false);
 
       const incomplete = await routeConsult({
         ...baseParams,

@@ -1162,12 +1162,29 @@ describe('evaluatePlanSpecQuality', () => {
     });
 
     expect(result.ratings['atomic-observable-behavior'].rating).toBe('pass');
-    expect(result.details.atomicityDetectorControls).toEqual([
-      expect.objectContaining({ expected: 'compound', actual: 'compound', passed: true }),
-      expect.objectContaining({ expected: 'compound', actual: 'compound', passed: true }),
-      expect.objectContaining({ expected: 'atomic', actual: 'atomic', passed: true }),
-      expect.objectContaining({ expected: 'atomic', actual: 'atomic', passed: true }),
-    ]);
+    expect(result.details.atomicityDetectorControls).toHaveLength(8);
+    expect(result.details.atomicityDetectorControls.every((control) => control.passed)).toBe(true);
+    expect(result.details.atomicityDetectorControls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        behavior: 'Each original parked-agent request has exactly one evidence-based disposition and never counts queued or delivered as pickup.',
+        expected: 'compound', actual: 'compound', passed: true,
+      }),
+      expect.objectContaining({
+        behavior: 'A current-build dogfood run completes the parked-agent audit through coord:roster view=audit without caller SQL and records complete coverage.',
+        expected: 'compound', actual: 'compound', passed: true,
+      }),
+      expect.objectContaining({
+        behavior: 'Each original parked-agent request has exactly one evidence-based disposition.',
+        expected: 'atomic', actual: 'atomic', passed: true,
+      }),
+      expect.objectContaining({
+        behavior: 'A current-build dogfood run completes the parked-agent audit through coord:roster view=audit without caller SQL.',
+        expected: 'atomic', actual: 'atomic', passed: true,
+      }),
+    ]));
+    expect(result.ratings['atomic-observable-behavior'].evidence).toContain(
+      '4/4 compound counterexamples rejected; 4/4 single-outcome controls accepted',
+    );
     expect(result.ratings['atomic-observable-behavior'].evidence).toContain('not a proof of arbitrary natural-language semantics');
   });
 

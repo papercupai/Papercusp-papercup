@@ -785,15 +785,22 @@ export function evaluatePlanSpecQuality(input: {
   const atomicityDetectorControls = [
     { behavior: 'The price sheet reproduces measured costs, separates platform margin and specifies an allowance.', expected: 'compound' as const },
     { behavior: 'The customer journey satisfies the security and operating promises.', expected: 'compound' as const },
+    { behavior: 'Each original parked-agent request has exactly one evidence-based disposition and never counts queued or delivered as pickup.', expected: 'compound' as const },
+    { behavior: 'A current-build dogfood run completes the parked-agent audit through coord:roster view=audit without caller SQL and records complete coverage.', expected: 'compound' as const },
     { behavior: 'The price sheet reproduces the measured cost for each workload case.', expected: 'atomic' as const },
     { behavior: 'The customer journey stops when the inference allowance is exhausted.', expected: 'atomic' as const },
+    { behavior: 'Each original parked-agent request has exactly one evidence-based disposition.', expected: 'atomic' as const },
+    { behavior: 'A current-build dogfood run completes the parked-agent audit through coord:roster view=audit without caller SQL.', expected: 'atomic' as const },
   ].map((control) => {
     const actual = specBehaviorNonAtomicReason(control.behavior) === null ? 'atomic' as const : 'compound' as const;
     return { ...control, actual, passed: actual === control.expected };
   });
   const atomicityControlsPassed = atomicityDetectorControls.every((control) => control.passed);
+  const compoundControls = atomicityDetectorControls.filter((control) => control.expected === 'compound');
+  const singleOutcomeControls = atomicityDetectorControls.filter((control) => control.expected === 'atomic');
   const atomicityControlEvidence =
-    ' Detector controls: two compound counterexamples rejected and two single-outcome controls accepted; see details.atomicityDetectorControls.' +
+    ` Detector controls: ${compoundControls.filter((control) => control.passed).length}/${compoundControls.length} compound counterexamples rejected; ` +
+    `${singleOutcomeControls.filter((control) => control.passed).length}/${singleOutcomeControls.length} single-outcome controls accepted; see details.atomicityDetectorControls.` +
     ' Coverage is structural pattern detection, not a proof of arbitrary natural-language semantics.';
   ratings['atomic-observable-behavior'] =
     behavioral.length === 0

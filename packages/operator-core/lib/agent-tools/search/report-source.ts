@@ -61,17 +61,40 @@ export function createReportSearchSource(viewer: ReportViewer = {}, audience: Kn
       const leg = await (p.phaseTimer
         ? p.phaseTimer.measure('bm25-flag-index-availability', makeLeg)
         : makeLeg());
-      const headlineQuery = headlineTsQuery(p.sql, leg.engine, p.query);
+      const highlightColumn = p.wantHighlight === false
+        ? p.sql`''::text AS highlight`
+        : p.sql`ts_headline('english', body_md, ${headlineTsQuery(p.sql, leg.engine, p.query)},
+          'StartSel=<mark>,StopSel=</mark>,MaxWords=35,MinWords=15,MaxFragments=2') AS highlight`;
       const selectRows = () => p.sql`SELECT report_id, title, summary, body_md, lineage_id, origin_harness_slug, published_at,
         (${leg.score})::float8 AS rank,
-        ts_headline('english', body_md, ${headlineQuery},
-          'StartSel=<mark>,StopSel=</mark>,MaxWords=35,MinWords=15,MaxFragments=2') AS highlight
+        ${highlightColumn}
         FROM harness_shared.report_library WHERE report_id IN (${latest(p)})
           AND ${leg.match} ORDER BY ${leg.order}, report_id LIMIT ${p.limit}`;
       const rows = await (p.phaseTimer
         ? p.phaseTimer.measure('report-lexical-sql', selectRows)
         : selectRows());
       return hits(rows as unknown as HitRow[], 'lexical');
+    },
+    async hydrateHighlights(p, sourceIds) {
+      if (sourceIds.length === 0 || await reportsLibraryDisabled()) return new Map();
+      const leg = await lexicalLeg(p.sql, {
+        table: 'report_library', query: p.query,
+        legacy: {
+          score: p.sql`ts_rank_cd(search_tsv, plainto_tsquery('english', ${p.query}))`,
+          match: p.sql`search_tsv @@ plainto_tsquery('english', ${p.query})`,
+        },
+      });
+      const headlineQuery = headlineTsQuery(p.sql, leg.engine, p.query);
+      const rows = await p.sql`SELECT report_id,
+          ts_headline('english', body_md, ${headlineQuery},
+            'StartSel=<mark>,StopSel=</mark>,MaxWords=35,MinWords=15,MaxFragments=2') AS highlight
+        FROM harness_shared.report_library
+        WHERE workspace_id = ${p.workspaceId}
+          AND report_id = ANY(${sourceIds}::text[])
+          AND report_id IN (${latest(p)})
+          AND ${leg.match}
+        ORDER BY report_id` as unknown as Array<{ report_id: string; highlight: string }>;
+      return new Map(rows.map(row => [row.report_id, row.highlight]));
     },
     async embedding(p) {
       if (await reportsLibraryDisabled()) return [];

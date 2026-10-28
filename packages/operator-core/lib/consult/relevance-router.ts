@@ -167,7 +167,12 @@ export interface RoutingCandidate {
   subjectEvidenceCoverage?: {
     status: 'supported' | 'mismatch' | 'unmeasured';
     required: string[];
-    evidence: Array<{ subject: string; status: 'supported' | 'mismatch' | 'unmeasured'; score: number | null }>;
+    evidence: Array<{
+      subject: string;
+      status: 'supported' | 'mismatch' | 'unmeasured';
+      score: number | null;
+      anchor?: { ref: string; sessionId: string; turnIdx: number; exact: boolean };
+    }>;
     unresolved: string[];
   };
   /**
@@ -681,6 +686,16 @@ function exactSubjectMentionPattern(subjectRef: string): string {
   return '(^|[^[:alnum:]_.-])' + escaped + '($|[^[:alnum:]_.-])';
 }
 
+/** Match one complete subject ref in a transcript passage, using the same token
+ * boundaries as the SQL filter. Similarity alone is not an inspectable anchor
+ * for an explicitly requested source. */
+function hasExactSubjectMention(text: string, subjectRef: string): boolean {
+  const escaped = subjectRef.replace(/[.*+?^$(){}|[\]\\]/g, '\\$&');
+  const boundary = '(^|[^\\p{L}\\p{N}_.-])';
+  const suffix = '($|[^\\p{L}\\p{N}_.-])';
+  return new RegExp(boundary + escaped + suffix, 'iu').test(text);
+}
+
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
 
 /**
@@ -1001,6 +1016,7 @@ async function routeConsultCore(
   const evidencePerOwner = params.evidencePerOwner ?? 3;
   const subjectRef = params.subjectRef?.trim() || null;
   const subjectPattern = subjectRef ? exactSubjectMentionPattern(subjectRef) : null;
+  const explicitSubjectRefs = params.subjectRefs !== undefined;
   const inferredSubject = expertiseSubject(params.question);
   // Natural questions still require problem-specific evidence. Reducing one to
   // generic procedural words, or skipping validation when no code is named,
@@ -1365,7 +1381,12 @@ async function routeConsultCore(
     });
     const boundedOwners = eligible.slice(0, SUBJECT_EVIDENCE_OWNER_LIMIT);
     const passages = boundedOwners.flatMap(ownerId => turnRows.filter(r => r.owner === ownerId)
-      .slice(0, Math.min(evidencePerOwner, 3)).map(r => ({ ownerId, text: r.subjectText })));
+      .slice(0, Math.min(evidencePerOwner, 3)).map(r => ({
+        ownerId,
+        sessionId: r.session_id,
+        turnIdx: r.turn_idx,
+        text: r.subjectText,
+      })));
     const usable = passages.filter(p => typeof p.text === 'string' && p.text.trim());
     if (usable.length && subjectRefs.length) {
       try {
@@ -1373,13 +1394,29 @@ async function routeConsultCore(
         const { value: scoreBySubject } = await measure('evidence', () => withDeadlineFallback((async () => {
           const all: Array<Array<number | null>> = [];
           for (const subject of subjectRefs) {
+            const anchorRef = explicitSubjectRefs ? subject : subjectRef;
+            const passageIndexes = usable.flatMap((passage, index) =>
+              !anchorRef || hasExactSubjectMention(passage.text, anchorRef) ? [index] : []);
+            if (passageIndexes.length === 0) {
+              all.push(usable.map(() => null));
+              continue;
+            }
             if (Date.now() >= deadline) {
               all.push(usable.map(() => null));
               continue;
             }
-            const scores = await (deps.scoreSubjectEvidence ?? scoreSubjectEvidence)(subject, usable.map(p => p.text), deadline)
-              .catch(() => usable.map(() => null));
-            all.push(scores.length === usable.length ? scores : usable.map(() => null));
+            const anchoredTexts = passageIndexes.map(index => usable[index]!.text);
+            const scores = await (deps.scoreSubjectEvidence ?? scoreSubjectEvidence)(subject, anchoredTexts, deadline)
+              .catch(() => anchoredTexts.map(() => null));
+            if (scores.length !== passageIndexes.length) {
+              all.push(usable.map(() => null));
+              continue;
+            }
+            const aligned = usable.map(() => null as number | null);
+            passageIndexes.forEach((passageIndex, scoreIndex) => {
+              aligned[passageIndex] = scores[scoreIndex] ?? null;
+            });
+            all.push(aligned);
           }
           return all;
         })(), SUBJECT_EVIDENCE_TIMEOUT_MS, () => subjectRefs.map(() => usable.map(() => null))));
@@ -1388,10 +1425,25 @@ async function routeConsultCore(
             const scores = scoreBySubject[subjectIndex] ?? [];
             const observed = usable.flatMap((p, passageIndex) => p.ownerId === ownerId &&
               typeof scores[passageIndex] === 'number' && Number.isFinite(scores[passageIndex]) &&
-              scores[passageIndex]! >= 0 && scores[passageIndex]! <= 1 ? [scores[passageIndex] as number] : []);
+              scores[passageIndex]! >= 0 && scores[passageIndex]! <= 1
+              ? [{
+                  score: scores[passageIndex] as number,
+                  anchor: {
+                    ref: explicitSubjectRefs ? subject : subjectRef ?? subject,
+                    sessionId: p.sessionId,
+                    turnIdx: p.turnIdx,
+                    exact: explicitSubjectRefs || subjectRef !== null,
+                  },
+                }]
+              : []);
             if (!observed.length) return { subject, status: 'unmeasured' as const, score: null };
-            const score = Math.max(...observed);
-            return { subject, status: score >= SUBJECT_EVIDENCE_MIN_SCORE ? 'supported' as const : 'mismatch' as const, score };
+            const best = observed.reduce((a, b) => b.score > a.score ? b : a);
+            return {
+              subject,
+              status: best.score >= SUBJECT_EVIDENCE_MIN_SCORE ? 'supported' as const : 'mismatch' as const,
+              score: best.score,
+              anchor: best.anchor,
+            };
           });
           const status = unresolvedSubjectRefs.length || evidence.some(row => row.status === 'unmeasured')
             ? 'unmeasured'

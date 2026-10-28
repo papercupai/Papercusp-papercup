@@ -27,7 +27,7 @@ interface AuditSummary {
   decisions: Decision[];
 }
 interface AuditModule {
-  auditTree(input: { treeRoot: string; lockRoot: string; lockfiles: string[] }): AuditSummary;
+  auditTree(input: { treeRoot: string; lockRoot: string; lockfiles: string[]; installedTrees?: string[] }): AuditSummary;
   lockfilesFromManifest(text: string): string[];
 }
 let mod: AuditModule;
@@ -77,6 +77,23 @@ function sharpRoot(): string {
 }
 
 describe('auditTree', () => {
+  it('rejects extra packages in a partially locked template tree without dropping its locked packages', () => {
+    const root = makeRoot(), tree = 'apps/fixture/template-kit/node_modules';
+    writeJson(join(root, 'package-lock.json'), lock({}));
+    writeJson(join(root, 'apps/fixture/package-lock.json'), lock({
+      'template-kit/node_modules/@types/node': { version: '22.0.0' },
+    }));
+    install(root, `${tree}/@types/node`, '22.0.0');
+    install(root, `${tree}/@jridgewell/sourcemap-codec`, '1.6.0');
+    const input = { treeRoot: root, lockRoot: root,
+      lockfiles: ['package-lock.json', 'apps/fixture/package-lock.json'], installedTrees: [tree] };
+    expect(mod.auditTree(input).defects).toEqual([
+      { kind: 'unlocked', path: `${tree}/@jridgewell/sourcemap-codec`, detail: 'installed package has no input lock entry' },
+    ]);
+    rmSync(join(root, tree, '@jridgewell'), { recursive: true });
+    expect(mod.auditTree(input).defects).toEqual([]);
+  });
+
   it.each([
     ['node_modules/better-sqlite3', 'Could not locate the bindings file'],
     ['packages/private/node_modules/better-sqlite3', 'NODE_MODULE_VERSION mismatch'],

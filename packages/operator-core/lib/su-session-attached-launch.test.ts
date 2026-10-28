@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   resume: vi.fn(), rehydrate: vi.fn(), registry: vi.fn(), owner: vi.fn(), recordOwner: vi.fn(),
   callOwner: vi.fn(), forwardable: vi.fn(),
   forkParent: vi.fn(), nativeHandle: vi.fn(),
+  retainPrincipal: vi.fn(),
 }));
 // WI-10003879: the cross-worker relay is proven for real in
 // su-session-owner-routing.integration.test.ts; here only the launch's
@@ -38,6 +39,7 @@ vi.mock('./su-session-persistence', () => ({ readDurableSuSession: mocks.read, b
   readSuSessionHostOwner: mocks.owner, recordSuSessionHostOwner: mocks.recordOwner }));
 vi.mock('./su-session-claude-engine', () => ({ startClaudeSuEngine: mocks.engine }));
 vi.mock('./su-session-rpc-engine', () => ({ startSuRpcEngine: mocks.rpc }));
+vi.mock('./auth/require-principal', () => ({ retainRequestPrincipal: mocks.retainPrincipal }));
 vi.mock('./endpoint-route/routes/agent-mcp/bootstrap-su', () => ({ bootstrapSu: { handler: mocks.bootstrap } }));
 vi.mock('./harness-registry', () => ({ loadHarnessRegistry: mocks.registry }));
 // P-009's durable client lease is covered by su-session-client-lease.test.ts
@@ -83,6 +85,16 @@ afterEach(() => {
 });
 
 describe('attached launch authority', () => {
+  it('passes only a live request principal resolver to a fresh Codex engine', async () => {
+    const resolver = vi.fn(async () => null), actual = request();
+    mocks.retainPrincipal.mockResolvedValue(resolver);
+    mocks.bootstrap.mockImplementation(async () => Response.json({ ...boot, agent: 'codex', nativeSessionId: null }));
+    expect((await launchAttachedSuSession(actual, { ...input, agent: 'codex', agent_chat_id: 'principal-fresh' })).ok).toBe(true);
+    expect(mocks.retainPrincipal).toHaveBeenCalledExactlyOnceWith(actual.headers, 'workspace');
+    expect(mocks.rpc.mock.calls.at(-1)![2].resolveRequestPrincipal).toBe(resolver);
+    expect(JSON.stringify(mocks.rpc.mock.calls.at(-1)![2])).not.toContain('fixture-principal');
+  });
+
   it('does not coalesce a fork request into a different in-flight launch', async () => {
     let release!: (value: unknown) => void;
     mocks.chat.mockReturnValueOnce(new Promise(done => { release = done; }));

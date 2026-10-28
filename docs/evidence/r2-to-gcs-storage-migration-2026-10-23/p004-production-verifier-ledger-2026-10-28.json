@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P004 completed deployed Worker multipart, private and finalization verification",
+  "framework": "node",
+  "command": [
+    "timeout",
+    "150s",
+    "node",
+    "--import",
+    "tsx",
+    "--input-type=module"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-28T21:57:03.641Z",
+  "finishedAt": "2026-10-28T21:57:11.534Z",
+  "summary": "Register the already completed fourteen-check production run. This artifact does not execute it again. Exact original receipt, source hashes, runtime identities and cleanup remain authoritative.",
+  "assertions": [
+    {
+      "id": "unique-destination-absent",
+      "passed": true,
+      "evidence": "{\"name\":\"unique-destination-absent\",\"ok\":true}"
+    },
+    {
+      "id": "anonymous-write-denied",
+      "passed": true,
+      "evidence": "{\"name\":\"anonymous-write-denied\",\"ok\":true,\"status\":401}"
+    },
+    {
+      "id": "production-multipart-created",
+      "passed": true,
+      "evidence": "{\"name\":\"production-multipart-created\",\"ok\":true,\"status\":201}"
+    },
+    {
+      "id": "operation-state-durable",
+      "passed": true,
+      "evidence": "{\"name\":\"operation-state-durable\",\"ok\":true,\"status\":200}"
+    },
+    {
+      "id": "reconnect-resumes-original-operation",
+      "passed": true,
+      "evidence": "{\"name\":\"reconnect-resumes-original-operation\",\"ok\":true,\"status\":200}"
+    },
+    {
+      "id": "unfinalized-public-read-before-upload-denied",
+      "passed": true,
+      "evidence": "{\"name\":\"unfinalized-public-read-before-upload-denied\",\"ok\":true,\"status\":404}"
+    },
+    {
+      "id": "declared-part-uploaded",
+      "passed": true,
+      "evidence": "{\"name\":\"declared-part-uploaded\",\"ok\":true,\"status\":200}"
+    },
+    {
+      "id": "multipart-complete",
+      "passed": true,
+      "evidence": "{\"name\":\"multipart-complete\",\"ok\":true,\"status\":201}"
+    },
+    {
+      "id": "completed-object-metadata-readable",
+      "passed": true,
+      "evidence": "{\"name\":\"completed-object-metadata-readable\",\"ok\":true,\"status\":200}"
+    },
+    {
+      "id": "generation-pinned-exact-bytes",
+      "passed": true,
+      "evidence": "{\"name\":\"generation-pinned-exact-bytes\",\"ok\":true,\"generation\":\"1793224629043977\",\"sha256\":\"32ca78f18750923d787925f72139b7446f93efc9615b1f70eeb95bb01416e6e9\",\"sizeBytes\":70}"
+    },
+    {
+      "id": "completion-replay-retains-generation",
+      "passed": true,
+      "evidence": "{\"name\":\"completion-replay-retains-generation\",\"ok\":true,\"status\":200,\"generation\":\"1793224629043977\"}"
+    },
+    {
+      "id": "unfinalized-public-read-after-completion-denied",
+      "passed": true,
+      "evidence": "{\"name\":\"unfinalized-public-read-after-completion-denied\",\"ok\":true,\"status\":404}"
+    },
+    {
+      "id": "raw-private-bucket-anonymous-denied",
+      "passed": true,
+      "evidence": "{\"name\":\"raw-private-bucket-anonymous-denied\",\"ok\":true,\"status\":403}"
+    },
+    {
+      "id": "existing-finalized-public-positive-control",
+      "passed": true,
+      "evidence": "{\"name\":\"existing-finalized-public-positive-control\",\"ok\":true}"
+    },
+    {
+      "id": "generation-fenced-cleanup-complete",
+      "passed": true,
+      "evidence": "{\"deleted\":[{\"key\":\"__artifact_uploads/8bdd99d0-de56-4a44-86a4-826e9a975785/part-1\",\"generation\":\"1793224627815906\",\"status\":204},{\"key\":\"__artifact_uploads/8bdd99d0-de56-4a44-86a4-826e9a975785/session\",\"generation\":\"1793224625291959\",\"status\":204},{\"key\":\"artifacts/workspace-host/sha256/32ca78f18750923d787925f72139b7446f93efc9615b1f70eeb95bb01416e6e9/.multipart/f1637ed4-4aa2-4f74-918f-4f1c1553eeaa/parts/1.json\",\"generation\":\"1793224628034316\",\"status\":204},{\"key\":\"artifacts/workspace-host/sha256/32ca78f18750923d787925f72139b7446f93efc9615b1f70eeb95bb01416e6e9/server.tgz\",\"generation\":\"1793224629043977\",\"status\":204}],\"complete\":true,\"remaining\":[],\"providerRemaining\":[]}"
+    },
+    {
+      "id": "source-stable-through-run",
+      "passed": true,
+      "evidence": "{\"scripts/lib/workspace-host-gcs-publication.mjs\":\"57fb36c16ee49674c19322295ff880727b46f714e9be0f977bdc07c06c86e8c6\",\"scripts/lib/workspace-host-gcs-publication.d.mts\":\"04831f5f06a6811c5805a71500098685c6deec7cdde473d231f8917dd62f6456\",\"scripts/publish-workspace-host-artifacts.test.ts\":\"479fb8a301b4dd9d1b932a990fc4614b35fb76f482fd00a66821b029da437d28\",\"packages/operator-core/lib/remote-runtime-identity.ts\":\"bce5fe298e733b4c3a8d3f8b9957eb6285854a3cb2f40a99793d1f9de4a94f14\"}"
+    },
+    {
+      "id": "worker-identity-stable-through-run",
+      "passed": true,
+      "evidence": "cloudflare-worker:f896982ea2f6d507e4f29eeecbd26e94/papercusp-cupboard before=d3629e7844c8dda7bfef030946753469d0850e7d05b646dc1c5e970b89ffacb9 after=d3629e7844c8dda7bfef030946753469d0850e7d05b646dc1c5e970b89ffacb9"
+    }
+  ],
+  "originalReceipt": {
+    "path": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p004-production-verifier-live-current-2026-10-28.json",
+    "sha256": "635bafab68bba1eaa9074436ba31e81657662ccc3de51ba70626ceb088774d2a"
+  },
+  "workItem": "WI-6554700010025563",
+  "runtimeUnit": "cloudflare-worker:f896982ea2f6d507e4f29eeecbd26e94/papercusp-cupboard",
+  "instrument": {
+    "path": "scripts/lib/workspace-host-gcs-publication.mjs",
+    "testPath": "scripts/publish-workspace-host-artifacts.test.ts",
+    "export": "verifyGcsWorkspaceHostUpload"
+  },
+  "invocationProvenance": {
+    "session": "01a18449-0527-7bd3-a9c4-52bdfcdd9182",
+    "toolCallId": "call_b832606d031b42ee9b1b83691d428f03",
+    "submittedAt": "2026-10-28T21:56:55.087Z",
+    "stdinDescription": "Module imports verifyGcsWorkspaceHostUpload and measureRemoteRuntimeIdentity; credentials are read in memory from gh/gcloud; recordOperation writes the exact journal before mutation. Full original stdin survives in the named native transcript."
+  },
+  "scope": "Current maintained verifier on deployed Cupboard private multipart/replay/finalization boundary; exact generation-pinned bytes and cleanup. Excludes historical R2 census, publish-worker archive deployment, full migration and P544 trial. Local runtime observations are receipts, not substitutes for independently server-measured runtimeUnits."
+}

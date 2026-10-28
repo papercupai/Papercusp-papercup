@@ -2263,6 +2263,23 @@ snapshot_committed_operator_source() {
 }
 verifier_run_step operator-source-snapshot snapshot_operator_source || { snapshot_rc=$?; cleanup_operator_source_snapshot; exit "$snapshot_rc"; }
 
+verify_frozen_native_cli() {
+  # A source-lockfile selector may describe a root-only install. The native
+  # shell also needs the standalone desktop install; never satisfy it with
+  # an ambient CLI or discover its absence after building the SPA and host.
+  local cli="$DESKTOP_DIR/node_modules/.bin/tauri" cli_rc=0
+  if [ ! -x "$cli" ]; then
+    echo "VERIFY_TAURI_NATIVE_CLI_MISSING: selected desktop dependency snapshot lacks an executable Tauri CLI: $cli" >&2
+    return 74
+  fi
+  "$cli" --version || cli_rc=$?
+  if [ "$cli_rc" -ne 0 ]; then
+    echo "VERIFY_TAURI_NATIVE_CLI_UNUSABLE: selected desktop Tauri CLI version probe failed (exit=$cli_rc): $cli" >&2
+  fi
+  return "$cli_rc"
+}
+verifier_run_step verifier-native-cli verify_frozen_native_cli || { native_cli_rc=$?; cleanup_operator_source_snapshot; exit "$native_cli_rc"; }
+
 # EI-22616267024724225: never boot the frozen operator through tsx's runtime
 # loader. bundle-host.sh documents the failure mechanism: every module
 # resolution becomes a synchronous Atomics.wait RPC, and its measured tail has

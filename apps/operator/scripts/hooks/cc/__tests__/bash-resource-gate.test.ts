@@ -6330,6 +6330,25 @@ describe('shell-write guard distinguishes executable writes from data and known 
     expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
   });
 
+  it('still denies mkdtempSync when TMPDIR resolves inside the canonical tree', () => {
+    const command =
+      "node -e \"const fs=require('node:fs'); const os=require('node:os'); const path=require('node:path'); " +
+      "const dir=fs.mkdtempSync(path.join(os.tmpdir(),'pc-evidence-')); " +
+      "fs.writeFileSync(path.join(dir,'artifact.json'),'{}')\"";
+    expectInterpDeny(
+      runGate(bashCmd(command, { cwd: CANON }), { ...CANON_ENV, TMPDIR: CANON }),
+    );
+  });
+
+  it('fails closed when the command overrides TMPDIR into the canonical tree', () => {
+    const command =
+      'TMPDIR=' + JSON.stringify(CANON) +
+      " node -e \"const fs=require('node:fs'); const os=require('node:os'); const path=require('node:path'); " +
+      "const dir=fs.mkdtempSync(path.join(os.tmpdir(),'pc-evidence-')); " +
+      "fs.writeFileSync(path.join(dir,'artifact.json'),'{}')\"";
+    expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
   it('fails closed for the same basename under an unresolved in-tree temporary directory', () => {
     const command =
       `node -e "const fs=require('node:fs'); const path=require('node:path'); ` +

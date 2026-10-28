@@ -1114,7 +1114,7 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     expect(r.terminal_evidence).toMatchObject({ candidate: 'abc12345', observed_at_ms: oldLogAt, exit_status: '137' });
   });
 
-  it('reports active:true with started_at, a bounded eta_sec, and the parsed candidate when the unit is active', () => {
+  it('reports active:true with started_at, a null no-ceiling eta_sec, and the parsed candidate when the unit is active', () => {
     const startedAt = new Date(Date.now() - 5 * 60_000).toISOString(); // started 5 min ago
     const execFn = vi.fn((cmd: string, args: string[]) => {
       if (cmd === 'systemctl') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt })();
@@ -1135,8 +1135,9 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     expect(r.current_candidate).toBe('98817077fd79af9dfee00076a1c6e90445d268af');
     expect(r.candidate_stale).toBe(false);
     expect(r.started_at).toBe(startedAt);
-    expect(r.eta_sec).toBeGreaterThan(0);
-    expect(r.eta_sec).toBeLessThanOrEqual(CHECKPOINT_MAX_RUNTIME_SEC);
+    // WI-6554700010042457 phase 1b: no run-level wall clock exists, so there is no countdown.
+    expect(r.eta_sec).toBeNull();
+    expect(r.eta_basis).toBe('no-ceiling');
     expect(readLogHead).toHaveBeenCalledWith(`/tmp/${checkpointUnitForRoot('/tree')}.log`);
   });
 
@@ -1503,7 +1504,8 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     expect(r.candidate_stale).toBe(false); // never replaceable — EI-11667 safety, regardless of resolution
     expect(r.started_at).toBe(startedAt);
     expect(r.elapsed_sec).toBeGreaterThan(0);
-    expect(r.eta_sec).toBeGreaterThan(0);
+    expect(r.eta_sec).toBeNull();
+    expect(r.eta_basis).toBe('no-ceiling');
     expect(pidAlive).toHaveBeenCalledWith(4242);
   });
 

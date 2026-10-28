@@ -1803,7 +1803,7 @@ async function writeGitSyncStrandEscalation(
 }
 
 /**
- * EI-18: write/refresh the `git-sync-error` escalation (repeated push failures and/or
+ * EI-18: write/refresh the `git-sync-error` escalation (repeated git-sync errors and/or
  * oversized-file exclusions). The (harness_slug, phase) row is SHARED with the
  * conflict escalation — the conditional DO UPDATE makes this a strict non-clobber:
  * an open `git-sync-conflict` (which a merge-resolver may be reading) always wins.
@@ -1831,7 +1831,9 @@ async function writeGitSyncErrorEscalation(
       `git-sync needs attention: ${info.reasons.join(' + ')}` +
       (info.reasons.includes('push-failure')
         ? ` — push failed ${info.consecutiveErrorTicks} consecutive ticks (commits NOT reaching origin)`
-        : '') +
+        : info.reasons.includes('sync-failure')
+          ? ` — ${info.consecutiveErrorTicks} consecutive git-sync error ticks; inspect last_error for the failing leg`
+          : '') +
       (info.oversized.length > 0
         ? ` — ${info.oversized.length} oversized file(s) excluded from auto-commit (gitignore or remove them)`
         : ''),
@@ -4667,7 +4669,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
 
   // P-003: count any tick whose errors[] is non-empty — a sibling push failure that
   // co-occurs with a conflict produces status 'conflict' (worst-outcome), which used
-  // to RESET this counter to 0 every tick and defer the EI-18 push-failure escalation
+  // to RESET this counter to 0 every tick and defer the EI-18 sync-error escalation
   // indefinitely. The error LIST drives the counter now, not the worst status.
   const tickErrors = 'errors' in outcome ? outcome.errors : [];
   // The local guard ran while this fire held its git-sync lease. Re-check once

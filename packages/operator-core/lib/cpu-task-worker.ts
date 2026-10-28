@@ -353,6 +353,18 @@ function workerPath(): string {
   return resolve(dirname(here), 'cpu-task-worker.script.mjs');
 }
 
+function workerExecArgv(): string[] {
+  // File-based workers cannot inherit flags that describe the parent's stdin
+  // entry or process-wide report handling. Keep this policy aligned with the
+  // event-loop sentinel worker host.
+  const parentOnlyValueFlags = ['--input-type', '--report-directory', '--report-filename'];
+  return process.execArgv.filter((arg, i, args) =>
+    !parentOnlyValueFlags.some(flag =>
+      arg === flag || arg.startsWith(`${flag}=`) || (i > 0 && args[i - 1] === flag),
+    ) && arg !== '--report-on-fatalerror' && arg !== '--no-report-on-fatalerror',
+  );
+}
+
 /**
  * Hold the event loop open exactly while a request is in flight.
  *
@@ -396,7 +408,7 @@ function ensureWorker(): Promise<void> {
 
   _workerReady = new Promise<void>((resolveReady, rejectReady) => {
     try {
-      _worker = new Worker(workerPath());
+      _worker = new Worker(workerPath(), { execArgv: workerExecArgv() });
       // A fresh Worker is ref'd by libuv until we say otherwise.
       _workerRefd = true;
     } catch (err) {

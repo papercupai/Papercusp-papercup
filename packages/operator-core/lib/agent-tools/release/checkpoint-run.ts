@@ -21,9 +21,10 @@
  * as a transient failure and retry (or manually intervene), which starved the gate of a verdict.
  * Now the pre-launch check returns a STRUCTURED `already_running` reply (unit/candidate/
  * started_at/eta_sec/eta_basis) so a caller can tell "wait for it" from "try again" — pass
- * `force:true` to launch anyway. `eta_sec` is null with `eta_basis:'delivery-phase'`: the suite
- * is done, but no bounded verdict-duration estimate exists, so the full-suite backstop remainder
- * must not be presented as time to verdict.
+ * `force:true` to launch anyway. `eta_sec` is always null (WI-6554700010042457 phase 1b): the gate
+ * run has no run-level wall clock, so no bounded time-to-verdict exists. `eta_basis` says why:
+ * 'no-ceiling' while the suite runs, 'delivery-phase' once it is delivering its verdict. Judge a
+ * live run by current_phase / current_leg / progress_at.
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';

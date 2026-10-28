@@ -1836,7 +1836,8 @@ test("verifyDepsExtracted passes the selected npm environment to bounded repairs
   }
 });
 
-test("verifyDepsExtracted repairs a nested workspace lock tree after the root reify", async () => {
+for (const ignoredNestedLock of [false, true]) {
+test(`verifyDepsExtracted ${ignoredNestedLock ? "ignores an untracked ignored nested lock" : "repairs a nested workspace lock tree after the root reify"}`, async () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-nested-lock-tree-"));
   const workspaceRel = "libs/papercusp/packages/embedded-postgres-server";
   const workspaceRoot = join(repoRoot, workspaceRel);
@@ -1887,6 +1888,10 @@ test("verifyDepsExtracted repairs a nested workspace lock tree after the root re
   };
   writeJson(join(repoRoot, "package-lock.json"), rootLock);
   writeJson(join(workspaceRoot, "package-lock.json"), nestedLock);
+  if (ignoredNestedLock) {
+    assert.equal(spawnSync("git", ["init", "--quiet"], { cwd: repoRoot }).status, 0);
+    writeFileSync(join(repoRoot, ".gitignore"), `${workspaceRel}/package-lock.json\n`);
+  }
   writeJson(join(repoRoot, "node_modules/nested-dep/package.json"), { name: "nested-dep", version: "2.0.0" });
   const rootLockBefore = readFileSync(join(repoRoot, "package-lock.json"), "utf8");
   const nestedLockBefore = readFileSync(join(workspaceRoot, "package-lock.json"), "utf8");
@@ -1913,7 +1918,7 @@ test("verifyDepsExtracted repairs a nested workspace lock tree after the root re
     assert.equal(status, 0);
     assert.deepEqual(calls.map(({ args, options }) => ({ args, cwd: options.cwd })), [
       { args: ["install", "--legacy-peer-deps"], cwd: repoRoot },
-      { args: ["ci", "--legacy-peer-deps", "--workspaces=false", "--no-audit", "--no-fund"], cwd: workspaceRoot },
+      ...ignoredNestedLock ? [] : [{ args: ["ci", "--legacy-peer-deps", "--workspaces=false", "--no-audit", "--no-fund"], cwd: workspaceRoot }],
     ]);
     assert.equal(readFileSync(join(repoRoot, "package-lock.json"), "utf8"), rootLockBefore);
     assert.equal(readFileSync(join(workspaceRoot, "package-lock.json"), "utf8"), nestedLockBefore);
@@ -1921,6 +1926,7 @@ test("verifyDepsExtracted repairs a nested workspace lock tree after the root re
     rmSync(repoRoot, { recursive: true, force: true });
   }
 });
+}
 
 test("dependencySelectionArgs keeps every dev-selection form verbatim and nothing else", () => {
   assert.deepEqual(

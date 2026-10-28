@@ -3929,6 +3929,32 @@ function nativeMcpToolAddress(spawn: BuiltSpawnContext): SuNativeToolAddress | n
  * before any admission replay and binds the current native session context. */
 const NATIVE_TOOL_OWNER_UNSUPPORTED_CAPABILITY = 'native_tool_owner_unsupported_capability';
 
+/** Extend the existing direct dispatch seat with this process's genuine launch
+ * principal. The retained closure is never forwarded, persisted, or inferred
+ * from an activity row. Failure preserves the legacy dispatch path and grants
+ * no native capture authority. Resource ACLs still run in dispatch-stack. */
+export async function retainNativeRequestPrincipalForDispatch(
+  spawn: BuiltSpawnContext, toolName: string, args: unknown, runtimeBearer: string,
+): Promise<BuiltSpawnContext> {
+  if (spawn.authenticatedPrincipal || !runtimeBearer) return spawn;
+  // Installed commerce admission has its own principal/funding binding. This
+  // core capture lane cannot silently substitute a different payer principal.
+  const target = resolveMcpName(toolName);
+  if (!target || target.pluginInstallation) return spawn;
+  const address = nativeMcpToolAddress(spawn);
+  if (!address) return spawn;
+  const { nativeInstalledPerUseTurns } = await import('../../../agent-tools/per-use-chokepoint');
+  const principal = await nativeInstalledPerUseTurns.resolveRequestPrincipal({
+    workspaceId: address.workspaceId, advSessionId: address.advSessionId, ownerId: address.ownerId,
+    nativeSessionFingerprint: address.nativeSessionIdFingerprint,
+    callIdFingerprint: spawn.requestOrigin!.nativeSession!.callIdFingerprint!,
+    toolName, arguments: args, runtimeBearer,
+  });
+  if (!principal) return spawn;
+  return { ...spawn, authenticatedPrincipal: principal,
+    isSuperuser: spawn.isSuperuser === true && principal.capabilities.has('*'), isPowerUser: false };
+}
+
 export function normalizeNativeMcpOwnerSpawn(spawn: BuiltSpawnContext): BuiltSpawnContext {
   if (spawn.authenticatedPrincipal) throw new Error(NATIVE_TOOL_OWNER_UNSUPPORTED_CAPABILITY);
   const authority = spawn.admissionRecoveryAuthority;
@@ -5036,10 +5062,13 @@ export function registerMcpHost(server: McpServer): void {
           effectiveHarnessSlug === spawnRes.ctx.harnessSlug
             ? spawnRes.ctx
             : { ...spawnRes.ctx, harnessSlug: effectiveHarnessSlug };
-        const dispatchSpawnCtx =
+        const dispatchScopeCtx =
           effectiveWs === effectiveSpawnCtx.workspaceId
             ? effectiveSpawnCtx
             : { ...effectiveSpawnCtx, workspaceId: effectiveWs };
+        const dispatchSpawnCtx = await retainNativeRequestPrincipalForDispatch(
+          dispatchScopeCtx, projected.expose.mcp!.name, dispatchArgs,
+          headersFromExtra(extra).get('x-papercusp-native-runtime') ?? '');
         finishPreDispatchPhase('transportScopeSetup', transportScopeSetupStartedAt);
         const baseCtx = await measurePreDispatchPhase('toolContextBuild', () => buildMcpToolContext(
           dispatchSpawnCtx,

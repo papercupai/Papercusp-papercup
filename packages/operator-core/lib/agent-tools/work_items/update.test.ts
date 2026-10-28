@@ -814,6 +814,25 @@ describe('work_items:update — body/summary alias + strict (WI-4492)', () => {
       expect(mergeM).not.toHaveBeenCalled();
     });
 
+    it('reserves agent-review workflow authority and readiness from generic replacement', () => {
+      expect(reservedPayloadKeys({
+        agentReview: { status: 'revision-submitted', round: 1 },
+        implementationReadiness: { status: 'ready' },
+      })).toEqual(['agentReview', 'implementationReadiness']);
+    });
+
+    it.each(['agentReview', 'implementationReadiness'] as const)(
+      'refuses a generic %s replacement before any write and names its lifecycle owner',
+      async (key) => {
+        const b = await body({ id: 'EI-1', title: 'new title', payload: { [key]: { status: 'revision-submitted' } } });
+        expect(b.results[0].ok).toBe(false);
+        expect(b.results[0].error).toMatch(new RegExp(key));
+        expect(b.results[0].error).toMatch(/agent-review lifecycle/);
+        expect(updM).not.toHaveBeenCalled();
+        expect(mergeM).not.toHaveBeenCalled();
+      },
+    );
+
     // WI-6554700010030345: externalBlockers bypassed wait-ref admission through this merge.
     // The payload below is the shape actually written on 2026-10-22 — an active event wait
     // on the broad `git-sync:committed` wake, which set_blocker's admission refuses.

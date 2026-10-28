@@ -27,7 +27,9 @@ export interface SuCodexTurnAdmission {
   bindNativeTurn(nativeTurnId: string): Promise<void>;
   /** Trusted app-server observation after immutable native binding. A request's
    * own metadata/arguments are never a substitute for this host observation. */
-  observeToolCall?(input: { nativeTurnId: string; callId: string; server: string; tool: string }): Promise<void>;
+  observeToolCall?(input: { nativeTurnId: string; callId: string; server: string; tool: string;
+    /** Exact host-observed JSON object; missing/invalid arguments remain unknown. */
+    arguments?: unknown }): Promise<void>;
   complete(input: { nativeTurnId: string; status: string; completedAtMs: number }): Promise<void>;
   reconcile(input: { phase: 'delivery' | 'binding' | 'completion'; message: string }): Promise<void>;
 }
@@ -37,6 +39,33 @@ export interface SuCodexTurnLifecycle {
 }
 
 type Rec = Record<string, unknown>;
+
+/** Snapshot the native wire payload synchronously, before binding/IO can yield.
+ * Never coerce missing, non-JSON or oversized arguments into an empty request.
+ * This is observation only: possession and current resource ACL remain separate. */
+export function nativeToolArguments(value: unknown): Readonly<Rec> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  try {
+    const encoded = JSON.stringify(value, (_key, child) => {
+      if (child === undefined || typeof child === 'function' || typeof child === 'symbol'
+        || typeof child === 'bigint' || typeof child === 'number' && !Number.isFinite(child))
+        throw new Error('non-JSON native arguments');
+      return child;
+    });
+    if (Buffer.byteLength(encoded, 'utf8') > 256_000) return null;
+    const freeze = (child: unknown, depth: number): void => {
+      if (depth > 64) throw new Error('native argument depth');
+      if (child && typeof child === 'object') {
+        Object.values(child).forEach(value => freeze(value, depth + 1));
+        Object.freeze(child);
+      }
+    };
+    const copy: unknown = JSON.parse(encoded);
+    if (!copy || typeof copy !== 'object' || Array.isArray(copy)) return null;
+    freeze(copy, 0);
+    return copy as Readonly<Rec>;
+  } catch { return null; }
+}
 
 function rec(value: unknown): Rec | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;

@@ -3157,6 +3157,143 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(run?.batch_size).toBe(DEFAULT_FAIL_OPEN_BATCH_SIZE);
   });
 
+  it('admits the full run through bounded statements when a large UPDATE exceeds the write budget', async () => {
+    for (let index = 0; index <= DEFAULT_FAIL_OPEN_BATCH_SIZE; index += 1) {
+      await seedItem({ id: `WI-write-budget-${String(index).padStart(3, '0')}`,
+        createdAtMs: NOW - 2 * 60 * 60_000 + index, vector: null });
+    }
+    // A deterministic PostgreSQL statement budget, rather than a timing assertion:
+    // the old 100-row UPDATE fails; independently committed small statements pass.
+    await db.sql.unsafe(`
+      CREATE FUNCTION harness_shared.fail_open_statement_budget() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF (SELECT count(*) FROM changed_rows) > 5 THEN
+          RAISE EXCEPTION 'fail-open statement write budget exceeded' USING ERRCODE = '57014';
+        END IF;
+        RETURN NULL;
+      END; $fn$;
+      CREATE TRIGGER fail_open_statement_budget AFTER UPDATE ON harness_shared.work_items
+        REFERENCING NEW TABLE AS changed_rows FOR EACH STATEMENT
+        EXECUTE FUNCTION harness_shared.fail_open_statement_budget();
+    `).simple();
+    try {
+      const announced: string[] = [];
+      const result = await runWorkItemAdmissionFailOpen({
+        workspaceId: WS, harnessSlug: HARNESS, runId: 'fail-open-write-budget', sql: db.sql, now: () => NOW,
+        onNewlyAdmitted: async (rows) => { announced.push(...rows.map((row) => row.id)); },
+      });
+      expect(result.autoPromoted).toHaveLength(DEFAULT_FAIL_OPEN_BATCH_SIZE);
+      expect([...announced].sort()).toEqual(result.autoPromoted);
+      expect(new Set(announced).size).toBe(DEFAULT_FAIL_OPEN_BATCH_SIZE);
+      const pending = await db.sql`SELECT feature_id FROM harness_shared.work_items
+        WHERE admission = 'pending' ORDER BY feature_id`;
+      expect(pending.map((row) => row.feature_id)).toEqual([
+        `WI-write-budget-${String(DEFAULT_FAIL_OPEN_BATCH_SIZE).padStart(3, '0')}`,
+      ]);
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER fail_open_statement_budget ON harness_shared.work_items; DROP FUNCTION harness_shared.fail_open_statement_budget()').simple();
+    }
+  });
+
+  it('retains and announces committed admission progress when a later write chunk fails', async () => {
+    for (let index = 0; index <= DEFAULT_FAIL_OPEN_BATCH_SIZE; index += 1) {
+      await seedItem({ id: `WI-partial-write-${String(index).padStart(3, '0')}`,
+        createdAtMs: NOW - 2 * 60 * 60_000 + index, vector: null });
+    }
+    await db.sql.unsafe(`
+      CREATE FUNCTION harness_shared.fail_open_later_write() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.feature_id = 'WI-partial-write-005' THEN
+          RAISE EXCEPTION 'later admission write failed' USING ERRCODE = '57014';
+        END IF;
+        RETURN NEW;
+      END; $fn$;
+      CREATE TRIGGER fail_open_later_write BEFORE UPDATE ON harness_shared.work_items
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.fail_open_later_write();
+    `).simple();
+    try {
+      const announced: string[] = [];
+      await expect(runWorkItemAdmissionFailOpen({
+        workspaceId: WS, harnessSlug: HARNESS, runId: 'fail-open-partial-write', sql: db.sql, now: () => NOW,
+        onNewlyAdmitted: async (rows) => { announced.push(...rows.map((row) => row.id)); },
+      })).rejects.toThrow();
+      const admitted = await db.sql`SELECT feature_id, payload #>> '{admissionFailOpen,runId}' AS producer
+        FROM harness_shared.work_items WHERE admission = 'unreviewed' ORDER BY feature_id`;
+      expect(admitted).toEqual(Array.from({ length: 5 }, (_, index) => ({
+        feature_id: `WI-partial-write-${String(index).padStart(3, '0')}`, producer: 'fail-open-partial-write',
+      })));
+      expect(announced).toEqual(admitted.map((row) => row.feature_id));
+      const [receipt] = await db.sql`SELECT auto_promoted_unreviewed, detail,
+          jsonb_typeof(detail->'committedItems') AS journal_type,
+          jsonb_typeof(detail->'announcedCount') AS cursor_type
+        FROM harness_shared.admission_runs WHERE id = 'fail-open-partial-write'`;
+      expect(receipt).toMatchObject({ auto_promoted_unreviewed: 5, journal_type: 'array', cursor_type: 'number', detail: {
+        status: 'failed', committedItemIds: announced,
+        outcome: { successful: 5, uniqueRowsChanged: 5, rolledBack: null },
+      } });
+      await db.sql.unsafe('DROP TRIGGER fail_open_later_write ON harness_shared.work_items');
+      const resume = () => runWorkItemAdmissionFailOpen({
+        workspaceId: WS, harnessSlug: HARNESS, runId: 'fail-open-partial-write', sql: db.sql, now: () => NOW,
+        onNewlyAdmitted: async (rows) => { announced.push(...rows.map((row) => row.id)); },
+      });
+      const resumed = await resume();
+      expect(resumed.autoPromoted).toHaveLength(DEFAULT_FAIL_OPEN_BATCH_SIZE);
+      expect(announced).toHaveLength(DEFAULT_FAIL_OPEN_BATCH_SIZE);
+      expect(new Set(announced).size).toBe(DEFAULT_FAIL_OPEN_BATCH_SIZE);
+      // The same logical run keeps its original cap even across another replay.
+      expect((await resume()).autoPromoted).toEqual(resumed.autoPromoted);
+      expect(announced).toHaveLength(DEFAULT_FAIL_OPEN_BATCH_SIZE);
+      const remaining = await db.sql`SELECT feature_id FROM harness_shared.work_items WHERE admission = 'pending'`;
+      expect(remaining.map((row) => row.feature_id)).toEqual([
+        `WI-partial-write-${String(DEFAULT_FAIL_OPEN_BATCH_SIZE).padStart(3, '0')}`,
+      ]);
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER IF EXISTS fail_open_later_write ON harness_shared.work_items; DROP FUNCTION harness_shared.fail_open_later_write()').simple();
+    }
+  });
+
+  it('recovers notifications after admission committed but the announcer failed', async () => {
+    await seedItem({ id: 'WI-notify-recovery', createdAtMs: NOW - 2 * 60 * 60_000, vector: null });
+    const options = { workspaceId: WS, harnessSlug: HARNESS, runId: 'fail-open-notify-recovery', sql: db.sql, now: () => NOW };
+    await expect(runWorkItemAdmissionFailOpen({ ...options,
+      onNewlyAdmitted: async () => { throw new Error('notification unavailable'); },
+    })).rejects.toThrow('notification unavailable');
+    const [before] = await db.sql`SELECT admission FROM harness_shared.work_items WHERE feature_id = 'WI-notify-recovery'`;
+    expect(before?.admission).toBe('unreviewed');
+    const announced: string[] = [];
+    const result = await runWorkItemAdmissionFailOpen({ ...options,
+      onNewlyAdmitted: async (rows) => { announced.push(...rows.map((row) => row.id)); },
+    });
+    expect(result.autoPromoted).toEqual(['WI-notify-recovery']);
+    expect(announced).toEqual(['WI-notify-recovery']);
+  });
+
+  it('rolls back admission when its atomic progress journal cannot be written', async () => {
+    await seedItem({ id: 'WI-journal-failure', createdAtMs: NOW - 2 * 60 * 60_000, vector: null });
+    await db.sql.unsafe(`
+      CREATE FUNCTION harness_shared.fail_open_journal_write() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.id = 'fail-open-journal-failure' AND NEW.detail ? 'committedItems' THEN
+          RAISE EXCEPTION 'admission journal unavailable' USING ERRCODE = '57014';
+        END IF;
+        RETURN NEW;
+      END; $fn$;
+      CREATE TRIGGER fail_open_journal_write BEFORE UPDATE ON harness_shared.admission_runs
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.fail_open_journal_write();
+    `).simple();
+    try {
+      const announce = vi.fn(async () => undefined);
+      await expect(runWorkItemAdmissionFailOpen({ workspaceId: WS, harnessSlug: HARNESS,
+        runId: 'fail-open-journal-failure', sql: db.sql, now: () => NOW, onNewlyAdmitted: announce,
+      })).rejects.toThrow();
+      const [row] = await db.sql`SELECT admission FROM harness_shared.work_items WHERE feature_id = 'WI-journal-failure'`;
+      expect(row?.admission).toBe('pending');
+      expect(announce).not.toHaveBeenCalled();
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER fail_open_journal_write ON harness_shared.admission_runs; DROP FUNCTION harness_shared.fail_open_journal_write()').simple();
+    }
+  });
+
   it('never fail-opens a row that carries a typed duplicate verdict (bug-inflow-one-problem-one-row-2026-10-18 SPEC-P-006-PROMOTE)', async () => {
     const createdAtMs = NOW - 2 * 60 * 60_000;
     await seedItem({ id: 'WI-dup-canonical', createdAtMs, vector: null, admission: 'auto' });
@@ -4621,7 +4758,9 @@ describe('degraded-row dedup re-screen in the fail-open runner (WI-6554700010018
     await seedItem({ id: 'WI-rs-plain', createdAtMs: OLD, vector: null });
     const screen = screenWith({
       'WI-rs-clean': clean,
-      'WI-rs-twin': { lexical: 'ok', semantic: 'ok', candidates: [{ id: 'WI-canonical', similarity: 0.91, method: 'semantic-soft' }] },
+      // Strong candidates remain promoter work; semantic-soft alone is now
+      // deliberately eligible for the fail-open backstop.
+      'WI-rs-twin': { lexical: 'ok', semantic: 'ok', candidates: [{ id: 'WI-canonical', similarity: 0.91, method: 'semantic-hard' }] },
       'WI-rs-still': stillDown,
     });
 
@@ -4651,7 +4790,7 @@ describe('degraded-row dedup re-screen in the fail-open runner (WI-6554700010018
 
     const twinRow = await readRow('WI-rs-twin');
     expect(twinRow.admission).toBe('pending');
-    expect(twinRow.payload.dedupCandidates).toEqual([{ id: 'WI-canonical', similarity: 0.91, method: 'semantic-soft' }]);
+    expect(twinRow.payload.dedupCandidates).toEqual([{ id: 'WI-canonical', similarity: 0.91, method: 'semantic-hard' }]);
     expect(twinRow.payload.dedupCoverage).toMatchObject({ degraded: false, rescreen: { outcome: 'candidates' } });
 
     const stillRow = await readRow('WI-rs-still');

@@ -2173,6 +2173,9 @@ describe("shapeWorkItemsGet — priorAttemptRefResolution", () => {
       row({
         id,
         checkpoint: "C".repeat(3_000),
+        checkpointAgeMs: 4_200,
+        checkpointUpdatedAtMs: 1_712_345_678_901,
+        checkpointContentHash: "hash-1",
         lifecycle: { coverage: "full", flags: {}, events: [fatEvent(), fatEvent(), fatEvent(), fatEvent()] },
         workItem: {
           id,
@@ -2187,12 +2190,27 @@ describe("shapeWorkItemsGet — priorAttemptRefResolution", () => {
         },
       }),
     );
-    const out = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
+    const sourceProjection = {
+      pick: [
+        "results[].id",
+        "results[].workItem.assignee",
+        "results[].workItem.state",
+        "results[].workItem.title",
+        "results[].checkpointAgeMs",
+        "results[].checkpointUpdatedAtMs",
+        "results[].checkpointContentHash",
+      ],
+    };
+    const out = shapeWorkItemsGet(envelope(rows), "trimmed", sourceProjection) as Envelope;
     expect(out.results.filter((r) => (r as Record<string, unknown>)._stub)).toHaveLength(0);
     for (const r of out.results) {
       const w = r.workItem as Record<string, unknown>;
       expect(w.title).toBeTruthy();
       expect(w.state).toBeTruthy();
+      expect(w.assignee).toBe("su-1");
+      expect(r.checkpointAgeMs).toBe(4_200);
+      expect(r.checkpointUpdatedAtMs).toBe(1_712_345_678_901);
+      expect(r.checkpointContentHash).toBe("hash-1");
     }
     // The bulk that gave way is NAMED, never silently gone (D-004).
     expect(out._shapeNote?.dropped).toEqual(

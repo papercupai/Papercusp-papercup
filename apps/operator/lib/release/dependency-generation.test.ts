@@ -144,23 +144,40 @@ function makeIntegration(): string {
   writeFileSync(join(root, 'node_modules/pkg/package.json'), '{"name":"pkg","version":"1.0.0"}\n');
   writeFileSync(
     join(root, 'package-lock.json'),
-    '{"name":"fixture","lockfileVersion":3,"packages":{}}\n',
+    JSON.stringify({ name: 'fixture', lockfileVersion: 3, packages: {
+      'node_modules/pkg': { version: '1.0.0' },
+      'packages/a/node_modules/local': { version: '1.0.0' },
+      // The incremental-removal cases deliberately omit this optional tree.
+      'packages/b/node_modules/other': { version: '1.0.0', optional: true },
+    } }) + '\n',
   );
   writeFileSync(
     join(root, 'packages/a/node_modules/local/index.js'),
     'local-v1\n',
   );
   writeFileSync(join(root, 'packages/a/package.json'), '{"name":"a"}\n');
+  writeFileSync(join(root, 'packages/a/node_modules/local/package.json'), '{"name":"local","version":"1.0.0"}\n');
   writeFileSync(
     join(root, 'packages/b/node_modules/other/index.js'),
     'other-v1\n',
   );
   writeFileSync(join(root, 'packages/b/package.json'), '{"name":"b"}\n');
+  writeFileSync(join(root, 'packages/b/node_modules/other/package.json'), '{"name":"other","version":"1.0.0"}\n');
   writeFileSync(
     join(root, '.papercusp/worktrees/repair/node_modules/foreign/index.js'),
     'must-not-copy\n',
   );
   return root;
+}
+
+function lockFixturePackage(integration: string, path: string, optional = false) {
+  const file = join(integration, 'package-lock.json');
+  const lock = JSON.parse(readFileSync(file, 'utf8'));
+  lock.packages[path] = { version: '1.0.0', ...(optional ? { optional: true } : {}) };
+  writeFileSync(file, JSON.stringify(lock) + '\n');
+  writeFileSync(join(integration, path, 'package.json'), JSON.stringify({
+    name: path.slice(path.lastIndexOf('node_modules/') + 'node_modules/'.length), version: '1.0.0',
+  }) + '\n');
 }
 
 function publish(
@@ -535,12 +552,33 @@ describe('dependency source checkout boundaries', () => {
     execFileSync('git', ['update-index', '--add', '--cacheinfo', `160000,${vendorCommit},libs/vendor`], { cwd: integration });
     // The superproject ignores one too.
     mkdirSync(join(integration, 'tools'), { recursive: true });
-    writeFileSync(join(integration, '.gitignore'), '/tools/package-lock.json\n');
+    writeFileSync(join(integration, '.gitignore'), '/tools/package-lock.json\n/packages/a/package-lock.json\n');
+    writeFileSync(join(integration, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+      'packages/a/node_modules/local': { version: '1.0.0' },
+    } }) + '\n');
     const sourceCommit = commitAllFixture(integration, 'record submodule and ignore rules');
 
     // Install artifacts the commits can never carry.
     writeFileSync(join(vendor, 'kit/package-lock.json'), '{"name":"kit","lockfileVersion":3,"packages":{}}\n');
     writeFileSync(join(integration, 'tools/package-lock.json'), '{"name":"tools","lockfileVersion":3,"packages":{}}\n');
+    for (const dir of ['libs/vendor/kit', 'tools']) {
+      mkdirSync(join(integration, dir, 'node_modules/unbound'), { recursive: true });
+      writeFileSync(join(integration, dir, 'node_modules/unbound/package.json'), '{"name":"unbound","version":"1.0.0"}\n');
+    }
+    const enumerateTrees = () => spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+      'DEPENDENCY_GENERATION_SCOPE_MODE=selected',
+      'DEPENDENCY_GENERATION_WORKSPACE_DIRS=(packages/a libs/vendor/kit tools)',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+    ].join('\n')], { encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration } });
+    const trees = enumerateTrees();
+    expect(trees.status, trees.stderr).toBe(0);
+    expect(trees.stdout.match(/packages\/a\/node_modules/g)).toHaveLength(2);
+    expect(trees.stdout).not.toContain('libs/vendor/kit/node_modules');
+    expect(trees.stdout).not.toContain('tools/node_modules');
+    expect(existsSync(join(vendor, 'kit/node_modules/unbound/package.json'))).toBe(true);
     const live = () => spawnSync('bash', ['-c', [
       'set -euo pipefail',
       'source "$SCRIPT"',
@@ -556,6 +594,13 @@ describe('dependency source checkout boundaries', () => {
     const exact = fingerprintRef(integration, sourceCommit);
     expect(exact.status, exact.stderr).toBe(0);
     expect(result.stdout).toContain(`LIVE_INPUT=${publishedInputFingerprint(exact.stdout)}`);
+
+    // A cleaned-up ignored lock must not readmit its leftover private tree.
+    rmSync(join(vendor, 'kit/package-lock.json'));
+    rmSync(join(integration, 'tools/package-lock.json'));
+    const withoutLocks = enumerateTrees();
+    expect(withoutLocks.status, withoutLocks.stderr).toBe(0);
+    expect(withoutLocks.stdout).toBe(trees.stdout);
 
     // An untracked lockfile that is NOT ignored is still a live input: it could be
     // committed, so the comparison must keep refusing until it is.
@@ -1350,7 +1395,9 @@ describe('immutable dependency generation', () => {
 
     writeFileSync(
       join(integration, 'package-lock.json'),
-      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/new":{"version":"1.0.0"}}}\n',
+      JSON.stringify({ ...JSON.parse(readFileSync(join(integration, 'package-lock.json'), 'utf8')),
+        packages: { ...JSON.parse(readFileSync(join(integration, 'package-lock.json'), 'utf8')).packages,
+          'node_modules/new': { version: '1.0.0' } } }) + '\n',
     );
     const miss = selectPrewarmed(generationRoot, integration);
     expect(miss.status).toBe(74);
@@ -1816,7 +1863,9 @@ describe('immutable dependency generation', () => {
   // a lock NO checkout ever installed. --ensure-ref used to publish from the live tree and
   // re-open by the ref's key — a permanent exit 74 that stalled verification (5955f82b).
   const lockWith = (packages: Record<string, Record<string, unknown>>) =>
-    `${JSON.stringify({ name: 'fixture', lockfileVersion: 3, packages: { '': { name: 'fixture' }, ...packages } })}\n`;
+    `${JSON.stringify({ name: 'fixture', lockfileVersion: 3, packages: { '': { name: 'fixture' },
+      'packages/a/node_modules/local': { version: '1.0.0' },
+      'packages/b/node_modules/other': { version: '1.0.0', optional: true }, ...packages } })}\n`;
   const PKG = {
     'node_modules/pkg': {
       version: '1.0.0',
@@ -2503,7 +2552,8 @@ exec /bin/cp "$@"
     expect(first.status, first.stderr).toBe(0);
     writeFileSync(
       join(integration, 'package-lock.json'),
-      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/pkg":{"version":"1.0.0"}}}\n',
+      JSON.stringify({ ...JSON.parse(readFileSync(join(integration, 'package-lock.json'), 'utf8')),
+        name: 'fixture-with-new-input-metadata' }) + '\n',
     );
 
     const result = publish(integration);
@@ -2665,6 +2715,7 @@ exec /bin/cp "$@"
     const cache = join(packageDir, '.cache');
     mkdirSync(packageDir, { recursive: true });
     writeFileSync(dependency, 'dependency-v1\n');
+    lockFixturePackage(integration, 'node_modules/@huggingface/transformers');
     const env = { DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT: portable, DG_MODEL_PACKAGE: packageDir };
     const first = publish(integration, {
       ...env,
@@ -2741,6 +2792,7 @@ exec /bin/cp "$@"
       const dir = join(integration, source);
       mkdirSync(join(dir, 'node_modules/source-package'), { recursive: true });
       writeFileSync(join(dir, 'node_modules/source-package/index.js'), 'source dependency\n');
+      lockFixturePackage(integration, `${source}/node_modules/source-package`);
     }
     const afterSource = publish(integration);
     expect(afterSource.status, afterSource.stderr).toBe(0);
@@ -2786,6 +2838,7 @@ exec /bin/cp "$@"
       join(integration, 'packages/a/sidecar/node_modules/staged-package/index.js'),
       'staged\n',
     );
+    lockFixturePackage(integration, 'packages/a/sidecar/node_modules/staged-package');
     const afterReal = publish(integration);
     expect(afterReal.status, afterReal.stderr).toBe(0);
     expect(publishedIdentity(afterReal.stdout)).not.toBe(
@@ -3103,7 +3156,9 @@ exec /bin/cp "$@"
 
     writeFileSync(
       join(integration, 'package-lock.json'),
-      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/new-input":{}}}\n',
+      JSON.stringify({ ...JSON.parse(originalLockfile), packages: {
+        ...JSON.parse(originalLockfile).packages, 'node_modules/new-input': {},
+      } }) + '\n',
     );
     // The new lock entry is installed, as a real install would leave it (lock-tree audit).
     mkdirSync(join(integration, 'node_modules/new-input'), { recursive: true });
@@ -3507,7 +3562,8 @@ exec /bin/cp "$@"
     for (let i = 1; i <= 2; i += 1) {
       writeFileSync(
         join(integration, 'package-lock.json'),
-        `{"name":"fixture-${i}","lockfileVersion":3,"packages":{}}\n`,
+        JSON.stringify({ ...JSON.parse(readFileSync(join(integration, 'package-lock.json'), 'utf8')),
+          name: `fixture-${i}` }) + '\n',
       );
       writeFileSync(join(integration, 'node_modules/pkg/index.js'), `new-${i}\n`);
       const result = publish(integration, {
@@ -3520,7 +3576,8 @@ exec /bin/cp "$@"
     rmSync(handoffLease!);
     writeFileSync(
       join(integration, 'package-lock.json'),
-      '{"name":"fixture-after-handoff","lockfileVersion":3,"packages":{}}\n',
+      JSON.stringify({ ...JSON.parse(readFileSync(join(integration, 'package-lock.json'), 'utf8')),
+        name: 'fixture-after-handoff' }) + '\n',
     );
     writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'after-handoff\n');
     const after = publish(integration, {
@@ -4046,6 +4103,28 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
     const result = copyScenario('sleep 3.5');
     expect(result.stdout, result.stderr).toContain('RC=0');
     expect(result.stderr).not.toContain('copy progress');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('treats a process disappearing during /proc stat read as unmeasured without stderr noise', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dependency-copy-proc-stat-race-'));
+    roots.push(root);
+    const wrapper = [
+      'set -uo pipefail',
+      'source "$SCRIPT"',
+      // Inject the procfs read failure that occurs when the monitored child exits
+      // after the caller checked it but before Bash finishes reading /proc/PID/stat.
+      'read() { if [ "$1" = -r ] && [ "$2" = stat_line ]; then printf "read: read error: 0: No such process\\n" >&2; return 1; fi; builtin read "$@"; }',
+      'cp() { command sleep 0.1; }',
+      'dependency_generation_copy_with_progress "$ROOT/src" "$ROOT/dest"',
+      'printf "COPY_DONE\\n"',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+      env: { ...process.env, SCRIPT, ROOT: root },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('COPY_DONE');
+    expect(result.stderr).not.toContain('read: read error: 0: No such process');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('reports checksum reads while an independent resume verifies retained bytes without writing', () => {
@@ -4778,6 +4857,7 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
       symlinkSync('index.js', join(pkg, 'link.js'));
       mkdirSync(join(integration, 'node_modules/gone'));
       writeFileSync(join(integration, 'node_modules/gone/index.js'), 'gone\n');
+      lockFixturePackage(integration, 'node_modules/gone', true);
 
       const first = publish(integration, incrementalEnv('0'));
       expect(first.status, first.stderr).toBe(0);
@@ -4813,7 +4893,8 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
           // manifest makeIntegration installs so the lock-vs-tree audit passes).
           kept: '22',
           copied: '2',
-          removed: '3',
+          // pkg/link.js plus gone directory, index.js and locked manifest.
+          removed: '4',
           copied_bytes: String('v2-0\n'.length + 'new\n'.length),
           // f0.js matched its record except for ctime and inode, so its bytes were
           // compared with the predecessor's copy, found different, and copied.
@@ -4889,6 +4970,7 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
       );
       mkdirSync(nestedPkg, { recursive: true });
       writeFileSync(join(nestedPkg, 'index.js'), 'v1\n');
+      lockFixturePackage(integration, 'tools/perf-test/wdio/node_modules/pkg');
       const env = {
         ...incrementalEnv('0'),
         DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '0',
@@ -5066,6 +5148,11 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
       rmSync(join(foreign, 'packages'), { recursive: true });
       mkdirSync(join(foreign, 'apps/other/node_modules/x'), { recursive: true });
       writeFileSync(join(foreign, 'apps/other/node_modules/x/index.js'), 'x-v1\n');
+      lockFixturePackage(foreign, 'apps/other/node_modules/x');
+      const foreignLock = JSON.parse(readFileSync(join(foreign, 'package-lock.json'), 'utf8'));
+      delete foreignLock.packages['packages/a/node_modules/local'];
+      delete foreignLock.packages['packages/b/node_modules/other'];
+      writeFileSync(join(foreign, 'package-lock.json'), JSON.stringify(foreignLock) + '\n');
       writeFileSync(join(foreign, 'node_modules/pkg/index.js'), 'foreign-root\n');
       const foreignBuild = publish(foreign, env, sharedRoot);
       expect(foreignBuild.status, foreignBuild.stderr).toBe(0);

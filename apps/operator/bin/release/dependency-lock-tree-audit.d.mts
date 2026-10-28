@@ -31,10 +31,11 @@ export function auditLockfile({ lock, lockDir, treeRoot, fs }: {
  * known before its workspace members. `lockfiles[]` in the result records each decision:
  * status audited | not-installed | workspace-member (with `owner`).
  */
-export function auditTree({ treeRoot, lockRoot, lockfiles, fs }: {
+export function auditTree({ treeRoot, lockRoot, lockfiles, installedTrees, fs }: {
     treeRoot: any;
     lockRoot: any;
     lockfiles: any;
+    installedTrees?: never[] | undefined;
     fs?: {
         exists(path: any): boolean;
         readJson(path: any): any;

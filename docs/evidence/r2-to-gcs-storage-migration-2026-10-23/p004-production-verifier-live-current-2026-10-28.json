@@ -1,0 +1,147 @@
+{
+  "schemaVersion": "r2gcs-p004-maintained-production-v2",
+  "workItem": "WI-6554700010025563",
+  "runtimeUnit": "cloudflare-worker:f896982ea2f6d507e4f29eeecbd26e94/papercusp-cupboard",
+  "observedRuntimeBefore": "d3629e7844c8dda7bfef030946753469d0850e7d05b646dc1c5e970b89ffacb9",
+  "observedRuntimeAfter": "d3629e7844c8dda7bfef030946753469d0850e7d05b646dc1c5e970b89ffacb9",
+  "runtimeStable": true,
+  "sourceHashesBefore": {
+    "scripts/lib/workspace-host-gcs-publication.mjs": "57fb36c16ee49674c19322295ff880727b46f714e9be0f977bdc07c06c86e8c6",
+    "scripts/lib/workspace-host-gcs-publication.d.mts": "04831f5f06a6811c5805a71500098685c6deec7cdde473d231f8917dd62f6456",
+    "scripts/publish-workspace-host-artifacts.test.ts": "479fb8a301b4dd9d1b932a990fc4614b35fb76f482fd00a66821b029da437d28",
+    "packages/operator-core/lib/remote-runtime-identity.ts": "bce5fe298e733b4c3a8d3f8b9957eb6285854a3cb2f40a99793d1f9de4a94f14"
+  },
+  "sourceHashesAfter": {
+    "scripts/lib/workspace-host-gcs-publication.mjs": "57fb36c16ee49674c19322295ff880727b46f714e9be0f977bdc07c06c86e8c6",
+    "scripts/lib/workspace-host-gcs-publication.d.mts": "04831f5f06a6811c5805a71500098685c6deec7cdde473d231f8917dd62f6456",
+    "scripts/publish-workspace-host-artifacts.test.ts": "479fb8a301b4dd9d1b932a990fc4614b35fb76f482fd00a66821b029da437d28",
+    "packages/operator-core/lib/remote-runtime-identity.ts": "bce5fe298e733b4c3a8d3f8b9957eb6285854a3cb2f40a99793d1f9de4a94f14"
+  },
+  "sourceStable": true,
+  "instrument": {
+    "path": "scripts/lib/workspace-host-gcs-publication.mjs",
+    "testPath": "scripts/publish-workspace-host-artifacts.test.ts",
+    "export": "verifyGcsWorkspaceHostUpload"
+  },
+  "tests": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- scripts/publish-workspace-host-artifacts.test.ts",
+    "passed": 65,
+    "failed": 0,
+    "skipped": 0
+  },
+  "observation": {
+    "operationId": "f1637ed4-4aa2-4f74-918f-4f1c1553eeaa",
+    "sha256": "32ca78f18750923d787925f72139b7446f93efc9615b1f70eeb95bb01416e6e9",
+    "sizeBytes": 70,
+    "startedAt": "2026-10-28T21:57:03.641Z",
+    "checks": [
+      {
+        "name": "unique-destination-absent",
+        "ok": true
+      },
+      {
+        "name": "anonymous-write-denied",
+        "ok": true,
+        "status": 401
+      },
+      {
+        "name": "production-multipart-created",
+        "ok": true,
+        "status": 201
+      },
+      {
+        "name": "operation-state-durable",
+        "ok": true,
+        "status": 200
+      },
+      {
+        "name": "reconnect-resumes-original-operation",
+        "ok": true,
+        "status": 200
+      },
+      {
+        "name": "unfinalized-public-read-before-upload-denied",
+        "ok": true,
+        "status": 404
+      },
+      {
+        "name": "declared-part-uploaded",
+        "ok": true,
+        "status": 200
+      },
+      {
+        "name": "multipart-complete",
+        "ok": true,
+        "status": 201
+      },
+      {
+        "name": "completed-object-metadata-readable",
+        "ok": true,
+        "status": 200
+      },
+      {
+        "name": "generation-pinned-exact-bytes",
+        "ok": true,
+        "generation": "1793224629043977",
+        "sha256": "32ca78f18750923d787925f72139b7446f93efc9615b1f70eeb95bb01416e6e9",
+        "sizeBytes": 70
+      },
+      {
+        "name": "completion-replay-retains-generation",
+        "ok": true,
+        "status": 200,
+        "generation": "1793224629043977"
+      },
+      {
+        "name": "unfinalized-public-read-after-completion-denied",
+        "ok": true,
+        "status": 404
+      },
+      {
+        "name": "raw-private-bucket-anonymous-denied",
+        "ok": true,
+        "status": 403
+      },
+      {
+        "name": "existing-finalized-public-positive-control",
+        "ok": true
+      }
+    ],
+    "result": "pass",
+    "cleanup": {
+      "deleted": [
+        {
+          "key": "__artifact_uploads/8bdd99d0-de56-4a44-86a4-826e9a975785/part-1",
+          "generation": "1793224627815906",
+          "status": 204
+        },
+        {
+          "key": "__artifact_uploads/8bdd99d0-de56-4a44-86a4-826e9a975785/session",
+          "generation": "1793224625291959",
+          "status": 204
+        },
+        {
+          "key": "artifacts/workspace-host/sha256/32ca78f18750923d787925f72139b7446f93efc9615b1f70eeb95bb01416e6e9/.multipart/f1637ed4-4aa2-4f74-918f-4f1c1553eeaa/parts/1.json",
+          "generation": "1793224628034316",
+          "status": 204
+        },
+        {
+          "key": "artifacts/workspace-host/sha256/32ca78f18750923d787925f72139b7446f93efc9615b1f70eeb95bb01416e6e9/server.tgz",
+          "generation": "1793224629043977",
+          "status": 204
+        }
+      ],
+      "complete": true,
+      "remaining": [],
+      "providerRemaining": []
+    },
+    "objectIdentity": {
+      "generation": "1793224629043977",
+      "metageneration": "1",
+      "crc32c": "HiH7fQ==",
+      "sizeBytes": 70
+    },
+    "finishedAt": "2026-10-28T21:57:11.534Z"
+  },
+  "scope": "Current maintained verifier on deployed Cupboard private multipart/replay/finalization boundary; exact generation-pinned bytes and cleanup. Excludes historical R2 census, publish-worker archive deployment, full migration and P544 trial. Local runtime observations are receipts, not substitutes for independently server-measured runtimeUnits."
+}

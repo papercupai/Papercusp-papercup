@@ -23,7 +23,10 @@ vi.mock('../harness-registry', async original => ({
 }));
 vi.mock('@papercusp/flags/server', async original => ({
   ...await original<typeof import('@papercusp/flags/server')>(),
-  getFlag: async (key: string) => key === 'papercusp-code-intel-push-completion',
+  // WI-6554700010030348: the controlled providers must pass the per-provider gate
+  // (REUSE_PROVIDER_FLAGS); a false here reports every provider `disabled`.
+  getFlag: async (key: string) => key === 'papercusp-code-intel-push-completion'
+    || key.startsWith('papercusp-code-intel-reuse-'),
 }));
 vi.mock('../events', async original => ({ ...await original<typeof import('../events')>(), fireReactionInProcess: async () => ({ ok: true }) }));
 vi.mock('../grading-integrity', async original => ({
@@ -100,25 +103,35 @@ function controlled(id: ReuseProviderId, mode: Mode): ReuseBriefProvider {
   } };
 }
 
+/** One real canonical close of a fresh claimed issue against the controlled providers. */
+async function closeControlled(mode: Mode, invocation: string) {
+  h.providers = ids.map(id => controlled(id, mode));
+  const issue = await createIssue({ kind: 'change', scope: 'harness:papercusp', createdBy: OWNER,
+    title: `P010 controlled completion ${mode}`, body: 'Private R19 handler-delivery fixture.' });
+  await fx.admin`UPDATE harness_shared.work_items SET taken_by = ${OWNER}, taken_at = now(), admission = 'admitted'
+    WHERE feature_id = ${issue.id}`;
+  await declareChangeKinds({ workspaceId: fx.workspaceId, featureId: issue.id, kinds: ['logic'], step: 'claim', declaredBy: OWNER });
+  const metadata = vi.fn();
+  const base = await getCompletionTimeBrief({ workspaceId: fx.workspaceId, harness: 'papercusp', paths: ['target.ts'] });
+  const started = Date.now();
+  const response = await complete.handler(complete.args.parse({ id: issue.id, harness: 'papercusp', state: 'done', assumptions: 'none',
+    completion: { summary: 'Checked private source fixture and its completion advice.',
+      testsRun: 'npm run test:file -- packages/operator-core/lib/code-intelligence/reuse-completion.integration.test.ts',
+      testResult: '1 passed', verifiedHow: 'Real handler and private PG readback', filesChanged: ['target.ts'] } }),
+    { workspaceId: fx.workspaceId, uiClientId: OWNER, isSuperuser: true, dispatchCallId: invocation,
+      signal: new AbortController().signal, metadata, log: vi.fn(), emit: vi.fn(), progress: vi.fn() } as never);
+  return { issue, metadata, base, elapsedMs: Date.now() - started, response };
+}
+
 describe('R19 canonical completion remains advisory', () => {
+  // WI-6554700010030348: the 6s bound is the warm handler's. One throwaway close pays the
+  // cold module graph (the handler's and the reuse branch's lazy imports) outside it.
+  beforeAll(async () => { await closeControlled('no-match', 'p010-close-warmup'); }, 120_000);
   it.each(['match', 'no-match', 'oversized', 'failed', 'slow', 'complete', 'partial', 'stale'] as const)(
     '%s preserves close/base, payload classes, budgets and per-provider issued identity', async mode => {
-      h.providers = ids.map(id => controlled(id, mode));
-      const issue = await createIssue({ kind: 'change', scope: 'harness:papercusp', createdBy: OWNER,
-        title: `P010 controlled completion ${mode}`, body: 'Private R19 handler-delivery fixture.' });
-      await fx.admin`UPDATE harness_shared.work_items SET taken_by = ${OWNER}, taken_at = now(), admission = 'admitted'
-        WHERE feature_id = ${issue.id}`;
-      await declareChangeKinds({ workspaceId: fx.workspaceId, featureId: issue.id, kinds: ['logic'], step: 'claim', declaredBy: OWNER });
-      const invocation = `p010-close-${mode}`, metadata = vi.fn();
-      const base = await getCompletionTimeBrief({ workspaceId: fx.workspaceId, harness: 'papercusp', paths: ['target.ts'] });
-      const started = Date.now();
-      const response = await complete.handler(complete.args.parse({ id: issue.id, harness: 'papercusp', state: 'done', assumptions: 'none',
-        completion: { summary: 'Checked private source fixture and its completion advice.',
-          testsRun: 'npm run test:file -- packages/operator-core/lib/code-intelligence/reuse-completion.integration.test.ts',
-          testResult: '1 passed', verifiedHow: 'Real handler and private PG readback', filesChanged: ['target.ts'] } }),
-        { workspaceId: fx.workspaceId, uiClientId: OWNER, isSuperuser: true, dispatchCallId: invocation,
-          signal: new AbortController().signal, metadata, log: vi.fn(), emit: vi.fn(), progress: vi.fn() } as never);
-      expect(Date.now() - started).toBeLessThan(6_000);
+      const invocation = `p010-close-${mode}`;
+      const { issue, metadata, base, elapsedMs, response } = await closeControlled(mode, invocation);
+      expect(elapsedMs).toBeLessThan(6_000);
       const result = (response as { data: { results: Array<Record<string, any>> } }).data.results[0]!;
       expect(result.ok, JSON.stringify(result)).toBe(true);
       expect((await getWorkItem(issue.id))?.state).toBe('done');
@@ -129,17 +142,27 @@ describe('R19 canonical completion remains advisory', () => {
       expect(brief.executionCoverage).toBe('unmeasured');
       expect(briefCodePoints(JSON.stringify(brief))).toBeLessThanOrEqual(3_000);
       const text = brief.limitations.join('\n');
+      const observed = metadata.mock.calls.flatMap(([value]) => value.reuseBriefProviders ?? []).at(-1);
+      // WI-6554700010030348: a dropped reuse block must name WHY (deadline, held-out, no observe call).
+      const why = JSON.stringify({ status: brief.status, observations: observed?.observations?.map(
+        (row: { provider: string; status: string; reason: string }) => `${row.provider}:${row.status}:${row.reason}`)
+        ?? 'reuse block never reported (ref.reuse unset or skipped)' });
+      // reuseHoldout draws ~10% per (work item, provider), and every case closes a fresh random
+      // id: a held-out provider is observed but never placed, so its text must be absent.
+      const heldOut = new Set<string>((observed?.observations ?? [])
+        .filter((row: { status: string }) => row.status === 'held-out').map((row: { provider: string }) => row.provider));
+      const placed = (provider: ReuseProviderId, needle: string) => heldOut.has(provider)
+        ? expect(text, why).not.toContain(needle) : expect(text, why).toContain(needle);
       if (mode === 'no-match') expect(brief.limitations).toEqual(base.limitations);
       else {
-        expect(text).toContain('Untouched sibling'); expect(text).toContain('New copy');
-        expect(text).toContain('Untouched partner.ts');
-        if (mode !== 'failed' && mode !== 'slow') expect(text).toContain('SQL reader left unchecked');
+        placed('clones', 'Untouched sibling'); placed('clones', 'New copy');
+        placed('cochange', 'Untouched partner.ts');
+        if (mode !== 'failed' && mode !== 'slow') placed('sql', 'SQL reader left unchecked');
         if (mode === 'partial' || mode === 'stale') {
-          expect(text).toContain(mode === 'partial' ? 'execution absence unknown (partial coverage)' : 'execution unknown');
-          expect(text).not.toContain('no recorded test executed changed lines');
-        } else expect(text).toContain('no recorded test executed changed lines');
+          placed('coverage', mode === 'partial' ? 'execution absence unknown (partial coverage)' : 'execution unknown');
+          expect(text, why).not.toContain('no recorded test executed changed lines');
+        } else placed('coverage', 'no recorded test executed changed lines');
       }
-      const observed = metadata.mock.calls.flatMap(([value]) => value.reuseBriefProviders ?? []).at(-1);
       expect(observed?.context).toMatchObject({ surface: 'completion', invocation, workItem: issue.id });
       for (const row of observed.observations) expect(row.chars).toBeLessThanOrEqual(REUSE_PROVIDER_POLICY[row.provider as ReuseProviderId].cap);
       if (mode === 'oversized') expect(observed.observations.some((row: { reason: string }) => row.reason === 'truncated')).toBe(true);
@@ -147,7 +170,9 @@ describe('R19 canonical completion remains advisory', () => {
         .toMatchObject({ status: 'unknown', reason: mode === 'failed' ? 'failure' : 'timeout' });
       const rows = await fx.admin`SELECT subject, chars, turn_id FROM harness_shared.code_intel_pushes
         WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${OWNER} AND subject::jsonb->>'invocation' = ${invocation}`;
-      expect(rows).toHaveLength(observed.observations.filter((row: { status: string }) => row.status === 'issued').length);
+      // reuse-brief-ledger records both arms: issued rows and held-out (reuse-holdout-<provider>, chars 0).
+      expect(rows, why).toHaveLength(observed.observations
+        .filter((row: { status: string }) => row.status === 'issued' || row.status === 'held-out').length);
       for (const row of rows) {
         expect(row.turn_id).toBe('p010-completion-turn');
         expect(JSON.parse(row.subject)).toMatchObject({ surface: 'completion', invocation, workItem: issue.id,

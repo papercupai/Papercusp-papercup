@@ -96,6 +96,10 @@ export const PERF_INTERACTIONS = {
    *  whose panel is not yet wired simply emits nothing (its stale start is
    *  discarded past STALE_START_MS) — never a garbage measure. */
   learningViewSwitch: "learning-view-switch",
+  /** Admin performance fixture: click to the first committed report-card render. */
+  reportMarkdownFirstMount: "report-markdown-first-mount",
+  /** Admin performance fixture: click to the next queued task after report rendering. */
+  reportMarkdownInputDelay: "report-markdown-input-delay",
 } as const;
 
 export type PerfInteractionName =

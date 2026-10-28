@@ -14,6 +14,8 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildSync } from 'esbuild';
+import { makeBgCompilerCandidate } from '../../../packages/operator-core/lib/source-preview.fixture';
+import { prepareBgVerifierBuildRecord, verifyBgVerifierBuildRecord } from '../../../scripts/source-preview.mjs';
 
 // Overridable so scripts/mutation-probe.sh can point the suite at a mutated COPY.
 const HELPER_SOURCE =
@@ -71,6 +73,38 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
+});
+
+describe('BG original builder identity', () => {
+  const boundaries = ['before-build', 'before-publication'] as const;
+  let serial = 0;
+
+  async function invocationDefect(boundary: typeof boundaries[number], defect: 'builder-configuration' | 'toolchain-identity') {
+    const { prepared, dependencies } = await makeBgCompilerCandidate(join(repo, `bg-builder-${++serial}`));
+    const invocation = { builder: join(prepared.root, 'apps/operator/bin/bundle-host.sh'),
+      argv: ['--bundle', '--platform=node', '--target=node22'], node: process.execPath,
+      compiler: join(prepared.root, 'node_modules/fixture-dependency/index.js'),
+      packageManager: join(prepared.root, 'node_modules/fixture-package-manager/cli.js'),
+      configuration: [join(prepared.root, 'package-lock.json')], environment: { NODE_OPTIONS: '', NODE_PATH: '', PATH: '/fixture/bin' } };
+    const originalReceipt = readFileSync(join(prepared.root, '.verifier-source.json'));
+    const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation });
+    const recordBytes = JSON.stringify(record);
+    expect(verifyBgVerifierBuildRecord(record, invocation, boundary)).toBe(record);
+    if (defect === 'builder-configuration') invocation.argv.push('--target=node23');
+    else invocation.node = invocation.packageManager;
+    expect(() => verifyBgVerifierBuildRecord(record, invocation, boundary))
+      .toThrow('BG builder configuration or toolchain identity changed');
+    expect(JSON.stringify(record)).toBe(recordBytes);
+    expect(readFileSync(join(prepared.root, '.verifier-source.json'))).toEqual(originalReceipt);
+  }
+
+  for (const boundary of boundaries) for (const defect of ['builder-configuration', 'toolchain-identity'] as const) {
+    it(`bg-r1-${defect}-${boundary} rejects changed ${defect} ${boundary}`, () => invocationDefect(boundary, defect));
+  }
+  it('BG-PREP-EXACT-SELECTION rejects changed builder configuration or toolchain identity', async () => {
+    for (const boundary of boundaries) for (const defect of ['builder-configuration', 'toolchain-identity'] as const)
+      await invocationDefect(boundary, defect);
+  });
 });
 
 describe('bundle-host-freshness output-tree identity', () => {
