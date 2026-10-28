@@ -123,9 +123,13 @@ export function judgeConsultReceiptMatrix(input: {
     const answering = typeof attempt?.answeringOwnerId === 'string' ? attempt.answeringOwnerId : null;
     const source = typeof attempt?.sourceOwnerId === 'string' ? attempt.sourceOwnerId : null;
     const requester = artifact.requesterId;
-    const answer = rows.posts.find(post => post.thread_id === `thr-${cell.conversationId}` &&
+    // A consult cascade posts once per attempt (a decline, an earlier reply), so the first
+    // qualifying post can belong to a session the cascade moved past. Judge the dispatched
+    // session's own post; fall back to the first one so a missing dispatched answer still fails.
+    const qualifying = rows.posts.filter(post => post.thread_id === `thr-${cell.conversationId}` &&
       post.author_id !== null && post.author_id !== requester && post.author_id !== source &&
       Number(post.len) >= CONSULT_RECEIPT_MIN_ANSWER_CHARS);
+    const answer = qualifying.find(post => answering !== null && post.author_id === answering) ?? qualifying[0];
     const checks: Record<string, boolean> = {
       consult_row_present: consult !== undefined,
       mode_matches_definition: cell.mode === def.mode,

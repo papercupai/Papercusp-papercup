@@ -3539,6 +3539,11 @@ export function parkOnHostDeferral(
   return {
     kind: 'park',
     reason: `psu-host ${reason}: the live host deferred this wake; parked for a durable retry, never a second process`,
+    // The host accepted this delivery into its durable re-arm queue. Keep the
+    // event pump's generic attempt ceiling and inbox fallback from racing that
+    // host-owned write; after a terminal host drop, the same delivery can be
+    // re-enrolled by the origin with fresh turn provenance.
+    hostCommitPending: true,
   };
 }
 

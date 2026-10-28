@@ -1,6 +1,6 @@
 /**
  * Seed the `acceptance-grading-sweep` routine — the acceptance-grading stall
- * sweep's 600s cadence (acceptance-grading-stall-sweep-2026-08-26 P-004; handler in
+ * sweep's 60s cadence (acceptance-grading-stall-sweep-2026-08-26 P-004; handler in
  * `acceptance-grading-sweep-action.ts`, orchestration in
  * `../../acceptance-grading-sweep-run.ts`, decision core in
  * `../../acceptance-grading-sweep.ts`).
@@ -13,8 +13,8 @@
  * by the per-host ephemeral executor (`../../dbos/ephemeral-executor.ts`) on boot —
  * NOT a bare `setInterval` (`lint:no-raw-setinterval`).
  *
- * 600s cadence: the decision core's own thresholds are 2h (re-dispatch) and 12h
- * (escalate), so a 10-minute sweep bounds detection overshoot at ~8% of the shortest
+ * 60s cadence: the decision core's own thresholds are 2h (re-dispatch) and 12h
+ * (escalate), so a one-minute sweep bounds detection overshoot at ~0.8% of the shortest
  * contract. The cadence is deliberately far below both thresholds so that sweep
  * TIMING can never be the thing that decides an outcome — the thresholds decide, and
  * the sweep merely observes often enough not to matter.

@@ -4,9 +4,13 @@
  *
  * It compares the files a work-item edited (edit_attribution_ledger rows stamped with the
  * item, P-005) with the test files recorded in harness_shared.test_runs during the item's
- * claim window, and names every edited file no recorded run exercised. It also says whether
- * any PASSING run was measured on a clean tree, because a pass on a dirty tree is the
- * documented trap (CLAUDE.md "A PASS at tip is NOT proof"). It is a warning only: nothing
+ * claim window, and names every edited file no recorded run exercised. It also names every
+ * covered file whose PASSING runs were all measured on a dirty tree (or never recorded the
+ * flag), because a pass on a dirty tree is the documented trap (CLAUDE.md "A PASS at tip is
+ * NOT proof"). The clean-tree verdict is judged only on runs that exercised an edited file:
+ * an unrelated clean run elsewhere in the workspace says nothing about these files. The run
+ * population is every test_runs row stamped with the workspace (agent-run test files; gate
+ * rows carry no workspace and are not counted), whoever ran it. It is a warning only: nothing
  * here can refuse a close (D-003 keeps P-011 at low priority, plan non-goal: no refusal).
  *
  * The classifier is pure; the edit rows, the test runs and the "does test T exercise file F"
@@ -58,10 +62,24 @@ export interface CloseCoverageReport {
   uncoveredFiles: string[];
   /** Test runs in the window whose status counts as having exercised code (pass / fail). */
   runsConsidered: number;
+  /** Passing runs in the window that exercised at least one edited file. */
   passingRuns: number;
-  /** True iff some passing run in the window recorded worktree_dirty=false. */
+  /** True iff some passing run that exercised an edited file recorded worktree_dirty=false. */
   anyCleanPass: boolean;
+  /** Verdict over the passing runs that exercised an edited file. */
   cleanTree: CleanTreeVerdict;
+  /** Covered files whose passing runs all recorded worktree_dirty=true. */
+  dirtyOnlyFiles: string[];
+  /** Covered files with passing runs, none clean, at least one not recording the flag. */
+  unknownTreeFiles: string[];
+  /** True when the run read hit its row cap, so coverage may be undercounted. */
+  runsTruncated: boolean;
+}
+
+function cleanTreeVerdict(passes: CloseCoverageTestRun[]): CleanTreeVerdict {
+  if (passes.length === 0) return 'no-pass';
+  if (passes.some((r) => r.worktreeDirty === false)) return 'clean-pass';
+  return passes.every((r) => r.worktreeDirty === true) ? 'dirty-only' : 'unknown';
 }
 
 /** Statuses that mean the test file actually ran. skip / cancelled / running / error do not. */
@@ -73,6 +91,8 @@ export function classifyCloseCoverage(input: {
   covers: CoverageMapping;
   windowStartMs: number;
   windowEndMs: number;
+  /** The caller's run read hit its row cap (see {@link CLOSE_COVERAGE_MAX_TEST_FILES}). */
+  runsTruncated?: boolean;
 }): CloseCoverageReport {
   const { windowStartMs, windowEndMs } = input;
   const inWindow = (ms: number) => Number.isFinite(ms) && ms >= windowStartMs && ms <= windowEndMs;
@@ -88,16 +108,23 @@ export function classifyCloseCoverage(input: {
   for (const file of editedFiles) {
     (testFiles.some((t) => t === file || input.covers(file, t)) ? coveredFiles : uncoveredFiles).push(file);
   }
-  const passes = runs.filter((r) => String(r.status).toLowerCase() === 'pass');
+  const exercises = (file: string, r: CloseCoverageTestRun) => {
+    const t = normalize(r.testFile);
+    return t === file || input.covers(file, t);
+  };
+  // Only runs that exercised an edited file say anything about these files' tree.
+  const passes = runs.filter(
+    (r) => String(r.status).toLowerCase() === 'pass' && editedFiles.some((f) => exercises(f, r)),
+  );
   const anyCleanPass = passes.some((r) => r.worktreeDirty === false);
-  const cleanTree: CleanTreeVerdict =
-    passes.length === 0
-      ? 'no-pass'
-      : anyCleanPass
-        ? 'clean-pass'
-        : passes.every((r) => r.worktreeDirty === true)
-          ? 'dirty-only'
-          : 'unknown';
+  const cleanTree = cleanTreeVerdict(passes);
+  const dirtyOnlyFiles: string[] = [];
+  const unknownTreeFiles: string[] = [];
+  for (const file of coveredFiles) {
+    const verdict = cleanTreeVerdict(passes.filter((r) => exercises(file, r)));
+    if (verdict === 'dirty-only') dirtyOnlyFiles.push(file);
+    else if (verdict === 'unknown') unknownTreeFiles.push(file);
+  }
   return {
     windowStartMs,
     windowEndMs,
@@ -108,7 +135,15 @@ export function classifyCloseCoverage(input: {
     passingRuns: passes.length,
     anyCleanPass,
     cleanTree,
+    dirtyOnlyFiles,
+    unknownTreeFiles,
+    runsTruncated: input.runsTruncated === true,
   };
+}
+
+function listFiles(files: string[]): string {
+  const shown = files.slice(0, 12);
+  return `${shown.join(', ')}${files.length > shown.length ? ', …' : ''}`;
 }
 
 /** The one-line warning `work_items:complete` returns, or undefined when there is nothing to say. */
@@ -116,22 +151,30 @@ export function closeCoverageWarningText(itemId: string, r: CloseCoverageReport)
   if (r.editedFiles.length === 0) return undefined;
   const parts: string[] = [];
   if (r.uncoveredFiles.length > 0) {
-    const shown = r.uncoveredFiles.slice(0, 12);
     parts.push(
       `${r.uncoveredFiles.length} of ${r.editedFiles.length} file(s) ${itemId} edited were exercised by no recorded ` +
-        `test run in its claim window: ${shown.join(', ')}${r.uncoveredFiles.length > shown.length ? ', …' : ''}`,
+        `test run in its claim window: ${listFiles(r.uncoveredFiles)}`,
     );
   }
-  if (r.cleanTree !== 'clean-pass') {
+  if (r.cleanTree === 'no-pass' && r.coveredFiles.length > 0) {
+    parts.push('no passing test run that exercised an edited file was recorded in the claim window');
+  }
+  if (r.dirtyOnlyFiles.length > 0) {
     parts.push(
-      r.cleanTree === 'no-pass'
-        ? 'no passing test run was recorded in the claim window'
-        : r.cleanTree === 'dirty-only'
-          ? 'every passing run in the claim window was measured on a DIRTY tree (worktree_dirty=true), so it may have passed on bytes that are not committed'
-          : 'no passing run in the claim window recorded a clean tree (worktree_dirty unknown)',
+      `${r.dirtyOnlyFiles.length} edited file(s) passed only on a DIRTY tree (worktree_dirty=true), so they may have ` +
+        `passed on bytes that are not committed: ${listFiles(r.dirtyOnlyFiles)}`,
+    );
+  }
+  if (r.unknownTreeFiles.length > 0) {
+    parts.push(
+      `${r.unknownTreeFiles.length} edited file(s) have no passing run that recorded a clean tree (worktree_dirty ` +
+        `unknown): ${listFiles(r.unknownTreeFiles)}`,
     );
   }
   if (parts.length === 0) return undefined;
+  if (r.runsTruncated) {
+    parts.push(`the test-run read hit its ${CLOSE_COVERAGE_MAX_TEST_FILES * 3}-row cap, so coverage may be undercounted`);
+  }
   return (
     `close coverage (warning only, the close is not refused): ${parts.join('; ')}. ` +
     `A run counts when it passed or failed between claim and close; a test exercises a file when it is the file, ` +
@@ -244,6 +287,14 @@ export async function computeCloseCoverage(opts: {
        GROUP BY file
     `;
     if (editRows.length === 0) return null;
+    // Only tests under an edited file's package root can exercise it (same file, sibling test,
+    // or a direct relative import). Filtering in SQL keeps the row cap from dropping the
+    // alphabetically-late test files of a busy window: 24 h of workspace runs measured
+    // 15,112 (file, status, dirty) rows on 2026-10-28, above the cap.
+    const rootPatterns = [...new Set(editRows.map((r) => packageRoot(r.file)))];
+    const filterByRoot = rootPatterns.length > 0 && !rootPatterns.includes('');
+    const likePatterns = rootPatterns.map((r) => `${r.replace(/[\\%_]/g, (c) => `\\${c}`)}/%`);
+    const rowCap = CLOSE_COVERAGE_MAX_TEST_FILES * 3;
     const runRows = await sql<{ file_path: string; status: string; worktree_dirty: boolean | null; finished_ms: string | number }[]>`
       SELECT DISTINCT ON (file_path, status, worktree_dirty)
              file_path, status, worktree_dirty, extract(epoch FROM finished_at) * 1000 AS finished_ms
@@ -251,8 +302,9 @@ export async function computeCloseCoverage(opts: {
        WHERE workspace_id = ${workspaceId}
          AND finished_at >= ${from} AND finished_at <= ${to}
          AND status IN ('pass', 'fail')
+         AND (${!filterByRoot} OR file_path LIKE ANY(${likePatterns}::text[]))
        ORDER BY file_path, status, worktree_dirty, finished_at DESC
-       LIMIT ${CLOSE_COVERAGE_MAX_TEST_FILES * 3}
+       LIMIT ${rowCap}
     `;
     const testRuns: CloseCoverageTestRun[] = runRows.map((r) => ({
       testFile: r.file_path,
@@ -271,6 +323,7 @@ export async function computeCloseCoverage(opts: {
       covers: directImportCoverageMapping((t) => sources.get(t) ?? null),
       windowStartMs,
       windowEndMs,
+      runsTruncated: runRows.length >= rowCap,
     });
   } catch {
     return null;

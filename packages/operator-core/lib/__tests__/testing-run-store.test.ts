@@ -19,6 +19,7 @@ import {
   persistRunSnapshot,
   distillVitestRun,
   parseFailureDetailsSidecar,
+  parseVitestJsonForHarnessRows,
   COLLECTION_FAILURE_TEST,
   _resetTestingRunStore,
 } from '../testing-run-store';
@@ -336,6 +337,33 @@ describe('distillVitestRun', () => {
       actual: '{ service_select: false }',
       expected: '{ service_select: true }',
     }]);
+  });
+
+  it('redacts launch-environment secrets in every Vitest report projection', () => {
+    const credential = 'synthetic-child-credential-value-never-present-in-parent-env';
+    const environment = { SYNTHETIC_CHILD_CREDENTIAL: credential };
+    const json = report([{
+      name: `${ROOT}/pkg/credential.test.ts`, status: 'failed',
+      assertionResults: [{
+        status: 'failed', fullName: 'suite > keeps credentials private',
+        failureMessages: [`received ${credential} from the child environment`],
+      }],
+    }]);
+    const details = parseFailureDetailsSidecar(JSON.stringify({ failures: [{
+      file: `${ROOT}/pkg/credential.test.ts`,
+      test: 'suite > keeps credentials private',
+      actual: { observed: credential },
+      expected: { observed: 'placeholder' },
+    }] }), ROOT, environment);
+
+    const distilled = distillVitestRun(json, ROOT, { failureDetails: details, environment });
+    const rows = parseVitestJsonForHarnessRows(json, ROOT, environment);
+    const projected = JSON.stringify({ distilled, rows });
+
+    expect(projected).not.toContain(credential);
+    expect(distilled.failures[0]?.message).toContain('[redacted]');
+    expect(distilled.failures[0]?.actual).toContain('[redacted]');
+    expect(rows[0]?.outputTail).toContain('[redacted]');
   });
 
   it('parses malformed or unsupported sidecars fail-soft', () => {

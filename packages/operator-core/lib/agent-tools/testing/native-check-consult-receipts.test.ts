@@ -98,6 +98,27 @@ describe('judgeConsultReceiptMatrix (R-6 receipt oracle)', () => {
     expect(assertions[1]!.evidence).toContain('substantive_answer_posted');
   });
 
+  it('judges the dispatched session\'s answer when earlier cascade attempts posted first', () => {
+    const r = rows();
+    const conv = CELLS[1]!.conv;
+    // Attempt 1 declined at length and attempt 2 replied; the cascade then dispatched the artifact's session.
+    r.consults[1] = { ...r.consults[1]!, dispatch_attempts: [
+      { agent: 'codex', operation: 'convert', sourceOwnerId: 'su-src-b', answeringOwnerId: 'su-decliner' },
+      { agent: 'codex', operation: 'convert', sourceOwnerId: 'su-src-b', answeringOwnerId: 'su-earlier' },
+      ...(r.consults[1]!.dispatch_attempts as unknown[]),
+    ] };
+    r.posts = [{ id: 1, thread_id: `thr-${conv}`, author_id: 'su-decliner', len: 548 },
+      { id: 2, thread_id: `thr-${conv}`, author_id: 'su-earlier', len: 1900 }, ...r.posts];
+    const assertions = judgeConsultReceiptMatrix({ artifact: artifact(), definition: DEFINITION, rows: r });
+    expect(failedIds(assertions)).toEqual([]);
+    expect(assertions[1]!.evidence).toContain('by su-ans-b');
+    // Without the dispatched session's own post, an earlier attempt's post does not stand in for it.
+    r.posts = r.posts.filter(post => !(post.thread_id === `thr-${conv}` && post.author_id === 'su-ans-b'));
+    const missing = judgeConsultReceiptMatrix({ artifact: artifact(), definition: DEFINITION, rows: r });
+    expect(failedIds(missing)).toEqual(['cell:claude-ended-to-codex-conversion', 'matrix:all-defined-cells-checked']);
+    expect(missing[1]!.evidence).toContain('answer_author_is_dispatched_session');
+  });
+
   it('fails when the durable dispatch names a different answering session than the artifact claims', () => {
     const a = artifact();
     a.matrix.cells[2] = { ...a.matrix.cells[2]!, answeringOwnerId: 'su-someone-else' };

@@ -3747,6 +3747,69 @@ describe('executeWake — the liveness ladder', () => {
     );
   });
 
+  it('keeps a deferred loop-fire retry host-owned and preserves exact delivery identity and turn proof', async () => {
+    const ownerId = 'su-loop-deferral';
+    const delivery = work({
+      id: 7331,
+      subscriberId: ownerId,
+      attempts: 8,
+      payload: { carry: 'warm', wakeCount: 8, harness: 'papercusp', routineId: 'routine-loop-deferral' },
+    });
+    const tagOrigins: string[] = [];
+    const tag = ((args: { sid: string; origin: string; text: string }) => {
+      tagOrigins.push(args.origin);
+      return {
+        taggedText: '⟦tagged:' + args.origin + '⟧\n' + args.text,
+        envelope: '⟦tagged:' + args.origin + '⟧',
+        nonce: 'loop-deferral-test',
+        origin: args.origin,
+        ledgerWritten: true,
+      };
+    }) as never;
+    const results = [
+      { ok: false, confirmation: 'acked' as const, reason: 'deferred-busy-gate' },
+      { ok: true, confirmation: 'acked' as const, reason: 'delivered' },
+    ];
+    const injectPsuHostWithConfirmation = vi.fn(async () => results.shift() as (typeof results)[number]);
+    const host = { sock: '/tmp/psu-pty/loop-deferral.sock', ownerId, caps: ['native-turn-start'] };
+    const wakeDeps = deps({
+      findPsuHost: vi.fn(() => host) as never,
+      injectPsuHost: undefined,
+      injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+      tagTurn: tag,
+    });
+
+    const first = await executeWake(delivery, wakeDeps);
+    expect(first).toMatchObject({
+      kind: 'park',
+      reason: expect.stringContaining('deferred-busy-gate'),
+      hostCommitPending: true,
+    });
+
+    const retry = await executeWake({
+      ...delivery,
+      attempts: 9,
+      lastError: first.kind === 'park' ? first.reason : null,
+    }, wakeDeps);
+    expect(retry).toEqual({
+      kind: 'delivered',
+      channel: 'psu-socket-inject',
+      turnProof: 'host-attested',
+    });
+    expect(tagOrigins).toEqual(['loop-fire', 'loop-fire']);
+    for (const attempt of [1, 2]) {
+      expect(injectPsuHostWithConfirmation).toHaveBeenNthCalledWith(
+        attempt,
+        host.sock,
+        expect.objectContaining({
+          deliveryId: String(delivery.id),
+          data: expect.stringMatching(/^⟦tagged:loop-fire⟧\n/),
+          requireNativeTurnStart: true,
+        }),
+      );
+    }
+  });
+
   it('releases only the exact current-host accepted delivery after a host-ending terminal drop', async () => {
     const ownerId = 'su-host-ending-drop';
     const deliveryId = '782698';

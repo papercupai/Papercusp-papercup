@@ -2018,9 +2018,13 @@ async function readRunReportTexts(dir: string): Promise<string[]> {
 }
 
 /** Read the optional assertion-detail sidecar without making it a run prerequisite. */
-async function readFailureDetails(path: string, root: string): Promise<ReturnType<typeof parseFailureDetailsSidecar>> {
+async function readFailureDetails(
+  path: string,
+  root: string,
+  environment: Readonly<Record<string, string | undefined>>,
+): Promise<ReturnType<typeof parseFailureDetailsSidecar>> {
   try {
-    return parseFailureDetailsSidecar(await readFile(path, 'utf8'), root);
+    return parseFailureDetailsSidecar(await readFile(path, 'utf8'), root, environment);
   } catch {
     return [];
   }
@@ -2042,6 +2046,7 @@ export async function recoverCompletedRunAfterBudget(opts: {
   files: string[];
   timeoutMs: number;
   maxFailures?: number;
+  environment: Readonly<Record<string, string | undefined>>;
 }): Promise<TestFilesCoreResult | null> {
   const terminal = parseRouterTerminalCompletion(opts.output);
   if (!terminal) return null;
@@ -2050,10 +2055,14 @@ export async function recoverCompletedRunAfterBudget(opts: {
   const reportTexts = await readRunReportTexts(opts.dir);
   let run: DistilledTestRun | null = null;
   if (reportTexts.length > 0) {
-    const failureDetails = await readFailureDetails(join(opts.dir, TEST_FAILURE_DETAILS_FILENAME), opts.root);
+    const failureDetails = await readFailureDetails(
+      join(opts.dir, TEST_FAILURE_DETAILS_FILENAME), opts.root, opts.environment,
+    );
     run = mergeDistilledRuns(
       withNodeTestGroupRuns(
-        reportTexts.map((text) => distillVitestRun(text, opts.root, { maxFailures: opts.maxFailures, failureDetails })),
+        reportTexts.map((text) => distillVitestRun(text, opts.root, {
+          maxFailures: opts.maxFailures, failureDetails, environment: opts.environment,
+        })),
         opts.nodeTestOutput ?? opts.output,
         opts.files,
         opts.maxFailures === undefined ? {} : { maxFailures: opts.maxFailures },
@@ -3934,6 +3943,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
         runId,
         files: pathResolution.files,
         timeoutMs,
+        environment: childEnv,
         ...(opts.maxFailures === undefined ? {} : { maxFailures: opts.maxFailures }),
       });
       if (completed) {
@@ -4081,13 +4091,15 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
 
     let failureDetails = [] as ReturnType<typeof parseFailureDetailsSidecar>;
     try {
-      failureDetails = parseFailureDetailsSidecar(await readFile(failureDetailsPath, 'utf8'), root);
+      failureDetails = parseFailureDetailsSidecar(await readFile(failureDetailsPath, 'utf8'), root, childEnv);
     } catch {
       // The sidecar is optional and fail-soft; JSON reports remain authoritative.
     }
 
     const distilledRuns = withNodeTestGroupRuns(
-      reportTexts.map((text) => distillVitestRun(text, root, { maxFailures: opts.maxFailures, failureDetails })),
+      reportTexts.map((text) => distillVitestRun(text, root, {
+        maxFailures: opts.maxFailures, failureDetails, environment: childEnv,
+      })),
       outcome.nodeTestOutput ?? outcome.output,
       pathResolution.files,
       opts.maxFailures !== undefined ? { maxFailures: opts.maxFailures } : {},
@@ -4112,7 +4124,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     // record the same run group.
     if (ingestLedgerInProcess && ledgerWorktreeBefore && opts.workspaceId && opts.harnessSlug) {
       const ledgerWorktreeAfter = await captureWorktreeSnapshotAsync(root);
-      const rows = reportTexts.flatMap((text) => parseVitestJsonForHarnessRows(text, root));
+      const rows = reportTexts.flatMap((text) => parseVitestJsonForHarnessRows(text, root, childEnv));
       await persistHarnessTestRuns({
         harnessSlug: opts.harnessSlug,
         workspaceId: opts.workspaceId,

@@ -144,6 +144,8 @@ interface RunState {
   proc: ChildProcess | null;
   cwd: string;
   worktreeBefore: WorktreeGitSnapshot;
+  /** Launch-time environment stays process-local so recovery can redact child output exactly. */
+  childEnv: NodeJS.ProcessEnv;
   finalization: Promise<void> | null;
   snapshotSql?: SqlLike;
   progressTimer: ReturnType<typeof setTimeout> | null;
@@ -614,7 +616,12 @@ export async function getForegroundRunVerdictAsync(
   };
 }
 
-async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike, recoveryScope?: DetachedReportRecoveryScope): Promise<RunSnapshot | null> {
+async function readPersistedRunSnapshot(
+  runId: string,
+  sqlOverride?: SqlLike,
+  recoveryScope?: DetachedReportRecoveryScope,
+  environment?: Readonly<Record<string, string | undefined>>,
+): Promise<RunSnapshot | null> {
   const sql = await snapshotSql(sqlOverride);
   if (!sql) throw new TestingRunSnapshotUnavailableError();
   let query: PromiseLike<unknown>;
@@ -654,19 +661,20 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike, re
   const snapshot = snapshotFromRow(row);
   if (!snapshot) throw new TestingRunSnapshotUnavailableError();
   if (reportTaskRecovery) {
-    const recovered = await reconcilePersistedReportArtifact(snapshot, row, sql);
+    const recovered = await reconcilePersistedReportArtifact(snapshot, row, sql, environment);
     // A task reconstructed for evidence recovery is never a liveness verdict.
     return recovered === snapshot ? null : recovered;
   }
-  return reconcilePersistedOrphan(snapshot, row, sql);
+  return reconcilePersistedOrphan(snapshot, row, sql, environment);
 }
 
 async function readPersistedRunSnapshotWithRetry(
   runId: string,
   sqlOverride?: SqlLike,
   recoveryScope?: DetachedReportRecoveryScope,
+  environment?: Readonly<Record<string, string | undefined>>,
 ): Promise<RunSnapshot | null> {
-  let snapshot = await readPersistedRunSnapshot(runId, sqlOverride, recoveryScope);
+  let snapshot = await readPersistedRunSnapshot(runId, sqlOverride, recoveryScope, environment);
   if (snapshot) return snapshot;
 
   // `testing:run` waits for the initial upsert before it marks detachedDurable
@@ -676,7 +684,7 @@ async function readPersistedRunSnapshotWithRetry(
   // absent; read errors remain snapshot_unavailable and are never retried here.
   for (const delayMs of DETACHED_RUN_DURABILITY_RETRY_DELAYS_MS) {
     await waitForSnapshotRetry(delayMs);
-    snapshot = await readPersistedRunSnapshot(runId, sqlOverride, recoveryScope);
+    snapshot = await readPersistedRunSnapshot(runId, sqlOverride, recoveryScope, environment);
     if (snapshot) return snapshot;
   }
   return null;
@@ -1011,6 +1019,7 @@ async function reconcilePersistedOrphan(
   snapshot: RunSnapshot,
   row: DurableRunSnapshotRow,
   sql: SqlLike,
+  environment?: Readonly<Record<string, string | undefined>>,
 ): Promise<RunSnapshot> {
   const taskState = row.task_state;
   const taskDeadlineAt = epochMs(row.task_deadline_at ?? null);
@@ -1028,9 +1037,9 @@ async function reconcilePersistedOrphan(
   if (taskTerminal || deadlineExpired) {
     const artifact = detachedArtifactsFromRow(snapshot, row)
       .find(candidate => candidate.stdoutPath || candidate.stderrPath);
-    await appendDetachedOutput(observed, artifact ?? null);
+    await appendDetachedOutput(observed, artifact ?? null, environment);
   }
-  const fromReport = await reconcilePersistedReportArtifact(observed, row, sql);
+  const fromReport = await reconcilePersistedReportArtifact(observed, row, sql, environment);
   if (fromReport !== observed) return fromReport;
   const fromTestRunLedger = await reconcilePersistedTestRun(observed, task, taskLinked, sql);
   if (fromTestRunLedger !== observed) return fromTestRunLedger;
@@ -1251,14 +1260,19 @@ function detachedArtifactsFromRow(snapshot: RunSnapshot, row: DurableRunSnapshot
 }
 
 /** A recovery verdict needs the complete JSON reporter, not a partially flushed file. */
-function completedDetachedReport(text: string, root: string): HarnessTestFileRow[] | null {
+function completedDetachedReport(
+  text: string,
+  root: string,
+  environment: Readonly<Record<string, string | undefined>>,
+): HarnessTestFileRow[] | null {
   try {
-    const report = JSON.parse(text);
+    const safeText = redactSensitiveText(text, [], environment);
+    const report = JSON.parse(safeText);
     if (typeof report.success !== 'boolean' || !Array.isArray(report.testResults)
       || report.testResults.length === 0 || report.testResults.some((file: VitestJsonFile) =>
         !file || !Number.isFinite(file.startTime) || !Number.isFinite(file.endTime)
         || file.endTime! < file.startTime! || !Array.isArray(file.assertionResults))) return null;
-    const rows = parseVitestJsonForHarnessRows(text, root);
+    const rows = parseVitestJsonForHarnessRows(safeText, root, environment);
     if (rows.length !== report.testResults.length || rows.some(r => !r.execution)
       || new Set(rows.map(r => r.filePath)).size !== rows.length) return null;
     const counts = rows.reduce((sum, r) => ({
@@ -1276,7 +1290,12 @@ function completedDetachedReport(text: string, root: string): HarnessTestFileRow
 
 async function reconcilePersistedReportArtifact(
   snapshot: RunSnapshot, row: DurableRunSnapshotRow, sql: SqlLike,
+  environment?: Readonly<Record<string, string | undefined>>,
 ): Promise<RunSnapshot> {
+  // A process restart drops the original child environment. Do not recover raw
+  // report/output artifacts with a different process.env: it may no longer
+  // contain the values that appeared in the child report.
+  if (!environment) return snapshot;
   const noVerdict = snapshot.status === 'error' && snapshot.exitCode === null
     && snapshot.output.includes('[detached-recovery]') && snapshot.output.includes('no test verdict was observed');
   const closed = snapshot.status === 'pass' || snapshot.status === 'fail';
@@ -1290,11 +1309,11 @@ async function reconcilePersistedReportArtifact(
   const artifacts = detachedArtifactsFromRow(snapshot, row);
   if (artifacts.length === 0) return snapshot;
   const outputArtifact = artifacts.find(artifact => artifact.stdoutPath || artifact.stderrPath);
-  await appendDetachedOutput(snapshot, outputArtifact ?? null);
+  await appendDetachedOutput(snapshot, outputArtifact ?? null, environment);
   try {
     const expanded = await expandDetachedReportArtifacts(artifacts);
     const reports = await Promise.all(expanded.map(async artifact => ({
-      artifact, rows: completedDetachedReport(await readFile(artifact.reportPath, 'utf8'), artifact.root),
+      artifact, rows: completedDetachedReport(await readFile(artifact.reportPath, 'utf8'), artifact.root, environment),
     })));
     if (reports.some(report => report.rows === null)
       || !hasCompleteRouterReportCoverage(artifacts, snapshot.requestedFiles, reports)) return snapshot;
@@ -1525,13 +1544,14 @@ async function persistDetachedReportArtifacts(
   snapshot: RunSnapshot,
   artifacts: PreparedDetachedReportArtifact[],
   configurationSnapshot: ConfigurationSnapshot | null,
+  environment: Readonly<Record<string, string | undefined>>,
 ): Promise<void> {
   let expanded: PreparedDetachedReportArtifact[];
   try {
     expanded = await expandDetachedReportArtifacts(artifacts);
     if (artifacts.some(artifact => artifact.routerReports)) {
       const reports = await Promise.all(expanded.map(async artifact => ({
-        rows: completedDetachedReport(await readFile(artifact.reportPath, 'utf8'), artifact.root),
+        rows: completedDetachedReport(await readFile(artifact.reportPath, 'utf8'), artifact.root, environment),
       })));
       if (!hasCompleteRouterReportCoverage(artifacts, snapshot.requestedFiles, reports)) return;
     }
@@ -1547,12 +1567,13 @@ async function persistDetachedReportArtifacts(
             failureDetails = parseFailureDetailsSidecar(
               await readFile(artifact.failureDetailsPath, 'utf8'),
               artifact.root,
+              environment,
             );
           } catch {
             /* swallow — the JSON report remains authoritative */
           }
         }
-        const distilled = distillVitestRun(reportText, artifact.root, { failureDetails });
+        const distilled = distillVitestRun(reportText, artifact.root, { failureDetails, environment });
         if (distilled.failed > 0) {
           const lines = [
             `\n[detached-recovery] Vitest reported ${distilled.failed} failing test(s) in ${distilled.files} file(s):`,
@@ -1569,7 +1590,7 @@ async function persistDetachedReportArtifacts(
           }
           appendSnapshotOutput(snapshot, `${lines.join('\n')}\n`);
         }
-        const rows = parseVitestJsonForHarnessRows(reportText, artifact.root);
+        const rows = parseVitestJsonForHarnessRows(reportText, artifact.root, environment);
         if (rows.length > 0 && artifact.scope) {
           const after = await captureWorktreeSnapshotAsync(artifact.root);
           await boundedOrgTxn(async tx => {
@@ -1668,16 +1689,19 @@ async function readDetachedOutputTail(path: string | undefined): Promise<{ text:
 async function appendDetachedOutput(
   snapshot: RunSnapshot,
   paths: { stdoutPath?: string; stderrPath?: string } | null,
+  environment?: Readonly<Record<string, string | undefined>>,
 ): Promise<void> {
-  if (!paths || snapshot.output.includes(DETACHED_OUTPUT_MARKER)) return;
+  if (!paths || !environment || snapshot.output.includes(DETACHED_OUTPUT_MARKER)) return;
   const [stdout, stderr] = await Promise.all([
     readDetachedOutputTail(paths.stdoutPath),
     readDetachedOutputTail(paths.stderrPath),
   ]);
   if (!stdout.text && !stderr.text) return;
   appendSnapshotOutput(snapshot, DETACHED_OUTPUT_MARKER);
-  if (stdout.text) appendSnapshotOutput(snapshot, `stdout${stdout.truncated ? ' (tail)' : ''}:\n${stdout.text}`);
-  if (stderr.text) appendSnapshotOutput(snapshot, `\nstderr${stderr.truncated ? ' (tail)' : ''}:\n${stderr.text}`);
+  if (stdout.text) appendSnapshotOutput(snapshot,
+    `stdout${stdout.truncated ? ' (tail)' : ''}:\n${redactSensitiveText(stdout.text, [], environment)}`);
+  if (stderr.text) appendSnapshotOutput(snapshot,
+    `\nstderr${stderr.truncated ? ' (tail)' : ''}:\n${redactSensitiveText(stderr.text, [], environment)}`);
   snapshot.truncated ||= stdout.truncated || stderr.truncated;
 }
 
@@ -1696,7 +1720,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     detachedOutputPaths,
   } = prepared;
   const state: RunState = {
-    snapshot, proc: null, cwd, worktreeBefore, finalization: null,
+    snapshot, proc: null, cwd, worktreeBefore, childEnv, finalization: null,
     snapshotSql: opts.snapshotSql, progressTimer: null, progressWrite: null,
   };
   _runs.set(snapshot.runId, state);
@@ -1709,8 +1733,8 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
         // The final snapshot must be written only after detached report rows and
         // failure details have been reconciled; otherwise testing:run-status can
         // observe a terminal run while its Vitest evidence is still in flight.
-        await appendDetachedOutput(snapshot, detachedOutputPaths);
-        await persistDetachedReportArtifacts(snapshot, detachedReportArtifacts, configurationSnapshot);
+        await appendDetachedOutput(snapshot, detachedOutputPaths, childEnv);
+        await persistDetachedReportArtifacts(snapshot, detachedReportArtifacts, configurationSnapshot, childEnv);
         await persistFallbackRow(snapshot, worktreeBefore, cwd, configurationSnapshot);
         await persistRunSnapshot(snapshot, state.snapshotSql);
       } catch {
@@ -2026,12 +2050,19 @@ async function withholdUnverifiedVitestPass(
  * even though the task manager has already observed the scope ending.
  * Missing/expired/unreadable durable rows retain their existing semantics.
  */
-export async function getRunAsync(runId: string, sqlOverride?: SqlLike, recoveryScope?: DetachedReportRecoveryScope): Promise<RunSnapshot | null> {
+export async function getRunAsync(
+  runId: string,
+  sqlOverride?: SqlLike,
+  recoveryScope?: DetachedReportRecoveryScope,
+  environment?: Readonly<Record<string, string | undefined>>,
+): Promise<RunSnapshot | null> {
   evictOldRuns();
   const local = _runs.get(runId);
   if (local) {
     if (local.snapshot.status === 'running' && local.snapshot.taskId) {
-      const persisted = await readPersistedRunSnapshot(runId, sqlOverride ?? local.snapshotSql, recoveryScope);
+      const persisted = await readPersistedRunSnapshot(
+        runId, sqlOverride ?? local.snapshotSql, recoveryScope, local.childEnv,
+      );
       // Preserve fresher local progress while the task is live, and never
       // overwrite a cancellation/close that completed during the durable read.
       if (local.snapshot.status === 'running' && persisted && persisted.status !== 'running') {
@@ -2048,7 +2079,7 @@ export async function getRunAsync(runId: string, sqlOverride?: SqlLike, recovery
     }
     return snapshot;
   }
-  const persisted = await readPersistedRunSnapshotWithRetry(runId, sqlOverride, recoveryScope);
+  const persisted = await readPersistedRunSnapshotWithRetry(runId, sqlOverride, recoveryScope, environment);
   return persisted ? withholdUnverifiedVitestPass(persisted, sqlOverride) : null;
 }
 

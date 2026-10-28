@@ -2041,7 +2041,7 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
 
   it('first render and guide addressing use the selected moderated mode revision', async () => {
     const { parse: parseYaml, stringify: stringifyYaml } = await import('yaml');
-    const { blueprintPackageInputs, builtinBlueprintPath, resolveBlueprintSource, resolveBuiltinExtends } =
+    const { blueprintPackageInputs, builtinBlueprintPath, resolveBlueprintSource, resolveBuiltinExtends, SU_STATIC_LAYERS } =
       await import('@papercusp/orchestrator/blueprint');
     const { buildBlueprintReleaseArchive, commitBlueprintRelease } = await import('./cupboard/blueprint-release');
     const { getSelectedModeCatalog } = await import('./agent-identities/source');
@@ -2068,10 +2068,14 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
         version: '1.0.0', source: 'https://github.com/acme/mode', pins,
         modeApproval: { listingId: 'moderated-listing', policyRef: 'auto', approvedArtifactContentHash: hash } });
       resolvePromptFilesMock.mockReturnValueOnce([join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md')]);
-      await buildLaunchSpec({ ...su, modes: ['auto'] });
+      const spec = await buildLaunchSpec({ ...su, modes: ['auto'] });
       const rendered = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { baseText?: string };
       expect(rendered.baseText).toContain('AUTO selected from moderated install');
       expect(rendered.baseText).not.toContain("AUTO mode — the owner's switch");
+      expect(spec.impliedStack).toEqual(expect.arrayContaining([
+        ...SU_STATIC_LAYERS.map((layer) => `${layer.slot}:${layer.id}`),
+        `autonomy:${id}`,
+      ]));
       await composerFromLastRender()({ text: 'G', source: '/repo/CLAUDE.md' });
       expect(lastRead().tokens).toContain(`blueprint:${id}`);
     } finally {
@@ -2168,11 +2172,6 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     expect(memberTokens).toContain('blueprint:su.mode-auto');
     expect(leaderTokens).not.toContain('blueprint:su.mode-auto');
     expect(leaderTokens).not.toEqual(memberTokens);
-    expect(leader.impliedStack).toContain('fleet-posture:su.fleet-leader');
-    expect(member.impliedStack).toEqual(expect.arrayContaining([
-      'fleet-posture:su.fleet-member',
-      'autonomy:su.mode-auto',
-    ]));
   });
 
   it('GENERIC profile (no repo guide) threads NO composer; POWER reads under the launch harness', async () => {

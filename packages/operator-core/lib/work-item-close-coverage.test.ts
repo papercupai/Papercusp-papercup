@@ -61,6 +61,40 @@ describe('classifyCloseCoverage (R-10)', () => {
     expect(r.uncoveredFiles).toEqual([]);
     expect(r.cleanTree).toBe('dirty-only');
     expect(r.anyCleanPass).toBe(false);
+    expect(r.dirtyOnlyFiles).toEqual(['lib/z.test.ts']);
+  });
+
+  it('judges the clean tree only on runs that exercised an edited file', () => {
+    const r = classifyCloseCoverage({
+      edits: [edit('lib/a.ts')],
+      // An unrelated clean pass elsewhere in the workspace says nothing about lib/a.ts.
+      testRuns: [run('lib/a.test.ts', 'pass', true), run('lib/unrelated.test.ts', 'pass', false)],
+      covers: mapping,
+      windowStartMs: W0,
+      windowEndMs: W1,
+    });
+    expect(r.anyCleanPass).toBe(false);
+    expect(r.cleanTree).toBe('dirty-only');
+    expect(r.passingRuns).toBe(1);
+    expect(r.dirtyOnlyFiles).toEqual(['lib/a.ts']);
+  });
+
+  it('names a file that passed only on a dirty tree even when another edited file has a clean pass', () => {
+    const r = classifyCloseCoverage({
+      edits: [edit('lib/a.ts'), edit('lib/c.ts')],
+      testRuns: [run('lib/a.test.ts', 'pass', false), run('lib/x.test.ts', 'pass', true)],
+      covers: mapping,
+      windowStartMs: W0,
+      windowEndMs: W1,
+    });
+    expect(r.cleanTree).toBe('clean-pass');
+    expect(r.dirtyOnlyFiles).toEqual(['lib/c.ts']);
+    expect(r.unknownTreeFiles).toEqual([]);
+    const w = closeCoverageWarningText('WI-1', r)!;
+    expect(w).toContain('DIRTY');
+    expect(w).toContain('lib/c.ts');
+    expect(w).not.toContain('lib/a.ts');
+    expect(w).toContain('not refused');
   });
 
   it('states unknown when no passing run is clean and one did not record the flag', () => {
@@ -73,6 +107,8 @@ describe('classifyCloseCoverage (R-10)', () => {
     });
     expect(r.cleanTree).toBe('unknown');
     expect(r.passingRuns).toBe(2);
+    expect(r.unknownTreeFiles).toEqual(['lib/a.ts']);
+    expect(r.dirtyOnlyFiles).toEqual([]);
   });
 });
 
@@ -85,11 +121,26 @@ describe('closeCoverageWarningText', () => {
       windowStartMs: W0,
       windowEndMs: W1,
     });
+    expect(r.uncoveredFiles).toEqual(['lib/b.ts']);
+    expect(r.dirtyOnlyFiles).toEqual(['lib/a.ts']);
     const w = closeCoverageWarningText('WI-1', r)!;
-    expect(w).toContain('lib/b.ts');
-    expect(w).not.toContain('lib/a.ts,');
-    expect(w).toContain('DIRTY');
+    expect(w).toContain('exercised by no recorded test run in its claim window: lib/b.ts');
+    expect(w).toContain('passed only on a DIRTY tree');
     expect(w).toContain('not refused');
+    expect(w).not.toContain('row cap');
+  });
+
+  it('says coverage may be undercounted when the run read hit its cap', () => {
+    const r = classifyCloseCoverage({
+      edits: [edit('lib/b.ts')],
+      testRuns: [],
+      covers: mapping,
+      windowStartMs: W0,
+      windowEndMs: W1,
+      runsTruncated: true,
+    });
+    expect(r.runsTruncated).toBe(true);
+    expect(closeCoverageWarningText('WI-1', r)).toContain('may be undercounted');
   });
 
   it('is silent when every edited file is covered by a clean pass', () => {

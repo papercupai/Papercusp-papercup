@@ -16,6 +16,7 @@ import { RATCHET_METRICS_INSTRUMENT_KEY } from './release/ratchet-metrics';
 import { SILENT_HALT_STRANDED_INSTRUMENT_KEY } from './system-health/silent-halt-instrument';
 import { CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY } from './code-intelligence/code-intel-unknown-rate-probe';
 import { CODE_INTEL_LIVENESS_INSTRUMENT_KEY } from './code-intelligence/push-leg-liveness';
+import { COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY } from './code-intelligence/coupling-shadow-window';
 import { CLEANUP_OUTCOME_INSTRUMENT_KEYS } from './code-cleanup/outcome';
 import { DREAM_CONTROL_LIVE_INSTRUMENT_KEY } from './dream/dream-control-live-instrument';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
@@ -272,6 +273,7 @@ describe('the registry seed set', () => {
       CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY,
       CODE_INTEL_LIVENESS_INSTRUMENT_KEY,
       nativeAdoption.LEG_OUTCOMES_INSTRUMENT_KEY,
+      COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY,
       ...Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS),
     ];
     expect(platformComputedInstrumentKeys().sort()).toEqual([...expected].sort());
@@ -331,6 +333,12 @@ describe('the registry seed set', () => {
           } else if (key === nativeAdoption.LEG_OUTCOMES_INSTRUMENT_KEY) {
             // P-013 (R-10): one 7-day leg-outcome window per run, measured-leg count.
             expect(instrument.rescore?.windowMs).toBe(7 * 24 * 60 * 60_000);
+            expect(instrument.rescore?.unit).toBe('count');
+            expect(instrument.rescore?.scope).toBe('workspace');
+            expect(await instrument.rescore!.resolve({ ...window, workspaceId: ' ' })).toEqual({ verdict: 'unknown', detail: 'Exact workspace required.' });
+          } else if (key === COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY) {
+            // P-012 (R-12): one 28-day shadow window per run, distinct-edge sample count.
+            expect(instrument.rescore?.windowMs).toBe(28 * 24 * 60 * 60_000);
             expect(instrument.rescore?.unit).toBe('count');
             expect(instrument.rescore?.scope).toBe('workspace');
             expect(await instrument.rescore!.resolve({ ...window, workspaceId: ' ' })).toEqual({ verdict: 'unknown', detail: 'Exact workspace required.' });

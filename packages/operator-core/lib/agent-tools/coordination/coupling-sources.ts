@@ -778,6 +778,10 @@ export async function logCodeDependencyShadow(selfOwnerId: string, result: CodeD
     });
   }
   if (!rows.length) return 0;
+  // R-12 (D-013/D-020): stamp the coupling-derivation fingerprint so the shadow
+  // window restarts its count when the derivation changes. Null on a bundled build.
+  const fingerprint = await import('../../code-intelligence/coupling-shadow-window')
+    .then((m) => m.loadedDerivationFingerprint()).catch(() => null);
   try {
     const sql = coordSql();
     const ws = coordWorkspaceId();
@@ -786,7 +790,7 @@ export async function logCodeDependencyShadow(selfOwnerId: string, result: CodeD
       const inserted = await sql`
         INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
         VALUES (${r.id}, ${at}, ${self}, ${CODE_DEPENDENCY_SHADOW_ACTION}, ${r.subject},
-                ${sql.json(JSON.parse(JSON.stringify(r.details)))}, ${ws})
+                ${sql.json(JSON.parse(JSON.stringify({ ...r.details, fingerprint })))}, ${ws})
         ON CONFLICT (id) DO NOTHING`;
       written += inserted.count;
     }

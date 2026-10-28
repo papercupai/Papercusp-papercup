@@ -2129,6 +2129,57 @@ describe('testing:run (integration)', () => {
     }
   }, 180_000);
 
+  it('redacts a credential added only to the launched child environment from the failure response', async () => {
+    const file = 'packages/x/credential-redaction.test.ts';
+    const root = await makeScratchTestCheckout('testing-run-child-env-redaction-', file);
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts', 'test-files.mjs'), 'process.exit(0);\n');
+    await sealScratchTestCheckout(root);
+
+    const credential = 'synthetic-child-only-credential-value-1234567890';
+    const credentialKey = `PAPERCUSP_SYNTHETIC_CREDENTIAL_${randomUUID().replaceAll('-', '')}`;
+    expect(process.env[credentialKey]).toBeUndefined();
+    const testName = 'suite > keeps inherited credentials private';
+    const runRouterFn = vi.fn(async (args: string[], _cwd: string, environment: NodeJS.ProcessEnv) => {
+      environment[credentialKey] = credential;
+      const reportArgument = args.find((arg) => arg.startsWith('--outputFile='));
+      if (!reportArgument) throw new Error('test router did not receive the JSON report path');
+      await writeFile(reportArgument.slice('--outputFile='.length), JSON.stringify({ testResults: [{
+        name: join(root, file),
+        status: 'failed',
+        assertionResults: [{
+          status: 'failed',
+          fullName: testName,
+          failureMessages: [`received ${credential} from the child environment`],
+        }],
+      }] }));
+      const detailsPath = environment.PAPERCUSP_TEST_FAILURE_DETAILS_PATH;
+      if (!detailsPath) throw new Error('test router did not receive the failure details path');
+      await writeFile(detailsPath, JSON.stringify({ failures: [{
+        file: join(root, file),
+        test: testName,
+        actual: { observed: credential },
+        expected: { observed: 'placeholder' },
+      }] }));
+      return { code: 1, signal: null, timedOut: false, aborted: false, output: '' };
+    });
+
+    const result = await runTestFilesCore({ root, files: [file], timeoutMs: 10_000 }, { runRouterFn });
+    const serialized = JSON.stringify(result);
+
+    expect(result, serialized).toMatchObject({
+      ok: false,
+      failed: 1,
+      failures: [expect.objectContaining({
+        test: testName,
+        message: expect.stringContaining('[redacted]'),
+        actual: expect.stringContaining('[redacted]'),
+      })],
+    });
+    expect(serialized).not.toContain(credential);
+    expect(process.env[credentialKey]).toBeUndefined();
+  }, 30_000);
+
   it('runs a repo-resolving file from a phantom handler root through the canonical repo and surfaces the source', async () => {
     const phantom = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-handler-phantom-'));
     await rm(phantom, { recursive: true, force: true });
