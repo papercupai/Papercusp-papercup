@@ -1435,6 +1435,13 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
                ? sql`harness_slug = ANY(${filter.harnesses as string[]}::text[])`
                : sql`TRUE`
          }
+         AND ${
+           filter.ids
+             ? Array.isArray(filter.ids)
+               ? sql`feature_id = ANY(${filter.ids as string[]}::text[])`
+               : sql`feature_id IN (${filter.ids as ReturnType<OrgSql>})`
+             : sql`TRUE`
+         }
          AND ${q ? sql`(COALESCE(title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(summary, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
          AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
          AND ${filter.state ? sql`status = ${filter.state}` : sql`TRUE`}

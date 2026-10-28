@@ -2450,6 +2450,55 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain("agent's first turn");
   });
 
+  // EI-27199337851073256: an operator-scope caller (harness '*') relaunching a predecessor
+  // recorded in a real harness opened the successor with NO --harness and no harness in its
+  // MCP envelope; the fresh psu then bound to an unrelated hive and every claim it retained
+  // was refused harness_forbidden. The successor must inherit the predecessor's harness.
+  it.each([
+    ['an operator-scope caller', { workspaceId: 'ws-test', harnessSlug: '*', role: 'su' }],
+    ['a caller scoped to a different harness', { workspaceId: 'ws-test', harnessSlug: 'other-hive', role: 'su' }],
+  ])('launches a successor in the predecessor\'s recorded harness for %s', async (_label, callerCtx) => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, workspaceId: 'ws-test', harnessSlug: 'papercusp' });
+    verifyFreshLaunchStartedMock.mockResolvedValue({
+      agentStarted: true,
+      waitedMs: 5,
+      sessions: [{ ownerId: 'su-a1a71', sessionId: 'session-harness-successor', successfulCalls: 1 }],
+      note: 'successor verified',
+    });
+
+    const res = await launchAgent.handler(
+      { successor: { agentId: 'su-a1a71' }, brief: 'continue the recovery' },
+      callerCtx as never,
+    );
+
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--owner-id=su-a1a71 --harness=papercusp');
+    expect(buildConsoleEnvelopeMock.mock.calls[0]?.[0]).toMatchObject({ slug: 'papercusp' });
+    expect(gateWorkScopeMock).toHaveBeenCalledWith('capability:launch-agent', expect.objectContaining({ harness: 'papercusp' }));
+    expect(textOf(res)).toContain("predecessor's recorded harness 'papercusp'");
+  });
+
+  it('lets an explicit harness override the predecessor harness for a successor', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, workspaceId: 'ws-test', harnessSlug: 'other-hive' });
+    verifyFreshLaunchStartedMock.mockResolvedValue({
+      agentStarted: true,
+      waitedMs: 5,
+      sessions: [{ ownerId: 'su-a1a71', sessionId: 'session-explicit-harness', successfulCalls: 1 }],
+      note: 'successor verified',
+    });
+
+    const res = await launchAgent.handler(
+      { successor: { agentId: 'su-a1a71' }, harness: 'papercusp', brief: 'continue the recovery' },
+      { workspaceId: 'ws-test', harnessSlug: '*', role: 'su' } as never,
+    );
+
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--harness=papercusp');
+    expect(spawnedCommand()).not.toContain('--harness=other-hive');
+  });
+
   it('preserves a specialized source role and accepted-operation feature when starting a successor', async () => {
     findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue({

@@ -497,6 +497,60 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     if (complete.ok) expect(refAt(root, frozenLineageRef(candidate))).toBe(complete.commit);
   });
 
+  // change-provenance-and-admission-throughput-2026-10-27#P-002: a multi-source admission names
+  // its real whole-blob sources; the built (synthesized) source commit is never cohort-checked.
+  it('cohortSources: checks each named source once, never built.sourceCommit, and names the refusing source', () => {
+    // Each case gets its OWN fixture: a passing admit publishes and moves the lineage ref, so a
+    // shared repo would refuse every later case as lineage-ref-moved instead of judging its cohort.
+    const fixture = () => {
+      const { root, candidate } = repo();
+      const sourceCommit = sweep(root, {
+        'lib/a.ts': 'export const a = 2;\n',
+        'lib/a.test.ts': "import { a } from './a';\nimport { c } from './c';\nexport const result = a + c;\n",
+        'lib/c.ts': 'export const c = 2;\n',
+      }, 'cohort source');
+      return { root, candidate, sourceCommit };
+    };
+    type Fixture = ReturnType<typeof fixture>;
+    const run = (f: Fixture, cohortSources: Array<{ sourceCommit: string; paths: string[] }>, paths: string[]) =>
+      admit(f.root, f.candidate, paths, {
+        source: { ref: f.sourceCommit },
+        // enforceSourceCohort is ON, so a pass below proves cohortSources replaced the built-commit check.
+        preflight: importCompletenessPreflight({
+          root: f.root, probeRef: f.sourceCommit, enforceSourceCohort: true, cohortSources,
+        }),
+      });
+
+    // An empty list checks nothing: the same admission the single-source door refuses publishes.
+    expect(run(fixture(), [], ['lib/a.ts'])).toMatchObject({ ok: true });
+
+    // The first entry passes (nothing differs at the candidate); the second refuses, naming ITS source.
+    const f2 = fixture();
+    const { sourceCommit } = f2;
+    const refused = run(
+      f2,
+      [{ sourceCommit: f2.candidate, paths: ['docs/x.md'] }, { sourceCommit, paths: ['lib/a.ts'] }],
+      ['lib/a.ts', 'docs/x.md'],
+    );
+    expect(refused).toMatchObject({
+      ok: false,
+      code: 'admission-incomplete',
+      missing: [expect.objectContaining({ wanted: 'lib/a.test.ts', relation: 'reverse-importer' })],
+    });
+    if (!refused.ok && 'detail' in refused) {
+      expect(refused.detail).toContain(sourceCommit.slice(0, 12));
+      expect(refused.detail).toContain('or add a source that admits them');
+    }
+
+    // A cohort path admitted by any source satisfies the check, whichever source carried it.
+    const f3 = fixture();
+    expect(run(
+      f3,
+      [{ sourceCommit: f3.sourceCommit, paths: ['lib/a.ts'] }, { sourceCommit: f3.sourceCommit, paths: ['lib/a.test.ts', 'lib/c.ts'] }],
+      ['lib/a.ts', 'lib/a.test.ts', 'lib/c.ts'],
+    )).toMatchObject({ ok: true });
+  });
+
   it('checks a wide pinned cohort with constant Git calls and byte-framed Unicode test blobs', () => {
     const { root, candidate } = repo();
     const edits: Record<string, string> = {

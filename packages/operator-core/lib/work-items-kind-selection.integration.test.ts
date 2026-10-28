@@ -77,6 +77,39 @@ describe('indexed feature-family kind selection', () => {
     expect(await ids()).toEqual(['feature']);
   });
 
+  it('honors exact ids for both family readers and both identity-filter forms', async () => {
+    await seed('feature-array', 'feature');
+    await seed('feature-subquery', 'feature');
+    await seed('bug-array', 'bug');
+    await seed('bug-subquery', 'bug');
+
+    const listIds = async (
+      kind: 'feature' | 'bug',
+      ids: NonNullable<Parameters<typeof wi.listWorkItems>[0]>['ids'],
+    ) => (await wi.listWorkItems({
+      harness: HARNESS,
+      kind,
+      ids,
+      includeBody: false,
+      includePayload: false,
+    })).map(row => row.id).sort();
+
+    expect(await listIds('feature', ['feature-array'])).toEqual(['feature-array']);
+    expect(await listIds('bug', ['bug-array'])).toEqual(['bug-array']);
+    expect(await listIds('feature', [])).toEqual([]);
+    expect(await listIds('bug', [])).toEqual([]);
+    expect(await listIds('feature', db.sql`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = 'default' AND harness_slug = ${HARNESS}
+         AND item_kind = 'feature' AND feature_id = 'feature-subquery'
+    `)).toEqual(['feature-subquery']);
+    expect(await listIds('bug', db.sql`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = 'default' AND harness_slug = ${HARNESS}
+         AND item_kind = 'bug' AND feature_id = 'bug-subquery'
+    `)).toEqual(['bug-subquery']);
+  });
+
   it('makes item_kind indexable during a list rebuild, unlike the historical OR filter', async () => {
     await db.sql`INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts, summary)

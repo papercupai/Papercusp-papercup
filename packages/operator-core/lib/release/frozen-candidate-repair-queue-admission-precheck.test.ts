@@ -3,6 +3,7 @@ import {
   createFrozenCandidateRepairQueue,
   markFrozenRepairAdmitted,
   parseAdmissionPrecheckRecord,
+  parseAppliedAdmissionSources,
   parseFrozenCandidateRepairQueue,
   type FrozenRepairAdmission,
 } from './frozen-candidate-repair-queue';
@@ -108,7 +109,19 @@ describe('every FrozenRepairAdmission field survives the queue round trip (P-019
       unchanged: ['lib/b.ts'],
       blobs: { 'lib/a.test.ts': C1, 'lib/gone.ts': null },
       reason: 'repair the red leg',
-      mode: 'committed-patch',
+      mode: 'multi-source',
+      // change-provenance-and-admission-throughput-2026-10-27#P-002: the ordered sources a
+      // multi-source admission applied, one entry of each kind.
+      sources: [
+        { index: 0, kind: 'whole-blob', paths: ['lib/b.ts'], sourceCommit: C1, pinned: true, headAfter: C1 },
+        {
+          index: 1,
+          kind: 'committed-patch',
+          paths: ['lib/a.test.ts'],
+          patches: [{ commit: C2, parent: C, sha256: 'a'.repeat(64) }],
+          headAfter: C2,
+        },
+      ],
       precheck: {
         ran: true,
         reason: 'measured',
@@ -132,7 +145,58 @@ describe('every FrozenRepairAdmission field survives the queue round trip (P-019
       foreignAgents: ['su-peer'],
       provenance: 'reconciled-from-ref',
     };
-    const parsed = roundTrip(markFrozenRepairAdmitted(queue, full));
-    expect(parsed?.admissions?.at(-1)).toEqual(full);
+    // Mode-exclusive fields: `patch`/`patches` are kept only in committed-patch mode, `sources`
+    // only in multi-source mode (P-002). Each variant drops the OTHER mode's fields, and every
+    // remaining field must round-trip unchanged, so each field is asserted in the mode it belongs to.
+    const without = (...keys: Array<keyof FrozenRepairAdmission>): FrozenRepairAdmission =>
+      Object.fromEntries(Object.entries(full).filter(([k]) => !keys.includes(k as keyof FrozenRepairAdmission))) as unknown as FrozenRepairAdmission;
+    const variants: FrozenRepairAdmission[] = [
+      without('patch', 'patches'),
+      { ...without('sources'), mode: 'committed-patch' },
+    ];
+    for (const admission of variants) {
+      const parsed = roundTrip(markFrozenRepairAdmitted(queue, admission));
+      expect(parsed?.admissions?.at(-1)).toEqual(admission);
+    }
+  });
+});
+
+// change-provenance-and-admission-throughput-2026-10-27#P-002: a recorded multi-source
+// admission keeps its ordered sources; one malformed entry drops the whole list (never a guess).
+describe('parseAppliedAdmissionSources', () => {
+  const whole = { index: 0, kind: 'whole-blob', paths: ['lib/b.ts'], sourceCommit: C1, pinned: false, headAfter: C1 };
+  const patch = {
+    index: 1,
+    kind: 'committed-patch',
+    paths: ['lib/a.test.ts'],
+    patches: [{ commit: C2, parent: C, sha256: 'a'.repeat(64) }],
+    headAfter: C2,
+  };
+
+  it('keeps every entry in its recorded order', () => {
+    expect(parseAppliedAdmissionSources([whole, patch])).toEqual([whole, patch]);
+    expect(parseAppliedAdmissionSources([patch, whole])).toEqual([patch, whole]);
+  });
+
+  it.each([
+    ['an empty list', []],
+    ['a non-array', { 0: whole }],
+    ['an unknown kind', [whole, { ...patch, kind: 'hunk-exact' }]],
+    ['a whole-blob without pinned', [{ ...whole, pinned: undefined }]],
+    ['a patch with a bad digest', [{ ...patch, patches: [{ commit: C2, parent: C, sha256: 'bad' }] }]],
+    ['an entry with no paths', [{ ...whole, paths: [] }]],
+    ['a bad headAfter', [{ ...whole, headAfter: 'HEAD' }]],
+  ])('returns null for %s', (_label, raw) => {
+    expect(parseAppliedAdmissionSources(raw)).toBeNull();
+  });
+
+  it('a multi-source admission with malformed sources keeps no mode and no sources', () => {
+    const queue = admittedWith(undefined);
+    const raw = JSON.parse(JSON.stringify(queue));
+    raw.admissions[0].mode = 'multi-source';
+    raw.admissions[0].sources = [{ ...whole, kind: 'other' }];
+    const parsed = parseFrozenCandidateRepairQueue(raw);
+    expect(parsed?.admissions?.[0]).not.toHaveProperty('sources');
+    expect(parsed?.admissions?.[0]).not.toHaveProperty('mode');
   });
 });

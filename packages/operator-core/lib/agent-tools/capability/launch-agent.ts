@@ -777,7 +777,7 @@ export default defineTool({
         .string()
         .max(80)
         .optional()
-        .describe('FRESH/successor model override. Omit on in-place resume to keep the target model; an override may conflict with the saved fleet profile.'),
+        .describe('FRESH/successor model. For ordinary in-place resume, omit it to keep the target model; overrides may conflict with the saved fleet profile.'),
       effort: z.string().min(1).max(40).optional()
         .describe('Reasoning effort (low|medium|high|xhigh|max) for every member; members[].effort overrides. Model aliases: config:tiers-get launchAliases.'),
       extraArgs: z
@@ -1145,7 +1145,9 @@ export default defineTool({
     // Operator/HTTP bridge calls can arrive with a wildcard or unset harness context. An explicit
     // harness keeps those launches on the su bootstrap path; without it, buildAgentLaunchCommand
     // omits --harness and a fresh psu falls into plain-CLI onboarding before it can receive its brief.
-    const slug = args.harness?.trim() || (ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null);
+    // `let`, not `const`: a successor re-scopes to its predecessor's recorded harness once the
+    // source is resolved below (EI-27199337851073256).
+    let slug = args.harness?.trim() || (ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null);
     // workspace-work-scope-policy-2026-09-04 P-005: no agent is launched into a harness
     // the workspace work-scope policy excludes.
     {
@@ -1855,6 +1857,31 @@ export default defineTool({
           );
         }
       }
+    }
+
+    // EI-27199337851073256: a successor RETAINS the predecessor's coord identity and its
+    // durable claims, so it must run in the predecessor's recorded harness — not the
+    // caller's. Without this an operator-scope caller (ctx harness '*'/unset) opened a
+    // successor with no --harness and no harness in its MCP envelope, and the fresh psu
+    // bound to an unrelated hive where every claim was refused harness_forbidden. An
+    // explicit `harness` argument still wins. This runs AFTER the source block so a resume
+    // promoted to a successor (critical-dormant) is covered too, and re-applies the
+    // work-scope gate to the harness actually launched into.
+    const predecessorHarness = resumeHarnessSlug && resumeHarnessSlug !== '*' ? resumeHarnessSlug : null;
+    if (isSuccessor && !args.harness?.trim() && predecessorHarness && predecessorHarness !== slug) {
+      const { gateWorkScope } = await import('../../work-scope-policy');
+      const scope = await gateWorkScope('capability:launch-agent', {
+        harness: predecessorHarness,
+        plan: (args as { plan?: string }).plan ?? null,
+        workItem: (args as { workItem?: string }).workItem ?? null,
+      });
+      if (!scope.allowed) return err(scope.message);
+      notes.push(
+        `✓ Successor launched in the predecessor's recorded harness '${predecessorHarness}'` +
+          (slug ? ` (not the caller's '${slug}')` : ' (the caller has no harness scope)') +
+          ' so it keeps access to the claims it retains.',
+      );
+      slug = predecessorHarness;
     }
 
     // Every capability fork pre-pins a managed identity. Check the launcher's

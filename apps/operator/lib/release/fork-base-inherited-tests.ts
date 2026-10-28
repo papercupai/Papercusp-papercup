@@ -133,13 +133,26 @@ export function parseAffectedTestsResult(output: string): AffectedSuiteResult | 
   return { status, counters };
 }
 
+/** Coverage-ACCOUNTING fields that `scripts/lib/vitest-summary.mjs` `formatCoverageFields` appends
+ *  to the terminal line. They say how many tests a task REPORTED, not whether its failures were
+ *  located: `coverageUnreadableTasks` counts every task whose output carried no vitest counts — every
+ *  lint, typecheck and build leg — so it is non-zero on essentially every real run. Matching it as a
+ *  failure counter skipped inheritance on every real fork red (drill run 6bf1c1a5:
+ *  `reason=suite-coverageUnreadableTasks=35`). Pinned against the real formatter by the test. */
+export const SUITE_COVERAGE_ACCOUNTING_KEYS: ReadonlySet<string> = new Set([
+  'testsExecuted',
+  'testsSkipped',
+  'coverageUnreadableTasks',
+]);
+
 /** Why the suite's own terminal result rules inheritance out, or null when it is a plain
- *  measured red. A task that timed out, could not be determined, or could not be read has
+ *  measured red. A task that timed out, could not be determined, crashed or aborted has
  *  failures no located file accounts for. */
 export function suiteResultRefusal(result: AffectedSuiteResult | null): string | null {
   if (!result) return 'no-suite-result-line';
   if (result.status !== 'failed') return `suite-status-${result.status}`;
   for (const [key, value] of Object.entries(result.counters)) {
+    if (SUITE_COVERAGE_ACCOUNTING_KEYS.has(key)) continue;
     if (value > 0 && /timedOut|undetermined|unreadable|crash|abort/i.test(key)) {
       return `suite-${key}=${value}`;
     }

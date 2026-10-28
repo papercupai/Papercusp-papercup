@@ -1038,6 +1038,14 @@ describe('scorecards:emit deterministic-check transport budget', () => {
     const scaledContractMs = Math.ceil((measuredBatchMs * maxFiles) / measuredFiles);
 
     expect(SCORECARD_TEST_CHECK_TIMEOUT_MS).toBeGreaterThanOrEqual(scaledContractMs);
+    // EI-27178046774796527: file count is not the cost driver. Integration files and
+    // config groups run serially, so the 4-file fresh-cut acceptance batch cost the SUM
+    // of its per-file ledger maxima (705s + 35s + 218s + 15s), and a 13-minute budget
+    // cut off its later groups. Cover that measured max with 25% headroom plus two
+    // minutes of router startup, private-PG boot and globalSetup.
+    const measuredSerialMaxMs = (705 + 35 + 218 + 15) * 1_000;
+    expect(SCORECARD_TEST_CHECK_TIMEOUT_MS)
+      .toBeGreaterThanOrEqual(Math.ceil(measuredSerialMaxMs * 1.25) + 2 * 60_000);
     expect(scorecardEmitTool.timeoutSec).toBe(SCORECARD_EMIT_TIMEOUT_SEC);
     expect(SCORECARD_EMIT_TIMEOUT_SEC * 1_000 - SCORECARD_TEST_CHECK_TIMEOUT_MS)
       .toBeGreaterThanOrEqual(2 * 60_000);

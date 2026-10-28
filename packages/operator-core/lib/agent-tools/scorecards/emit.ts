@@ -198,12 +198,19 @@ import type { SessionState } from '../coordination/presence-wakeability';
  * scorecards:emit accepts deterministic checks spanning up to 50 files. A real
  * 16-file Papercusp acceptance batch takes roughly four minutes, so the old
  * two-minute inner budget rejected a fully green run before it could be filed.
- * Scale that observed batch to the schema cap (12.5 minutes), round up to 13,
- * and keep two more minutes outside the runner for process-group settlement,
- * the ledger write, and MCP serialization.
+ * Scaling that batch linearly to the schema cap gives 12.5 minutes, but file count
+ * is not the cost driver: integration files run serially (fileParallelism:false)
+ * and the router runs its Vitest config groups one after another, so a batch
+ * costs the SUM of its files. EI-27178046774796527: the 4-file fresh-cut
+ * acceptance batch measured 7.4/10.6/16.2 min (min/p50/max of per-file ledger
+ * durations, before startup + globalSetup). One integration file alone took up to
+ * 705s, so a 13-minute budget cut off every later config group, and the
+ * truncated groups could never be recovered. 25 minutes covers that measured max
+ * with ~40% headroom; two more minutes stay outside the runner for process-group
+ * settlement, the ledger write, and MCP serialization.
  */
-export const SCORECARD_EMIT_TIMEOUT_SEC = 15 * 60;
-export const SCORECARD_TEST_CHECK_TIMEOUT_MS = 13 * 60_000;
+export const SCORECARD_EMIT_TIMEOUT_SEC = 27 * 60;
+export const SCORECARD_TEST_CHECK_TIMEOUT_MS = 25 * 60_000;
 
 /**
  * A scorecard check process can survive an API restart while its caller cannot.

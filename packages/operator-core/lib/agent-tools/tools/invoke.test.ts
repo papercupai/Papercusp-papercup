@@ -31,6 +31,7 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 
 import toolInvoke, { NestedToolRefusalError, summarizeNestedToolOutcome } from './invoke';
 import dbMigrateTool from '../db/migrate';
+import { SCORECARD_EMIT_TIMEOUT_SEC } from '../scorecards/emit';
 
 const markEnabledMock = vi.mocked(dispatchWrapperMarkEnabled);
 
@@ -62,11 +63,12 @@ describe('tools:invoke registration', () => {
     // This pure delegator must not hold a workspace transaction across a slow
     // nested tool call; the idle transaction is killed by PostgreSQL after 60s.
     expect(def.skipWorkspaceTx).toBe(true);
-    // db:migrate's explicit target budget (1020s) is longer than scorecards:emit's
-    // 900s budget. Keep the meta-wrapper at least 60s above it, not merely above
-    // the previously longest known target.
+    // Keep the meta-wrapper at least 60s above EVERY long target budget, not merely
+    // above the previously longest one: db:migrate (1020s) and scorecards:emit
+    // (raised to 1620s by EI-27178046774796527).
     const dbMigrateTimeoutSec = (dbMigrateTool as unknown as { timeoutSec: number }).timeoutSec;
     expect(def.timeoutSec - dbMigrateTimeoutSec).toBeGreaterThanOrEqual(60);
+    expect(def.timeoutSec - SCORECARD_EMIT_TIMEOUT_SEC).toBeGreaterThanOrEqual(60);
     expect(def.args.safeParse({ name: 'flags:set', args: { key: 'x', value: true } }).success).toBe(true);
     expect(def.args.safeParse({
       name: 'flags:set',

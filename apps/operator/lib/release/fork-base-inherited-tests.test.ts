@@ -13,6 +13,7 @@ import {
   isFlagOnlyLockfileDiff,
   parseAffectedTestsResult,
   parseRawDiffZ,
+  SUITE_COVERAGE_ACCOUNTING_KEYS,
   suiteResultRefusal,
   type ForkBaseFileOutcome,
   type ForkBaseInheritanceDeps,
@@ -103,6 +104,19 @@ describe('suite result gate', () => {
       'suite-status-aborted',
     );
     expect(suiteResultRefusal(parseAffectedTestsResult('no result here'))).toBe('no-suite-result-line');
+  });
+  it('ignores the coverage-accounting fields the REAL emitter appends (drill run 6bf1c1a5, coverageUnreadableTasks=35)', async () => {
+    // Built with the real formatter, not a hand-copied fixture: FAILED_RESULT predates these fields,
+    // which is how a substring-matched `unreadable` skipped inheritance on every real fork red.
+    const { formatCoverageFields } = await import('../../../../scripts/lib/vitest-summary.mjs');
+    const fields = String(formatCoverageFields({ executed: 6878, skipped: 8, unreadableTasks: 35, notExecuted: [] }));
+    const keys = [...fields.matchAll(/\b([A-Za-z]+)=\d+/g)].map((m) => m[1]);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const k of keys) expect(SUITE_COVERAGE_ACCOUNTING_KEYS.has(k), `unlisted coverage field ${k}`).toBe(true);
+    expect(suiteResultRefusal(parseAffectedTestsResult(`${FAILED_RESULT} ${fields}`))).toBeNull();
+    expect(
+      suiteResultRefusal(parseAffectedTestsResult(`${FAILED_RESULT.replace('timedOutTasks=0', 'timedOutTasks=1')} ${fields}`)),
+    ).toBe('suite-timedOutTasks=1');
   });
 });
 
