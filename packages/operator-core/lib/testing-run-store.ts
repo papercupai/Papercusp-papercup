@@ -1592,7 +1592,7 @@ async function persistDetachedReportArtifacts(
       const reports = await Promise.all(expanded.map(async artifact => ({
         rows: completedDetachedReport(await readFile(artifact.reportPath, 'utf8'), artifact.root, environment),
       })));
-      if (!hasCompleteRouterReportCoverage(artifacts, snapshot.requestedFiles, reports)) return;
+      if (!hasCompleteReportCoverage(artifacts, snapshot.requestedFiles, reports)) return;
     }
   } catch { return; } // Keep incomplete/unreadable evidence for a later recovery read.
   await Promise.all(

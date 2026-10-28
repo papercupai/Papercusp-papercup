@@ -302,6 +302,8 @@ export function staleExecutorRetryBackoffMs(consecutiveDrainRefusals: number): n
  * clears; it is the drain-refusal ceiling, which already exceeds the longest pass measured.
  */
 export const STALE_EXECUTOR_PASS_COMPLETION_BACKSTOP_MS = STALE_EXECUTOR_DRAIN_REFUSAL_BACKOFF_MAX_MS;
+/** One bounded wait for disk-retention's existing cooperative safe-checkpoint mutex. */
+export const STALE_EXECUTOR_RETENTION_CHECKPOINT_WAIT_MS = 5 * 60_000;
 
 /** One holder as dev:restart's refusal body reports it (`holders[]`). */
 export interface RestartRefusalHolder {
@@ -398,6 +400,28 @@ type RestartCommand = (
   args: string[],
   options: { stdin: string; timeout: number },
 ) => Promise<RestartCommandResult>;
+
+type RetentionMutexRunner = <T>(
+  action: () => Promise<T>,
+  options: { timeoutMs: number; intent: string },
+) => Promise<T>;
+
+async function withRetentionSafeCheckpoint<T>(
+  action: () => Promise<T>,
+  runner?: RetentionMutexRunner,
+): Promise<T> {
+  const run = runner ?? (async <R>(
+    callback: () => Promise<R>,
+    options: { timeoutMs: number; intent: string },
+  ) => {
+    const { withRetentionMutex } = await import('../../storage/retention-census-walk');
+    return withRetentionMutex(callback, options);
+  });
+  return run(action, {
+    timeoutMs: STALE_EXECUTOR_RETENTION_CHECKPOINT_WAIT_MS,
+    intent: 'stale bg-host restart waits for disk-retention safe checkpoint',
+  });
+}
 
 function runRestartCommand(command: string, args: string[], options: { stdin: string; timeout: number }): Promise<RestartCommandResult> {
   return new Promise((resolve) => {
@@ -520,6 +544,7 @@ export interface StaleExecutorRestartResult {
   coalesced: boolean;
   verified: boolean;
   code: string;
+  deferred?: boolean;
   error?: string;
   /** The refusal body's `holders[]`, when dev:restart named them. */
   holders?: RestartRefusalHolder[];
@@ -559,6 +584,12 @@ export async function restartStaleBgHostExecutor(
       staleExecutorRestartCooldownUntilMs,
       nowMs + staleExecutorRetryBackoffMs(staleExecutorConsecutiveDrainRefusals),
     );
+  } else if (result.deferred) {
+    staleExecutorConsecutiveDrainRefusals = 0;
+    staleExecutorRestartCooldownUntilMs = Math.max(
+      staleExecutorRestartCooldownUntilMs,
+      nowMs + STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS,
+    );
   } else if (result.restarted || result.coalesced) {
     staleExecutorConsecutiveDrainRefusals = 0;
     staleExecutorAwaitedPassOwners = null;
@@ -574,6 +605,7 @@ async function attemptStaleBgHostExecutorRestart(
     run?: RestartCommand;
     verifyGeneration?: (beforePid: unknown) => Promise<StaleExecutorGenerationVerification>;
     ptoolScript?: string;
+    retentionMutex?: RetentionMutexRunner;
     /** P-037: live owners on the `git-sync` barrier; null when the read failed. */
     liveGitSyncHolderOwners?: () => Promise<string[] | null>;
   } = {},
@@ -593,6 +625,7 @@ async function attemptStaleBgHostExecutorRestart(
 
   // Latched before the first await, so two sweeps cannot both pass the gate below.
   staleExecutorRestartInFlight = true;
+  let restartCommandStarted = false;
   try {
     // P-037: a refusal behind a no-yield pass waits for THAT pass. The first sweep
     // after its lease is gone retries at once; until then nothing is attempted. A
@@ -631,10 +664,13 @@ async function attemptStaleBgHostExecutorRestart(
           ? `auto-restart bg-host executor between gate measurements: in-process gate code changed since boot; ${identity}`
           : `auto-remediate stale routines-enabled bg-host executor; ${identity}`,
     };
-    const result = await run(process.execPath, [ptoolScript, 'dev:restart', '--json', '-'], {
-      stdin: JSON.stringify(args),
-      timeout: STALE_EXECUTOR_PTOOL_TIMEOUT_MS,
-    });
+    const result = await withRetentionSafeCheckpoint(() => {
+      restartCommandStarted = true;
+      return run(process.execPath, [ptoolScript, 'dev:restart', '--json', '-'], {
+        stdin: JSON.stringify(args),
+        timeout: STALE_EXECUTOR_PTOOL_TIMEOUT_MS,
+      });
+    }, deps.retentionMutex);
     // ptool exits non-zero on an ok:false answer (EI-24654733539966460), so a
     // refused restart arrives WITH result.error. Its body still names the
     // refusal — judge it before collapsing the error to 'ptool_failed'. The body
@@ -665,6 +701,13 @@ async function attemptStaleBgHostExecutorRestart(
     staleExecutorRestartCooldownUntilMs = nowMs + STALE_EXECUTOR_RESTART_COOLDOWN_MS;
     return { attempted: true, restarted: true, coalesced: false, verified: true, code: 'restarted' };
   } catch (error) {
+    if (!restartCommandStarted) {
+      return {
+        ...skipped('retention_safe_checkpoint_wait_failed'),
+        deferred: true,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
     return {
       ...skipped('restart_failed'),
       attempted: true,
@@ -1363,9 +1406,9 @@ export async function staleRoutineExecutorSweep(opts: {
       // WI-10007644: the caller logs only outcome+reason, so an attempt that did not
       // restart used to vanish — the actuator failed on every tick for weeks with no
       // trace. Every real attempt now leaves one line (at most one per backoff window).
-      if (result.attempted) {
+      if (result.attempted || result.deferred) {
         console.warn(
-          `[stale-routine-executor] auto-restart (${identity}${forVerdict.trigger === 'gate-code' ? ', gate-code' : ''}): ` +
+          `[stale-routine-executor] ${result.deferred ? 'auto-restart deferred' : 'auto-restart'} (${identity}${forVerdict.trigger === 'gate-code' ? ', gate-code' : ''}): ` +
             `${result.code}` +
             (result.error ? ` — ${result.error}` : '') +
             (result.awaitingPassCompletion?.length

@@ -27,6 +27,7 @@ import {
   pidKeyedSocketPath,
   pinSocketForCluster,
   probeUnixSocketAlive,
+  probeUnixSocketState,
   reapOrphanedPidKeyedSockets,
 } from './pid-keyed-socket';
 
@@ -389,10 +390,80 @@ describe('listenUnixSocketExclusive — a sidecar must not take a live sidecar\'
 
   it('rejects a non-EADDRINUSE listen error instead of probing or unlinking', async () => {
     const socketPath = path.join(os.tmpdir(), `pid-keyed-listen-nodir-${process.pid}-${Date.now()}`, 'x.sock');
-    const probe = vi.fn(async () => false);
+    const probe = vi.fn(async () => 'dead' as const);
     const unlink = vi.fn();
     await expect(listenUnixSocketExclusive(net.createServer(), socketPath, { probe, unlink })).rejects.toThrow();
     expect(probe).not.toHaveBeenCalled();
     expect(unlink).not.toHaveBeenCalled();
+  });
+
+  // WI-6554700010042230: a vitest-spawned sidecar took bg-host's live spawner path.
+  // A busy listener answers a probe with EAGAIN or nothing at all; neither proves the
+  // path stale, so the bind must refuse instead of unlinking the live server's name.
+  it('refuses (never unlinks) a LIVE path when the probe cannot prove it stale', async () => {
+    const socketPath = tmpSock('busy');
+    const original = named('original');
+    original.listen(socketPath);
+    await once(original, 'listening');
+    const probe = vi.fn(async () => 'indeterminate' as const);
+    const unlink = vi.fn();
+    const second = named('hijacker');
+    try {
+      await expect(listenUnixSocketExclusive(second, socketPath, { probe, unlink })).resolves.toBe('in-use');
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(unlink).not.toHaveBeenCalled();
+      expect(await whoAnswers(socketPath)).toBe('original');
+    } finally {
+      second.close();
+      original.close();
+      rmSync(socketPath, { force: true });
+    }
+  });
+});
+
+describe('probeUnixSocketState — only ECONNREFUSED/ENOENT prove a path stale', () => {
+  function erroringConnect(code: string | undefined) {
+    return ((_p: string) => {
+      const handlers: Record<string, (e?: unknown) => void> = {};
+      const sock = {
+        on(ev: string, h: (e?: unknown) => void) {
+          handlers[ev] = h;
+          return sock;
+        },
+        destroy: vi.fn(),
+      };
+      setTimeout(() => handlers.error?.(Object.assign(new Error(code ?? 'boom'), { code })), 0);
+      return sock as never;
+    }) as never;
+  }
+
+  it.each([
+    ['ECONNREFUSED', 'dead'],
+    ['ENOENT', 'dead'],
+    ['EAGAIN', 'indeterminate'],
+    ['EACCES', 'indeterminate'],
+    [undefined, 'indeterminate'],
+  ])('errno %s ⇒ %s', async (code, expected) => {
+    await expect(probeUnixSocketState('/tmp/x.sock', { connect: erroringConnect(code) })).resolves.toBe(expected);
+  });
+
+  it('a hung connect is indeterminate, not dead', async () => {
+    const hang = ((_p: string) => ({ on: () => undefined, destroy: vi.fn() })) as never;
+    await expect(probeUnixSocketState('/tmp/x.sock', { timeoutMs: 5, connect: hang })).resolves.toBe('indeterminate');
+  });
+
+  it('a real stale socket file (no listener) is dead', async () => {
+    const socketPath = path.join(os.tmpdir(), `pid-keyed-state-${process.pid}-${Date.now()}.sock`);
+    const bound = `${socketPath}.bound`;
+    const gone = net.createServer().listen(bound);
+    await once(gone, 'listening');
+    renameSync(bound, socketPath);
+    gone.close();
+    await once(gone, 'close');
+    try {
+      await expect(probeUnixSocketState(socketPath)).resolves.toBe('dead');
+    } finally {
+      rmSync(socketPath, { force: true });
+    }
   });
 });

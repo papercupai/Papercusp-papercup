@@ -297,6 +297,31 @@ describe('governed test-process bridge', () => {
     expect(JSON.parse(result.childEnv.PAPERCUSP_ADMISSION_CONTEXT)).toEqual(context);
   });
 
+  it('forwards admission phase diagnostics through the test-process bridge', async () => {
+    const phaseEvent = { phase: 'enqueue', state: 'pending', elapsedMs: 0 };
+    const onAdmissionPhase = vi.fn();
+    const runGovernedOperation = vi.fn(async (input, run) => {
+      input.onAdmissionPhase?.(phaseEvent);
+      return run(context);
+    });
+    const executionApi = {
+      admissionContextFromEnvironment: vi.fn(() => undefined),
+      governedExecutionLeaseTtlForTimeout: vi.fn(() => 4567),
+      runGovernedOperation,
+    };
+
+    const result = await runGovernedTestProcess(
+      { executionApi, workspaceId: 'ws', env: {}, owner: 'runner', onAdmissionPhase },
+      async () => 'ok',
+    );
+
+    expect(result).toBe('ok');
+    expect(onAdmissionPhase).toHaveBeenCalledOnce();
+    expect(onAdmissionPhase).toHaveBeenCalledWith(phaseEvent);
+    const [input] = runGovernedOperation.mock.calls[0] as unknown as [Record<string, unknown>];
+    expect(input.onAdmissionPhase).toBe(onAdmissionPhase);
+  });
+
   it('lets a long-lived embedder opt back onto the shared pool (WI-638180)', async () => {
     // The default is the safe one, so the escape hatch needs its own coverage:
     // an in-process host must be able to keep the shared pool it already owns.

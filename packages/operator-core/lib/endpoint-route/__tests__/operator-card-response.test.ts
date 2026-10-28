@@ -69,12 +69,21 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     _resetCardResponseRateLimitForTests();
   });
 
-  function pendingCard() {
+  function legacyPendingCard() {
     openRun({ workspaceId: ws, runId: 'r1' });
     return registerCard({
       workspaceId: ws, runId: 'r1',
       spec: { prompt: 'choose', dataSchema: choiceSchema },
     });
+  }
+
+  function scopedPendingCard(commitResponse = async (response: CardResponse) => ({ accepted: true, response })) {
+    openRun({ workspaceId: ws, runId: 'r1' });
+    const reg = registerCard({ workspaceId: ws, runId: 'r1',
+      spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
+    vi.mocked(findConverseCard).mockResolvedValue({ commitResponse,
+      info: () => ({ correlationId: reg.correlationId, runId: 'r1', workspaceId: ws }) } as never);
+    return reg;
   }
 
   it('forwards a native private answer under authenticated agent-chat scope without conversation persistence', async () => {
@@ -109,8 +118,8 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     expect(res.status).toBe(400);
   });
 
-  it('submit happy-path: resolves deferred, returns 200', async () => {
-    const reg = pendingCard();
+  it('submit happy-path: commits a conversation-bound card, returns 200', async () => {
+    const reg = scopedPendingCard();
     const res = await post({
       correlationId: reg.correlationId, workspaceId: ws,
       action: 'submit', payload: { picks: ['a'] },
@@ -157,16 +166,15 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     expect(commitResponse).toHaveBeenCalledOnce();
   });
 
-  it('submit validation failure returns 400 with Zod details', async () => {
-    const reg = pendingCard();
+  it('submit validation failure returns 400 from the scoped card adapter', async () => {
+    const reg = scopedPendingCard(async () => { throw new Error('invalid-answer'); });
     const res = await post({
       correlationId: reg.correlationId, workspaceId: ws,
       action: 'submit', payload: { picks: [] },
     });
     expect(res.status).toBe(400);
     const j = (await res.json()) as { error: string; details?: unknown };
-    expect(j.error).toMatch(/dataSchema/);
-    expect(j.details).toBeDefined();
+    expect(j.error).toBe('invalid-answer');
   });
 
   it('commits a recovered scoped card without a process-local waiter', async () => {
@@ -209,7 +217,7 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
   });
 
   it('decline path resolves with action:decline', async () => {
-    const reg = pendingCard();
+    const reg = scopedPendingCard();
     const res = await post({
       correlationId: reg.correlationId, workspaceId: ws,
       action: 'decline', reason: 'nope',
@@ -219,7 +227,7 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
   });
 
   it('cross-workspace correlationId returns 404 (defense-in-depth)', async () => {
-    const reg = pendingCard();
+    const reg = legacyPendingCard();
     const res = await post({
       correlationId: reg.correlationId, workspaceId: 'other-ws',
       action: 'submit', payload: { picks: ['a'] },
@@ -238,7 +246,7 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     expect(denied.status).toBe(404);
     expect(resolved).toBe(false);
 
-    const own = pendingCard();
+    const own = scopedPendingCard();
     expect((await post({ correlationId: own.correlationId, workspaceId: ws,
       action: 'submit', payload: { picks: ['a'] } })).status).toBe(200);
     expect(await own.result).toEqual({ action: 'submit', payload: { picks: ['a'] } });
@@ -246,7 +254,7 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
   });
 
   it('P010 scoped atomic decisions: missing or foreign conversation refuses before resolving a card', async () => {
-    const own = pendingCard();
+    const own = scopedPendingCard();
     let resolved = false;
     void own.result.then(() => { resolved = true; });
     vi.mocked(getConversationById).mockResolvedValueOnce(null);
@@ -261,7 +269,7 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
   });
 
   it('P010 scoped atomic decisions: failed scope storage never acknowledges or resolves an answer', async () => {
-    const own = pendingCard();
+    const own = scopedPendingCard();
     let resolved = false;
     void own.result.then(() => { resolved = true; });
     vi.mocked(getConversationById).mockRejectedValueOnce(new Error('scope-storage-unavailable'));
@@ -271,6 +279,18 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     expect((await post({ correlationId: own.correlationId, workspaceId: ws,
       action: 'submit', payload: { picks: ['a'] } })).status).toBe(200);
     expect(await own.result).toEqual({ action: 'submit', payload: { picks: ['a'] } });
+  });
+
+  it('rejects a same-workspace legacy card without a durable conversation/run binding', async () => {
+    const foreign = legacyPendingCard();
+    let resolved = false;
+    void foreign.result.then(() => { resolved = true; });
+    const res = await post({ correlationId: foreign.correlationId, workspaceId: ws,
+      action: 'submit', payload: { picks: ['a'] } });
+    expect(res.status).toBe(404);
+    expect(resolved).toBe(false);
+    expect(findConverseCard).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: ws,
+      conversationId: 'c1', correlationId: foreign.correlationId }));
   });
 
   it('429 after 30 RPS for the same session user (H3)', async () => {

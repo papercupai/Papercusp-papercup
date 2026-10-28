@@ -11,10 +11,11 @@
  *
  * Definitions:
  *   - "directed": kind='message' (or unset, the default), addressed via
- *     explicit ownerId(s) — never a broadcast/audience-selector send (no
- *     `audience` key stamped; see sendMessage's deriveAudienceKey — '*' and
- *     every `@selector` both stamp one). Sender != recipient (never counts a
- *     message against its own author, e.g. a fanout that lists the sender).
+ *     explicit ownerId(s) or a resolved `@file` selector. Selector expansion
+ *     stores concrete ownerIds in `to` and the original selector in `audience`.
+ *     Wildcard broadcasts and other selector audiences remain excluded until
+ *     their group-reply semantics are defined. Sender != recipient (never
+ *     counts a message against its own author, e.g. a fanout that lists the sender).
  *   - "expects reply": the sender explicitly sets `expectsReply:true`, or
  *     uses the coord:send ergonomic `wake:'required'` + `replyDeadlineSec`
  *     combination (which stamps the same field). FYI/status reports are
@@ -518,7 +519,23 @@ export async function fetchUnansweredDirected(
         AND e.body->'to' ?| ${recipientIds}::text[]
         AND (e.body->>'expectsReply') = 'true'
         AND (eb.b->>'kind' IS NULL OR eb.b->>'kind' = 'message')
-        AND NOT (eb.b ? 'audience')
+        AND (
+          NOT (eb.b ? 'audience')
+          OR (
+            jsonb_typeof(eb.b->'audience') = 'array'
+            AND EXISTS (
+              SELECT 1
+                FROM jsonb_array_elements_text(
+                  CASE WHEN jsonb_typeof(eb.b->'audience') = 'array'
+                    THEN eb.b->'audience'
+                    ELSE '[]'::jsonb
+                  END
+                ) AS audience_selector(value)
+               WHERE audience_selector.value LIKE '@file:%'
+            )
+            AND NOT ((eb.b->'audience') ? '*')
+          )
+        )
         AND jsonb_typeof(eb.b->'to') = 'array'
         AND r = ANY(${recipientIds}::text[])
         AND eb.b->>'from' IS DISTINCT FROM r
@@ -1095,7 +1112,23 @@ export async function fetchOpenAsks(
          AND jsonb_typeof(e.body->'to') = 'array'
          AND r IS DISTINCT FROM e.body->>'from'
          AND (e.body->>'kind' IS NULL OR e.body->>'kind' = 'message')
-         AND NOT (e.body ? 'audience')
+         AND (
+           NOT (e.body ? 'audience')
+           OR (
+             jsonb_typeof(e.body->'audience') = 'array'
+             AND EXISTS (
+               SELECT 1
+                 FROM jsonb_array_elements_text(
+                   CASE WHEN jsonb_typeof(e.body->'audience') = 'array'
+                     THEN e.body->'audience'
+                     ELSE '[]'::jsonb
+                   END
+                 ) AS audience_selector(value)
+                WHERE audience_selector.value LIKE '@file:%'
+             )
+             AND NOT ((e.body->'audience') ? '*')
+           )
+         )
          AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
          AND (e.body->>'expectsReply') = 'true'
          AND ((e.body->>'expects') IS DISTINCT FROM 'none' OR e.body->>'lifecycle' = 'release_request')

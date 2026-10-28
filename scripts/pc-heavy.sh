@@ -3759,11 +3759,23 @@ if [ "$_coalesce_enabled" = 1 ]; then
       # "line 1: _c_out_tmp: unbound variable", which reads as a fault in the
       # caller's own command, and the trap aborts partway through its cleanup
       # list rather than running all of it (WI-38277, observed live).
+      # WI-6554700010042252: a process-group SIGTERM kills the capture tees
+      # with the leader, but the leader's fd 1/2 still point into their FIFOs.
+      # The first fork+wait inside this trap reaps the signalled runner, and
+      # bash prints its "Terminated" notice into the reader-less FIFO. That
+      # SIGPIPE lands while bash is already handling the TERM, so bash kills
+      # itself on the spot and aborts the trap before the `.part` rm. CI saw
+      # this as signal=SIGPIPE with both temps left. So ignore PIPE for the
+      # rest of the shell's life, point fd 1/2 at /dev/null, and sweep the
+      # temps before anything else.
       trap '
-        if [ -n "${_c_out_tee_pid:-}" ]; then kill "${_c_out_tee_pid:-}" 2>/dev/null || true; fi
-        if [ -n "${_c_err_tee_pid:-}" ]; then kill "${_c_err_tee_pid:-}" 2>/dev/null || true; fi
-        rm -rf "$_c_lockdir" 2>/dev/null
-        rm -f "${_c_out_tmp:-}" "${_c_err_tmp:-}" "${_c_out_fifo:-}" "${_c_err_fifo:-}" 2>/dev/null
+        trap "" PIPE
+        exec 1>/dev/null 2>/dev/null
+        rm -f "${_c_out_tmp:-}" "${_c_err_tmp:-}" "${_c_out_fifo:-}" "${_c_err_fifo:-}"
+        if [ -n "${_c_out_tee_pid:-}" ]; then kill "${_c_out_tee_pid:-}" || true; fi
+        if [ -n "${_c_err_tee_pid:-}" ]; then kill "${_c_err_tee_pid:-}" || true; fi
+        rm -rf "$_c_lockdir"
+        rm -f "${_c_out_tmp:-}" "${_c_err_tmp:-}"
       ' EXIT
       break
     fi

@@ -16,9 +16,13 @@ vi.mock('../../events/await/psu-pty-discovery', () => ({
   hostSupports: (host: { caps?: string[] }, cap: string) => host.caps?.includes(cap) === true,
   injectIntoHostWithConfirmation: recovery.inject,
 }));
-vi.mock('../../adv-sessions', () => ({
-  getLatestActiveAdvSessionByOwner: activeSessionLookup,
-}));
+vi.mock(import('../../adv-sessions'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    getLatestActiveAdvSessionByOwner: activeSessionLookup,
+  };
+});
 vi.mock('../../sync-sse', () => ({
   notifySyncInvalidate: vi.fn(),
 }));

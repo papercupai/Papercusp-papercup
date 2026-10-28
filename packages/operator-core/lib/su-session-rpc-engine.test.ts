@@ -1281,20 +1281,61 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
   }
 });
 
-// WI-10003604: the OMP session's papercusp-su bearer must be the token THIS operator validates
-// ($PAPERCUSP_HOME/superuser-token), not the one baked into the user's ~/.omp template — the
-// installed-product run failed every OMP turn with superuser_invalid_bearer when they differed.
-it('hands OMP the superuser token this operator validates', async () => {
+// WI-10003604: prove the OMP child will read the config file that carries the
+// bearer this operator validates. Checking only the writer argument misses a
+// split HOME/PI_CONFIG_DIR where OMP loads a different config (the installed
+// product failure was `superuser_invalid_bearer` on tools/list).
+it('materializes the live operator bearer at OMP’s effective private config target', async () => {
+  const runtimeHome = mkdtempSync(join(tmpdir(), 'rpc-omp-runtime-home-'));
   const papercuspHome = mkdtempSync(join(tmpdir(), 'rpc-su-token-'));
-  nativeDirs.push(papercuspHome);
-  writeFileSync(join(papercuspHome, 'superuser-token'), 'operator-validated-token-0123456789\n');
+  nativeDirs.push(runtimeHome, papercuspHome);
+  const liveToken = 'operator-validated-token-0123456789';
+  const templateToken = 'stale-template-token-9876543210';
+  writeFileSync(join(papercuspHome, 'superuser-token'), `${liveToken}\n`);
+  const templateAgent = join(runtimeHome, '.omp', 'agent');
+  mkdirSync(templateAgent, { recursive: true });
+  writeFileSync(join(templateAgent, 'config.yml'), 'agent:\n  discoveryMode: mcp-only\n');
+  const templateMcp = JSON.stringify({ mcpServers: {
+    'papercusp-su': {
+      type: 'http',
+      url: 'http://localhost:9071/api/mcp?superuser=1&client=machine-template',
+      headers: { Authorization: `Bearer ${templateToken}` },
+    },
+  } });
+  writeFileSync(join(templateAgent, 'mcp.json'), templateMcp);
+  vi.stubEnv('HOME', runtimeHome);
   vi.stubEnv('PAPERCUSP_HOME', papercuspHome);
+  vi.stubEnv('PAPERCUSP_SU_OMP_HOMES_DIR', join(runtimeHome, '.papercusp', 'su-omp-homes'));
   try {
-    const f = fixture('omp');
+    const launcher = await vi.importActual<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>(
+      '../../../apps/operator/scripts/psu-launcher.mjs',
+    );
+    mocks.writeOmp.mockImplementation((id, options) =>
+      launcher.writeOmpSessionConfigDir(id, options, runtimeHome));
+
+    const f = fixture('omp', { env: { HOME: runtimeHome } });
     await f.engine.ready;
-    const [, options] = mocks.writeOmp.mock.calls.at(-1)!;
-    expect(options).toMatchObject({ operatorBearer: 'operator-validated-token-0123456789' });
-  } finally { vi.unstubAllEnvs(); }
+
+    const childEnv = f.transport().env;
+    const effectiveAgent = join(runtimeHome, childEnv.PI_CONFIG_DIR!, 'agent');
+    expect(childEnv.PI_CODING_AGENT_DIR).toBe(effectiveAgent);
+    const effectiveMcpPath = join(childEnv.PI_CODING_AGENT_DIR!, 'mcp.json');
+    expect(existsSync(effectiveMcpPath)).toBe(true);
+    const effectiveMcp = JSON.parse(readFileSync(effectiveMcpPath, 'utf8')) as {
+      mcpServers: Record<string, { url: string; headers?: Record<string, string> }>;
+    };
+    const server = effectiveMcp.mcpServers['papercusp-su']!;
+    expect(new URL(server.url).origin).toBe('http://127.0.0.1:3170');
+    expect(new URL(server.url).searchParams.get('superuser')).toBe('1');
+    expect(server.headers?.Authorization).toBe(`Bearer ${liveToken}`);
+    const { isValidSuperuserBearer } = await import('./superuser-token');
+    expect(isValidSuperuserBearer(server.headers?.Authorization?.replace(/^Bearer /, ''))).toBe(true);
+    expect(server.headers?.Authorization).not.toBe(`Bearer ${templateToken}`);
+    expect(readFileSync(join(templateAgent, 'mcp.json'), 'utf8')).toBe(templateMcp);
+  } finally {
+    mocks.writeOmp.mockImplementation(() => '.papercusp/su-omp-homes/session-71');
+    vi.unstubAllEnvs();
+  }
 });
 
 it('enables native OMP question callbacks through the RPC UI transport', async () => {

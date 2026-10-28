@@ -609,19 +609,14 @@ export const LOOP_WAKE_CHECKPOINT_MAX_CHARS = 3_000;
 export const LOOP_WAKE_EXPANDED_VERIFIED_CHECKS = 1;
 
 /** EI-18187907490692276: clip an over-long carry-note for a wake prompt WITHOUT dropping
- *  the load-bearing tail. A loop:checkpoint carry-note is authored Did → Left → Insight →
- *  Next action, so the single most load-bearing section — `## Next action`, i.e. what to
- *  actually DO this wake — sits at the END. A plain head-keep `note.slice(0, max)` therefore
- *  truncates exactly that (observed live 2026-07-20: a warm loop-fire cut the Next action
- *  mid-word at "acknowled…", stranding the concrete next command). Instead keep a HEAD + the
- *  load-bearing TAIL and elide the MIDDLE, so `## Next action` always survives — for BOTH warm
- *  wakes (a bare pointer would arguably suffice since they re-orient, but this is cheap and
- *  universal) and COLD wakes (whose ONLY continuity IS this note — a pointer would strand
- *  them). The kept tail is anchored at the LAST `## ` section header when the whole final
- *  section fits in the reserved tail budget (so `## Next action` is delivered intact, starting
- *  at its header, not mid-sentence); otherwise it falls back to the last `tailBudget` chars,
- *  still preferring a section boundary. Total length stays ≤ `max` (the marker is budgeted
- *  inside `max`), so every existing scaffold byte-budget bound holds unchanged. */
+ *  the load-bearing action. A loop:checkpoint carry-note is authored Did → Left → Insight →
+ *  Next action, but rendered `## Checks` may follow that section. Preserve the named
+ *  `## Next action` section even when it is not the final heading; carried checks and walls
+ *  have their own priority renderers, and the complete note remains in loop:checkpoint.
+ *  Keep a HEAD + the action section and elide the MIDDLE for both warm and cold wakes. If the
+ *  action section itself exceeds the reserved tail budget, keep its heading and leading
+ *  action text with an explicit continuation marker. Total length stays ≤ `max` (the marker
+ *  is budgeted inside `max`), so every existing scaffold byte-budget bound holds unchanged. */
 export function clipLoopCheckpointForWake(
   checkpoint: string | null | undefined,
   max: number = LOOP_WAKE_CHECKPOINT_MAX_CHARS,
@@ -631,9 +626,34 @@ export function clipLoopCheckpointForWake(
   const marker =
     '\n…[loop:checkpoint MIDDLE elided for the wake prompt — HEAD + load-bearing TAIL kept so `## Next action` survives; the full note is in loop:checkpoint]…\n';
   // Reserve up to half the budget for the tail (a normal Next-action section is well under
-  // this). Anchor at the last `## ` header when the whole final section fits; else start the
-  // tail at a section boundary inside the budget, else at the raw budget offset.
+  // this). Prefer the named Next-action section even when a rendered Checks section follows.
   const tailBudget = Math.max(0, Math.min(Math.floor(max / 2), Math.max(0, max - marker.length)));
+  const actionHeaders = [...note.matchAll(/(?:^|\n)## Next action[ \t]*\r?$/gm)];
+  const actionHeader = actionHeaders.at(-1);
+  if (actionHeader?.index != null) {
+    const actionStart = actionHeader.index + (note[actionHeader.index] === '\n' ? 1 : 0);
+    const actionHeaderEnd = actionHeader.index + actionHeader[0].length;
+    const followingHeader = note.indexOf('\n## ', actionHeaderEnd);
+    const actionEnd = followingHeader === -1 ? note.length : followingHeader;
+    const actionSection = note.slice(actionStart, actionEnd);
+    let tail = actionSection;
+    if (tail.length > tailBudget) {
+      const header = note.slice(actionStart, actionHeaderEnd);
+      const continuationMarker = '\n…[Next action continues in loop:checkpoint]…\n';
+      if (header.length + continuationMarker.length < tailBudget) {
+        const actionText = note.slice(actionHeaderEnd, actionEnd).replace(/^\r?\n/, '');
+        const actionBudget = tailBudget - header.length - continuationMarker.length;
+        tail = `${header}${continuationMarker}${actionText.slice(0, actionBudget)}`;
+      } else {
+        tail = actionSection.slice(0, tailBudget);
+      }
+    }
+    const headBudget = Math.max(0, max - tail.length - marker.length);
+    const head = note.slice(0, Math.min(headBudget, actionStart)).trimEnd();
+    return `${head}${marker}${tail}`;
+  }
+
+  // Legacy notes without a named action section retain their final-section behavior.
   let tailStart = note.length - tailBudget;
   const lastHeader = note.lastIndexOf('\n## ');
   if (lastHeader !== -1 && lastHeader + 1 >= tailStart) {

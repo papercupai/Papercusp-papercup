@@ -674,6 +674,53 @@ describe('resource governor enforcement lint', () => {
     expect(P016_DISPOSITION_REGISTRY.get(key)?.reason).toContain('MAX_VISITED_FILES');
   });
 
+  it('dispositions only the Codex per-account permit-order queue, with source and priority-order recurrence guards', () => {
+    const path = 'packages/operator-core/lib/inference-gateway/gateway.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const key = path + '::hidden-or-static-capacity';
+    const finding = path + ':hidden-or-static-capacity';
+    const disposition = BYPASS_REGISTRY.get(key);
+    const pacingTest = readFileSync(
+      ROOT + 'packages/operator-core/lib/inference-gateway/gateway-account-rate-pacing.test.ts',
+      'utf8',
+    );
+
+    expect(inspectGovernorSource(source)).toContain('hidden-or-static-capacity');
+    expect(disposition?.disposition).toBe('semantic');
+    expect(disposition?.reason).toContain('per-account Codex attempt permit-order queue');
+    expect(disposition?.matchesSource?.(source)).toBe(true);
+    expect(pacingTest).toContain(
+      'orders account starts by priority without letting later arrivals race a paced request',
+    );
+    expect(pacingTest).toContain("expect(order).toEqual(['first', 'interactive', 'background']);");
+    expect(scanInventory([[path, source]], { validateRegistry: true })).toEqual([]);
+
+    const changedConcurrency = source.replace(
+      'queue = new PriorityAdmissionQueue({ maxConcurrent: 1 });',
+      'queue = new PriorityAdmissionQueue({ maxConcurrent: 2 });',
+    );
+    expect(changedConcurrency).not.toBe(source);
+    expect(scanInventory([[path, changedConcurrency]])).toEqual([finding]);
+
+    const changedTask = source.replace(
+      'return governor.acquire({}, {',
+      'return enqueueProviderWork(() => governor.acquire({}, {',
+    );
+    expect(changedTask).not.toBe(source);
+    expect(scanInventory([[path, changedTask]])).toEqual([finding]);
+
+    const extraCapacity = source + '\nconst maxWorkers = 2;';
+    expect(scanInventory([[path, extraCapacity]])).toEqual([finding]);
+
+    const dynamicQueue = source.replace(
+      'queue = new PriorityAdmissionQueue({ maxConcurrent: 1 });',
+      'queue = new PriorityAdmissionQueue({ maxConcurrent: admissionSeedWindow });',
+    );
+    expect(
+      scanInventory([[path, dynamicQueue]], { validateRegistry: true }),
+    ).toContain('stale-bypass-registry:' + key + ':finding-absent');
+  });
+
   it('keeps hosted GCP role reconciliation as a one-shot operator CLI bypass', () => {
     const path = 'scripts/workspace-host/reconcile-hosted-gcp-roles.ts';
     const source = readFileSync(ROOT + path, 'utf8');

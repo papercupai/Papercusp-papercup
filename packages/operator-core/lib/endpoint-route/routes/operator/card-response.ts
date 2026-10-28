@@ -6,7 +6,7 @@
  * Ported from app/api/operator/conversations/[id]/card-response/route.ts.
  * `auth: 'loopback'` (auth-tier Wave 1) — session check inline.
  */
-import { deliverCommittedCardResponse, resolveCardResponseAsync } from '@papercusp/agent-mcp';
+import { deliverCommittedCardResponse } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getSessionUserOrLocalDefaultAuthority } from '../../session-or-local';
 import { findConverseCard } from '../../../agent-tools/operator/converse-card';
@@ -99,21 +99,10 @@ export default defineTool({
         : ['already-decided', 'cancelled', 'expired'].includes(code) ? 409 : 503;
       return Response.json({ error: status === 503 ? 'card decision needs reconciliation' : code }, { status });
     }
-    const r = await resolveCardResponseAsync({
-      correlationId: body.correlationId,
-      action: body.action,
-      payload: body.payload,
-      reason: body.reason,
-      expectedWorkspaceId: conversation.workspaceId,
-      legacyOnly: true,
-    });
-
-    if (!r.ok) {
-      return Response.json(
-        { error: r.error, ...(r.details ? { details: r.details } : {}) },
-        { status: r.status },
-      );
-    }
-    return Response.json({ ok: true });
+    // A process-local card has no durable binding to this URL conversation or
+    // its child run. Workspace equality alone would let another conversation
+    // in the same shared workspace answer it, so only the scoped store above
+    // may authorize non-native responses.
+    return Response.json({ error: 'card not found' }, { status: 404 });
   },
 });

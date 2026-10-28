@@ -21,6 +21,7 @@ import {
   STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS,
   STALE_EXECUTOR_DRAIN_REFUSAL_BACKOFF_MAX_MS,
   STALE_EXECUTOR_PASS_COMPLETION_BACKSTOP_MS,
+  STALE_EXECUTOR_RETENTION_CHECKPOINT_WAIT_MS,
   noYieldGitSyncPassOwners,
   parsePtoolResultBody,
   staleExecutorRetryBackoffMs,
@@ -53,6 +54,12 @@ import {
   type RoutineCodeDrift,
 } from '../../dbos/process-boot-identity';
 import type { GateCollisionProbe } from '../../release/gate-collision-guard';
+
+// Keep this pure watchdog suite out of the live disk-retention mutex. The
+// restart-gate tests below inject grant and timeout behavior explicitly.
+vi.mock('../../storage/retention-census-walk', () => ({
+  withRetentionMutex: async (action: () => Promise<unknown>) => action(),
+}));
 
 const TWO_H = 2 * 3_600_000;
 const BOOT = 1_000_000;
@@ -373,6 +380,7 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
 
   it('only remediates the stale bg-host identity and keeps the safety rails on the ptool call', async () => {
     let nowMs = 1_000_000_000;
+    let retentionGateCalls = 0;
     const calls: Array<{ command: string; args: string[]; stdin: string; timeout: number }> = [];
     const run = async (command: string, args: string[], options: { stdin: string; timeout: number }) => {
       calls.push({ command, args, stdin: options.stdin, timeout: options.timeout });
@@ -384,6 +392,11 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
       now: () => nowMs,
       run,
       ptoolScript: '/tmp/ptool.mjs',
+      retentionMutex: async (action, options) => {
+        retentionGateCalls += 1;
+        expect(options.timeoutMs).toBe(STALE_EXECUTOR_RETENTION_CHECKPOINT_WAIT_MS);
+        return action();
+      },
       verifyGeneration: async (beforePid) => ({
         verified: true,
         beforePid: Number(beforePid),
@@ -414,11 +427,56 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     expect(payload).not.toHaveProperty('override_git_sync_collision');
     expect(payload).not.toHaveProperty('force');
     expect(ptool?.timeout).toBeGreaterThan(STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC * 1_000);
+    expect(retentionGateCalls).toBe(1);
 
     const cooldown = await restartStaleBgHostExecutor('port-3271', staleVerdict(), { now: () => nowMs, run });
     expect(cooldown).toMatchObject({ attempted: false, code: 'restart_cooldown' });
     expect(calls).toHaveLength(2); // baseline PID read + the one ptool invocation
     nowMs += STALE_EXECUTOR_RESTART_COOLDOWN_MS + 1;
+  });
+
+  it('defers the stale restart when retention cannot reach its safe checkpoint within the bound', async () => {
+    let nowMs = 2_000_000_000;
+    let retentionGateCalls = 0;
+    let ptoolCalls = 0;
+    const run = async (command: string) => {
+      if (command === 'systemctl') return { stdout: '101\\n' };
+      ptoolCalls += 1;
+      return { stdout: JSON.stringify({ ok: true, restarted: true, restartedFromPid: 101 }) };
+    };
+    const result = await restartStaleBgHostExecutor('port-3271', staleVerdict(), {
+      now: () => nowMs,
+      run,
+      ptoolScript: '/tmp/ptool.mjs',
+      retentionMutex: async (_action, options) => {
+        retentionGateCalls += 1;
+        expect(options.timeoutMs).toBe(STALE_EXECUTOR_RETENTION_CHECKPOINT_WAIT_MS);
+        const timeout = new Error('retention pass did not reach a safe checkpoint');
+        Object.assign(timeout, { code: 'ETIMEDOUT' });
+        throw timeout;
+      },
+    });
+
+    expect(result).toMatchObject({
+      attempted: false,
+      deferred: true,
+      code: 'retention_safe_checkpoint_wait_failed',
+    });
+    expect(ptoolCalls).toBe(0);
+
+    nowMs += 30_000;
+    await expect(
+      restartStaleBgHostExecutor('port-3271', staleVerdict(), {
+        now: () => nowMs,
+        run,
+        ptoolScript: '/tmp/ptool.mjs',
+        retentionMutex: async () => {
+          retentionGateCalls += 1;
+          return { stdout: '' };
+        },
+      }),
+    ).resolves.toMatchObject({ attempted: false, code: 'restart_cooldown' });
+    expect(retentionGateCalls).toBe(1);
   });
 
   it('WI-6554700010010584: drains for the full git-sync barrier ceiling, not a shorter budget', async () => {
@@ -790,7 +848,7 @@ describe('staleRoutineExecutorSweep — remediation runs before alert debounce',
     }
   });
 
-  it('logs every attempted restart outcome, and stays quiet when nothing was attempted (WI-10007644)', async () => {
+  it('logs attempted and deferred restart outcomes, and stays quiet when nothing needs a restart (WI-10007644)', async () => {
     const savedPort = process.env.PAPERCUSP_HONO_PORT;
     const savedRoutines = process.env.PAPERCUSP_DBOS_ROUTINES;
     const savedThreshold = process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC;
@@ -824,6 +882,20 @@ describe('staleRoutineExecutorSweep — remediation runs before alert debounce',
       });
       expect(restartLines()).toEqual([
         '[stale-routine-executor] auto-restart (port-3271): ptool_script_missing — ptool script not found at /x/ptool.mjs',
+      ]);
+
+      warn.mockClear();
+      await sweep({
+        attempted: false,
+        deferred: true,
+        restarted: false,
+        coalesced: false,
+        verified: false,
+        code: 'retention_safe_checkpoint_wait_failed',
+        error: 'retention pass did not reach a safe checkpoint',
+      });
+      expect(restartLines()).toEqual([
+        '[stale-routine-executor] auto-restart deferred (port-3271): retention_safe_checkpoint_wait_failed — retention pass did not reach a safe checkpoint',
       ]);
 
       warn.mockClear();

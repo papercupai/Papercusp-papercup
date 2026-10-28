@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { configureCoordLog, resetCoordLog } from './log';
 import {
+  fetchOpenAsks,
   fetchUnansweredDirected,
   UNANSWERED_LOOKBACK_MS,
   UNANSWERED_NEWEST_CAP,
@@ -210,7 +211,7 @@ beforeAll(async () => {
       captured.push({ query, params: params as unknown[] });
     },
   });
-  configureCoordLog({ getSql: () => traced, getWorkspaceId: () => WS } as never);
+  configureCoordLog({ getSql: () => traced, getWorkspaceId: () => WS, workspaceId: WS } as never);
 }, 180_000);
 
 afterAll(async () => {
@@ -230,6 +231,79 @@ describe('unanswered-directed roster statement (P-005)', () => {
     expect(current[0]!.recipient).toBe(R0);
     expect(Number(current[0]!.cnt)).toBe(2);
     expect([...(current[0]!.newest_ids as string[])].sort()).toEqual(['ask-r0-a1-new', 'ask-r0-a2-old']);
+  });
+
+  it('counts a resolved @file question on both sides, excludes wildcard/other selector audiences, then clears it on reply', async () => {
+    const fileAskId = 'ask-r0-file-selector';
+    const topicAskId = 'ask-r0-topic-selector';
+    const broadcastAskId = 'ask-r0-wildcard';
+    const extraMessages = [
+      ask(fileAskId, 'su-p005-a7', R0, 0.01, {
+        audience: ['@file:packages/operator-core/lib/storage/disk-reclaim.ts'],
+      }),
+      ask(topicAskId, 'su-p005-a8', R0, 0.01, { audience: ['@topic:storage'] }),
+      msg(broadcastAskId, 'su-p005-a9', ROSTER, 0.01, {
+        expectsReply: true,
+        expects: 'answer',
+        audience: ['*'],
+      }),
+    ];
+    const insertMessages = async (messages: Body[]) => {
+      await db.sql.unsafe(
+        `INSERT INTO harness_shared.coord_event_log (workspace_id, surface, msg_id, body, ts)
+         SELECT $1, 'messages', m->>'msg_id', m, (m->>'ts')::timestamptz
+           FROM jsonb_array_elements(($2::text)::jsonb) m`,
+        [WS, JSON.stringify(messages)],
+      );
+    };
+
+    await insertMessages(extraMessages);
+    try {
+      const recipientBefore = await fetchUnansweredDirected([R0], {
+        workspaceId: WS,
+        nowMs,
+        endedSendersFn: async () => new Set(),
+      });
+      const recipientSummary = recipientBefore.get(R0);
+      expect(recipientSummary?.count).toBe(3);
+      expect(recipientSummary?.newest.map((entry) => entry.msgId)).toContain(fileAskId);
+      expect(recipientSummary?.newest.map((entry) => entry.msgId)).not.toContain(topicAskId);
+      expect(recipientSummary?.newest.map((entry) => entry.msgId)).not.toContain(broadcastAskId);
+
+      const sendersBefore = await fetchOpenAsks(['su-p005-a7', 'su-p005-a8', 'su-p005-a9'], {
+        nowMs,
+        recipientStatesFn: async () => new Map<string, null>(),
+      });
+      expect(sendersBefore.get('su-p005-a7')?.count).toBe(1);
+      expect(sendersBefore.get('su-p005-a7')?.newest.map((entry) => entry.msgId)).toContain(fileAskId);
+      expect(sendersBefore.has('su-p005-a8')).toBe(false);
+      expect(sendersBefore.has('su-p005-a9')).toBe(false);
+
+      await insertMessages([
+        msg('reply-r0-file-selector', R0, ['su-p005-a7'], 0.005, {
+          related_msg_id: fileAskId,
+        }),
+      ]);
+
+      const recipientAfter = await fetchUnansweredDirected([R0], {
+        workspaceId: WS,
+        nowMs,
+        endedSendersFn: async () => new Set(),
+      });
+      expect(recipientAfter.get(R0)?.count).toBe(2);
+      expect(recipientAfter.get(R0)?.newest.map((entry) => entry.msgId)).not.toContain(fileAskId);
+
+      const sendersAfter = await fetchOpenAsks(['su-p005-a7'], {
+        nowMs,
+        recipientStatesFn: async () => new Map<string, null>(),
+      });
+      expect(sendersAfter.has('su-p005-a7')).toBe(false);
+    } finally {
+      await db.sql.unsafe(
+        'DELETE FROM harness_shared.coord_event_log WHERE workspace_id = $1 AND msg_id = ANY($2::text[])',
+        [WS, [fileAskId, topicAskId, broadcastAskId, 'reply-r0-file-selector']],
+      );
+    }
   });
 
   it('reads the asks through the partial GIN index, probes replies by index, and never scans the table', async () => {

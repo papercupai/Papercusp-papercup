@@ -22,7 +22,7 @@ import {
   WORKING_COPY_INTEGRATION_BRANCH,
   type PotIntegrationModeRead,
 } from './pot-integration-mode';
-import { findUnpublishedGitlinks, type SubmoduleForksRead } from './submodule-forks';
+import { applySubmoduleForkRemotes, findUnpublishedGitlinks, type SubmoduleForksRead } from './submodule-forks';
 
 /** Real git, fleet hooks off; file transport allowed so local submodules can be cloned. */
 const testRunGit: RunGit = (args, cwd) =>
@@ -129,15 +129,25 @@ const REVIEW: PotIntegrationModeRead = { mode: 'review', source: 'set' };
 async function tick(t: Topology, submoduleForks: SubmoduleForksRead) {
   const decision = resolveIntegrationPushRemote({ read: REVIEW, forkRemote: t.superFork, submoduleForks });
   const cfg: GitSyncConfig = { branch: 'main', push: true };
+  const setupGitCommands: Array<{ runner: 'runGit' | 'codeRunGit'; args: string[]; cwd: string }> = [];
+  let setupInvocations = 0;
   const commitOnly = await applyIntegrationPushTarget('sf-it', cfg, decision, t.work, {
-    setupSubmodules: async (repoPath, forks) =>
-      (await import('./submodule-forks')).applySubmoduleForkRemotes(repoPath, forks, {
-        runGit: throwingRunGit,
-        codeRunGit: testRunGit,
-      }),
+    setupSubmodules: async (repoPath, forks) => {
+      setupInvocations += 1;
+      return applySubmoduleForkRemotes(repoPath, forks, {
+        runGit: async (args, cwd) => {
+          setupGitCommands.push({ runner: 'runGit', args: [...args], cwd });
+          return throwingRunGit(args, cwd);
+        },
+        codeRunGit: async (args, cwd) => {
+          setupGitCommands.push({ runner: 'codeRunGit', args: [...args], cwd });
+          return testRunGit(args, cwd);
+        },
+      });
+    },
   });
   const outcome = await runGitSync('sf-it', { runGit: testRunGit, repoPath: t.work, config: cfg });
-  return { commitOnly, cfg, outcome };
+  return { commitOnly, cfg, outcome, setupInvocations, setupGitCommands };
 }
 
 beforeEach(async () => {
@@ -152,6 +162,28 @@ afterEach(async () => {
 });
 
 describe('working copy WITH submodules (P-014 / D-017, WI-10006416)', () => {
+  it('runs one per-submodule safety-check pass on an unchanged fork tick', async () => {
+    const t = await makeTopology();
+    const forks: SubmoduleForksRead = { source: 'set', forks: { 'libs/sub': t.subFork } };
+
+    expect((await tick(t, forks)).commitOnly).toBeNull();
+    const second = await tick(t, forks);
+    expect(second.commitOnly).toBeNull();
+    expect(second.setupInvocations).toBe(1);
+
+    const subDir = join(t.work, 'libs/sub');
+    expect(second.setupGitCommands.filter((call) => call.cwd === subDir)).toEqual([
+      { runner: 'runGit', args: ['remote', 'get-url', POT_FORK_REMOTE_NAME], cwd: subDir },
+      { runner: 'runGit', args: ['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd: subDir },
+      {
+        runner: 'runGit',
+        args: ['rev-parse', '--verify', '--quiet', `refs/remotes/${POT_FORK_REMOTE_NAME}/${WORKING_COPY_INTEGRATION_BRANCH}`],
+        cwd: subDir,
+      },
+    ]);
+    expect(second.setupGitCommands.filter((call) => call.runner === 'codeRunGit')).toHaveLength(1);
+  });
+
   it('the superproject fork’s gitlink resolves on the submodule fork; no main repository moves', async () => {
     const t = await makeTopology();
     const superMain = await git(['rev-parse', 'main'], t.superUpstream);

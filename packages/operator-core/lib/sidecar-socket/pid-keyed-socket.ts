@@ -201,12 +201,32 @@ export function probeUnixSocketAlive(
   socketPath: string,
   opts: { timeoutMs?: number; connect?: typeof net.createConnection } = {},
 ): Promise<boolean> {
+  return probeUnixSocketState(socketPath, opts).then((state) => state === 'alive');
+}
+
+/**
+ * The verdict of one connect probe, kept three-valued because only two errnos prove
+ * that NOBODY is listening: ECONNREFUSED (a socket file with no bound listener) and
+ * ENOENT (no file). Everything else proves nothing either way. A live listener whose
+ * accept backlog is full answers a non-blocking unix connect with EAGAIN, and one that
+ * is merely slow answers nothing before the timeout. Both are `indeterminate`, never
+ * `dead`: a caller that reclaims the path on `indeterminate` unlinks a LIVE server's
+ * name and silently takes it over (WI-6554700010042230).
+ */
+export type UnixSocketProbeState = 'alive' | 'dead' | 'indeterminate';
+
+const DEFINITIVELY_DEAD_ERRNOS = new Set(['ECONNREFUSED', 'ENOENT']);
+
+export function probeUnixSocketState(
+  socketPath: string,
+  opts: { timeoutMs?: number; connect?: typeof net.createConnection } = {},
+): Promise<UnixSocketProbeState> {
   const timeoutMs = opts.timeoutMs ?? 250;
   const connect = opts.connect ?? net.createConnection;
-  return new Promise<boolean>((resolve) => {
+  return new Promise<UnixSocketProbeState>((resolve) => {
     let settled = false;
     let sock: net.Socket | null = null;
-    const done = (alive: boolean) => {
+    const done = (state: UnixSocketProbeState) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -215,7 +235,11 @@ export function probeUnixSocketAlive(
       } catch {
         /* destroying a socket must never mask the verdict */
       }
-      resolve(alive);
+      resolve(state);
+    };
+    const fromError = (e: unknown): UnixSocketProbeState => {
+      const code = (e as NodeJS.ErrnoException | null)?.code;
+      return code && DEFINITIVELY_DEAD_ERRNOS.has(code) ? 'dead' : 'indeterminate';
     };
     // The timeout must not out-race a connect that has ALREADY completed. Both
     // callbacks run on THIS process's event loop, and the timers phase runs before
@@ -227,15 +251,15 @@ export function probeUnixSocketAlive(
     // first. Deferring the "dead" verdict by one setImmediate lets that poll phase
     // deliver the completed connect first; a listener that never completes the
     // connect still resolves false.
-    const timer = setTimeout(() => setImmediate(() => done(false)), timeoutMs);
+    const timer = setTimeout(() => setImmediate(() => done('indeterminate')), timeoutMs);
     // Do not hold the event loop open on the probe's account — a boot-path probe
     // must never be the reason a short-lived process refuses to exit.
     timer.unref?.();
     try {
-      sock = connect(socketPath, () => done(true));
-      sock.on('error', () => done(false));
-    } catch {
-      done(false);
+      sock = connect(socketPath, () => done('alive'));
+      sock.on('error', (e) => done(fromError(e)));
+    } catch (e) {
+      done(fromError(e));
     }
   });
 }
@@ -262,18 +286,21 @@ export const SIDECAR_EXIT_SOCKET_IN_USE = 75;
  * two spawner sidecars on :3070, both LISTEN on one path, each ~2 GB.
  *
  * Listen first; only an EADDRINUSE earns a look at the path. A live listener there
- * resolves `'in-use'`: the caller must exit and leave the path alone. A stale file
- * (ECONNREFUSED, or no answer) is unlinked and the bind retried once. A second
- * EADDRINUSE whose probe still finds no listener rejects rather than looping. Any
- * other listen error rejects. Listeners are removed on settle, so the caller's own
- * `error` handler owns everything after the bind.
+ * resolves `'in-use'`: the caller must exit and leave the path alone. So does a probe
+ * that cannot PROVE the path is stale (a timeout, EAGAIN from a full backlog, any
+ * errno but ECONNREFUSED/ENOENT): refusing costs one EX_TEMPFAIL exit and a host
+ * adoption, while reclaiming a busy live path is the silent hijack this function
+ * exists to prevent (WI-6554700010042230). Only a provably stale file is unlinked and
+ * the bind retried once. A second EADDRINUSE whose probe again says `dead` rejects
+ * rather than looping. Any other listen error rejects. Listeners are removed on
+ * settle, so the caller's own `error` handler owns everything after the bind.
  */
 export function listenUnixSocketExclusive(
   server: net.Server,
   socketPath: string,
-  opts: { probe?: (p: string) => Promise<boolean>; unlink?: (p: string) => void } = {},
+  opts: { probe?: (p: string) => Promise<UnixSocketProbeState>; unlink?: (p: string) => void } = {},
 ): Promise<'listening' | 'in-use'> {
-  const probe = opts.probe ?? ((p: string) => probeUnixSocketAlive(p));
+  const probe = opts.probe ?? ((p: string) => probeUnixSocketState(p));
   const unlink = opts.unlink ?? ((p: string) => fs.rmSync(p, { force: true }));
   return new Promise((resolve, reject) => {
     let reclaimed = false;
@@ -288,8 +315,8 @@ export function listenUnixSocketExclusive(
         settle(() => reject(err));
         return;
       }
-      void probe(socketPath).then((alive) => {
-        if (alive) return settle(() => resolve('in-use'));
+      void probe(socketPath).then((state) => {
+        if (state !== 'dead') return settle(() => resolve('in-use'));
         if (reclaimed) return settle(() => reject(err));
         reclaimed = true;
         try {

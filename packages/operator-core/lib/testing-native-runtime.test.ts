@@ -24,6 +24,9 @@ it.skipIf(bwrap.status !== 0)('keeps native custody outside a mutation overlay a
     const env = { ...process.env, VERIFY_TAURI_PID: String(native.pid), OPERATOR_SOURCE_ROOT: root,
       VERIFY_TAURI_SOURCE_REF: commit, VERIFY_TAURI_SOURCE_RECEIPT: receipt,
       PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET: undefined };
+    // Actual-goal journeys can use the shared database read-only. Native
+    // custody is proven by the source receipt and original process identity.
+    delete env.PAPERCUSP_VERIFY_TAURI_ISOLATED;
     const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done, reject) => {
       const child = spawn(process.execPath, ['--import', 'tsx', modulePath, '--with-native-observer', '--',
         'bwrap', '--dev-bind', '/', '/', '--die-with-parent', '--', process.execPath,
@@ -99,7 +102,10 @@ it('cancels an actual native mutation guard and removes its observer and frozen 
       child!.once('close', done);
       child!.once('error', reject);
     });
-    const deadline = Date.now() + 15000;
+    // The probe prepares source/write containment before it invokes the guard
+    // command. Leave most of the 45s test budget for that readiness signal,
+    // keeping 15s for cancellation and cleanup.
+    const deadline = Date.now() + 30000;
     while (!existsSync(marker) && Date.now() < deadline && child.exitCode === null)
       await new Promise(done => setTimeout(done, 25));
     expect(existsSync(marker), stderr).toBe(true);

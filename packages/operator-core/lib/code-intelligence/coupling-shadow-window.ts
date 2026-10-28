@@ -173,8 +173,12 @@ export interface ShadowWindowInput {
   judgments: EdgeJudgment[];
   /** Null when no breakage reader is available: recall is then unmeasured. */
   breakages: CrossAgentBreakage[] | null;
-  /** R-1's interface leg over the same window; null when unmeasured. */
-  interfaceLeg: { eligible: number | null; eligibleLineages?: number | null } | null;
+  /**
+   * R-1's interface leg over the same window, counted PER EDIT from edit_attribution_ledger
+   * (one row per dispatch call and file); null when unmeasured. `unknown` is the D-020
+   * numerator: outside edits whose interface verdict was unknown.
+   */
+  interfaceLeg: { eligible: number | null; eligibleLineages?: number | null; unknown?: number | null } | null;
   /** ownerId → spawn-lineage key. */
   lineageOf: ReadonlyMap<string, string>;
   implementerOwners: ReadonlySet<string>;
@@ -206,7 +210,8 @@ export interface ShadowWindowScore {
   recallState: RecallState;
   breakages: number | null;
   tokenMeanChars: number | null;
-  unknownOutcomes: number;
+  /** D-020 numerator (per edit, outside the implementer); null when unmeasured. */
+  unknownOutcomes: number | null;
   interfaceEligible: number | null;
   unstampedRows: number;
   reviewBy: number | null;
@@ -247,7 +252,7 @@ export function scoreShadowWindow(input: ShadowWindowInput): ShadowWindowScore {
     fingerprint: latest?.fingerprint ?? null, fingerprints, restarts,
     windowStart: latest?.firstTs ?? null, days: 0, sample: 0, liveAgents: 0, lineages: 0, judged: 0,
     precision: null, recall: null, recallState: 'reader-unavailable', breakages: null, tokenMeanChars: null,
-    unknownOutcomes: 0, interfaceEligible: input.interfaceLeg?.eligible ?? null,
+    unknownOutcomes: input.interfaceLeg?.unknown ?? null, interfaceEligible: input.interfaceLeg?.eligible ?? null,
     unstampedRows: input.unstampedRows, reviewBy: null, reasons: [],
   };
   if (!latest) {
@@ -262,11 +267,14 @@ export function scoreShadowWindow(input: ShadowWindowInput): ShadowWindowScore {
 
   const days = (input.now - latest.firstTs) / DAY_MS;
   const edges = new Map<string, { a: string; b: string; firstTs: number; reason: string }>();
-  // D-020 unknown share: counted in the SAME unit and population as the interface leg's
-  // eligible count (summarizeInterfaceEligibility) — one per edit (the writer emits one
-  // unknown row per call), and only for editors outside the implementer lineages. A row
-  // with no editor is excluded, as the eligible reader excludes rows with no agent.
-  let unknownEdits = 0;
+  // D-020 unknown share. The numerator comes from the SAME source, unit and population as the
+  // eligible count: edit_attribution_ledger rows (one per dispatch call and file) whose
+  // interface verdict is unknown, by owners outside the implementer lineages
+  // (summarizeInterfaceEligibility). Shadow `unknown` rows are NOT counted: they are not one
+  // per edit. The writer (coupling-sources.ts logCodeDependencyShadow) runs on coupling READS,
+  // keys each row by an hour bucket and inserts ON CONFLICT DO NOTHING, so N same-hour
+  // unknown edits leave one row, and one evidence row is re-emitted every hour it is read.
+  const unknownEdits = input.interfaceLeg?.unknown ?? null;
   let surfaced = 0;
   for (const r of input.windowRows) {
     if (r.kind === 'edge' && r.a && r.b) {
@@ -274,10 +282,6 @@ export function scoreShadowWindow(input: ShadowWindowInput): ShadowWindowScore {
       const key = shadowEdgeKey(r.a, r.b, r.path, r.symbol);
       const prior = edges.get(key);
       if (!prior || r.ts < prior.firstTs) edges.set(key, { a: r.a, b: r.b, firstTs: r.ts, reason: r.reason ?? prior?.reason ?? '' });
-    } else if (r.kind === 'unknown') {
-      const editor = r.editorOwnerId;
-      if (editor && !input.implementerOwners.has(editor)
-        && !input.implementerLineages.has(input.lineageOf.get(editor) ?? editor)) unknownEdits += 1;
     }
   }
   const outside = [...edges.values()].filter(e => !input.implementerOwners.has(e.a) && !input.implementerOwners.has(e.b));
@@ -327,10 +331,10 @@ export function scoreShadowWindow(input: ShadowWindowInput): ShadowWindowScore {
   const eligibleLineages = input.interfaceLeg?.eligibleLineages ?? null;
   // The D-020 dead-derivation rule needs BOTH counts, measured outside the implementer
   // lineages. A reader that omits either leaves the rule unevaluable — never satisfied.
-  const deadMeasured = eligible !== null && eligibleLineages !== null;
+  const deadMeasured = eligible !== null && eligibleLineages !== null && unknownEdits !== null;
   const deadEvidence = deadMeasured && (eligible as number) >= B.deadMinEligible
     && (eligibleLineages as number) >= B.deadMinLineages;
-  if (deadEvidence && (edges.size === 0 || unknownEdits > B.deadUnknownShare * (eligible as number))) {
+  if (deadEvidence && (edges.size === 0 || (unknownEdits as number) > B.deadUnknownShare * (eligible as number))) {
     reasons.push(`dead derivation: ${eligible} eligible interface edits, ${edges.size} edge(s), ${unknownEdits} unknown edit(s)`);
     return { ...scored, status: 'closed', disposition: 'keep-shadow', grade: 'broken', verdict: 'fail',
       reviewBy: input.now + B.reviewByDays * DAY_MS };
@@ -389,7 +393,7 @@ export function summarizeShadowWindow(s: ShadowWindowScore): string {
     `sample=${s.sample}`, `liveAgents=${s.liveAgents}`, `lineages=${s.lineages}`, `judged=${s.judged}`,
     `precision=${pct(s.precision)}`, `recall=${pct(s.recall)} (${s.recallState})`,
     `tokenMeanChars=${s.tokenMeanChars === null ? 'n/a' : Math.round(s.tokenMeanChars)}`,
-    `unknown=${s.unknownOutcomes}`, `interfaceEligible=${s.interfaceEligible ?? 'n/a'}`,
+    `unknown=${s.unknownOutcomes ?? 'n/a'}`, `interfaceEligible=${s.interfaceEligible ?? 'n/a'}`,
     `unstamped=${s.unstampedRows}`,
     ...(s.reviewBy ? [`reviewBy=${new Date(s.reviewBy).toISOString().slice(0, 10)}`] : []),
     ...s.reasons,
@@ -397,7 +401,8 @@ export function summarizeShadowWindow(s: ShadowWindowScore): string {
 }
 
 /** One ledger owner's interface-eligible edit count in the window (edit_attribution_ledger). */
-export interface InterfaceEligibilityRow { owner: string | null; eligible: number; observed: number }
+/** One owner's edit_attribution_ledger counts; `unknown` = edits whose interface verdict was unknown. */
+export interface InterfaceEligibilityRow { owner: string | null; eligible: number; observed: number; unknown?: number }
 
 /**
  * The D-020 dead-derivation inputs, counted OUTSIDE the implementer: eligible interface edits by
@@ -410,25 +415,29 @@ export interface InterfaceEligibilityRow { owner: string | null; eligible: numbe
 export function summarizeInterfaceEligibility(
   rows: readonly InterfaceEligibilityRow[], lineageOf: ReadonlyMap<string, string>,
   implementerOwners: ReadonlySet<string>, implementerLineages: ReadonlySet<string>,
-): { eligible: number | null; eligibleLineages: number | null } {
-  if (!rows.some(r => r.observed > 0)) return { eligible: null, eligibleLineages: null };
+): { eligible: number | null; eligibleLineages: number | null; unknown: number | null } {
+  if (!rows.some(r => r.observed > 0)) return { eligible: null, eligibleLineages: null, unknown: null };
   let eligible = 0;
+  let unknown = 0;
   const outside = new Set<string>();
   for (const r of rows) {
-    if (!r.owner || r.eligible <= 0) continue;
+    if (!r.owner) continue;
     const lineage = lineageOf.get(r.owner) ?? r.owner;
     if (implementerOwners.has(r.owner) || implementerLineages.has(lineage)) continue;
+    unknown += r.unknown ?? 0;
+    if (r.eligible <= 0) continue;
     eligible += r.eligible;
     outside.add(lineage);
   }
-  return { eligible, eligibleLineages: outside.size };
+  return { eligible, eligibleLineages: outside.size, unknown };
 }
 
 // ── Live adapter ───────────────────────────────────────────────────────────────
 
 async function readInterfaceEligibility(sql: Sql, workspaceId: string, start: number, end: number): Promise<InterfaceEligibilityRow[]> {
-  const rows = await sql<{ owner: string | null; eligible: string; observed: string }[]>`
+  const rows = await sql<{ owner: string | null; eligible: string; observed: string; unknown: string }[]>`
     SELECT agent_id AS owner,
+           count(*) FILTER (WHERE signal_eligibility->'interface'->>'verdict' = 'unknown') AS unknown,
            count(*) FILTER (WHERE signal_eligibility->'interface'->>'verdict' = 'eligible'
              AND jsonb_array_length(coalesce(signal_eligibility->'interface'->'peerEvidence'->'peers', '[]'::jsonb)) > 0) AS eligible,
            count(*) FILTER (WHERE signal_eligibility ? 'interface') AS observed
@@ -436,7 +445,8 @@ async function readInterfaceEligibility(sql: Sql, workspaceId: string, start: nu
      WHERE workspace_id = ${workspaceId}
        AND ts >= ${new Date(start).toISOString()}::timestamptz AND ts < ${new Date(end).toISOString()}::timestamptz
      GROUP BY agent_id`;
-  return rows.map(r => ({ owner: r.owner, eligible: Number(r.eligible ?? 0), observed: Number(r.observed ?? 0) }));
+  return rows.map(r => ({ owner: r.owner, eligible: Number(r.eligible ?? 0), observed: Number(r.observed ?? 0),
+    unknown: Number(r.unknown ?? 0) }));
 }
 
 type Json = Record<string, unknown>;

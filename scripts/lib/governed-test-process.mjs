@@ -541,6 +541,7 @@ export async function runGovernedTestProcess(options, run) {
     workspaceId,
     namespace: options.namespace ?? 'test-process',
     owner: options.owner,
+    onAdmissionPhase: options.onAdmissionPhase,
     admissionClass: options.admissionClass ?? 'process',
     demand: options.demand ?? { cpuWeight: 1 },
     idempotencyKey: options.idempotencyKey ?? governedProcessIdempotencyKey(options.owner),

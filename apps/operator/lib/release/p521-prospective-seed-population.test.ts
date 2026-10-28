@@ -23,6 +23,7 @@ import {
   createCorestoreSeedProvider, exportSeedUuidIdempotencySource, SEED_EXCLUDED_TABLES,
   seedSnapshotValueTransform, type SeedFrozenExecution,
 } from '../../../../packages/operator-core/lib/sync/hyperbee/seed-provider-corestore';
+import { SEED_EXECUTION_PATHS } from '../../../../packages/operator-core/lib/sync/hyperbee/seed-frozen-execution';
 import { readCoreProjectedFrom } from '../../../../packages/operator-core/lib/sync/hyperbee/seed-projection-meta';
 import { judgeSeedPayloadIntegrity } from './seed-payload-integrity-guard';
 import * as consumer from './p2p-candidate-evidence';
@@ -97,13 +98,7 @@ function execution(): SeedFrozenExecution {
     securityPackages: installedPackages.map(row => ({ ...row, resolved: `https://registry.npmjs.org/${row.name}/-/fixture.tgz`,
       integrity: `sha512-${Buffer.alloc(64, 7).toString('base64')}`,
       files: [{ path: 'package.json', sha256: sha(`private-package-${row.name}`) }] })),
-    directBlobs: ['packages/operator-core/lib/sync/hyperbee/read-merge.ts',
-      'packages/operator-core/lib/sync/hyperbee/log-snapshot.ts',
-      'packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts', 'apps/operator/lib/release/cut-seed-cli.ts',
-      'packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts',
-      'packages/operator-core/lib/sync/hyperbee/hive-epoch-aead.ts',
-      'apps/operator/bin/release/dependency-generation.sh', 'scripts/check-lockfile-census.mjs',
-      'packages/operator-core/lib/sync/hyperbee/seed-module-census.mjs']
+    directBlobs: SEED_EXECUTION_PATHS
       .map(path => ({ path, sha256: sha(`private-source:${SOURCE}:${path}`) })) };
 }
 async function fixture(options: { omitObservation?: boolean; privacyConflict?: boolean } = {}): Promise<Fixture> {

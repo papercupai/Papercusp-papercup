@@ -574,6 +574,41 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     expect(block).toContain('NEXT_ACTION_SENTINEL: release:deploy{op:status}');
   });
 
+  it('EI-26768687964947174: keeps ## Next action when rendered ## Checks follow it', () => {
+    const checks = Array.from(
+      { length: 12 },
+      (_, index) => ({
+        id: `check-${index}`,
+        claim: `verified evidence retained in loop:checkpoint ${index}`,
+        verified: `result-${index}`,
+      }),
+    );
+    const note = [
+      '## Did',
+      'd'.repeat(LOOP_WAKE_CHECKPOINT_MAX_CHARS + 100),
+      '## Next action',
+      'NEXT_ACTION_SENTINEL: resume the held scheduler lane',
+      '## Checks',
+      ...checks.map((check) => renderCheckLine(check)),
+    ].join('\n');
+
+    const clipped = clipLoopCheckpointForWake(note);
+    expect(clipped).toContain('## Next action');
+    expect(clipped).toContain('NEXT_ACTION_SENTINEL: resume the held scheduler lane');
+    expect(clipped.length).toBeLessThanOrEqual(LOOP_WAKE_CHECKPOINT_MAX_CHARS);
+
+    const rendered = renderLoopWakeText({
+      kickoff: '🔁 Continue the loop.',
+      fireNumber: 1,
+      checkpoint: note,
+      checks,
+    });
+    expect(rendered).toContain('NEXT_ACTION_SENTINEL: resume the held scheduler lane');
+    expect(rendered).toContain('CARRIED CHECKS');
+    expect(rendered).toContain('#check-0');
+    expect(rendered).toContain('#check-11');
+  });
+
   it('FAILURE-STREAK gate trips → fire WITHHELD, no wake', async () => {
     const deps = mkDeps({
       checkFireGate: vi.fn(async () => ({

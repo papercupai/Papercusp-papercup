@@ -142,9 +142,9 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
     contextAndRelease:
       "embed-admission and the sidecar hold one durable admission per unit; provider responses remain live feedback and the gateway watchdog is observe-only, so no local cap is duplicated",
     currentCaps:
-      "none: inference-gateway/watchdog.mjs reads the live admission.maxConcurrent gauge only to detect a frozen queue; it does not configure or enforce capacity",
+      "none on provider execution: gateway.ts uses maxConcurrent: 1 only for the per-account Codex permit-order queue around governor.acquire; ProviderAdmissionLifecycle controls the outer provider window dynamically, while watchdog.mjs only reads live admission state",
     writerEvidence:
-      "governed writers: memory/embed-admission.ts, memory/bench/index-cap.ts, and memory/embed-sidecar-server.ts (embedding/inference per-unit runGovernedOperation); watchdog reads live provider state without admission",
+      "governed writers: memory/embed-admission.ts, memory/bench/index-cap.ts, and memory/embed-sidecar-server.ts (embedding/inference per-unit runGovernedOperation); gateway-account-rate-pacing.test.ts verifies per-account permit priority; watchdog reads live provider state without admission",
     sites: [
       {
         path: "packages/operator-core/lib/memory/embed-admission.ts",
@@ -925,11 +925,16 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for checkpoint-qualification-transaction.ts: its sole process start is a timeout-bounded, awaited systemctl is-active probe for the unit of an already-recorded runner. It reads release/checkpoint control metadata, creates no worker or resident queue, and must remain available while productive capacity is pressured.",
+      "P-016 reviewed bypass disposition for checkpoint-qualification-transaction.ts: it has one timeout-bounded, awaited systemctl is-active probe for an already-recorded runner and one awaited git helper that validates the immutable candidate with up to three sequential ref/status probes. Both use 5s timeouts and a 1MiB output bound; they inspect existing release/checkpoint state and create no worker or resident queue, so the control path remains available under productive-work pressure.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
-      return resourceStartCallCount(source) === 1 &&
+      return resourceStartCallCount(source) === 2 &&
         source.includes("await promisify(execFile)('systemctl', ['--user', 'is-active', unit], {") &&
+        source.includes("const git = async (...args: string[]) => (await promisify(execFile)('git', ['-C', input.root, ...args],") &&
+        source.includes("timeout: 5_000, maxBuffer: 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }") &&
+        source.includes("await git('rev-parse', '--show-prefix')") &&
+        source.includes("await git('rev-parse', '--verify', 'HEAD')") &&
+        source.includes("await git('status', '--porcelain', '--untracked-files=normal')") &&
         source.includes("timeout: 5_000,") &&
         source.includes("if (!unit) return 'unknown';") &&
         !/\bdetached\s*:\s*true/.test(code) &&
@@ -2112,10 +2117,11 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for operator-e2e-isolated-action.ts: the routine starts exactly one isolated E2E task through managedSpawn, classed as test-run with the existing memory and runtime limits, a task-ledger identity, and a single-flight check. This is already admitted and accounted at the task manager boundary; the local spawn alias is only the injected managedSpawn seam.",
+      "P-016 reviewed bypass disposition for operator-e2e-isolated-action.ts: the routine starts exactly one isolated E2E task through managedSpawn. It uses the task-manager OPERATOR_E2E_TASK_CLASS and launched-by identity, memory/runtime limits, and a ledger-backed single-flight check; the local spawn alias is the injected managedSpawn seam, not a raw child start outside the task manager.",
     matchesSource: (source) => resourceStartCallCount(source) === 1 &&
       source.includes("const spawn = opts.spawnFn ?? managedSpawn;") &&
-      source.includes("class: 'test-run'") &&
+      source.includes("class: OPERATOR_E2E_TASK_CLASS") &&
+      source.includes("launchedBy: OPERATOR_E2E_TASK_LAUNCHED_BY") &&
       source.includes("memoryMaxBytes: OPERATOR_E2E_MEMORY_MAX_BYTES") &&
       source.includes("runtimeMaxSec: OPERATOR_E2E_RUNTIME_MAX_SEC") &&
       source.includes("if (inFlight.length > 0)"),
@@ -3116,6 +3122,46 @@ export const BYPASS_REGISTRY = new Map([
     },
   ],
   [
+    "packages/operator-core/lib/inference-gateway/gateway.ts::hidden-or-static-capacity",
+    {
+      disposition: "semantic",
+      reason:
+        "Reviewed for EI-26751546283561244: the single maxConcurrent: 1 is a per-account Codex attempt permit-order queue around RateLimitGovernor.acquire. It serializes permit acquisition to preserve priority; it does not cap provider execution, which uses the separate ProviderAdmissionLifecycle window. The gateway-account-rate-pacing test proves an interactive waiter passes a background waiter after the first acquire settles. Request abort and maxQueueWaitMs cancel queued attempts. The source pin requires this exact one-slot queue, acquire-only task body, and cancellation path; drift restores the finding for review.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        const staticCaps = [...code.matchAll(new RegExp(STATIC_CAP.source, "gi"))].map(([match]) =>
+          match.replace(/\s+/g, " ").toLowerCase(),
+        );
+        const functionStart = source.indexOf("const acquireCodexAttemptPermit = async (");
+        const functionEnd = functionStart < 0 ? -1 : source.indexOf("\n  };", functionStart);
+        const attemptSource =
+          functionEnd > functionStart ? source.slice(functionStart, functionEnd) : "";
+        return (
+          staticCaps.length === 1 &&
+          staticCaps[0] === "maxconcurrent: 1" &&
+          !HIDDEN_SEMAPHORE.test(code) &&
+          source.includes("const codexAttemptQueues = new Map<RateLimitGovernor, PriorityAdmissionQueue>();") &&
+          attemptSource.includes("queue = new PriorityAdmissionQueue({ maxConcurrent: 1 });") &&
+          attemptSource.includes(
+            "const governor = governorForAccount(model || SERVICEABLE_CLAMP_MODEL, accountId, 'codex');",
+          ) &&
+          attemptSource.includes(
+            "const release = await queue.run(priorityFromLabel(priorityLabel), () => {",
+          ) &&
+          attemptSource.includes("return governor.acquire({}, {") &&
+          attemptSource.includes("signal: waitingSignal,") &&
+          attemptSource.includes(
+            "const timer = setTimeout(() => deadline.abort(), maxQueueWaitMs);",
+          ) &&
+          attemptSource.includes("}, { signal: waitingSignal });") &&
+          attemptSource.includes(
+            "finally {\n      clearTimeout(timer);\n      unsubscribe();",
+          )
+        );
+      },
+    },
+  ],
+  [
     "packages/operator-core/lib/memory/embed-sidecar-spawn.ts::resource-start-outside-admission",
     {
       disposition: "bypass",
@@ -3363,14 +3409,6 @@ export const BYPASS_REGISTRY = new Map([
     },
   ],
   [
-    "packages/operator-core/lib/endpoint-route/routes/harness/prs.ts::resource-start-outside-admission",
-    {
-      disposition: "bypass",
-      reason:
-        "execFileP is promisify(execFile) for a bounded git-origin metadata read used to render PR context; the command is awaited and finite.",
-    },
-  ],
-  [
     "packages/operator-core/lib/endpoint-route/routes/harness/sync.ts::resource-start-outside-admission",
     {
       disposition: "bypass",
@@ -3414,10 +3452,12 @@ export const BYPASS_REGISTRY = new Map([
     {
       disposition: "bypass",
       reason:
-        "Reviewed bypass for the spawner sidecar's forkserver client. It has two starts. (1) startForkserver: one long-lived `node -e` forkserver per sidecar process, restarted only after it dies. It runs no work of its own: it forks children on request so the ~500MB sidecar stops forking on its admission event loop. (2) directSpawn: the fallback while the forkserver cannot start. Every child either start produces is requested by execProcess (sidecar-exec-process.ts) AFTER its governed admission receipt is held, and the receipt is settled when the child's group exits. The forkserver adds no capacity the governor does not already admit. Pinned to exactly these two spawn calls.",
-      matchesSource: (source) => resourceStartCallCount(source) === 2 &&
-        source.includes("spawn(process.execPath, ['-e', FORKSERVER_SOURCE]") &&
-        source.includes("return spawn(req.command, req.args, {"),
+        "Reviewed bypass for the spawner sidecar's forkserver client. startForkserver starts one task-manager sidecar with managedSpawn; that server performs no user work and only forks a requested child so the large sidecar stops forking on its admission event loop. directSpawn is the fallback for that same request. sidecar-exec-process.ts calls spawnSidecarChild only after beginGovernedExecution holds the per-request admission, then settles it on process-group exit. Pin the managed sidecar start and the single direct fallback primitive; neither adds an independent work queue.",
+      matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+        source.includes("void managedSpawn('/usr/bin/env', ['-u', 'NODE_OPTIONS', process.execPath, '-e', FORKSERVER_SOURCE], {") &&
+        source.includes("class: 'sidecar', title: 'spawner forkserver'") &&
+        source.includes("return spawn(req.command, req.args, {") &&
+        source.includes("if (req.forkserverIdentity === null) return directSpawn(req);"),
     },
   ],
   [
@@ -3430,6 +3470,26 @@ export const BYPASS_REGISTRY = new Map([
         source.includes("server.children.delete(m.id)") &&
         source.includes("server.pending.clear()") &&
         source.includes("server.children.clear()"),
+    },
+  ],
+  [
+    "scripts/lib/runtime-compatibility-admission.mjs::missing-admission-context-or-release",
+    {
+      disposition: "semantic",
+      reason:
+        "This isolated runtime-compatibility fixture validates both admission outcomes. On the admitted gateway path it checks outcome.kind before passing that same outcome.context to governor.release; on the enqueue path it reports the queued receipt without claiming or releasing execution capacity. The context is the runtime Governor result contract, although this JavaScript fixture has no TypeScript AdmissionContext token for the lexical checker.",
+      matchesSource: (source) => {
+        const admit = source.indexOf("outcome = await governor.admit({ idempotencyKey: 'same-request'");
+        const admittedGuard = source.indexOf(
+          "if (outcome.kind !== 'admitted') throw new Error('Gateway did not return an admitted receipt');",
+          admit,
+        );
+        const release = source.indexOf("const released = await governor.release(outcome.context);", admittedGuard);
+        return admit >= 0 && admittedGuard > admit && release > admittedGuard &&
+          source.includes("const result = await new Governor(driver, { now: () => nowMs }).admit({") &&
+          source.includes("return { queued: result.kind === 'queued' };") &&
+          source.includes("return { admitted: true, stateAfterCompetitor: status.state, released: released.released };");
+      },
     },
   ],
 ]);

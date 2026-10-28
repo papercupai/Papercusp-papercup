@@ -7,6 +7,7 @@ import {
   SHADOW_WINDOW_BOUNDS, derivationFingerprint, fingerprintEpochs, recordAndReport, scoreShadowWindow, shadowEdgeKey,
   type ShadowRow, type ShadowWindowInput,
 } from './coupling-shadow-window';
+import { codeDependencyShadowRowId } from '../agent-tools/coordination/coupling-sources';
 
 const DAY = 86_400_000;
 const T0 = Date.UTC(2026, 10, 1);
@@ -70,7 +71,7 @@ function input(over: Partial<ShadowWindowInput> = {}): ShadowWindowInput {
     unstampedRows: 0,
     judgments: [],
     breakages: [],
-    interfaceLeg: { eligible: 40, eligibleLineages: 4 },
+    interfaceLeg: { eligible: 40, eligibleLineages: 4, unknown: 0 },
     lineageOf: new Map(agents.map(a => [a, `lin-${a}`])),
     implementerOwners: new Set(['impl-1']),
     implementerLineages: new Set(['lin-impl-1']),
@@ -162,8 +163,7 @@ describe('scoreShadowWindow (R-12)', () => {
   });
 
   it('grades broken when unknown outcomes exceed half the eligible edits', () => {
-    const unknown = Array.from({ length: 21 }, (_, i) => ({ ts: T0 + i, kind: 'unknown', mode: 'shadow', editorOwnerId: 'ag-1', symbol: `u${i}`, path: 'src/u.ts' }));
-    const s = scoreShadowWindow(input({ windowRows: [...edgeRows(30), ...unknown] }));
+    const s = scoreShadowWindow(input({ windowRows: edgeRows(30), interfaceLeg: { eligible: 40, eligibleLineages: 4, unknown: 21 } }));
     expect([s.grade, s.verdict, s.unknownOutcomes]).toEqual(['broken', 'fail', 21]);
   });
 
@@ -186,8 +186,7 @@ describe('scoreShadowWindow (R-12)', () => {
     const wouldKeep = scoreShadowWindow(input({ windowRows: rows, judgments: judgeAll(rows, false), breakages, interfaceLeg: liveShape }));
     expect([wouldKeep.grade, wouldKeep.verdict]).toEqual(['unknown', 'unknown']);
     // Over half the eligible edits unknown, with no lineage count: never a pass.
-    const unknown = Array.from({ length: 21 }, (_, i) => ({ ts: T0 + i, kind: 'unknown', mode: 'shadow', editorOwnerId: 'ag-1', symbol: `u${i}`, path: 'src/u.ts' }));
-    const deadish = scoreShadowWindow(input({ windowRows: [...rows, ...unknown], judgments: judgeAll(rows, false), breakages, interfaceLeg: liveShape }));
+    const deadish = scoreShadowWindow(input({ windowRows: rows, judgments: judgeAll(rows, false), breakages, interfaceLeg: { ...liveShape, unknown: 21 } }));
     expect(deadish.verdict).not.toBe('pass');
   });
 
@@ -232,21 +231,43 @@ describe('scoreShadowWindow (R-12)', () => {
     expect([capped.restarts, capped.status, capped.disposition, capped.grade, capped.verdict]).toEqual([4, 'closed', 'keep-shadow', 'unknown', 'unknown']);
   });
 
-  it('counts unknown outcomes per edit, so repeated unknowns on one symbol push the share over half and grade broken', () => {
-    const repeated = Array.from({ length: 21 }, (_, i) => ({ ts: T0 + i, kind: 'unknown', mode: 'shadow', editorOwnerId: 'ag-2', symbol: 'u0', path: 'src/u.ts' }));
-    const s = scoreShadowWindow(input({ windowRows: [...edgeRows(30), ...repeated] }));
+  // Reviewer objection thread-post:1208844: shadow unknown rows are not one per edit. The live
+  // writer (logCodeDependencyShadow) keys each by codeDependencyShadowRowId (hour bucket) and
+  // inserts ON CONFLICT (id) DO NOTHING, so 21 same-hour unknown edits leave ONE row. The D-020
+  // numerator therefore comes from the per-edit ledger count (interfaceLeg.unknown).
+  it('counts unknown outcomes per edit: 21 same-hour unknowns collapse to one shadow row as they do live, and the window still grades broken', () => {
+    const live = new Map<string, ShadowRow>();
+    for (let i = 0; i < 21; i += 1) {
+      const at = T0 + i * 60_000;
+      const id = codeDependencyShadowRowId(['unknown', 'ag-2', '', 'u0', 'src/u.ts'], at);
+      if (!live.has(id)) live.set(id, { ts: at, kind: 'unknown', mode: 'shadow', editorOwnerId: 'ag-2', symbol: 'u0', path: 'src/u.ts' });
+    }
+    expect(live.size).toBe(1);
+    const s = scoreShadowWindow(input({ windowRows: [...edgeRows(30), ...live.values()], interfaceLeg: { eligible: 40, eligibleLineages: 4, unknown: 21 } }));
     expect([s.grade, s.verdict, s.unknownOutcomes]).toEqual(['broken', 'fail', 21]);
+    // Shadow rows alone never move the numerator: the same collapsed row with no ledger unknowns.
+    const rowsOnly = scoreShadowWindow(input({ windowRows: [...edgeRows(30), ...live.values()] }));
+    expect(rowsOnly.unknownOutcomes).toBe(0);
+    // An unmeasured ledger count leaves the D-020 rule unevaluable: a close is never a pass.
+    const unmeasured = scoreShadowWindow(input({ windowRows: edgeRows(30), judgments: judgeAll(edgeRows(30), true),
+      interfaceLeg: { eligible: 40, eligibleLineages: 4, unknown: null } }));
+    expect(unmeasured.verdict).not.toBe('pass');
   });
 
   it('counts unknown outcomes only for editors outside the implementer lineages, the same population as the eligible count', () => {
-    const lineageOf = new Map([...agents.map(a => [a, `lin-${a}`] as [string, string]), ['impl-2', 'lin-impl-1']]);
-    const mk = (editorOwnerId: string | undefined, n: number): ShadowRow[] => Array.from({ length: n }, (_, i) =>
-      ({ ts: T0 + i, kind: 'unknown', mode: 'shadow', ...(editorOwnerId ? { editorOwnerId } : {}), symbol: `u${i}`, path: 'src/u.ts' }));
-    const s = scoreShadowWindow(input({ lineageOf, windowRows: [...edgeRows(30), ...mk('impl-1', 30), ...mk('impl-2', 30), ...mk(undefined, 30)] }));
+    const lineageOf = new Map([...agents.map(a => [a, `lin-${a}`] as [string, string]), ['impl-1', 'lin-impl-1'], ['impl-2', 'lin-impl-1']]);
+    const impl = new Set(['impl-1']);
+    const implLin = new Set(['lin-impl-1']);
+    // Three outside lineages and 40 eligible edits: the D-020 floor is met, so only the unknown count decides.
+    const base = [{ owner: 'ag-1', eligible: 14, observed: 14 }, { owner: 'ag-2', eligible: 13, observed: 13 }, { owner: 'ag-3', eligible: 13, observed: 13 }];
+    const inside = summarizeInterfaceEligibility([...base, { owner: 'impl-1', eligible: 0, observed: 30, unknown: 30 },
+      { owner: 'impl-2', eligible: 0, observed: 30, unknown: 30 }, { owner: null, eligible: 0, observed: 30, unknown: 30 }], lineageOf, impl, implLin);
+    const s = scoreShadowWindow(input({ lineageOf, implementerOwners: impl, implementerLineages: implLin, windowRows: edgeRows(30), interfaceLeg: inside }));
     expect(s.unknownOutcomes).toBe(0);
     expect(s.grade).not.toBe('broken');
     // The same 21 unknowns from an outside editor do cross the 0.5 share.
-    const outside = scoreShadowWindow(input({ lineageOf, windowRows: [...edgeRows(30), ...mk('impl-1', 30), ...mk('ag-3', 21)] }));
+    const outsideLeg = summarizeInterfaceEligibility([...base, { owner: 'ag-3', eligible: 0, observed: 21, unknown: 21 }], lineageOf, impl, implLin);
+    const outside = scoreShadowWindow(input({ lineageOf, implementerOwners: impl, implementerLineages: implLin, windowRows: edgeRows(30), interfaceLeg: outsideLeg }));
     expect([outside.unknownOutcomes, outside.grade, outside.verdict]).toEqual([21, 'broken', 'fail']);
   });
 });
@@ -261,21 +282,23 @@ describe('summarizeInterfaceEligibility (R-12 D-020 inputs outside the implement
       { owner: 'ag-1', eligible: 10, observed: 12 }, { owner: 'ag-2', eligible: 5, observed: 5 },
       { owner: 'ag-3', eligible: 7, observed: 9 }, { owner: 'impl-1', eligible: 50, observed: 50 },
       { owner: 'impl-child', eligible: 40, observed: 40 }, { owner: null, eligible: 30, observed: 30 },
-      { owner: 'ag-4', eligible: 0, observed: 3 },
+      { owner: 'ag-4', eligible: 0, observed: 3, unknown: 4 }, { owner: 'impl-1', eligible: 0, observed: 9, unknown: 9 },
+      { owner: null, eligible: 0, observed: 3, unknown: 3 },
     ], lineageOf, impl, implLin);
-    expect(r).toEqual({ eligible: 22, eligibleLineages: 2 });
+    // ag-4's unknown edits count although it made no eligible edit; implementer and unattributed rows never do.
+    expect(r).toEqual({ eligible: 22, eligibleLineages: 2, unknown: 4 });
   });
 
   it('is unmeasured (null, never zero) when the detector observed no interface row', () => {
-    expect(summarizeInterfaceEligibility([], lineageOf, impl, implLin)).toEqual({ eligible: null, eligibleLineages: null });
+    expect(summarizeInterfaceEligibility([], lineageOf, impl, implLin)).toEqual({ eligible: null, eligibleLineages: null, unknown: null });
     expect(summarizeInterfaceEligibility([{ owner: 'ag-1', eligible: 0, observed: 0 }], lineageOf, impl, implLin))
-      .toEqual({ eligible: null, eligibleLineages: null });
+      .toEqual({ eligible: null, eligibleLineages: null, unknown: null });
   });
 
   it('feeds a dead-derivation verdict only when outside lineages reach the floor', () => {
     const rows = [{ owner: 'ag-1', eligible: 20, observed: 20 }, { owner: 'ag-3', eligible: 20, observed: 20 }, { owner: 'ag-9', eligible: 5, observed: 5 }];
     const leg = summarizeInterfaceEligibility(rows, lineageOf, impl, implLin);
-    expect(leg).toEqual({ eligible: 45, eligibleLineages: 3 });
+    expect(leg).toEqual({ eligible: 45, eligibleLineages: 3, unknown: 0 });
     expect(scoreShadowWindow(input({ windowRows: [], interfaceLeg: leg })).grade).toBe('broken');
   });
 });
