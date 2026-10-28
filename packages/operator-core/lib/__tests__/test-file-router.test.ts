@@ -45,10 +45,12 @@ it('records a real node:test child when the focused router starts without a TS l
 });
 // The production entrypoint deliberately stays executable by plain Node.
 import {
+  allSkippedVerdict,
   aggregateGroupResults,
   assertCommittedTestConfigCoverageExports,
   assertExecutedProofOutputCustody,
   assertPrivateIntegrationEvidence,
+  assertionOutcomesFromReport,
   buildNodeTestArgs,
   canonicalMatch,
   classifyGovernedAdmissionFailure,
@@ -339,7 +341,7 @@ describe('test-files router', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('hands the private command to verifier-run before any list or test child is started', async () => {
+  it('defers private PG admission until verifier dependency preparation and before any test child', async () => {
     const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
     const oldOptions = process.env.NODE_OPTIONS;
     const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
@@ -357,26 +359,30 @@ describe('test-files router', () => {
       process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN = 'parent-release-token';
       delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
       const frozen = vi.fn(async options => {
-        stages.push('source-freeze'); receiptDir = join(options.receiptPath, '..'); return 7;
+        stages.push('verifier-dependencies-ready');
+        expect(options.env).not.toHaveProperty('HARNESS_ADMIN_DATABASE_URL');
+        await expect(options.prepareChildEnv()).resolves.toEqual({
+          HARNESS_ADMIN_DATABASE_URL: 'postgresql://harness_admin:test-only@127.0.0.1:54321/papercusp',
+        });
+        stages.push('child-environment-ready'); receiptDir = join(options.receiptPath, '..'); return 7;
       });
       expect(await main([resolve(REPO_ROOT, file), '--', '--testNamePattern=private Create'], {
         preflightPrivateIntegrationPgImpl: preflight,
         restrictedHoldPreflightImpl: restricted,
         runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
       })).toBe(7);
-      expect(stages).toEqual(['restricted-preflight', 'pg-preflight', 'source-freeze']);
+      expect(stages).toEqual(['restricted-preflight', 'verifier-dependencies-ready', 'pg-preflight',
+        'child-environment-ready']);
       expect(restricted).toHaveBeenCalledExactlyOnceWith({ repoRoot: REPO_ROOT, files: [resolve(REPO_ROOT, file)] });
       expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
       expect(frozen).toHaveBeenCalledWith(expect.objectContaining({ repo: REPO_ROOT,
         ref: expect.stringMatching(/^[a-f0-9]{40}$/), inputs: expect.arrayContaining([file]),
-        releaseParentPrivatePg: true,
+        releaseParentPrivatePg: true, prepareChildEnv: expect.any(Function),
         command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs', file,
           '--', '--testNamePattern=private Create'],
         env: expect.objectContaining({ PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: 'admitted-by-test-router' }),
       }));
-      expect(frozen.mock.calls[0][0].env).toEqual(expect.objectContaining({
-        HARNESS_ADMIN_DATABASE_URL: 'postgresql://harness_admin:test-only@127.0.0.1:54321/papercusp',
-      }));
+      expect(frozen.mock.calls[0][0].env).not.toHaveProperty('HARNESS_ADMIN_DATABASE_URL');
     } finally {
       if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
       if (oldAdmission === undefined) delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
@@ -392,7 +398,7 @@ describe('test-files router', () => {
     const resolved = resolve(REPO_ROOT, 'packages/operator-core', file);
     const oldOptions = process.env.NODE_OPTIONS;
     const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
-    const frozen = vi.fn(async () => 7);
+    const frozen = vi.fn(async options => { await options.prepareChildEnv(); return 7; });
     const preflight = vi.fn(async () => ({
       url: 'postgresql://harness_admin:test-only@127.0.0.1:54321/papercusp', source: 'operator-env-file',
     }));
@@ -448,10 +454,11 @@ describe('test-files router', () => {
     },
   );
 
-  it('refuses an unavailable private-proof PG before source copying or any test child', async () => {
+  it('refuses unavailable private-proof PG after dependency preparation but before any test child', async () => {
     const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
     const oldOptions = process.env.NODE_OPTIONS;
-    const frozen = vi.fn(), list = vi.fn(), run = vi.fn();
+    const frozen = vi.fn(async options => { await options.prepareChildEnv(); return 7; });
+    const list = vi.fn(), run = vi.fn();
     const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
@@ -461,7 +468,7 @@ describe('test-files router', () => {
         runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
       })).toBe(2);
       expect(preflight).toHaveBeenCalledOnce();
-      expect(frozen).not.toHaveBeenCalled();
+      expect(frozen).toHaveBeenCalledOnce();
       expect(list).not.toHaveBeenCalled();
       expect(run).not.toHaveBeenCalled();
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('TEST SUBSTRATE STORAGE LOW'));
@@ -2716,6 +2723,54 @@ describe('aggregateGroupResults — no group may be silently abandoned (EI-13535
   it('a clean run with no timed-out group reports anyTimedOut=false (no false positive)', () => {
     const summary = aggregateGroupResults([okGroup(1, 1, 1), okGroup(2, 2, 2)]);
     expect(summary.anyTimedOut).toBe(false);
+  });
+});
+
+describe('all-skipped verdict checks each requested file', () => {
+  it('a mixed two-file request refuses a wholly skipped file when the other file passed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mixed-all-skipped-files-'));
+    try {
+      const reportPath = join(dir, 'report.json');
+      const passedFile = resolve(dir, 'passed.test.ts');
+      const skippedFile = resolve(dir, 'skipped.test.ts');
+      writeFileSync(reportPath, JSON.stringify({
+        testResults: [
+          { name: passedFile, assertionResults: [{ fullName: 'suite > passes', status: 'passed' }] },
+          { name: skippedFile, assertionResults: [{ fullName: 'suite > skipped', status: 'skipped' }] },
+        ],
+      }));
+      const outcomes = assertionOutcomesFromReport(reportPath);
+      const summary = aggregateGroupResults([{
+        requested: 2,
+        matched: 2,
+        executed: 2,
+        unmatchedCount: 0,
+        failed: false,
+        launchError: false,
+        testsSkipped: outcomes?.skipped.length ?? null,
+        skippedNames: outcomes?.skipped ?? [],
+        executedNames: outcomes?.executed ?? [],
+        executedFiles: outcomes?.executedFiles ?? [],
+      }]);
+
+      expect(allSkippedVerdict(summary)).toEqual({
+        vacuous: true,
+        reason: 'requested-file-has-no-executed-tests',
+        files: [skippedFile],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps explicit skipped cases measured when the same file also executed a test', () => {
+    expect(allSkippedVerdict({
+      anyFailed: false,
+      executedNames: ['suite > passes'],
+      executedFiles: ['same.test.ts'],
+      skippedNames: [{ name: 'suite > skipped', file: 'same.test.ts' }],
+      skippedUnmeasuredGroups: 0,
+    })).toEqual({ vacuous: false, reason: 'tests-executed' });
   });
 });
 

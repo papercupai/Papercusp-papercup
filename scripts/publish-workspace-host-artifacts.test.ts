@@ -26,7 +26,7 @@ function workspaceUploadVerificationFixture(fault?: 'bytes' | 'replay-generation
   const key = prefix + 'server.tgz';
   const providerId = 'b8800627-5a91-4c16-8acc-1be87227a643';
   const providerPrefix = '__artifact_uploads/' + providerId + '/';
-  const objects = new Map<string, { name: string; generation: string; bytes: Buffer }>();
+  const objects = new Map<string, { name: string; generation: string; bytes: Buffer<ArrayBuffer> }>();
   const put = (name: string, bytes: string, generation = '101') => objects.set(name, { name, generation, bytes: Buffer.from(bytes) });
   const calls: { url: URL; method: string }[] = [];
   const journal: unknown[] = [];

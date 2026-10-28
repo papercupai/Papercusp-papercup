@@ -1276,8 +1276,18 @@ function bgCompilerOptions(argv, root) {
 export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocations }) {
   assert.ok(Array.isArray(invocations) && invocations.length > 0, 'BG invocation set is empty');
   const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation: invocations[0] });
+  return readBgVerifierBuildContexts(record, invocations);
+}
+
+/** Capture command identities after the caller has checked the common input
+ * cohort in THIS synchronous validation. Never retain an input-validation cache
+ * across boundaries, compiler calls or publication operations.
+ * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} record
+ * @param {BgBuildInvocation[]} invocations
+ */
+function readBgVerifierBuildContexts(record, invocations) {
   const context = freezeBgExpectation({ schemaVersion: 'bg-build-contexts-v1', record,
-    invocations: invocations.map(invocation => ({ invocation, original: readBgBuildInvocation(prepared, invocation) })) });
+    invocations: invocations.map(invocation => ({ invocation, original: readBgBuildInvocation(record.prepared, invocation) })) });
   validateBgVerifierBuildContexts(context);
   return context;
 }
@@ -1286,6 +1296,8 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
 function validateBgVerifierBuildContexts(context) {
   assert.equal(context.schemaVersion, 'bg-build-contexts-v1', 'BG invocation set is UNKNOWN');
   assert.ok(Array.isArray(context.invocations) && context.invocations.length > 0, 'BG invocation set is empty');
+  assert.deepEqual(context.invocations[0].original, context.record.invocation,
+    'BG invocation set changed first build record');
   const common = ({ argv, ...identity }) => identity;
   const commands = new Set(), outputs = new Set();
   for (const entry of context.invocations) {
@@ -1301,6 +1313,21 @@ function validateBgVerifierBuildContexts(context) {
       outputs.add(output);
     }
   }
+}
+
+/** Refresh the shared source/dependency census once per boundary, while still
+ * reading EVERY command's actual toolchain, configuration and namespace. The
+ * structural common-identity check must precede this deduplication: later
+ * invocations cannot borrow the first command's authority.
+ * @param {ReturnType<typeof prepareBgVerifierBuildContexts>} context
+ * @param {'before-build' | 'before-publication'} boundary
+ */
+function verifyBgVerifierBuildContexts(context, boundary) {
+  validateBgVerifierBuildContexts(context);
+  verifyBgVerifierBuildRecord(context.record, context.invocations[0].invocation, boundary);
+  for (const entry of context.invocations.slice(1))
+    assert.deepEqual(readBgBuildInvocation(context.record.prepared, entry.invocation), entry.original,
+      'BG builder configuration or toolchain identity changed');
 }
 
 /** @param {ReturnType<typeof prepareBgVerifierBuildContexts>} context
@@ -1360,7 +1387,7 @@ function isBgSymlink(path) {
 function validateBgVerifierBuildTransaction(transaction) {
   assert.equal(transaction.schemaVersion, 'bg-build-transaction-v1', 'BG transaction is UNKNOWN');
   const { contexts, bank, stage, outputs } = transaction;
-  validateBgVerifierBuildContexts(contexts);
+  verifyBgVerifierBuildContexts(contexts, 'before-build');
   assert.deepEqual(readBgDirectoryIdentity(bank.path), bank, 'BG transaction bank identity changed');
   assert.equal(dirname(stage), bank.path, 'BG transaction stage escaped bank');
   assert.match(basename(stage), /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'BG transaction stage leaf is invalid');
@@ -1395,7 +1422,6 @@ function validateBgVerifierBuildTransaction(transaction) {
   assert.ok(!temporary.some(path => finals.includes(path)), 'BG transaction temporary and logical outputs overlap');
   const compilerOutputs = [];
   for (const entry of contexts.invocations) {
-    verifyBgVerifierBuildRecord({ ...contexts.record, invocation: entry.original }, entry.invocation, 'before-build');
     for (const arg of entry.original.argv) {
       if (arg.includes('@BG_PID@')) {
         const output = /^--(?:outfile|metafile)=(.+)$/.exec(arg)?.[1];
@@ -1525,7 +1551,9 @@ export function stageBgVerifierAssetCopies(binding) {
     }
     writeFileSync(join(transaction.stage, asset.temporary), contents, { flag: 'wx', mode: 0o600 });
   }
-  verifyBgVerifierOutputBinding(binding);
+  // An empty asset set has no intervening copy effect to fence. Real copies
+  // still require the closing source/dependency and namespace validation.
+  if (assets.length > 0) verifyBgVerifierOutputBinding(binding);
 }
 
 /** Measure the COMPLETE temporary output population against the retained binding
@@ -1549,7 +1577,6 @@ export function qualifyBgVerifierBuildOutputSet({ binding, receipts }) {
     const receipt = matches[0];
     assert.equal(receipt.schemaVersion, 'bg-compiler-invocation-v1', 'BG output compiler receipt is UNKNOWN');
     const record = { ...contexts.record, invocation: entry.original };
-    verifyBgVerifierBuildRecord(record, entry.invocation, 'before-publication');
     assert.equal(receipt.buildRecordSha256, hash(record), 'BG output compiler original record changed');
     assert.equal(receipt.originalSourceReceiptSha256, record.originalSourceReceiptSha256,
       'BG output compiler original source receipt changed');
@@ -1579,8 +1606,7 @@ export function qualifyBgVerifierBuildOutputSet({ binding, receipts }) {
     existsSync(join(transaction.stage, path)))]);
   assertBgOutputPopulation(transaction.stage, expected, controls);
   // Close the census with the same source, dependency and directory identities.
-  for (const entry of contexts.invocations)
-    verifyBgVerifierBuildRecord({ ...contexts.record, invocation: entry.original }, entry.invocation, 'before-publication');
+  verifyBgVerifierBuildContexts(contexts, 'before-publication');
   return freezeBgExpectation({ schemaVersion: 'bg-build-output-set-v1',
     transactionSha256: binding.transactionSha256, bindingSha256: hash(binding),
     compilerReceiptsSha256: hash(receipts), originalSourceReceiptSha256: contexts.record.originalSourceReceiptSha256,
@@ -1598,9 +1624,13 @@ function verifyBgVerifierOutputBinding(binding) {
   const namespace = binding.contexts.record.invocation.outputNamespace;
   assert.ok(namespace && namespace.stage.path === transaction.stage, 'BG output original stage changed');
   assert.deepEqual(namespace.bank, transaction.bank, 'BG output original bank changed');
-  const contexts = prepareBgVerifierBuildContexts({ ...transaction.contexts.record,
-    invocations: transaction.contexts.invocations.map(entry => ({ ...entry.invocation, outputNamespace: namespace,
-      argv: entry.original.argv.map(arg => arg.replaceAll('@BG_PID@', String(ownerPid))) })) });
+  // Transaction validation refreshed the common census above. Reconstruct the
+  // exact PID-bound commands and read all live identities without rescanning
+  // those same common inputs during this synchronous binding check.
+  const invocations = transaction.contexts.invocations.map(entry => ({ ...entry.invocation, outputNamespace: namespace,
+    argv: entry.original.argv.map(arg => arg.replaceAll('@BG_PID@', String(ownerPid))) }));
+  const contexts = readBgVerifierBuildContexts({ ...transaction.contexts.record,
+    invocation: readBgBuildInvocation(transaction.contexts.record.prepared, invocations[0]) }, invocations);
   assert.deepEqual(binding.contexts, contexts, 'BG output original contexts changed');
   const compilerOutputs = transaction.outputs.map(row => ({ ...row,
     temporary: row.temporary.replaceAll('@BG_PID@', String(ownerPid)) }));
@@ -1723,8 +1753,7 @@ export function verifyBgVerifierLogicalOutputSet(logical, { output, binding, rec
   assertBgOutputPopulation(transaction.stage, new Set([...outputs.map(row => row.final),
     ...logical.controls.map(row => relative(transaction.stage, row.path)),
     relative(transaction.stage, logical.artifact.manifest.path)]), controls);
-  for (const entry of contexts.invocations)
-    verifyBgVerifierBuildRecord({ ...contexts.record, invocation: entry.original }, entry.invocation, 'before-publication');
+  verifyBgVerifierBuildContexts(contexts, 'before-publication');
   return logical;
 }
 
@@ -2256,11 +2285,11 @@ function preflightVerifierWorkspaceBinDonor({ repo, commit, donor }) {
 
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
  *   clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs,
+export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs, prepareChildEnv = async () => ({}),
   releaseParentPrivatePg = false, requestParentPgReleaseImpl = requestPrivateTestPgRelease,
   clock = { now: Date.now, setTimeout, clearTimeout } }) {
   if (!ref?.trim() || !receiptPath || !command?.length || !command[0])
@@ -2319,7 +2348,12 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   /** @type {VerifierPhaseRunner} */
   let runPhase = async (_phase, operation) => operation();
   let failure;
+  let finalizationFailure;
   let budget;
+  let commandExitCode = null;
+  let phaseArchivePath;
+  let taskEvidenceRoot;
+  let taskEvidenceManifestPath;
   const admitBudget = (estimate, preparation = false) => {
     const admission = admitVerifierCommandBudget(estimate, { env, preparation, nowMs: clock.now() });
     budget = { deadlineEpochMs: admission.deadlineEpochMs, cleanupReserveMs: admission.cleanupReserveMs,
@@ -2332,6 +2366,23 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     ownership = writeVerifierTaskReceipt(owned, sourceRepo, env, taskReceiptPath);
     const tracedPhase = verifierPhaseRunner(`${resolve(receiptPath)}.phases.jsonl`, env,
       `${receiptPath}.child.json`);
+    phaseArchivePath = tracedPhase.archivePath;
+    if (ownership.taskId) {
+      const taskEvidenceTaskRoot = join(dirname(phaseArchivePath), `verifier-task-${ownership.taskId}`);
+      mkdirSync(taskEvidenceTaskRoot, { recursive: true, mode: 0o700 });
+      const taskEvidenceStat = lstatSync(taskEvidenceTaskRoot);
+      assert.ok(taskEvidenceStat.isDirectory() && !taskEvidenceStat.isSymbolicLink(),
+        'Verifier task evidence directory is not private storage');
+      assert.equal(taskEvidenceStat.mode & 0o077, 0, 'Verifier task evidence directory must be private');
+      const runId = createHash('sha256').update(resolve(receiptPath)).digest('hex');
+      taskEvidenceRoot = join(taskEvidenceTaskRoot, runId);
+      mkdirSync(taskEvidenceRoot, { mode: 0o700 });
+      const runEvidenceStat = lstatSync(taskEvidenceRoot);
+      assert.ok(runEvidenceStat.isDirectory() && !runEvidenceStat.isSymbolicLink(),
+        'Verifier task run-evidence directory is not private storage');
+      assert.equal(runEvidenceStat.mode & 0o077, 0, 'Verifier task run-evidence directory must be private');
+      taskEvidenceManifestPath = join(taskEvidenceRoot, 'manifest.json');
+    }
     process.stderr.write(`VERIFIER_PHASE_ARCHIVE ${JSON.stringify({
       path: `${resolve(receiptPath)}.phases.jsonl`, archivePath: tracedPhase.archivePath,
     })}\n`);
@@ -2378,13 +2429,20 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     const childEnv = await runPhase('child.preflight', () => verifierSourceChildEnv({ root, receiptPath,
         env: { ...env, PAPERCUSP_REPO_DIR: root, NODE_OPTIONS: '', NODE_PATH: '',
           VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } }));
+    // Resource setup that depends on a ready command environment (for example
+    // starting the parent's private PG) happens only after committed source and
+    // dependency-generation preparation have succeeded. A missing generation
+    // therefore cannot allocate PG and then fail inside this verifier.
+    const preparedChildEnv = await runPhase('child.environment', async () =>
+      (await prepareChildEnv({ sourceRoot: root })) ?? {});
+    const finalChildEnv = { ...childEnv, ...preparedChildEnv };
     let exitCode;
     let childRunError;
     try { exitCode = await runPhase('child.run', async () => {
       // Preflight can consume the admitted clock. Check again at the actual
       // spawn boundary, then keep the absolute cutoff until the WHOLE group exits.
       admitBudget(childEstimate);
-      const child = spawn(command[0], command.slice(1), { cwd: root, env: childEnv,
+      const child = spawn(command[0], command.slice(1), { cwd: root, env: finalChildEnv,
         detached: process.platform !== 'win32', stdio: ['inherit', 'pipe', 'pipe'] });
       const lifetime = processGroupLifetime(child, message => process.stderr.write(`${message}\n`));
       let diagnostics, captureError;
@@ -2452,6 +2510,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         budget.childExitVerifiedAtMs = clock.now();
         if (budget.cutoffTriggeredAtMs !== null) throw cutoffError();
         if (captureError) throw captureError;
+        commandExitCode = code;
         return code;
       } catch (error) {
         outcome.error = String(error?.message ?? error).slice(0, 2000);
@@ -2533,8 +2592,12 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
           }
         } catch (cleanupError) {
           cleanup = cleaned ? 'completed' : 'failed';
-          if (failure) throw new AggregateError([failure, cleanupError],
-            `${failure.message}; verifier cleanup failed: ${cleanupError.message}`);
+          finalizationFailure = cleanupError;
+          if (failure) {
+            finalizationFailure = new AggregateError([failure, cleanupError],
+              `${failure.message}; verifier cleanup failed: ${cleanupError.message}`);
+            throw finalizationFailure;
+          }
           throw cleanupError;
         }
       }
@@ -2545,9 +2608,27 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
           try {
             await fs.writeFile(next, `${JSON.stringify({ ...ownership, cleanup,
               ...(budget ? { budget } : {}),
-              ...(cancellationSignal ? { cancellationSignal } : {}) })}\n`, { flag: 'wx', mode: 0o600 });
+              ...(cancellationSignal ? { cancellationSignal } : {}),
+              ...(taskEvidenceManifestPath ? { evidenceManifestPath: taskEvidenceManifestPath } : {}) })}\n`,
+            { flag: 'wx', mode: 0o600 });
             await fs.rename(next, taskReceiptPath);
           } finally { await fs.rm(next, { force: true }); }
+        }
+        if (taskEvidenceRoot && ownership && phaseArchivePath) {
+          try {
+            const retainedManifestPath = archiveVerifierTaskEvidence({ evidenceRoot: taskEvidenceRoot, taskId: ownership.taskId,
+              sourceCommit, receiptPath, taskReceiptPath, phaseArchivePath, cleanup,
+              childExitCode: commandExitCode, error: failure ?? finalizationFailure });
+            process.stderr.write(`VERIFIER_TASK_EVIDENCE ${JSON.stringify({
+              taskId: ownership.taskId, manifestPath: retainedManifestPath,
+            })}\n`);
+          } catch (evidenceError) {
+            const priorError = failure ?? finalizationFailure;
+            if (priorError) throw new AggregateError([priorError, evidenceError],
+              `${priorError.message}; verifier task evidence retention failed: ${evidenceError.message}`,
+              { cause: priorError });
+            throw evidenceError;
+          }
         }
       } finally {
         process.off('SIGINT', onInt); process.off('SIGTERM', onTerm); process.off('SIGHUP', onHup);
@@ -2816,6 +2897,70 @@ export function admitVerifierCommandBudget(estimate, { env = process.env, nowMs 
   } catch (error) {
     throw new PreviewError(error.message, 2);
   }
+}
+
+/**
+ * Copy the managed verifier's receipts into the existing checkpoint-log store
+ * before the command can exit. Terminal wakes may be consumed hours later, after
+ * their caller's /tmp files have been removed. The task id names the bundle; the
+ * manifest is written last so readers never mistake a partial copy for a verdict.
+ * @param {{ evidenceRoot: string, taskId: string, sourceCommit: string, receiptPath: string,
+ *   taskReceiptPath: string, phaseArchivePath: string, cleanup: string,
+ *   childExitCode: number|null, error?: unknown }} args
+ * @returns {string}
+ */
+function archiveVerifierTaskEvidence({ evidenceRoot, taskId, sourceCommit, receiptPath, taskReceiptPath,
+  phaseArchivePath, cleanup, childExitCode, error }) {
+  const candidates = [
+    ['source.json', receiptPath],
+    ['dependencies.json', `${receiptPath}.dependencies.json`],
+    ['dependencies-after.json', `${receiptPath}.dependencies.after.json`],
+    ['task.json', taskReceiptPath],
+    ['phases.jsonl', phaseArchivePath],
+    ['child.json', `${receiptPath}.child.json`],
+    ['stdout.log', `${receiptPath}.stdout.log`],
+    ['stderr.log', `${receiptPath}.stderr.log`],
+  ];
+  const artifacts = {};
+  for (const [name, sourcePath] of candidates) {
+    let sourceStat;
+    try { sourceStat = lstatSync(sourcePath); }
+    catch (readError) {
+      if (readError?.code === 'ENOENT') continue;
+      throw readError;
+    }
+    assert.ok(sourceStat.isFile() && !sourceStat.isSymbolicLink(),
+      `Verifier task evidence is not a regular file: ${sourcePath}`);
+    const bytes = readFileSync(sourcePath);
+    const afterStat = lstatSync(sourcePath);
+    assert.deepEqual({ dev: afterStat.dev, ino: afterStat.ino, size: afterStat.size,
+      mtimeMs: afterStat.mtimeMs, ctimeMs: afterStat.ctimeMs },
+    { dev: sourceStat.dev, ino: sourceStat.ino, size: sourceStat.size,
+      mtimeMs: sourceStat.mtimeMs, ctimeMs: sourceStat.ctimeMs },
+    `Verifier task evidence changed while being retained: ${sourcePath}`);
+    assert.equal(bytes.byteLength, sourceStat.size, `Verifier task evidence read was short: ${sourcePath}`);
+    const retainedPath = join(evidenceRoot, name);
+    writeFileSync(retainedPath, bytes, { flag: 'wx', mode: 0o600 });
+    artifacts[name] = { path: retainedPath, sizeBytes: bytes.byteLength,
+      sha256: createHash('sha256').update(bytes).digest('hex') };
+  }
+  assert.ok(artifacts['task.json'] && artifacts['phases.jsonl'],
+    'Managed verifier evidence requires its terminal task receipt and retained phase archive');
+  const manifestPath = join(evidenceRoot, 'manifest.json');
+  const manifest = {
+    schemaVersion: 'verifier-task-evidence-v1',
+    taskId,
+    runId: basename(evidenceRoot),
+    sourceCommit,
+    wrapperStatus: error ? 'failed' : 'completed',
+    cleanup,
+    childExitCode,
+    ...(error ? { error: String(error?.message ?? error).slice(0, 2000) } : {}),
+    childLogs: { stdout: 'stdout.log', stderr: 'stderr.log' },
+    artifacts,
+  };
+  writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`, { flag: 'wx', mode: 0o600 });
+  return manifestPath;
 }
 
 async function listFiles(dir) {

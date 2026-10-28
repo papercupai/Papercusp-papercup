@@ -4548,6 +4548,40 @@ describe('applyResultDoor', () => {
       });
       expect(envelope.incomplete.note).toContain('body_truncated');
     });
+
+    it('keeps selected metadata inline when its truncation warning names an excluded field', () => {
+      const source = JSON.stringify({
+        rows: [{ msg_id: 'm1', summary: 'selected-summary', body: 'x'.repeat(2_000), body_truncated: true }],
+      });
+      const parsed = parseProjection({ pick: ['rows[].msg_id', 'rows[].summary'] });
+      if (!parsed.ok) throw new Error(parsed.error);
+
+      const projected = applyResultProjection(
+        { content: [{ type: 'text' as const, text: source }] },
+        parsed.spec,
+        { toolName: 'coord:feed', effect: 'read' },
+      );
+      const projection = (projected._meta as {
+        resultProjection?: { applied?: boolean; bodyContentIndex?: number; notes?: string[] };
+      }).resultProjection;
+      expect(projection?.applied).toBe(true);
+      expect(projection?.notes?.join('\n')).toContain('body_truncated');
+      expect(projection?.bodyContentIndex).toEqual(expect.any(Number));
+      const selected = JSON.parse(
+        (projected.content[projection!.bodyContentIndex!] as { text: string }).text,
+      );
+      expect(selected).toEqual({ rows: [{ msg_id: 'm1', summary: 'selected-summary' }] });
+
+      const doored = applyResultDoor(projected, {
+        toolName: 'coord:feed',
+        workspaceId: 'ws-1',
+        runId: 'coord-feed-projected-field-warning',
+        scratchWriteFailure: { error: Object.assign(new Error('scratch must not be needed'), { code: 'ENOSPC' }) },
+      });
+      expect(doored).toBe(projected);
+      expect(doored.content.filter((item) => item.type === 'text').map((item) => item.text).join('\n'))
+        .toContain('body_truncated');
+    });
   });
 });
 

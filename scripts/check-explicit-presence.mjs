@@ -190,44 +190,9 @@ export function decideRatchet({ count, baselineCount, updateFlag = false }) {
  * for, however unremarkable its `code` looks.
  */
 const ALLOW = [
-  // ── postgres.js RESULT-ARRAY `.count`, not a row column ────────────────────────────────
-  // Every one of these is `<result>.count` on the object postgres.js returns from a
-  // DELETE/UPDATE — the driver's affected-row count, which it populates on every command.
-  // These historical entries predate the analyzer's result-metadata distinction.
-  // `rows[0].count` is a real, NULLable column; `rows.count` is driver metadata. The `?? 0` here is
-  // a no-op, and the zero it would produce is the honest "nothing matched".
-  {
-    at: "packages/operator-core/lib/blueprint/commit-reproject-real.ts:110",
-    code: "return { ...res, proposalMarked: (updated.count ?? 0) > 0 };",
-  },
-  {
-    at: "packages/operator-core/lib/harness/routines/coord-invariant-actions.ts:1527",
-    code: "const n = del.count ?? 0;",
-  },
-  {
-    at: "packages/operator-core/lib/search/session-ingest.ts:1969",
-    code: "deleted += r.count ?? 0;",
-  },
-  {
-    at: "packages/operator-core/lib/search/session-ingest.ts:1970",
-    code: "if ((r.count ?? 0) < 5000) break;",
-  },
-  {
-    at: "packages/operator-core/lib/search/session-ingest.ts:2001",
-    code: "partsDeleted += r.count ?? 0;",
-  },
-  {
-    at: "packages/operator-core/lib/search/session-ingest.ts:2002",
-    code: "if ((r.count ?? 0) < 5000) break;",
-  },
-  {
-    at: "packages/operator-core/lib/steering-churn.ts:316",
-    code: "return deleted.count ?? 0;",
-  },
-  {
-    at: "packages/operator-core/lib/sync/hyperbee/coord-quarantine-store.ts:139",
-    code: "return { cleared: rows.count ?? 0 };",
-  },
+  // (The postgres.js RESULT-ARRAY `.count` entries were pruned: the analyzer now tells
+  // driver result metadata `rows.count` apart from a NULLable `rows[0].count` column, so
+  // they matched no candidate.)
 
   // ── absence IS the encoder's representation of empty ───────────────────────────────────
   // encodeSessionCursor (same file, ~line 90) OMITS `bounds` when it is empty:

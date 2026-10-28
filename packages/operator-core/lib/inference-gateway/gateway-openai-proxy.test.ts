@@ -476,7 +476,8 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     await bootCodex(ok);
     const res = await postResponses(
       { model: 'gpt-x', input: 'hi' },
-      { 'x-api-key': 'sk-strip-me', authorization: 'Bearer client-replace-me', 'anthropic-beta': 'fine-grained-2025' },
+      { 'x-api-key': 'sk-strip-me', authorization: 'Bearer client-replace-me', 'anthropic-beta': 'fine-grained-2025',
+        'x-papercusp-native-runtime': 'n'.repeat(43) },
     );
     expect(res.status).toBe(200);
     expect(((await res.json()) as { ok?: boolean }).ok).toBe(true);
@@ -485,6 +486,7 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     // codex OAuth bearer injected (NOT the client's), client api-key stripped
     expect(h['authorization']).toBe('Bearer cdx-1-tok');
     expect(h['x-api-key']).toBeUndefined();
+    expect(h['x-papercusp-native-runtime']).toBeUndefined();
     expect(h['accept-encoding']).toBe('identity');
     // CRITICAL: the codex path must NOT force the Claude-only oauth-2025-04-20 beta —
     // it would 400 against OpenAI. The client's anthropic-beta is passed through untouched

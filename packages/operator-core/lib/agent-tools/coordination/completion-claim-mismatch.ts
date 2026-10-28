@@ -40,6 +40,8 @@ const RUBRIC_REF = /\brubricRef\s*[:=]\s*[`'\"]?([a-z0-9][a-z0-9-]*)/gi;
 const RUBRIC_QUOTED = /\brubric\b[^`'\"\n]{0,24}[`'\"]([a-z0-9][a-z0-9-]*)[`'\"]/gi;
 const COMPLETION_WORD =
   /\b(?:completed?|finished|shipped|verified?|accepted?|graded?|passed|resolved|closed|delivered)\b/gi;
+const IMPLICIT_PLAN_COMPLETION =
+  /\b(?:(?:the|this|current|parent|derived)\s+)?plan\b\s+(?:(?:is|was|has(?:\s+been)?|were)\s+)?(?:completed?|finished|shipped|verified?|accepted?|graded?|passed|resolved|closed|delivered)\b|\b(?:completed?|finished|shipped|verified?|accepted?|graded?|passed|resolved|closed|delivered)\b\s+(?:(?:the|this|current|parent|derived)\s+)?plan\b/gi;
 const NEGATION_TAIL = /\b(?:not|never|no|without|didn['’]t|doesn['’]t|isn['’]t|wasn['’]t|weren['’]t|cannot|can['’]t)\s*(?:(?:yet|been|be|actually|already)\s+)*$/i;
 const FUTURE_MARKER =
   /\b(?:will|shall|would|could|should|may|might|can|going\s+to|planning\s+to|plan(?:s|ned|ning)?\s+to|intend(?:s|ed|ing)?\s+to|next|up\s+next|later|after\s+this|then\s+(?:i\s+)?(?:will|shall|read|reconcile|inspect|review|checkpoint|investigate|verify|check|examine|validate|run|fix|update|write|record))\b/i;
@@ -96,6 +98,29 @@ function hasPositiveCompletionClaim(text: string): boolean {
     if (beforeChar === '-' || afterChar === '-') continue;
     const before = text.slice(Math.max(0, match.index - 24), match.index);
     if (!NEGATION_TAIL.test(before) && !FUTURE_MARKER.test(text.slice(0, match.index))) return true;
+  }
+  return false;
+}
+
+function hasImplicitPlanCompletionClaim(text: string): boolean {
+  IMPLICIT_PLAN_COMPLETION.lastIndex = 0;
+  for (let match = IMPLICIT_PLAN_COMPLETION.exec(text); match; match = IMPLICIT_PLAN_COMPLETION.exec(text)) {
+    const planIndex = match[0].toLowerCase().indexOf('plan');
+    const planEnd = match.index + planIndex + 'plan'.length;
+    // An explicit `plan:<slug>` is collected by the named-ref matchers. It must
+    // not cause the routing-envelope planSlug to be inferred as a second target.
+    if (text[planEnd] === ':') continue;
+
+    COMPLETION_WORD.lastIndex = 0;
+    const completion = COMPLETION_WORD.exec(match[0]);
+    if (!completion) continue;
+    const completionIndex = match.index + completion.index;
+    const beforeChar = text[completionIndex - 1];
+    const afterChar = text[completionIndex + completion[0].length];
+    if (beforeChar === '-' || afterChar === '-') continue;
+    const before = text.slice(Math.max(0, completionIndex - 24), completionIndex);
+    if (NEGATION_TAIL.test(before) || FUTURE_MARKER.test(text.slice(0, completionIndex))) continue;
+    return true;
   }
   return false;
 }
@@ -159,10 +184,6 @@ export function completionClaimRefs(input: CompletionClaimInput): string[] {
   if (!statements.length) return [];
   const declaredRefs: string[] = [];
   const seen = new Set<string>();
-  if (input.planSlug) {
-    const plan = slug(input.planSlug);
-    if (plan) addRef(declaredRefs, seen, `plan:${plan}`);
-  }
   for (const text of statements) {
     const skipFutureIntent = (match: RegExpExecArray): boolean => isFutureIntentReference(text, match.index);
     collectMatches(text, WORK_ITEM_REF, (match) => `work-item:${match[1]!.toUpperCase()}`, declaredRefs, seen, skipFutureIntent);
@@ -213,6 +234,13 @@ export function completionClaimRefs(input: CompletionClaimInput): string[] {
     );
   }
   collectExplicitPremises(input, declaredRefs, seen);
+  // planSlug is routing context, not a completion artifact by itself. Infer it
+  // only when an affirmative clause actually says the plan was completed; an
+  // unrelated verified artifact elsewhere in the message is not enough.
+  if (input.planSlug && statements.some(hasImplicitPlanCompletionClaim)) {
+    const plan = slug(input.planSlug);
+    if (plan) addRef(declaredRefs, seen, `plan:${plan}`);
+  }
   return declaredRefs;
 }
 

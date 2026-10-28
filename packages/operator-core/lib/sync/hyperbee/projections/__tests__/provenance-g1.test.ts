@@ -29,6 +29,13 @@ const OWN_LOG_KEY = 'aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbb
 const REMOTE_LOG_KEY = '1111aaaa2222bbbb3333cccc4444dddd5555eeee6666ffff1111aaaa2222bbbb33';
 const LOCAL_PUBKEY = 'deadbeefdeadbeef';
 const REMOTE_PUBKEY = 'cafebabecafebabe';
+/**
+ * A valid encoded HLC (`encodeHlc({ ms: 1700000000000, count: 0 })`). applyOpVia
+ * REJECTS a remote op (sourceLogKeyHex !== ownLogKeyHex) whose `hlc` fails
+ * `isValidOpHlc` — every real remote op is HLC-stamped at the SEND seam — so the
+ * remote fixtures must carry one to reach the provenance logic under test.
+ */
+const OP_HLC = '001700000000000:00000';
 
 /** Minimal valid feature row as a decoded value. */
 function featureValue(overrides: Record<string, unknown> = {}): unknown {
@@ -85,6 +92,7 @@ function putOp(overrides: Partial<OpEnvelope> = {}): OpEnvelope {
     hbKey: 'F-001',
     value: featureValue(),
     ts: 1700000000000,
+    hlc: OP_HLC,
     schema_version: 1,
     ...overrides,
   };
@@ -97,7 +105,7 @@ describe('G1 Provenance — applyOpVia origin determination', () => {
     const { projection, captured } = capturingProjection();
     const lookup = (tag: string) => (tag === projection.tableTag ? projection : null);
 
-    await applyOpVia(lookup, putOp({ writerPubkey: undefined, sourceLogKeyHex: undefined, ts: undefined }));
+    await applyOpVia(lookup, putOp({ writerPubkey: undefined, sourceLogKeyHex: undefined, ts: undefined, hlc: undefined }));
 
     expect(captured).toEqual([
       {
@@ -108,6 +116,9 @@ describe('G1 Provenance — applyOpVia origin determination', () => {
           ts: undefined,
           fedHlc: undefined,
           sourceLogKeyHex: undefined,
+          // resolveOpProvenance threads the op's key through for writers that
+          // need it (projection.ts resolveOpProvenance).
+          hbKey: 'F-001',
         },
       },
     ]);
@@ -189,6 +200,7 @@ describe('G1 Provenance — applyOpVia origin determination', () => {
       type: 'del',
       table: 'features-by-id',
       hbKey: 'F-001',
+      hlc: OP_HLC,
       writerPubkey: REMOTE_PUBKEY,
       sourceLogKeyHex: REMOTE_LOG_KEY,
     };

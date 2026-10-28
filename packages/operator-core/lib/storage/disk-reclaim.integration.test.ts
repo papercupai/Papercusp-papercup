@@ -6,6 +6,7 @@ import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
+import { pinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
@@ -14,7 +15,7 @@ import { readDiskAlarmContext, runDiskSpaceAlarmOnce } from './disk-space-alarm'
 import { writeCensusRun } from './disk-consumer-census';
 import type { AttentionNotifyInput } from '../attention-notify';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { drainScheduledDiskReclaim, nativeRetentionCommand, readReclaimReceipt, removePrivilegedRetentionEntry, runDiskReclaimOnce, writeReclaimAudit, type DiskReclaimReceipt, type NativeRetentionTiming, type ReclaimSql, type RetentionEntry } from './disk-reclaim';
+import { createWorkspaceHostCutRetentionDelegate, drainScheduledDiskReclaim, nativeRetentionCommand, readReclaimReceipt, removePrivilegedRetentionEntry, runDiskReclaimOnce, writeReclaimAudit, type DiskReclaimReceipt, type NativeRetentionTiming, type ReclaimSql, type RetentionEntry } from './disk-reclaim';
 import { CACHEDIR_TAG_SIGNATURE, type RetentionClass } from './retention-policy';
 import { inspectRetentionTrees } from './disk-consumer-census';
 import { awaitRetentionCensusCompletion, inspectDetachedRetentionTrees, withRetentionMutex } from './retention-census-walk';
@@ -174,6 +175,29 @@ const fixtureBuildRemover = (entry: RetentionEntry, ms: number, _observe?: (timi
   }), undefined, dryRun);
 
 describe('retention on a real fixture tree', () => {
+  it('loads the real workspace-host owner and retains an unqualified private cut', async () => {
+    fixture = await mkdtemp(join(tmpdir(), 'disk-retention-owner-'));
+    const cut = join(fixture, '.papercusp', 'wh-release-unqualified');
+    await mkdir(cut, { recursive: true });
+    await writeFile(join(cut, 'owner-evidence'), 'retain this incomplete build');
+    vi.stubEnv('HOME', fixture);
+    vi.stubEnv('PAPERCUSP_HOME', join(fixture, '.papercusp'));
+    try {
+      const nowMs = Date.now();
+      const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: fixture,
+        protection: () => ({ pins: [], nowMs, isPinned: pinProtection([], nowMs) }) });
+      // Keep the real lazy owner and its dependencies. Vitest transforms this
+      // integration; the plain-Node bundle boundary has its separate unit proof.
+      const result = await withFsMutex('papercusp-disk-retention', () =>
+        delegate.run(true, undefined, nowMs + 10_000));
+      expect(result).toEqual({ ok: true, detail: { ok: true, cuts: [{ workDir: cut,
+        status: 'retained', reason: 'no completed writer state' }] } });
+      expect(await readFile(join(cut, 'owner-evidence'), 'utf8')).toBe('retain this incomplete build');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('discovers fresh policy roots on each pass and refuses symlink roots before reclaiming', async () => {
     const { root, options } = await setup();
     const one = join(root, 'run-one'), owner = join(fixture!, 'owner');

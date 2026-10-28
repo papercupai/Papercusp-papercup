@@ -282,7 +282,11 @@ export function createRefactorFactsResolver(io: RefactorFactsIo): RefactorFactsR
   };
 }
 
-const execFileAsync = promisify(execFile);
+// Promisified lazily on first call, never at module scope (EI-10161): an eager
+// promisify(execFile) throws at import time under a narrow node:child_process test mock.
+let cachedExecFileAsync: typeof execFile.__promisify__ | undefined;
+const execFileAsync = ((...args: Parameters<typeof execFile.__promisify__>) =>
+  (cachedExecFileAsync ??= promisify(execFile))(...args)) as typeof execFile.__promisify__;
 
 /** Production I/O: git in `root`, test_runs + work_items in Postgres, the native coverage map. */
 export function nativeRefactorFactsResolver(scope: { root: string; workspaceId: string; harness: string }): RefactorFactsResolver {

@@ -749,16 +749,23 @@ export async function lastRoutineFireAgeSec(
   // healthy routines would mask this workspace's dead ones and silently downgrade a
   // genuine blocker to an advisory. Narrower evidence can only over-report the blocker,
   // which is the safe way to be wrong.
+  //
+  // SCOPE TO THE DURABLE TIER for the same reason (EI-27251243767353998). The count this
+  // corroborates is of DBOS background primaries, and only `tier = 'durable'` routines are
+  // fired by DBOS. Ephemeral-tier routines run on a per-host executor that keeps firing
+  // when DBOS is dead, so including them reported "background work is happening" through
+  // the whole 2026-10-28 18:31-19:13Z outage, when DBOS never launched and no durable
+  // routine fired (WI-6554700010042546).
   const rows = workspaceId
     ? await sql<Array<{ age_sec: number | null }>>`
         SELECT EXTRACT(EPOCH FROM (now() - max(last_fired_at)))::float8 AS age_sec
           FROM harness_shared.routines
-         WHERE active = true AND last_fired_at IS NOT NULL
+         WHERE active = true AND tier = 'durable' AND last_fired_at IS NOT NULL
            AND workspace_id = ${workspaceId}`
     : await sql<Array<{ age_sec: number | null }>>`
         SELECT EXTRACT(EPOCH FROM (now() - max(last_fired_at)))::float8 AS age_sec
           FROM harness_shared.routines
-         WHERE active = true AND last_fired_at IS NOT NULL`;
+         WHERE active = true AND tier = 'durable' AND last_fired_at IS NOT NULL`;
   const age = rows[0]?.age_sec;
   return typeof age === 'number' && Number.isFinite(age) ? age : null;
 }

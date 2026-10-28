@@ -236,6 +236,17 @@ it('adopts the same native census completion in the observed private background 
     expectedReclaimCases: 1, census: false,
     observedSources: ['packages/operator-core/lib/storage/disk-census-detached-walk.ts'],
   }, context), options.testTimeoutMs);
+it('loads the real workspace-host owner and retains unqualified cuts in the observed private background runtime',
+  context => runSelection({ reclaimTitles: [
+    'loads the real workspace-host owner and retains an unqualified private cut',
+  ], expectedReclaimCases: 1, census: false,
+  observedSources: ['apps/operator/lib/release/workspace-host-release-cut-cli.ts'] }, context), options.testTimeoutMs);
+it('reuses enclosing release usage admission in the observed private background runtime',
+  context => runSelection({ assertion: releaseAssertion, source: releaseSource, reclaimTitles: [
+    'reuses retention admission instead of reacquiring a usage slot mutex',
+    'keeps usage launch behind the shared retention admission',
+  ], expectedReclaimCases: 2, census: false,
+  observedSources: [usageSource] }, context), options.testTimeoutMs);
 it('supervises release usage progress and refuses incomplete measurement in the observed private background runtime',
   context => runSelection({ assertion: releaseAssertion, source: releaseSource, reclaimTitles: [
     'finishes a productive usage walk past ten seconds',

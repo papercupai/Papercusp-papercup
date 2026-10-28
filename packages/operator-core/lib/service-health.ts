@@ -1475,11 +1475,18 @@ export async function probeBgHostTicker(now: number = Date.now()): Promise<Probe
     // No install_slug filter — the ticker drives EVERY install's routines, so the
     // fleet-wide newest fire is the ticker heartbeat (and it stays robust while the
     // papercup→papercusp slug rename is in flight).
+    //
+    // tier = 'durable' ONLY (WI-6554700010042546): DBOS's routinesTick fires the
+    // durable tier; `ephemeral` rows are fired by the per-host ephemeral-executor
+    // and keep ticking while DBOS is DEAD. On 2026-10-28 DBOS failed to boot at
+    // 18:36Z, durable fires stopped at 18:31Z, and this probe kept reporting
+    // "last routine tick 1s ago — DBOS ticker alive" off ephemeral fires, which
+    // misled a peer into calling the outage healed.
     const rows = await boundedPgReadTxn(
       (tx) => tx<{ last: Date | string | null }[]>`
         SELECT MAX(last_fired_at) AS last
           FROM harness_shared.routines
-         WHERE active = true AND last_fired_at IS NOT NULL`,
+         WHERE active = true AND tier = 'durable' AND last_fired_at IS NOT NULL`,
       {
         timeoutMs: PG_READ_TXN_DEFAULT_TIMEOUT_MS,
         acquireTimeoutMs: PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS,

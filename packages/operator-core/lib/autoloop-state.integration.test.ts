@@ -147,6 +147,37 @@ describe('recordFire outcome semantics (P-009)', () => {
     expect((await checkFireGate(SLUG, ROLE)).allow).toBe(true);
   });
 
+  it('a recovery reset cannot erase a newer fire failure than the observed circuit stamp', async () => {
+    const role = `reset-cas-${randomBytes(4).toString('hex')}`;
+    await recordFire(SLUG, role, 'error: first', 'error');
+    await rootSql`UPDATE harness_shared.autoloop_state
+                     SET last_fired_at = '2026-01-01T00:00:01.123456Z'::timestamptz
+                   WHERE workspace_id = ${WS} AND harness_slug = ${SLUG} AND role = ${role}`;
+    const observed = await rootSql<{ last_fired_at: string }[]>`
+      SELECT last_fired_at::text AS last_fired_at
+        FROM harness_shared.autoloop_state
+       WHERE workspace_id = ${WS} AND harness_slug = ${SLUG} AND role = ${role}`;
+
+    await recordFire(SLUG, role, 'error: newer', 'error');
+    const staleReset = await resetFireErrors(SLUG, role, {
+      workspaceId: WS,
+      expectedLastFiredAt: observed[0].last_fired_at,
+    });
+    expect(staleReset).toBe(0);
+    expect((await readFireState(SLUG, role))?.consecutiveErrors).toBe(2);
+
+    const current = await rootSql<{ last_fired_at: string }[]>`
+      SELECT last_fired_at::text AS last_fired_at
+        FROM harness_shared.autoloop_state
+       WHERE workspace_id = ${WS} AND harness_slug = ${SLUG} AND role = ${role}`;
+    const appliedReset = await resetFireErrors(SLUG, role, {
+      workspaceId: WS,
+      expectedLastFiredAt: current[0].last_fired_at,
+    });
+    expect(appliedReset).toBe(1);
+    expect((await readFireState(SLUG, role))?.consecutiveErrors).toBe(0);
+  });
+
   it('the status surface returns the per-role rows', async () => {
     const rows = await getAutoLoopState(SLUG);
     expect(rows).not.toBeNull();

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { formatWithOptions } from 'node:util';
 import type { Sql } from 'postgres';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
+import { createHostedSecretRefResolver } from '../auth/hosted/secret-ref';
 import {
   HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS,
   createHostedRuntime,
@@ -226,6 +228,54 @@ describe('hosted runtime composition', () => {
     await expect(
       createHostedRuntime(configuration, { resolveSecret: leaky, runService: serviceRunner('hosted_service') }),
     ).rejects.not.toThrow(/hunter2/);
+  });
+
+  it('keeps encrypted integration Postgres failures safe through the hosted boot error and log boundary', async () => {
+    const sentinel = 'sentinel-db-decryption-key-do-not-leak';
+    const driverError = Object.assign(new Error(`Wrong key or corrupt data: ${sentinel}`, { cause: new Error(sentinel) }), {
+      code: '39000',
+      where: `parameters: $1 = '${sentinel}'`,
+      query: `SELECT pgp_sym_decrypt(payload_ct, '${sentinel}')`,
+      parameters: [sentinel],
+    });
+    const resolveSecret = createHostedSecretRefResolver({
+      readIntegrationKey: async () => { throw driverError; },
+    });
+    const failedConfiguration = {
+      ...configuration,
+      hostedSessionCookieSecretRef: 'integration:HOSTED_COOKIE_SECRET',
+    };
+    const failure = await createHostedRuntime(failedConfiguration, {
+      resolveSecret,
+      runService: serviceRunner('hosted_service'),
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    const outer = failure as Error & { cause?: unknown };
+    expect(outer.message).toBe(
+      'hosted_runtime_secret_ref_unresolved:PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF — ' +
+      'hosted_secret_ref_store_unavailable (sqlstate=39000)',
+    );
+    const safeCause = outer.cause as Error & { code?: string; sqlState?: string; cause?: unknown };
+    expect(safeCause).toMatchObject({ code: 'hosted_secret_ref_store_unavailable', sqlState: '39000' });
+    expect(safeCause.cause).toBeUndefined();
+
+    const logged: string[] = [];
+    const log = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      logged.push(formatWithOptions({ depth: null, colors: false }, ...args));
+    });
+    try {
+      console.error(outer);
+      const serializeErrors = (_key: string, value: unknown): unknown => value instanceof Error
+        ? { name: value.name, message: value.message, stack: value.stack,
+            cause: value.cause, code: (value as Error & { code?: string }).code,
+            sqlState: (value as Error & { sqlState?: string }).sqlState }
+        : value;
+      const rendered = [outer.message, outer.stack, JSON.stringify(outer, serializeErrors),
+        formatWithOptions({ depth: null, colors: false }, outer), logged.join('\n')].join('\n');
+      expect(rendered).not.toContain(sentinel);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it('reads only ref-bearing production configuration and refuses an incomplete profile', () => {

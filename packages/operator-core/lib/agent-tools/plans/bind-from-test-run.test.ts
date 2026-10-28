@@ -681,7 +681,7 @@ describe('expandTestRunBinding: mutation causal controls', () => {
       schemaVersion: 1,
       probeInvocationId: 'probe-own-0001',
       mode: 'copy-out',
-      subjectPath: 'pkg/lib/limit.ts',
+      subjectPath: 'pkg/lib/thing.ts',
       mutateExpression: 's/3/4/',
       againstCommit: null,
       subjectBeforeSha256: 'c'.repeat(64),
@@ -706,6 +706,7 @@ describe('expandTestRunBinding: mutation causal controls', () => {
         loadRun: async (_scope, id) => rows.get(Number(id)) ?? null,
         adoptRun: async () => true,
         resolveRoot: async () => root,
+        git: async () => root,
       });
     }
 
@@ -1404,6 +1405,59 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     expect(await asCommittedTestPath(harness, cleanRow({ file_path: `${SUB}/src/missing.test.ts` }), localGitRunner)).toBeNull();
     const bound = await expandTestRunBinding(input({ sourcePaths: [`${SUB}/src/s.ts`] }), SCOPE, binder(viaGitlink));
     expect(bound).toMatchObject({ ok: true });
+  });
+
+  it('normalizes a relative mutation subject from the nested Git root to the harness root', async () => {
+    const testPath = `${SUB}/src/s.test.ts`;
+    const mutationRow = run({
+      id: 21915008,
+      file_path: testPath,
+      source: 'mutation-probe',
+      status: 'fail',
+      root: null,
+      commit_sha: null,
+      worktree_dirty: true,
+      execution_details: {
+        schemaVersion: 1,
+        root: null,
+        filePath: testPath,
+        runGroupId: null,
+        workspaceId: 'ws-1',
+        harnessSlug: 'web',
+        testNamePattern: null,
+        passed: 0,
+        failed: 1,
+        skipped: 0,
+        collectionFailed: false,
+        mutationPhase: 'mutant',
+        commitSha: null,
+        worktreeDirty: true,
+        failedCaseTitles: ['suite > fails'],
+        mutation: {
+          schemaVersion: 1,
+          probeInvocationId: 'probe-nested-0001',
+          mode: 'copy-out',
+          subjectPath: 'src/s.ts',
+          mutateExpression: 's/1/2/',
+          againstCommit: null,
+          subjectBeforeSha256: 'a'.repeat(64),
+          subjectAfterSha256: 'b'.repeat(64),
+          mutantDiff: '-export const s = 1;\n+export const s = 2;',
+          mutantDiffTruncated: false,
+          testCommandSha256: 'c'.repeat(64),
+          testCommand: 'npm run test:file -- {}',
+          leg: 'mutant',
+          testFileSha256: 'd'.repeat(64),
+        },
+      },
+    });
+
+    const bound = await expandTestRunBinding(input(), SCOPE, binder(mutationRow));
+
+    expect(bound).toMatchObject({
+      ok: true,
+      binding: { measurement: { sourcePaths: [`${SUB}/src/s.ts`] } },
+    });
   });
 
   it('maps a Cargo submodule cwd stamped with the superproject commit through its pinned gitlink', async () => {

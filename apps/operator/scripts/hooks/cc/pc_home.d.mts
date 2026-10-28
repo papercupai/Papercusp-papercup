@@ -20,3 +20,14 @@ export function papercuspPath(...parts: any[]): string;
  * dedicated PAPERCUSP_PSU_PTY_DIR pin.
  */
 export function papercuspPtyPath(env?: NodeJS.ProcessEnv, fallbackHome?: string): string;
+/**
+ * Resolve the host-wide operator state directory.
+ *
+ * The operator writes host-shared state (for example the frozen-repair edit
+ * markers) from one multi-workspace process that carries no PAPERCUSP_HOME,
+ * while session processes may carry a workspace-scoped PAPERCUSP_HOME. A
+ * session-side reader of operator-written state therefore must not derive the
+ * directory from its own PAPERCUSP_HOME (EI-27237474160744241). Isolated hosts
+ * and tests opt into their own directory through the PAPERCUSP_STATE_DIR pin.
+ */
+export function papercuspHostStatePath(env?: NodeJS.ProcessEnv, fallbackHome?: string): string;

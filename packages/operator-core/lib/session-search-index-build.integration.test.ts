@@ -15,6 +15,7 @@ import {
   SESSION_SEARCH_INDEXES,
   ISSUE_Q_SEARCH_INDEXES,
   TEST_RUNS_SEARCH_INDEXES,
+  CODE_FAMILIARITY_INDEXES,
   SESSION_TURN_PARTS_TABLE,
   SESSION_TURN_TRGM_EXPR,
   SESSION_TURNS_TABLE,
@@ -384,6 +385,7 @@ describe('runSessionSearchIndexBuildOnce', () => {
       [TOOL_RESULT, 'deferred-table-missing'],
       ...ISSUE_Q_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       ...TEST_RUNS_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
+      ...CODE_FAMILIARITY_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       [VOCAB_TRGM, 'built'],
     ]);
     for (const n of [TRGM, TS_DESC, VOCAB_TRGM]) expect(await indexValid(n)).toBe(true);
@@ -396,6 +398,7 @@ describe('runSessionSearchIndexBuildOnce', () => {
       [TOOL_RESULT, 'deferred-table-missing'],
       ...ISSUE_Q_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       ...TEST_RUNS_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
+      ...CODE_FAMILIARITY_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       [VOCAB_TRGM, 'present'],
     ]);
     expect(second.vocab.every((v) => v.action === 'current')).toBe(true);
@@ -413,6 +416,34 @@ describe('runSessionSearchIndexBuildOnce', () => {
       expect(await indexValid(TOOL_RESULT)).toBe(true);
     } finally {
       await sql.unsafe('DROP TABLE harness_shared.session_turn_parts CASCADE');
+    }
+  }, 60_000);
+
+  it('builds the invocation familiarity index online and recovers an interrupted build', async () => {
+    await sql.unsafe(`CREATE TABLE harness_shared.tool_invocations (
+      workspace_id text NOT NULL,
+      tool_name text NOT NULL,
+      coord_owner_id text,
+      status text NOT NULL
+    )`);
+    const { name } = CODE_FAMILIARITY_INDEXES[0];
+    try {
+      const first = await runSessionSearchIndexBuildOnce(sql, OPTS);
+      expect(first.indexes.find((i) => i.name === name)?.action).toBe('built');
+      expect(await indexValid(name)).toBe(true);
+
+      const second = await runSessionSearchIndexBuildOnce(sql, OPTS);
+      expect(second.indexes.find((i) => i.name === name)?.action).toBe('present');
+
+      await sql.unsafe(
+        `UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'harness_shared.${name}'::regclass`,
+      );
+      const recovered = await runSessionSearchIndexBuildOnce(sql, OPTS);
+      expect(recovered.invalidDropped).toContain(name);
+      expect(recovered.indexes.find((i) => i.name === name)?.action).toBe('built');
+      expect(await indexValid(name)).toBe(true);
+    } finally {
+      await sql.unsafe('DROP TABLE harness_shared.tool_invocations CASCADE');
     }
   }, 60_000);
 

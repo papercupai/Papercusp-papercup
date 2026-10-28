@@ -40,7 +40,9 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
     const keys = Object.keys(tool.args.out.shape);
     expect(keys).toContain("limit");
     expect(keys).not.toContain("inboxLimit");
-    expect(tool.description).toMatch(/direct bound is `limit`/i);
+    // The direct bound is `limit`; orient's inboxLimit maps onto it (wording
+    // trimmed under the prompt-weight cap — assert the mapping, not a sentence).
+    expect(tool.description).toMatch(/`limit` bounds/i);
     expect(tool.description).toMatch(/coord:orient\.inboxLimit.*maps/i);
     // The mapping is single-sourced in the description. Keep the recurrence
     // guard on the writer-backed budget instead of requiring removed duplicate
@@ -195,7 +197,7 @@ describe("coord:inbox — the VIEW contract is stated to the caller (D-013 R1)",
     // read safe to interpret. Assert the PROMISE, not the prose, so the sentence
     // can be rewritten without failing here.
     expect(tool.description).toMatch(/VIEW/);
-    expect(tool.description).toMatch(/not a delta/i);
+    expect(tool.description).toMatch(/not a delta|re-reading does not empty/i);
   });
 });
 

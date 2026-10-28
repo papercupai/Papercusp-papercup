@@ -84227,14 +84227,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/code-intelligence/change-history.ts#<module>/boundChangeHistoryProviders/provenance:a12494a0de24a960e3f7:1",
-      "path": "packages/operator-core/lib/code-intelligence/change-history.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/code-intelligence/clone-sweep.ts#<module>/fileCloneSweep:3ef97c9197de7f805678:1",
       "path": "packages/operator-core/lib/code-intelligence/clone-sweep.ts",
       "classification": "durable",
@@ -84947,31 +84939,7 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/enrichTaskBriefWithReuse:7467be5e0b1384715ef0:1",
-      "path": "packages/operator-core/lib/code-intelligence/task-brief.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/enrichTaskBriefWithReuse/append:919d4426353b38418644:1",
-      "path": "packages/operator-core/lib/code-intelligence/task-brief.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/enrichTaskBriefWithReuse/plannedAt:586f92c527fdc0d0c065:1",
-      "path": "packages/operator-core/lib/code-intelligence/task-brief.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/getClaimTimeTaskBrief:19e65e512cd0d8e0dd49:1",
       "path": "packages/operator-core/lib/code-intelligence/task-brief.ts",
       "classification": "durable",
       "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.",
@@ -84988,14 +84956,6 @@
     },
     {
       "id": "packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/getCompletionTimeBrief/work:48f9cdbeedfcaa583a04:1",
-      "path": "packages/operator-core/lib/code-intelligence/task-brief.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/getIntentTimeTaskBrief:8f185819f59c48dd812c:1",
       "path": "packages/operator-core/lib/code-intelligence/task-brief.ts",
       "classification": "durable",
       "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.",

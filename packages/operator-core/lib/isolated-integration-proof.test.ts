@@ -3,7 +3,7 @@ import { fork, spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
@@ -76,6 +76,51 @@ async function withCapturedRouter(options: Parameters<typeof captureIsolatedWork
 
 const routerPhaseOptions = { phaseTimeouts: { bootstrapMs: 100, executeMs: 80, teardownMs: 30 },
   killGraceMs: 10, drainGraceMs: 10, testFileExecutionFromStdout: true };
+
+it('keeps supervised router startup outside the test execution budget', async () => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    // The private runtime is observed before the router lists files or admits
+    // Vitest. Its lifetime receipt must not spend the test execution allowance.
+    child.emit('message', { kind: 'isolated-runtime-start' });
+    await vi.advanceTimersByTimeAsync(90);
+    expect(child.kill).not.toHaveBeenCalled();
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    await vi.advanceTimersByTimeAsync(79);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'execute' });
+  });
+});
+
+it('bounds supervised router startup despite repeated runtime lifetime receipts', async () => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    child.emit('message', { kind: 'isolated-runtime-start' });
+    await vi.advanceTimersByTimeAsync(70);
+    child.emit('message', { kind: 'isolated-runtime-start' });
+    await vi.advanceTimersByTimeAsync(29);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'bootstrap' });
+  });
+});
+
+it('bounds cleanup when a supervised router stops before test execution', async () => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    child.emit('message', { kind: 'isolated-runtime-start' });
+    await vi.advanceTimersByTimeAsync(10);
+    child.emit('message', { kind: 'isolated-runtime-stopping' });
+    await vi.advanceTimersByTimeAsync(29);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'teardown' });
+  });
+});
 
 it('recognizes direct test:file execution across chunks without changing phase budgets', async () => {
   const options = isolatedTestFileWorkerOptions({}, 1);
@@ -560,6 +605,10 @@ it('preserves failure progress and verifies a real reaped signal without certify
 
 // Only the parent's telemetry database is substituted. The proof writer,
 // worker IPC, kernel process identities, receipt retention and pruning are real.
+// Source collection must stay inert even when the binding handler graph cannot load.
+vi.mock('./agent-tools/plans/bind-from-test-run', () => {
+  throw new Error('Proof source collection must not import the binding tool graph');
+});
 vi.mock('../test/_org-test-db', () => ({ createOrgTestDb: async () => ({
   dbName: 'isolated-proof-telemetry', adminDsn: 'unused', adminSql: {}, cleanup: async () => {},
 }) }));
@@ -611,6 +660,18 @@ it.each([
   // and mutex private too, so host cleanup cannot stall these lifecycle tests.
   vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(fixture, 'retention'));
   vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(fixture, 'locks'));
+  let stage = 'setup';
+  // Capture the awaited boundary before Vitest's existing deadline can erase
+  // attribution. This observation neither renews nor replaces that deadline.
+  const stallDiagnostic = setTimeout(() => {
+    const runs = existsSync(evidenceRoot) ? readdirSync(evidenceRoot).filter(name => /^\d{8}T/.test(name)) : [];
+    const preparation = runs.map(run => {
+      const path = join(evidenceRoot, run, 'phases/prepare/worker-progress.ndjson');
+      return { run, progress: existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n').slice(-6) : [] };
+    });
+    process.stderr.write('ISOLATED_PROOF_FIXTURE_PENDING ' +
+      JSON.stringify({ stage, fixture, fails, ended, valid, preparation }) + '\n');
+  }, 10_000);
   try {
     mkdirSync(runtimeRoot); mkdirSync(dataDir);
     writeFileSync(supervisorPath, `
@@ -640,15 +701,18 @@ process.once('message', async message => {
 });
 `);
     let runId: string | undefined;
+    stage = 'record-proof';
     const run = recordIsolatedIntegrationProof({
       root, filePath: 'packages/operator-core/lib/isolated-integration-proof.test.ts', sourcePaths: [],
       retainedArtifacts: ['phases/execute/provider-response.json'],
       prepare: evidenceDir => {
+        stage = 'prepare';
         writeFileSync(join(evidenceDir, 'operator-api-build-result.json'), JSON.stringify({ status: 0, pid: 123 }));
         writeFileSync(join(evidenceDir, 'operator-api-build.log'), 'original preparation compiler diagnostic\n');
         writeFileSync(join(evidenceDir, 'hono-host.mjs.build-steps.jsonl'), '{"step":"prepare-compile","event":"end","status":0}\n');
       },
       execute: async (observe, evidenceDir) => {
+        stage = 'execute';
         runId = JSON.parse(readFileSync(join(evidenceDir, '../prepare/source.json'), 'utf8')).runId;
         writeFileSync(join(evidenceDir, 'operator-api-build.log'), 'original nested bundle rejection\n');
         writeFileSync(join(evidenceDir, 'hono-host.mjs.build-steps.jsonl'), '{"step":"host-compile","event":"end","status":17}\n');
@@ -667,7 +731,9 @@ process.once('message', async message => {
           env: { ...process.env, PROOF_RUNTIME: runtimeRoot, PROOF_DATA: dataDir },
           stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
+        stage = 'worker-capture';
         const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 5_000 });
+        stage = 'worker-complete';
         expect(result.code).toBe(valid ? 0 : 1);
         if (fails) throw new Error('original journey assertion');
       },
@@ -675,12 +741,13 @@ process.once('message', async message => {
     const rejected = fails || !ended || !valid;
     if (rejected) await expect(run).rejects.toThrow();
     else expect(await run).toBe(runId);
+    stage = 'proof-settled';
     const result = JSON.parse(readFileSync(join(evidenceRoot, runId!, 'result.json'), 'utf8'));
     expect(result.verdict).toBe(rejected ? 'fail' : 'pass');
     if (fails) expect(result.phases.find((p: { phase: string }) => p.phase === 'execute').detail)
       .toContain('original journey assertion');
     const artifacts = new Map<string, string>();
-    for (const path of ['phases/prepare/operator-api-build-result.json',
+    for (const path of ['phases/prepare/worker-progress.ndjson', 'phases/prepare/operator-api-build-result.json',
       'phases/prepare/operator-api-build.log', 'phases/prepare/hono-host.mjs.build-steps.jsonl',
       'phases/execute/operator-api-build.log', 'phases/execute/hono-host.mjs.build-steps.jsonl',
       'phases/execute/build.log',
@@ -703,16 +770,20 @@ process.once('message', async message => {
       expect(JSON.parse(artifacts.get('phases/execute/lifecycle-observation.json')!).observationError).toBeTruthy();
     }
     expect(existsSync(runtimeRoot) || existsSync(dataDir)).toBe(false);
+    stage = 'sentinel';
     await runHarness({ contract: { name: 'isolated-integration', phases: [{ id: 'execute' }] },
       evidenceRoot, runId: '20991014T000000Z-1', guardRails: [], runPhase: async () => ({ ok: true }) });
+    stage = 'prune';
     expect(await pruneRuns(evidenceRoot, 1, Date.now(), {
       measureDisk: async () => ({ totalBytes: 1_000, availableBytes: 500 }), reserveBytes: () => 400,
     })).toContain(runId);
+    stage = 'retained-compare';
     for (const [path, bytes] of artifacts)
       expect(readFileSync(join(evidenceRoot, 'retained', runId!, path), 'utf8')).toBe(bytes);
     expect(JSON.parse(readFileSync(join(evidenceRoot, 'retained', runId!, 'result.json'), 'utf8')).verdict)
       .toBe(rejected ? 'fail' : 'pass');
   } finally {
+    clearTimeout(stallDiagnostic);
     child?.kill('SIGKILL');
     vi.restoreAllMocks();
     vi.unstubAllEnvs();

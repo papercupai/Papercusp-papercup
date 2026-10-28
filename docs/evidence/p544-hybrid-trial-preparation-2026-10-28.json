@@ -27,7 +27,7 @@
     ]
   },
   "maintainedSources": {
-    "scripts/agent-capacity/cost-model.ts": "053c00df0273f9fc8f6d4e1016632856cb60499c1504439f2df2eedf6c07a679",
+    "scripts/agent-capacity/cost-model.ts": "7fd6126f044e2c0d589c259e9c70d08528d4201998a196e4c580aa4f1d0392a2",
     "scripts/agent-capacity/vm/swap-tier.py": "571de870f07edac826021bac7b4eb13cbfe19694e13d0787f0c4b7d796a0f708",
     "scripts/agent-capacity/vm/swap-tier-bootstrap.sh": "f921a6cf14d3d48eb885d8df9621059d03f60cb7e2af24f3cefe848640891e19",
     "scripts/agent-capacity/vm/stage-driver.sh": "303cbcfd8d73c5e85a40ca06d6a099f454f055d544c296d17e03541758282673",
@@ -110,6 +110,32 @@
       "--expected-artifact-sha256", "<independently-admitted-artifact-sha256>"
     ],
     "evaluationTemplateExecuted": false
+  },
+  "localCostValidatorFix": {
+    "rootCause": "trialEconomicsCoverage rejected an observed quantity of zero even with a positive observed exposure, valid observation window and bound source identity. Measured zero therefore could not qualify as a zero-cost category.",
+    "detectorGap": "The existing economics fixtures supplied only positive observed usage; they did not exercise a legitimate measured zero.",
+    "change": "Allow the existing nonnegative safe-integer quantity validation to accept zero. Retain positive exposure, window, identity, rate, allocation and projected-amount checks.",
+    "guard": "Added one positive measured-zero regression and two controls for null/zero exposure in the existing cost-model Vitest suite.",
+    "testFile": "scripts/agent-capacity/cost-model.test.ts",
+    "testFileSha256": "1fb04be88c73f35ce9bb3577997e6b79f42cf9d65736c81891b73ad6622f25bc",
+    "before": {
+      "runId": "f9c60b4e-e2e6-4dda-9819-4e429a7dd5fe",
+      "ledgerId": 22557519,
+      "selectedPassed": 2,
+      "selectedFailed": 1,
+      "excludedByNameFilter": 110,
+      "observation": "Valid measured zero failed; both invalid-exposure controls passed."
+    },
+    "after": {
+      "runId": "a3d5a871-58cd-4209-9b4a-72c373cbe32c",
+      "ledgerId": 22557528,
+      "passed": 113,
+      "failed": 0,
+      "skipped": 0,
+      "cleanupComplete": true,
+      "manifest": "/home/builduser/.papercusp/test-artifacts/testing-run/run-o3Gask/manifest.json"
+    },
+    "scope": "Source-functional fixture verification only. No actual zero charge, provider authenticity, integrated trial, deployed candidate or shipment is established."
   },
   "nextExecution": "After verified D090 acceptance, resolve the null candidate/admission fields, stage the maintained drivers and their writer manifest, run the admitted integrated lifecycle/native journey, retain original source observations, then evaluate native and economics dossiers and obtain independent acceptance before final shipment.",
   "acceptance": {

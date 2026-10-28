@@ -134,6 +134,10 @@ export const NOT_SHIPPED_LOCKFILES = new Map([
     'local heap-snapshot diagnostic adapter: built explicitly with the cargo build --locked command documented in scripts/analyze-heap-snapshots.mjs and invoked only when a caller supplies nativeExecutable; neither the operator host bundle nor the desktop sidecar script/resource copy includes this Cargo project or its target binary',
   ],
   [
+    'packages/operator-core/vendor/proximus/uv.lock',
+    'the pinned uv project of an unmodified upstream research reference (vendor/proximus/UPSTREAM.json: Proximal-Labs/proximus at a989f7b, "execution and paid comparisons require the existing benchmark authorization and accounting gates"); it ships in NO artifact. It is consumed from the SOURCE TREE only: external-bench/proximus-runtime.ts prepareProximusRuntime resolves new URL(\'../../vendor/proximus\', import.meta.url), sha256s this lockfile and has uv install it on demand into a tmpdir venv, so its Python deps are never vendored or embedded. No packaging step carries the directory: (1) papercusp-desktop/bin/build-desktop-sidecar.sh (a SUBMODULE path; search it from inside papercusp-desktop) esbuild-bundles the serve entry into sidecar/serve.mjs and names neither proximus nor packages/operator-core/vendor anywhere, its only "vendor" text being the Mach-O .git-vendor relpath comment; (2) papercusp-desktop/src-tauri/tauri.conf.json bundles only resources ["sidecar/spa/**/*"]; (3) apps/operator/bin/bundle-host.sh copies harness blueprints, locks SQL and two runner scripts, never operator-core/vendor. Classified 2026-10-28 (WI-6554700010042542) from the gate run that first saw it unclassified.',
+  ],
+  [
     'apps/tui/Cargo.lock',
     'apps/tui is a developer terminal UI built from source on a dev box; it is not bundled into any desktop installer target',
   ],

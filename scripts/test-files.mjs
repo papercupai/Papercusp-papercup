@@ -1341,7 +1341,7 @@ const NOT_EXECUTED_STATUSES = new Set(['skipped', 'pending', 'todo', 'disabled']
  *
  * @param {string | null} reportPath value of `--outputFile`, if any
  * @param {string} [cwd] the group's cwd — vitest resolves a relative --outputFile against it
- * @returns {{ executed: string[], skipped: Array<{ name: string, file: string }> } | null}
+ * @returns {{ executed: string[], executedFiles: string[], skipped: Array<{ name: string, file: string }> } | null}
  */
 export function assertionOutcomesFromReport(reportPath, cwd) {
   if (!reportPath) return null;
@@ -1354,6 +1354,7 @@ export function assertionOutcomesFromReport(reportPath, cwd) {
   }
   if (!report || typeof report !== 'object' || !Array.isArray(report.testResults)) return null;
   const executed = [];
+  const executedFiles = new Set();
   const skipped = [];
   for (const fileResult of report.testResults) {
     const file = typeof fileResult?.name === 'string' ? fileResult.name : '';
@@ -1366,10 +1367,13 @@ export function assertionOutcomesFromReport(reportPath, cwd) {
             : '';
       if (name === '') continue;
       if (NOT_EXECUTED_STATUSES.has(assertion?.status)) skipped.push({ name, file });
-      else executed.push(name);
+      else {
+        executed.push(name);
+        if (file) executedFiles.add(file);
+      }
     }
   }
-  return { executed, skipped };
+  return { executed, executedFiles: [...executedFiles], skipped };
 }
 
 const MAX_FAILED_ASSERTION_DIAGNOSTICS = 20;
@@ -1622,7 +1626,7 @@ export function requireRanFrom(ownArgs) {
  *   `unverified` — no readable report, so the question was not answered. NOT a pass.
  *
  * @param {string | null} pattern
- * @param {{ executed: string[], skipped: Array<{ name: string, file: string }> } | null} outcomes
+ * @param {{ executed: string[], executedFiles?: string[], skipped: Array<{ name: string, file: string }> } | null} outcomes
  */
 export function requireRanVerdict(pattern, outcomes) {
   if (!pattern) return { status: 'not-requested', matches: [] };
@@ -1648,10 +1652,11 @@ export function requireRanVerdict(pattern, outcomes) {
  * "unreadable" into "nothing executed" is the exact mistake this file already learned twice
  * (EI-19380376466745152, and the `??`-not-`||` note at the testsExecuted push site).
  *
- * @returns {{ vacuous: boolean, reason: string }}
+ * @returns {{ vacuous: boolean, reason: string, files?: string[] }}
  */
 export function allSkippedVerdict(summary) {
   const executedNames = summary?.executedNames ?? [];
+  const executedFiles = new Set(summary?.executedFiles ?? []);
   const skippedNames = summary?.skippedNames ?? [];
   // A genuine red anywhere in the request is a real measurement — report it as `failed`, never
   // soften it into a refusal.
@@ -1660,6 +1665,18 @@ export function allSkippedVerdict(summary) {
   // fabricating a verdict from a hole.
   if (summary?.skippedUnmeasuredGroups !== 0) return { vacuous: false, reason: 'skip-count-unmeasured' };
   if (skippedNames.length === 0) return { vacuous: false, reason: 'no-collected-skips' };
+  const filesWithoutExecutedTests = [...new Set(skippedNames
+    .map((entry) => entry?.file)
+    .filter((file) => typeof file === 'string' && file.length > 0 && !executedFiles.has(file)))];
+  if (filesWithoutExecutedTests.length > 0) {
+    return {
+      vacuous: true,
+      reason: executedNames.length === 0
+        ? 'every-collected-test-was-skipped'
+        : 'requested-file-has-no-executed-tests',
+      files: filesWithoutExecutedTests,
+    };
+  }
   if (executedNames.length > 0) return { vacuous: false, reason: 'tests-executed' };
   return { vacuous: true, reason: 'every-collected-test-was-skipped' };
 }
@@ -1710,6 +1727,7 @@ export function aggregateGroupResults(groupResults) {
   const skippedUnmeasuredGroups = groupResults.filter((g) => typeof g.testsSkipped !== 'number').length;
   const skippedNames = groupResults.flatMap((g) => g.skippedNames ?? []);
   const executedNames = groupResults.flatMap((g) => g.executedNames ?? []);
+  const executedFiles = groupResults.flatMap((g) => g.executedFiles ?? []);
   return {
     ok,
     requested,
@@ -1721,6 +1739,7 @@ export function aggregateGroupResults(groupResults) {
     skippedUnmeasuredGroups,
     skippedNames,
     executedNames,
+    executedFiles,
     anyUnmatched,
     anyFailed,
     launchError,
@@ -3729,7 +3748,6 @@ export async function main(
       const inputs = privateIntegrationVerifierInputs(repoRoot, routes.map(route => route.absolute));
       if (inputs) {
         assertPrivateIntegrationEvidence();
-        const privatePg = await preflightPrivateIntegrationPgImpl();
         const head = run('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
         const ref = head?.stdout?.trim();
         if (head?.error || head?.status !== 0 || !/^[a-f0-9]{40}$/.test(ref ?? ''))
@@ -3741,10 +3759,14 @@ export async function main(
         try {
           return await runPrivateVerifierImpl({ repo: repoRoot, ref, receiptPath, inputs,
             releaseParentPrivatePg: Boolean(process.env[PRIVATE_TEST_PG_RELEASE_TOKEN_ENV]),
-            // The frozen router takes over this same logical invocation's
-            // barriers; ordinary test children still never inherit them.
+            // The verifier must finish committed source/dependency preparation
+            // before this callback allocates private PG. Ordinary test children
+            // still never inherit the parent's barriers.
+            prepareChildEnv: async () => {
+              const privatePg = await preflightPrivateIntegrationPgImpl();
+              return privatePg?.url ? { HARNESS_ADMIN_DATABASE_URL: privatePg.url } : {};
+            },
             env: { ...process.env,
-              ...(privatePg?.url ? { HARNESS_ADMIN_DATABASE_URL: privatePg.url } : {}),
               ...(preemptMarkerPaths.readyFile ? { PC_HEAVY_PREEMPT_READY_FILE: preemptMarkerPaths.readyFile } : {}),
               ...(preemptMarkerPaths.finalizationFile ? { PC_HEAVY_PSI_FINALIZATION_FILE: preemptMarkerPaths.finalizationFile } : {}) },
             command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs',
@@ -4322,6 +4344,7 @@ export async function main(
           : testsSkippedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`),
       skippedNames: groupOutcomes?.skipped ?? [],
       executedNames: groupOutcomes?.executed ?? [],
+      executedFiles: groupOutcomes?.executedFiles ?? [],
       unmatchedCount: 0,
       failed: groupFailed,
       launchError: false,
@@ -4561,16 +4584,16 @@ export async function main(
   // advisory output does not beat the verdict line, which is exactly why this refusal is not one.
   //
   // Three-state-safe by construction: it fires only on POSITIVE evidence from a readable report —
-  // names of tests that were collected-and-skipped, with no executed names beside them. When no
-  // report was readable BOTH name lists are empty, so an unreadable run can never be turned into a
-  // fabricated refusal; it keeps its existing behaviour. A genuine failure anywhere in the request
-  // still reports `status=failed` below, and a partially-skipped run is untouched.
+  // a requested file has collected-and-skipped tests and no executed tests of its own. When no
+  // report was readable BOTH name lists are empty, so an unreadable run cannot become a fabricated
+  // refusal. A genuine failure anywhere in the request still reports `status=failed` below.
   const allSkipped = allSkippedVerdict(summary);
   if (allSkipped.vacuous) {
     console.error(
       `TEST_FILE_ALL_SKIPPED requested=${summary.requested} executed=${summary.executed} ` +
-        `matched=${summary.matched} testsExecuted=0 testsSkipped=${summary.testsSkipped} ` +
-        `status=not-measured reason=${allSkipped.reason} — this run executed NO tests, ` +
+        `matched=${summary.matched} testsExecuted=${summary.executedNames.length} ` +
+        `testsSkipped=${summary.testsSkipped} files=${JSON.stringify(allSkipped.files ?? [])} ` +
+        `status=not-measured reason=${allSkipped.reason} — at least one requested file executed NO tests, ` +
         'so it is not evidence that anything passed. Find the gate that skipped them (an unset env ' +
         'flag, `describe.skipIf`, `.skip`) and rerun. Refusing to report a TEST_FILE_RESULT verdict ' +
         'for a run that measured nothing.',

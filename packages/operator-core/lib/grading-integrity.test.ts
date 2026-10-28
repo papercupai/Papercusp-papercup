@@ -3981,6 +3981,78 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
+  it('recovers a retained Claude billing error from owner-bound native evidence without a rendered footer', async () => {
+    const d = deps();
+    const issueId = 'EI-native-credit-balance';
+    const sessionId = 'native-credit-balance-session';
+    const ownerId = 'su-credit-balance-auditor';
+    const nativeTranscript = JSON.stringify({
+      type: 'assistant',
+      sessionId,
+      isSidechain: false,
+      isApiErrorMessage: true,
+      apiErrorStatus: 400,
+      message: {
+        role: 'assistant',
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'Credit balance is too low' }],
+      },
+    });
+    const task = {
+      taskId: 'task-native-credit-balance',
+      sessionId,
+      workspaceId: 'ws-test',
+      class: 'agent-session',
+      state: 'running',
+      startedAt: new Date().toISOString(),
+      logPath: '/tmp/grading-native-credit-balance.log',
+      detail: { label: 'grading-audit:' + issueId, coordOwnerId: ownerId },
+    } as unknown as TaskRow;
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+    d.listTasks.mockResolvedValue([task]);
+    d.launch.mockResolvedValueOnce(launchResult({
+      deduped: false,
+      launch: { tasks: [{ taskId: 'task-native-credit-fallback', logPath: '/tmp/grading-native-credit-fallback.log' }] },
+    }));
+    const listNativeSessions = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['listNativeSessionsByTranscriptHandles']>>()
+      .mockResolvedValue([{ sessionId, coordOwnerId: ownerId, agent: 'claude' }]);
+    const resolveTranscript = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['findSessionTranscript']>>()
+      .mockResolvedValue('/tmp/grading-native-credit-balance.jsonl');
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' as const }));
+    const nowMs = Date.now();
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: [issueId], ctx, harness: 'papercusp' },
+      {
+        ...d,
+        listNativeSessionsByTranscriptHandles: listNativeSessions,
+        findSessionTranscript: resolveTranscript,
+        killTask,
+        providerCanServe: vi.fn(async () => true),
+        readLogTail: (path) => path.endsWith('.jsonl')
+          ? nativeTranscript
+          : path.includes('fallback') ? 'healthy fallback boot' : 'Credit balance is too low',
+        readLogMtimeMs: () => nowMs,
+        now: () => nowMs,
+        terminalLogRecheckDelayMs: 0,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(listNativeSessions).toHaveBeenCalledExactlyOnceWith([sessionId]);
+    expect(resolveTranscript).toHaveBeenCalledExactlyOnceWith(sessionId, { owner: ownerId });
+    expect(killTask).toHaveBeenCalledWith(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(d.launch).toHaveBeenCalledOnce();
+    expect(result.receipts[0]).toMatchObject({
+      issueId,
+      state: 'launched',
+      terminalRecovery: {
+        retiredTaskIds: [task.taskId],
+        codes: ['inference_gateway_error'],
+      },
+    });
+  });
+
   it.each(['missing', 'unavailable', 'foreign-owner'])('preserves a retained task when recovered native binding is %s', async (binding) => {
     const d = deps();
     const issueId = 'EI-unproven-native';

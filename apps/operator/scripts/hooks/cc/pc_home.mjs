@@ -34,3 +34,20 @@ export function papercuspPtyPath(env = process.env, fallbackHome = homedir()) {
     : '';
   return override || join(fallbackHome, '.papercusp', 'psu-pty');
 }
+
+/**
+ * Resolve the host-wide operator state directory.
+ *
+ * The operator writes host-shared state (for example the frozen-repair edit
+ * markers) from one multi-workspace process that carries no PAPERCUSP_HOME,
+ * while session processes may carry a workspace-scoped PAPERCUSP_HOME. A
+ * session-side reader of operator-written state therefore must not derive the
+ * directory from its own PAPERCUSP_HOME (EI-27237474160744241). Isolated hosts
+ * and tests opt into their own directory through the PAPERCUSP_STATE_DIR pin.
+ */
+export function papercuspHostStatePath(env = process.env, fallbackHome = homedir()) {
+  const override = typeof env?.PAPERCUSP_STATE_DIR === 'string'
+    ? env.PAPERCUSP_STATE_DIR.trim()
+    : '';
+  return override || join(fallbackHome, '.papercusp', 'state');
+}

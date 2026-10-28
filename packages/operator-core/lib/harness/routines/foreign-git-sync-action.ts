@@ -36,7 +36,7 @@ registerSystemAction(FOREIGN_GIT_SYNC_ROUTINE_NAME, async (ctx: SystemActionCtx)
         `${committed} committed, ${parked} parked, ${errored} errored`,
     );
   }
-});
+}, { scheduling: 'on-demand' });
 
 /**
  * Idempotent upsert of the workspace's foreign-git-sync routine (active).

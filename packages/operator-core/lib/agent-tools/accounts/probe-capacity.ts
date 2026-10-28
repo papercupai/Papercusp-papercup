@@ -144,7 +144,9 @@ function reportRow(r: CapacityProbeResult) {
       ...(r.windows.bucket ? { bucket: r.windows.bucket } : {}),
     },
     verdict: !r.ok
-      ? 'no-reading'
+      ? r.authentication === 'relink-required'
+        ? 'authentication refused (relink required)'
+        : r.authentication === 'refused' ? 'authentication refused' : 'no-reading'
       : r.windows.bucket === 'base_model_inference'
         ? 'reserve-meter reading (Luna bucket) — NOT projected'
         : r.unwalls
@@ -152,6 +154,7 @@ function reportRow(r: CapacityProbeResult) {
           : 'confirmed',
     ...(r.error ? { error: r.error } : {}),
     ...(r.httpRefusal ? { httpRefusal: r.httpRefusal } : {}),
+    ...(r.authentication ? { authentication: r.authentication } : {}),
   };
 }
 

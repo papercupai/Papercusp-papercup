@@ -25,7 +25,7 @@ import {
   applyClaimPathReadDeps,
 } from '../../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
-import { HOLD_AGENT_MAX_REVIEW_DAYS } from '../../restriction-holds';
+import { HOLD_ACTIONS, HOLD_AGENT_MAX_REVIEW_DAYS } from '../../restriction-holds';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
@@ -187,7 +187,13 @@ describe('work_items:set_blocker kind:hold (R-4)', () => {
     const base = { target: { kind: 'work-item', id: target }, forbids: 'reset', reviewAt: inDays(3) };
 
     const badAction = await setBlocker({ id: carrier, kind: 'hold', hold: { ...base, forbids: 'touch' }, summary: 'r' });
-    expect(badAction).toMatchObject({ ok: false, code: 'hold_spec_invalid' });
+    // The refusal must name the vocabulary, not only carry the code: parseHoldSpec re-checks
+    // forbids for type narrowing, so a dropped vocabulary check still refuses, with an empty error.
+    expect(badAction).toMatchObject({
+      ok: false,
+      code: 'hold_spec_invalid',
+      error: expect.stringContaining(`forbids must be one of: ${HOLD_ACTIONS.join(', ')}.`),
+    });
 
     const noReason = await setBlocker({ id: carrier, kind: 'hold', hold: base });
     expect(noReason).toMatchObject({ ok: false, code: 'hold_spec_invalid' });

@@ -59,6 +59,15 @@ export function canDispatchOnFallbackOperator(tool: any, fallbackUsed: any): boo
  */
 export function resolvePtoolRecoveryTool(toolName: string | null | undefined, callArgs: unknown, tools?: ToolCatalogEntry[]): ToolCatalogEntry | null;
 /**
+ * Build-routed wrapper calls must be supported by the selected operator's
+ * outer schema. A current nested target does not make an older tools:invoke
+ * or tools:find wrapper accept the build selector.
+ * @param {string | null | undefined} toolName
+ * @param {unknown} callArgs
+ * @param {ToolCatalogEntry[]} tools
+ */
+export function catalogSupportsBuildSelector(toolName: string | null | undefined, callArgs: unknown, tools?: ToolCatalogEntry[]): boolean;
+/**
  * Whether a catalog proves a current generation for the exact requested tool.
  * For tools:invoke, validate its nested target rather than the wrapper.
  * @param {string | null | undefined} toolName

@@ -41,4 +41,4 @@ registerSystemAction('oddsmith-paper-cycle', async (ctx: SystemActionCtx) => {
   });
   assertRunOk('oddsmith-paper-cycle', r);
   console.log(`[oddsmith-paper-cycle] ok: ${(r.stdout || '').trim().split('\n').slice(-1)[0]}`);
-});
+}, { scheduling: 'on-demand' });

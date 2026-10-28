@@ -2708,13 +2708,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "upstream",
     reason:
-      "P-016 reviewed upstream disposition for workspace-host-gcs-publication.mjs: its two gcloud start sites belong to the existing journaled release adoption/publication consumer. The command and private-byte read have explicit 30-minute and 15-minute deadlines; byte verification binds the exact digest and size, metadata mutation requires the original journal, and direct publication is stage-only.",
+      "P-016 reviewed upstream disposition for workspace-host-gcs-publication.mjs: its two gcloud start sites belong to the existing journaled release adoption/publication consumer. The command and private-byte read have explicit 30-minute and 15-minute deadlines; byte verification binds the exact digest and size, metadata mutation requires the original journal, and direct publication is stage-only. Re-reviewed 2026-10-28 (WI-6554700010042408): `exec` is now promisified lazily on first call (EI-10161 class: an eager module-scope promisify(execFile) crashes a narrow node:child_process test mock at import time). It wraps the same execFile and adds no start site.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
       const gcloudStarts = childProcessVerbCallCount(code) +
         [...code.matchAll(/\bspawnImpl\s*\(/g)].length;
       return gcloudStarts === 2 &&
-        source.includes("const exec = promisify(execFile);") &&
+        source.includes("const exec = (...args) => (cachedExec ??= promisify(execFile))(...args);") &&
         source.includes("const runGcloud = async (args) => (await exec('gcloud', args, {") &&
         source.includes("maxBuffer: 4 * 1024 * 1024, timeout: 1800_000") &&
         source.includes("spawnImpl('gcloud', ['storage', 'cat', uri], {") &&

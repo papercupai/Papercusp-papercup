@@ -142,9 +142,61 @@ const RETRYABLE_SQLSTATES = new Set([
 ]);
 const RETRYABLE_ERRNOS = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN']);
 const RETRYABLE_MESSAGE =
-  /lock(?:[_ ]timeout|[_ ]not[_ ]available)|connection terminated (?:due to connection timeout|unexpectedly)|timeout (?:exceeded|expired) when trying to connect|connect(?:ion)? timeout|too many clients already|the database system is (?:starting up|in recovery mode|shutting down)/i;
+  /lock(?:[_ ]timeout|[_ ]not[_ ]available)|connection terminated (?:due to connection timeout|unexpectedly)|timeout (?:exceeded|expired) when trying to connect|\btimeout expired\b|connect(?:ion)? timeout|too many clients already|the database system is (?:starting up|in recovery mode|shutting down)/i;
+
+/**
+ * WI-6554700010042546 (2026-10-28 18:36Z): the third incident of this class.
+ * `DBOS.launch()` failed with "Unable to connect to system database at …:
+ * timeout expired" — node-postgres's bare connect-timeout string
+ * (`pg/lib/client.js`: `new Error('timeout expired')`, no `code`). The
+ * message regex above only knew the wording seen in earlier incidents, so no
+ * retry was armed and every durable routine stayed dark until a manual
+ * restart. Matching one more string would only defer the fourth incident.
+ *
+ * Class rule: DBOS raises "Unable to connect to system database" ONLY around
+ * the connect itself (`connectToSystemDatabase` in the SDK's
+ * system_database.js), so an error under that wrapper is a connection-
+ * establishment failure by construction. It is transient UNLESS the server
+ * itself answered with a definitive SQLSTATE that is not in the retryable set
+ * (e.g. 28P01 bad password, 3D000 missing database). Client-side failures —
+ * any timeout wording, socket errnos — carry no server SQLSTATE and retry.
+ */
+const DBOS_CONNECT_WRAPPER = /^Unable to connect to system database\b/;
+
+/** A server-issued SQLSTATE: 5 chars, upper-case/digits, at least one digit.
+ *  Node errnos (ECONNREFUSED, EPIPE, EAI_AGAIN) never contain a digit. */
+function isServerSqlstate(code: unknown): code is string {
+  return typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) && /\d/.test(code);
+}
+
+type ErrorChainNode = { code?: unknown; message?: unknown; error?: unknown; cause?: unknown; originalError?: unknown };
+
+function errorChain(error: unknown): ErrorChainNode[] {
+  const nodes: ErrorChainNode[] = [];
+  const seen = new Set<object>();
+  const walk = (value: unknown): void => {
+    if (value === null || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    const node = value as ErrorChainNode;
+    nodes.push(node);
+    walk(node.error);
+    walk(node.cause);
+    walk(node.originalError);
+  };
+  walk(error);
+  return nodes;
+}
+
+function isTransientDbosConnectFailure(error: unknown): boolean {
+  const chain = errorChain(error);
+  const wrapperAt = chain.findIndex((n) => typeof n.message === 'string' && DBOS_CONNECT_WRAPPER.test(n.message));
+  if (wrapperAt < 0) return false;
+  const inner = errorChain(chain[wrapperAt]).slice(1);
+  return !inner.some((n) => isServerSqlstate(n.code) && !RETRYABLE_SQLSTATES.has(n.code));
+}
 
 export function isRetryableDbosLaunchError(error: unknown): boolean {
+  if (isTransientDbosConnectFailure(error)) return true;
   const seen = new Set<object>();
   const visit = (value: unknown): boolean => {
     if (value === null || typeof value !== 'object') return false;

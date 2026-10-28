@@ -13,6 +13,12 @@ import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
 import type { SpecTestAdequacyRerunRecipe } from './harness/improvements/observation-types';
 
+/** The grading-audit writers splice the static issue-kind list via `tx.unsafe(...)`;
+ *  a fake transaction must expose it like a real postgres.js tag does. */
+function withUnsafe(tx: unknown): never {
+  return Object.assign(tx as object, { unsafe: (text: string) => text }) as never;
+}
+
 describe('superseding a pending grading-audit target', () => {
   it('atomically cancels the pending stamp and clears its live reservation only for the matching superseder', async () => {
     const statements: Array<{ text: string; values: unknown[] }> = [];
@@ -21,7 +27,7 @@ describe('superseding a pending grading-audit target', () => {
       statements.push({ text, values });
       return [{ feature_id: 'EI-TARGET' }];
     }) as never;
-    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(withUnsafe(tx))) as never;
     const notifySyncInvalidate = vi.fn();
 
     await expect(cancelSupersededPendingGradingAuditAtomically(
@@ -49,7 +55,7 @@ describe('superseding a pending grading-audit target', () => {
 
   it('leaves a settled or unrelated target untouched', async () => {
     const tx = (async () => []) as never;
-    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(withUnsafe(tx))) as never;
     const notifySyncInvalidate = vi.fn();
 
     await expect(cancelSupersededPendingGradingAuditAtomically(
@@ -69,7 +75,7 @@ describe('cancelling a pending audit after its exact evidence binding goes stale
       statements.push({ text, values });
       return [{ feature_id: 'EI-TARGET' }];
     }) as never;
-    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(withUnsafe(tx))) as never;
     const notifySyncInvalidate = vi.fn();
 
     await expect(cancelStaleEvidencePendingGradingAuditAtomically(
@@ -126,7 +132,7 @@ describe('cancelling pending audits during an evidence retraction', () => {
       return [{ feature_id: 'EI-TARGET' }];
     }) as never;
 
-    await expect(cancelPendingGradingAuditsForBindingInTransaction(tx, 'ws-test', 30308))
+    await expect(cancelPendingGradingAuditsForBindingInTransaction(withUnsafe(tx), 'ws-test', 30308))
       .resolves.toEqual(['EI-TARGET']);
 
     const write = statements[0]!;
@@ -158,7 +164,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       if (text.includes('FROM harness_shared.task_ledger')) return [{ coord_owner_id: 'su-auditor' }];
       return [{ feature_id: 'EI-TARGET' }];
     }) as never;
-    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(withUnsafe(tx))) as never;
     const expected = {
       state: 'pending' as const,
       metaRubricRef: 'grading-integrity',
@@ -217,7 +223,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       if (text.includes('FROM harness_shared.task_ledger')) return [{ coord_owner_id: 'su-auditor' }];
       return [{ feature_id: 'EI-TARGET' }];
     }) as never;
-    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(withUnsafe(tx))) as never;
     const notifySyncInvalidate = vi.fn();
     const expected = {
       state: 'pending' as const,
@@ -288,7 +294,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       }
       return [{ feature_id: 'EI-TARGET' }];
     }) as never;
-    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(withUnsafe(tx))) as never;
     const expected = {
       state: 'pending' as const,
       metaRubricRef: 'grading-integrity',
@@ -329,7 +335,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       if (text.includes('FROM harness_shared.task_ledger')) return taskRows;
       return [];
     }) as never;
-    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(withUnsafe(tx))) as never;
     const deps = { resolveWorkspace: async () => 'ws-test', transact };
     const reservation = { key: 'grading-audit:EI-TARGET', reservedAt: '2026-09-20T04:02:01.600Z' };
 

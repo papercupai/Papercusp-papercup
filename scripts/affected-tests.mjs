@@ -7371,10 +7371,11 @@ function runCapturedTask(
   const taskDurationMs = timeoutDurationEstimate(durationHistory, spawnTaskKey);
   // P-004 (gate-latency-selection-and-retry-policy-2026-09-06): a RETRY carries its own budget,
   // derived by deriveRetryBudget from the first pass this runner just measured (and the task's
-  // history), floored and capped. It replaces the history watchdog outright and is also the
-  // progress-extension ceiling below, so the budget is a HARD bound: a retry that keeps emitting
-  // past it is still killed. The initial pass is untouched — `__retry` is only ever set by the
-  // retry pool.
+  // history), floored and capped. It replaces the history watchdog outright and, off the release
+  // gate, is also the progress-extension ceiling below, so there the budget is a HARD bound: a
+  // retry that keeps emitting past it is still killed. On the gate it is only the first
+  // checkpoint (no ceiling, owner #2574). The initial pass is untouched — `__retry` is only ever
+  // set by the retry pool.
   const retryBudgetMs =
     Number.isFinite(context.__retry?.budgetMs) && context.__retry.budgetMs > 0
       ? context.__retry.budgetMs
@@ -7409,7 +7410,14 @@ function runCapturedTask(
           : taskTimeoutMs === BATCH_TIMEOUT_MAX_MS
             ? "history-capped"
             : "history";
-  const watchdogCeilingMs = retryBudgetMs ?? BATCH_TIMEOUT_MAX_MS;
+  // Owner #2574 (WI-6554700010042457): on the release gate nothing is killed for running
+  // long while it still makes progress — a SIGKILLed lane is an UNDETERMINED leg, so the
+  // gate can never go green on it. The gate therefore passes `null` (no absolute
+  // ceiling): the watchdog extends a still-emitting task indefinitely and kills only a
+  // task whose output stayed flat for a whole stall window. Off the gate the ceiling
+  // stays: a retry's budget, else BATCH_TIMEOUT_MAX_MS.
+  const watchdogCeilingMs =
+    process.env.PC_HEAVY_RELEASE_GATE === '1' ? null : (retryBudgetMs ?? BATCH_TIMEOUT_MAX_MS);
   const {
     cmd,
     argv,
@@ -8130,17 +8138,22 @@ function runCapturedTask(
     // 762,401B@2340s -> 797,873B@2700s). The signal was already here: `capturedBytes`
     // advances on every chunk, and it was only ever read AFTER the kill to word the report.
     // Policy + its two safety properties (MONOTONE — never kills earlier than the time-only
-    // watchdog did; BOUNDED — extensions stop at BATCH_TIMEOUT_MAX_MS, under the ~120m gate
-    // ceiling) live in decideWatchdogExpiry, unit-tested with these measured numbers.
+    // watchdog did; BOUNDED — by silence always, and off the gate also by BATCH_TIMEOUT_MAX_MS)
+    // live in decideWatchdogExpiry, unit-tested with these measured numbers.
     // Recompute at arming time: process preparation/spawn consumed part of the
     // same launcher budget. Output progress must never extend past cleanup.
     const launcherWatchdogMs = launchBudget?.childCutoffEpochMs == null ? Infinity
       : Math.max(1, launchBudget.childCutoffEpochMs - Date.now());
     const watchdog = createProgressAwareWatchdog({
       timeoutMs: Math.min(taskTimeoutMs, launcherWatchdogMs),
-      // P-004: a retry's ceiling IS its budget (see retryBudgetMs above); the initial pass keeps
-      // the gate-wide BATCH_TIMEOUT_MAX_MS so its extension policy is byte-identical to before.
-      maxMs: Math.min(watchdogCeilingMs, launcherWatchdogMs),
+      // P-004: off the gate a retry's ceiling IS its budget (see retryBudgetMs above) and the
+      // initial pass keeps BATCH_TIMEOUT_MAX_MS. On the release gate there is no ceiling
+      // (watchdogCeilingMs null, owner #2574): only a silent task is killed.
+      // `null` must not reach Math.min (it coerces to 0 = kill at once): no ceiling of our
+      // own still honours a finite launcher cutoff, and stays unbounded without one.
+      maxMs: watchdogCeilingMs === null
+        ? (Number.isFinite(launcherWatchdogMs) ? launcherWatchdogMs : null)
+        : Math.min(watchdogCeilingMs, launcherWatchdogMs),
       stallWindowMs: BATCH_TIMEOUT_QUANTUM_MS,
       extensionMs: BATCH_TIMEOUT_QUANTUM_MS,
       onExtend: () => emitProgress("watchdog-extended"),

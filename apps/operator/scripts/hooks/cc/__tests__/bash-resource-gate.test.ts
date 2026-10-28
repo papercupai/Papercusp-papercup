@@ -6286,6 +6286,78 @@ describe('interpreter write guard ignores inert serialized code strings (EI-2681
   });
 });
 
+describe('interpreter inline code keeps quoted stdin heredocs as data (EI-26888909335647927)', () => {
+  const archive = JSON.stringify({
+    artifactPath: 'config.toml',
+    source: "writeFileSync('config.toml', 'contents')",
+  }, null, 2);
+
+  it('allows read-only stdin hashing when archived JSON contains filesystem-write source text', () => {
+    const code = 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())';
+    const command = [
+      `python3 -c ${JSON.stringify(code)} <<'ARCHIVE'`,
+      archive,
+      'ARCHIVE',
+    ].join('\n');
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('still denies a real inline repository writer when stdin also comes from a heredoc', () => {
+    const code = "import sys; open('apps/operator/generated.ts', 'w').write(sys.stdin.read())";
+    const command = [
+      `python3 -c ${JSON.stringify(code)} <<'ARCHIVE'`,
+      archive,
+      'ARCHIVE',
+    ].join('\n');
+    const reason = denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('EI-18691482279179647');
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+});
+
+describe('shell-write guard distinguishes executable writes from data and known external temps (EI-26915112847968753)', () => {
+  const expectInterpDeny = (out: { stdout: string; status: number | null }) => {
+    const reason = denyReason(out);
+    expect(reason).toContain('EI-18691482279179647');
+    return reason;
+  };
+
+  it('allows a write beneath a directory created by mkdtempSync(os.tmpdir())', () => {
+    const command =
+      `node -e "const fs=require('node:fs'); const os=require('node:os'); const path=require('node:path'); ` +
+      `const dir=fs.mkdtempSync(path.join(os.tmpdir(),'pc-evidence-')); ` +
+      `fs.writeFileSync(path.join(dir,'artifact.json'),'{}')"`;
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('fails closed for the same basename under an unresolved in-tree temporary directory', () => {
+    const command =
+      `node -e "const fs=require('node:fs'); const path=require('node:path'); ` +
+      `const dir=fs.mkdtempSync(path.join(process.cwd(),'pc-evidence-')); ` +
+      `fs.writeFileSync(path.join(dir,'artifact.json'),'{}')"`;
+    expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows a data-only Python CLI payload containing a quoted Node write expression', () => {
+    const evidence = `node -e "const fs=require('node:fs'); const path=require('node:path'); ` +
+      `fs.writeFileSync(path.join(dir, 'artifact.json'), 'x')"`;
+    const command = [
+      "python3 - <<'PY'",
+      'import json, subprocess',
+      `evidence = '''${evidence}'''`,
+      "payload = json.dumps({'body': evidence})",
+      "subprocess.run(['node', 'scripts/mcp-call.mjs', 'improvements:capture', '--json', payload], check=True)",
+      'PY',
+    ].join('\n');
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('still denies an executable relative staging write', () => {
+    const command = `node -e "require('node:fs').writeFileSync('apps/operator/generated.ts','x')"`;
+    expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+});
+
 // ── Substitution gate (bash-to-tool-substitution-2026-07-26, P-016) ─────────
 // Two distinct things are under test and they fail differently:
 //   1. the PRE-FILTER — does a command a registry rule could claim actually

@@ -24,7 +24,7 @@
  *
  * Pure: the caller resolves the cited refs to turns (fetchSourceTurns) and passes them in.
  */
-import { isOwnerTurnVerdict, type SourceTurn } from './activation-item-provenance';
+import { isOwnerTurnVerdict, parseOrderSourceRef, type SourceTurn } from './activation-item-provenance';
 import { parseTurnRef } from './agent-tools/sessions/_shared';
 
 /** The only part of an activation audit payload the brief reads. */
@@ -93,7 +93,11 @@ export function buildBlindReviewBrief(input: {
     } else if (isOwnerTurnVerdict(turn.verdict)) {
       ownerTurns.push({ ref, text: turn.text });
       carried.push({ ref, text: turn.text, unverified: false });
-    } else if (isUnverifiedUserTurn(turn)) {
+    } else if (isUnverifiedUserTurn(turn) && parseOrderSourceRef(ref) == null) {
+      // An `order:<id>` row is never "authorship unknown": it is owner speech only
+      // when the hook captured it, and otherwise an agent relay (orderRowVerdict).
+      // Carrying a relay as "treat as the owner's words" would brief the reviewer
+      // with agent text, so it falls through to the not-owner exclusion below.
       unverifiedTurns.push({ ref, text: turn.text });
       carried.push({ ref, text: turn.text, unverified: true });
     } else {

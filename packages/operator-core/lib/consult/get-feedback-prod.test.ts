@@ -14,6 +14,7 @@ const h = vi.hoisted(() => {
       conversation_id: 'accepted-conv', thread_id: 'thr-accepted-conv', request_key: 'retry-key',
       latency_contract: 'proceed' as const, park_key: null, hint: 'pending',
     })),
+    validateBarCritiquePlanOrigin: vi.fn(async (_request: unknown, _sql: unknown) => null),
     continueFeedbackRequestCore: vi.fn(async (_workspace: string, _conversation: string, _deps: unknown) => false),
     getOrgPg: vi.fn(() => ({ sql })),
     buildQueryEmbedderResolved: vi.fn(async () => null),
@@ -36,7 +37,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: h.getOrgPg,
 }));
 vi.mock('./get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore,
-  acceptFeedbackRequestCore: h.acceptFeedbackRequestCore, continueFeedbackRequestCore: h.continueFeedbackRequestCore }));
+  acceptFeedbackRequestCore: h.acceptFeedbackRequestCore, validateBarCritiquePlanOrigin: h.validateBarCritiquePlanOrigin,
+  continueFeedbackRequestCore: h.continueFeedbackRequestCore }));
 vi.mock('../rubrics', () => ({ resolveAcceptanceBarApproverScreen: h.resolveAcceptanceBarApproverScreen }));
 // expertiseSubject: acceptFeedbackRequestProd reads it since f36b33ffd5; the mock
 // lacked it, so the acceptance test failed at HEAD.
@@ -164,6 +166,21 @@ describe('getFeedbackProd expert-routing settings', () => {
     expect(h.makeConsultReachDispatcher).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalledWith(
       'workspace-1', 'accepted-conv', expect.objectContaining({ execute: expect.any(Function) })));
+  });
+
+  it('refuses an invalid bar-critique plan before acceptance persistence or dispatch', async () => {
+    const refusal = { error: 'bar_critique_requires_plan', hint: 'exact registered plan required' };
+    h.validateBarCritiquePlanOrigin.mockResolvedValueOnce(refusal as never);
+    const result = await acceptFeedbackRequestProd({ workspaceId: 'workspace-1', requesterId: 'requester',
+      question: 'review these bars', policy: 'bar-critique', originTaskRef: 'EI-incident' },
+    { ownerId: 'requester' } as never, { harnessSlug: 'papercusp' });
+    expect(result).toEqual(refusal);
+    expect(h.validateBarCritiquePlanOrigin).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'workspace-1', harnessSlug: 'papercusp', originTaskRef: 'EI-incident',
+    }), h.getOrgPg().sql);
+    expect(h.acceptFeedbackRequestCore).not.toHaveBeenCalled();
+    expect(h.openConversation).not.toHaveBeenCalled();
+    expect(h.continueFeedbackRequestCore).not.toHaveBeenCalled();
   });
 
   it.each([true, false])('passes actual dispatch permission %s to creation without launching when disabled', async (allowDispatch) => {

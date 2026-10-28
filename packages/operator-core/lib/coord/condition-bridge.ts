@@ -520,7 +520,8 @@ async function assignAdoptedConditionOwner(
        WHERE feature_id = ${incumbentId}
          AND (${workspaceId ?? null}::text IS NULL OR workspace_id = ${workspaceId ?? null})
        LIMIT 1`;
-    if (!rows[0] || (rows[0].taken_by ?? '') !== '') return null;
+    // Already taken = a non-NULL, non-empty taken_by; NULL and '' both mean unassigned.
+    if (!rows[0] || (rows[0].taken_by !== null && rows[0].taken_by !== undefined && rows[0].taken_by !== '')) return null;
     const assignment = decideConditionAssignment(
       policy,
       await (deps.readGateOwner ?? readLiveGateOwnerForAssignment)(harness),

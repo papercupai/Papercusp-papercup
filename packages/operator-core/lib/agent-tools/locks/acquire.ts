@@ -26,7 +26,7 @@
 
 import { z } from 'zod';
 import { existsSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readFileLockIdentity } from './identity';
@@ -75,7 +75,7 @@ import { projectLockWaitOperationalBrief } from '../../operational-brief/wait-br
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
 import { hardText, LIMITS } from '../limits';
-import { isExternalLockKey, resolveExternalPathLockIdentity } from './external-path';
+import { isExternalLockKey, managedRepositoryPathToLockIdentity, resolveExternalPathLockIdentity } from './external-path';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { isTransientPgConnectionError } from '../../host-benign-errors';
 import { withPgRetry } from '../../pg-transient-retry';
@@ -310,6 +310,25 @@ export default defineTool({
         ...(args.paths ?? []),
         ...externalIdentities.map((identity) => identity.path),
       ]);
+      // Native edit hooks key submodule files on their nearest repository.
+      // A deliberate superproject alias would create an independent lock that
+      // neither contends with nor releases the hook's lock for the same file.
+      // Refuse before routing rather than silently remapping pending edits or
+      // mixing multiple physical repositories under one returned lock id.
+      if (isAbsolute(coordinationDomain)) {
+        for (const path of paths) {
+          if (isExternalLockKey(path)) continue;
+          const identity = managedRepositoryPathToLockIdentity(join(coordinationDomain, path));
+          if (identity?.coordinationDomain && identity.coordinationDomain !== coordinationDomain) {
+            return errorResult(
+              `path ${JSON.stringify(path)} belongs to repository ${JSON.stringify(identity.coordinationDomain)}, ` +
+                `not coordination_domain ${JSON.stringify(coordinationDomain)}. ` +
+                `Acquire it separately with coordination_domain=${JSON.stringify(identity.coordinationDomain)} ` +
+                `and paths=[${JSON.stringify(identity.path)}] so manual and native hook locks use the same identity.`,
+            );
+          }
+        }
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return jsonResult({ ok: false, error: msg });

@@ -38,6 +38,7 @@ import runTool, {
   buildTestProcessDemand,
   classifyTestProcessOutcome,
   checkoutRootForTestFiles,
+  groupTestFilesByCheckout,
   createBoundedRouterOutputCapture,
   createTestProcessDemandSampler,
   detachedTestTimeoutHint,
@@ -786,6 +787,22 @@ describe('completed child with failed router finalization (WI-10004947)', () => 
 });
 
 describe('mixed-checkout test batches (EI-22733560502709681)', () => {
+  it('skips a nested git workspace without a runner and coalesces its files at the runnable parent', async () => {
+    const parent = await makeScratchTestCheckout('papercusp-testing-run-nested-unrunnable-');
+    const nested = join(parent, 'libs', 'papercusp');
+    const nestedFile = join(nested, 'packages', 'orchestrator', 'src', 'managed.test.ts');
+    await mkdir(dirname(nestedFile), { recursive: true });
+    await writeFile(join(nested, '.git'), 'gitdir: ../.git/modules/libs/papercusp\n');
+    await writeFile(join(nested, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
+    await writeFile(nestedFile, 'export {};\n');
+
+    const parentFile = join(parent, 'packages', 'x', 'real.test.ts');
+    expect(checkoutRootForTestFiles([nestedFile], parent)).toBe(parent);
+    expect(groupTestFilesByCheckout([nestedFile, parentFile], parent)).toEqual([
+      { root: parent, files: [nestedFile, parentFile] },
+    ]);
+  });
+
   it('does not switch a mixed relative + absolute request wholesale to the absolute checkout', async () => {
     await mkdir(join(REPO_ROOT, '.papercusp', 'tmp'), { recursive: true });
     const parent = await mkdtemp(join(REPO_ROOT, '.papercusp', 'tmp', 'testing-run-mixed-select-'));

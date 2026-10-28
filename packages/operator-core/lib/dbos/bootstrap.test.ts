@@ -8,6 +8,11 @@
  * DBOS.setConfig/launch).
  */
 import { describe, expect, it, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import net from 'node:net';
+import path from 'node:path';
+import pg from 'pg';
 import {
   withDbosIdleTxGrace,
   resolvePgLaunchRetryMs,
@@ -15,6 +20,8 @@ import {
   isRetryableDbosLaunchError,
   awaitDbosLaunchInFlight,
 } from './bootstrap';
+
+const require = createRequire(import.meta.url);
 
 // WI-10004957: provisioning routes wait on this only for a launch that is already in flight.
 describe('awaitDbosLaunchInFlight', () => {
@@ -164,6 +171,105 @@ describe('isRetryableDbosLaunchError (EI-22022209900260112)', () => {
     expect(isRetryableDbosLaunchError({ error: { code: '28P01', message: 'password authentication failed' } })).toBe(false);
     expect(isRetryableDbosLaunchError({ error: { code: '42501', message: 'permission denied for schema dbos' } })).toBe(false);
     expect(isRetryableDbosLaunchError({ error: { code: '42601', message: 'syntax error at or near' } })).toBe(false);
+  });
+});
+
+/**
+ * WI-6554700010042546 (2026-10-28): DBOS failed to launch with node-postgres's
+ * bare "timeout expired" and no retry armed — the third incident where the
+ * retry predicate knew only the wording of the previous one. These cases do
+ * not hand-type pg's wording: they make a REAL pg.Client fail against a local
+ * socket and wrap the error exactly as the SDK does, so a future pg rewording
+ * cannot reopen the hole.
+ */
+describe('isRetryableDbosLaunchError — DBOS connect wrapper (WI-6554700010042546)', () => {
+  // Mirrors the SDK's connectToSystemDatabase: DBOSInitializationError(msg, e)
+  // stores the cause on `.error`. The SDK does not export the class.
+  const dbosConnectError = (cause: Error) =>
+    Object.assign(new Error(`Unable to connect to system database at postgresql://u:***@127.0.0.1:1/x: ${cause.message}`), {
+      error: cause,
+    });
+
+  const sockets = new Set<net.Socket>();
+  let server: net.Server | null = null;
+  afterEach(async () => {
+    for (const s of sockets) s.destroy();
+    sockets.clear();
+    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+    server = null;
+  });
+
+  const listen = async (onSocket: (s: net.Socket) => void): Promise<number> => {
+    server = net.createServer((s) => {
+      sockets.add(s);
+      onSocket(s);
+    });
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+    return (server!.address() as net.AddressInfo).port;
+  };
+
+  const realConnectError = async (port: number): Promise<Error> => {
+    const client = new pg.Client({ host: '127.0.0.1', port, user: 'u', database: 'd', connectionTimeoutMillis: 100 });
+    client.on('error', () => {});
+    const err = await client.connect().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    await client.end().catch(() => {});
+    expect(err).toBeInstanceOf(Error);
+    return err as Error;
+  };
+
+  it('pins the SDK seam the rule depends on: the wrapper wording and the `.error` cause field', () => {
+    // The package main is dist/src/index.js, so its directory holds the sources.
+    const sdkSrc = path.dirname(require.resolve('@dbos-inc/dbos-sdk'));
+    expect(readFileSync(path.join(sdkSrc, 'system_database.js'), 'utf8')).toContain(
+      'new error_1.DBOSInitializationError(`Unable to connect to system database at ',
+    );
+    expect(readFileSync(path.join(sdkSrc, 'error.js'), 'utf8')).toMatch(
+      /class DBOSInitializationError[\s\S]{0,200}this\.error = error;/,
+    );
+  });
+
+  it('retries the REAL node-postgres connect timeout against a server that never answers', async () => {
+    const port = await listen(() => {}); // accept, then say nothing
+    const err = await realConnectError(port);
+    expect(isRetryableDbosLaunchError(dbosConnectError(err))).toBe(true);
+    // The unwrapped pg error is retryable on its own too (non-wrapped launch paths).
+    expect(isRetryableDbosLaunchError(err)).toBe(true);
+  });
+
+  it('retries the REAL error when the server accepts and immediately hangs up', async () => {
+    const port = await listen((s) => s.destroy());
+    const err = await realConnectError(port);
+    expect(isRetryableDbosLaunchError(dbosConnectError(err))).toBe(true);
+  });
+
+  it('retries the REAL error for a refused connection', async () => {
+    const port = await listen(() => {});
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = null;
+    const err = await realConnectError(port);
+    expect(isRetryableDbosLaunchError(dbosConnectError(err))).toBe(true);
+  });
+
+  it('retries any client-side wording under the wrapper, so the next pg rewording is covered', () => {
+    expect(isRetryableDbosLaunchError(dbosConnectError(new Error('some future node-postgres wording')))).toBe(true);
+  });
+
+  it('refuses a definitive server refusal under the wrapper, and retries a transient server SQLSTATE', () => {
+    const serverError = (code: string, message: string) =>
+      Object.assign(new pg.DatabaseError(message, 0, 'error'), { code, severity: 'FATAL' });
+    expect(isRetryableDbosLaunchError(dbosConnectError(serverError('28P01', 'password authentication failed for user "u"')))).toBe(false);
+    expect(isRetryableDbosLaunchError(dbosConnectError(serverError('3D000', 'database "d" does not exist')))).toBe(false);
+    expect(isRetryableDbosLaunchError(dbosConnectError(serverError('42501', 'permission denied for database d')))).toBe(false);
+    expect(isRetryableDbosLaunchError(dbosConnectError(serverError('53300', 'sorry, too many clients already')))).toBe(true);
+    expect(isRetryableDbosLaunchError(dbosConnectError(serverError('57P03', 'the database system is starting up')))).toBe(true);
+  });
+
+  it('does not treat a node errno as a server SQLSTATE', () => {
+    const errno = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    expect(isRetryableDbosLaunchError(dbosConnectError(errno))).toBe(true);
   });
 });
 

@@ -2544,7 +2544,7 @@ export async function dispatchPendingGradingAudits(
         terminalFailure = await detectTerminalFailure(taskLogPath, 0, false, {
           nativeTranscriptPath,
           nativeSessionId: taskSessionId,
-          ...(nativeSession.agent === 'codex' ? { nativeBackend: 'codex' as const } : {}),
+          nativeBackend: nativeSession.agent === 'claude' ? 'claude' : 'codex',
         });
       } catch {
         continue;
@@ -2995,7 +2995,7 @@ export async function dispatchPendingGradingAudits(
                   })
                 : null;
             if (nativeTranscriptPath) nativeProof = { nativeTranscriptPath, nativeSessionId: taskSessionId,
-              ...(nativeSession.agent === 'codex' ? { nativeBackend: 'codex' as const } : {}) };
+              nativeBackend: nativeSession.agent === 'claude' ? 'claude' : 'codex' };
           } catch {
             // The existing log-only classifier remains authoritative when native proof is unavailable.
           }

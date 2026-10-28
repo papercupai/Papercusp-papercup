@@ -167,7 +167,7 @@ Entry: `libs/generic/search-core/src/index.ts`.
 - `./llm-rerank` — `llmRerank`, `defaultLlmRerankPrompt` · types: `LlmRerankOptions`
 - `./escalation` — `shouldEscalate` · types: `EscalationOptions`
 - `./metrics` — `dcg`, `ndcg`, `ndcgAtK`, `precisionAtK`, `accessoryAtK`
-- `./relevance-eval` — `evaluateRelevance`, `assertRelevance`, `recallAtK` · types: `RelevanceEvalCoverage`, `RelevanceGroundTruth`, `RelevanceEvalInput`, `RelevanceEvalResult`, `RelevanceFloor`, `RelevanceAssertion`
+- `./relevance-eval` — `evaluateRelevance`, `assertRelevance`, `assertSearchEvaluation`, `assertSearchFieldFreshness`, `recallAtK` · types: `SearchFieldFreshnessPolicy`, `SearchFieldVersion`, `SearchFieldFreshnessInput`, `SearchFieldFreshnessAssertion`, `SearchEvaluationPins`, `SearchEvaluationCell`, `SearchEvaluationDeclaration`, `SearchEvaluationAttempt`, `SearchEvaluationRun`, `SearchEvaluationAssertion`, `RelevanceEvalCoverage`, `RelevanceGroundTruth`, `RelevanceEvalInput`, `RelevanceEvalResult`, `RelevanceFloor`, `RelevanceAssertion`
 - `./rank` — `rankWithReranker` · types: `RankDoc`, `RankWithRerankerOptions`
 - `./retrieval-bench` — `runChunkingBench`, `decideChunking`, `drawTailProbe`, `drawShortProbe`, `isDistinctiveProbe`, `rankKeys`, `summarizeRankings`, `pooledScore`, `cosine` · types: `BenchEmbed`, `BenchEmbedKind`, `BenchRow`, `BenchSplitter`, `BenchProbe`, `BenchFold`, `ProbeClass`, `TailProbeOptions`, `ChunkingBenchInput`, `ChunkingBenchResult`, `ArmResult`, `ArmClassResult`, `RankSummary`, `SplitterStats`, `ChunkingDecisionRule`, `ChunkingDecision`
 - `./width-sweep` — `runWidthSweep` · types: `WidthSweepDoc`, `WidthSweepChunkArm`, `WidthSweepInput`, `WidthSweepArm`, `WidthSweepResult`

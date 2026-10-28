@@ -9,11 +9,11 @@
  * The fixture tables carry exactly the columns the measurement reads.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
 import postgres, { type Sql } from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { codeAuthorshipScore, familiarityFilePatterns, measureCodeFamiliarity } from './code-familiarity';
 import { WORKING_SET_TOOLS } from '../code-intelligence/working-set';
+import { CODE_FAMILIARITY_INDEXES, createIndexConcurrentlySql } from '../session-search-index-build';
 
 const WS = 'ws-fam';
 const FILE = 'packages/operator-core/lib/consult/relevance-router.ts';
@@ -34,10 +34,7 @@ beforeAll(async () => {
       coord_owner_id text, args_json jsonb, status text NOT NULL DEFAULT 'ok',
       invoked_at timestamptz NOT NULL DEFAULT now());
   `);
-  await sql.unsafe(readFileSync(
-    new URL('../../../../libs/papercusp/libs/db/sql/1606-tool-invocations-code-familiarity-index.sql', import.meta.url),
-    'utf8',
-  ));
+  await sql.unsafe(createIndexConcurrentlySql(CODE_FAMILIARITY_INDEXES[0]));
   const edit = (agent: string, file: string, ts: string, ws = WS) =>
     sql`INSERT INTO harness_shared.edit_attribution_ledger (workspace_id, agent_id, file, ts) VALUES (${ws}, ${agent}, ${file}, ${ts})`;
   const read = (owner: string, tool: string, args: object, ts: string, status = 'ok') =>

@@ -24,6 +24,11 @@ import { WORK_ITEM_KINDS } from './work-items';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const MIGRATION_1318 = join(REPO_ROOT, 'libs/papercusp/libs/db/sql/1318-datatype-nature.sql');
+// Every migration that seeds a built-in work_item kind row. 1606 added 'cleanup' (migration 1590's kind).
+const BUILTIN_KIND_SEED_MIGRATIONS = [
+  MIGRATION_1318,
+  join(REPO_ROOT, 'libs/papercusp/libs/db/sql/1606-datatype-registry-cleanup-kind.sql'),
+];
 
 test('slugifyDatatype — lowercases, collapses non-alphanumerics to single dashes, trims', () => {
   assert.equal(slugifyDatatype('bet'), 'bet');
@@ -188,12 +193,15 @@ test('BUILTIN_WORK_ITEM_KIND_NATURES covers exactly WORK_ITEM_KINDS, all agent w
   assert.equal(isBuiltinWorkItemKind('toString'), false); // own-property check, not the prototype
 });
 
-test('migration 1318 seeds the same built-in kinds as BUILTIN_WORK_ITEM_KIND_NATURES, and the same legacy rule', () => {
+test('migrations 1318 + 1606 seed the same built-in kinds as BUILTIN_WORK_ITEM_KIND_NATURES, and 1318 the same legacy rule', () => {
   const sql = readFileSync(MIGRATION_1318, 'utf8');
   const seed = new Map<string, { kind: string; nature: string; audience: string }>();
   const row = /\('([a-z-]+)', 'papercusp-workspace', NULL,[\s\S]*?'first-class', '([a-z-]+)',[\s\S]*?'(work|record|document|event)', '(agent|human)', now\(\)\)/g;
-  for (const m of sql.matchAll(row)) seed.set(m[1], { kind: m[2], nature: m[3], audience: m[4] });
-  assert.ok(seed.size > 0, 'parser matched no seed rows — the migration format changed, fix the test parser');
+  for (const file of BUILTIN_KIND_SEED_MIGRATIONS) {
+    const before = seed.size;
+    for (const m of readFileSync(file, 'utf8').matchAll(row)) seed.set(m[1], { kind: m[2], nature: m[3], audience: m[4] });
+    assert.ok(seed.size > before, `parser matched no seed rows in ${file} — the migration format changed, fix the test parser`);
+  }
   assert.deepEqual([...seed.keys()].sort(), Object.keys(BUILTIN_WORK_ITEM_KIND_NATURES).sort());
   for (const [id, s] of seed) {
     const want = BUILTIN_WORK_ITEM_KIND_NATURES[id as keyof typeof BUILTIN_WORK_ITEM_KIND_NATURES];

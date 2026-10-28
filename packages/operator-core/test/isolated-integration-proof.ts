@@ -25,21 +25,32 @@ import { createProgressAwareWatchdog } from '../../../scripts/lib/batch-watchdog
  * live-target guard and the reader's ordinary sidecar/fallback behavior. */
 export async function withIsolatedIntegrationSourceObserver<T>(
   capture: (sql: import('postgres').Sql) => Promise<T>,
+  progress: (stage: string) => void = () => {},
 ) {
+  progress('observer-import-start');
   const { createOrgTestDb } = await import('./_org-test-db');
   const { setupBaselineCoordFixture } = await import('../lib/_baseline-coord-fixture');
   const { flushFallbackObservations } = await import('../lib/degradation/fallback-observations');
+  progress('observer-import-complete');
+  progress('observer-database-start');
   const db = await createOrgTestDb();
+  progress('observer-database-complete');
   const previous = {
     HARNESS_DATABASE_URL: process.env.HARNESS_DATABASE_URL,
     HARNESS_ADMIN_DATABASE_URL: process.env.HARNESS_ADMIN_DATABASE_URL,
   };
   let fixture: Awaited<ReturnType<typeof setupBaselineCoordFixture>> | undefined;
   try {
+    progress('observer-fixture-start');
     fixture = await setupBaselineCoordFixture({ dsn: db.adminDsn });
+    progress('observer-fixture-complete');
+    progress('observer-capture-start');
     const value = await capture(db.adminSql);
+    progress('observer-capture-complete');
+    progress('observer-flush-start');
     const flush = await flushFallbackObservations({ sql: db.adminSql });
     assert.equal(flush.failed, 0, 'private parent fallback observations must persist');
+    progress('observer-flush-complete');
     return { value, database: db.dbName, flush };
   } finally {
     try {
@@ -224,7 +235,8 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
   /** Throttle observed progress relayed to the encompassing file watchdog. */
   progressIntervalMs?: number;
   cleanupFromStdout?: boolean;
-  /** Direct scripts/test-files.mjs children have router progress, not runtime IPC. */
+  /** Routers, direct or supervised, begin execution at their stdout start marker.
+   * Runtime IPC still proves the private lifetime before collection/admission. */
   testFileExecutionFromStdout?: boolean;
 }) {
   assert.ok((options.timeoutMs === undefined) !== (options.phaseTimeouts === undefined), 'one deadline contract is required');
@@ -371,8 +383,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
         relayProgress(stage);
       }
       // Repeated or out-of-order IPC cannot renew a phase's deadline.
-      if (kind === 'isolated-runtime-start' && phase === 'bootstrap') armPhase('execute');
-      else if ((kind === 'isolated-runtime-stopping' || kind === 'isolated-runtime-end') && phase === 'execute') armPhase('teardown');
+      if (kind === 'isolated-runtime-start' && phase === 'bootstrap' && !options.testFileExecutionFromStdout) armPhase('execute');
+      else if ((kind === 'isolated-runtime-stopping' || kind === 'isolated-runtime-end') &&
+          (phase === 'execute' || options.testFileExecutionFromStdout && phase === 'bootstrap')) armPhase('teardown');
       if (phase === 'teardown' && kind === 'isolated-runtime-cleanup') {
         if (typeof stage === 'string' && /^(start|profile-stop|pg-stop|pg-stopped|remove-private-state|complete)$/.test(stage) && !cleanupStages.has(stage)) {
           cleanupStages.add(stage);
@@ -519,17 +532,22 @@ export function observeIsolatedWorkerLifetime(child: ChildProcess, root: string,
 }
 
 /** Preserve the superproject's pinned submodule identity, rather than its checkout HEAD. */
-export async function isolatedIntegrationSourceFiles(root: string, commit: string, paths: string[]) {
+export async function isolatedIntegrationSourceFiles(root: string, commit: string, paths: string[],
+  progress: (stage: string) => void = () => {}) {
   const sourcePaths = [...new Set(paths)];
   // Match fromTestRun calibration before observing the original lifetime. A
   // side-effect test import is executable fixture input even when its cases
   // are excluded by the selected test-name filter.
-  const { deriveFixtureSupportPaths } = await import('../lib/agent-tools/plans/bind-from-test-run');
+  progress('fixture-support-import-start');
+  const { deriveFixtureSupportPaths } = await import('../lib/search/import-graph');
+  progress('fixture-support-import-complete');
+  progress('fixture-support-derive-start');
   for (const path of paths.filter(path => /\.(test|spec)\.[cm]?[jt]sx?$/.test(path))) {
     for (const support of deriveFixtureSupportPaths(root, path)) {
       if (!sourcePaths.includes(support)) sourcePaths.push(support);
     }
   }
+  progress('fixture-support-derive-complete');
   const launcher = 'scripts/with-test-pg.mjs';
   // The launcher owns teardown. Its extracted helper belongs to the same
   // source receipt even when an older caller only declares the launcher.
@@ -546,7 +564,9 @@ export async function isolatedIntegrationSourceFiles(root: string, commit: strin
     return { path, sha256: hash(readFileSync(join(root, path))) };
   });
   // Uncommitted local tests remain usable, but missing Git identity cannot certify live proof.
+  progress('committed-files-start');
   const committed = await readCommittedFiles(root, commit, sourcePaths).catch(() => new Map());
+  progress('committed-files-complete');
   return files.map(file => ({ ...file, gitSha256: committed.get(file.path)?.sha256 ?? null }));
 }
 
@@ -608,6 +628,7 @@ export function isolatedIntegrationProofSourcePaths(filePath: string, sourcePath
   return [...new Set([filePath,
     'scripts/lib/isolated-runtime-start.mjs',
     'scripts/with-test-pg.mjs',
+    'packages/operator-core/lib/search/import-graph.ts',
     'packages/operator-core/test/isolated-integration-proof.ts',
     'packages/operator-core/test/private-http-workspace-preflight.ts',
     ...sourcePaths,
@@ -653,9 +674,15 @@ export async function recordIsolatedIntegrationProof(options: {
     retainedArtifacts,
     runPhase: async ctx => {
       if (ctx.phase === 'prepare') {
+        const progress = (stage: string) => {
+          ctx.markStep(stage);
+          retainIsolatedWorkerProgress(ctx.evidenceDir, stage);
+        };
         // Working-source callers also fail before the parent telemetry DB or
         // any worker exists, so teardown can truthfully report no allocation.
+        progress('private-evidence-check-start');
         assertPrivateIntegrationEvidence();
+        progress('private-evidence-check-complete');
         // Required originals must be validated and retained before allocating
         // the parent observer. Legacy void callbacks retain their old order.
         if (options.requiredPreparation) {
@@ -666,13 +693,15 @@ export async function recordIsolatedIntegrationProof(options: {
             await writeFile(join(ctx.evidenceDir, name), bytes, { flag: 'wx' });
           recheckPreparation();
         }
+        progress('source-commit-start');
         const commit = original?.handoff.selectedCommit
           ?? execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+        progress('source-commit-complete');
         const observed = await withIsolatedIntegrationSourceObserver(async () => {
-          if (!original) return isolatedIntegrationSourceFiles(root, commit, paths);
+          if (!original) return isolatedIntegrationSourceFiles(root, commit, paths, progress);
           recheckPreparation();
           return original.planned.source.files;
-        });
+        }, progress);
         recheckPreparation();
         const files = observed.value;
         source = { schemaVersion: 1, runId: ctx.runId, sourceCommit: commit, repoRoot: root, filePath,
@@ -747,6 +776,7 @@ export async function recordIsolatedIntegrationProof(options: {
 /** Common small diagnostics emitted by the maintained private worker/browser boundary. */
 export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[] {
   return ['phases/prepare/operator-api-preflight.json', 'phases/prepare/operator-api-build-result.json',
+    'phases/prepare/worker-progress.ndjson',
     'phases/prepare/operator-api-inputs.json',
     'phases/prepare/verifier-source.json', 'phases/execute/worker-result.json',
     'phases/execute/lifecycle-observation.json',

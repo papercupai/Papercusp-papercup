@@ -708,6 +708,21 @@ describe('tagTurnForInjection (the injector one-call API)', () => {
     expect(res.matchedBy).toBe('nonce+hash');
   });
 
+  it('verifies a stop-hook envelope nested in the native Codex wrapper', async () => {
+    const text = 'TURN-END REFUSED\nSTOP CONTEXT';
+    const tagged = await tagTurnForInjection({ sid: SID, origin: 'stop-hook', text, dir, nowMs: NOW });
+    const wrapped = '<hook_prompt hook_run_id=stop:22:/tmp/hooks.json>\n' + tagged.taggedText;
+    const rows = readLedgerRows(SID, { dir, nowMs: NOW + 1, includeExpired: true });
+
+    expect(parseEnvelope(wrapped)).toBeNull();
+    expect(classify(wrapped, rows, { nowMs: NOW + 1, ttlMs: TTL })).toMatchObject({
+      verdict: 'verified-agent',
+      origin: 'stop-hook',
+      matchedBy: 'nonce+hash',
+      textMangled: false,
+    });
+  });
+
   it('enrolls loop-fire identity alongside the nonce', async () => {
     const tagged = await tagTurnForInjection({
       sid: SID,
@@ -734,6 +749,16 @@ describe('tagTurnForInjection (the injector one-call API)', () => {
     });
     expect(tagged.ledgerWritten).toBe(false);
     expect(tagged.taggedText).toContain('tick');
+  });
+});
+
+describe('Codex Stop-hook wrapper fallback', () => {
+  it('treats an un-enrolled hook_prompt as machine output while preserving owner quotation', () => {
+    const wrapped = '<hook_prompt hook_run_id=stop:22:/tmp/hooks.json>\nSTOP CONTEXT';
+    expect(classify(wrapped, [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe('machine-surface');
+    expect(classify('Owner asks why ' + wrapped, [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe(
+      'owner-interactive',
+    );
   });
 });
 

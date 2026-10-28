@@ -1201,6 +1201,8 @@ const STRIP_REQUEST = new Set([
   'x-papercusp-account',
   'x-papercusp-account-pin',
   'x-papercusp-owner',
+  // Runtime possession is host-local and must never reach a model provider.
+  'x-papercusp-native-runtime',
   REQUIRE_OUTPUT_TOKEN_LIMIT_HEADER,
   'content-length',
   'accept-encoding',

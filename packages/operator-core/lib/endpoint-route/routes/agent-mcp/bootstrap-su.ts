@@ -24,6 +24,7 @@ import { basename, join } from 'node:path';
 import { isIP } from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
+import { provisionNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning';
 import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../workspace-registry';
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { CORS_HEADERS, jsonRes, gatePrincipal, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED, autoModeDirective, DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, composeModePromptSection } from './bootstrap-su-shared';
@@ -3101,6 +3102,23 @@ export const bootstrapSu = defineTool({
     try {
       if (agent === 'codex') {
         codexCompactionLimit = await codexCompactionLimitForBootstrap(sid, launchArgv);
+        // Supplemental possession only. Unverified loopback launches and an
+        // unavailable issuer remain unenrolled (capture authority UNKNOWN).
+        // The credential goes directly to the private home writer; never to
+        // launch argv, envelopeEnv, diagnostics, or the HTTP response.
+        let nativeRuntimeBearer: string | undefined;
+        if (sessionId != null && launchPrincipal && ['trusted', 'verified'].includes(launchPrincipal.trust)
+          && launchPrincipal.capabilities.has('*') && [workspace, '*'].includes(launchPrincipal.workspaceId)) {
+          try {
+            const issued = await provisionNativeRuntimeBearer({ workspaceId: workspace, advSessionId: sessionId,
+              issuer: launchPrincipal });
+            if (issued.binding.workspaceId === workspace && issued.binding.advSessionId === sessionId
+              && issued.binding.ownerId === sid && issued.binding.provider === agent) nativeRuntimeBearer = issued.bearer;
+          } catch {
+            // Enrollment is optional; never borrow the shared SU bearer or a
+            // caller-supplied identity as replacement source authority.
+          }
+        }
         // D-006: the superuser bearer is baked into the home's config.toml
         // (codex 0.135's bearer_token_env_var doesn't deliver for HTTP MCP).
         // Read it server-side — it never transits the bootstrap HTTP response.
@@ -3114,6 +3132,7 @@ export const bootstrapSu = defineTool({
           // Current registered budget wins over stale or absent launch argv.
           compactionLimit: codexCompactionLimit,
           token: readSuperuserToken(),
+          nativeRuntimeBearer,
           codexGatewayAccountId: accountPin.provider === 'codex' ? accountPin.accountId : null,
           // WI-3645: explicit-auto → the UNPINNED gateway provider block (header omitted;
           // the gateway auto-selects). False whenever a pin resolved or routing is off.

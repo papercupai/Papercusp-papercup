@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { papercuspPath } from './pc_home.mjs';
+import { papercuspHostStatePath, papercuspPath } from './pc_home.mjs';
 // apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs
 //
 // PostToolUse (Edit|Write|MultiEdit) hook with TWO jobs, both only while a gate candidate is
@@ -72,10 +72,15 @@ export function normalizeRepoPath(value) {
  * silently dropped (⇒ `no-ledgered-hunks` at admission); a leftover ⇒ nudges about a dead
  * repair radius. `frozen-repair-edit-hook-parity.test.ts` pins this default LOCATION against
  * the writer's default, not only the file format.
+ *
+ * EI-27237474160744241: the directory is the HOST-level operator state dir, never one derived
+ * from this process's PAPERCUSP_HOME. The writer runs in the operator service (no
+ * PAPERCUSP_HOME), while this hook runs in a session that carries a workspace-scoped
+ * PAPERCUSP_HOME; resolving through `papercuspPath('state')` read an empty directory there, so
+ * every edit since the freeze went unrecorded. `PAPERCUSP_STATE_DIR` stays the pin for both.
  */
-export function markersDir() {
-  const base = process.env.PAPERCUSP_STATE_DIR ?? papercuspPath('state');
-  return join(base, 'frozen-repair-edit-markers');
+export function markersDir(env = process.env) {
+  return join(papercuspHostStatePath(env), 'frozen-repair-edit-markers');
 }
 
 /** Every readable scoped marker, in a stable order. A missing directory or a corrupt file

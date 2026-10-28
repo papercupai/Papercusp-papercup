@@ -155,6 +155,7 @@
 import type { Sql } from 'postgres';
 import { recoverExpectedLoopExecution } from './loop-execution-recovery';
 import { getOrgPg } from '@papercusp/db-org';
+import { resetFireErrors as defaultResetFireErrors } from '../../autoloop';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
   CARRY_NOTE_BOOKKEEPING_TOOL_NAMES,
@@ -174,6 +175,7 @@ import {
   type LoopStatus,
 } from './loop';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
+import { RESUMABLE_DEAD_PAUSE_PREFIX } from './loop-unreachable-guard';
 import { probeWakeReachability, type WakeReachabilityVerdict } from '../../events/await/wake-reachability';
 import {
   classifyStalledLoopHost,
@@ -419,6 +421,18 @@ export interface OwnerToolActivity {
   lastCallAt: string | null;
 }
 
+export interface RevivableLoopCandidate {
+  routineId: string;
+  ownerId: string;
+  installSlug: string;
+  routineName: string;
+  pausedAtMs: number;
+  pauseReason: string;
+  revivedCount: number;
+  lastFiredAt: string | null;
+  consecutiveErrors: number;
+}
+
 /**
  * WI-37546 — is this activity evidence of an agent WORKING, as opposed to an agent SPINNING?
  *
@@ -453,6 +467,8 @@ export interface StalledLoopsSweepDeps {
    * the only write in the module that crosses back over `active = FALSE`.
    */
   revive?: typeof reviveDisarmedLoop;
+  /** Injectable for tests; only a verified resumable-dead recovery clears the old fire streak. */
+  resetFireErrors?: typeof defaultResetFireErrors;
   /**
    * Injectable for tests; defaults to one indexed read of `harness_shared.tool_invocations`
    * (WI-37546).
@@ -488,18 +504,17 @@ export interface StalledLoopsSweepDeps {
   /**
    * Injectable for tests; defaults to a plain read of `harness_shared.routines` (WI-37546).
    *
-   * The revival pass's candidate set: loops THIS module disarmed as turn-stalled, recently
-   * enough to still be revivable and not already at the revival ceiling. Every bound is applied
-   * in SQL so the pass cannot accidentally widen — in particular the pause-reason predicate,
-   * which is what keeps the 7/7-correct `dead-owner` disarms (and cost-cap / dead-man pauses)
-   * structurally out of reach.
+   * The revival pass's candidate set: loops THIS module disarmed as turn-stalled, plus the
+   * narrower `RESUMABLE-DEAD` subset whose owner may later resume the same native continuation.
+   * Every bound is applied in SQL so the pass cannot accidentally widen; all other dead-owner,
+   * cost-cap, and dead-man pauses remain structurally out of reach.
    */
   readRevivableLoops?: (o: {
     sql: Sql;
     workspaceId: string;
     pausedAfterMs: number;
     maxRevivals: number;
-  }) => Promise<Array<{ routineId: string; ownerId: string; pausedAtMs: number; pauseReason: string; revivedCount: number }>>;
+  }) => Promise<RevivableLoopCandidate[]>;
   /** Injectable for tests; defaults to the real wake-reachability probe — the SAME oracle
    *  reconcileLoopRoutines uses to refuse terminating a live owner (EI-19406534159939583). */
   probeReachability?: typeof probeWakeReachability;
@@ -824,6 +839,7 @@ export async function sweepStalledLoops(
   const retainHostRecoveryWall = deps.retainHostRecoveryWall ?? retainStalledLoopRecoveryWall;
   const queueHostRelaunch = deps.queueHostRelaunch ?? queueStalledHostRelaunch;
   const revive = deps.revive ?? reviveDisarmedLoop;
+  const resetFireErrors = deps.resetFireErrors ?? defaultResetFireErrors;
   const probeReachability = deps.probeReachability ?? probeWakeReachability;
   // WI-37546 — one indexed read for the whole sweep. `unnest` pairs each owner with its OWN
   // boundary (last fire for a live candidate, pause time for a revival candidate), so the
@@ -871,9 +887,10 @@ export async function sweepStalledLoops(
       return out;
     });
   // WI-37546 — the revival candidate set. Every bound lives in SQL: this module's OWN
-  // turns-stalled pause reason (never `dead-owner`, never a cost-cap/dead-man pause), inside the
-  // revival window, under the revival ceiling, and — the supersession bound — only while this
-  // module's disarm is still the transition that put the row down.
+  // turns-stalled pause reason, or the narrowly recoverable RESUMABLE-DEAD pause reason (not
+  // generic dead-owner, cost-cap, or dead-man), inside the revival window, under the revival
+  // ceiling, and — the supersession bound — only while the pause is still the transition that
+  // put the row down.
   //
   // The supersession bound exists because `loop_paused_reason`/`pause` are deliberately sticky
   // (reviveDisarmedLoop must never clear them — see its doc), so a row that was disarmed here,
@@ -899,27 +916,42 @@ export async function sweepStalledLoops(
       const rows = await o.sql<
         Array<{
           id: string;
+          install_slug: string;
+          routine_name: string;
           target_owner_id: string;
           paused_at_ms: string | number;
           pause_reason: string;
           revived_count: number;
+          last_fired_at: string | null;
+          consecutive_errors: number | null;
         }>
       >`
-        SELECT id,
-               target_owner_id,
-               (metadata->'pause'->>'pausedAtMs')::bigint            AS paused_at_ms,
-               metadata->>'loop_paused_reason'                       AS pause_reason,
-               COALESCE((metadata->>'loop_revived_count')::int, 0)   AS revived_count
-          FROM harness_shared.routines
-         WHERE workspace_id = ${o.workspaceId}
-           AND name LIKE 'loop-%'
-           AND target_owner_id IS NOT NULL
-           AND active = false
-           AND metadata->>'loop_paused_reason' LIKE ${TURN_STALLED_PAUSE_PREFIX + '%'}
-           AND (metadata->'pause'->>'pausedAtMs')::bigint >= ${o.pausedAfterMs}
-           AND COALESCE((metadata->>'loop_revived_count')::int, 0) < ${o.maxRevivals}
-           AND COALESCE((metadata->>'armed_at')::timestamptz, '-infinity'::timestamptz)
-               < to_timestamp(((metadata->'pause'->>'pausedAtMs')::bigint) / 1000.0)
+        SELECT r.id,
+               r.install_slug,
+               r.name                                                       AS routine_name,
+               r.target_owner_id,
+               (r.metadata->'pause'->>'pausedAtMs')::bigint                  AS paused_at_ms,
+               r.metadata->>'loop_paused_reason'                             AS pause_reason,
+               COALESCE((r.metadata->>'loop_revived_count')::int, 0)         AS revived_count,
+               f.last_fired_at::text                                         AS last_fired_at,
+               COALESCE(f.consecutive_errors, 0)                             AS consecutive_errors
+          FROM harness_shared.routines AS r
+          LEFT JOIN harness_shared.autoloop_state AS f
+            ON f.workspace_id = r.workspace_id
+           AND f.harness_slug = r.install_slug
+           AND f.role = r.name
+         WHERE r.workspace_id = ${o.workspaceId}
+           AND r.name LIKE 'loop-%'
+           AND r.target_owner_id IS NOT NULL
+           AND r.active = false
+           AND (
+             r.metadata->>'loop_paused_reason' LIKE ${TURN_STALLED_PAUSE_PREFIX + '%'}
+             OR r.metadata->>'loop_paused_reason' LIKE ${RESUMABLE_DEAD_PAUSE_PREFIX + '%'}
+           )
+           AND (r.metadata->'pause'->>'pausedAtMs')::bigint >= ${o.pausedAfterMs}
+           AND COALESCE((r.metadata->>'loop_revived_count')::int, 0) < ${o.maxRevivals}
+           AND COALESCE((r.metadata->>'armed_at')::timestamptz, '-infinity'::timestamptz)
+               < to_timestamp(((r.metadata->'pause'->>'pausedAtMs')::bigint) / 1000.0)
       `;
       return rows
         .filter(
@@ -932,9 +964,13 @@ export async function sweepStalledLoops(
         .map((r) => ({
           routineId: r.id,
           ownerId: r.target_owner_id,
+          installSlug: r.install_slug,
+          routineName: r.routine_name,
           pausedAtMs: Number(r.paused_at_ms),
           pauseReason: r.pause_reason,
           revivedCount: Number(r.revived_count) || 0,
+          lastFiredAt: r.last_fired_at ?? null,
+          consecutiveErrors: Number(r.consecutive_errors) || 0,
         }))
         .filter((r) => Number.isFinite(r.pausedAtMs));
     });
@@ -976,15 +1012,15 @@ export async function sweepStalledLoops(
   // exactly the state that most needs a revival pass, and exactly the state the early return
   // below would have bailed out of.
   //
-  // What it undoes: a disarm THIS module wrote as turn-stalled, whose owner has since made
-  // progressing tool calls. That combination means the verdict was wrong and the agent came
-  // back — a fact nothing else in this system was reading, so the loop stayed dark until a human
-  // noticed and typed `loop:arm`.
+  // What it undoes: a turn-stalled disarm followed by owner progress, or a RESUMABLE-DEAD
+  // disarm followed by both a genuine completed turn and progressing tool calls. The second
+  // case is deliberately narrower than generic dead-owner recovery: the 2026-08-09 control
+  // measured 7/7 generic dead-owner pauses correctly, while EI-26879418910767205 showed a
+  // Codex native continuation resuming after a RESUMABLE-DEAD pause.
   //
-  // The bounds are in `readRevivableLoops`'s SQL, not here, so the candidate set cannot widen by
-  // accident: this module's own pause-reason prefix (never the `dead-owner` path, which measured
-  // 7/7 CORRECT on the day this one measured 18/19 wrong), inside REVIVE_WINDOW_MS, under
-  // MAX_REVIVALS. The progress term is the same one the veto uses.
+  // The bounds are in `readRevivableLoops`'s SQL, not here: exact pause prefixes, the revival
+  // window, MAX_REVIVALS, and the armed-at supersession test. RESUMABLE-DEAD also requires a
+  // completed owner turn after pause plus the same progressing-tool predicate.
   //
   // Fails toward the STATUS QUO on a read fault: an empty candidate set means "revive nobody",
   // which is precisely the behaviour that existed before this pass. A revival is a correction, so
@@ -1000,15 +1036,24 @@ export async function sweepStalledLoops(
       `[stalled-loops-guard] revival candidate read failed (${e instanceof Error ? e.message : e}) — ` +
         `reviving nobody this sweep; previously-disarmed loops stay down.`,
     );
-    return [] as Array<{
-      routineId: string;
-      ownerId: string;
-      pausedAtMs: number;
-      pauseReason: string;
-      revivedCount: number;
-    }>;
+    return [] as RevivableLoopCandidate[];
   });
   if (reviveCandidates.length > 0) {
+    const resumableDeadOwners = [...new Set(reviveCandidates
+      .filter((candidate) => candidate.pauseReason.startsWith(RESUMABLE_DEAD_PAUSE_PREFIX))
+      .map((candidate) => candidate.ownerId))];
+    let resumableDeadStatuses = new Map<string, LoopStatus>();
+    if (resumableDeadOwners.length > 0) {
+      try {
+        resumableDeadStatuses = await getStatuses(resumableDeadOwners, { sql });
+      } catch (e) {
+        rethrowProgrammingError(e);
+        console.warn(
+          `[stalled-loops-guard] resumable-dead turn read failed (${e instanceof Error ? e.message : e}) — ` +
+            `reviving no resumable-dead loops this sweep.`,
+        );
+      }
+    }
     const sinceDisarm = await readOwnerToolActivity(
       reviveCandidates.map((c) => ({ ownerId: c.ownerId, sinceIso: new Date(c.pausedAtMs).toISOString() })),
       { sql },
@@ -1021,27 +1066,60 @@ export async function sweepStalledLoops(
       return new Map<string, OwnerToolActivity>();
     });
     for (const c of reviveCandidates) {
+      const turnStalledPause = c.pauseReason.startsWith(TURN_STALLED_PAUSE_PREFIX);
+      const resumableDeadPause = c.pauseReason.startsWith(RESUMABLE_DEAD_PAUSE_PREFIX);
+      if (!turnStalledPause && !resumableDeadPause) continue;
+      if (resumableDeadPause) {
+        const lastRealTurnAt = resumableDeadStatuses.get(c.ownerId)?.lastRealTurnAt;
+        const lastRealTurnMs = lastRealTurnAt ? Date.parse(lastRealTurnAt) : NaN;
+        if (!Number.isFinite(lastRealTurnMs) || lastRealTurnMs <= c.pausedAtMs) continue;
+      }
       const activity = sinceDisarm.get(c.ownerId);
       if (!isProgressingToolActivity(activity)) continue;
       console.warn(
-        `[stalled-loops-guard] REVIVAL CANDIDATE ${c.ownerId}: disarmed as turn-stalled at ` +
+        `[stalled-loops-guard] REVIVAL CANDIDATE ${c.ownerId}: disarmed as ${resumableDeadPause ? 'RESUMABLE-DEAD' : 'turn-stalled'} at ` +
           `${new Date(c.pausedAtMs).toISOString()}, but has made ${activity?.calls} tool call(s) since ` +
           `(${activity?.distinctTools} distinct tool(s), ${activity?.okCalls} ok, last ` +
           `${activity?.lastCallAt ?? 'unknown'}) — owner activity makes it eligible for a ` +
           `snapshot-guarded revival attempt (WI-37546).`,
       );
       if (!dryRun) {
+        const revivalReason = resumableDeadPause
+          ? `stalled-loops-guard (EI-26879418910767205): revived RESUMABLE-DEAD pause at ` +
+            `${new Date(c.pausedAtMs).toISOString()} after a genuine owner turn and ${activity?.calls} ` +
+            `progressing tool call(s). Revival ${c.revivedCount + 1} of ${MAX_REVIVALS}.`
+          : `stalled-loops-guard (WI-37546): revived — disarmed as turn-stalled at ` +
+            `${new Date(c.pausedAtMs).toISOString()}, then made ${activity?.calls} tool call(s) ` +
+            `(${activity?.distinctTools} distinct, ${activity?.okCalls} ok, last ` +
+            `${activity?.lastCallAt ?? 'unknown'}). The owner was working; the turn-stalled verdict ` +
+            `was wrong. Revival ${c.revivedCount + 1} of ${MAX_REVIVALS}.`;
         const didRevive = await revive(
           sql,
           c.routineId,
           { pausedAtMs: c.pausedAtMs, pauseReason: c.pauseReason },
-          `stalled-loops-guard (WI-37546): revived — disarmed as turn-stalled at ` +
-            `${new Date(c.pausedAtMs).toISOString()}, then made ${activity?.calls} tool call(s) ` +
-            `(${activity?.distinctTools} distinct, ${activity?.okCalls} ok, last ` +
-            `${activity?.lastCallAt ?? 'unknown'}). The owner was working; the turn-stalled verdict ` +
-            `was wrong. Revival ${c.revivedCount + 1} of ${MAX_REVIVALS}.`,
+          revivalReason,
         );
         if (!didRevive) continue;
+        if (resumableDeadPause && c.consecutiveErrors > 0) {
+          try {
+            const reset = await resetFireErrors(c.installSlug, c.routineName, {
+              workspaceId: ws,
+              expectedLastFiredAt: c.lastFiredAt,
+            });
+            if (reset === 0) {
+              console.warn(
+                `[stalled-loops-guard] RESUMABLE-DEAD circuit for ${c.ownerId} changed after candidate read; ` +
+                  `preserved the newer fire state.`,
+              );
+            }
+          } catch (e) {
+            rethrowProgrammingError(e);
+            console.warn(
+              `[stalled-loops-guard] RESUMABLE-DEAD circuit reset failed for ${c.ownerId} ` +
+                `(${e instanceof Error ? e.message : e}); revival remains bounded and active.`,
+            );
+          }
+        }
       }
       revivedAfterDisarm.push(c.ownerId);
     }

@@ -104,27 +104,30 @@ export type OwnerRpcHandler = (
 // ends its workers; an unknown scoped handle never causes a replacement launch.
 const RESOURCE_KIND = 'owner-rpc-resource';
 const RESOURCE_TTL_MS = 10 * 60_000;
-const localResources = new Map<string, number>();
+const MAX_RESOURCE_TTL_MS = 60 * 60_000;
+const localResources = new Map<string, { at: number; ttlMs: number }>();
 function resourceKey(kind: string, id: string, scope: string): string {
   return JSON.stringify([kind, id, scope]);
 }
 
-export async function bindOwnerRpcResource(kind: string, id: string, scope: string): Promise<void> {
+/** Optional lifetime covers resources whose completion grace exceeds the default. */
+export async function bindOwnerRpcResource(kind: string, id: string, scope: string, ttlMs = RESOURCE_TTL_MS): Promise<void> {
   if (!kind || !id || !scope) throw new Error('owner_resource_scope_required');
+  if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > MAX_RESOURCE_TTL_MS) throw new Error('owner_resource_ttl_invalid');
   if (!ownerRpcAvailable()) {
-    localResources.set(resourceKey(kind, id, scope), Date.now());
+    localResources.set(resourceKey(kind, id, scope), { at: Date.now(), ttlMs });
     return;
   }
-  const out = await callOwnerProcess({ targetPid: 0, kind: RESOURCE_KIND, payload: { op: 'bind', kind, id, scope } });
+  const out = await callOwnerProcess({ targetPid: 0, kind: RESOURCE_KIND, payload: { op: 'bind', kind, id, scope, ttlMs } });
   if (!out.ok) throw new Error(`owner_resource_bind_failed:${out.code}`);
 }
 
 export async function locateOwnerRpcResource(kind: string, id: string, scope: string): Promise<OwnerRpcOutcome> {
   if (!ownerRpcAvailable()) {
     const key = resourceKey(kind, id, scope);
-    const at = localResources.get(key);
-    if (at !== undefined && Date.now() - at < RESOURCE_TTL_MS) {
-      localResources.set(key, Date.now());
+    const row = localResources.get(key);
+    if (row !== undefined && Date.now() - row.at < row.ttlMs) {
+      row.at = Date.now();
       return { ok: true, result: { ownerPid: process.pid } };
     }
     localResources.delete(key);
@@ -388,22 +391,24 @@ function findLiveWorker(cluster: OwnerRpcClusterLike, pid: number): OwnerRpcWork
  */
 export function startPrimaryOwnerRpcRelay(opts: { cluster: OwnerRpcClusterLike }): OwnerRpcHandle {
   const { cluster } = opts;
-  const resources = new Map<string, { pid: number; at: number }>();
+  const resources = new Map<string, { pid: number; at: number; ttlMs: number }>();
   const listener = (_worker: unknown, message: unknown): void => {
     if (isOwnerRpcRequest(message)) {
       // IPC peer identity is authoritative, not a pid asserted in a payload.
       if ((_worker as OwnerRpcWorkerLike)?.process?.pid !== message.fromPid) return;
       if (message.targetPid === 0 && message.kind === RESOURCE_KIND) {
-        const p = message.payload as { op?: string; kind?: string; id?: string; scope?: string } | null;
+        const p = message.payload as { op?: string; kind?: string; id?: string; scope?: string; ttlMs?: number } | null;
         let result: OwnerRpcOutcome = { ok: false, code: 'handler_error', message: 'invalid resource request' };
         if (p && typeof p.kind === 'string' && p.kind && typeof p.id === 'string' && p.id && typeof p.scope === 'string' && p.scope) {
-          for (const [key, row] of resources) if (Date.now() - row.at >= RESOURCE_TTL_MS) resources.delete(key);
+          for (const [key, row] of resources) if (Date.now() - row.at >= row.ttlMs) resources.delete(key);
           const key = resourceKey(p.kind, p.id, p.scope);
           const row = resources.get(key);
           if (p.op === 'bind') {
+            const ttlMs = p.ttlMs ?? RESOURCE_TTL_MS;
             // A live existing owner cannot be displaced by a sibling worker.
-            if (row && row.pid !== message.fromPid) result = { ok: false, code: 'handler_error', message: 'resource already bound' };
-            else { resources.set(key, { pid: message.fromPid, at: Date.now() }); result = { ok: true, result: { ownerPid: message.fromPid } }; }
+            if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > MAX_RESOURCE_TTL_MS) result = { ok: false, code: 'handler_error', message: 'invalid resource lifetime' };
+            else if (row && row.pid !== message.fromPid) result = { ok: false, code: 'handler_error', message: 'resource already bound' };
+            else { resources.set(key, { pid: message.fromPid, at: Date.now(), ttlMs }); result = { ok: true, result: { ownerPid: message.fromPid } }; }
           } else if (p.op === 'locate') {
             if (!row) {
               result = { ok: false, code: 'owner_gone',

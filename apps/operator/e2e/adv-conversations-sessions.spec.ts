@@ -346,6 +346,46 @@ test.describe('/adv Conversations + Sessions e2e', () => {
 
     sync.assertServed('advRoster.list', 'agentDetail.byOwner');
   });
+
+  test('SessionChatModal hides an untagged peer recovery diagnostic and keeps owner prompts visible', async ({
+    page,
+  }, info) => {
+    const sync = await stubCommonApis(page);
+    const peerDiagnostic =
+      '[peer:su-4a84c93a-e530-450c-b01e-8beb7bdc670f] Parent recovery diagnostic under existing EI-26842368936683990.';
+    const ordinaryOwnerTurn = "Please keep this native ownerTurn mode:'turn' request as owner input.";
+    const ownerQuote = `Why did this appear? ${peerDiagnostic}`;
+    const timeline = [
+      { kind: 'prompt', text: peerDiagnostic, ts: '2026-10-01T12:00:00.000Z' },
+      { kind: 'prompt', text: ordinaryOwnerTurn, ts: '2026-10-01T12:00:03.000Z' },
+      { kind: 'text', text: 'The ordinary owner request remains in the conversation.', ts: '2026-10-01T12:00:04.000Z' },
+      { kind: 'prompt', text: ownerQuote, ts: '2026-10-01T12:00:06.000Z' },
+      { kind: 'text', text: 'The quoted peer diagnostic remains available for discussion.', ts: '2026-10-01T12:00:07.000Z' },
+    ];
+    await page.route('**/api/adv/session/thinking**', (route) => route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: `retry: 100\nevent: backfill\ndata: ${JSON.stringify(timeline)}\n\n`,
+    }));
+
+    await page.goto(`${baseURL}/adv?tab=hud&scope=all&hudtab=sessions&hudsession=${AGENT_ID}&welcome=0`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await sync.waitForServed(['advRoster.list'], 30_000);
+
+    const chat = page.locator('.chat-panel');
+    await expect(chat).toBeVisible({ timeout: 30_000 });
+    await expect(chat.getByText(ordinaryOwnerTurn, { exact: true })).toBeVisible();
+    await expect(chat.getByText(ownerQuote, { exact: true })).toBeVisible();
+    await expect(chat.getByText('The ordinary owner request remains in the conversation.', { exact: true })).toBeVisible();
+    await expect(chat.getByText('The quoted peer diagnostic remains available for discussion.', { exact: true })).toBeVisible();
+    await expect(chat.getByText(peerDiagnostic, { exact: true })).toHaveCount(0);
+
+    const screenshotPath = info.outputPath('session-chat-modal-peer-recovery.png');
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+    await info.attach('session-chat-modal-peer-recovery', { path: screenshotPath, contentType: 'image/png' });
+    sync.assertServed('advRoster.list');
+  });
 });
 
 // This journey deliberately uses the migrated disposable database and the

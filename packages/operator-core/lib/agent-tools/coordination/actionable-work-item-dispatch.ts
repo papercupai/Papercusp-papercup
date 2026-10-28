@@ -636,14 +636,14 @@ export async function assignActionableWorkItems(
         refusal: {
           observed: {
             targetAgent: args.targetAgent,
-            activeClaims: capacity!.activeClaims,
-            maxConcurrentClaims: capacity!.maxConcurrentClaims,
+            activeClaims: String(capacity!.activeClaims),
+            maxConcurrentClaims: String(capacity!.maxConcurrentClaims),
             heldIds: capacity!.heldIds.join(','),
             blockerParkedIds: capacity!.blockerParkedIds.join(','),
           },
           liftsWhen: 'the target has an available slot under its effective maxConcurrentClaims limit',
-          whoCanMakeItTrue: ['target-agent'],
-        },
+          whoCanMakeItTrue: ['self'],
+        } satisfies RefusalContract,
       })));
     }
   }

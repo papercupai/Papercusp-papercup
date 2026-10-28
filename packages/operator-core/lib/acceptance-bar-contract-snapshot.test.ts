@@ -444,7 +444,8 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
     };
     evidence.details = { evidencePlane: 'tree', adequacy: { testLayer: 'integration', pathReachable: true,
       fixtureCalibrated: true, falsifiable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
-      outcome: 'passed', targeted: evidence.specId, testCases: [caseTitle], scenarioIds: [caseTitle] } };
+      outcome: 'passed', targeted: evidence.specId, testCases: [caseTitle], scenarioIds: [caseTitle],
+      scenarioTestCases: { [caseTitle]: [caseTitle] } } };
     // Since 39ce2b4152 a counterexample proves falsifiability only when its run's test file
     // also carries this clause's current passing `test` binding (clauseBoundCurrentTests pairs
     // them by testRunProvenance.filePath). The counterexamples below spread this row, so each

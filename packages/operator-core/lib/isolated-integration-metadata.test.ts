@@ -265,6 +265,7 @@ it('retains the recorder and private runtime support in every original source ce
   const paths = isolatedIntegrationProofSourcePaths(filePath, [fixture, filePath, fixture]);
   expect(paths).toEqual([
     filePath, fixture,
+    'packages/operator-core/lib/search/import-graph.ts',
     'packages/operator-core/test/isolated-integration-proof.ts',
     'packages/operator-core/test/private-http-workspace-preflight.ts',
     'scripts/lib/isolated-runtime-start.mjs', 'scripts/with-test-pg.mjs',

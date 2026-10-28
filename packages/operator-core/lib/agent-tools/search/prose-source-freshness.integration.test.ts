@@ -52,7 +52,7 @@ beforeAll(async () => {
       text_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', left(text, 20000))) STORED,
       ingested_at timestamptz NOT NULL DEFAULT now(), text_embedding vector(384),
       text_embedding_mode text, text_embedding_profile text,
-      turn_origin text, turn_origin_verdict text, turn_origin_classifier_version integer,
+      turn_origin text, turn_origin_verdict text, turn_origin_classifier_version integer, chunked_at timestamptz,
       PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)
     );
     CREATE TABLE harness_shared.session_turn_chunks (
@@ -129,7 +129,7 @@ async function update(name: Name, key: string) {
     kind = 'change', state = 'resolved', severity = 'major', lane = 'observation', updated_at = '2026-01-02'
     WHERE feature_id = ${key}`;
   if (name === 'session_turn') await s`UPDATE harness_shared.session_turns
-    SET text = ${`${query} newwitness canonical body`}, speaker = 'assistant', owner = ${`${key}-new`}, ts = '2026-01-02'
+    SET text = ${`${query} newwitness canonical body`}, chunked_at = NULL, speaker = 'assistant', owner = ${`${key}-new`}, ts = '2026-01-02'
     WHERE session_id = ${key}`;
   if (name === 'coord_message') await s`UPDATE harness_shared.coord_event_log
     SET body = ${s.json({ from: `${key}-new`, kind: 'finding', summary: query, body: 'newwitness canonical body' })},

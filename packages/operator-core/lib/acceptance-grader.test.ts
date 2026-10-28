@@ -122,6 +122,51 @@ describe('native terminal API-error provenance', () => {
     })).resolves.toBeNull();
   });
 
+  it('classifies a native billing error body only for controlled inference callers', async () => {
+    const nativeBillingError = record({
+      apiErrorStatus: 400,
+      message: {
+        role: 'assistant',
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'Credit balance is too low' }],
+      },
+    });
+    const options = {
+      nativeTranscriptPath: 'native.jsonl',
+      nativeSessionId: sessionId,
+      nativeBackend: 'claude' as const,
+      maxRechecks: 0,
+      detectStartupStall: false,
+      readLogTail: (path: string) => path === 'native.jsonl' ? nativeBillingError : 'Credit balance is too low\n❯',
+    };
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      ...options,
+      allowInferenceGatewayError: true,
+    })).resolves.toMatchObject({
+      code: 'inference_gateway_error',
+      evidence: expect.stringContaining('billing error status 400'),
+    });
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      ...options,
+      allowInferenceGatewayError: false,
+    })).resolves.toBeNull();
+
+    const quoted = record({
+      isApiErrorMessage: false,
+      apiErrorStatus: 400,
+      message: {
+        role: 'assistant',
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'Credit balance is too low' }],
+      },
+    });
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      ...options,
+      allowInferenceGatewayError: true,
+      readLogTail: (path: string) => path === 'native.jsonl' ? quoted : 'Credit balance is too low\n❯',
+    })).resolves.toBeNull();
+  });
+
   it('keeps recovery unconfirmed when the native transcript cannot be read', async () => {
     const log = "●API Error: 400 role 'system' is not supported on this model\n✻ Worked for 1m 9s · done\n❯";
     await expect(detectAcceptanceGraderTerminalFailure('judge.log', {

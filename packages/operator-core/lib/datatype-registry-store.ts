@@ -58,8 +58,8 @@ export function isWorkAudience(a: unknown): a is WorkAudience {
 }
 
 /**
- * The built-in work_item kinds and their nature (D-013 §1). Migration 1318 seeds the same
- * rows into datatype_registry (tier first-class, work_item_kind = the kind); this constant is
+ * The built-in work_item kinds and their nature (D-013 §1). Migrations 1318 and 1606 ('cleanup')
+ * seed the same rows into datatype_registry (tier first-class, work_item_kind = the kind); this constant is
  * the fallback for a workspace without those rows. A unit test pins the constant to the
  * migration seed and to WORK_ITEM_KINDS, so the three cannot drift.
  */
@@ -69,6 +69,7 @@ export const BUILTIN_WORK_ITEM_KIND_NATURES = {
   bug: { nature: 'work', audience: 'agent' },
   change: { nature: 'work', audience: 'agent' },
   task: { nature: 'work', audience: 'agent' },
+  cleanup: { nature: 'work', audience: 'agent' },
 } as const satisfies Record<string, { nature: DatatypeNature; audience: WorkAudience | null }>;
 export type BuiltinWorkItemKind = keyof typeof BUILTIN_WORK_ITEM_KIND_NATURES;
 export function isBuiltinWorkItemKind(id: string): id is BuiltinWorkItemKind {

@@ -32,6 +32,10 @@ import type { Sql } from 'postgres';
 import { probeWakeReachability, type WakeReachabilityVerdict } from '../../events/await/wake-reachability';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
 
+/** Only this dead-owner subtype can be reconsidered after its native session resumes. */
+export const RESUMABLE_DEAD_CHANNEL_LABEL = 'RESUMABLE-DEAD';
+export const RESUMABLE_DEAD_PAUSE_PREFIX = `dead-owner: ${RESUMABLE_DEAD_CHANNEL_LABEL}`;
+
 /** Terminal window floor: an unreachable owner must stay that way for at least this long
  *  (env-overridable) before termination is even considered. */
 export const DEFAULT_TERMINAL_UNREACHABLE_MS = 2 * 3600_000; // 2h
@@ -188,7 +192,7 @@ export function evaluateUnreachableTerminalGuard(input: {
   const minFires = minStuckFiresForTermination();
   if (input.stuckFireCount < minFires) return { breach: false };
   const channelPhrase = resumableDead
-    ? 'RESUMABLE-DEAD (probe reports reachable via `claude --resume`, but the resume turns never settle)'
+    ? `${RESUMABLE_DEAD_CHANNEL_LABEL} (probe reports reachable via \`claude --resume\`, but the resume turns never settle)`
     : comatoseHost
       ? 'COMATOSE-HOST (WI-6639: the injectable channel is genuinely live, but the agent behind it ' +
         `has settled no turn across ${input.stuckFireCount} consecutive stuck-backstop fires)`

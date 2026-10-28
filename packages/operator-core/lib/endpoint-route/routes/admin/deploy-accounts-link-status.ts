@@ -29,6 +29,6 @@ export default defineTool({
     if (!body?.linkId) {
       return Response.json({ ok: false, error: 'linkId required' }, { status: 400 });
     }
-    return Response.json({ ok: true, ...getCliLinkStatus(String(body.linkId)) });
+    return Response.json({ ok: true, ...await getCliLinkStatus(String(body.linkId)) });
   },
 });

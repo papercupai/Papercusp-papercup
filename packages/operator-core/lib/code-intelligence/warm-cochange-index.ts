@@ -28,7 +28,11 @@ import { createTextCollector } from '../child-output';
 import type { CoChangeReport } from './cochange-index';
 import type { WarmCoChangeReply, WarmCoChangeRequest, WarmCoChangeStatus } from './warm-cochange-index.worker';
 
-const run = promisify(execFile);
+// Deferred to first call, memoized (lint:no-eager-execfile-promisify): a module-scope
+// promisify(execFile) runs at import in every transitive importer, including mocked tests.
+type RunFile = (file: string, args: string[], opts: Record<string, unknown>) => Promise<{ stdout: string; stderr: string }>;
+let cachedRun: RunFile | null = null;
+const run: RunFile = (file, args, opts) => (cachedRun ??= promisify(execFile) as unknown as RunFile)(file, args, opts);
 
 export const WARM_COCHANGE_WORKER_BUNDLED = 'warm-cochange-index.worker.mjs';
 export const WARM_COCHANGE_WORKER_SOURCE = 'warm-cochange-index.worker.dev.mjs';
@@ -121,6 +125,7 @@ function ensure(root: string): Handle | string {
   child.unref();
   child.channel?.unref();
   const init: WarmCoChangeRequest = { kind: 'warm-cochange-init', root, snapshotPath: snapshotPathFor(root) };
+  // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/warm-cochange-index.ts#<module>/ensure:ed35373dfff792c07d62:1","classification":"safe-to-lose","reason":"IPC init to this module's own resident co-change worker, not a notice to any person. A lost init marks the worker gone, and queryWarmCoChange then reports not-ready, so the brief section reads unknown with a named limitation."}
   child.send(init, (error) => { if (error) gone(`init not delivered: ${error.message}`); });
   state.handles.set(root, handle);
   return handle;
@@ -134,6 +139,7 @@ export async function queryWarmCoChange(root: string, paths: readonly string[], 
   try {
     const real = await realpath(root);
     const commit = (await run('git', ['-C', real, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 5_000, signal: abort })).stdout.trim();
+    // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/warm-cochange-index.ts#<module>/queryWarmCoChange:aba9e934ef419a35bcd4:1","classification":"safe-to-lose","reason":"Reaches only the resident co-change worker's IPC init (ensure). Losing it leaves the index not-ready; the reader reports unknown and no person is notified."}
     const handle = ensure(real);
     if (typeof handle === 'string') return { error: handle };
     const id = handle.nextId++;
@@ -144,6 +150,7 @@ export async function queryWarmCoChange(root: string, paths: readonly string[], 
       abort.addEventListener('abort', onAbort, { once: true });
       handle.pending.set(id, finish);
       const query: WarmCoChangeRequest = { kind: 'warm-cochange-query', id, paths: [...paths], commit };
+      // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/warm-cochange-index.ts#<module>/queryWarmCoChange/<callback>:4ff8c975495a6d628114:1","classification":"safe-to-lose","reason":"IPC query to the resident co-change worker. A lost query resolves null (send error or the pending timeout), so the brief section reads unknown; no person is notified."}
       handle.child.send(query, (error) => { if (error) { handle.pending.delete(id); finish(null); } });
     });
     if (!reply) {

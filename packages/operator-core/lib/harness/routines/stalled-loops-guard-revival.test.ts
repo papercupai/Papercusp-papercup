@@ -26,7 +26,9 @@ import {
   MAX_REVIVALS,
   type StalledLoopsSweepDeps,
   type OwnerToolActivity,
+  type RevivableLoopCandidate,
 } from './stalled-loops-guard';
+import { RESUMABLE_DEAD_PAUSE_PREFIX } from './loop-unreachable-guard';
 import { deactivateLoop, reviveDisarmedLoop, LOOP_END_PAUSE_PREFIX, type LoopStatus } from './loop';
 
 // P-007: keep the sweep's default host reader off the real ~/.papercusp/psu-pty directory — see
@@ -47,6 +49,7 @@ type BroadcastFn = NonNullable<StalledLoopsSweepDeps['broadcast']>;
 type NotifyFn = NonNullable<StalledLoopsSweepDeps['notify']>;
 type ReadActivityFn = NonNullable<StalledLoopsSweepDeps['readOwnerToolActivity']>;
 type ReadRevivableFn = NonNullable<StalledLoopsSweepDeps['readRevivableLoops']>;
+type ResetFireErrorsFn = NonNullable<StalledLoopsSweepDeps['resetFireErrors']>;
 
 function fakeSql(rows: Array<{ id: string; target_owner_id: string }>) {
   return ((strings: TemplateStringsArray) => {
@@ -551,18 +554,16 @@ describe('sweepStalledLoops — liveness veto (WI-37546: 18 of 19 disarms on 202
 describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () => {
   const pausedAtMs = Date.parse('2026-08-09T17:07:00.000Z');
   const pauseReason = TURN_STALLED_PAUSE_PREFIX + ' candidate fixture';
-  const candidate = (over: Partial<{
-    routineId: string;
-    ownerId: string;
-    pausedAtMs: number;
-    pauseReason: string;
-    revivedCount: number;
-  }> = {}) => ({
+  const candidate = (over: Partial<RevivableLoopCandidate> = {}) => ({
     routineId: 'rt-dead',
     ownerId: 'su-b8422496',
+    installSlug: 'papercusp',
+    routineName: 'loop-su-b8422496',
     pausedAtMs,
     pauseReason,
     revivedCount: 0,
+    lastFiredAt: '2026-08-09 17:06:59.123456+00',
+    consecutiveErrors: 0,
     ...over,
   });
 
@@ -573,6 +574,7 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
     getStatuses: vi.fn(async () => new Map<string, LoopStatus>()),
     autoPause: vi.fn<AutoPauseFn>(async () => {}),
     readOwnerToolActivity: noActivity(),
+    resetFireErrors: vi.fn<ResetFireErrorsFn>(async () => 0),
     ...over,
   });
 
@@ -591,6 +593,79 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
     expect(revive.mock.calls[0][1]).toBe('rt-dead');
     expect(revive.mock.calls[0][2]).toEqual({ pausedAtMs, pauseReason });
     expect(revive.mock.calls[0][3]).toContain('WI-37546');
+  });
+
+  it('recovers a RESUMABLE-DEAD pause only after a new real turn and progressing tool activity', async () => {
+    const resumablePause = `${RESUMABLE_DEAD_PAUSE_PREFIX} (probe reports reachable via claude resume)`;
+    const lastFiredAt = '2026-08-09 17:06:59.123456+00';
+    const revive = vi.fn<ReviveFn>(async () => true);
+    const resetFireErrors = vi.fn<ResetFireErrorsFn>(async () => 1);
+    const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => [candidate({
+      pauseReason: resumablePause,
+      lastFiredAt,
+      consecutiveErrors: 8,
+    })]);
+    const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => new Map([['su-b8422496', WORKING]]));
+    const getStatuses = vi.fn(async () => new Map([[
+      'su-b8422496',
+      status({ turnsStalled: false, lastRealTurnAt: new Date(pausedAtMs + 1_000).toISOString() }),
+    ]]));
+
+    const res = await sweepStalledLoops(
+      { sql: fakeSql([]), workspaceId: 'ws' },
+      deps({ revive, resetFireErrors, readRevivableLoops, readOwnerToolActivity, getStatuses }),
+    );
+
+    expect(res.revivedAfterDisarm).toEqual(['su-b8422496']);
+    expect(revive).toHaveBeenCalledWith(
+      expect.anything(),
+      'rt-dead',
+      { pausedAtMs, pauseReason: resumablePause },
+      expect.stringContaining('EI-26879418910767205'),
+    );
+    expect(resetFireErrors).toHaveBeenCalledWith('papercusp', 'loop-su-b8422496', {
+      workspaceId: 'ws',
+      expectedLastFiredAt: lastFiredAt,
+    });
+  });
+
+  it('does not recover RESUMABLE-DEAD from tool calls without a real post-pause turn', async () => {
+    const revive = vi.fn<ReviveFn>(async () => true);
+    const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => [candidate({
+      pauseReason: `${RESUMABLE_DEAD_PAUSE_PREFIX} (old resume circuit)`,
+      consecutiveErrors: 8,
+    })]);
+    const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => new Map([['su-b8422496', WORKING]]));
+    const getStatuses = vi.fn(async () => new Map([[
+      'su-b8422496',
+      status({ turnsStalled: false, lastRealTurnAt: new Date(pausedAtMs - 1_000).toISOString() }),
+    ]]));
+    const resetFireErrors = vi.fn<ResetFireErrorsFn>(async () => 1);
+
+    const res = await sweepStalledLoops(
+      { sql: fakeSql([]), workspaceId: 'ws' },
+      deps({ revive, resetFireErrors, readRevivableLoops, readOwnerToolActivity, getStatuses }),
+    );
+
+    expect(res.revivedAfterDisarm).toEqual([]);
+    expect(revive).not.toHaveBeenCalled();
+    expect(resetFireErrors).not.toHaveBeenCalled();
+  });
+
+  it('keeps generic dead-owner pauses outside the revival path even with later owner activity', async () => {
+    const revive = vi.fn<ReviveFn>(async () => true);
+    const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => [candidate({
+      pauseReason: 'dead-owner: unreachable (no injectable/resumable wake channel)',
+    })]);
+    const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => new Map([['su-b8422496', WORKING]]));
+
+    const res = await sweepStalledLoops(
+      { sql: fakeSql([]), workspaceId: 'ws' },
+      deps({ revive, readRevivableLoops, readOwnerToolActivity }),
+    );
+
+    expect(res.revivedAfterDisarm).toEqual([]);
+    expect(revive).not.toHaveBeenCalled();
   });
 
   it('does not report a revival when the candidate pause snapshot lost the compare-and-set', async () => {
@@ -777,8 +852,10 @@ describe('the DEFAULT revival candidate read carries the supersession bound (202
    */
   it('selects only rows NOT armed since the pause instant it would compensate', async () => {
     const statements: string[] = [];
-    const captureSql = ((strings: TemplateStringsArray) => {
+    const bindings: unknown[] = [];
+    const captureSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       statements.push(strings.join(' ? '));
+      bindings.push(...values);
       return Promise.resolve([]);
     }) as never;
 
@@ -799,7 +876,10 @@ describe('the DEFAULT revival candidate read carries the supersession bound (202
     const revivalReads = statements.filter((s) => s.includes('loop_paused_reason'));
     expect(revivalReads).toHaveLength(1);
     const revivalSql = revivalReads[0];
-    expect(revivalSql).toContain("metadata->>'loop_paused_reason'                       AS pause_reason");
+    expect(revivalSql).toContain("r.metadata->>'loop_paused_reason'");
+    expect(revivalSql).toContain('OR r.metadata->>');
+    expect(bindings).toContain(TURN_STALLED_PAUSE_PREFIX + '%');
+    expect(bindings).toContain(RESUMABLE_DEAD_PAUSE_PREFIX + '%');
     // The supersession bound, by its moving parts: the stamp every arm writes, compared against
     // the pause instant the revival would compensate, with absence failing toward revival.
     expect(revivalSql).toContain(`'armed_at'`);
@@ -962,9 +1042,11 @@ describe('the disarm reason and the revival predicate are ONE string (WI-37546 a
 
     const reason = autoPause.mock.calls[0][2];
     expect(reason.startsWith(TURN_STALLED_PAUSE_PREFIX)).toBe(true);
-    // And the prefix is still specific enough to exclude the OTHER disarm path, which measured
-    // 7/7 CORRECT on 2026-08-09 and must never be revived by this module.
+    // Keep the old prefix specific; only the separate RESUMABLE-DEAD prefix is allowed through
+    // the narrowly evidenced recovery path.
     expect(TURN_STALLED_PAUSE_PREFIX).toContain('turns-stalled');
     expect(TURN_STALLED_PAUSE_PREFIX).not.toContain('dead-owner');
+    expect(RESUMABLE_DEAD_PAUSE_PREFIX).toBe('dead-owner: RESUMABLE-DEAD');
+    expect(RESUMABLE_DEAD_PAUSE_PREFIX).not.toMatch(/[%_]/);
   });
 });

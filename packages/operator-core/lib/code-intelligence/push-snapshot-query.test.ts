@@ -140,6 +140,38 @@ describe('source-corroborated snapshot queries', () => {
     }
   });
 
+  it('per-file caller proof keeps callers in unchanged files past declaration and caller drift (WI-6554700010042518)', async () => {
+    await load();
+    const perFile = (over: Partial<Parameters<typeof module.queryPushSnapshot>[0]> = {}) =>
+      query({ callerProof: 'per-file', declaredIn: 'lib/target.ts', ...over });
+    // The completion case: the declaration file was edited after the snapshot.
+    await writeFile(join(state.root, 'lib/target.ts'), files['lib/target.ts'] + '// edited at completion\n');
+    expect(await query()).toBeNull();
+    const declarationEdited = await perFile();
+    expect(declarationEdited?.sites.map(site => site.path)).toEqual(['app/use.ts', 'other/use.ts']);
+    expect(declarationEdited?.coverage?.limitations).toContainEqual(
+      expect.stringContaining('the declaration file changed after the snapshot and is not part of this proof'));
+    expect(declarationEdited?.evidence?.sourceScope.supportingFiles.map(file => file.path))
+      .toEqual(['app/use.ts', 'lib/barrel.ts', 'other/use.ts']);
+    // A changed caller file drops only its own callers, and the answer says how many.
+    await writeFile(join(state.root, 'other/use.ts'), files['other/use.ts'] + '// changed\n');
+    const callerEdited = await perFile();
+    expect(callerEdited?.sites.map(site => site.path)).toEqual(['app/use.ts']);
+    expect(callerEdited?.coverage?.limitations).toContainEqual(
+      expect.stringContaining('1 caller site(s) in 1 file(s) changed after the snapshot were not counted'));
+    // Every caller file changed: unmeasured, never an empty caller set.
+    await writeFile(join(state.root, 'app/use.ts'), files['app/use.ts'] + '// changed\n');
+    expect(await perFile()).toBeNull();
+    await writeFile(join(state.root, 'app/use.ts'), files['app/use.ts']);
+    // A forwarding module stays a required proof.
+    await writeFile(join(state.root, 'lib/barrel.ts'), files['lib/barrel.ts'] + '// changed\n');
+    expect(await perFile()).toBeNull();
+    await writeFile(join(state.root, 'lib/barrel.ts'), files['lib/barrel.ts']);
+    // A declaration in another file is not this symbol.
+    expect(await perFile({ declaredIn: 'lib/barrel.ts' })).toBeNull();
+    expect((await perFile())?.sites.map(site => site.path)).toEqual(['app/use.ts']);
+  });
+
   it('does not turn cold, missing, empty-scope or invalid requests into negative answers', async () => {
     expect(await query()).toBeNull();
     // Reset after the intentionally absent-file cold read; it has a refresh interval.

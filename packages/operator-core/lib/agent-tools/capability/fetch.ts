@@ -146,9 +146,9 @@ export async function readResponseBody(
 export default defineTool({
   name: 'capability:fetch',
   description:
-    'Make an outbound HTTP(S) request and return status, headers, and a bounded body. The server-resolved boundary profile validates every destination, DNS answer, and redirect; confined callers cannot target private addresses, mutate, or forward credentials. Bodies spill only within a hard streamed-download ceiling. For MCP streamable-HTTP POSTs, send Accept: application/json, text/event-stream; application/json alone returns 406. A local ?superuser=1 MCP endpoint also needs Authorization: Bearer <contents of $PAPERCUSP_HOME/superuser-token>, with PAPERCUSP_HOME defaulting to ~/.papercusp: without it initialize STILL SUCCEEDS, while tools/list and tools/call are refused as HTTP 200 carrying superuser_invalid_bearer in the body — so ok:true is not proof the call was accepted.',
+    'Make an outbound HTTP(S) request and return status, headers, and a bounded body. The server-resolved boundary profile validates every destination, DNS answer, and redirect; confined callers cannot target private addresses, mutate, or forward credentials. Bodies spill only within a hard streamed-download ceiling. Use expected_statuses for known non-2xx responses: the status and body remain visible, while those responses count as successful tool calls. Without it, non-2xx responses remain tool errors. For MCP streamable-HTTP POSTs, send Accept: application/json, text/event-stream; application/json alone returns 406. A local ?superuser=1 MCP endpoint also needs Authorization: Bearer <contents of $PAPERCUSP_HOME/superuser-token>, with PAPERCUSP_HOME defaulting to ~/.papercusp: without it initialize STILL SUCCEEDS, while tools/list and tools/call are refused as HTTP 200 carrying superuser_invalid_bearer in the body — so ok:true is not proof the call was accepted.',
   guidance: {
-    when: 'Fetch a URL — an API, a raw file, a docs page. For MCP streamable-HTTP POSTs, set Accept: application/json, text/event-stream (application/json alone returns 406). A credential failure on a local ?superuser=1 endpoint arrives as HTTP 200 with the refusal inside the body, so judge those by the body, never by ok/status. For rich page-to-markdown extraction prefer the fetch_plus / firecrawl plugin tools when available.',
+    when: 'Fetch a URL — an API, a raw file, a docs page. When a non-2xx response is the expected result of a negative control, pass its status in expected_statuses; status/body stay visible and the tool call is not classified as a failure. For MCP streamable-HTTP POSTs, set Accept: application/json, text/event-stream (application/json alone returns 406). A credential failure on a local ?superuser=1 endpoint arrives as HTTP 200 with the refusal inside the body, so judge those by the body, never by ok/status. For rich page-to-markdown extraction prefer the fetch_plus / firecrawl plugin tools when available.',
     notWhen: 'Reading a local file — use capability:read. Running a network CLI — use capability:bash (curl/wget).',
     chaining: 'Standalone. Large bodies spill to a log path you can capability:read.',
   },
@@ -167,10 +167,13 @@ export default defineTool({
     max_bytes: z.number().int().positive().max(HARD_MAX_BYTES).optional().describe(`Max body bytes returned inline (default ${DEFAULT_MAX_BYTES}, bounded by the shared ${INLINE_OUTPUT_CAP}-byte inline ceiling); beyond the effective cap spills to a file.`),
     max_download_bytes: z.number().int().positive().max(HARD_MAX_DOWNLOAD_BYTES).optional().describe(`Hard streamed response ceiling (default ${DEFAULT_MAX_DOWNLOAD_BYTES}); the body is cancelled before further buffering or disk growth.`),
     max_redirects: z.number().int().min(0).max(10).optional().describe(`Maximum manually validated redirects (default ${DEFAULT_MAX_REDIRECTS}).`),
+    expected_statuses: z.array(z.number().int().min(100).max(599)).min(1).max(50)
+      .refine((statuses) => new Set(statuses).size === statuses.length, 'expected_statuses must not contain duplicates')
+      .optional().describe('Non-2xx HTTP statuses expected by this caller. These keep their status/body in the result but do not mark the tool invocation as an error.'),
     timeout_ms: z.number().int().positive().max(120_000).optional().describe(`Request timeout in ms (default ${DEFAULT_TIMEOUT_MS}).`),
   }).superRefine((args, ctx) => {
     if ((!args.browser || args.browser.op === 'navigate') && !args.url) ctx.addIssue({ code: 'custom', path: ['url'], message: 'url required' });
-    if (args.browser && (args.method || args.headers || args.body || args.max_bytes !== undefined || args.max_download_bytes !== undefined || args.max_redirects !== undefined)) ctx.addIssue({ code: 'custom', path: ['browser'], message: 'browser uses its own read-only request policy and text/resource limits; HTTP method/headers/body/limits are not accepted' });
+    if (args.browser && (args.method || args.headers || args.body || args.max_bytes !== undefined || args.max_download_bytes !== undefined || args.max_redirects !== undefined || args.expected_statuses !== undefined)) ctx.addIssue({ code: 'custom', path: ['browser'], message: 'browser uses its own read-only request policy and text/resource limits; HTTP method/headers/body/limits are not accepted' });
     if (args.browser && ['observe', 'close'].includes(args.browser.op) && args.url) ctx.addIssue({ code: 'custom', path: ['url'], message: 'url only accepted for open/navigation' });
   }),
   async handler(args, ctx) {
@@ -260,7 +263,7 @@ export default defineTool({
             }),
           },
         ],
-        isError: !res.ok,
+        isError: !res.ok && !args.expected_statuses?.includes(res.status),
       };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

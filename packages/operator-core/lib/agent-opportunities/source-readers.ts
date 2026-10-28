@@ -89,7 +89,11 @@ export function productionOpportunityReaders(opts: OpportunityReaderOptions, dep
       return { callId: `invocation:${input.id}`, provider: 'ledger', namespace: 'operator-dispatch', complete: true, body };
     } catch { return null; } // Missing, expired, corrupt or unauthorized evidence is UNKNOWN.
   };
-  const readTranscript: NonNullable<NativeCorpusOptions['readTranscript']> = async input => {
+  // D030: the index row's harness is not independent authority. Do not hydrate
+  // native bodies until a genuine authenticated per-call scope receipt exists.
+  // Candidate hydration below remains a technical reader, never an ACL grant.
+  const readTranscript: NonNullable<NativeCorpusOptions['readTranscript']> = async () => null;
+  const readTranscriptCandidate: NonNullable<NativeCorpusOptions['readTranscript']> = async input => {
     try {
       if (!input.callId || !await activity(input.id)) return null;
       if (!deps.locateTranscript) {
@@ -150,5 +154,7 @@ export function productionOpportunityReaders(opts: OpportunityReaderOptions, dep
     return window.family === 'native-operation' ? reconcileNativeCapture({ ...opts, ...window, authorize: scopeAllowed })
       : readSqlIntentRetention({ ...opts, ...window });
   };
-  return { authorizeLedgerSource: ledger, authorizeActivitySource: activity, readOutput, readTranscript, readContinuity };
+  return { authorizeLedgerSource: ledger, authorizeActivitySource: activity, readOutput, readTranscript, readContinuity,
+    /** @internal Candidate pairing only; never use as a production source authority. */
+    readTranscriptCandidate };
 }

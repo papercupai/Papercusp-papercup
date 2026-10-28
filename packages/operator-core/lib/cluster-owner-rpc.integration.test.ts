@@ -15,11 +15,13 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   callOwnerProcess,
+  bindOwnerRpcResource,
   locateOwnerRpcResource,
   startPrimaryOwnerRpcRelay,
+  startWorkerOwnerRpc,
   type OwnerRpcClusterLike,
   type OwnerRpcHandle,
   type OwnerRpcOutcome,
@@ -171,6 +173,60 @@ describe('cluster owner rpc across real worker processes', () => {
     expect(out).toMatchObject({ ok: true, result: { servedBy: a.pid } });
     expect((out as { ok: true; result: { progress: unknown[] } }).result.progress).toEqual(progress);
     expect(received).toEqual(progress);
+  });
+
+  it('keeps a declared resource lifetime across real worker IPC without widening the default', async () => {
+    const clock = vi.spyOn(Date, 'now');
+    const now = Date.now();
+    clock.mockReturnValue(now);
+    const kind = 'fixture-link';
+    const scope = 'install-a';
+    const rpcKind = { kind: 'owner-rpc-resource' };
+    try {
+      for (const [id, ttlMs] of [['long-link', 20 * 60_000], ['default-link', undefined]] as const) {
+        expect(await callFrom(a, 0, { op: 'bind', kind, id, scope, ttlMs }, rpcKind)).toMatchObject({ ok: true });
+      }
+      clock.mockReturnValue(now + 11 * 60_000);
+      expect(await callFrom(b, 0, { op: 'locate', kind, id: 'long-link', scope }, rpcKind)).toMatchObject({ ok: true, result: { ownerPid: a.pid } });
+      expect(await callFrom(b, 0, { op: 'locate', kind, id: 'default-link', scope }, rpcKind)).toMatchObject({ ok: false, code: 'owner_gone' });
+      expect(await callFrom(b, 0, { op: 'locate', kind, id: 'long-link', scope: 'other-install' }, rpcKind)).toMatchObject({ ok: false, code: 'owner_gone' });
+      clock.mockReturnValue(now + 32 * 60_000);
+      expect(await callFrom(b, 0, { op: 'locate', kind, id: 'long-link', scope }, rpcKind)).toMatchObject({ ok: false, code: 'owner_gone' });
+      expect(await callFrom(a, 0, { op: 'bind', kind, id: 'invalid', scope, ttlMs: -1 }, rpcKind)).toMatchObject({ ok: false, code: 'handler_error' });
+    } finally { clock.mockRestore(); }
+  });
+
+  it('uses the same bounded resource lifetime in a single-process host', async () => {
+    const clock = vi.spyOn(Date, 'now');
+    const now = Date.now();
+    clock.mockReturnValue(now);
+    try {
+      await bindOwnerRpcResource('fixture-link', 'local-long-link', 'install-a', 20 * 60_000);
+      clock.mockReturnValue(now + 11 * 60_000);
+      expect(await locateOwnerRpcResource('fixture-link', 'local-long-link', 'install-a')).toMatchObject({ ok: true, result: { ownerPid: process.pid } });
+      clock.mockReturnValue(now + 32 * 60_000);
+      expect(await locateOwnerRpcResource('fixture-link', 'local-long-link', 'install-a')).toMatchObject({ ok: false, code: 'owner_gone' });
+      await expect(bindOwnerRpcResource('fixture-link', 'invalid', 'install-a', Infinity)).rejects.toThrow('owner_resource_ttl_invalid');
+    } finally { clock.mockRestore(); }
+  });
+
+  it('sends the requested resource lifetime from the current worker helper', async () => {
+    // Test the current helper's IPC encoding even when the governed fork loader
+    // pins real child processes to their committed module versions.
+    let receive: (message: unknown) => void = () => {};
+    const sent: unknown[] = [];
+    const worker = startWorkerOwnerRpc({
+      on: (_event, cb) => { receive = cb; }, off: () => {},
+      send: (message) => {
+        sent.push(message);
+        receive({ type: 'papercusp:owner-rpc-response', id: message.id, toPid: process.pid, ok: true, result: { ownerPid: process.pid } });
+      },
+    });
+    try {
+      await bindOwnerRpcResource('fixture-link', 'worker-long-link', 'install-a', 20 * 60_000);
+      expect(sent).toMatchObject([{ kind: 'owner-rpc-resource', targetPid: 0,
+        payload: { op: 'bind', kind: 'fixture-link', id: 'worker-long-link', scope: 'install-a', ttlMs: 20 * 60_000 } }]);
+    } finally { worker.stop(); }
   });
 
   it('distinguishes an absent owner mapping from a recorded owner with no live worker', async () => {

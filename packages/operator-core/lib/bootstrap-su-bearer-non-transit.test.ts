@@ -23,6 +23,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from './endpoint-route/define-route';
+import type { Principal } from '@papercusp/agent-mcp';
+
+const nativeMocks = vi.hoisted(() => ({
+  principal: undefined as Principal | undefined,
+  issue: vi.fn(),
+}));
+vi.mock('@papercusp/agent-mcp/provisioning', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/agent-mcp/provisioning')>()),
+  provisionNativeRuntimeBearer: nativeMocks.issue,
+}));
 
 // A recognizable, sufficiently-long secret so a substring scan is meaningful.
 const SECRET_BEARER = 'SUPERUSER-BEARER-SECRET-do-not-leak-0123456789abcdef';
@@ -73,7 +83,7 @@ const writeSuCodexHomeMock = vi.fn((opts: any) => {
 // here also keeps the real auth chain from importing superuser-token for
 // principal resolution — we only want the route's own bearer read exercised.
 vi.mock('./auth/require-principal', () => ({
-  requirePrincipal: vi.fn(async () => {}),
+  requirePrincipal: vi.fn(async () => nativeMocks.principal),
   PrincipalCheckError: class PrincipalCheckError extends Error {
     status = 401;
     reason = 'denied';
@@ -126,17 +136,19 @@ vi.mock('./modes/store', async (importOriginal) => ({
 }));
 // Match the main bootstrap-su suite: context-budget reads and boot stamps are
 // registry leaves, independent of the bearer transport contract tested here.
-vi.mock('./agent-tools/coordination/presence', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./agent-tools/coordination/presence')>()),
+vi.mock('./agent-tools/coordination/presence', () => ({
   getPresence: vi.fn(async () => null),
   writePresence: vi.fn(async () => null),
+  touchHeartbeat: vi.fn(async () => {}),
 }));
 vi.mock('./task-manager/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./task-manager/store')>()),
   bindLiveAgentSessionTasksToNativeSession: vi.fn(async () => []),
 }));
-vi.mock('./role-codex-home', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./role-codex-home')>()),
+// The route consumes only the private writer here. Loading the real home
+// module also boots unrelated identity/presence imports before this fixture
+// can assert non-transit, and can escape its mocked database boundary.
+vi.mock('./role-codex-home', () => ({
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
   writeSuCodexHomeAsync: async (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
 }));
@@ -207,10 +219,45 @@ async function callPost(body: unknown): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  nativeMocks.principal = undefined;
+  nativeMocks.issue.mockReset();
   recordAdvSessionMock.mockResolvedValue(42);
 });
 
 describe('bootstrap-su bearer non-transit (D-006)', () => {
+  it('delivers only the canonical runtime credential from the actual verified launch principal to the private writer', async () => {
+    const principal: Principal = { workspaceId: 'default', slug: 'launch-user', kind: 'user', trust: 'verified',
+      authMethod: 'cookie-session', capabilities: new Set(['*']) };
+    nativeMocks.principal = principal;
+    nativeMocks.issue.mockImplementation(async () => ({ bearer: 'n'.repeat(43), binding: {
+      workspaceId: 'default', advSessionId: 42,
+      ownerId: (recordAdvSessionMock.mock.calls.at(-1)![0] as { coordOwnerId: string }).coordOwnerId, provider: 'codex',
+    } }));
+    const res = await callPost({ agent: 'codex', harness_slug: null, plan_slug: null,
+      nativeRuntimeBearer: 'forged', authenticatedPrincipal: { slug: 'forged' } });
+    expect(nativeMocks.issue).toHaveBeenCalledWith({ workspaceId: 'default', advSessionId: 42, issuer: principal });
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(expect.objectContaining({ nativeRuntimeBearer: 'n'.repeat(43) }));
+    const serialized = await res.text();
+    expect(serialized).not.toContain('n'.repeat(43));
+    expect(serialized).not.toContain(SECRET_BEARER);
+  });
+
+  it.each(['unverified', 'limited', 'foreign', 'unavailable', 'retargeted', 'runtime', 'workspace'])('keeps %s launches unenrolled without borrowing shared authority', async (control) => {
+    nativeMocks.principal = { workspaceId: control === 'foreign' ? 'other' : 'default', slug: 'launch-user', kind: 'user',
+      trust: control === 'unverified' ? 'unverified-loopback' : 'verified', authMethod: 'cookie-session',
+      capabilities: new Set(control === 'limited' ? ['harness:read'] : ['*']) };
+    if (control === 'unavailable') nativeMocks.issue.mockRejectedValue(new Error('issuer unavailable'));
+    else nativeMocks.issue.mockImplementation(async () => ({ bearer: 'n'.repeat(43), binding: {
+      workspaceId: control === 'workspace' ? 'other' : 'default', advSessionId: control === 'runtime' ? 99 : 42,
+      ownerId: control === 'retargeted' ? 'su-sibling'
+        : (recordAdvSessionMock.mock.calls.at(-1)![0] as { coordOwnerId: string }).coordOwnerId, provider: 'codex',
+    } }));
+    const res = await callPost({ agent: 'codex', harness_slug: null, plan_slug: null });
+    if (['unverified', 'limited', 'foreign'].includes(control)) expect(nativeMocks.issue).not.toHaveBeenCalled();
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(expect.objectContaining({ nativeRuntimeBearer: undefined }));
+    expect(await res.text()).not.toContain('n'.repeat(43));
+  });
+
   it('codex: the bearer is read server-side but is ABSENT from the response body', async () => {
     const res = await callPost({ agent: 'codex', harness_slug: null, plan_slug: null });
     expect(res.status).toBe(200);

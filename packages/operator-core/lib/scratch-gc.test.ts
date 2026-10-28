@@ -1719,7 +1719,7 @@ describe('deferred scratch quota recovery', () => {
     const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
     readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
       const entries = await read(path, options);
-      if (String(path) === scratchRootForWorkspace('ws-Q') && ++rootReads === 2) {
+      if (String(path) === scratchRootForWorkspace('ws-Q') && ++rootReads === 1) {
         reachedRoot();
         await scanGate;
       }
@@ -1744,9 +1744,18 @@ describe('deferred scratch quota recovery', () => {
           phase: 'quota-recovery',
           bytes: 16,
           pendingWrites: 1,
-          recoveryActive: true,
-          refreshActive: false,
+          recoveryActive: false,
+          refreshActive: true,
           quotaRecoveryDiagnostics: {
+            sizeWalkMs: expect.any(Number),
+            sizeWalkDirectories: expect.any(Number),
+            sizeWalkEntries: expect.any(Number),
+            readdirOperations: expect.any(Number),
+            currentOperationKind: 'readdir',
+            currentOperationPath: relative(scratchRoot(), scratchRootForWorkspace('ws-Q')),
+            currentOperationElapsedMs: expect.any(Number),
+          },
+          usageRefreshDiagnostics: {
             sizeWalkMs: expect.any(Number),
             sizeWalkDirectories: expect.any(Number),
             sizeWalkEntries: expect.any(Number),
@@ -1779,8 +1788,9 @@ describe('deferred scratch quota recovery', () => {
 
   it('reports the filesystem owner while quota recovery waits for the exclusive data mutex', async () => {
     const workspaceId = 'ws-Q';
-    makeSparseRun(workspaceId, UUID(1), WORKSPACE_QUOTA_BYTES + 1024);
-    _setScratchUsageForTests(workspaceId, WORKSPACE_QUOTA_BYTES + 1024);
+    makeSparseRun(workspaceId, UUID(1), 2 * 1024 ** 3);
+    await refreshScratchUsage(workspaceId);
+    _setScratchUsageForTests(workspaceId, WORKSPACE_QUOTA_BYTES + 1024, Date.now(), true);
 
     const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
     const dataMutexName = 'papercusp-scratch-data-' +
@@ -2765,27 +2775,77 @@ describe('deferred scratch quota recovery', () => {
     await refreshScratchUsage('ws-Q');
   });
 
-  it('keeps the complete workspace measurement when the per-run index is invalid', async () => {
+  it('refreshes an invalid per-run index outside the data lease while another writer proceeds', async () => {
     const retainedRun = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 10_000);
     const writerRun = makeRunDir('ws-Q', 'quota', UUID(2), 32);
     await refreshScratchUsage('ws-Q');
-    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 1024, Date.now());
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES - 1024 * 1024, Date.now());
     vi.mocked(readdirAsync).mockClear();
 
-    const timings: ScratchWriteTimings[] = [];
-    const writePath = join(writerRun, 'after-invalid-index.bin');
-    await writeWithScratchQuota({
-      workspaceId: 'ws-Q', filePath: writePath, bytes: 64,
-      onTiming: (row) => timings.push(row),
-    }, () => writeFile(writePath, Buffer.alloc(64)));
+    const wsRoot = scratchRootForWorkspace('ws-Q');
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseScan!: () => void;
+    let reachedRoot!: () => void;
+    const scanGate = new Promise<void>((resolveGate) => { releaseScan = resolveGate; });
+    const rootReached = new Promise<void>((resolveReached) => { reachedRoot = resolveReached; });
+    let rootWalks = 0;
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (
+        String(path) === wsRoot &&
+        options != null && typeof options === 'object' && 'withFileTypes' in options &&
+        ++rootWalks === 1
+      ) {
+        reachedRoot();
+        await scanGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
 
-    expect(existsSync(retainedRun)).toBe(true);
-    expect(timings[0]?.quotaRecoveryDiagnostics?.sizeWalkMs).toBeGreaterThan(0);
-    const sizeWalkDirectories = vi.mocked(readdirAsync).mock.calls
-      .filter(([, options]) => options != null && typeof options === 'object' && 'withFileTypes' in options)
-      .map(([path]) => String(path));
-    expect(sizeWalkDirectories).toContain(scratchRootForWorkspace('ws-Q'));
-    await refreshScratchUsage('ws-Q');
+    const timings: ScratchWriteTimings[] = [];
+    const recoveryPath = join(writerRun, 'recovery.bin');
+    const concurrentPath = join(writerRun, 'concurrent.bin');
+    let recoveryWrite: Promise<void> | undefined;
+    let concurrentWrite: Promise<void> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      recoveryWrite = writeWithScratchQuota({
+        workspaceId: 'ws-Q', filePath: recoveryPath, bytes: 2 * 1024 * 1024,
+        onTiming: (row) => timings.push(row),
+      }, () => writeFile(recoveryPath, Buffer.alloc(2 * 1024 * 1024)));
+
+      await rootReached;
+      concurrentWrite = writeWithScratchQuota({
+        workspaceId: 'ws-Q', filePath: concurrentPath, bytes: 16,
+      }, () => writeFile(concurrentPath, Buffer.alloc(16)));
+      await Promise.race([
+        concurrentWrite,
+        new Promise<void>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error('concurrent scratch writer waited for the full-tree measurement')), 5_000);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      expect(existsSync(concurrentPath)).toBe(true);
+
+      releaseScan();
+      await Promise.all([recoveryWrite, concurrentWrite]);
+      expect(existsSync(retainedRun)).toBe(true);
+      const settled = timings.at(-1);
+      expect(settled?.progress).toBeUndefined();
+      expect(settled?.usageRefreshDiagnostics?.sizeWalkMs).toBeGreaterThan(0);
+      const sizeWalkDirectories = readdirMock.mock.calls
+        .filter(([, options]) => options != null && typeof options === 'object' && 'withFileTypes' in options)
+        .map(([path]) => String(path));
+      expect(sizeWalkDirectories).toContain(wsRoot);
+      await refreshScratchUsage('ws-Q');
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      releaseScan();
+      readdirMock.mockImplementation(originalRead);
+      await Promise.allSettled([recoveryWrite, concurrentWrite].filter((task): task is Promise<void> => Boolean(task)));
+    }
   });
 
   it('does not hold the process-local quota mutex during payload I/O when filesystem mutexes are disabled', async () => {

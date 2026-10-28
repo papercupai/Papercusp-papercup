@@ -11,7 +11,11 @@ import type { ScopedContractReport } from './scoped-contracts';
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const GROUP_LIMIT = 1000;
-const git = promisify(execFile);
+// Promisified lazily on first call, never at module scope (EI-10161): an eager
+// promisify(execFile) throws at import time under a narrow node:child_process test mock.
+let cachedGit: typeof execFile.__promisify__ | undefined;
+const git = ((...args: Parameters<typeof execFile.__promisify__>) =>
+  (cachedGit ??= promisify(execFile))(...args)) as typeof execFile.__promisify__;
 const hash = (value: string | null | undefined): value is string => Boolean(value && /^[a-f0-9]{64}$/.test(value));
 const build = (value: string | null | undefined): value is string => Boolean(value && /^[a-f0-9]{10,64}$/.test(value));
 const safePath = (path: string) => path.length > 0 && !path.startsWith('/') && !path.includes('\\')

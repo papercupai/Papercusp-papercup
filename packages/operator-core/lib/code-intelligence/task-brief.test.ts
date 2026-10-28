@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
-import { buildTaskBrief, claimedScopePaths, enrichTaskBriefWithReuse, gateTaskBriefRecover, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
+import { buildTaskBrief, claimedScopePaths, enrichTaskBriefWithReuse, gateTaskBriefRecover, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, snapshotCallersAnswer, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
 import { nativeChangeReport, type ChangeReportRequest } from './packer-facade';
 import { firstPartyCallers } from './first-party-callers';
 import type { CodeIntelAnswer } from './contracts';
@@ -12,6 +12,15 @@ import { readEngineeringEvidence, type EngineeringEvidenceDeps } from './enginee
 import { coverageHash, type TestCoverageSnapshot } from '@papercusp/test-config/test-coverage-map';
 import { decodeClaimReuseContribution } from './reuse-brief-providers';
 import { toolsetFromNames } from './push-toolset';
+import { firstPartyCallersOffthread } from './first-party-callers-offthread';
+import type { queryPushSnapshot } from './push-snapshot';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+
+// Pass-through spy: every test keeps the real worker; WI-6554700010042518 asserts it never starts.
+vi.mock('./first-party-callers-offthread', async original => {
+  const actual = await original<typeof import('./first-party-callers-offthread')>();
+  return { ...actual, firstPartyCallersOffthread: vi.fn(actual.firstPartyCallersOffthread) };
+});
 
 /** A recipient session listed every tool a brief can name for recovery. */
 const RECOVERY_TOOLS = ['code:pack', 'work_items:get', 'coord:declare-intent', 'plans:get', 'testing:runs', 'graph:query'];
@@ -203,6 +212,62 @@ describe('P039 completion pre-review briefs', () => {
     expect(graph.mock.calls[0]![2]).toBeLessThanOrEqual(1_250);
     expect(brief).toMatchObject({ status: 'unknown', changes: [] });
     expect(brief.limitations).toContainEqual(expect.stringContaining('Compiler evidence was unmeasured for target.ts#target'));
+  });
+  describe('operator-home callers come from the warm push snapshot (WI-6554700010042518)', () => {
+    const home = () => ({ ...ref(), harness: operatorHomeHarnessSlug() });
+    const effects = { exec: async () => ({ stdout: '', stderr: '' }), writeArtifact: async () => 'fixture-artifact' };
+    // A real, source-hashed compiler answer, re-labelled as the snapshot's syntax-bound callers.
+    const snapshotOf = (root: string, declaredIn = 'target.ts'): CodeIntelAnswer => {
+      const compiler = firstPartyCallers({ ts, root, name: 'target', filePath: 'target.ts', op: 'callers', paths: ['.'] });
+      const evidence = compiler.evidence!;
+      return { ...compiler, backend: 'first-party-snapshot', evidence: { ...evidence,
+        relationships: evidence.relationships.map(edge => ({ ...edge, target: { contentHash: 'declaration',
+          versionedSymbolId: null, site: { path: declaredIn, line1: 1, kind: null, name: 'target', detail: null } } })) } };
+    };
+    it('measures the section from the snapshot inside the deadline and never starts the cold worker', async () => {
+      const { root, rootResolver } = setup();
+      vi.mocked(firstPartyCallersOffthread).mockClear();
+      const snapshot = vi.fn<typeof queryPushSnapshot>(async () => snapshotOf(root));
+      const started = Date.now();
+      const brief = await getCompletionTimeBrief(home(), { root: rootResolver, snapshot, runs: async () => [], effects });
+      expect(Date.now() - started).toBeLessThan(TASK_BRIEF_BUDGET_MS);
+      // Per-file proof: the changed declaration file cannot match a snapshot taken before the edit.
+      expect(snapshot).toHaveBeenCalledWith(expect.objectContaining({ op: 'callers', name: 'target',
+        callerProof: 'per-file', declaredIn: 'target.ts' }));
+      expect(brief).toMatchObject({ status: 'measured', changes: [expect.objectContaining({ file: 'target.ts', symbol: 'target' })] });
+      expect(firstPartyCallersOffthread).not.toHaveBeenCalled();
+    });
+    it('reports a cold snapshot as index-not-ready instead of forking the worker', async () => {
+      const { rootResolver } = setup();
+      vi.mocked(firstPartyCallersOffthread).mockClear();
+      const brief = await getCompletionTimeBrief(home(), { root: rootResolver, snapshot: async () => null,
+        snapshotMissReason: () => 'loading', runs: async () => [], effects });
+      expect(brief).toMatchObject({ status: 'unknown', changes: [] });
+      expect(brief.limitations).toContainEqual(expect.stringContaining(
+        'Compiler evidence was unmeasured for target.ts#target: index-not-ready: the caller snapshot is loading'));
+      expect(firstPartyCallersOffthread).not.toHaveBeenCalled();
+    });
+    it('refuses a same-name declaration in another file and names the miss', async () => {
+      const { root, rootResolver } = setup();
+      const brief = await getCompletionTimeBrief(home(), { root: rootResolver, snapshot: async () => snapshotOf(root, 'other.ts'),
+        runs: async () => [], effects });
+      expect(brief).toMatchObject({ status: 'unknown', changes: [] });
+      expect(brief.limitations).toContainEqual(expect.stringContaining(
+        "snapshot-miss: the snapshot's target is declared in other.ts, not target.ts"));
+    });
+    it('labels both limitation copies as direct callers, and never reads a miss as zero callers', async () => {
+      const { root } = setup();
+      const answer = await snapshotCallersAnswer({ symbol: 'target', file: join(root, 'target.ts'), phase: 'pre-review' }, root,
+        async () => snapshotOf(root));
+      expect(answer.error).toBeNull();
+      expect(answer.sites.length).toBeGreaterThan(0);
+      expect(answer.coverage?.limitations).toContainEqual(expect.stringContaining('Direct callers from the first-party snapshot'));
+      expect(answer.evidence?.graphScope.limitations).toContainEqual(expect.stringContaining('Direct callers from the first-party snapshot'));
+      const miss = await snapshotCallersAnswer({ symbol: 'target', file: 'target.ts' }, root, async () => null, () => null);
+      expect(miss).toMatchObject({ sites: [],
+        error: expect.stringContaining('snapshot-miss: no caller of target declared in target.ts could be verified against current disk') });
+      expect(miss.evidence).toBeUndefined();
+    });
   });
   it('never analyzes an escaping source or an unbounded path population', async () => {
     const { root, report, rootResolver } = setup(); const outside = fixture();

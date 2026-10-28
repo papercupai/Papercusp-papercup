@@ -35,21 +35,26 @@ export async function acceptFeedbackRequestProd(
     options: AcceptFeedbackRequestProdOptions = {},
 ) {
     methodReviewTarget(request);
-    const [{ getOrgPg }, { acceptFeedbackRequestCore }, conversations, { publicManualSource }, { expertiseSubject }] = await Promise.all([
+    const [{ getOrgPg }, { acceptFeedbackRequestCore, validateBarCritiquePlanOrigin }, conversations, { publicManualSource }, { expertiseSubject }] = await Promise.all([
       import('@papercusp/db-org'), import('./get-feedback-core'), import('../agent-tools/coordination/conversations'),
       import('../agent-tools/docs/_public-manual'), import('./relevance-router'),
     ]);
+    const sql = getOrgPg().sql;
+    const payload = { ...request, harnessSlug: request.harnessSlug || options.harnessSlug || undefined,
+      allowDispatch: options.allowDispatch !== false };
+    const planRefusal = await validateBarCritiquePlanOrigin(payload, sql);
+    if (planRefusal) return planRefusal;
+
     const sourceRefs = request.subjectRefs?.length ? request.subjectRefs :
       expertiseSubject(request.question) ? [expertiseSubject(request.question)!] : [];
     const subjectExpansion = sourceRefs.length ? await publicManualSource().expandSubjectRefs(sourceRefs) : null;
-    const payload = { ...request, harnessSlug: request.harnessSlug || options.harnessSlug || undefined,
-      allowDispatch: options.allowDispatch !== false,
+    const acceptedPayload = { ...payload,
       ...(subjectExpansion ? {
         resolvedSubjectRefs: subjectExpansion.refs,
         unresolvedSubjectRefs: subjectExpansion.unresolvedDocuments,
       } : {}) };
-    const accepted = await acceptFeedbackRequestCore(payload, {
-      getSql: () => getOrgPg().sql,
+    const accepted = await acceptFeedbackRequestCore(acceptedPayload, {
+      getSql: () => sql,
       open: async (input) => {
         const result = await conversations.openConversation(identity, { ...input, producer: 'consult:get_feedback' });
         return { conversation_id: result.conversation.id, thread_id: result.thread_id, delivered: result.delivered };

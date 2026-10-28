@@ -5,6 +5,8 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { delimiter, dirname } from 'node:path';
+import type { OwnerRpcOutcome } from '../cluster-owner-rpc';
+import type { StoredCliLink } from './account-link-state';
 
 const h = vi.hoisted(() => {
   const state = {
@@ -105,6 +107,44 @@ vi.mock('./account-pool', () => ({
 vi.mock('./account-pool-store', () => ({ updateAccountPool: h.updateAccountPool, accountStatus: h.accountStatus }));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
+const rpc = vi.hoisted(() => ({
+  bind: vi.fn(async () => {}),
+  locate: vi.fn<(...args: unknown[]) => Promise<OwnerRpcOutcome>>(async () => ({ ok: false, code: 'owner_gone', message: 'unknown resource' })),
+  call: vi.fn(),
+  handlers: new Map<string, (payload: unknown) => Promise<unknown>>(),
+}));
+vi.mock('../cluster-owner-rpc', () => ({
+  bindOwnerRpcResource: rpc.bind,
+  locateOwnerRpcResource: rpc.locate,
+  callOwnerProcess: rpc.call,
+  registerOwnerRpcHandler: (kind: string, handler: (payload: unknown) => Promise<unknown>) => rpc.handlers.set(kind, handler),
+}));
+
+const durable = vi.hoisted(() => ({
+  rows: new Map<string, StoredCliLink>(),
+  create: vi.fn(async (row: StoredCliLink) => { durable.rows.set(row.linkId, structuredClone(row)); }),
+  read: vi.fn(async (id: string) => durable.rows.get(id) ?? null),
+  finish: vi.fn(async (id: string, _scope: string, nonce: string, outcome: StoredCliLink['outcome'], failure: StoredCliLink['failure']) => {
+    const row = durable.rows.get(id);
+    if (!row || row.owner.nonce !== nonce) return false;
+    durable.rows.set(id, { ...row, outcome, failure });
+    return true;
+  }),
+  claim: vi.fn(async (row: StoredCliLink, owner: StoredCliLink['owner']) => {
+    if (durable.rows.get(row.linkId)?.owner.nonce !== row.owner.nonce) return null;
+    const next = { ...row, owner };
+    durable.rows.set(row.linkId, next);
+    return next;
+  }),
+  liveness: vi.fn<() => 'alive' | 'dead' | 'unknown'>(() => 'alive'),
+}));
+vi.mock('./account-link-state', () => ({
+  createStoredCliLink: durable.create, readStoredCliLink: durable.read,
+  finishStoredCliLink: durable.finish, claimStoredCliLink: durable.claim,
+  newLinkOwner: () => ({ host: 'test-host', pid: process.pid, processIdentity: 'test-identity', nonce: 'new-owner' }),
+  linkOwnerLiveness: durable.liveness, LINK_RECOVERY_RETENTION_MS: 86_400_000,
+}));
+
 import { startCliLink, completeCliLink, resolveCliBin, getCliLinkStatus, __resetCliLinksForTest } from './account-link-cli';
 
 afterEach(() => {
@@ -117,9 +157,181 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.clearAllMocks();
   vi.useRealTimers();
+  rpc.bind.mockReset().mockResolvedValue(undefined);
+  rpc.locate.mockReset().mockResolvedValue({ ok: false, code: 'owner_gone', message: 'unknown resource' });
+  rpc.call.mockReset();
+  durable.rows.clear();
+  durable.liveness.mockReset().mockReturnValue('alive');
 });
 
 describe('account-link-cli — CLI-driven OAuth link', () => {
+  function lostLink(overrides: Partial<StoredCliLink> = {}): StoredCliLink {
+    const row: StoredCliLink = {
+      linkId: 'lost-link', scope: '/tmp/test/deploy-credentials', accountId: 'recovered',
+      provider: 'codex', configDir: '/tmp/test/deploy-credentials/.codex-setup-recovered-a1',
+      owner: { host: 'test-host', pid: 123, processIdentity: 'old-process', nonce: 'old-owner' },
+      createdAt: Date.now() - 1000, expiresAt: Date.now() + 60_000,
+      retainUntil: Date.now() + 86_400_000, ...overrides,
+    };
+    durable.rows.set(row.linkId, row);
+    return row;
+  }
+
+  it('requires durable custody before spawning, and stores no provider output', async () => {
+    durable.create.mockRejectedValueOnce(new Error('database unavailable'));
+    expect(await startCliLink({ accountId: 'no-store' })).toMatchObject({ ok: false });
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.mkdir).not.toHaveBeenCalled();
+    const r = await startCliLink({ accountId: 'stored' });
+    expect(r.ok).toBe(true);
+    expect(JSON.stringify([...durable.rows.values()])).not.toMatch(/ABCD-12345|sk-ant-oat|authorizeUrl|access_token|refresh_token/);
+  });
+
+  it('reads terminal outcome after losing the local map and resource registry', async () => {
+    lostLink({ outcome: 'completed' });
+    expect(await getCliLinkStatus('lost-link')).toEqual({ status: 'completed', account: null });
+    expect(await completeCliLink({ linkId: 'lost-link' })).toEqual({ ok: true, account: null });
+    expect(durable.claim).not.toHaveBeenCalled();
+    expect(h.registerAccount).not.toHaveBeenCalled();
+  });
+
+  it('status reports measured interruption without acquiring recovery or touching credentials', async () => {
+    lostLink();
+    durable.liveness.mockReturnValue('dead');
+    expect(await getCliLinkStatus('lost-link')).toMatchObject({ status: 'failed', error: expect.stringContaining('interrupted') });
+    expect(durable.claim).not.toHaveBeenCalled();
+    expect(durable.finish).not.toHaveBeenCalled();
+    expect(h.readFile).not.toHaveBeenCalled();
+    expect(h.updateAccountPool).not.toHaveBeenCalled();
+    expect(h.rm).not.toHaveBeenCalled();
+  });
+
+  it('recovers approved Codex auth through the maintained finalizer without another login', async () => {
+    const row = lostLink();
+    durable.liveness.mockReturnValue('dead');
+    expect(await completeCliLink({ linkId: row.linkId })).toMatchObject({ ok: true });
+    expect(durable.claim).toHaveBeenCalledOnce();
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.registerAccount).toHaveBeenCalledOnce();
+    expect(h.writeFile).toHaveBeenCalledWith('/tmp/test/deploy-credentials/recovered.codex-cli/auth.json', expect.any(String), { mode: 0o600 });
+    expect(durable.rows.get(row.linkId)).toMatchObject({ outcome: 'completed' });
+  });
+
+  it('permits only one concurrent restart recoverer to register the approved login', async () => {
+    lostLink();
+    durable.liveness.mockReturnValue('dead');
+    const results = await Promise.all([completeCliLink({ linkId: 'lost-link' }), completeCliLink({ linkId: 'lost-link' })]);
+    expect(results.filter(r => r.ok)).toHaveLength(1);
+    expect(h.registerAccount).toHaveBeenCalledOnce();
+  });
+
+  it.each(['alive', 'unknown'] as const)('never steals a %s custodian', async (state) => {
+    lostLink();
+    durable.liveness.mockReturnValue(state);
+    expect(await completeCliLink({ linkId: 'lost-link' })).toMatchObject({ ok: false });
+    expect(durable.claim).not.toHaveBeenCalled();
+    expect(h.readFile).not.toHaveBeenCalled();
+    expect(h.spawn).not.toHaveBeenCalled();
+  });
+
+  it.each(['timeout', 'no_handler', 'send_failed'] as const)('never recovers on RPC %s', async (code) => {
+    lostLink();
+    durable.liveness.mockReturnValue('dead');
+    rpc.locate.mockResolvedValueOnce({ ok: false, code, message: 'unavailable' });
+    expect(await completeCliLink({ linkId: 'lost-link' })).toMatchObject({ ok: false });
+    expect(durable.claim).not.toHaveBeenCalled();
+  });
+
+  it('preserves approved recovery auth on registration failure and retries with the same custodian', async () => {
+    const row = lostLink();
+    durable.liveness.mockReturnValue('dead');
+    h.updateAccountPool.mockRejectedValueOnce(new Error('register unavailable'));
+    expect(await completeCliLink({ linkId: row.linkId })).toMatchObject({ ok: false });
+    expect(h.rm.mock.calls.some(([path]) => path === row.configDir)).toBe(false);
+    expect(durable.rows.get(row.linkId)).toMatchObject({ outcome: 'failed', failure: 'registration-failed' });
+    expect(await completeCliLink({ linkId: row.linkId })).toMatchObject({ ok: true });
+    expect(durable.claim).toHaveBeenCalledOnce();
+    expect(h.spawn).not.toHaveBeenCalled();
+  });
+
+  it('keeps status pending on store failure without writing or launching', async () => {
+    durable.read.mockRejectedValueOnce(new Error('database unavailable'));
+    expect(await getCliLinkStatus('lost-link')).toEqual({ status: 'pending' });
+    expect(durable.create).not.toHaveBeenCalled();
+    expect(durable.claim).not.toHaveBeenCalled();
+    expect(h.spawn).not.toHaveBeenCalled();
+  });
+
+  it('checks the durable fence before a cached owner can write or register credentials', async () => {
+    h.state.mode = 'codex';
+    const started = await startCliLink({ accountId: 'fenced', provider: 'codex' });
+    if (!started.ok) throw new Error('expected start');
+    const row = durable.rows.get(started.linkId)!;
+    durable.rows.set(started.linkId, { ...row, owner: { ...row.owner, nonce: 'another-custodian' } });
+    expect(await completeCliLink({ linkId: started.linkId })).toMatchObject({ ok: false, error: expect.stringContaining('custody changed') });
+    expect(h.readFile).not.toHaveBeenCalled();
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.registerAccount).not.toHaveBeenCalled();
+  });
+
+  it('binds the link to its process before spawning a login', async () => {
+    const result = await startCliLink({ accountId: 'bound' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(rpc.bind).toHaveBeenCalledWith('account-cli-link', result.linkId, '/tmp/test/deploy-credentials', 16 * 60_000);
+    expect(rpc.bind.mock.invocationCallOrder[0]).toBeLessThan(h.spawn.mock.invocationCallOrder[0]);
+  });
+
+  it('does not spawn a login when process custody cannot be registered', async () => {
+    rpc.bind.mockRejectedValueOnce(new Error('relay unavailable'));
+    expect(await startCliLink({ accountId: 'unbound' })).toMatchObject({ ok: false });
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.mkdir).not.toHaveBeenCalled();
+  });
+
+  it('reads a sibling-owned link through its original process', async () => {
+    rpc.locate.mockResolvedValueOnce({ ok: true, result: { ownerPid: process.pid + 1 } });
+    rpc.call.mockResolvedValueOnce({ ok: true, result: { status: 'pending' } });
+    expect(await getCliLinkStatus('sibling-link')).toEqual({ status: 'pending' });
+    expect(rpc.call).toHaveBeenCalledWith(expect.objectContaining({
+      targetPid: process.pid + 1, kind: 'account-cli-link', payload: { op: 'status', linkId: 'sibling-link' },
+    }));
+    expect(h.spawn).not.toHaveBeenCalled();
+  });
+
+  it('routes pasted-code completion to the original process without another CLI', async () => {
+    rpc.locate.mockResolvedValueOnce({ ok: true, result: { ownerPid: process.pid + 1 } });
+    rpc.call.mockResolvedValueOnce({ ok: true, result: { ok: true, account: null } });
+    expect(await completeCliLink({ linkId: 'sibling-link', code: 'code#state' })).toEqual({ ok: true, account: null });
+    expect(rpc.call).toHaveBeenCalledWith(expect.objectContaining({
+      payload: { op: 'complete', linkId: 'sibling-link', code: 'code#state' },
+      timeoutMs: 65_000,
+    }));
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps timeout distinct from owner loss and never cleans a sibling credential home', async () => {
+    rpc.locate.mockResolvedValue({ ok: true, result: { ownerPid: process.pid + 1 } });
+    rpc.call.mockResolvedValueOnce({ ok: false, code: 'timeout', message: 'no response' });
+    expect(await getCliLinkStatus('sibling-link')).toMatchObject({ status: 'pending' });
+    expect(h.rm).not.toHaveBeenCalled();
+    rpc.call.mockResolvedValueOnce({ ok: false, code: 'owner_gone', message: 'worker exited' });
+    expect(await getCliLinkStatus('sibling-link')).toEqual({ status: 'unknown' });
+    expect(h.rm).not.toHaveBeenCalled();
+    expect(h.spawn).not.toHaveBeenCalled();
+  });
+
+  it('serves forwarded operations locally and rejects unsupported payloads without relaying again', async () => {
+    const handler = rpc.handlers.get('account-cli-link');
+    expect(handler).toBeTypeOf('function');
+    expect(await handler?.({ op: 'status', linkId: 'absent' })).toEqual({ status: 'unknown' });
+    expect(await handler?.({ op: 'complete', linkId: 'absent', code: 'c' })).toMatchObject({ ok: false });
+    await expect(handler?.({ op: 'spawn', linkId: 'absent' })).rejects.toThrow('invalid account link operation');
+    expect(rpc.locate).not.toHaveBeenCalled();
+    expect(rpc.call).not.toHaveBeenCalled();
+  });
+
   it('startCliLink spawns `claude setup-token` (isolated config) + returns the URL it prints', async () => {
     const r = await startCliLink({ accountId: 'acme', label: 'Acme' });
     expect(r.ok).toBe(true);
@@ -213,7 +425,7 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     expect(s.ok).toBe(true);
     if (!s.ok) return;
     h.state.exitCbs.slice().forEach((cb) => cb({ exitCode: 0 }));
-    await vi.waitFor(() => expect(getCliLinkStatus(s.linkId).status).toBe('completed'));
+    await vi.waitFor(async () => expect((await getCliLinkStatus(s.linkId)).status).toBe('completed'));
     expect(h.registerAccount).toHaveBeenCalledTimes(1);
     expect(h.registerAccount.mock.calls[0]?.[1]).toMatchObject({
       id: 'codex-auto', provider: 'codex',
@@ -255,7 +467,7 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     expect(s.ok).toBe(true);
     if (!s.ok) return;
     await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
-    expect(getCliLinkStatus(s.linkId).status).toBe('completed');
+    expect((await getCliLinkStatus(s.linkId)).status).toBe('completed');
     expect(h.registerAccount).toHaveBeenCalledTimes(1);
     expect(h.writeFile.mock.invocationCallOrder[0]).toBeLessThan(h.rm.mock.invocationCallOrder.at(-1)!);
   });
@@ -270,7 +482,7 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     if (!s.ok) return;
     h.updateAccountPool.mockRejectedValueOnce(new Error('registry unavailable'));
     await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
-    expect(getCliLinkStatus(s.linkId).status).toBe('failed');
+    expect((await getCliLinkStatus(s.linkId)).status).toBe('failed');
     expect(h.rm.mock.calls.some(([path]) => String(path).includes('.codex-setup-'))).toBe(false);
     const retried = await completeCliLink({ linkId: s.linkId }, { notify: () => {} });
     expect(retried.ok).toBe(true);
@@ -321,18 +533,18 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     const s = await startCliLink({ accountId: 'auto-acme', label: 'Auto' });
     expect(s.ok).toBe(true);
     if (!s.ok) return;
-    expect(getCliLinkStatus(s.linkId)).toEqual({ status: 'pending' });
+    expect(await getCliLinkStatus(s.linkId)).toEqual({ status: 'pending' });
     // The CLI prints the token with no pty write ever having happened.
     h.state.dataCbs.forEach((cb) => cb('\r\nSuccess!\r\nsk-ant-oat01-AUTOMINTED_AbC-999\r\n'));
-    await vi.waitFor(() => expect(getCliLinkStatus(s.linkId).status).toBe('completed'));
+    await vi.waitFor(async () => expect((await getCliLinkStatus(s.linkId)).status).toBe('completed'));
     expect(h.writeFile).toHaveBeenCalledWith('/tmp/test/deploy-credentials/auto-acme', 'sk-ant-oat01-AUTOMINTED_AbC-999', { mode: 0o600 });
     expect(h.registerAccount).toHaveBeenCalled();
     expect(h.state.killed).toBeGreaterThan(0); // the CLI's job is over — process released
     // A late "Complete link" click with NO code reports the finished link instead of demanding a paste…
     const done = await completeCliLink({ linkId: s.linkId });
     expect(done.ok).toBe(true);
-    // …and releases the entry.
-    expect(getCliLinkStatus(s.linkId).status).toBe('unknown');
+    // The local entry is released; its durable terminal receipt remains readable.
+    expect((await getCliLinkStatus(s.linkId)).status).toBe('completed');
   });
 
   // WI-1917 (2026-07-03): the no-URL failure used to swallow the CLI's output and blame PATH

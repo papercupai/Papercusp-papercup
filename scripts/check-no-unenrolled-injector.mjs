@@ -85,6 +85,11 @@ export const ALLOWLIST = new Map([
     'packages/operator-core/lib/su-session-omp-adapter.ts::ownerTurn::injectIntoHostWithConfirmation::content::1',
     'Authenticated owner input passes through unchanged so it remains owner-authored.',
   ],
+  [
+    'apps/operator/vitest-shims/identity-assume-production.ts::send::injectIntoHostWithConfirmation::<missing-data>::1',
+    'Test-shim tracing wrapper around the session-assume-host send port: it forwards the identity-assume ' +
+      'control frame (mode identity-assume, data empty) built by session-assume-host.ts unchanged and authors no prompt text.',
+  ],
 ]);
 
 function isFunctionLike(t, node) {

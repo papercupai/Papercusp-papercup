@@ -286,6 +286,14 @@ export function pushSnapshotMissReason(repo: string, now = Date.now()): 'loading
 export async function queryPushSnapshot(query: {
   op: 'definition' | 'callers'; root: string; workspaceId?: string;
   name?: string; file?: string; line1?: number; character?: number; paths?: string[]; limit?: number;
+  /** Callers only. `all` (default) refuses on any drift. `per-file` (WI-6554700010042518) checks
+   * each caller file on its own, keeps callers whose file still matches, and does not require
+   * the declaration file; forwarding and manifest sources stay required. */
+  callerProof?: 'all' | 'per-file';
+  /** Callers only: consider only a declaration in this repository-relative file. */
+  declaredIn?: string;
+  /** Wall bound for the whole query; default 250 ms, capped at 5 s. */
+  timeoutMs?: number;
 }): Promise<CodeIntelAnswer | null> {
   const started = Date.now();
   const result = await withBoundedTimeout<CodeIntelAnswer | null>(async signal => {
@@ -320,13 +328,42 @@ export async function queryPushSnapshot(query: {
       const column = query.character! + 1;
       candidates = (snapshot.cursorSites?.get(`${cursorPath}:${query.line1}`) ?? [])
         .filter(site => column >= site.column && column < site.column + site.spelling.length).map(site => site.symbol);
-    } else candidates = snapshot.symbols.get(query.name ?? '') ?? [];
+    } else candidates = (snapshot.symbols.get(query.name ?? '') ?? [])
+      .filter(symbol => query.declaredIn === undefined || symbol.path === query.declaredIn);
     const unique = [...new Map(candidates.map(symbol => [symbol.id, symbol])).values()];
     if (unique.length !== 1) return null;
     const symbol = unique[0]!;
     if (!symbol.sources?.length) return null;
-    const callers = symbol.callers.filter(site => inScope(site.path));
+    let callers = symbol.callers.filter(site => inScope(site.path));
     if (query.op === 'callers' && callers.length === 0) return null;
+    // WI-6554700010042518: at completion the declaration file is the one just edited, so the
+    // all-files proof always refused. Per-file proof keeps callers whose own file still matches
+    // the snapshot and names what it dropped; forwarding and manifest sources stay required.
+    const callerPaths = new Set(symbol.callers.map(site => site.path));
+    let perFile: { declarationChanged: boolean; droppedSites: number; droppedFiles: number } | null = null;
+    if (query.op === 'callers' && query.callerProof === 'per-file') {
+      const pins = new Map<string, string | null>([[symbol.path, symbol.sha256]]);
+      for (const site of callers) {
+        const seen = pins.get(site.path);
+        pins.set(site.path, seen === undefined || seen === site.sha256 ? site.sha256 : null);
+      }
+      const checkable = [...pins].flatMap(([path, sha256]) => sha256 === null ? [] : [{ path, sha256 }]);
+      if (checkable.length > QUERY_PROOF_MAX_SOURCES) return null;
+      const current = new Set<string>();
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(8, checkable.length) }, async () => {
+        while (next < checkable.length && !signal.aborted) {
+          const source = checkable[next++]!;
+          if (await corroboratePushSources(root, [source], signal, 1)) current.add(source.path);
+        }
+      }));
+      if (signal.aborted) return null;
+      const kept = callers.filter(site => current.has(site.path));
+      if (kept.length === 0) return null;
+      perFile = { declarationChanged: !current.has(symbol.path), droppedSites: callers.length - kept.length,
+        droppedFiles: new Set(callers.filter(site => !current.has(site.path)).map(site => site.path)).size };
+      callers = kept;
+    }
     const limit = Math.min(500, Math.max(1, query.limit ?? 100));
     const reported = query.op === 'definition' ? [symbol] : callers.slice(0, limit);
     // P-040: a name-only definition that matched the declaration's OWN name rests on the
@@ -336,6 +373,9 @@ export async function queryPushSnapshot(query: {
     // callers answers keep the full forwarding + caller proof.
     const declarationOnly = query.op === 'definition' && !cursorPath && symbol.name === query.name;
     const proofInputs: PushProofSource[] = declarationOnly ? [{ path: symbol.path, sha256: symbol.sha256 }]
+      : perFile ? [...symbol.sources.filter(source => source.path !== symbol.path && !callerPaths.has(source.path)),
+        ...(perFile.declarationChanged ? [] : [{ path: symbol.path, sha256: symbol.sha256 }]),
+        ...callers.map(site => ({ path: site.path, sha256: site.sha256 }))]
       : [...symbol.sources, { path: symbol.path, sha256: symbol.sha256 },
         ...symbol.callers.map(site => ({ path: site.path, sha256: site.sha256 }))];
     const sourceMap = new Map<string, PushProofSource>();
@@ -366,6 +406,10 @@ export async function queryPushSnapshot(query: {
       'Positive syntax-bound snapshot matches only; compiler binding, dynamic dispatch, shadowed/unresolved calls and current resolver configuration remain unmeasured.',
       declarationOnly
         ? 'The declaration source hash matches current disk; forwarding modules and callers do not affect this answer and were not checked. Other source files and repository-wide completeness are unverified.'
+        : perFile ? `Forwarding sources and every reported caller file match current disk${perFile.declarationChanged
+          ? '; the declaration file changed after the snapshot and is not part of this proof' : ''}.${perFile.droppedSites
+          ? ` ${perFile.droppedSites} caller site(s) in ${perFile.droppedFiles} file(s) changed after the snapshot were not counted, and a binding that passes through a changed file was not re-verified.`
+          : ''} Other source files and repository-wide completeness are unverified.`
         : 'Definition, forwarding and captured caller source hashes match current disk. Other source files and repository-wide completeness are unverified.',
       'Caller sites are a lower bound; an empty snapshot never establishes absence. Runtime execution is unknown.',
     ];
@@ -391,7 +435,7 @@ export async function queryPushSnapshot(query: {
           } } : {}) })),
       },
     };
-  }, { fallback: null, timeoutMs: 250, label: 'code-intel-snapshot-query',
+  }, { fallback: null, timeoutMs: Math.min(5_000, Math.max(1, query.timeoutMs ?? 250)), label: 'code-intel-snapshot-query',
     // A snapshot miss or slow registry read is an expected best-effort fallback
     // to the compiler path. The fallback ledger remains the machine-readable
     // signal; console warnings make valid unsupported/temporary fixture roots

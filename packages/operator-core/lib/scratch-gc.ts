@@ -2398,6 +2398,23 @@ export async function writeWithScratchQuota(
    */
   const ensureQuotaRecovery = (): { promise: Promise<void>; started: boolean } => {
     if (entry.recovering) return { promise: entry.recovering, started: false };
+    if (!entry.runBytesValid || entry.refreshDeferred) {
+      // A missing per-run index used to make request-time recovery hold the exclusive data
+      // lease through a full workspace walk. Reuse the optimistic refresh instead: it measures
+      // outside that lease and checks the write generation before adopting its result.
+      const refresh = refreshScratchUsage(opts.workspaceId);
+      const diagnostics = entry.refreshDiagnostics;
+      if (diagnostics) activeRecoveryDiagnostics = diagnostics;
+      const promise = timed('quotaRecoveryMs', () => refresh).finally(() => {
+        if (diagnostics) {
+          const snapshot = snapshotScratchQuotaRecoveryDiagnostics(diagnostics);
+          timings.quotaRecoveryDiagnostics = snapshot;
+          timings.usageRefreshDiagnostics = snapshot;
+          if (activeRecoveryDiagnostics === diagnostics) activeRecoveryDiagnostics = undefined;
+        }
+      });
+      return { promise, started: true };
+    }
     entry.maintenanceEpoch += 1;
     let recovery!: Promise<void>;
     recovery = (async () => {
@@ -2645,7 +2662,7 @@ export async function writeWithScratchQuota(
           await waitForUsageRefresh(refreshWaitOwner ? 'refreshWaitMs' : 'quotaWaitMs');
           continue;
         }
-        if (quotaRecoveryAttempted) {
+        if (quotaRecoveryAttempted && entry.runBytesValid && !entry.refreshDeferred) {
           throw lastQuotaRefusal ?? new ScratchQuotaError(
             `scratch reservation: workspace ${opts.workspaceId} remains over quota after recovery`,
           );

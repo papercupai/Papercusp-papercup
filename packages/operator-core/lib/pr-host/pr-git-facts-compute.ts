@@ -7,7 +7,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { HarnessPrGitFacts } from './pr-git-facts';
 
-const execFileP = promisify(execFile);
+// Promisified lazily on first call, never at module scope (EI-10161): an eager
+// promisify(execFile) throws at import time under a narrow node:child_process test mock.
+let cachedExecFileP: typeof execFile.__promisify__ | undefined;
+const execFileP = ((...args: Parameters<typeof execFile.__promisify__>) =>
+  (cachedExecFileP ??= promisify(execFile))(...args)) as typeof execFile.__promisify__;
 
 /** `github.com/<owner>/<repo>` (the form parseRemote expects) from an origin URL, or null. */
 export function parseGithubOriginRemote(url: string): string | null {

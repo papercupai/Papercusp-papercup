@@ -107,13 +107,27 @@ describe('drain-fleet recovery guards', () => {
     ])).toBe('su-oldest');
   });
 
-  it('alarms only after ten minutes with positive live-member/start evidence and no successful pull', () => {
+  it('reports the pull observation window separately from long-lived member tenure', () => {
+    const memberTenureMs = 16 * 24 * 60 * 60 * 1000;
     const member = {
       agentId: 'su-member', agentRole: 'su', fleetRole: 'member', sessionState: 'live' as const,
-      startedAt: new Date(NOW - GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS - 1).toISOString(),
+      startedAt: new Date(NOW - memberTenureMs).toISOString(),
     };
+    // A successful pull outside the SQL's 10-minute window is not present in this set.
     expect(classifyGoalDrainFleetPullStall({ members: [member], successfulPullOwnerIds: new Set(), nowMs: NOW }))
-      .toMatchObject({ liveMemberIds: ['su-member'] });
+      .toEqual({
+        liveMemberIds: ['su-member'],
+        observationWindowMs: GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS,
+        oldestLiveMemberTenureMs: memberTenureMs,
+      });
+    expect(classifyGoalDrainFleetPullStall({
+      members: [{
+        ...member,
+        startedAt: new Date(NOW - GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS + 1).toISOString(),
+      }],
+      successfulPullOwnerIds: new Set(),
+      nowMs: NOW,
+    })).toBeNull();
     expect(classifyGoalDrainFleetPullStall({ members: [member], successfulPullOwnerIds: new Set(['su-member']), nowMs: NOW })).toBeNull();
     expect(classifyGoalDrainFleetPullStall({
       members: [{ ...member, startedAt: null }], successfulPullOwnerIds: new Set(), nowMs: NOW,
@@ -180,7 +194,8 @@ describe('drain-fleet recovery guards', () => {
       workspaceId: 'ws',
       fleetSlug: 'standalone',
       liveMemberIds: ['su-member'],
-      stalledForMs: GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS + 1,
+      observationWindowMs: GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS,
+      oldestLiveMemberTenureMs: GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS + 1,
     }]);
   });
 

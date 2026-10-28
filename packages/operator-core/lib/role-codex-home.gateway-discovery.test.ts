@@ -19,7 +19,7 @@
  * GPT-6 but never offered it in `/model`.
  */
 import * as TOML from '@iarna/toml';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -55,6 +55,7 @@ afterEach(() => {
 });
 
 type ParsedConfig = {
+  mcp_servers?: Record<string, { http_headers?: Record<string, string> }>;
   model_provider?: string;
   features?: Record<string, unknown>;
   model_providers?: Record<string, { base_url?: string; model_catalog_url?: string; requires_openai_auth?: boolean; http_headers?: Record<string, string> }>;
@@ -64,6 +65,39 @@ type ParsedConfig = {
 function parseConfig(configPath: string): ParsedConfig {
   return TOML.parse(readFileSync(configPath, 'utf8')) as ParsedConfig;
 }
+
+it('publishes distinct runtime possession only in local private provider and MCP headers', async () => {
+  const { writeSuCodexHome, suCodexConfigToml } = await import('./role-codex-home');
+  const nativeRuntimeBearer = 'n'.repeat(43);
+  const written = writeSuCodexHome({ sessionKey: 'native-private', mcpUrl: MCP_URL,
+    sid: 'su-native-private', model: MODEL, promptText: 'prompt', codexGatewayAuto: true, nativeRuntimeBearer });
+  const config = parseConfig(written.configPath);
+  expect(config.model_providers?.[PROVIDER_ID]?.http_headers?.['x-papercusp-native-runtime']).toBe(nativeRuntimeBearer);
+  expect(config.mcp_servers?.['papercusp-su']?.http_headers?.['x-papercusp-native-runtime']).toBe(nativeRuntimeBearer);
+  expect(statSync(written.configPath).mode & 0o777).toBe(0o600);
+  expect(JSON.stringify(written)).not.toContain(nativeRuntimeBearer);
+  expect(readFileSync(written.agentsPath, 'utf8')).not.toContain(nativeRuntimeBearer);
+  expect(readFileSync(join(written.codexHome, 'papercusp-diagnostics.json'), 'utf8')).not.toContain(nativeRuntimeBearer);
+  expect(() => suCodexConfigToml({ mcpUrl: 'https://external.invalid/mcp', sid: 'su-private', nativeRuntimeBearer }))
+    .toThrow('native_runtime_delivery_denied');
+  expect(() => suCodexConfigToml({ mcpUrl: MCP_URL, sid: 'su-private', nativeRuntimeBearer: 'bad\nheader' }))
+    .toThrow('native_runtime_delivery_denied');
+});
+
+it.each([true, false])('repair removes unreissued possession on gateway=%s and accepts only an explicitly supplied replacement', async (codexGatewayAuto) => {
+  const { writeSuCodexHome, ensureSuCodexHomeConfig } = await import('./role-codex-home');
+  const base = { sessionKey: 'native-repair', mcpUrl: MCP_URL, sid: 'su-native-repair', model: MODEL, codexGatewayAuto };
+  const written = writeSuCodexHome({ ...base, promptText: 'prompt', nativeRuntimeBearer: 'n'.repeat(43) });
+  const repaired = ensureSuCodexHomeConfig(base);
+  expect(repaired.repaired).toBe(true);
+  expect(readFileSync(written.configPath, 'utf8')).not.toContain('n'.repeat(43));
+  const replacement = { ...base, nativeRuntimeBearer: 'r'.repeat(43) };
+  expect(ensureSuCodexHomeConfig(replacement).repaired).toBe(true);
+  expect(parseConfig(written.configPath).mcp_servers?.['papercusp-su']?.http_headers?.['x-papercusp-native-runtime'])
+    .toBe(replacement.nativeRuntimeBearer);
+  expect(ensureSuCodexHomeConfig(replacement).repaired).toBe(false);
+  expect(statSync(written.configPath).mode & 0o777).toBe(0o600);
+});
 
 /** The three D-001 discovery settings, asserted on the PARSED structure. */
 function expectGatewayCatalogDiscovery(config: ParsedConfig) {

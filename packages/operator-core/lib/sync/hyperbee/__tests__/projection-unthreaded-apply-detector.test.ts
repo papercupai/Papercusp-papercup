@@ -23,6 +23,7 @@
  * of those two paths can miss the real one.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { encodeHlc } from '@papercusp/locks-core';
 import {
   applyHyperbeeOpToPg,
   applyOpVia,
@@ -84,6 +85,9 @@ const put = (over: Record<string, unknown> = {}) => ({
   hbKey: 'offer-1',
   value: { id: 'offer-1' },
   ts: 1_000,
+  // A remote op applied with ownLogKeyHex threaded must carry a canonical wire
+  // HLC — applyOpVia refuses a threaded remote op whose clock is missing/malformed.
+  hlc: encodeHlc({ ms: 1_000, count: 0 }),
   writerPubkey: 'publisher-hex',
   sourceLogKeyHex: REMOTE_LOG,
   ...over,

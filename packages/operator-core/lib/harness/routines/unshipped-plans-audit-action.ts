@@ -24,4 +24,4 @@ export async function fireUnshippedPlansAudit(ctx: SystemActionCtx) {
   );
 }
 
-registerSystemAction(UNSHIPPED_PLANS_AUDIT_ACTION, fireUnshippedPlansAudit);
+registerSystemAction(UNSHIPPED_PLANS_AUDIT_ACTION, fireUnshippedPlansAudit, { scheduling: 'on-demand' });

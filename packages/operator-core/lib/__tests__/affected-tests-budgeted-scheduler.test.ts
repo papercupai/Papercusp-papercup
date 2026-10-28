@@ -4171,7 +4171,9 @@ describe('affected-tests scheduler wiring', () => {
     const watchdog = body.slice(body.indexOf('const watchdog = createProgressAwareWatchdog({'),
       body.indexOf('let progressTimer = null;'));
     expect(watchdog).toContain('timeoutMs: Math.min(taskTimeoutMs, launcherWatchdogMs)');
-    expect(watchdog).toContain('maxMs: Math.min(watchdogCeilingMs, launcherWatchdogMs)');
+    expect(watchdog).toContain(': Math.min(watchdogCeilingMs, launcherWatchdogMs)');
+    // The gate's "no ceiling" (null) still honours a finite launcher cutoff.
+    expect(watchdog).toContain('Number.isFinite(launcherWatchdogMs) ? launcherWatchdogMs : null');
   });
 
   it('awaits the initial budgeted pool and preserves allocation-specific Vitest ceilings', () => {

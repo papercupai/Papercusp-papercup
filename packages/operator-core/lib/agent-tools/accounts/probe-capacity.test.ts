@@ -58,6 +58,18 @@ afterEach(() => {
 });
 
 describe('accounts:probe-capacity — failure persistence', () => {
+  it.each(['refused', 'relink-required'])('reports %s authentication without mutating accounts or launching recovery', async (authentication) => {
+    const before = JSON.stringify(pool);
+    probeM.mockResolvedValue([{ accountId: 'a', ok: false, status: 401, authentication, windows: {}, before: {}, unwalls: false }]);
+    const out = body((await tool.handler({} as never, {} as never)) as Out);
+    expect(out.rows[0]).toMatchObject({ authentication, verdict: authentication === 'relink-required'
+      ? 'authentication refused (relink required)' : 'authentication refused' });
+    expect(out.serving).toEqual([]);
+    expect(out.applied).toEqual([]);
+    expect(JSON.stringify(pool)).toBe(before);
+    expect(gatewayFetchM).not.toHaveBeenCalled();
+  });
+
   it('reports HTTP refusal metadata read-only without claiming capacity or changing the pool', async () => {
     const httpRefusal = { status: 400, bodyState: 'parsed', errorType: 'invalid_request_error', message: 'model is unavailable', requestId: 'req_test' };
     probeM.mockResolvedValue([{ accountId: 'a', ok: false, status: 400, windows: {}, before: {}, unwalls: false, error: 'no capacity headers', httpRefusal }]);

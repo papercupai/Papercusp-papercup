@@ -184,6 +184,32 @@ export type GetFeedbackError =
   | { error: 'consult_cycle'; lineage: string[]; hint: string }
   | { error: 'bar_critique_requires_plan'; hint: string };
 
+/** Bar critiques count only when their origin is the exact registered plan
+ * key that plans:start will query in this workspace and harness. A non-empty
+ * work-item or incident id is still the wrong identity. */
+export async function validateBarCritiquePlanOrigin(
+  req: GetFeedbackRequest,
+  sql: Sql,
+): Promise<Extract<GetFeedbackError, { error: 'bar_critique_requires_plan' }> | null> {
+  if (req.policy !== BAR_CRITIQUE_POLICY) return null;
+  const planSlug = req.originTaskRef;
+  const harnessSlug = req.harnessSlug;
+  const hint = `policy:'${BAR_CRITIQUE_POLICY}' requires origin_task_ref to be the exact plan_slug of a registered plan in the same workspace and harness. Use plans:list/get to resolve the slug, pass a concrete harness, and retry.`;
+  if (typeof planSlug !== 'string' || !planSlug.trim() || planSlug !== planSlug.trim() ||
+      typeof harnessSlug !== 'string' || !harnessSlug.trim() || harnessSlug !== harnessSlug.trim()) {
+    return { error: 'bar_critique_requires_plan', hint };
+  }
+  const rows = await sql<{ one: number }[]>`
+    SELECT 1 AS one
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${req.workspaceId}
+       AND harness_slug = ${harnessSlug}
+       AND plan_slug = ${planSlug}
+     LIMIT 1
+  `;
+  return rows.length ? null : { error: 'bar_critique_requires_plan', hint };
+}
+
 export interface GetFeedbackDeps {
   /** Internal recovery context, never an externally supplied conversation id. */
   acceptedRequest?: { conversation_id: string; thread_id: string; leaseToken: string };
@@ -1108,15 +1134,11 @@ export async function getFeedbackCore(
   const now = deps.now ? deps.now() : new Date();
   const latency: LatencyContract = req.latencyContract ?? 'proceed';
 
-  // P-007 / SPEC-P-007-CRITIQUE-REF: plans:start finds a plan's critiques by
-  // origin_task_ref = plan slug, so a bar-critique without one could never count.
-  // Refuse it here instead of letting it default to the requester's wip item.
-  if (req.policy === BAR_CRITIQUE_POLICY && !(typeof req.originTaskRef === 'string' && req.originTaskRef.trim())) {
-    return {
-      error: 'bar_critique_requires_plan',
-      hint: `policy:'${BAR_CRITIQUE_POLICY}' critiques one plan's bars: pass origin_task_ref:'<plan slug>' so plans:start can count it.`,
-    };
-  }
+  // P-007 / SPEC-P-007-CRITIQUE-REF: a present string is not enough. Check
+  // the exact workspace+harness plan key before routing, opening, or writing;
+  // this also rechecks durable requests recovered from before the preflight.
+  const planRefusal = await validateBarCritiquePlanOrigin(req, sql);
+  if (planRefusal) return planRefusal;
 
   // 0) Recursion lineage (P-005, D-005 / D-007 §7): a consult opened from
   //    within a consult carries parent depth+1 (structural refusal past the

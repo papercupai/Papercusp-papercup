@@ -10,6 +10,8 @@ import { deriveRepoPathsFromText } from '../agent-tools/work_items/_derive-paths
 import { DEFAULT_PACKER_EFFECTS, nativeChangeReport, packerFacade, type ChangeReportEffects, type ChangeReportRequest,
   type PackerEffects, type PackerResult } from './packer-facade';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
+import { pushSnapshotMissReason, queryPushSnapshot } from './push-snapshot';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
 import type { CodeIntelAnswer } from './contracts';
 import { getClaimTimePlanDecisions, type ClaimTimePlanDecisionsBrief } from '../plan-decisions-claim-port';
@@ -556,6 +558,7 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
     // engineering or compacting afterwards could replace base evidence and
     // remove hints after their issuance was recorded.
     const mandatory = compactTaskBrief(base, ref.maxChars ?? TASK_BRIEF_MAX_CHARS);
+    // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/getClaimTimeTaskBrief:fa78d302a2e17cd5d2de:1","classification":"durable","reason":"Re-keyed from getClaimTimeTaskBrief:19e65e51 (WI-6554700010042548). No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return { taskBrief: await enrichTaskBriefWithReuse(mandatory, ref, deps, deadline) };
   } finally { clearTimeout(timer); }
 }
@@ -592,6 +595,7 @@ export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: 
   };
   const history = harness ? boundChangeHistoryProviders({ harness,
     root: () => deps.root(context.workspaceId, harness), priorWork: deps.reuse?.priorWork }) : [];
+  // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/enrichTaskBriefWithReuse:3eca8252554396366205:1","classification":"durable","reason":"Re-keyed from enrichTaskBriefWithReuse:7467be5e and /plannedAt:586f92c5 (WI-6554700010042548). No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const result = await composeReuseBrief({ base, context, deadline: deadline - 150,
     maxChars: ref.maxChars ?? TASK_BRIEF_MAX_CHARS,
     providers: deps.reuse?.providers ?? (() => {
@@ -639,6 +643,7 @@ export async function getIntentTimeTaskBrief(ref: { owner: string; workspaceId: 
     const claimed = new Set(await deps.claimedPaths(ref.workspaceId, ref.owner));
     const paths = ref.paths.filter(path => !claimed.has(normalizeScopePath(path)));
     if (!paths.length) return null;
+    // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/getIntentTimeTaskBrief:3a5020e17447d3339ad1:1","classification":"durable","reason":"Re-keyed from getIntentTimeTaskBrief:8f185819 (WI-6554700010042548). No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return await getClaimTimeTaskBrief({ ...ref, paths }, deps);
   } catch { return null; }
 }
@@ -650,6 +655,9 @@ export interface CompletionBriefDeps {
   runs?: (paths: string[]) => Promise<{ path: string; status: string; runGroupId: string }[] | null>;
   /** The default report's graph leg; `budgetMs` is what remains of the brief deadline. */
   graph?: (request: ChangeReportRequest, root: string, budgetMs: number) => Promise<CodeIntelAnswer>;
+  /** WI-6554700010042518: the operator-home harness's warm caller index and its miss reason. */
+  snapshot?: typeof queryPushSnapshot;
+  snapshotMissReason?: typeof pushSnapshotMissReason;
   /** The default report's non-graph effects (git, artifact writes). */
   effects?: Omit<ChangeReportEffects, 'graph'>;
   cochange?: typeof readWarmCoChange;
@@ -681,6 +689,41 @@ function completionChangedLines(patch: string): number[] | null {
   return seen && !oldLeft && !newLeft ? added : null;
 }
 
+/** WI-6554700010042518: the completion graph leg on the operator-home harness. Answers
+ * DIRECT callers from the maintained push snapshot, a file read by both :3070 and :3170,
+ * so no per-process cache and no cold worker on the request path. The snapshot matches by
+ * name, so an answer counts only when its one declaration is the changed file. The changed
+ * file was edited after the snapshot by definition, so the proof is per caller file: callers
+ * in unchanged files count and the rest are named as dropped. A miss is an unmeasured answer
+ * with a named reason, never an empty consumer set. */
+export async function snapshotCallersAnswer(request: ChangeReportRequest, root: string,
+  query: typeof queryPushSnapshot = queryPushSnapshot,
+  missReason: typeof pushSnapshotMissReason = pushSnapshotMissReason, budgetMs = 2_000): Promise<CodeIntelAnswer> {
+  const started = Date.now();
+  const file = isAbsolute(request.file) ? relative(root, request.file) : request.file;
+  const answer = await query({ op: 'callers', root, name: request.symbol, paths: [...(request.paths ?? ['.'])],
+    limit: request.limit ?? 20, callerProof: 'per-file', declaredIn: file,
+    timeoutMs: Math.min(2_000, Math.max(1, budgetMs)) });
+  const declaredAt = [...new Set((answer?.evidence?.relationships ?? [])
+    .flatMap(edge => edge.target ? [edge.target.site.path] : []))];
+  if (answer && declaredAt.length === 1 && declaredAt[0] === file) {
+    const limitations = [...(answer.coverage?.limitations ?? []),
+      'Direct callers from the first-party snapshot; transitive impact was not measured at completion.'];
+    const coverage = { basis: 'syntax' as const, sourceCompleteness: 'unverified' as const, ...answer.coverage, limitations };
+    return { ...answer, coverage, ...(answer.evidence ? { evidence: { ...answer.evidence, graphScope: coverage } } : {}) };
+  }
+  const reason = missReason('papercusp');
+  return {
+    backend: 'first-party-snapshot', intent: 'callers', query: request.symbol, sites: [],
+    truncation: { truncated: false, totalAvailable: null, continuation: null },
+    freshness: { health: 'unknown', indexedAt: null, indexedCommit: null, staleVsDisk: null },
+    latencyMs: Date.now() - started,
+    error: answer ? `snapshot-miss: the snapshot's ${request.symbol} is declared in ${declaredAt.join(', ') || 'no recorded file'}, not ${file}; callers were not measured.`
+      : reason ? `index-not-ready: the caller snapshot is ${reason}; callers were not measured.`
+        : `snapshot-miss: no caller of ${request.symbol} declared in ${file} could be verified against current disk (absent from the snapshot, no recorded caller, a changed forwarding module, or every caller file changed since the snapshot); callers were not measured.`,
+  };
+}
+
 /** P-039: reuse the pre-review report at the completion receipt, without
  * treating a declared test command or a static edge as execution evidence. */
 export async function getCompletionTimeBrief(ref: { workspaceId: string; harness: string; paths: readonly string[];
@@ -694,9 +737,14 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
   const rootResolver = deps.root ?? defaults.root;
   const deadline = Math.min(ref.deadlineMs ?? Number.POSITIVE_INFINITY, Date.now() + TASK_BRIEF_BUDGET_MS);
   const toolset = readBriefToolset(deps.toolset, ref.workspaceId, ref.reuse?.owner ?? ref.owner);
-  const graphSource = deps.graph ?? ((request, root, budgetMs) => firstPartyCallersOffthread({ vendorDir: LSP_VENDOR_DIR, root,
-    op: 'impact', name: request.symbol, filePath: request.file, paths: request.paths ?? ['.'],
-    direction: 'downstream', limit: 20, maxDepth: 5, maxPaths: 10, includeInterfaces: true }, { budgetMs }));
+  // WI-6554700010042518: on the operator-home harness a cold per-symbol worker measured past
+  // the completion deadline, so callers come from the maintained push snapshot. Other
+  // harnesses have no snapshot and keep the worker inside what remains of the deadline.
+  const graphSource: NonNullable<CompletionBriefDeps['graph']> = deps.graph ?? (ref.harness === operatorHomeHarnessSlug()
+    ? (request, root, budgetMs) => snapshotCallersAnswer(request, root, deps.snapshot, deps.snapshotMissReason, budgetMs)
+    : (request, root, budgetMs) => firstPartyCallersOffthread({ vendorDir: LSP_VENDOR_DIR, root,
+      op: 'impact', name: request.symbol, filePath: request.file, paths: request.paths ?? ['.'],
+      direction: 'downstream', limit: 20, maxDepth: 5, maxPaths: 10, includeInterfaces: true }, { budgetMs }));
   // The graph leg gets what remains of the brief deadline. A fixed 2000 ms sub-budget expired
   // under host load (a fresh worker measured 1048-2598 ms), so the brief read `unknown` with
   // most of its own deadline unused (WI-6554700010019386).

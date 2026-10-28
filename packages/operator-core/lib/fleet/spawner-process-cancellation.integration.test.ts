@@ -71,6 +71,13 @@ function alive(pid: number): boolean {
   }
 }
 
+function parseExecStageLogDetails(value: unknown): Record<string, unknown> {
+  // spawner-sidecar-server serializes this bounded diagnostic as one JSON string
+  // argument so each journal record retains its correlation fields on one line.
+  expect(typeof value).toBe('string');
+  return JSON.parse(value as string) as Record<string, unknown>;
+}
+
 let server: Server;
 let dir: string;
 let clients: SpawnerIpcClient[];
@@ -180,7 +187,7 @@ describe('cancellable caller with real IPC and child processes', () => {
     expect(alive(childPid)).toBe(false);
     expect(h.finished).toHaveBeenCalledTimes(1);
     expect(logs.mock.calls.some(([tag, details]) => tag === '[spawner-process-exec-stage]' &&
-      (details as { event?: string }).event === 'request-settled')).toBe(true);
+      parseExecStageLogDetails(details).event === 'request-settled')).toBe(true);
   }, 30_000);
 
   it.each(['admission', 'settlement'] as const)('distinguishes a stalled %s from child execution without logging the payload', async (phase) => {
@@ -201,13 +208,14 @@ describe('cancellable caller with real IPC and child processes', () => {
     }, { onRequestId: (id, connection) => { requestId = id; clientConnectionId = connection; } });
     void result.then(() => { settled = true; }, () => {});
     const stage = phase === 'admission' ? 'admission-start' : 'settlement-start';
-    const matching = () => events.mock.calls.filter(([tag, details]) =>
-      tag === '[spawner-process-exec-stage]' &&
-      (details as { clientConnectionId?: string; stage?: string }).clientConnectionId === clientConnectionId &&
-      (details as { stage?: string }).stage === stage);
+    const matching = () => events.mock.calls.flatMap(([tag, details]) => {
+      if (tag !== '[spawner-process-exec-stage]') return [];
+      const parsed = parseExecStageLogDetails(details);
+      return parsed.clientConnectionId === clientConnectionId && parsed.stage === stage ? [parsed] : [];
+    });
     try {
       await vi.waitFor(() => expect(matching().length).toBeGreaterThan(0));
-      const details = matching()[0]![1] as Record<string, unknown>;
+      const details = matching()[0]!;
       const fence = await executionFence(client);
       expect(details).toMatchObject({
         serverGeneration: fence.serverGeneration, connectionId: fence.connectionId,
@@ -235,16 +243,15 @@ describe('cancellable caller with real IPC and child processes', () => {
       release();
       expect(await result).toMatchObject({ code: 0, stdout: secret });
     }
-    await vi.waitFor(() => expect(events.mock.calls.some(([tag, details]) =>
-      tag === '[spawner-process-exec-stage]' &&
-      (details as { clientConnectionId?: string; event?: string }).clientConnectionId === clientConnectionId &&
-      (details as { event?: string }).event === 'request-settled')).toBe(true));
-    const completed = events.mock.calls.find(([tag, details]) =>
-      tag === '[spawner-process-exec-stage]' &&
-      (details as { clientConnectionId?: string; event?: string }).clientConnectionId === clientConnectionId &&
-      (details as { event?: string }).event === 'request-settled')![1] as { stageMs: Record<string, number> };
-    expect(completed.stageMs).toHaveProperty('settlement-complete');
-    expect(completed.stageMs).toHaveProperty('exec-complete');
+    const completed = () => events.mock.calls.flatMap(([tag, details]) => {
+      if (tag !== '[spawner-process-exec-stage]') return [];
+      const parsed = parseExecStageLogDetails(details);
+      return parsed.clientConnectionId === clientConnectionId && parsed.event === 'request-settled' ? [parsed] : [];
+    })[0];
+    await vi.waitFor(() => expect(completed()).toBeDefined());
+    const completedStages = completed()!.stageMs as Record<string, number>;
+    expect(completedStages).toHaveProperty('settlement-complete');
+    expect(completedStages).toHaveProperty('exec-complete');
   });
 
   it('drains a lost reply without replaying a file mutation or killing a shared sibling', async () => {

@@ -453,7 +453,11 @@ export function boundCoveragePaths(batches: readonly TriageBatch[], pathLimit: n
   return { paths: [...paths].sort(), dropped };
 }
 
-const execGit = promisify(execFile);
+// Promisified lazily on first call, never at module scope (EI-10161): an eager
+// promisify(execFile) throws at import time under a narrow node:child_process test mock.
+let cachedExecGit: typeof execFile.__promisify__ | undefined;
+const execGit = ((...args: Parameters<typeof execFile.__promisify__>) =>
+  (cachedExecGit ??= promisify(execFile))(...args)) as typeof execFile.__promisify__;
 /** Concurrent `git log -L` reads; each walks the window's first-parent history. */
 const MEMBER_HISTORY_CONCURRENCY = 8;
 

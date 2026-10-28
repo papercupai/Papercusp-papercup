@@ -658,7 +658,7 @@ describe('gather + execute against a real temporary repo', () => {
     const slot = usageSlot();
     // A leftover holder of the old, redundant slot mutex must not impose a
     // second one-second admission deadline after retention admission succeeded.
-    slot.usageWalk.dir = path.join(tmp, 'long-slot-'.repeat(20));
+    // Use the ordinary slot: private runtime temp prefixes can already be long.
     let release!: () => void;
     let acquired!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
@@ -667,7 +667,9 @@ describe('gather + execute against a real temporary repo', () => {
       acquired();
       await held;
     });
-    await ready;
+    // Surface acquisition errors instead of leaving ready pending until the
+    // test deadline (for example ENAMETOOLONG in a deeper private temp root).
+    await Promise.race([ready, holder]);
     try {
       const result = await reclaimCutWorktrees(plan, { dryRun: true, notAfterMs: Date.now() + 10_000 }, { usageWalk: slot.usageWalk });
       expect(result.errors).toEqual([]);
@@ -694,7 +696,8 @@ describe('gather + execute against a real temporary repo', () => {
       acquired(context.hasWaiters);
       await held;
     });
-    const hasWaiters = await ready;
+    const hasWaiters = await Promise.race([ready, holder]);
+    if (!hasWaiters) throw new Error('fixture retention mutex ended before admission');
     const pending = reclaimCutWorktrees(plan, { dryRun: true }, { usageWalk: slot.usageWalk });
     try {
       await vi.waitFor(async () => expect(await hasWaiters()).toBe(true));

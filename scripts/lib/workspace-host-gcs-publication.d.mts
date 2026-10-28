@@ -11,6 +11,13 @@ export function verifyGcsPublicBytes(url: any, expected: any, fetchImpl?: typeof
     sha256: string;
     sizeBytes: number;
 }>;
+/** @typedef {{ deleted: { key: string, generation: string, status: number }[], complete: boolean,
+ * remaining: string[], providerRemaining: string[], error?: string }} GcsUploadVerificationCleanup */
+/** `error` / `errorCauseCode` / `cleanup.error` are set only on a failing run, so they are optional.
+ * @typedef {{ operationId: string, sha256: string, sizeBytes: number, startedAt: string, finishedAt?: string,
+ * checks: Array<{ name: string, ok: boolean } & Record<string, unknown>>, result: 'incomplete' | 'pass' | 'fail',
+ * objectIdentity?: { generation: string, metageneration: string, crc32c: string, sizeBytes: number },
+ * error?: string, errorCauseCode?: string | null, cleanup: GcsUploadVerificationCleanup }} GcsUploadVerificationResult */
 /** Bounded operational verification through the serving Worker's real storage port.
  * The caller must durably journal the exact operation before this function writes.
  * Cleanup is restricted to this unique fixture and generation-fenced; original
@@ -19,6 +26,7 @@ export function verifyGcsPublicBytes(url: any, expected: any, fetchImpl?: typeof
  * operationId: string, body: string,
  * recordOperation: (operation: { operationId: string, sha256: string, sizeBytes: number }) => Promise<void>,
  * positiveControl: { path: string, sha256: string, sizeBytes: number }, fetchImpl?: typeof fetch }} options
+ * @returns {Promise<GcsUploadVerificationResult>}
  */
 export function verifyGcsWorkspaceHostUpload({ baseUrl, bucket, githubToken, accessToken, operationId, body, recordOperation, positiveControl, fetchImpl }: {
     baseUrl: string;
@@ -38,20 +46,7 @@ export function verifyGcsWorkspaceHostUpload({ baseUrl, bucket, githubToken, acc
         sizeBytes: number;
     };
     fetchImpl?: typeof fetch;
-}): Promise<{
-    startedAt: string;
-    checks: never[];
-    result: string;
-    cleanup: {
-        deleted: never[];
-        complete: boolean;
-        remaining: never[];
-        providerRemaining: never[];
-    };
-    operationId: string;
-    sha256: string;
-    sizeBytes: number;
-}>;
+}): Promise<GcsUploadVerificationResult>;
 /**
  * @param {string} uri
  * @param {{ sha256: string, sizeBytes: number }} expected
@@ -147,3 +142,38 @@ export function publishGcsObjects({ target, objects, expiresAt, ctx, runMutation
     target?: undefined;
     objects?: undefined;
 }>;
+export type GcsUploadVerificationCleanup = {
+    deleted: {
+        key: string;
+        generation: string;
+        status: number;
+    }[];
+    complete: boolean;
+    remaining: string[];
+    providerRemaining: string[];
+    error?: string;
+};
+/**
+ * `error` / `errorCauseCode` / `cleanup.error` are set only on a failing run, so they are optional.
+ */
+export type GcsUploadVerificationResult = {
+    operationId: string;
+    sha256: string;
+    sizeBytes: number;
+    startedAt: string;
+    finishedAt?: string;
+    checks: Array<{
+        name: string;
+        ok: boolean;
+    } & Record<string, unknown>>;
+    result: "incomplete" | "pass" | "fail";
+    objectIdentity?: {
+        generation: string;
+        metageneration: string;
+        crc32c: string;
+        sizeBytes: number;
+    };
+    error?: string;
+    errorCauseCode?: string | null;
+    cleanup: GcsUploadVerificationCleanup;
+};

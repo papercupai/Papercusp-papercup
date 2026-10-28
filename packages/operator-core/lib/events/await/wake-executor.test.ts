@@ -1106,6 +1106,30 @@ describe('executeWake — delivery-time fleet member-dead liveness re-check (EI-
     expect(write).not.toHaveBeenCalled();
   });
 
+  it('a draining member is downgraded to a corrected inbox notice before any wake side effect', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-draining' }));
+    const write = vi.fn(() => true);
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const resolveMemberLiveness = verdictMap('draining');
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      sendCoordMessage: sendCoordMessage as never,
+      resolveMemberLiveness: resolveMemberLiveness as never,
+    });
+
+    const out = await executeWake(memberDeadWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(resolveMemberLiveness).toHaveBeenCalledWith([{ ownerId: 'su-worker' }], { hydratePerId: true });
+    const [, opts] = sendCoordMessage.mock.calls[0] as unknown as [unknown, { summary: string; body: string }];
+    expect(opts.summary).toContain("currently 'draining', not 'ended'");
+    expect(opts.body).toContain('⚠ STALE');
+    expect(opts.body).toContain('RETRACTED');
+    expect(findPty).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
   // EI-22068041747784942: the REAL emit-time payload (emitFleetTransitionEdge)
   // asserts "fleet X: member Y is DEAD (...)" as `d.summary`. The downgrade
   // message used to APPEND the correction AFTER that assertion, so a reader

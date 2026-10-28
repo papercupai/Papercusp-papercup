@@ -103,13 +103,18 @@ it('measures the production identity policy read in a private background runtime
 
         const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID;
         const home = process.env.HOME;
+        const progressFile = process.env.PAPERCUSP_ISOLATED_PROGRESS_FILE;
         const progress = async (stage, evidence = {}) => {
-          const path = process.env.PAPERCUSP_ISOLATED_PROGRESS_FILE;
-          if (!path) return;
-          await appendFile(path, JSON.stringify({ stage, observedAt: new Date().toISOString(), ...evidence }) + '\n');
+          assert.ok(progressFile, 'isolated worker progress path must be configured');
+          await appendFile(progressFile, JSON.stringify({ stage, observedAt: new Date().toISOString(), ...evidence }) + '\n');
         };
-        const { _resetForTests } = await import('@papercusp/db-org');
+        let resetForTests;
         try {
+        await progress('db-org-reset-import-start');
+        const dbOrg = await import('@papercusp/db-org');
+        resetForTests = dbOrg._resetForTests;
+        assert.equal(typeof resetForTests, 'function');
+        await progress('db-org-reset-import-complete');
         await progress('runtime-env-validation-start');
         assert.ok(workspaceId && workspaceId.startsWith('test-runtime-'));
         assert.equal(process.env.PAPERCUSP_WORKSPACE, workspaceId);
@@ -309,9 +314,11 @@ it('measures the production identity policy read in a private background runtime
         await progress('identity-policy-receipt-created', { policyReadMs, elapsedMs, eventLoopMaxMs });
         console.log('IDENTITY_POLICY_BACKGROUND_RECEIPT ' + JSON.stringify(receipt));
         } finally {
-          await progress('operator-pg-pool-reset-start');
-          await _resetForTests();
-          await progress('operator-pg-pool-reset-complete');
+          if (resetForTests) {
+            await progress('operator-pg-pool-reset-start');
+            await resetForTests();
+            await progress('operator-pg-pool-reset-complete');
+          }
         }
       `;
       const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -350,6 +357,14 @@ it('measures the production identity policy read in a private background runtime
         .map(value => JSON.parse(value.slice('[with-test-pg] cleanup '.length)));
       const cleanup = cleanupStages.find(value => value.stage === 'complete');
       expect(cleanup).toMatchObject({ runtimeRemoved: true, pgDataRemoved: true });
+      const progressRows = readFileSync(join(evidenceDir, 'worker-progress.ndjson'), 'utf8')
+        .trim().split('\n').map(value => JSON.parse(value));
+      const progressStages = progressRows.map(value => value.stage);
+      expect(progressStages).toContain('db-org-reset-import-start');
+      expect(progressStages).toContain('db-org-reset-import-complete');
+      expect(progressStages).toContain('operator-pg-pool-reset-start');
+      expect(progressStages).toContain('operator-pg-pool-reset-complete');
+      expect(progressStages.at(-1)).toBe('operator-pg-pool-reset-complete');
       writeFileSync(join(evidenceDir, 'identity-surface-receipt.json'),
         JSON.stringify({ worker, cleanup }, null, 2), { flag: 'wx' });
     },

@@ -318,12 +318,19 @@ describe('affected-tests.mjs retry pool wiring (P-004)', () => {
     expect(src).toContain('formatRetryPoolLine({');
   });
 
-  it('gives the retry child its budget as BOTH the watchdog timeout and the extension ceiling', () => {
-    // The progress-aware watchdog extends a still-emitting child up to `maxMs`; with the
-    // budget as the ceiling the bound is hard. The initial pass keeps BATCH_TIMEOUT_MAX_MS.
-    expect(src).toMatch(/const taskTimeoutMs =\s*retryBudgetMs \?\?\s*resolveTaskTimeoutMs\(\{/);
-    expect(src).toMatch(/const watchdogCeilingMs = retryBudgetMs \?\? BATCH_TIMEOUT_MAX_MS;/);
-    expect(src).toMatch(/maxMs: watchdogCeilingMs,/);
+  it('gives the retry child its budget as BOTH the watchdog timeout and, off the gate, the extension ceiling', () => {
+    // The progress-aware watchdog extends a still-emitting child up to `maxMs`; off the
+    // release gate the budget is the ceiling, so the bound is hard and the initial pass keeps
+    // BATCH_TIMEOUT_MAX_MS. On the gate (PC_HEAVY_RELEASE_GATE=1) there is NO ceiling
+    // (owner #2574, WI-6554700010042457): only a task whose output went flat is killed.
+    expect(src).toMatch(/const historyTimeoutMs =\s*retryBudgetMs \?\?\s*resolveTaskTimeoutMs\(\{/);
+    expect(src).toMatch(
+      /const watchdogCeilingMs =\s*process\.env\.PC_HEAVY_RELEASE_GATE === '1' \? null : \(retryBudgetMs \?\? BATCH_TIMEOUT_MAX_MS\);/,
+    );
+    // `null` is routed around Math.min, which would coerce it to 0 and kill the task at once.
+    expect(src).toMatch(
+      /maxMs: watchdogCeilingMs === null\s*\?\s*\(Number\.isFinite\(launcherWatchdogMs\) \? launcherWatchdogMs : null\)\s*:\s*Math\.min\(watchdogCeilingMs, launcherWatchdogMs\),/,
+    );
     expect(src).toMatch(/retryBudgetMs != null\s*\?\s*"retry-budget"/);
   });
 

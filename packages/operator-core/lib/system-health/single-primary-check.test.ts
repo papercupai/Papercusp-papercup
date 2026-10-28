@@ -454,6 +454,23 @@ describe('lastRoutineFireAgeSec', () => {
     await lastRoutineFireAgeSec(sql);
     expect(seen[0]).toEqual([]);
   });
+
+  // EI-27251243767353998: ephemeral-tier routines keep firing on the per-host executor
+  // while DBOS is dead, so counting them false-greens a real zero-primary outage
+  // (2026-10-28 18:31-19:13Z, WI-6554700010042546). Both branches must read the durable tier only.
+  it.each([
+    ['scoped to a workspace', 'papercusp-workspace'],
+    ['unscoped', undefined],
+  ])('reads ONLY durable-tier fires (%s)', async (_label, workspaceId) => {
+    const texts: string[] = [];
+    const sql = (async (s: TemplateStringsArray) => {
+      texts.push(s.join('?'));
+      return [{ age_sec: 1 }];
+    }) as never;
+    await lastRoutineFireAgeSec(sql, workspaceId);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toMatch(/\btier\s*=\s*'durable'/);
+  });
 });
 
 describe('openSinglePrimaryConditions (WI-7291 durable condition read)', () => {

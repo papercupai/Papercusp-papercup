@@ -149,6 +149,17 @@ describe('classifyRecordedTurn', () => {
     ).toBe('machine-surface');
   });
 
+  it('classifies Codex Stop-hook wrappers without attributing quoted wrappers to the owner', () => {
+    const wrapped =
+      '<hook_prompt hook_run_id=stop:22:/tmp/hooks.json>\n' +
+      '⟦turn-origin:stop-hook nonce:a1b2c3d4e5f60718⟧\nSTOP CONTEXT';
+    expect(classifyRecordedTurn(wrapped)).toEqual({ verdict: 'agent-injected', origin: 'stop-hook' });
+    expect(classifyRecordedTurn('<hook_prompt hook_run_id=stop:22:/tmp/hooks.json>\nSTOP CONTEXT').verdict).toBe(
+      'machine-surface',
+    );
+    expect(classifyRecordedTurn('Owner quoted ' + wrapped).verdict).toBe('owner-typed');
+  });
+
   it('the TUI interrupt marker is machine-surface (owner action, but not an owner directive)', () => {
     expect(classifyRecordedTurn('[Request interrupted by user]').verdict).toBe('machine-surface');
     expect(classifyRecordedTurn('[Request interrupted by user for tool use]').verdict).toBe('machine-surface');

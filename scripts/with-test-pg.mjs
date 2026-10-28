@@ -694,6 +694,8 @@ if (isolatedRuntime) {
     // This is the test router's execution contract, not a product endpoint.
     // Multi-process proofs validate it before allocating their nested runtime.
     'PAPERCUSP_TEST_FILE_TIMEOUT_MS',
+    // Retained isolated-integration evidence written by the private worker.
+    'PAPERCUSP_ISOLATED_PROGRESS_FILE',
     'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
     'PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_TEST_RUN_HARNESS',
     'PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_SOURCE',

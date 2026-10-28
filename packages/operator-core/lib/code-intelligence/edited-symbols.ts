@@ -26,7 +26,11 @@ import * as ts from 'typescript';
 import type * as TS from 'typescript';
 import { measureCodeHealth } from './code-health';
 
-const run = promisify(execFile);
+// Promisified lazily on first call, never at module scope (EI-10161): an eager
+// promisify(execFile) throws at import time under a narrow node:child_process test mock.
+let cachedRun: typeof execFile.__promisify__ | undefined;
+const run = ((...args: Parameters<typeof execFile.__promisify__>) =>
+  (cachedRun ??= promisify(execFile))(...args)) as typeof execFile.__promisify__;
 const SOURCE_PATH = /\.[cm]?[jt]sx?$/;
 /** Above this many LCS cells the whole differing middle counts as changed. */
 const MAX_LCS_CELLS = 1_000_000;

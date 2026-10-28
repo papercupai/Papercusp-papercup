@@ -125,6 +125,12 @@ export function parseCrossSessionSender(text: string): { from: string; fromName:
   };
 }
 
+/** Codex wraps a Stop-hook continuation in this native header. The Papercusp
+ * stop-context response enrolls its inner envelope; old/un-enrolled turns still
+ * need a narrow non-owner fallback. */
+export const CODEX_STOP_HOOK_PROMPT_RE =
+  /^\s*<hook_prompt\b[^>\r\n]*\bhook_run_id=stop:\d+:[^>\r\n]+>/i;
+
 export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
   DAMAGED_EVENT_WAKE_RE,
   CROSS_SESSION_MESSAGE_RE,
@@ -193,6 +199,8 @@ export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
   //
   // Our own Stop-hook chain talking back into the turn.
   /^\s*Stop hook feedback:/,
+  // Codex's native Stop-hook wrapper around a Papercusp refusal/reinjection.
+  CODEX_STOP_HOOK_PROMPT_RE,
   // The MCP transport auto-heal advisory (mcp-dark-watchdog).
   /^\s*⚠\s*MCP transport auto-heal/,
   // Claude Code's skill-loader preamble, e.g. "Base directory for this skill: …"

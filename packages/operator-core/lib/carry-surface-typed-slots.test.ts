@@ -158,6 +158,38 @@ describe('lintOwnerQuestionSlots', () => {
 });
 
 describe('EI-19988500685566622: negation and third-party-subject suppression', () => {
+  it('does not flag a negative owner-answer status when existing typed approval waits are preserved', () => {
+    const walls: WallEntry[] = [
+      {
+        id: 'p012-trial-reserved',
+        claim: 'P012 trial remains behind the existing owner approval wall',
+        recheck: 'recheck after the approved event changes',
+      },
+      {
+        id: 'second-approval-wall',
+        claim: 'The separate rollout remains behind its existing owner approval wall',
+        recheck: 'recheck after its owning gate changes',
+      },
+    ];
+    const checkpoint = [
+      '## Did',
+      'No new actual owner answer arrived; the exact existing approval await is preserved.',
+      '## Next',
+      'Keep the existing conversation [ask:conv-mvblpih7-0000-2e207ccc73f647d89d4c05ebedccd02e].',
+      `## ${CARRY_NOTE_WALLS_HEADING}`,
+      ...walls.map(renderWallLine),
+    ].join('\n');
+
+    expect(lintOwnerQuestionSlots(checkpoint)).toEqual({ flagged: false, matches: [] });
+
+    // Existing typed approvals must not hide a separate, genuinely new question.
+    const withNewQuestion = [checkpoint, '## Next', 'Need to ask the owner whether to change the release scope.'].join('\n');
+    const result = lintOwnerQuestionSlots(withNewQuestion);
+    expect(result.flagged).toBe(true);
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].matchedText).toBe('Need to ask the owner');
+  });
+
   it('does NOT flag a DENIAL of an owner-gated item ("no need to ask the owner")', () => {
     expect(
       lintOwnerQuestionSlots(

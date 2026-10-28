@@ -27,6 +27,29 @@ export const HOSTED_INTEGRATION_SECRET_REF_PREFIX = 'integration:';
 
 /** Same shape `setup:save_integration_key` enforces for a stored name. */
 const INTEGRATION_NAME = /^[A-Z][A-Z0-9_]{2,63}$/;
+const POSTGRES_SQLSTATE = /^[0-9A-Z]{5}$/;
+
+/** A database read failed; the driver error is intentionally not retained. */
+export class HostedSecretStoreUnavailableError extends Error {
+  readonly code = 'hosted_secret_ref_store_unavailable';
+  readonly sqlState?: string;
+
+  constructor(sqlState?: string) {
+    super('hosted_secret_ref_store_unavailable');
+    this.name = 'HostedSecretStoreUnavailableError';
+    if (typeof sqlState === 'string' && POSTGRES_SQLSTATE.test(sqlState)) this.sqlState = sqlState;
+  }
+}
+
+function safeSqlStateFromStoreFailure(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  try {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === 'string' && POSTGRES_SQLSTATE.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export type HostedSecretRefResolver = (reference: string) => Promise<string>;
 
@@ -58,7 +81,12 @@ export function createHostedSecretRefResolver(
     if (!INTEGRATION_NAME.test(name)) {
       throw new Error(`hosted_secret_ref_malformed:${trimmed} (expected integration:SCREAMING_SNAKE_NAME)`);
     }
-    const value = await readKey(name);
+    let value: string | undefined;
+    try {
+      value = await readKey(name);
+    } catch (error) {
+      throw new HostedSecretStoreUnavailableError(safeSqlStateFromStoreFailure(error));
+    }
     if (typeof value !== 'string' || value.trim().length === 0) {
       throw new Error(
         `hosted_secret_ref_missing:${HOSTED_INTEGRATION_SECRET_REF_PREFIX}${name} ` +

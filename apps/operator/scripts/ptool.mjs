@@ -362,6 +362,35 @@ export function resolvePtoolRecoveryTool(toolName, callArgs, tools = []) {
 }
 
 /**
+ * Build-routed wrapper calls must be supported by the selected operator's
+ * outer schema. A current nested target does not make an older tools:invoke
+ * or tools:find wrapper accept the build selector.
+ * @param {string | null | undefined} toolName
+ * @param {unknown} callArgs
+ * @param {ToolCatalogEntry[]} tools
+ */
+export function catalogSupportsBuildSelector(toolName, callArgs, tools = []) {
+  if (toolName !== 'tools:invoke' && toolName !== 'tools:find') return true;
+  if (
+    !callArgs || typeof callArgs !== 'object' || Array.isArray(callArgs) ||
+    !Object.hasOwn(callArgs, 'build') || callArgs.build === undefined
+  ) return true;
+
+  const schema = tools.find((entry) => entry?.name === toolName)?.inputSchema;
+  const buildSchema = schema?.properties?.build;
+  if (!buildSchema || typeof buildSchema !== 'object' || Array.isArray(buildSchema)) return false;
+  if (typeof callArgs.build !== 'string') return false;
+  if (buildSchema.type != null) {
+    const types = Array.isArray(buildSchema.type) ? buildSchema.type : [buildSchema.type];
+    if (!types.includes('string')) return false;
+  }
+  if (Object.hasOwn(buildSchema, 'enum') &&
+      (!Array.isArray(buildSchema.enum) || !buildSchema.enum.includes(callArgs.build))) return false;
+  if (Object.hasOwn(buildSchema, 'const') && buildSchema.const !== callArgs.build) return false;
+  return true;
+}
+
+/**
  * Whether a catalog proves a current generation for the exact requested tool.
  * For tools:invoke, validate its nested target rather than the wrapper.
  * @param {string | null | undefined} toolName
@@ -384,6 +413,7 @@ export function hasCurrentPtoolServingGeneration(toolName, callArgs, tools = [])
  * @param {ToolCatalogEntry[]} tools
  */
 export function isReadOnlyPtoolRecoveryRequest(toolName, callArgs, tools = []) {
+  if (!catalogSupportsBuildSelector(toolName, callArgs, tools)) return false;
   return resolvePtoolRecoveryTool(toolName, callArgs, tools)?.annotations?.readOnlyHint === true;
 }
 
@@ -429,6 +459,7 @@ export function canDispatchPtoolOnFallback(
   fallbackUsed,
   managedCatalogValidated = false,
 ) {
+  if (!catalogSupportsBuildSelector(toolName, callArgs, tools)) return false;
   return !fallbackUsed || managedCatalogValidated || canDispatchOnFallbackOperator(tool, true) ||
     isReadOnlyPtoolRecoveryRequest(toolName, callArgs, tools);
 }
@@ -4965,7 +4996,10 @@ async function main() {
               const directTools = await withInvocationPhase('tools-list', () => listAllTools(directClient, {
                 retryLocalErrors: isLocalOperatorUrl(operatorUrl),
               }));
-              if (hasCurrentPtoolServingGeneration(args.tool, inputArgs, directTools)) {
+              if (
+                catalogSupportsBuildSelector(args.tool, inputArgs, directTools) &&
+                hasCurrentPtoolServingGeneration(args.tool, inputArgs, directTools)
+              ) {
                 await closeClientQuietly(client);
                 client = directClient;
                 directClient = null;
@@ -5044,6 +5078,16 @@ async function main() {
     if (!tool) {
       console.error(`ptool: no tool named "${toolName}". Try \`ptool --list ${serviceOf(toolName)}\`.`);
       process.exit(1);
+    }
+    if (!catalogSupportsBuildSelector(toolName, inputArgs, tools)) {
+      const routeKind = operatorFallbackUsed || managedDirectCatalogRecoveryUsed ? 'fallback' : 'selected';
+      console.error(
+        `ptool: refusing to dispatch ${toolName} because the ${routeKind} operator catalog does not declare a ` +
+          `compatible build selector for ${JSON.stringify(inputArgs?.build)}. ` +
+          'Pass --url=<intended operator> to pin the call.',
+      );
+      process.exitCode = 1;
+      return;
     }
     try {
       // The old release handler cannot enforce a generation it does not know

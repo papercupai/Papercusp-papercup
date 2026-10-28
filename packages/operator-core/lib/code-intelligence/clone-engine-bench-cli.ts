@@ -13,7 +13,11 @@ import { extractCloneFile } from './clone-index';
 import { CLONE_BENCH_POLICY, minhashTreeSimilarity, parseJscpd, parseSimilarityTs, runCloneBench,
   type CloneBenchPair, type CloneEngine } from './clone-engine-bench';
 
-const exec = promisify(execFile);
+// Promisified lazily on first call, never at module scope (EI-10161): an eager
+// promisify(execFile) throws at import time under a narrow node:child_process test mock.
+let cachedExec: typeof execFile.__promisify__ | undefined;
+const exec = ((...args: Parameters<typeof execFile.__promisify__>) =>
+  (cachedExec ??= promisify(execFile))(...args)) as typeof execFile.__promisify__;
 const fixture = fileURLToPath(new URL('./__fixtures__/clone-corpus-20261021/', import.meta.url));
 const repo = resolve(fixture, '../../../../../..');
 const json = async (path: string) => JSON.parse(await readFile(path, 'utf8'));

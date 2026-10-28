@@ -3556,11 +3556,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const criticalContinuationBlocker = (
     conflictKeys: string[] | null,
     now = Date.now(),
+    before?: QueuedCriticalContinuation,
   ): {
     tools: string[];
     ageMs: number;
     traceId: string;
     conflictKeys: string[] | null;
+    admissionState: "active" | "queued";
   } | null => {
     let oldest: ContinuationRequestDetails | null = null;
     for (const details of criticalContinuationRequests.values()) {
@@ -3570,14 +3572,30 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         oldest = details;
       }
     }
-    return oldest == null
-      ? null
-      : {
-          tools: oldest.tools,
-          ageMs: Math.max(0, now - oldest.startedAtMs),
-          traceId: oldest.traceId,
-          conflictKeys: oldest.conflictKeys,
+    if (oldest != null) return {
+      tools: oldest.tools,
+      ageMs: Math.max(0, now - oldest.startedAtMs),
+      traceId: oldest.traceId,
+      conflictKeys: oldest.conflictKeys,
+      admissionState: "active",
+    };
+    // A disjoint active write can still hold an earlier global waiter. Name that
+    // FIFO barrier rather than reporting no blocker (EI-26983586816895393).
+    if (before) {
+      for (const waiter of criticalContinuationQueue) {
+        if (waiter === before) break;
+        if (waiter.cancelled || waiter.granted ||
+            !criticalContinuationKeysConflict(waiter.conflictKeys, conflictKeys)) continue;
+        return {
+          tools: waiter.tools,
+          ageMs: Math.max(0, now - waiter.enqueuedAtMs),
+          traceId: waiter.traceId,
+          conflictKeys: waiter.conflictKeys,
+          admissionState: "queued",
         };
+      }
+    }
+    return null;
   };
 
   const improvementsCaptureBlocker = (
@@ -4249,6 +4267,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           conflictKeys: waiter.conflictKeys,
           ageMs: Math.max(0, healthNow - waiter.enqueuedAtMs),
           maxWaitMs: waiter.maxWaitMs,
+          blockedBy: criticalContinuationBlocker(waiter.conflictKeys, healthNow, waiter),
         }));
       const activeCoordSendRequests = [...coordSendRequests.entries()]
         .slice(0, MAX_CRITICAL_CONTINUATION_HEALTH_REQUESTS)
@@ -5277,6 +5296,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   maxCriticalContinuationQueue,
                   maxCriticalContinuationQueueWaitMs:
                     queuedCriticalContinuation.maxWaitMs,
+                  blockedBy: criticalContinuationBlocker(
+                    criticalContinuationConflictKeys, Date.now(), queuedCriticalContinuation,
+                  ),
                 });
                 armCriticalContinuationWaitWatch();
               }, nextDelayMs);
@@ -5299,6 +5321,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               maxCriticalContinuationQueue,
               maxCriticalContinuationQueueWaitMs: effectiveQueueWaitMs,
               forwardingResult: "queued",
+              blockedBy: criticalContinuationBlocker(
+                criticalContinuationConflictKeys, enqueuedAtMs, queuedCriticalContinuation,
+              ),
             });
           });
           clearQueuedWaitTimer(queuedCriticalContinuation);

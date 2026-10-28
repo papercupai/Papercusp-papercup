@@ -24,6 +24,7 @@
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
+import { tagTurnForInjection } from '../../../turn-provenance/turn-provenance';
 import {
   evaluateHookContextSink,
   evaluateToolGuard,
@@ -161,7 +162,17 @@ const stopContext = defineTool({
       boundedContextSinkText({ ownerId, workspaceId, sink: 'stop' }),
     ]);
     const text = [heldWorkText, identityText].filter((t) => t.length > 0).join('\n\n');
-    return Response.json({ ok: true, text });
+    const deliveredText =
+      body.client === 'codex' && text
+        ? (
+            await tagTurnForInjection({
+              sid: ownerId,
+              origin: 'stop-hook',
+              text,
+            })
+          ).taggedText
+        : text;
+    return Response.json({ ok: true, text: deliveredText });
   },
 });
 

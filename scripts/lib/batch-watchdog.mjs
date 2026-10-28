@@ -97,15 +97,17 @@ export function resolveTaskTimeoutMs({
  *
  * 1. MONOTONE. Every branch either kills at the same instant today's code would, or
  *    kills LATER. No input makes it kill EARLIER, so it cannot introduce a new red.
- * 2. STILL BOUNDED. Extensions stop at `maxMs` (90m), below the ~120m gate ceiling
- *    this watchdog protects. A wedge that emits nothing is killed at the original
- *    deadline; a wedge that *chatters* while wedged is bounded by the ceiling. The
- *    unbounded-hang class that motivated the watchdog stays closed.
+ * 2. BOUNDED BY SILENCE, AND BY `maxMs` WHEN ONE IS GIVEN. A wedge that emits nothing
+ *    is killed at the original deadline. Off the gate, extensions also stop at `maxMs`
+ *    (90m), so a wedge that *chatters* while wedged is bounded by the ceiling. The
+ *    release gate passes `maxMs: null` (owner #2574: nothing on the main-greening path
+ *    is killed for running long while it still makes progress), so there a task is
+ *    killed only once its output goes flat for a whole stall window.
  *
  * Missing evidence FAILS SAFE: an unusable `lastProgressAgeMs` kills on time, so a
  * caller that cannot measure progress keeps exactly today's behavior.
  *
- * @param {{ elapsedMs: number, lastProgressAgeMs?: number | null, maxMs: number,
+ * @param {{ elapsedMs: number, lastProgressAgeMs?: number | null, maxMs: number | null,
  *   stallWindowMs?: number, extensionMs?: number }} opts
  * @returns {{ action: 'kill' | 'extend', reason: 'absolute-ceiling' | 'progress-unknown'
  *   | 'progress-stalled' | 'invalid-policy' | 'progress-advancing', extendByMs: number }}
@@ -130,7 +132,13 @@ export function decideWatchdogExpiry({
     return kill('invalid-policy');
   }
 
-  const remainingToCeilingMs = Number.isFinite(maxMs) ? maxMs - elapsedMs : 0;
+  // `maxMs: null` is the explicit "no absolute ceiling" policy (the release gate, owner
+  // #2574 / WI-6554700010042457): a task is extended for as long as its output keeps
+  // advancing and is killed only once it goes silent for a whole stall window. Every
+  // OTHER non-finite value (undefined, NaN, Infinity) still fails toward the kill, so a
+  // missing or garbled constant can never silently disable the bound.
+  const remainingToCeilingMs =
+    maxMs === null ? Infinity : Number.isFinite(maxMs) ? maxMs - elapsedMs : 0;
   if (remainingToCeilingMs <= 0) return kill('absolute-ceiling');
 
   // No live reading -> behave exactly as the time-only watchdog did.
@@ -160,7 +168,7 @@ export function decideWatchdogExpiry({
  * `noteProgress()` is the forward-progress signal — the caller calls it when child
  * output arrives, because a synchronously-spinning worker cannot emit any.
  *
- * @param {{ timeoutMs: number, maxMs: number, stallWindowMs?: number, extensionMs?: number,
+ * @param {{ timeoutMs: number, maxMs: number | null, stallWindowMs?: number, extensionMs?: number,
  *   now?: () => number, setTimer?: (fn: () => void, ms: number) => any,
  *   clearTimer?: (handle: any) => void,
  *   onExtend?: (decision: ReturnType<typeof decideWatchdogExpiry>) => void,

@@ -26,8 +26,10 @@ import {
   countAgentToolCallsInWindow,
   LOOP_WAKE_ACTION,
   routeStalledLoopToHostRecovery,
+  rearmFireStarvedLoop,
   retainStalledLoopRecoveryWall,
 } from './loop';
+import { readLatestLoopTransition } from './loop-transition-log';
 import {
   decideMonitorAdmission,
   hasActiveMonitorForOwnerPredicate,
@@ -137,6 +139,49 @@ describe('stalled host recovery ownership (real PG)', () => {
     expect(await retainStalledLoopRecoveryWall(sql, row.id, wall)).toEqual({ retained: false, changed: false });
     expect(await routeStalledLoopToHostRecovery(sql, row.id, 'stale retry', wall.condition)).toEqual({ routed: false });
     expect((await rawRow(OWNER))?.active).toBe(false);
+  });
+
+  it('persists the exact appointment for each recovery writer that changes next_fire_at', async () => {
+    const row = await seed();
+    const latestTransition = async (actor: string) => {
+      let latest: Awaited<ReturnType<typeof readLatestLoopTransition>> | undefined;
+      await vi.waitFor(async () => {
+        latest = await readLatestLoopTransition({
+          workspaceId: WS,
+          installSlug: HARNESS,
+          routineName: loopRoutineName(OWNER),
+          targetOwnerId: OWNER,
+        }, { sql });
+        expect(latest).toMatchObject({
+          status: 'found',
+          transition: { event: 'rearmed', actor },
+        });
+      }, { timeout: 5_000, interval: 50 });
+
+      const [schedule] = await sql<Array<{ next_fire_at: Date }>>`
+        SELECT next_fire_at FROM harness_shared.routines WHERE id = ${row.id}`;
+      expect(latest?.status).toBe('found');
+      if (latest?.status !== 'found') throw new Error(`missing loop transition for ${actor}`);
+      expect(latest.transition.newNextFireAt).toBe(schedule.next_fire_at.toISOString());
+    };
+
+    await latestTransition('loop-explicit-materialize');
+
+    await rearmFireStarvedLoop(sql, row.id, 'owner activity proves the loop is still live');
+    await latestTransition('loop-fire-starvation-recovery');
+
+    await routeStalledLoopToHostRecovery(sql, row.id, 'provider host recovery required', 'provider-auth');
+    await latestTransition('stalled-loop-host-recovery');
+
+    const wall = {
+      ownerId: OWNER,
+      condition: 'provider-auth',
+      reason: 'provider login remains unavailable',
+      remedy: 'refresh provider credentials',
+    };
+    await expect(retainStalledLoopRecoveryWall(sql, row.id, wall))
+      .resolves.toEqual({ retained: true, changed: true });
+    await latestTransition('stalled-loop-recovery-wall');
   });
 });
 

@@ -85,6 +85,6 @@ export const accountsLinkStatusTool = defineTool({
     linkId: z.string().min(1).describe('The opaque linkId from accounts:link-start'),
   }),
   async handler(args) {
-    return json({ ok: true, ...getCliLinkStatus(args.linkId) });
+    return json({ ok: true, ...await getCliLinkStatus(args.linkId) });
   },
 });

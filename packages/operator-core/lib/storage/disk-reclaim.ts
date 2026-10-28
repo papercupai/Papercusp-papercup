@@ -273,13 +273,19 @@ export async function runScheduledDiskReclaimWithFailureReceipt(
   startedAt: string,
   options: {
     persistFailureReceipt: (receipt: DiskReclaimReceipt) => Promise<void>;
+    /** Finish the owning worker before accepting success. A late failure must
+     * retain the exact measured pass rather than replace it with empty data. */
+    finalize?: () => Promise<void>;
     now?: () => Date;
   },
 ): Promise<DiskReclaimReceipt> {
+  let receipt: DiskReclaimReceipt;
+  let failed = false;
   try {
-    return await run();
+    receipt = await run();
   } catch (err) {
-    const receipt = {
+    failed = true;
+    receipt = {
       schemaVersion: 1,
       id: randomUUID(),
       startedAt,
@@ -292,9 +298,19 @@ export async function runScheduledDiskReclaimWithFailureReceipt(
       errors: [message(err)],
       finishedAt: (options.now ?? (() => new Date()))().toISOString(),
     } satisfies DiskReclaimReceipt;
-    await options.persistFailureReceipt(receipt);
-    return receipt;
   }
+  try {
+    await options.finalize?.();
+  } catch (err) {
+    failed = true;
+    // Keep any previously persisted receipt object unchanged. This terminal
+    // edition retains its id, measured effects and all earlier failures.
+    receipt = { ...receipt, complete: false, policyExhausted: null,
+      errors: [...receipt.errors, `finalize:${message(err)}`],
+      finishedAt: (options.now ?? (() => new Date()))().toISOString() };
+  }
+  if (failed) await options.persistFailureReceipt(receipt);
+  return receipt;
 }
 
 const RETENTION_HOLDER_SCAN_MS = 30_000;
@@ -1972,12 +1988,16 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
       waitMs: options.timeoutMs ?? DEFAULT_RECLAIM_RUN_BUDGET_MS,
     });
   const holders = createRetentionHolderScanner();
-  try { return await runDiskReclaimOnce({ ...options, yieldAfterProductiveEffects: true, yieldAfterPendingCensus: true,
+  return runScheduledDiskReclaimWithFailureReceipt(() => runDiskReclaimOnce({ ...options, yieldAfterProductiveEffects: true, yieldAfterPendingCensus: true,
     previousReceipt, delegates, readProtection, inspectTrees, inspectInitialCappedTrees,
     removeEntry: (entry, timeoutMs, observeTiming) => removePrivilegedRetentionEntry(entry, timeoutMs, nativeRetentionCommand, observeTiming),
     scanHolders: holders.scan, acquireRegularFileLease: holders.acquireRegularFileLease,
     record: async (phase, detail) => {
     if (phase === 'started') runId = (detail as DiskReclaimReceipt).id;
     await writeReclaimAudit(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(), runId, phase, detail);
-  } }); } finally { await holders.close(); }
+  } }), new Date().toISOString(), {
+    finalize: holders.close,
+    persistFailureReceipt: receipt => writeReclaimAudit(getOrgPg().sql as unknown as ReclaimSql,
+      activeWorkspaceId(), receipt.id, 'receipt', receipt),
+  });
 }

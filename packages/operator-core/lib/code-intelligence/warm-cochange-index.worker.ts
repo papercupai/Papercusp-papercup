@@ -32,7 +32,11 @@ import {
   type CoChangeIndex, type CoChangeReport, type HistoryCommit,
 } from './cochange-index';
 
-const run = promisify(execFile);
+// Deferred to first call, memoized (lint:no-eager-execfile-promisify): a module-scope
+// promisify(execFile) runs at import in every transitive importer, including mocked tests.
+type RunFile = (file: string, args: string[], opts: Record<string, unknown>) => Promise<{ stdout: string; stderr: string }>;
+let cachedRun: RunFile | null = null;
+const run: RunFile = (file, args, opts) => (cachedRun ??= promisify(execFile) as unknown as RunFile)(file, args, opts);
 const DAY = 86_400_000;
 export const WARM_COCHANGE_SNAPSHOT_VERSION = 1;
 /** A longer delta (a long-idle host, a rewritten branch) is read as a full window instead. */
@@ -221,6 +225,7 @@ if (process.send) {
       void watchRefs().catch(() => undefined);
       requestRefresh();
     } else if (request?.kind === 'warm-cochange-query') {
+      // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/warm-cochange-index.worker.ts#<module>/<callback>:4e477bb2fb6dcc24dc73:1","classification":"safe-to-lose","reason":"IPC reply from the resident co-change worker to its host. A lost reply hits the host's pending-query timeout, so the brief section reads unknown; no person is notified."}
       process.send?.(answer(request));
     }
   });

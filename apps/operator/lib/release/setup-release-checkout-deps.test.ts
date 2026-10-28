@@ -82,6 +82,36 @@ function spawnFailureDetails(
   ].join('\n');
 }
 
+it('spawnFailureDetails reports timeout phase and bounded child output', () => {
+  const error = Object.assign(new Error('timed out'), {
+    code: 'ETIMEDOUT',
+    syscall: 'spawnSync bash',
+    path: 'bash',
+  });
+  const result = {
+    status: null,
+    signal: 'SIGTERM',
+    error,
+    stdout: 'x'.repeat(4_001),
+    stderr: 'y'.repeat(4_001),
+  } as ReturnType<typeof spawnSync>;
+
+  const details = spawnFailureDetails('prepare explicit generation', 30_002, result);
+
+  expect(details).toContain(
+    'phase=prepare explicit generation elapsedMs=30002 status=null signal=SIGTERM',
+  );
+  expect(details).toContain(
+    'spawnError=Error code=ETIMEDOUT syscall=spawnSync bash path=bash message=timed out',
+  );
+  expect(details).toContain('stdout (4001 chars, trailing 4000 shown):');
+  expect(details).toContain('stderr (4001 chars, trailing 4000 shown):');
+  expect(details).toContain('x'.repeat(4_000));
+  expect(details).toContain('y'.repeat(4_000));
+  expect(details).not.toContain('x'.repeat(4_001));
+  expect(details).not.toContain('y'.repeat(4_001));
+});
+
 /**
  * Run the real `need_node_modules()` against the given trees. Returns true when the
  * function decided a re-copy is NEEDED (exit 0) and false when node_modules is

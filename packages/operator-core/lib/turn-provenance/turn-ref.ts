@@ -26,7 +26,7 @@ import {
   resolveOwnerIsolatedSessionByPrefix,
   type ResolveSelfSessionOptions,
 } from '../search/self-session';
-import { parseEnvelope } from './turn-provenance';
+import { parseCodexStopHookEnvelope, parseEnvelope } from './turn-provenance';
 import { hasMachineSurfaceMarker, hasSyntheticMarker } from './machine-surface-catalogue';
 import { blockPayloadText, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES, DIALOG_ANSWER_SOURCE_PREFIX, dialogAnswerText, claudeDialogProvenanceAttachment } from '../transcript-wire';
 
@@ -195,7 +195,7 @@ export interface RecordedTurnClass {
  * affirmative owner stamp (same D-002 default as the live classifier).
  */
 export function classifyRecordedTurn(text: string): RecordedTurnClass {
-  const env = parseEnvelope(text);
+  const env = parseEnvelope(text) ?? parseCodexStopHookEnvelope(text);
   if (env) return { verdict: 'agent-injected', origin: env.origin };
   const t = text ?? '';
   if (t.startsWith(`${DIALOG_ANSWER_SOURCE_PREFIX}automatic⟧`)) {

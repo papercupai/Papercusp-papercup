@@ -5,8 +5,9 @@
  * per test isolates the module-level _runs map.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { MAX_RECORDED_PASSED_CASES } from '@papercusp/test-config/execution-details';
 
@@ -515,11 +516,12 @@ describe('task lifecycle handlers', () => {
     );
   });
 
-  it('ingests a detached reporter-less JSON artifact on close and cleans it up', async () => {
+  it('ingests a detached reporter-less JSON artifact and retains a durable manifest before cleanup', async () => {
     const reportDir = await mkdtemp('/tmp/papercusp-testing-run-store-report-');
     const reportPath = join(reportDir, 'report.json');
     const failureDetailsPath = join(reportDir, 'failure-details.json');
     const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+    let retainedRunDirectory: string | undefined;
     process.env.PAPERCUSP_TEST_RUNS_PERSIST = '1';
     try {
       // Warm the mocked database module before the close handler starts its
@@ -544,6 +546,7 @@ describe('task lifecycle handlers', () => {
                   status: 'failed',
                   fullName: 'suite > works',
                   failureMessages: ['expected a structured diff'],
+                  meta: { nativeToolSurface: { invocations: ['testing:run-status'] } },
                 },
               ],
             },
@@ -641,6 +644,21 @@ describe('task lifecycle handlers', () => {
       expect(finalSnapshotValues[9]).toContain('suite > works');
       expect(finalSnapshotValues[9]).toContain('actual: actual-value');
       expect(finalSnapshotValues[9]).toContain('expected: expected-value');
+      const retainedMatch = /\[detached-recovery\] retained report artifact (\{[^\n]+\})/.exec(String(finalSnapshotValues[9]));
+      expect(retainedMatch).not.toBeNull();
+      const retained = JSON.parse(retainedMatch![1]!) as {
+        reportPath: string; manifestPath: string; sha256: string; byteLength: number;
+      };
+      retainedRunDirectory = dirname(dirname(retained.manifestPath));
+      const retainedText = await readFile(retained.reportPath, 'utf8');
+      const retainedReport = JSON.parse(retainedText);
+      expect(retainedReport.testResults[0].assertionResults.at(-1).meta.nativeToolSurface)
+        .toEqual({ invocations: ['testing:run-status'] });
+      expect(retained.sha256).toBe(createHash('sha256').update(retainedText).digest('hex'));
+      expect(retained.byteLength).toBe(Buffer.byteLength(retainedText));
+      const manifest = JSON.parse(await readFile(retained.manifestPath, 'utf8'));
+      expect(manifest).toMatchObject({ schemaVersion: 1, kind: 'detached-vitest-report', runId: snapshot.runId,
+        report: { path: retained.reportPath, sha256: retained.sha256, byteLength: retained.byteLength } });
       expect(finalSnapshotValues[9]).toHaveLength(16 * 1024);
       expect(finalSnapshotValues[10]).toBe(true);
       const testRunCallIndex = persistSqlMock.mock.calls.findIndex((call) =>
@@ -655,6 +673,7 @@ describe('task lifecycle handlers', () => {
     } finally {
       if (previousPersistOptIn === undefined) delete process.env.PAPERCUSP_TEST_RUNS_PERSIST;
       else process.env.PAPERCUSP_TEST_RUNS_PERSIST = previousPersistOptIn;
+      if (retainedRunDirectory) await rm(retainedRunDirectory, { recursive: true, force: true });
       await rm(reportDir, { recursive: true, force: true });
     }
   });
@@ -987,6 +1006,7 @@ describe('durable detached snapshot lifecycle', () => {
     const childOnlySecret = 'synthetic-child-api-key-not-present-after-worker-restart';
     const reportDir = await mkdtemp('/tmp/papercusp-testing-run-recovery-');
     const reportPath = join(reportDir, 'papercusp-testing-run-detached-fixture.json');
+    let retainedRunDirectory: string | undefined;
     try {
       execFileSyncMock.mockImplementation((_command: string, args: string[]) =>
         args[0] === 'rev-parse' ? 'launch-sha\n' : '',
@@ -1012,6 +1032,7 @@ describe('durable detached snapshot lifecycle', () => {
           assertionResults: [{
             status: options.failure ? 'failed' : 'passed',
             fullName: options.secretOutput ? `saved assertion ${childOnlySecret}` : 'saved assertion',
+            meta: { nativeToolSurface: { invocations: ['testing:run-status'] } },
             ...(options.secretOutput ? { failureMessages: [`child report included ${childOnlySecret}`] } : {}),
           }, { status: 'pending' }],
         }],
@@ -1082,6 +1103,34 @@ describe('durable detached snapshot lifecycle', () => {
         return;
       }
       const recovered = await recovery;
+      const recoveryOutput = recovered?.output ?? '';
+      const retainedMatches = [...recoveryOutput.matchAll(/\[detached-recovery\] retained report artifact (\{[^\n]+\})/g)];
+      const expectedRetainedCount = options.routerReports && !options.missingRouterGroup && !options.partialRouterGroup ? 2 : 1;
+      const reportWasRecovered = /(?:recorded|recovered) completed saved Vitest report/.test(recoveryOutput);
+      expect(retainedMatches).toHaveLength(reportWasRecovered ? expectedRetainedCount : 0);
+      for (const match of retainedMatches) {
+        const retained = JSON.parse(match[1]!) as {
+          reportPath: string; manifestPath: string; sha256: string; byteLength: number;
+        };
+        retainedRunDirectory = dirname(dirname(retained.manifestPath));
+        const retainedText = await readFile(retained.reportPath, 'utf8');
+        expect(retained.sha256).toBe(createHash('sha256').update(retainedText).digest('hex'));
+        expect(retained.byteLength).toBe(Buffer.byteLength(retainedText));
+        const retainedReport = JSON.parse(retainedText);
+        if (retainedReport.testResults[0].name.endsWith('saved.test.ts')) {
+          expect(retainedReport.testResults[0].assertionResults[0].meta.nativeToolSurface)
+            .toEqual({ invocations: ['testing:run-status'] });
+        }
+        if (options.secretOutput) expect(retainedText).not.toContain(childOnlySecret);
+        const manifest = JSON.parse(await readFile(retained.manifestPath, 'utf8'));
+        expect(manifest.report).toMatchObject({ path: retained.reportPath, sha256: retained.sha256,
+          byteLength: retained.byteLength });
+        if (options.secretOutput) {
+          expect(manifest.sanitization).toBe('child-launch-environment-unavailable; free-form assertion text omitted');
+          expect(retainedReport.testResults[0].assertionResults[0].fullName)
+            .toBe('[omitted: child launch environment unavailable]');
+        }
+      }
       if (options.expected === null) expect(recovered).toBeNull();
       else expect(recovered?.status).toBe(options.expected);
       if (options.expired) {
@@ -1132,6 +1181,7 @@ describe('durable detached snapshot lifecycle', () => {
       await expect(readFile(reportPath)).rejects.toMatchObject({ code: 'ENOENT' });
       if (options.routerReports) await expect(readFile(siblingPath)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
+      if (retainedRunDirectory) await rm(retainedRunDirectory, { recursive: true, force: true });
       await rm(reportDir, { recursive: true, force: true });
     }
   });

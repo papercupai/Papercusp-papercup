@@ -7,6 +7,8 @@ import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { getOrgPg } from '@papercusp/db-org';
+import { resolveMcpName } from '@papercusp/tooldef/tool-projection';
+import { canonicalJson } from '../external-bench/reproducibility/canonical-json';
 import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
 import { createNativeTranscriptReader, NATIVE_PROVIDERS, type NativeProvider } from './native-operation';
 import type { SearchSource } from './search-reformulation';
@@ -32,6 +34,68 @@ const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(va
 const micros = (value: string) => BigInt(Date.parse(value)) * 1000n
   + BigInt(((/\.(\d+)/.exec(value)?.[1] ?? '').padEnd(6, '0').slice(3, 6)) || '0');
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+/** D030: exact dispatch correlation is a necessary check, NEVER an authority
+ * grant. The existing host stores system-bearer authentication and caller/row
+ * consistency, not independently authenticated owner/per-call scope. Keep that
+ * distinction in the return type so a candidate cannot certify capture. Call
+ * only with a source read from its independently enumerated issued runtime;
+ * neither an activity row nor this helper scopes its siblings or its root. */
+export async function inspectNativeDispatchCandidate(source: SearchSource, binding: Binding,
+  opts: Pick<NativeCaptureOptions, 'workspaceId' | 'client' | 'authorize'>): Promise<{
+    authority: 'unknown'; correlation: 'unknown' | 'exact'; candidateHarness?: string; fingerprint?: string;
+  }> {
+  const unknown = { authority: 'unknown', correlation: 'unknown' } as const;
+  const object = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  try {
+    // Native shell/browser tools and code-mode/wrapper fanout have no faithful
+    // one-to-one dispatch projection. Do not inspect their program text.
+    const tool = resolveMcpName(source.tool)?.expose.mcp?.name;
+    const args = object(source.args);
+    if (!tool || ['tools:invoke', 'code:run'].includes(tool) || !args || Object.hasOwn(args, '_truncated')
+      || !source.callId || !source.namespace || source.workspaceId !== opts.workspaceId
+      || source.actor !== binding.owner || source.provider !== binding.provider
+      || source.identityAuthority !== 'provider' || !source.sourceComplete
+      || !/^\d+$/.test(binding.id) || !await opts.authorize()) return unknown;
+    const sql = opts.client ?? getOrgPg().sql;
+    const sha = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
+    const session = sha(source.namespace), call = sha(source.callId);
+    // Match the WHOLE exact-call population, not just this owner/tool/scope or
+    // a selected invocation ID. A conflicting sibling dispatch must be visible.
+    const read = async () => {
+      const runtimes = await sql`SELECT id::text,workspace_id,coord_owner_id,agent
+        FROM harness_shared.adv_sessions WHERE id=${binding.id}::bigint`;
+      const rows = await sql<{ invocation: Record<string, unknown>; population: string }[]>`
+        SELECT to_jsonb(i) AS invocation,count(*) OVER ()::text AS population
+        FROM harness_shared.tool_invocations i
+        WHERE i.metadata_json->'requestOrigin'->'nativeSession'->>'valueFingerprint'=${session}
+          AND i.metadata_json->'requestOrigin'->'nativeSession'->>'callIdFingerprint'=${call}
+        ORDER BY i.id LIMIT 2`;
+      return { runtimes: [...runtimes], rows: [...rows] };
+    };
+    const first = await read();
+    const runtime = first.runtimes[0], match = first.rows[0];
+    if (first.runtimes.length !== 1 || runtime?.workspace_id !== opts.workspaceId
+      || runtime.coord_owner_id !== binding.owner || runtime.agent !== binding.provider
+      || first.rows.length !== 1 || match?.population !== '1') return unknown;
+    const row = match.invocation, origin = object(object(row.metadata_json)?.requestOrigin), native = object(origin?.nativeSession);
+    const harness = row.harness_slug;
+    if (row.workspace_id !== opts.workspaceId || row.coord_owner_id !== binding.owner || row.tool_name !== tool
+      || typeof harness !== 'string' || !harness || harness === '*' || row.transport !== 'mcp'
+      || row.principal_trust !== 'trusted' || row.principal_kind !== 'system' || row.principal_auth_method !== 'bearer-token'
+      || origin?.transport !== 'mcp' || native?.carrier !== 'meta:threadId' || native.binding !== 'bound'
+      || native.candidateAdvSessionId !== Number(binding.id)
+      || canonicalJson(args) !== canonicalJson(row.args_json)
+      || ['harness', 'harness_slug'].some(key => Object.hasOwn(args, key) && args[key] !== harness)
+      || ['workspace', 'workspace_id'].some(key => Object.hasOwn(args, key) && args[key] !== opts.workspaceId)) return unknown;
+    // No cache or historical backfill. Recheck live ACL and both canonical
+    // populations after the read; changes/deletions cannot retain even an exact
+    // candidate. Persisting this correlation as scope would still be incorrect.
+    if (!await opts.authorize() || canonicalJson(first) !== canonicalJson(await read())) return unknown;
+    return { authority: 'unknown', correlation: 'exact', candidateHarness: harness,
+      fingerprint: sha(canonicalJson(first)) };
+  } catch { return unknown; }
+}
 /** Enrollment records source identities, not a claim that their content was
  * captured. Never load historical transcript bodies just to start a prospective
  * interval; the reconciler must validate them before certifying any coverage. */
@@ -180,10 +244,22 @@ export async function canonicalNativeRuntimeSources(binding: Binding, context: {
     identities, snapshot, complete, continuation: chunked ? cursor : null };
 }
 
-/** A fresh canonical-source reconciliation, not a cached callback attestation.
- * Missing sources, an index rewrite, changed authority, future windows and the
- * pre-install period remain UNKNOWN/gap. Only opaque digests/counts are retained. */
-export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promise<'complete' | 'gap' | 'unknown'> {
+/** Production authority boundary (D030). No existing generic persisted receipt
+ * independently authenticates owner + issued runtime + exact per-call scope.
+ * Until one does, even a perfect candidate index is UNKNOWN. In particular,
+ * never run the candidate indexer here: it writes opts.harnessSlug and cannot
+ * supply its own authority. This is a fail-closed mitigation; the missing
+ * positive binding remains tracked by EI-27075012317842664. */
+export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promise<'unknown'> {
+  try { await opts.authorize(); } catch { /* Revocation/unavailable ACL is also UNKNOWN. */ }
+  return 'unknown';
+}
+
+/** @internal Technical candidate-index preparation, NOT scope authorization or
+ * production continuity. Kept separate to preserve the real filesystem/PG
+ * scanner, receipt-time and cache-invalidation regressions. Only the production
+ * authority boundary above may certify continuity; this helper cannot do so. */
+export async function indexNativeCaptureCandidates(opts: NativeCaptureOptions): Promise<'complete' | 'gap' | 'unknown'> {
   const sql = opts.client ?? getOrgPg().sql, deadline = Date.now() + 1000;
   try {
     if (!opts.harnessSlug || !opts.sourceBoundary || !Number.isFinite(Date.parse(opts.since))

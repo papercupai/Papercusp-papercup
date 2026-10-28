@@ -12,6 +12,80 @@ export const DOCS_FINAL_INPUT_CONTRACT = 'docs-search-final-row-json-v1';
 
 export const TYPESENSE_FINAL_INPUT_CONTRACT = 'restart-typesense-final-row-json-v1';
 
+export const PROSE_FINAL_INPUT_CONTRACT = 'prose-search-final-row-json-v1';
+
+/** Direct handler captures contain the complete MCP envelope. Effective scope
+ * is pinned separately: production work_item requests also search plans.
+ * Fulltext has no delivered degradation verdict; unknown must remain unknown.
+ */
+export function decodeProseSearchCapture(capture: unknown, expected: {
+  id: string;
+  adapter: 'search:fulltext' | 'search:semantic';
+  args: Readonly<Record<string, unknown>>;
+  effectiveScope: readonly string[];
+}) {
+  const saved = object(capture, 'capture');
+  if (saved.schemaVersion !== 1 || saved.attemptId !== expected.id || saved.adapter !== expected.adapter)
+    throw new Error('capture adapter or attempt differs from frozen request');
+  const request = object(saved.request, 'request');
+  if (adapterFingerprint(request as Parameters<typeof adapterFingerprint>[0]) !==
+      adapterFingerprint(expected.args as Parameters<typeof adapterFingerprint>[0]))
+    throw new Error('capture request differs from frozen request');
+  if (typeof request.query !== 'string' || !request.query.trim() || !Number.isInteger(request.limit)
+    || (request.limit as number) < 1 || typeof request.harness_slug !== 'string' || !request.harness_slug
+    || !Array.isArray(request.scope) || !request.scope.length || !expected.effectiveScope.length
+    || new Set(expected.effectiveScope).size !== expected.effectiveScope.length)
+    throw new Error('requires explicit query, source/harness scope and cutoff');
+  if (saved.exitCode !== 0 || typeof saved.stdout !== 'string' || !saved.stdout.trim()
+    || typeof saved.deliveryWallMs !== 'number' || !Number.isFinite(saved.deliveryWallMs) || saved.deliveryWallMs < 0)
+    throw new Error('missing successful complete capture or measured handler duration');
+  const observation = object(saved.observation, 'observation');
+  if (observation.plane !== 'direct-tool-handler' || observation.transportExercised !== false)
+    throw new Error('requires explicit direct-handler measurement plane');
+  const envelope = object(JSON.parse(saved.stdout), 'handler envelope');
+  complete(envelope);
+  if (envelope.isError === true || !Array.isArray(envelope.content) || envelope.content.length !== 1)
+    throw new Error('not a complete successful prose handler envelope');
+  const block = object(envelope.content[0], 'content block');
+  if (block.type !== 'text' || typeof block.text !== 'string') throw new Error('missing exact prose response');
+  const response = object(JSON.parse(block.text), 'response');
+  complete(response);
+  if (response.query !== request.query || JSON.stringify(response.scope) !== JSON.stringify(expected.effectiveScope)
+    || !Array.isArray(response.results) || response.results.length > (request.limit as number))
+    throw new Error('response query, effective scope or cutoff differs');
+  let degraded: boolean | null = null;
+  if (expected.adapter === 'search:semantic') {
+    const legs = object(response.legs, 'observed legs');
+    if (typeof legs.degraded !== 'boolean' || typeof response.embedder_available !== 'boolean'
+      || !['ok', 'degraded'].includes(String(response.status)) || response.mode !== (request.mode ?? 'hybrid'))
+      throw new Error('missing semantic path or degradation observations');
+    const coverage = object(response.coverage, 'observed coverage');
+    if (typeof coverage.degraded !== 'boolean') throw new Error('missing coverage degradation observation');
+    degraded = response.status === 'degraded' || legs.degraded || coverage.degraded || !response.embedder_available;
+  }
+  if (response.total_hits !== null && (!Number.isInteger(response.total_hits) || (response.total_hits as number) < 0)
+    || response.total_hits === null && (expected.adapter !== 'search:semantic' || degraded !== true))
+    throw new Error('invalid or unqualified unknown hit count');
+  const ids = new Set<string>();
+  const hits: RankedHit[] = response.results.map((value, index) => {
+    const hit = object(value, 'hit');
+    if (typeof hit.source !== 'string' || !expected.effectiveScope.includes(hit.source)
+      || typeof hit.source_id !== 'string' || !hit.source_id || typeof hit.excerpt !== 'string')
+      throw new Error('invalid delivered prose identity or source scope');
+    const docId = JSON.stringify([hit.source, hit.harness_slug ?? null, hit.source_id]);
+    if (ids.has(docId)) throw new Error('duplicate delivered prose identity');
+    ids.add(docId);
+    const score = expected.adapter === 'search:fulltext' ? hit.rank : hit.score;
+    if (score !== undefined && (typeof score !== 'number' || !Number.isFinite(score)))
+      throw new Error('invalid delivered prose score');
+    return { docId, rank: index + 1, source: expected.adapter, docText: JSON.stringify(hit),
+      ...(typeof score === 'number' ? { score } : {}) };
+  });
+  return { inputContract: PROSE_FINAL_INPUT_CONTRACT, response, envelope, hits, degraded,
+    measurementPlane: 'direct-tool-handler' as const, handlerWallMs: saved.deliveryWallMs,
+    rawStdoutSha256: createHash('sha256').update(saved.stdout).digest('hex') };
+}
+
 /** Decode the library's returned documents, not raw engine hits or Scout cards.
  * Branch observations must come from the runner; answer:null and hits:[] alone
  * cannot distinguish fallback, missing usage, or genuinely empty retrieval. */

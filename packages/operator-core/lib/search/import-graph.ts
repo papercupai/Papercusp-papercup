@@ -40,7 +40,7 @@
  */
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import ts from 'typescript';
 
 export interface ImportGraph {
@@ -152,6 +152,63 @@ export function runtimeSpecifiers(file: string): string[] {
   const sideEffect = /(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g;
   for (const m of src.matchAll(sideEffect)) out.push(m[1]);
   return out;
+}
+
+const TEST_FILE_RE = /\.(test|spec)\.[cm]?[jt]sx?$/;
+const TEST_INFRA_SEGMENTS: ReadonlySet<string> = new Set([
+  'test', 'tests', '__tests__', '__fixtures__', 'fixtures', '__mocks__',
+]);
+
+/** Test infrastructure is not the proof's subject. Shared with evidence binding. */
+export function isTestInfrastructurePath(repoRelative: string): boolean {
+  if (TEST_FILE_RE.test(repoRelative)) return true;
+  return repoRelative.split('/').slice(0, -1).some(segment => TEST_INFRA_SEGMENTS.has(segment));
+}
+
+/** Literal dynamic imports used to load a subject after vi.mock. */
+function dynamicImportSpecifiers(file: string): string[] {
+  const src = stripComments(readFileSync(file, 'utf8'));
+  return [...src.matchAll(/\bimport\(\s*['"]([^'"]+)['"]\s*\)/g)].map(m => m[1]);
+}
+
+/** Static runtime declarations, including adjacent imports on the same line. */
+function staticRuntimeSpecifiers(file: string): string[] {
+  const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+  const specifiers = new Set<string>();
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+      if (!statement.importClause?.isTypeOnly) specifiers.add(statement.moduleSpecifier.text);
+    } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier
+      && ts.isStringLiteral(statement.moduleSpecifier) && !statement.isTypeOnly) {
+      specifiers.add(statement.moduleSpecifier.text);
+    }
+  }
+  return [...specifiers];
+}
+
+function firstRingRelativeRuntimeImportPaths(root: string, testPath: string): string[] {
+  const abs = resolve(root, testPath);
+  const out = new Set<string>();
+  for (const specifier of [...staticRuntimeSpecifiers(abs), ...dynamicImportSpecifiers(abs)]) {
+    if (!specifier.startsWith('.')) continue;
+    const target = resolveRelative(abs, specifier);
+    if (!target) continue;
+    const rel = relative(root, target);
+    if (rel.startsWith('..') || isAbsolute(rel)) continue;
+    const posix = rel.split(sep).join('/');
+    if (posix !== testPath) out.add(posix);
+  }
+  return [...out].sort();
+}
+
+/** Derive proof inputs without loading tool handlers or evaluating fixture modules. */
+export function deriveSubjectSourcePaths(root: string, testPath: string): string[] {
+  return firstRingRelativeRuntimeImportPaths(root, testPath).filter(path => !isTestInfrastructurePath(path));
+}
+
+/** Direct first-party helpers, fixtures and mocks in the same calibrated source census. */
+export function deriveFixtureSupportPaths(root: string, testPath: string): string[] {
+  return firstRingRelativeRuntimeImportPaths(root, testPath).filter(isTestInfrastructurePath);
 }
 
 function isFile(p: string): boolean {

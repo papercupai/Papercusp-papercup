@@ -31,7 +31,7 @@ beforeAll(async () => {
       ts timestamptz, owner text, harness_slug text, speaker text NOT NULL, text text NOT NULL,
       text_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english',left(text,20000))) STORED,
       ingested_at timestamptz NOT NULL DEFAULT '2026-01-15', text_embedding vector(768),
-      text_embedding_mode text, text_embedding_profile text, turn_origin_verdict text,
+      text_embedding_mode text, text_embedding_profile text, turn_origin_verdict text, chunked_at timestamptz,
       PRIMARY KEY (workspace_id,source_kind,session_id,turn_idx)
     );
     CREATE TABLE harness_shared.session_turn_chunks (
@@ -127,8 +127,10 @@ describe('P001 — session-turn fields, chunk candidates and disclosure boundari
     await seed(`${mode}-other-harness`,workspace,`${harness}-other`);
     await seed(`${mode}-no-harness`,workspace,null);
     const initial = await capture('stored-fields-chunk-only-vector',[target]);
+    // chunked_at=NULL in the same statement: session_turns.text is insert-only
+    // unless the writer re-arms chunking (search/session-turns-text-immutable.test.ts).
     await db.sql`UPDATE harness_shared.session_turns SET text=${`${query} replacement body`},
-      owner=${`${target}-new-owner`},speaker='assistant' WHERE session_id=${target}`;
+      owner=${`${target}-new-owner`},speaker='assistant',chunked_at=NULL WHERE session_id=${target}`;
     const changed = await capture('content-changed-timestamp-and-index-unchanged',[target]);
     expect(changed.after.raw.revision).not.toBe(initial.after.raw.revision);
     expect(changed.after.raw.ts).toEqual(initial.after.raw.ts);

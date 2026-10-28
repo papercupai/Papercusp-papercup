@@ -112,7 +112,7 @@ registerSystemAction('oddsmith-error-triage-autofix', async (ctx: SystemActionCt
   const r = await runBounded('claude', args, { cwd: root, env: agentEnv, timeoutMs: ODDSMITH_ERROR_TRIAGE_AUTOFIX_TIMEOUT_MS });
   assertRunOk('oddsmith-error-triage-autofix:agent', r);
   console.log('[oddsmith-error-triage-autofix] agent done');
-});
+}, { scheduling: 'on-demand' });
 
 /** Bound for the cheap `list open` count call — reuses the ingest action's bound
  *  rather than inventing a third constant for the same "quick CLI call" shape. */

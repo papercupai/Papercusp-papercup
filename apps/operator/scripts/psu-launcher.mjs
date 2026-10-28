@@ -2737,7 +2737,10 @@ export function prepareSuLaunch(boot, {
     promptFile: boot.promptFile, coordExtPath: boot.coordExtPath,
     injectHookPath: resolveOmpInjectHookPath(boot.agent),
     nativeSessionId: resumeSession ? null : nativeSessionId,
-    allowSubagents, allowNativeLsp: env.PAPERCUSP_OMP_NATIVE_LSP === "1",
+    // Read the SERVER's envelope, not the merged `env`: an inherited
+    // PAPERCUSP_OMP_NATIVE_LSP must never stand in for the server-side gate
+    // (mayKeepOmpNativeLsp). Pinned by omp-native-lsp-gate.test.ts.
+    allowSubagents, allowNativeLsp: boot.envelopeEnv?.PAPERCUSP_OMP_NATIVE_LSP === "1",
   });
   const settings = boot.agent === "claude" ? readClaudeLaunchSettings(env) : null;
   const modelArgs = modelArgsFor(boot.agent, effectiveModel, { compactionLimit, claudeSettings: settings });

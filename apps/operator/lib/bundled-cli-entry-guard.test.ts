@@ -230,6 +230,19 @@ describe('check-bundled-cli-entry-guards', () => {
     }
   });
 
+  it('keeps the real engineering evidence harness entry synchronous to import', async () => {
+    const repoRoot = repositoryRoot();
+    const root = mkdtempSync(join(tmpdir(), 'bundled-engineering-entry-'));
+    try {
+      const metafile = join(root, 'bundle.meta.json');
+      writeFileSync(metafile, JSON.stringify({ inputs: { 'scripts/verify-engineering-evidence-release.mjs': {} } }));
+      expect(findBundledCliEntryGuards({ metafilePath: metafile, baseDir: repoRoot })).toEqual([]);
+      expect(await findBundledTopLevelAwaits({ metafilePath: metafile, baseDir: repoRoot })).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps imported test-router helpers safe in the actual host bundle input graph', async () => {
     const repoRoot = repositoryRoot();
     const root = mkdtempSync(join(tmpdir(), 'bundled-test-router-entry-'));

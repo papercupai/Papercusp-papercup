@@ -62,6 +62,14 @@ describe('adv/sessions ensure-codex-home — legacy rows remain repairable', () 
   it('supplies a resolved model to the canonical writer for model-less legacy rows', () => {
     expect(src).toContain('const repairModel = requestedModel ? resolveCodexModel(requestedModel) : record.model ?? CODEX_DEFAULT_MODEL');
     expect(src).toContain('model: repairModel,');
-    expect(src).not.toContain('model: record.model,');
+    // Scope the negative to the legacy-repair region. The preserved-artifact
+    // branch earlier in the handler legitimately passes `record.model` — it
+    // refuses ('preserved-route-unavailable') before that point when the model
+    // is missing, so it can never hand the writer a model-less row.
+    const repairStart = src.indexOf('const repairModel =');
+    expect(repairStart).toBeGreaterThan(-1);
+    const nextExport = src.indexOf('\nexport ', repairStart);
+    const repairRegion = src.slice(repairStart, nextExport === -1 ? undefined : nextExport);
+    expect(repairRegion).not.toContain('model: record.model,');
   });
 });

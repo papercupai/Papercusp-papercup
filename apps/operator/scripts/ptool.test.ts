@@ -40,6 +40,7 @@ import {
   resolvePtoolOperatorCandidates,
   resolvePtoolInvocationCandidates,
   resolveLauncherManagedStagingDirectCandidate,
+  catalogSupportsBuildSelector,
   hasCurrentPtoolServingGeneration,
   canDispatchOnFallbackOperator,
   resolvePtoolRecoveryTool,
@@ -801,6 +802,87 @@ describe('ptool operator routing', () => {
     expect(canDispatchPtoolOnFallback(
       'tools:invoke', { name: 'work_items:complete' }, catalog[0], catalog, true,
     )).toBe(false);
+  });
+
+  it('requires the selected wrapper schema to accept build routing and preserves its selector and generation', () => {
+    const callArgs = {
+      name: 'work_items:get',
+      args: { id: 'EI-1' },
+      build: 'staging',
+    };
+    const generation = 'serving-generation-v1:staging';
+    const target = {
+      name: 'work_items:get',
+      annotations: { readOnlyHint: true },
+      _meta: { 'papercusp/servingGeneration': generation },
+    };
+    const legacyCatalog = [
+      {
+        name: 'tools:invoke',
+        inputSchema: { type: 'object', properties: { name: { type: 'string' }, args: { type: 'object' } } },
+        annotations: { readOnlyHint: false },
+        _meta: { 'papercusp/servingGeneration': generation },
+      },
+      target,
+    ];
+
+    expect(catalogSupportsBuildSelector('tools:invoke', callArgs, legacyCatalog)).toBe(false);
+    expect(isReadOnlyPtoolRecoveryRequest('tools:invoke', callArgs, legacyCatalog)).toBe(false);
+    expect(canDispatchPtoolOnFallback(
+      'tools:invoke', callArgs, legacyCatalog[0], legacyCatalog, true,
+    )).toBe(false);
+    // Direct catalog validation must not bypass the outer schema contract.
+    expect(canDispatchPtoolOnFallback(
+      'tools:invoke', callArgs, legacyCatalog[0], legacyCatalog, true, true,
+    )).toBe(false);
+    expect(catalogSupportsBuildSelector('tools:invoke', { name: 'work_items:get', args: {} }, legacyCatalog)).toBe(true);
+
+    const currentCatalog = [
+      {
+        ...legacyCatalog[0],
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            args: { type: 'object' },
+            build: { type: 'string', enum: ['main', 'staging'] },
+          },
+        },
+      },
+      target,
+    ];
+    expect(catalogSupportsBuildSelector('tools:invoke', callArgs, currentCatalog)).toBe(true);
+    expect(isReadOnlyPtoolRecoveryRequest('tools:invoke', callArgs, currentCatalog)).toBe(true);
+    expect(canDispatchPtoolOnFallback(
+      'tools:invoke', callArgs, currentCatalog[0], currentCatalog, true,
+    )).toBe(true);
+    const params = buildCallToolParams('tools:invoke', callArgs, {
+      outputSchema: { type: 'object' },
+      idempotencyKey: 'ptool-build-selector-test',
+      servingGeneration: generation,
+    });
+    expect(params.arguments).toEqual({
+      name: 'work_items:get',
+      args: JSON.stringify({ id: 'EI-1' }),
+      build: 'staging',
+    });
+    expect(params._meta).toMatchObject({
+      structured: true,
+      idempotencyKey: 'ptool-build-selector-test',
+      'papercusp/servingGeneration': generation,
+    });
+
+    const mainOnlyCatalog = [{
+      ...currentCatalog[0],
+      inputSchema: {
+        ...currentCatalog[0].inputSchema,
+        properties: {
+          ...currentCatalog[0].inputSchema.properties,
+          build: { type: 'string', enum: ['main'] },
+        },
+      },
+    }, target];
+    expect(catalogSupportsBuildSelector('tools:invoke', callArgs, mainOnlyCatalog)).toBe(false);
   });
 
   it('validates the exact direct or nested target generation before managed recovery', () => {

@@ -1004,6 +1004,74 @@ describe('native retention completion', () => {
 
 describe('scheduled reclaim failure receipts', () => {
   const startedAt = '2026-10-22T22:00:00.000Z';
+  const measuredReceipt = (): DiskReclaimReceipt => ({
+    schemaVersion: 1, id: 'measured-pass', host: 'fixture-host', startedAt, finishedAt: startedAt,
+    dryRun: false, complete: true, policyExhausted: true,
+    devices: [{ path: '/', beforeFreeBytes: 100, afterFreeBytes: 120, atTarget: false }],
+    entries: [{ path: '/scratch/expired', classId: 'scratch', status: 'removed', bytes: 20 }],
+    delegates: [{ classId: 'fixture-owner', ok: true, detail: { removed: 1 } }], errors: [],
+    scan: { inspectedNodes: 2, retainedRecentTrees: 0, stoppedAtRoot: null },
+    caps: [{ root: '/scratch', classId: 'scratch', maxBytes: 100, beforeBytes: 120,
+      afterBytes: 100, pinnedBytes: 0, pinnedPaths: [], overByBytes: 0, pinnedOverageBytes: 0 }],
+  });
+
+  it('preserves the measured pass and persists an incomplete receipt when holder cleanup fails', async () => {
+    const measured = measuredReceipt();
+    const original = structuredClone(measured);
+    const finalize = vi.fn().mockRejectedValue(new Error('retention holder ledger completion deadline'));
+    const persistFailureReceipt = vi.fn();
+    const finishedAt = new Date('2026-10-22T22:02:00.000Z');
+    const receipt = await runScheduledDiskReclaimWithFailureReceipt(async () => measured, startedAt, {
+      finalize, persistFailureReceipt, now: () => finishedAt,
+    });
+
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(receipt).toEqual({ ...original, complete: false, policyExhausted: null,
+      finishedAt: finishedAt.toISOString(), errors: ['finalize:retention holder ledger completion deadline'] });
+    expect(measured).toEqual(original);
+    expect(persistFailureReceipt).toHaveBeenCalledExactlyOnceWith(receipt);
+  });
+
+  it('awaits holder cleanup before returning a measured successful pass', async () => {
+    let release!: () => void;
+    const cleanup = new Promise<void>(resolve => { release = resolve; });
+    const finalize = vi.fn(() => cleanup);
+    const measured = measuredReceipt();
+    const persistFailureReceipt = vi.fn();
+    let settled = false;
+    const pending = runScheduledDiskReclaimWithFailureReceipt(async () => measured, startedAt, {
+      finalize, persistFailureReceipt,
+    }).then(receipt => { settled = true; return receipt; });
+    try {
+      await Promise.resolve();
+      expect(finalize).toHaveBeenCalledOnce();
+      expect(settled).toBe(false);
+      release();
+      await expect(pending).resolves.toBe(measured);
+      expect(persistFailureReceipt).not.toHaveBeenCalled();
+    } finally { release(); await pending; }
+  });
+
+  it('retains both run and cleanup failures in the persisted fallback', async () => {
+    const finalize = vi.fn().mockRejectedValue(new Error('cleanup unavailable'));
+    const persistFailureReceipt = vi.fn();
+    const receipt = await runScheduledDiskReclaimWithFailureReceipt(
+      async () => { throw new Error('census unavailable'); }, startedAt, { finalize, persistFailureReceipt });
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(receipt).toMatchObject({ complete: false, policyExhausted: null,
+      errors: ['census unavailable', 'finalize:cleanup unavailable'] });
+    expect(persistFailureReceipt).toHaveBeenCalledExactlyOnceWith(receipt);
+  });
+
+  it('refuses to return a cleanup failure when its measured receipt cannot be persisted', async () => {
+    const finalize = vi.fn().mockRejectedValue(new Error('cleanup unavailable'));
+    const persistFailureReceipt = vi.fn().mockRejectedValue(new Error('audit unavailable'));
+    await expect(runScheduledDiskReclaimWithFailureReceipt(async () => measuredReceipt(), startedAt, {
+      finalize, persistFailureReceipt,
+    })).rejects.toThrow('audit unavailable');
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(persistFailureReceipt).toHaveBeenCalledOnce();
+  });
 
   it('persists an incomplete fallback receipt before returning it', async () => {
     const run = vi.fn().mockRejectedValue(new Error('finalizePendingYield is not defined'));

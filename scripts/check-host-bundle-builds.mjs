@@ -69,7 +69,19 @@ const outFile = join(outDir, 'hono-host.mjs');
 // leaving 72.30 MiB of organic first-party growth, so the budget went 72 -> 74 MiB.
 // Staging measured 76.25 MiB the same day: diagnose it (WI-6554700010030028)
 // rather than raising again.
-const HOST_BUNDLE_BUDGET_BYTES = 74 * 1024 * 1024;
+//
+// Re-baselined 2026-10-28 (WI-6554700010042603, frozen-lineage-red-burndown-2026-10-27 R5),
+// after that diagnosis: the tip measured 76.77 MiB. A metafile diff of the tip bundle
+// against 8c03b5dcd156 (the 72.30 MiB measurement) attributes the whole ~4.5 MiB to
+// FIRST-PARTY code: 246 new modules (~1.7 MiB, none larger than 48 KB except the
+// pre-existing psu-pty-host/psu-launcher scripts) plus ~2.45 MiB of growth across
+// existing modules (largest +93 KB, scripts/source-preview.mjs). No node_modules package
+// became newly reachable. The largest bundled SDK, @anthropic-ai/claude-agent-sdk
+// (1.77 MiB), was already statically imported by su-session-claude-engine.ts at
+// 8c03b5dcd156. It is package-local (packages/operator-core/node_modules), so an
+// --external would not resolve beside dist-host. Budget 74 -> 78 MiB. The next breach
+// needs the same metafile diff first.
+const HOST_BUNDLE_BUDGET_BYTES = 78 * 1024 * 1024;
 const HOST_BUNDLE_POST_TRIM_BASELINE_MB = 36.4;
 const HOST_PROCESS_COUNT = 17;
 

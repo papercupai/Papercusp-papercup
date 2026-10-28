@@ -1308,7 +1308,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(existsSync(join(candidate, '.papercusp/scratch'))).toBe(false);
   });
 
-  it.each(['donor-change', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'phase-io-failure', 'deadline-refusal', 'history-refusal', 'private-pg-release'] as const)
+  it.each(['donor-change', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'dependency-preflight-failure', 'phase-io-failure', 'deadline-refusal', 'history-refusal', 'private-pg-release', 'evidence-retention'] as const)
     ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
       const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
@@ -1317,7 +1317,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
       write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
       write(fixture.repo, preflight, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
-      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\nif [ "${VERIFIER_PREPARE_FAIL:-}" = 1 ]; then echo missing dependency generation >&2; exit 42; fi\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
       write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
       write(fixture.repo, provider, [
         "import { readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';",
@@ -1331,7 +1331,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         "  receipt: process.env.VERIFY_TAURI_SOURCE_RECEIPT, repo: process.env.PAPERCUSP_REPO_DIR,",
         "  source: readFileSync('scripts/provider-fixture.mjs', 'utf8'),",
         "  options: process.env.NODE_OPTIONS, path: process.env.NODE_PATH, flag: process.argv[5],",
-        "  privatePgReleaseToken: process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN ?? null }));",
+        "  privatePgReleaseToken: process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN ?? null,",
+        "  preparedChildEnv: process.env.VERIFIER_CHILD_ENV_PREPARED ?? null }));",
         "if (mode === 'frozen-tamper') writeFileSync('scripts/provider-fixture.mjs', 'tampered frozen source');",
         "if (mode === 'dependency-tamper') writeFileSync('node_modules/@native-proof/runtime/index.mjs', 'tampered installed bytes');",
         "if (mode === 'child-failure' || mode === 'child-output-overflow') {",
@@ -1355,8 +1356,21 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       const budgetFrom = join(tmp, 'verifier-command-budget-' + mode + '.jsonl');
       const requestParentPgRelease = vi.fn(async () => {});
       const releasesPrivatePg = mode === 'private-pg-release' || mode === 'output-io-failure';
+      const prepareChildEnv = vi.fn(async ({ sourceRoot }: { sourceRoot: string }) => {
+        const dependencies = JSON.parse(readFileSync(`${receiptPath}.dependencies.json`, 'utf8'));
+        expect(dependencies.sourceCommit).toBe(ref);
+        expect(existsSync(join(sourceRoot, 'node_modules'))).toBe(true);
+        expect(existsSync(proofPath)).toBe(false);
+        return { VERIFIER_CHILD_ENV_PREPARED: 'dependency-generation-ready' };
+      });
+      const taskId = mode === 'evidence-retention' ? 'delayed-consumer-fixture' : null;
+      const checkpointLogDir = join(tmp, 'verifier-task-evidence-checkpoint-logs');
       const env = { ...process.env, NODE_OPTIONS: '--import=/nonexistent/ambient-loader', NODE_PATH: '/ambient/dependencies',
+        PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 900_000),
+        ...(taskId ? { PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: taskId,
+          PAPERCUSP_CHECKPOINT_LOG_DIR: checkpointLogDir } : {}),
         ...(releasesPrivatePg ? { PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN: 'parent-release-token' } : {}),
+        ...(mode === 'dependency-preflight-failure' ? { VERIFIER_PREPARE_FAIL: '1' } : {}),
         ...(['history-refusal', 'deadline-refusal'].includes(mode) ? {
           PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + (mode === 'deadline-refusal' ? 180_000 : 60_000)),
         } : {}) };
@@ -1375,9 +1389,22 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
           ...(mode === 'history-refusal' ? { budgetFrom } : {}),
           childEstimateMs: mode === 'deadline-refusal' ? 600_000 : 0,
           env,
+          prepareChildEnv,
           ...(releasesPrivatePg ? { releaseParentPrivatePg: true,
             requestParentPgReleaseImpl: requestParentPgRelease } : {}) });
+      if (mode === 'dependency-preflight-failure') {
+        await expect(invocation).rejects.toThrow('missing dependency generation');
+        expect(prepareChildEnv).not.toHaveBeenCalled();
+        expect(existsSync(proofPath)).toBe(false);
+        expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+        const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(phases.find(row => row.event === 'failed')).toMatchObject({ phase: 'deps.snapshot' });
+        expect(phases.some(row => row.phase === 'child.environment' || row.phase === 'child.run')).toBe(false);
+        expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+        return;
+      }
       if (mode === 'deadline-refusal' || mode === 'history-refusal') {
+        expect(prepareChildEnv).not.toHaveBeenCalled();
         await expect(invocation).rejects.toThrow('TASK_DEADLINE_REFUSAL');
         expect(existsSync(proofPath)).toBe(false);
         expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
@@ -1392,21 +1419,29 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         return;
       }
       const stdout = mode === 'child-output-overflow' ? vi.spyOn(process.stdout, 'write').mockImplementation(() => true) : null;
-      const stderr = mode === 'child-output-overflow' ? vi.spyOn(process.stderr, 'write').mockImplementation(() => true) : null;
+      const stderr = mode === 'child-output-overflow' || mode === 'evidence-retention'
+        ? vi.spyOn(process.stderr, 'write').mockImplementation(() => true) : null;
+      let returnedRefLine: string | undefined;
       try {
         if (mode === 'frozen-tamper') await expect(invocation).rejects.toThrow('tampered verification source archive');
         else if (mode === 'dependency-tamper') await expect(invocation).rejects.toThrow('Verifier materialized dependencies changed during command');
         else if (mode === 'phase-io-failure') await expect(invocation).rejects.toThrow('EISDIR');
         else if (mode === 'output-io-failure') await expect(invocation).rejects.toThrow('Verifier child diagnostics path changed');
         else await expect(invocation).resolves.toBe(['child-failure', 'child-output-overflow'].includes(mode) ? 37 : 0);
+        if (mode === 'evidence-retention') {
+          returnedRefLine = stderr?.mock.calls.map(([chunk]) => String(chunk))
+            .find(line => line.startsWith('VERIFIER_TASK_EVIDENCE '));
+        }
         if (mode === 'child-output-overflow') {
           expect(stdout?.mock.calls.some(([chunk]) => String(chunk).includes('provider bootstrap stdout'))).toBe(true);
           expect(stderr?.mock.calls.some(([chunk]) => String(chunk).includes('provider bootstrap stderr'))).toBe(true);
         }
       } finally { stdout?.mockRestore(); stderr?.mockRestore(); }
+      expect(prepareChildEnv).toHaveBeenCalledTimes(mode === 'donor-change' ? 0 : 1);
       const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
       expect(proof).toMatchObject({ value: 'private-snapshot', ref, receipt: receiptPath,
         source: original, options: '', path: '', flag: '--provider-flag=literal', privatePgReleaseToken: null });
+      if (mode !== 'donor-change') expect(proof.preparedChildEnv).toBe('dependency-generation-ready');
       expect(requestParentPgRelease).toHaveBeenCalledTimes(releasesPrivatePg ? 1 : 0);
       if (releasesPrivatePg) expect(requestParentPgRelease).toHaveBeenCalledWith('parent-release-token');
       expect(proof.root).toBe(proof.repo);
@@ -1454,7 +1489,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         'source.admission', 'source.freeze', 'receipt.write', 'deps.source.before',
         'deps.source.after-runtime-assets', 'deps.snapshot',
         'deps.source.after-snapshot', 'deps.inputs', 'deps.measure', 'deps.source.after-preflight',
-        'deps.census', 'deps.receipt.write', 'child.admission', 'child.preflight', 'child.run',
+        'deps.census', 'deps.receipt.write', 'child.admission', 'child.preflight', 'child.environment', 'child.run',
         ...(mode === 'private-pg-release' ? ['private-pg.release'] : []), 'deps.postverify',
         ...(mode === 'dependency-tamper' ? [] : ['source.postverify']), 'cleanup',
       ]);
@@ -1472,6 +1507,44 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         .toMatchObject({ exitCode: ['child-failure', 'child-output-overflow'].includes(mode) ? 37 : 0,
           diagnosticsPath: receiptPath + '.child.json' });
       expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+      if (mode === 'evidence-retention') {
+        const taskReceiptPath = `${receiptPath}.task.json`;
+        const taskReceipt = JSON.parse(readFileSync(taskReceiptPath, 'utf8'));
+        const runId = createHash('sha256').update(receiptPath).digest('hex');
+        const expectedManifestPath = join(checkpointLogDir, `verifier-task-${taskId}`, runId, 'manifest.json');
+        expect(taskReceipt).toMatchObject({ taskId, cleanup: 'completed', evidenceManifestPath: expectedManifestPath });
+        const temporarySources = {
+          'source.json': receiptPath,
+          'dependencies.json': `${receiptPath}.dependencies.json`,
+          'dependencies-after.json': `${receiptPath}.dependencies.after.json`,
+          'task.json': taskReceiptPath,
+          'phases.jsonl': `${receiptPath}.phases.jsonl`,
+          'child.json': `${receiptPath}.child.json`,
+          'stdout.log': `${receiptPath}.stdout.log`,
+          'stderr.log': `${receiptPath}.stderr.log`,
+        };
+        const originalBytes = new Map(Object.entries(temporarySources)
+          .map(([name, path]) => [name, readFileSync(path)]));
+        for (const path of Object.values(temporarySources)) rmSync(path, { force: true });
+        expect(returnedRefLine).toBeDefined();
+        const returnedRef = JSON.parse(returnedRefLine!.slice('VERIFIER_TASK_EVIDENCE '.length)) as {
+          taskId: string; manifestPath: string;
+        };
+        expect(returnedRef).toEqual({ taskId, manifestPath: expectedManifestPath });
+        const manifest = JSON.parse(readFileSync(returnedRef.manifestPath, 'utf8')) as {
+          artifacts: Record<string, { path: string; sizeBytes: number; sha256: string }>;
+        };
+        expect(manifest).toMatchObject({ schemaVersion: 'verifier-task-evidence-v1', taskId,
+          runId, sourceCommit: ref, wrapperStatus: 'completed', cleanup: 'completed', childExitCode: 0,
+          childLogs: { stdout: 'stdout.log', stderr: 'stderr.log' } });
+        expect(Object.keys(manifest.artifacts).sort()).toEqual(Object.keys(temporarySources).sort());
+        for (const [name, artifact] of Object.entries(manifest.artifacts)) {
+          const bytes = readFileSync(artifact.path);
+          expect(bytes).toEqual(originalBytes.get(name));
+          expect(createHash('sha256').update(bytes).digest('hex')).toBe(artifact.sha256);
+          expect(statSync(artifact.path).mode & 0o777).toBe(0o600);
+        }
+      }
     });
 
   it.each(['hung', 'descendant', 'signal-race', 'unverified', 'completed', 'no-deadline'] as const)(
@@ -2768,11 +2841,18 @@ describe('BG inherited manifest and original source boundaries', () => {
   }
 
   it('BG recipe output-only mode compiles the original main and worker and publishes complete retained evidence', async () => {
+    const traceEnabled = Boolean(process.env.PAPERCUSP_BG_LOGICAL_TRACE);
+    const trace = (stage: string) => bgFixtureTrace('output-only:' + stage, traceEnabled);
+    trace('fixture:start');
     const fixture = await transactionRecipe();
+    trace('fixture:ready');
     const originalSource = readFileSync(join(fixture.prepared.root, '.verifier-source.json'));
     const child = fixture.runRecipe({ publishOnly: true });
-    expectBgChild(child, fixture.recipePhases(child.pid));
-    const phases = fixture.recipePhases(child.pid).trim().split('\n').map(line => JSON.parse(line));
+    trace('child:ready');
+    const phaseEvidence = fixture.recipePhases(child.pid);
+    if (traceEnabled) process.stderr.write(`BG_RECIPE_PHASES ${JSON.stringify(phaseEvidence)}\n`);
+    expectBgChild(child, phaseEvidence);
+    const phases = phaseEvidence.trim().split('\n').map(line => JSON.parse(line));
     expect(phases.filter(row => row.phase === 'bg.compiler.build' && row.event === 'completed')).toHaveLength(2);
     expect(phases.at(-1)).toMatchObject({ phase: 'bg.recipe.verify', event: 'completed' });
     const publication = JSON.parse(child.stdout);
@@ -2785,15 +2865,21 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(receipts).toHaveLength(2);
     expect(output.files).toHaveLength(4);
     expect(logical.files.map((row: { final: string }) => row.final)).toEqual(fixture.args.outputs.map(row => row.final));
+    trace('publication-verify:start');
     expect(verifyBgVerifierPublication(publication, { binding, receipts, output, logical })).toBe(publication);
+    trace('publication-verify:ready');
     const { identity, ...published } = publication;
     expect(JSON.parse(readFileSync(identity.path, 'utf8'))).toEqual(published);
+    trace('imports:start');
     const main = await import('data:text/javascript;base64,' + readFileSync(fixture.args.recipe.outfile).toString('base64'));
     const worker = await import('data:text/javascript;base64,' + readFileSync(join(fixture.stage, 'worker.mjs')).toString('base64'));
+    trace('imports:ready');
     expect({ y: main.y, dep: main.dep, worker: worker.y }).toEqual({ y: 2, dep: 41, worker: 2 });
     expect(readFileSync(fixture.path, 'utf8')).toBe(fixture.bytes);
     expect(readFileSync(join(fixture.prepared.root, '.verifier-source.json'))).toEqual(originalSource);
+    trace('replay:start');
     const replay = fixture.runRecipe({ publishOnly: true });
+    trace('replay:ready');
     expect(replay.status).not.toBe(0);
     expect(replay.stderr).toContain('BG recipe publication already exists');
     expect(JSON.parse(readFileSync(identity.path, 'utf8'))).toEqual(published);
@@ -3308,6 +3394,27 @@ describe('BG inherited manifest and original source boundaries', () => {
         ? 'BG transaction logical output duplicated' : defect === 'escape' ? 'BG transaction compiler output escaped stage'
           : defect.startsWith('pid-') ? 'BG transaction PID token is outside' : 'BG transaction compiler output membership mismatch');
       expect(existsSync(stage)).toBe(false);
+    });
+
+  it.each(['builder', 'compiler', 'node', 'packageManager', 'configuration', 'environment'] as const)(
+    'BG shared input validation refuses non-first %s divergence at both binding boundaries', async field => {
+      const fixture = await transactionCandidate();
+      const transaction = prepareBgVerifierBuildTransaction(fixture.args);
+      const diverge = (invocation: Parameters<typeof prepareBgVerifierBuildRecord>[0]['invocation']) => {
+        if (field === 'environment') invocation.environment = { ...invocation.environment, PATH: '/unaccepted' };
+        else if (field === 'configuration') invocation.configuration = [];
+        else invocation[field] = field === 'node' ? fixture.invocation.packageManager : fixture.invocation.node;
+      };
+      const changed = JSON.parse(JSON.stringify(transaction)) as typeof transaction;
+      diverge(changed.contexts.invocations[1]!.invocation);
+      expect(() => beginBgVerifierBuildTransaction({ transaction: changed, ownerPid: process.pid })).toThrow();
+      expect(existsSync(fixture.stage)).toBe(false);
+      const binding = beginBgVerifierBuildTransaction({ transaction, ownerPid: process.pid });
+      const changedBinding = JSON.parse(JSON.stringify(binding)) as typeof binding;
+      diverge(changedBinding.contexts.invocations[1]!.invocation);
+      expect(() => stageBgVerifierAssetCopies(changedBinding)).toThrow('BG output original contexts changed');
+      expect(readdirSync(fixture.stage)).toEqual([]);
+      expect(existsSync(join(fixture.args.bank, fixture.args.publicationLeaf!))).toBe(false);
     });
 
   it.each(['pid', 'stage', 'bank-link', 'bank-replaced', 'source', 'dependency'] as const)(

@@ -1,5 +1,80 @@
 {
   "schemaVersion": 1,
+  "retainedPopulationFollowup20261028": {
+    "qualification": "Prospective reuse of retained bytes only. No new restored database, executed adapter baseline, accepted target, quality label or production/runtime completeness is claimed.",
+    "consumptionManifest": {
+      "path": "/home/builduser/.papercusp/test-artifacts/shared-search-p001-consumption-a9eb-20261023.json",
+      "sha256": "1d29274c43d7dd7dfe0d0be3f47410649a99ae7ec0e263d496a3207acd0c0ab3"
+    },
+    "schemaManifest": {
+      "path": "/home/builduser/.papercusp/test-artifacts/shared-search-p001-schema-preflight-a9eb-20261024.inputs.json",
+      "sha256": "aba461040057d820e3aa56cfaf18450b58736f9b8d1b30506ee38c1aac81f714"
+    },
+    "modelConfiguration": {
+      "path": "/home/builduser/.papercusp/test-artifacts/shared-search-p001-model-config-a9eb-20261023.json",
+      "sha256": "4e3d170d82dd3cdf3c1005c45728781ce29b2e75918b53dc1d80db3cd2e257e8",
+      "profile": "gemma-embeddinggemma-300m-768@v1",
+      "qualification": "Retained configuration and assets; actual per-adapter loaded model/configuration must still be witnessed. Query recipes, pooling, normalization, dimensions and precomputed timing boundary must not be silently inherited by another adapter."
+    },
+    "selectedTables": ["work_items", "text_chunks", "personal_disclosures", "session_turn_windows", "session_turns", "session_turn_chunks"],
+    "excludedPopulation": "Other Papercusp adapter corpora and all Restart catalog/memory/Typesense corpora are not contained in this selected manifest. Shared primary pre-data definitions do not imply those tables' data were retained.",
+    "reuse": "scripts/backup/search-bench/prepare-selected-corpus.py uses complete-primary archived pre-data, disposable-cluster and absent-schema gates, then exact selected index DDL preflight before optional data restore. run-retained-baseline.py revalidates all bytes, installs preserved local model, verifies ordinary SDK/journal prerequisites, restores declared tables and checks expected counts. Extend these existing mechanisms for actual adapters; do not treat the legacy R10 benchmark as their invocation receipt.",
+    "byteRevalidation": {
+      "status": "matched",
+      "files": 13,
+      "bytes": 19415744953,
+      "allMatched": true,
+      "populationSha256": "022f88312d2baca7492bd33bfd2a29bf114cb107de3bc7db2dd063b28fa2e260",
+      "populationEncoding": "SHA256 of UTF-8 JSON sorted keys compact separators, in consumption manifest order: rows {kind,relativePath,sha256,bytes,matches}",
+      "procedure": "Stream each of all thirteen retained consumption files in8MiB blocks through SHA256; compare expected SHA256 and bytes and require before/after dev,inode,size,mtime_ns,ctime_ns equality. Compare manifest SHA256 after all reads. All checks true; process exit0 after309.192seconds.",
+      "qualification": "Current retained-input byte integrity only. Does not assert installed model bytes, index freshness, simultaneous DB snapshot, current authority, actual adapter execution, baseline quality/cost/latency acceptance or shipment."
+    }
+  },
+  "prospectiveFreezeFollowup20261028": {
+    "mechanism": "Extended existing adapter-baseline-cli.ts with --freeze --input <study.json> --out <new-frozen-study.json>; reuses FrozenAdapterStudy and evaluateAdapterBaseline structural checks, not a parallel study format.",
+    "boundary": "CLI supplies actual sealedAtMs/declaredAtMs, fingerprints the sealed study and original input bytes, writes wx mode0600, preserves input, rejects missing source/corpus/query/model pins, drifted queries, invalid budgets/cost definitions and impossible declared populations. Receipt-less structural validation does not invoke an adapter or judge; pinAuthenticity remains unverified, planAcceptance false.",
+    "verification": "adapter-baseline.test.ts passed32 tests zero skipped via npm run test:file at17:16Z, local dirty HEAD1776b4b2a4. Test-runner children substituted committed admin reporter/execution-details files; this does not establish full runtime acceptance. No real study has been sealed with invented corpus/model identities or numeric budgets.",
+    "runtimeResolution": "Restart node_modules symlinks resolve chat-protocol and scout-runtime to Restart/libs. chat-protocol exports backend/context/recovery TypeScript sources; scout-runtime package exports dist/index.js (including runner and Vertex export), not src/index.ts. Source-only pins do not establish executed Scout runtime bytes. Actual process loader and complete loaded closure remain to be observed.",
+    "installedRuntimeSha256": {
+      "libs/chat-protocol/src/model-backend.ts": "20e8d1fb6ebc1603a724d8d757b46123e617b1a1d5724ef3f3c0de529530ace5",
+      "libs/chat-protocol/src/conversation-context.ts": "a0bb5879ef5243ad6b07c13e989a1b21884f32ab44268d5011a4ab3343051ea6",
+      "libs/chat-protocol/src/turn-recovery.ts": "460d9ff8632332056784167349733411b8103b413ea844117a86899253c1ad7c",
+      "libs/chat-protocol/src/protocol-v1.ts": "9eaa4c0c4643ed909aa81897087e192aacc2b5c28728238739f910389bd83cdb",
+      "libs/scout-runtime/dist/index.js": "40b933cc0c4cba6429d11073ff5b77a2bee72fce7a630c5f209706d969a6a541",
+      "libs/scout-runtime/dist/runner.js": "f818730aeef91f78878d5ac9daa5bee3a42957c76bf82bfc4afe86ec346ec567",
+      "libs/scout-runtime/dist/vertex.js": "9e8dec11ffd4cce448e5314a687195e8b02beaac888ba5e1286dc70430d17759",
+      "libs/scout-runtime/dist/retry.js": "55f11de7919c04ccd52ee344a97cfd1095f28dc020f71c8fd8768fb66976b514"
+    },
+    "corpusReuseReview": "bm25-hybrid-recall-cli prepare-only freezes query inputs but explicitly leaves retrieval corpus null. prose-corpus-snapshot.ts preserves sampled doc/turn/plan clusters and clips embedding text at2000 chars; it is a sample fixture, not an immutable full actual-adapter retrieval population. Neither can be relabeled a complete corpus pin. Continue with isolated actual adapter corpus preparation."
+  },
+  "restartDependencyReview20261028": {
+    "inspectedSourceSha256": {
+      "libs/typesense/src/client.ts": "3ddb7b465c70c8d7ad4e4739fa95b6f2e3dadd5985f62af6a5fe1b2bdc9541d2",
+      "apps/scout-service/src/scout/scout-model-backend.ts": "d4f0facf1ca0bf02e467a63ce0fe36662377a27526dd64e01b0bb54b46ce04be",
+      "apps/scout-service/src/scout/scout-context.ts": "851e411ff97157a1519aa76e2ec29e13b42bc17f3992565f0f0a124dd33ac743",
+      "apps/scout-service/src/scout/turn-bus.service.ts": "4bc75637279d8d43d3626c74a2ad832f4a3b66227374e2348b8517bba272e90e",
+      "apps/scout-service/src/scout/conversation.store.ts": "e2e7bca474e86c33cddcf60b5ea107300f59ed87bf949da7ee0042ba9afbc668",
+      "apps/scout-service/src/scout/session.store.ts": "f2fe6e6ac4d68a99b11f9d2d8b5d119d98237d7720eb43482f4bc2579f9997be"
+    },
+    "qualification": "Source inspection and capture-decoder implementation only; no runtime baseline, model-byte proof, acceptance or shipment.",
+    "scoutClosure": [
+      "scout-model-backend.ts delegates model-only retries to shared runModelBackend; policy maxAttempts3/backoff1000ms/deadline120000ms/frame256KiB. Failed/retrying usage is separately observed. Provider EOF without terminal is incomplete-stream; cancellation closes reader.",
+      "scout-context.ts scopes history by conversation/principal, hashes persisted history, compacts under 32768 token policy, preserves transient final instruction and omitted references, and rejects clipped original messages. Summarization is a separate model invocation with no tools; measured failed and successful usage belongs in retrieval-attributable costs.",
+      "turn-bus.service.ts uses PG replay authority and verified caller, persisted event sequence and legacy projection. Replay never re-enters provider/tool. A running turn absent from process executions is needs-reconciliation. Transient UI commands are not persisted result blocks.",
+      "scout.service.ts executeCheckpointedTool writes a pending effect under caller-authorized conversation transaction before recovery.runEffect. Legacy no-execution path remains separate. conversation.store.ts fences state with row lock, current authorization and scope equality; context usage liability can survive revocation through an admitted operation ticket without granting history/dispatch authority.",
+      "session.store.ts derives principal from shop-api verified session or guest credential, not body.userId; each fenced operation re-verifies then share-locks session/customer rows including expiry/ban checks. This creates an auth-service dependency inside the scoped runtime closure."
+    ],
+    "typesenseSource": "Restart/libs/typesense/src/client.ts",
+    "typesensePaths": [
+      "Region-selected search: hybrid when semantic not false and observed embedding available; otherwise keyword-only. Live collection schema can differ from process creation config; ensureCollection can patch schema or create keyword-only fallback. Runtime must pin retrieved schema/model, not environment alone.",
+      "Single search and facets multi_search are separate paths. mainUnfiltered drops structured filters on main pool while facets exclude their own constraint. Final caller post-filter and disjunctive count meanings must be captured separately; internal pool is not delivered final results.",
+      "Successful conversation uses legacy US COLLECTION_NAME, always requests embedding, supports category/conditions/price/inStock but does not build categories[]/region/includeFields/semantic/maxTypos/mainUnfiltered through ordinary search(). Accepted parameter-type equivalence does not prove enforcement equivalence. Reconcile exact accepted/advertised constraints before production discharge.",
+      "Conversation model get-or-create pins restart-catalog-rag identity but may retrieve existing configuration rather than current GROQ_RAG_MODEL default. Read actual model definition and history corpus; redact keys from manifests. Setup/search errors call plain search(params) and return null answer/conversationId. Successful conversation caps twenty hits; plain fallback uses original limit.",
+      "Capture decoder now accepts exact library response rows with explicit runner path/degradation evidence, preserving full docs/facets/answer/history identity and rejecting partial output, request drift and duplicate identities. It does not qualify Scout cards, PostgreSQL cross-reference, corpus/model identity, cost or quality."
+    ],
+    "budgetBoundary": "Only inherited R13/R18 runHybridSearch work_item/session_turn latency ceilings are source-backed accepted targets in inventory-v2. Scout context/backend timeouts and Typesense five-second connectionTimeout/one retry are operational controls, not percentile acceptance. New product/adapter/query-class quality/cost/population ceilings remain prospective and cannot be borrowed from these constants.",
+    "remaining": "Pin full transitive shared runtime source/model bytes and isolated corpus/query identities; reconcile recognized constraints per actual path; predeclare budgets and attempted/executed/judged identities before new treatment. No paid judging executed."
+  },
   "planSlug": "shared-search-restart-papercusp-2026-10-22",
   "workItemId": "WI-6554700010022135",
   "kind": "focused-clause-evidence-reconciliation",
@@ -18,7 +93,36 @@
       "packages/operator-core/lib/capability-verbs/social-read.ts"
     ],
     "interpretation": "Historical evidence retains its original source pins. Changed bytes require semantic reconciliation before reuse; this comparison does not declare a defect or upgrade currentness.",
-    "remaining": "Inspect the six diffs against retained source bytes, then reconcile Restart and discover adapters beyond the frozen file population."
+    "remaining": "Reconcile Restart and discover adapters beyond the frozen file population; six frozen-blob semantic diffs inspected below.",
+    "semanticReview": {
+      "method": "Read git cat-file blob for each inventory-20261023-v2 headBlob and unified diff against working file; bounded to six previously changed paths, not a fresh census or test run.",
+      "acceptance": "incomplete; historical evidence is not upgraded to current",
+      "dispositions": [
+        { "path": "packages/operator-core/lib/memory/corpus-recall-io.ts", "change": "Add queryFamily to per-attempt PG diagnostic receipts.", "effect": "Diagnostic shape changes; shown diff does not change retrieval selection or ranking. Capture readers must tolerate the added field." },
+        { "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.ts", "change": "Predeclare identity-safe known-item sampling, retain candidate disposition fingerprints, and exclude server database name/port from restored query configuration identity.", "effect": "Population eligibility and input-restoration identity change. New captures must pin sampling exclusions and corpus separately; old runs cannot inherit new sampling qualification. Server relocation equality is not corpus equality." },
+        { "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall-cli.ts", "change": "Use moduleRepoRoot, export runtime-qualifier entrypoint, retain sampling/candidate artifacts with exclusive creation, and use selectBm25ProbeInputs.", "effect": "Execution closure, sampling and artifact population change. Prospective capture must pin the new entrypoint and sidecar artifacts; historical CLI captures retain their old closure." },
+        { "path": "packages/operator-core/lib/agent-tools/social/search.ts", "change": "Pass disclosureSubject(ctx) as agentOwnerId to the social reader.", "effect": "Actual principal-to-disclosure boundary changes; historical source pin cannot establish current dispatch privacy behavior." },
+        { "path": "packages/operator-core/lib/agent-tools/documents/search.ts", "change": "Use verified same-workspace user principal slug for GUI dispatch; reject invalid user principals before ambient session fallback.", "effect": "Authorization identity selection changes for user principals. Actual dispatch proof must bind this source; non-user ambient fallback remains a separate exercised boundary." },
+        { "path": "packages/operator-core/lib/capability-verbs/social-read.ts", "change": "Disclose mintable social documents in the read transaction, withhold unresolved restricted identity, return privacy and restriction metadata.", "effect": "Delivered rows/snippets and disclosure state can change even when underlying retrieval ranking does not. Prospective population must account for withheld rows and minted references; old counts and field receipts do not prove this boundary." }
+      ]
+    }
+  },
+  "restartSourceFollowup": {
+    "root": "/home/builduser/Restart",
+    "observedHead": "723c40d67002b3c8fa6ea921e68c87485f641555",
+    "comparison": "SHA256 of the exact eleven Restart inventory-20261023-v2 files; ten equal and scout.service.ts changed. Bounded source read, not runtime acceptance or a complete import census.",
+    "changedPath": "apps/scout-service/src/scout/scout.service.ts",
+    "reviewedBoundaries": [
+      "Scout execution path selects execution.caller.userId before memoryScopes; legacy no-execution path still uses req.userId. Both require separate scope controls.",
+      "Execution-scoped model/context, persistence, cancellation, checkpointed tool effects and shared model backend change the invocation closure; old Scout receipts cannot qualify the new path.",
+      "search_products seeds missing query from category, maps friendly category, caps limit at twelve, calls governed catalog.search as service principal with rewrite:false and region:US, then delivers projected product cards and compact model text.",
+      "Empty product results call verified broaden suggestions; error return and broaden suggestions are separate outcomes, not successful exact-match retrieval.",
+      "ask_catalog calls typesenseService.searchWithConversation directly, returning synthesized answer plus projected top hits. It must not inherit CatalogService PostgreSQL cross-reference/fallback qualification.",
+      "CatalogService listProducts selects Typesense for nonempty queries, cross-references PostgreSQL, and has SQL fallback plus a ten-second failure circuit; listProductsBloom also has a no-query SQL browse path.",
+      "Shopper memory recall uses scoped vector distance ordered scout_memory rows, text-embedding-3-small at 1536 dimensions, a 1500ms embedding timeout and a 2000ms recall timeout. Errors return an empty array; a capture must distinguish this from a genuinely empty corpus. These are operational source limits, not accepted latency percentiles."
+    ],
+    "prospectiveStudyBoundary": "Reuse FrozenAdapterStudy and capture interfaces. Freeze delivered cards/model snippets separately, primary/fallback/browse/conversational/memory paths, verified/legacy caller scope, region, cold/warm state and sampling exclusions before capture. No numeric quality or cost ceiling is inferred from timeout constants or fixture thresholds.",
+    "remaining": "Read complete changed Scout closure and actual Typesense/capture adapters; reconcile runtime population with registry; freeze source/model/corpus/query identities and source-backed per-cell budgets before new treatment. Paid judging remains paused."
   },
   "authority": {
     "clausesRead": {

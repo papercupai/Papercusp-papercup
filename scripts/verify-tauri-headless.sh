@@ -442,16 +442,20 @@ export VERIFY_TAURI_TRACE_SESSION_CHAT_CSS
 VERIFY_TAURI_SOURCE_SNAPSHOT_PATH="${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH:-}"
 cleanup_verifier_spa_snapshot() {
   [ -n "${WORK:-}" ] || return 0
+  # Early re-exec cleanup can run before the survivor helpers are defined.
+  [ -d "$WORK/spa" ] || [ -d "$WORK/verifier-spa" ] || return 0
   local root
+  # Inspect both build roots together: each guard needs two host censuses.
+  # Running it separately per directory repeats that work for the same host.
+  if ! reap_frozen_source_survivors "$WORK/spa" "${TAURI_LAUNCH_PROVENANCE:-}" "$WORK/verifier-spa"; then
+    echo "FATAL: refusing to clean frozen SPA with live survivors; preserving $WORK" >&2
+    return 1
+  fi
   for root in "$WORK/spa" "$WORK/verifier-spa"; do
     [ -d "$root" ] || continue
     # Reuse the source snapshot's exact process/provenance guard. An early
     # preparation failure runs this before full teardown is installed; a
     # normal exit runs it after stop.sh. Never delete a tree still in use.
-    if ! reap_frozen_source_survivors "$root" "${TAURI_LAUNCH_PROVENANCE:-}"; then
-      echo "FATAL: refusing to clean frozen SPA with live survivors; preserving $root" >&2
-      return 1
-    fi
     rm -rf -- "$root" || return 1
   done
 }
@@ -604,6 +608,21 @@ if ! node --import "$REPO_DIR/scripts/lib/committed-source-loader.mjs" \
   echo "FATAL: the restricted-write fence refused this verifier launch (see the RESTRICTED_HOLD_REFUSED line above); nothing was booted." >&2
   exit 1
 fi
+
+# The guarded Tauri launcher diagnoses a missing submodule CLI, but it runs
+# after source/dependency preparation and native setup. Catch an incomplete
+# papercusp-desktop install before those expensive verifier phases begin.
+preflight_desktop_tauri_cli() {
+  local cli="$DESKTOP_DIR/node_modules/.bin/tauri"
+  if [ -x "$cli" ] || command -v tauri >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "VERIFY_TAURI_DESKTOP_CLI_MISSING: @tauri-apps/cli is not installed for papercusp-desktop." >&2
+  echo "Run from the monorepo root: npm run install:safe -- --repo-root papercusp-desktop" >&2
+  echo 'npm run doctor also checks "submodule installs complete".' >&2
+  return 127
+}
+preflight_desktop_tauri_cli || exit $?
 
 # Share source-preview's absolute task admission before dependencies or native
 # capacity are allocated. Recheck the real clock at each expensive boundary;
@@ -1460,13 +1479,15 @@ frozen_source_path_is_inside() {
 }
 
 frozen_source_process_rooted() {
-  local pid="$1" root="$2" link path escaped_root
+  local pid="$1" root link path escaped_root
+  shift
   [ -d "/proc/$pid" ] || return 1
+  for root in "$@"; do
   for link in cwd root exe; do
     path="$(readlink "/proc/$pid/$link" 2>/dev/null || true)"
     frozen_source_path_is_inside "$path" "$root" && return 0
   done
-  [ -r "/proc/$pid/maps" ] || return 1
+  [ -r "/proc/$pid/maps" ] || continue
   # grep reads the maps file in one process. Parsing every line in Bash (or
   # starting sed for each VMA) makes a host-wide census scale with every
   # process mapping rather than the number of candidate processes.
@@ -1476,6 +1497,7 @@ frozen_source_process_rooted() {
   escaped_root="${escaped_root// /\\040}"
   escaped_root="${escaped_root//$'\n'/\\012}"
   grep -Fq -- "$escaped_root/" "/proc/$pid/maps" 2>/dev/null && return 0
+  done
   return 1
 }
 
@@ -1483,13 +1505,14 @@ frozen_source_rooted_processes() {
   # Read each account-owned process once. Walking every proc entry with find
   # and then spawning a maps pipeline made the six cleanup censuses alone
   # approach the generated-stop deadline. Node is already a verifier dependency.
-  node - "$1" "$EUID" <<'FROZEN_SOURCE_CENSUS'
+  node - "$EUID" "$@" <<'FROZEN_SOURCE_CENSUS'
   const fs = require('node:fs');
-  const root = process.argv[2];
-  const uid = Number(process.argv[3]);
-  const prefix = root.endsWith('/') ? root : root + '/';
-  const escaped = prefix.replaceAll('\\', '\\134').replaceAll(' ', '\\040').replaceAll('\n', '\\012');
-  const patterns = [Buffer.from(prefix), Buffer.from(escaped)];
+  const uid = Number(process.argv[2]);
+  const roots = process.argv.slice(3);
+  const prefixes = roots.map(root => root.endsWith('/') ? root : root + '/');
+  const patterns = prefixes.flatMap(prefix => [prefix,
+    prefix.replaceAll('\\', '\\134').replaceAll(' ', '\\040').replaceAll('\n', '\\012')
+  ]).map(value => Buffer.from(value));
   for (const entry of fs.readdirSync('/proc')) {
     if (!/^[0-9]+$/.test(entry)) continue;
     const proc = '/proc/' + entry;
@@ -1498,7 +1521,7 @@ frozen_source_rooted_processes() {
     for (const link of ['cwd', 'root', 'exe']) {
       try {
         const path = fs.readlinkSync(proc + '/' + link).replace(/ \(deleted\)$/, '');
-        if (path === root || path.startsWith(prefix)) { rooted = true; break; }
+        if (roots.includes(path) || prefixes.some(prefix => path.startsWith(prefix))) { rooted = true; break; }
       } catch { /* An exiting process or inaccessible link is not a candidate. */ }
     }
     if (!rooted) {
@@ -1541,8 +1564,9 @@ frozen_source_process_identity_matches() {
 
 frozen_source_process_matches() {
   local pid="$1" expected_ticks="$2" root="$3" provenance="$4"
+  shift 4
   frozen_source_process_identity_matches "$pid" "$expected_ticks" "$provenance" || return 1
-  frozen_source_process_rooted "$pid" "$root"
+  frozen_source_process_rooted "$pid" "$root" "$@"
 }
 
 # A persisted PID is a hint, never signal authority. Reuse the source reaper's
@@ -1618,16 +1642,22 @@ stop_verify_process_group() {
 }
 
 reap_frozen_source_survivors() (
-  local root="$1" provenance="$2" proc pid uid ticks owned census unowned=0
+  local root="$1" provenance="$2" proc pid uid ticks owned census canonical_root unowned=0
+  shift 2
   local attempt any_owned
-  local -a owned_pids=() owned_ticks=()
-  [ -n "$root" ] && [ -d "$root" ] || return 0
+  local -a owned_pids=() owned_ticks=() roots=()
+  for root in "$root" "$@"; do
+    [ -n "$root" ] && [ -d "$root" ] || continue
+    canonical_root="$(cd "$root" 2>/dev/null && pwd -P)" || {
+      echo "FATAL: cannot resolve frozen operator source root; preserving $root" >&2
+      return 1
+    }
+    roots+=("$canonical_root")
+  done
+  [ "${#roots[@]}" -gt 0 ] || return 0
+  root="${roots[0]}"
   [ -n "$provenance" ] || {
     echo "FATAL: cannot inspect frozen operator source without this run's provenance; preserving $root" >&2
-    return 1
-  }
-  root="$(cd "$root" 2>/dev/null && pwd -P)" || {
-    echo "FATAL: cannot resolve frozen operator source root; preserving $root" >&2
     return 1
   }
   # Do not let the cleanup shell itself keep the snapshot busy through cwd.
@@ -1635,7 +1665,7 @@ reap_frozen_source_survivors() (
     echo "FATAL: cannot leave the frozen operator source before cleanup; preserving $root" >&2
     return 1
   }
-  census="$(frozen_source_rooted_processes "$root")" || {
+  census="$(frozen_source_rooted_processes "${roots[@]}")" || {
     echo "FATAL: cannot census frozen operator source; preserving $root" >&2
     return 1
   }
@@ -1647,7 +1677,7 @@ reap_frozen_source_survivors() (
     # hold paths below it, so skip their proc entries rather than misreading
     # hidepid/permission failures as an empty process map.
     [ -O "$proc" ] || continue
-    frozen_source_process_rooted "$pid" "$root" || continue
+    frozen_source_process_rooted "$pid" "${roots[@]}" || continue
     ticks="$(frozen_source_process_start_ticks "$pid" 2>/dev/null || true)"
     [ -n "$ticks" ] || continue
     if frozen_source_process_owned "$pid" "$provenance"; then
@@ -1664,13 +1694,13 @@ reap_frozen_source_survivors() (
   for i in "${!owned_pids[@]}"; do
     pid="${owned_pids[$i]}"
     ticks="${owned_ticks[$i]}"
-    frozen_source_process_matches "$pid" "$ticks" "$root" "$provenance" || continue
+    frozen_source_process_matches "$pid" "$ticks" "$root" "$provenance" "${roots[@]:1}" || continue
     kill -TERM "$pid" 2>/dev/null || true
   done
   for attempt in {1..20}; do
     any_owned=0
     for i in "${!owned_pids[@]}"; do
-      frozen_source_process_matches "${owned_pids[$i]}" "${owned_ticks[$i]}" "$root" "$provenance" && any_owned=1
+      frozen_source_process_matches "${owned_pids[$i]}" "${owned_ticks[$i]}" "$root" "$provenance" "${roots[@]:1}" && any_owned=1
     done
     [ "$any_owned" -eq 1 ] || break
     sleep 0.1
@@ -1678,7 +1708,7 @@ reap_frozen_source_survivors() (
   for i in "${!owned_pids[@]}"; do
     pid="${owned_pids[$i]}"
     ticks="${owned_ticks[$i]}"
-    if frozen_source_process_matches "$pid" "$ticks" "$root" "$provenance"; then
+    if frozen_source_process_matches "$pid" "$ticks" "$root" "$provenance" "${roots[@]:1}"; then
       printf 'FROZEN_SOURCE_REAP pid=%s signal=KILL\n' "$pid" >&2
       kill -KILL "$pid" 2>/dev/null || true
     fi
@@ -1686,7 +1716,7 @@ reap_frozen_source_survivors() (
 
   # Re-census after signalling. Any process still rooted here without the exact
   # run marker is outside our authority; fail closed and leave the source intact.
-  census="$(frozen_source_rooted_processes "$root")" || {
+  census="$(frozen_source_rooted_processes "${roots[@]}")" || {
     echo "FATAL: cannot census frozen operator source after reap; preserving $root" >&2
     return 1
   }
@@ -1695,7 +1725,7 @@ reap_frozen_source_survivors() (
     pid="${proc##*/}"
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
     [ -O "$proc" ] || continue
-    frozen_source_process_rooted "$pid" "$root" || continue
+    frozen_source_process_rooted "$pid" "${roots[@]}" || continue
     ticks="$(frozen_source_process_start_ticks "$pid" 2>/dev/null || true)"
     [ -n "$ticks" ] || continue
     if frozen_source_process_owned "$pid" "$provenance"; then
@@ -2040,10 +2070,20 @@ snapshot_verifier_pinned_deps() {
       }
       console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
     ' "$snapshot_root/scripts/lib/task-cgroup-limits.mjs" || return $?
+    # Reuse the frozen helper's immutable-generation route when published,
+    # as source-preview does. A generation refusal must propagate rather
+    # than silently starting another full mutable-donor copy.
+    local snapshot_command="snapshot-locked"
+    if grep -Eq '^[[:space:]]*snapshot-generation-locked\)' "$pinned_deps_copy"; then
+      snapshot_command="snapshot-generation-locked"
+    else
+      local snapshot_support_status=$?
+      [ "$snapshot_support_status" -eq 1 ] || return "$snapshot_support_status"
+    fi
     # The existing heavy-command wrapper admits the copy's memory reserve;
-    # pinned-deps still owns the host copy lease and donor install mutex.
+    # pinned-deps owns the selected route's copy/selector leases and mutexes.
     bash "$snapshot_root/scripts/pc-heavy.sh" -- bash "$pinned_deps_copy" \
-      snapshot-locked "$REPO_DIR" "$snapshot_root" "$mode"
+      "$snapshot_command" "$REPO_DIR" "$snapshot_root" "$mode"
     return $?
   fi
   # WI-6554700010008536: pinned-deps.sh sources dependency-generation.sh
@@ -3419,25 +3459,18 @@ stop_verify_process "$OPENBOX_PID" "$openbox_ticks" "$TAURI_LAUNCH_PROVENANCE" |
 # EI-10387: stop our throwaway isolated-DB postgres (if VERIFY_TAURI_ISOLATED_DB
 # booted one) — SIGTERM lets it shut the postmaster down cleanly before we reap.
 stop_verify_process "$ISOLATED_PG_PID" "$pg_ticks" "$TAURI_LAUNCH_PROVENANCE" || SOURCE_CLEANUP_FAILED=1
-# Boot-only hands cleanup to this persisted script after disabling the parent
-# EXIT trap. Reuse its SPA survivor guard before removing any other snapshots.
-# Assertion teardown retains reports and owns its own SPA cleanup afterward.
+# Boot-only owns all three roots. Inspect them in one before/after census pair
+# before removing any of them. Assertion teardown owns its retained snapshots.
 if [ "\$SOURCE_CLEANUP_FAILED" -eq 0 ] && [ "$ASSERTION_MODE" -eq 0 ]; then
-  if ! WORK="$WORK" TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE" cleanup_verifier_spa_snapshot; then
-    SOURCE_CLEANUP_FAILED=1
-  fi
-fi
-# Boot-only stop.sh owns the per-run source/dependency snapshot.
-# Assertion teardown retains reports first and owns its own snapshot cleanup.
-if [ "\$SOURCE_CLEANUP_FAILED" -eq 0 ] && [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then
-  # The original verifier shell has exited in --boot-only mode, so use the
-  # identical proc census/reaper that normal teardown calls.
-  if ! source "$WORK/frozen-source-reaper.sh" \
-    || ! reap_frozen_source_survivors "$OPERATOR_SOURCE_ROOT" "$TAURI_LAUNCH_PROVENANCE"; then
-    echo "FATAL: preserving frozen operator source with process survivors: $OPERATOR_SOURCE_ROOT" >&2
-    SOURCE_CLEANUP_FAILED=1
-  elif ! rm -rf -- "$OPERATOR_SOURCE_WORK"; then
-    echo "FATAL: could not remove frozen operator source work directory: $OPERATOR_SOURCE_WORK" >&2
+  if [ -n "$OPERATOR_SOURCE_WORK" ]; then
+    if ! reap_frozen_source_survivors "$OPERATOR_SOURCE_ROOT" "$TAURI_LAUNCH_PROVENANCE" "$WORK/spa" "$WORK/verifier-spa"; then
+      echo "FATAL: preserving frozen operator source with process survivors: $OPERATOR_SOURCE_ROOT" >&2
+      SOURCE_CLEANUP_FAILED=1
+    elif ! rm -rf -- "$WORK/spa" "$WORK/verifier-spa" "$OPERATOR_SOURCE_WORK"; then
+      echo "FATAL: could not remove frozen operator source work directory: $OPERATOR_SOURCE_WORK" >&2
+      SOURCE_CLEANUP_FAILED=1
+    fi
+  elif ! WORK="$WORK" TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE" cleanup_verifier_spa_snapshot; then
     SOURCE_CLEANUP_FAILED=1
   fi
 fi

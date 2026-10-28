@@ -17,10 +17,10 @@
  *      until it mints the `sk-ant-oat…` token, write it to ~/.papercusp/deploy-credentials/<id>
  *      (0600) + registerAccount, kill the CLI. The token never reaches the browser.
  *
- * The live pty handles live in an in-memory map (a live process is a resource, not
- * persistable state — the storage-policy "no state Maps" rule is about durable state, not
- * process handles). Pinned on globalThis so both HTTP calls on one operator share it; an
- * idle reaper + a TTL kill any link the owner abandons.
+ * The live pty handles stay in an in-memory map. The existing cluster-owner RPC
+ * registry routes sibling workers' follow-up calls to that exact process; pinning
+ * a Map on globalThis alone cannot share handles across reusePort workers.
+ * An idle reaper + a TTL kill abandoned links.
  */
 import { spawn, type IPty } from '@lydell/node-pty';
 import { cp, readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
@@ -34,6 +34,12 @@ import { papercuspPath } from '../papercusp-root';
 import { trackDetached } from '../detached-imports';
 import { resolveAgentBinarySync } from '../agent-bin-detect';
 import { WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN } from '@papercusp/deployment-driver';
+import { bindOwnerRpcResource, locateOwnerRpcResource, callOwnerProcess, registerOwnerRpcHandler } from '../cluster-owner-rpc';
+import {
+  createStoredCliLink, readStoredCliLink, finishStoredCliLink, claimStoredCliLink,
+  newLinkOwner, linkOwnerLiveness, LINK_RECOVERY_RETENTION_MS,
+  type LinkOwner, type StoredCliLink,
+} from './account-link-state';
 
 const ID_RE = /^[A-Za-z0-9._-]+$/;
 // Match the authorize URL / the minted token in the CLI's (ANSI-stripped) output.
@@ -50,6 +56,9 @@ const OUTCOME_RE =
 const START_TIMEOUT_MS = 30_000; // the CLI to print the URL
 const COMPLETE_TIMEOUT_MS = 60_000; // the CLI to mint after we feed the code
 const LINK_TTL_MS = 10 * 60 * 1000; // how long a started link waits for the owner's code
+const CLI_LINK_RPC_KIND = 'account-cli-link';
+// Scope process handles to this installation's credential home, like the login itself.
+const cliLinkScope = () => papercuspPath('deploy-credentials');
 // The current `claude setup-token` is an Ink TUI: its masked code input treats a bulk
 // `code\r` write as paste text and SWALLOWS the trailing CR, so the code is never
 // submitted (the "Linking…" stall). The Enter must be its OWN write, sent AFTER the
@@ -178,7 +187,9 @@ function readUntil(
 }
 
 interface PendingCliLink {
-  pty: IPty;
+  /** A recovered approved Codex home has no surviving PTY. */
+  pty: IPty | null;
+  owner: LinkOwner;
   buf: string;
   accountId: string;
   label?: string;
@@ -219,6 +230,8 @@ function finalizeClaudeToken(
   if (l.done) return Promise.resolve(l.done);
   l.finalizing ??= (async () => {
     try {
+      const held = await readStoredCliLink(linkId, cliLinkScope());
+      if (held?.owner.nonce !== l.owner.nonce) throw new Error('link custody changed');
       const credPath = papercuspPath('deploy-credentials', l.accountId);
       await mkdir(dirname(credPath), { recursive: true });
       await writeFile(credPath, token, { mode: 0o600 });
@@ -226,14 +239,19 @@ function finalizeClaudeToken(
       const credentialRef = `token:${credPath}`;
       await updateAccountPool((p) => registerAccount(p, { id: l.accountId, credentialRef, label: l.label }, Date.now()), workspace);
       const account = (await accountStatus(workspace)).find((a) => a.id === l.accountId) ?? null;
+      if (!await finishStoredCliLink(linkId, cliLinkScope(), l.owner.nonce, 'completed')) {
+        throw new Error('link custody changed');
+      }
       l.done = { ok: true, account };
     } catch (e) {
       l.done = { ok: false, error: `register failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}` };
+      // Retain the isolated home and original owner on an uncommitted outcome.
+      return l.done;
     }
     clearTimeout(l.reaper);
     if (l.enterTimer) clearTimeout(l.enterTimer);
     try {
-      l.pty.kill();
+      l.pty?.kill();
     } catch {
       /* already exited */
     }
@@ -251,11 +269,49 @@ export type CliLinkStatus =
   | { status: 'completed'; account: AccountStatusRow | null }
   | { status: 'failed'; error: string }
   | { status: 'unknown' };
-export function getCliLinkStatus(linkId: string): CliLinkStatus {
+function localCliLinkStatus(linkId: string): CliLinkStatus {
   const l = links.get(linkId);
   if (!l) return { status: 'unknown' };
   if (!l.done) return { status: 'pending' };
   return l.done.ok ? { status: 'completed', account: l.done.account } : { status: 'failed', error: l.done.error };
+}
+
+/** Read on the PTY owner, rather than treating a sibling's empty Map as expiry. */
+export async function getCliLinkStatus(linkId: string): Promise<CliLinkStatus> {
+  if (links.has(linkId)) return localCliLinkStatus(linkId);
+  const owner = await locateOwnerRpcResource(CLI_LINK_RPC_KIND, linkId, cliLinkScope());
+  if (!owner.ok) {
+    // A lookup miss includes unknown/expired ids. A timeout proves neither expiry
+    // nor owner loss, so leave the UI pending and allow its next status read.
+    return owner.code === 'timeout' || owner.code === 'send_failed'
+      ? { status: 'pending' }
+      : storedCliLinkStatus(linkId);
+  }
+  const ownerPid = (owner.result as { ownerPid: number }).ownerPid;
+  if (ownerPid === process.pid) return storedCliLinkStatus(linkId);
+  const result = await callOwnerProcess({ targetPid: ownerPid, kind: CLI_LINK_RPC_KIND, payload: { op: 'status', linkId } });
+  if (result.ok) {
+    const status = result.result as CliLinkStatus;
+    return status.status === 'unknown' ? storedCliLinkStatus(linkId) : status;
+  }
+  if (result.code === 'timeout' || result.code === 'send_failed') return { status: 'pending' };
+  return storedCliLinkStatus(linkId);
+}
+
+async function storedCliLinkStatus(linkId: string): Promise<CliLinkStatus> {
+  try {
+    const row = await readStoredCliLink(linkId, cliLinkScope());
+    if (!row) return { status: 'unknown' };
+    if (row.outcome === 'completed') {
+      return { status: 'completed', account: (await accountStatus()).find(a => a.id === row.accountId) ?? null };
+    }
+    if (row.outcome === 'failed') return { status: 'failed', error: `account link ${row.failure ?? 'interrupted'} — complete the link to retry an approved Codex login` };
+    if (linkOwnerLiveness(row.owner) === 'dead') return { status: 'failed', error: 'account link owner interrupted — complete the link to recover an approved Codex login' };
+    return { status: 'pending' };
+  } catch {
+    // Persistence failure is not evidence that a link expired. This reader never writes.
+    return { status: 'pending' };
+  }
 }
 
 type G = typeof globalThis & { __papercuspCliLinks?: Map<string, PendingCliLink> };
@@ -270,7 +326,7 @@ function cleanup(linkId: string): void {
   clearTimeout(l.reaper);
   if (l.enterTimer) clearTimeout(l.enterTimer);
   try {
-    l.pty.kill();
+    l.pty?.kill();
   } catch {
     /* already exited */
   }
@@ -297,13 +353,30 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
     return { ok: false, error: 'accountId required (allowed: A-Za-z0-9 . _ -)' };
   }
   const provider = normalizeAccountProvider(input.provider);
+  const linkId = randomUUID();
+  // Establish custody BEFORE launching the CLI: a relay failure must not create
+  // an orphan login, or delete a completed credential while trying to unwind it.
+  try {
+    await bindOwnerRpcResource(CLI_LINK_RPC_KIND, linkId, cliLinkScope(), LINK_TTL_MS + DONE_GRACE_MS + 2 * START_TIMEOUT_MS);
+  } catch {
+    return { ok: false, error: 'could not establish account-link process custody — retry the add-account flow' };
+  }
   const configDir = papercuspPath(
     'deploy-credentials',
     provider === 'codex'
       ? `.codex-setup-${accountId}-${randomBytes(4).toString('hex')}`
       : `.setup-${accountId}-${randomBytes(4).toString('hex')}`,
   );
-  await mkdir(configDir, { recursive: true });
+  const linkOwner = newLinkOwner();
+  try {
+    await createStoredCliLink({ linkId, scope: cliLinkScope(), accountId,
+      label: input.label?.trim() || undefined, provider, configDir, owner: linkOwner,
+      createdAt: Date.now(), expiresAt: Date.now() + LINK_TTL_MS,
+      retainUntil: Date.now() + LINK_RECOVERY_RETENTION_MS });
+    await mkdir(configDir, { recursive: true });
+  } catch {
+    return { ok: false, error: 'could not persist account-link custody — no login was started' };
+  }
   let bin: string;
   let pty: IPty;
   try {
@@ -329,18 +402,19 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
       env: spawnEnv,
     });
   } catch (e) {
+    await finishStoredCliLink(linkId, cliLinkScope(), linkOwner.nonce, 'failed', 'start-failed');
     await rm(configDir, { recursive: true, force: true }).catch(() => {});
     return { ok: false, error: `couldn't launch the ${providerLabel(provider)} CLI: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}` };
   }
-  const linkId = randomUUID();
   const entry: PendingCliLink = {
     pty,
+    owner: linkOwner,
     buf: '',
     accountId,
     label: input.label?.trim() || undefined,
     provider,
     configDir,
-    reaper: setTimeout(() => { void expireCliLink(linkId); }, LINK_TTL_MS),
+    reaper: setTimeout(() => reapCliLink(linkId), LINK_TTL_MS),
   };
   links.set(linkId, entry);
   // ONE persistent listener owns appending to entry.buf; every readUntil below only OBSERVES
@@ -367,6 +441,7 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
     // Surface WHY: the CLI's own output tail (a real failure explains itself), or — when the pty
     // produced nothing — the resolved binary, so a missing/broken install is named, not guessed at.
     const tail = stripAnsi(entry.buf).replace(/\s+/g, ' ').trim().slice(-200);
+    await finishStoredCliLink(linkId, cliLinkScope(), entry.owner.nonce, 'failed', 'start-failed');
     cleanup(linkId);
     return {
       ok: false,
@@ -378,6 +453,7 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
   if (provider === 'codex') {
     const userCode = await readUntil(pty, () => entry.buf, noAppend, CODEX_USER_CODE_RE, startTimeoutMs);
     if (!userCode) {
+      await finishStoredCliLink(linkId, cliLinkScope(), entry.owner.nonce, 'failed', 'start-failed');
       cleanup(linkId);
       return { ok: false, error: 'the Codex CLI did not produce a device code' };
     }
@@ -487,12 +563,22 @@ function finalizeCodexCliLink(
   if (l.done?.ok) return Promise.resolve(l.done);
   l.done = undefined;
   if (l.finalizing) return l.finalizing;
-  const attempt = completeCodexCliLink(linkId, l, { linkId, ...input }, deps)
-    .then((result) => {
-      if (!result.ok) return result;
+  const attempt = Promise.resolve().then(async (): Promise<CompleteCliLinkResult> => {
+    const held = await readStoredCliLink(linkId, cliLinkScope());
+    if (held?.owner.nonce !== l.owner.nonce) return { ok: false, error: 'account-link custody changed; approved credentials were preserved' };
+    return completeCodexCliLink(linkId, l, { linkId, ...input }, deps);
+  })
+    .then(async (result) => {
+      if (!result.ok) {
+        await finishStoredCliLink(linkId, cliLinkScope(), l.owner.nonce, 'failed', 'registration-failed');
+        return result;
+      }
+      if (!await finishStoredCliLink(linkId, cliLinkScope(), l.owner.nonce, 'completed')) {
+        return { ok: false, error: 'account-link custody changed; approved credentials were preserved' } as CompleteCliLinkResult;
+      }
       l.done = result;
       clearTimeout(l.reaper);
-      try { l.pty.kill(); } catch { /* already exited */ }
+      try { l.pty?.kill(); } catch { /* already exited */ }
       void rm(l.configDir, { recursive: true, force: true }).catch(() => {});
       l.reaper = setTimeout(() => links.delete(linkId), DONE_GRACE_MS);
       (deps.notify ?? defaultNotify)();
@@ -505,6 +591,16 @@ function finalizeCodexCliLink(
 }
 
 /** A completed credential must be installed before its temporary home is removed. */
+function reapCliLink(linkId: string): void {
+  void trackDetached(expireCliLink(linkId)).catch(() => {
+    const l = links.get(linkId);
+    if (!l) return;
+    // A failed metadata write must neither crash the host nor discard the approved home.
+    l.done = { ok: false, error: 'account-link expiry could not be recorded; credentials preserved — retry completion' };
+    defaultNotify();
+  });
+}
+
 async function expireCliLink(linkId: string): Promise<void> {
   const l = links.get(linkId);
   if (!l) return;
@@ -519,11 +615,12 @@ async function expireCliLink(linkId: string): Promise<void> {
       return;
     } catch { /* no completed login to preserve */ }
   }
+  await finishStoredCliLink(linkId, cliLinkScope(), l.owner.nonce, 'failed', 'expired');
   cleanup(linkId);
 }
 
 /** Feed the pasted code into the held CLI when needed, capture the credential, write + register it. */
-export async function completeCliLink(input: CompleteCliLinkInput, deps: CompleteCliLinkDeps = {}): Promise<CompleteCliLinkResult> {
+async function completeLocalCliLink(input: CompleteCliLinkInput, deps: CompleteCliLinkDeps = {}): Promise<CompleteCliLinkResult> {
   const l = links.get(input.linkId);
   if (!l) return { ok: false, error: 'link expired or unknown — restart the add-account flow' };
   if (l.done && (l.done.ok || l.provider !== 'codex')) {
@@ -534,6 +631,8 @@ export async function completeCliLink(input: CompleteCliLinkInput, deps: Complet
     return done;
   }
   if (l.provider === 'codex') return finalizeCodexCliLink(input.linkId, l, input, deps);
+  if (!l.pty) return { ok: false, error: 'the original Claude handshake was interrupted' };
+  const pty = l.pty;
   const code = input.code?.trim();
   if (!code) {
     return {
@@ -550,20 +649,20 @@ export async function completeCliLink(input: CompleteCliLinkInput, deps: Complet
   // rejection line (OUTCOME_RE) so a bad code fails fast.
   const enterDelay = deps.enterDelayMs ?? SUBMIT_ENTER_DELAY_MS;
   const matched = await readUntil(
-    l.pty,
+    pty,
     () => l.buf,
     () => {},
     OUTCOME_RE,
     COMPLETE_TIMEOUT_MS,
     () => {
       try {
-        l.pty.write(code);
+        pty.write(code);
       } catch {
         /* pty already gone (auto-mint exited it) — the buffer check above still settles */
       }
       l.enterTimer = setTimeout(() => {
         try {
-          l.pty.write('\r');
+          pty.write('\r');
         } catch {
           /* pty already gone */
         }
@@ -581,6 +680,7 @@ export async function completeCliLink(input: CompleteCliLinkInput, deps: Complet
       return done;
     }
     const tail = stripAnsi(l.buf).replace(/\s+/g, ' ').trim().slice(-180);
+    await finishStoredCliLink(input.linkId, cliLinkScope(), l.owner.nonce, 'failed', 'interrupted');
     cleanup(input.linkId);
     const said = tail ? ` — claude said: "${tail}"` : '';
     return {
@@ -600,6 +700,64 @@ export async function completeCliLink(input: CompleteCliLinkInput, deps: Complet
   }
   return result;
 }
+
+/** Completion must write to the same PTY that started the provider handshake. */
+export async function completeCliLink(input: CompleteCliLinkInput, deps: CompleteCliLinkDeps = {}): Promise<CompleteCliLinkResult> {
+  if (links.has(input.linkId)) return completeLocalCliLink(input, deps);
+  const owner = await locateOwnerRpcResource(CLI_LINK_RPC_KIND, input.linkId, cliLinkScope());
+  if (!owner.ok) return owner.code === 'owner_gone' || owner.code === 'not_clustered'
+    ? recoverStoredCliLink(input, deps)
+    : { ok: false, error: `link owner unavailable (${owner.code}) — no replacement login was started` };
+  const ownerPid = (owner.result as { ownerPid: number }).ownerPid;
+  if (ownerPid === process.pid) return recoverStoredCliLink(input, deps);
+  const result = await callOwnerProcess({
+    targetPid: ownerPid, kind: CLI_LINK_RPC_KIND,
+    payload: { op: 'complete', ...input }, timeoutMs: COMPLETE_TIMEOUT_MS + 5_000,
+  });
+  if (result.ok) return result.result as CompleteCliLinkResult;
+  return result.code === 'owner_gone' ? recoverStoredCliLink(input, deps)
+    : { ok: false, error: `link owner unavailable (${result.code}) — no replacement login was started` };
+}
+
+/** Write path only. No new login, no time-based stealing, no cleanup before successful commit. */
+async function recoverStoredCliLink(input: CompleteCliLinkInput, deps: CompleteCliLinkDeps): Promise<CompleteCliLinkResult> {
+  let row: StoredCliLink | null;
+  try { row = await readStoredCliLink(input.linkId, cliLinkScope()); }
+  catch { return { ok: false, error: 'account-link custody could not be read; retry completion' }; }
+  if (!row) return { ok: false, error: 'link expired or unknown — no replacement login was started' };
+  if (row.outcome === 'completed') {
+    return { ok: true, account: (await accountStatus()).find(a => a.id === row.accountId) ?? null };
+  }
+  if (row.provider !== 'codex' || linkOwnerLiveness(row.owner) !== 'dead') {
+    return { ok: false, error: 'original account-link owner is live or unverified, or the provider handshake cannot be recovered' };
+  }
+  let claimed: StoredCliLink | null;
+  try { claimed = await claimStoredCliLink(row, newLinkOwner()); }
+  catch { return { ok: false, error: 'account-link recovery custody unavailable; retry completion' }; }
+  if (!claimed) return { ok: false, error: 'account-link recovery already has a custodian' };
+  const l: PendingCliLink = {
+    pty: null, buf: '', accountId: claimed.accountId, label: claimed.label,
+    provider: claimed.provider, configDir: claimed.configDir, owner: claimed.owner,
+    reaper: setTimeout(() => reapCliLink(input.linkId), LINK_TTL_MS),
+  };
+  links.set(input.linkId, l);
+  // If approval never completed, the maintained finalizer reports that precisely.
+  // Approved auth remains in place on registration/persistence failure for retry.
+  return finalizeCodexCliLink(input.linkId, l, input, deps);
+}
+
+registerOwnerRpcHandler(CLI_LINK_RPC_KIND, async (payload) => {
+  const p = payload as Partial<CompleteCliLinkInput> & { op?: unknown } | null;
+  if (!p || typeof p.linkId !== 'string' || !p.linkId ||
+      (p.op !== 'status' && p.op !== 'complete') ||
+      (p.code !== undefined && typeof p.code !== 'string') ||
+      (p.workspace !== undefined && typeof p.workspace !== 'string')) {
+    throw new Error('invalid account link operation');
+  }
+  // Never re-route here: a stale mapping must not cause a forwarding loop.
+  return p.op === 'status' ? localCliLinkStatus(p.linkId)
+    : completeLocalCliLink({ linkId: p.linkId, code: p.code, workspace: p.workspace });
+});
 
 /** Test-only: drop all held links (kills the ptys). */
 export function __resetCliLinksForTest(): void {

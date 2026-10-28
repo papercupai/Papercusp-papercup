@@ -6,6 +6,7 @@ import {
   withWorkspace,
   type VerifiedTenantServerContext,
 } from '@papercusp/db-org';
+import { HostedSecretStoreUnavailableError } from '../auth/hosted/secret-ref';
 import {
   PostgresWorkosAccessClosureSink,
   PostgresWorkosLifecycleProjectionStore,
@@ -208,13 +209,18 @@ export const HOSTED_RUNTIME_OPTIONAL_LABELS = [
 /**
  * Turn a resolver failure into a fixed, value-safe message.
  *
- * The resolver's own errors name the REFERENCE and never the value, so their
- * text is safe to surface. Anything else — a database connection failure in
- * particular, whose message can embed a connection string WITH its password —
- * collapses to a bare code. Never interpolate an unknown error message here.
+ * Resolver reference errors name no secret value. The one known encrypted-store
+ * failure may surface its fixed code and validated SQLSTATE; all other errors
+ * collapse to a fixed marker. Never interpolate an unknown error message here.
  * Same discipline as `apps/operator/bin/hosted-check-refs.ts`.
  */
 function safeResolverFailure(error: unknown): string {
+  if (error instanceof HostedSecretStoreUnavailableError && error.code === 'hosted_secret_ref_store_unavailable') {
+    const sqlState = error.sqlState;
+    return typeof sqlState === 'string' && /^[0-9A-Z]{5}$/.test(sqlState)
+      ? error.code + ' (sqlstate=' + sqlState + ')'
+      : error.code;
+  }
   const message = error instanceof Error ? error.message : '';
   return /^(hosted_secret_ref_(missing|malformed):|egress: )/.test(message) ? message : 'resolution_error';
 }

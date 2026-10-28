@@ -44,4 +44,4 @@ registerSystemAction('oddsmith-error-triage-ingest', async (ctx: SystemActionCtx
   });
   assertRunOk('oddsmith-error-triage-ingest', r);
   console.log(`[oddsmith-error-triage-ingest] ok: ${(r.stdout || '').trim().split('\n').slice(-1)[0]}`);
-});
+}, { scheduling: 'on-demand' });

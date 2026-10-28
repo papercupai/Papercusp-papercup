@@ -105,6 +105,9 @@ export interface CapacityProbeResult {
     message?: string;
     requestId?: string;
   };
+  /** An authentication refusal is independent of quota. Only explicit revocation or
+   * invalidated refresh evidence proves that the credential needs relinking. */
+  authentication?: 'refused' | 'relink-required';
   /** Transport/credential/no-header failure detail. Non-fatal: one bad account never fails the sweep. */
   error?: string;
 }
@@ -471,6 +474,11 @@ export async function probeAccountCapacity(
  *  with a ChatGPT account") — verified working on subscription plans 2026-08-13. */
 export const CODEX_CAPACITY_PROBE_MODEL = process.env.PAPERCUSP_CODEX_CAPACITY_PROBE_MODEL || 'gpt-5.6-sol';
 
+function codexAuthenticationFailure(status: number | undefined, code: string | undefined): CapacityProbeResult['authentication'] {
+  if (code === 'token_revoked' || code === 'refresh_token_invalidated') return 'relink-required';
+  return status === 401 ? 'refused' : undefined;
+}
+
 /**
  * Probe ONE ChatGPT-subscription codex account (credentialRef `codex-cli:<home>`) — WI-38582.
  * Same contract as `probeAccountCapacity`: never throws, any HTTP response with a usable header is
@@ -516,16 +524,21 @@ export async function probeCodexAccountCapacity(
     accessToken = auth.accessToken;
     chatgptAccountId = auth.accountId ?? null;
   } catch (e) {
+    const error = describeProbeError(e, 'credential resolution', deadlineAt, now);
+    const code = error.match(/\b(token_revoked|refresh_token_invalidated)\b/)?.[1];
     return {
       ...base,
       ok: false,
       windows: {},
       unwalls: false,
-      error: describeProbeError(e, 'credential resolution', deadlineAt, now),
+      ...(code ? { authentication: codexAuthenticationFailure(undefined, code) } : {}),
+      error,
     };
   }
 
   const failures: string[] = [];
+  let lastStatus: number | undefined;
+  let httpRefusal: CapacityProbeResult['httpRefusal'];
   const probeModel = deps.codexModel?.trim() || CODEX_CAPACITY_PROBE_MODEL;
   for (const egress of probeEgressCandidates(account)) {
     const route = describeEgress(egress);
@@ -572,14 +585,7 @@ export async function probeCodexAccountCapacity(
         'fetch',
         () => ac.abort(),
       );
-      // Headers are the whole signal — cancel the SSE stream instead of draining a model turn.
-      try {
-        ac.abort();
-      } catch {
-        /* already settled */
-      }
-      void res.body?.cancel().catch(() => undefined);
-
+      lastStatus = res.status;
       const h: Record<string, string | undefined> = {};
       res.headers.forEach((v, k) => {
         h[k.toLowerCase()] = v;
@@ -587,7 +593,12 @@ export async function probeCodexAccountCapacity(
       const windows = parseCapacityHeaders(h);
       if (windows.creditBalance && chatgptAccountId) windows.creditBalance.walletId = chatgptAccountId;
       const sawHeader = Object.keys(windows).length > 0;
-      if (sawHeader) {
+      // A 401 is authentication evidence even if upstream attaches quota headers.
+      // Preserve the bounded refusal before cancellation; successful SSE bodies
+      // still need no reading, and a 429 remains valid capacity evidence.
+      if (sawHeader && res.status !== 401) {
+        void res.body?.cancel().catch(() => undefined);
+        ac.abort();
         return {
           ...base,
           ok: true,
@@ -595,6 +606,16 @@ export async function probeCodexAccountCapacity(
           windows,
           unwalls: provesUnwall(before, windows, fullUtil),
         };
+      }
+      if (!res.ok) {
+        httpRefusal = await readHttpRefusal(res, accessToken, remainingMs(deadlineAt, now), () => ac.abort());
+        if (codexAuthenticationFailure(res.status, httpRefusal.errorCode) === 'relink-required') {
+          return { ...base, ok: false, status: res.status, windows: {}, unwalls: false,
+            authentication: 'relink-required', httpRefusal, error: 'Codex authentication refused; credential relink required' };
+        }
+      } else {
+        void res.body?.cancel().catch(() => undefined);
+        ac.abort();
       }
       failures.push(`${route}: HTTP ${res.status} carried no x-codex-* rate-limit header`);
     } catch (e) {
@@ -606,6 +627,10 @@ export async function probeCodexAccountCapacity(
   return {
     ...base,
     ok: false,
+    ...(lastStatus !== undefined ? { status: lastStatus } : {}),
+    ...(httpRefusal ? { httpRefusal } : {}),
+    ...(codexAuthenticationFailure(lastStatus, httpRefusal?.errorCode)
+      ? { authentication: codexAuthenticationFailure(lastStatus, httpRefusal?.errorCode) } : {}),
     windows: {},
     unwalls: false,
     error: failures.join('; '),

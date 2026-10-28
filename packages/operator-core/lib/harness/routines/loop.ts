@@ -1560,6 +1560,44 @@ export function computeTurnsStalled(input: {
   return now - input.lastFiredAtMs >= floorMs && !activeRecently;
 }
 
+type LoopScheduleTransitionRow = {
+  id: string;
+  workspace_id: string;
+  install_slug: string;
+  name: string | null;
+  target_role: string | null;
+  target_owner_id: string | null;
+  reschedule_interval_sec: number | string | null;
+  next_fire_at: Date | string | null;
+};
+
+function transitionNextFireAt(value: Date | string | null): string | null {
+  const nextFireAt = normalizeNextFireAt(value);
+  if (isParkedNextFire(nextFireAt)) return 'infinity';
+  return nextFireAt?.toISOString() ?? null;
+}
+
+function recordLoopScheduleTransition(
+  sql: Sql,
+  row: LoopScheduleTransitionRow,
+  actor: string,
+  detail: Record<string, unknown>,
+): void {
+  void recordLoopTransition(sql, {
+    workspaceId: row.workspace_id,
+    installSlug: row.install_slug,
+    routineId: row.id,
+    routineName: row.name,
+    targetRole: row.target_role,
+    targetOwnerId: row.target_owner_id,
+    event: 'rearmed',
+    actor,
+    newNextFireAt: transitionNextFireAt(row.next_fire_at),
+    intervalSec: row.reschedule_interval_sec == null ? null : Number(row.reschedule_interval_sec),
+    detail,
+  });
+}
+
 /**
  * EI-19406534159939583 — the REMEDY for a loop the firing path stopped serving, and the
  * deliberate dual of `autoPauseLoopRoutine` (loop-cost-cap.ts): where that one answers "this
@@ -1583,7 +1621,7 @@ export function computeTurnsStalled(input: {
  * routine, so `fireCount` keeps climbing and a repeat offender is still visible as one.
  */
 export async function rearmFireStarvedLoop(sql: Sql, routineId: string, reason: string): Promise<void> {
-  await sql`
+  const rows = await sql<LoopScheduleTransitionRow[]>`
     UPDATE harness_shared.routines
        SET next_fire_at = now(),
            metadata = COALESCE(metadata, '{}'::jsonb)
@@ -1598,7 +1636,11 @@ export async function rearmFireStarvedLoop(sql: Sql, routineId: string, reason: 
                        ),
            updated_at = now()
      WHERE id = ${routineId} AND active = TRUE
+    RETURNING id, workspace_id, install_slug, name, target_role, target_owner_id,
+              reschedule_interval_sec, next_fire_at
   `;
+  const row = rows[0];
+  if (row) recordLoopScheduleTransition(sql, row, 'loop-fire-starvation-recovery', { reason });
 }
 
 /** P-007: host-recovery routes one loop may take inside HOST_RECOVERY_ROUTE_WINDOW_MS. */
@@ -1626,7 +1668,7 @@ export async function routeStalledLoopToHostRecovery(
 ): Promise<{ routed: boolean }> {
   const max = opts.max ?? HOST_RECOVERY_ROUTE_MAX;
   const windowMs = opts.windowMs ?? HOST_RECOVERY_ROUTE_WINDOW_MS;
-  const rows = await sql<Array<{ id: string }>>`
+  const rows = await sql<LoopScheduleTransitionRow[]>`
     WITH cur AS (
       SELECT id,
              (extract(epoch from now()) * 1000)::bigint AS now_ms,
@@ -1660,8 +1702,15 @@ export async function routeStalledLoopToHostRecovery(
      WHERE r.id = b.id
        AND r.active = TRUE
        AND (b.window_expired OR b.route_count < ${max})
-    RETURNING r.id
+    RETURNING r.id, r.workspace_id, r.install_slug, r.name, r.target_role, r.target_owner_id,
+              r.reschedule_interval_sec, r.next_fire_at
   `;
+  const row = rows[0];
+  // deferFire reserves a host-recovery route but intentionally leaves the schedule alone
+  // until the carry ACK. It is not a scheduling transition and must not create a false one.
+  if (row && opts.deferFire !== true) {
+    recordLoopScheduleTransition(sql, row, 'stalled-loop-host-recovery', { reason, condition });
+  }
   return { routed: rows.length > 0 };
 }
 
@@ -1674,7 +1723,10 @@ export async function retainStalledLoopRecoveryWall(
   routineId: string,
   wall: { ownerId: string; condition: string; reason: string; remedy: string },
 ): Promise<{ retained: boolean; changed: boolean }> {
-  const rows = await sql<Array<{ changed: boolean }>>`
+  const rows = await sql<Array<{
+    changed: boolean;
+    prior_next_fire_at: Date | string | null;
+  } & LoopScheduleTransitionRow>>`
     WITH cur AS (
       SELECT id, metadata, next_fire_at,
              (metadata #>> '{stalled_host_recovery,wall,reason}') IS DISTINCT FROM ${wall.reason} AS changed
@@ -1693,9 +1745,15 @@ export async function retainStalledLoopRecoveryWall(
              ELSE now() + (${HOST_RECOVERY_ROUTE_WINDOW_MS}::bigint * interval '1 millisecond') END,
            updated_at = now()
       FROM cur WHERE r.id = cur.id AND r.active = TRUE AND r.target_owner_id = ${wall.ownerId}
-    RETURNING cur.changed
+    RETURNING cur.changed, cur.next_fire_at AS prior_next_fire_at,
+              r.id, r.workspace_id, r.install_slug, r.name, r.target_role, r.target_owner_id,
+              r.reschedule_interval_sec, r.next_fire_at
   `;
-  return { retained: rows.length > 0, changed: rows[0]?.changed === true };
+  const row = rows[0];
+  if (row && transitionNextFireAt(row.prior_next_fire_at) !== transitionNextFireAt(row.next_fire_at)) {
+    recordLoopScheduleTransition(sql, row, 'stalled-loop-recovery-wall', { reason: wall.reason });
+  }
+  return { retained: rows.length > 0, changed: row?.changed === true };
 }
 
 /**
@@ -1782,6 +1840,7 @@ export async function reviveDisarmedLoop(
       reschedule_interval_sec: number | null;
       revived_count: number | null;
       from_pause_reason: string | null;
+      next_fire_at: Date | string | null;
     }>
   >`
     UPDATE harness_shared.routines
@@ -1815,7 +1874,8 @@ export async function reviveDisarmedLoop(
     RETURNING workspace_id, install_slug, name, target_role, target_owner_id,
               reschedule_interval_sec,
               (metadata->>'loop_revived_count')::int AS revived_count,
-              metadata->>'loop_revived_from_pause_reason' AS from_pause_reason
+              metadata->>'loop_revived_from_pause_reason' AS from_pause_reason,
+              next_fire_at
   `;
 
   // WI-37571 — the counterpart to the `disarmed` row, and the reason this pair matters more
@@ -1845,7 +1905,7 @@ export async function reviveDisarmedLoop(
       actor: 'stalled-loops-guard-revival',
       // The revival schedules its rescue fire for now() — recorded as the fire time this
       // transition WROTE, matching the column's documented contract for a re-arm.
-      newNextFireAt: new Date().toISOString(),
+      newNextFireAt: transitionNextFireAt(row.next_fire_at),
       intervalSec: row.reschedule_interval_sec,
       detail: {
         reason,

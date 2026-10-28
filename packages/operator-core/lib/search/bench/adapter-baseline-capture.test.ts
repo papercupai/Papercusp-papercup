@@ -1,5 +1,52 @@
 import { describe, expect, it } from 'vitest';
-import { decodeDocsSearchCapture, DOCS_FINAL_INPUT_CONTRACT, decodeTypesenseCapture } from './adapter-baseline-capture';
+import { decodeDocsSearchCapture, DOCS_FINAL_INPUT_CONTRACT, decodeTypesenseCapture, decodeProseSearchCapture } from './adapter-baseline-capture';
+
+describe('actual direct prose capture label inputs', () => {
+  function sample() {
+    const args = { query: 'scope witness', scope: ['work_item'], harness_slug: 'papercusp', limit: 2 };
+    const expected = { id: 'prose-1', adapter: 'search:fulltext' as const, args, effectiveScope: ['work_item', 'plan'] };
+    const response = { query: args.query, scope: expected.effectiveScope, total_hits: 100,
+      results: [{ source: 'work_item', source_id: 'a', harness_slug: 'papercusp', rank: 0.2,
+        excerpt: 'superseded; inspect the current authority', qualifier: { current: 'unknown' } },
+      { source: 'plan', source_id: 'a', harness_slug: 'papercusp', rank: 0.1, excerpt: 'draft plan', plan_status: 'draft' }] };
+    const encode = (value: unknown) => JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(value) }] });
+    const capture = { schemaVersion: 1, attemptId: expected.id, adapter: expected.adapter, request: args,
+      exitCode: 0, stdout: encode(response), deliveryWallMs: 8,
+      observation: { plane: 'direct-tool-handler', transportExercised: false } };
+    return { expected, response, encode, capture };
+  }
+  it('preserves complete rows/order, implicit plan scope and unknown fulltext degradation', () => {
+    const f = sample(), result = decodeProseSearchCapture(f.capture, f.expected);
+    expect(result.hits.map(h => JSON.parse(h.docText))).toEqual(f.response.results);
+    expect(result.hits.map(h => h.rank)).toEqual([1, 2]);
+    expect(result.hits[0]!.docId).not.toBe(result.hits[1]!.docId);
+    expect(result.response).toEqual(f.response);
+    expect(result.degraded).toBeNull();
+    expect(result.measurementPlane).toBe('direct-tool-handler');
+    expect(result).not.toHaveProperty('quality');
+  });
+  it('refuses scope/request drift, truncation, duplicate identities and transport mislabelling', () => {
+    const f = sample();
+    for (const capture of [
+      { ...f.capture, request: { ...f.capture.request, harness_slug: 'foreign' } },
+      { ...f.capture, stdout: f.encode({ ...f.response, scope: ['work_item'] }) },
+      { ...f.capture, stdout: f.encode({ ...f.response, results: [{ ...f.response.results[0], _partial: true }] }) },
+      { ...f.capture, stdout: f.encode({ ...f.response, results: [f.response.results[0], f.response.results[0]] }) },
+      { ...f.capture, stdout: f.encode({ ...f.response, results: [{ ...f.response.results[0], source: 'session_turn' }] }) },
+      { ...f.capture, stdout: JSON.stringify({ content: [{ type: 'text', text: '{}' }], isError: true }) },
+      { ...f.capture, observation: { ...f.capture.observation, transportExercised: true } },
+    ]) expect(() => decodeProseSearchCapture(capture, f.expected)).toThrow();
+  });
+  it('preserves degraded semantic emptiness with unknown count and refuses an invented healthy zero', () => {
+    const f = sample(), expected = { ...f.expected, adapter: 'search:semantic' as const };
+    const response = { ...f.response, results: [], total_hits: null, mode: 'hybrid', status: 'degraded',
+      embedder_available: false, legs: { degraded: true }, coverage: { degraded: true }, zeroHitCaveat: 'not an absence claim' };
+    const capture = { ...f.capture, adapter: expected.adapter, stdout: f.encode(response) };
+    expect(decodeProseSearchCapture(capture, expected)).toMatchObject({ degraded: true, hits: [], response });
+    expect(() => decodeProseSearchCapture({ ...capture, stdout: f.encode({ ...response, status: 'ok',
+      embedder_available: true, legs: { degraded: false }, coverage: { degraded: false } }) }, expected)).toThrow();
+  });
+});
 
 describe('actual Typesense adapter capture', () => {
   function sample() {

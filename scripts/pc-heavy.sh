@@ -1591,6 +1591,18 @@ _pc_heavy_internal_preempt_run() {
     fi
     if [ "${EPOCHSECONDS:-$(date +%s)}" -ge "$_preempt_start_deadline" ]; then
       echo "[pc-heavy] REFUSED preemptible heavy run: child process-group identity was not published" >&2
+      # EI-27255002470732496: with no published pid, _preempt_reap_group cannot
+      # signal the group and blocks in `wait` until the supervisor exits on its
+      # own (possibly never). Stop the still-alive supervisor first, as
+      # _preempt_forward_signal does, escalating to KILL after the TERM grace.
+      if _preempt_leader_alive; then
+        kill -TERM "$_preempt_wait_pid" 2>/dev/null || true
+        local _preempt_stop_deadline=$(( ${EPOCHSECONDS:-$(date +%s)} + ${_preempt_term_grace:-30} ))
+        while _preempt_leader_alive && [ "${EPOCHSECONDS:-$(date +%s)}" -lt "$_preempt_stop_deadline" ]; do
+          sleep "${_preempt_poll:-0.1}"
+        done
+        _preempt_leader_alive && kill -KILL "$_preempt_wait_pid" 2>/dev/null || true
+      fi
       _preempt_reap_group
       _preempt_emit_result undetermined child-start-timeout 75
       trap - EXIT TERM INT HUP

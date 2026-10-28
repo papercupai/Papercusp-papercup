@@ -2,7 +2,10 @@ import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 
-const exec = promisify(execFile);
+// Promisified lazily on first call, never at module scope (EI-10161): an eager
+// promisify(execFile) throws at import time under a narrow node:child_process test mock.
+let cachedExec;
+const exec = (...args) => (cachedExec ??= promisify(execFile))(...args);
 const runGcloud = async (args) => (await exec('gcloud', args, {
   encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 1800_000,
 })).stdout;
@@ -22,6 +25,14 @@ export async function verifyGcsPublicBytes(url, expected, fetchImpl = fetch) {
   return verifyGcsStream(response.body, expected);
 }
 
+/** @typedef {{ deleted: { key: string, generation: string, status: number }[], complete: boolean,
+ * remaining: string[], providerRemaining: string[], error?: string }} GcsUploadVerificationCleanup */
+/** `error` / `errorCauseCode` / `cleanup.error` are set only on a failing run, so they are optional.
+ * @typedef {{ operationId: string, sha256: string, sizeBytes: number, startedAt: string, finishedAt?: string,
+ * checks: Array<{ name: string, ok: boolean } & Record<string, unknown>>, result: 'incomplete' | 'pass' | 'fail',
+ * objectIdentity?: { generation: string, metageneration: string, crc32c: string, sizeBytes: number },
+ * error?: string, errorCauseCode?: string | null, cleanup: GcsUploadVerificationCleanup }} GcsUploadVerificationResult */
+
 /** Bounded operational verification through the serving Worker's real storage port.
  * The caller must durably journal the exact operation before this function writes.
  * Cleanup is restricted to this unique fixture and generation-fenced; original
@@ -30,6 +41,7 @@ export async function verifyGcsPublicBytes(url, expected, fetchImpl = fetch) {
  * operationId: string, body: string,
  * recordOperation: (operation: { operationId: string, sha256: string, sizeBytes: number }) => Promise<void>,
  * positiveControl: { path: string, sha256: string, sizeBytes: number }, fetchImpl?: typeof fetch }} options
+ * @returns {Promise<GcsUploadVerificationResult>}
  */
 export async function verifyGcsWorkspaceHostUpload({ baseUrl, bucket, githubToken, accessToken,
   operationId, body, recordOperation, positiveControl, fetchImpl = fetch }) {
@@ -48,6 +60,7 @@ export async function verifyGcsWorkspaceHostUpload({ baseUrl, bucket, githubToke
   const path = '/admin/artifacts/workspace-host/sha256/' + sha256 + '/server.tgz/multipart';
   const publicPath = '/artifacts/workspace-host/sha256/' + sha256 + '/server.tgz';
   const operation = { operationId, sha256, sizeBytes: Buffer.byteLength(body) };
+  /** @type {GcsUploadVerificationResult} */
   const result = { ...operation, startedAt: new Date().toISOString(), checks: [], result: 'incomplete',
     cleanup: { deleted: [], complete: false, remaining: [], providerRemaining: [] } };
   const check = (name, ok, evidence = {}) => {

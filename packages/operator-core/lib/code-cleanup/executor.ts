@@ -19,7 +19,11 @@ import { promisify } from 'node:util';
 import type { CoverageScopeData } from '../code-intelligence/test-coverage-map';
 import type { TriageBatch, TriageLocation } from './triage';
 
-const execFileAsync = promisify(execFile);
+// Promisified lazily on first call, never at module scope (EI-10161): an eager
+// promisify(execFile) throws at import time under a narrow node:child_process test mock.
+let cachedExecFileAsync: typeof execFile.__promisify__ | undefined;
+const execFileAsync = ((...args: Parameters<typeof execFile.__promisify__>) =>
+  (cachedExecFileAsync ??= promisify(execFile))(...args)) as typeof execFile.__promisify__;
 
 /** Campaign aggressiveness (R-12). `safe` is the default for a new campaign (D-007). */
 export type CleanupAggressiveness = 'safe' | 'standard' | 'thorough';

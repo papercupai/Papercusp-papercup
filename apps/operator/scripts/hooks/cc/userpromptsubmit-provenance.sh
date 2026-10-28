@@ -70,6 +70,10 @@ if not isinstance(prompt, str) or not prompt:
 
 # ── lockstep mirrors of turn-provenance.ts ──────────────────────────────────
 ENVELOPE_RE = re.compile(r'^\s*⟦turn-origin:([A-Za-z0-9:._@-]+) nonce:([a-f0-9]{8,64})⟧')
+CODEX_STOP_HOOK_PROMPT_RE = re.compile(
+    r'^\s*<hook_prompt\b[^>\r\n]*\bhook_run_id=stop:\d+:[^>\r\n]+>',
+    re.IGNORECASE,
+)
 # WI-10002461: a prompt that is ENTIRELY one Claude Code paste block
 # (`<pasted_content id="X">…</pasted_content id="X">`) is classified by its pasted
 # text — PTY injectors now arrive wrapped, which hid the head envelope and let
@@ -168,6 +172,7 @@ def cross_session_sender(s):
 def is_machine_surface(s):
     return bool(
         MACHINE_SURFACE_RE.match(s)
+        or CODEX_STOP_HOOK_PROMPT_RE.match(s)
         or TASK_NOTIFICATION_TAG_RE.match(s)
         or CLAUDE_USAGE_RESET_RE.match(s)
         or MACHINE_SUFFIX_RE.search(s)
@@ -828,10 +833,16 @@ def request_released_operation_continuation(prompt, native_session, native_turn=
 # Classify the UNWRAPPED text; the owner branch still records/captures `prompt`
 # verbatim, so its hash keeps matching the transcript turn.
 ctext = unwrap_whole_paste(prompt)
-m = ENVELOPE_RE.match(ctext)
+envelope_text = ctext
+m = ENVELOPE_RE.match(envelope_text)
+if not m:
+    hook_prompt = CODEX_STOP_HOOK_PROMPT_RE.match(ctext)
+    if hook_prompt:
+        envelope_text = ctext[hook_prompt.end():]
+        m = ENVELOPE_RE.match(envelope_text)
 if m:
     origin_claim, nonce = m.group(1), m.group(2)
-    payload = ctext[m.end():]
+    payload = envelope_text[m.end():]
     row = next((r for r in rows if r['nonce'] == nonce), None)
     if row and live(row):
         hash_ok = sha256_hex(payload) == row['sha256']

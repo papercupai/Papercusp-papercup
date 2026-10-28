@@ -13,7 +13,9 @@ const scope = {
 };
 
 function sqlReturning(rows: unknown[]) {
-  return vi.fn(async () => rows) as never;
+  // The wi: branch splices a static kind list via `sql.unsafe(...)`; the fake
+  // must expose it like a real postgres.js tag does.
+  return Object.assign(vi.fn(async () => rows), { unsafe: (text: string) => text }) as never;
 }
 
 describe('session task typed blocker refs', () => {

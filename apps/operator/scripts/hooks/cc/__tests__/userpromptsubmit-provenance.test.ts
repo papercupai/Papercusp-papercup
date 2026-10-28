@@ -367,6 +367,28 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).not.toContain('OWNER (interactive)');
   });
 
+  it('verifies an enrolled envelope nested in the native Codex Stop-hook wrapper', () => {
+    writeRow({ origin: 'stop-hook' });
+    const ctx = contextOf(runHook({
+      prompt:
+        '<hook_prompt hook_run_id=stop:22:/tmp/hooks.json>\n' +
+        '⟦turn-origin:stop-hook nonce:aabbccddeeff0011⟧\nthe injected payload',
+    }));
+    expect(ctx).toContain('VERIFIED AGENT-ORIGIN');
+    expect(ctx).toContain('origin: stop-hook');
+    expect(ctx).not.toContain('OWNER (interactive)');
+  });
+
+  it('falls back to machine-surface for an un-enrolled wrapper but keeps owner quotation interactive', () => {
+    const wrapped = '<hook_prompt hook_run_id=stop:22:/tmp/hooks.json>\nSTOP CONTEXT';
+    const machine = contextOf(runHook({ prompt: wrapped }));
+    expect(machine).toContain('MACHINE-GENERATED SURFACE');
+    expect(machine).not.toContain('OWNER (interactive)');
+
+    const owner = contextOf(runHook({ prompt: 'Why did the transcript say ' + wrapped + '?' }));
+    expect(owner).toContain('OWNER (interactive)');
+  });
+
   it('an envelope MID-TEXT is quoted content — classifies OWNER, not unverified', () => {
     writeRow();
     const ctx = contextOf(

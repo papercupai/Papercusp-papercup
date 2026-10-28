@@ -114,6 +114,12 @@ const mocks = vi.hoisted(() => ({
   attributionSql: vi.fn(),
   // WI-6554700010019177: the admit door's read of the stored qualification transaction.
   readQualification: vi.fn(),
+  // WI-6554700010042419: the retire door's owner-directive verifier.
+  verifyDirective: vi.fn(),
+}));
+vi.mock('../work_items/release-force-guard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../work_items/release-force-guard')>()),
+  verifyOwnerForceDirective: mocks.verifyDirective,
 }));
 vi.mock('../../release/dependency-admission-prediction', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/dependency-admission-prediction')>()),
@@ -410,6 +416,7 @@ beforeEach(() => {
   mocks.readState.mockResolvedValue({ status: 'value', queue });
   mocks.alive.mockResolvedValue(false);
   mocks.retire.mockResolvedValue({ retired: true, current: null });
+  mocks.verifyDirective.mockResolvedValue({ ok: true, directiveId: 4242, excerpt: 'retire that queue' });
   mocks.audit.mockResolvedValue([]);
   let persisted = queue as FrozenCandidateRepairQueue;
   mocks.write.mockImplementation(async (_target, next) => { persisted = next; });
@@ -2485,7 +2492,7 @@ describe('release:repair-queue', () => {
           expectedCandidate: queue.candidate,
           expectedRepairHead: queue.repairHead,
           expectedUpdatedAtMs: queue.updatedAtMs,
-          reason: 'terminal incident cleanup',
+          reason: 'terminal incident cleanup', directiveRef: 4242,
           confirm: true,
         } as never,
         { role: 'su' } as never,
@@ -2495,13 +2502,60 @@ describe('release:repair-queue', () => {
     expect(mocks.retire).not.toHaveBeenCalled();
   });
 
+  // WI-6554700010042419 (owner #2557): an agent cannot retire a converging queue on its own
+  // judgment. A confirm:true retire must cite an owner-typed directive addressed to the caller.
+  describe('owner directive gate', () => {
+    const retireArgs = {
+      op: 'retire',
+      expectedCandidate: queue.candidate,
+      expectedRepairHead: queue.repairHead,
+      expectedUpdatedAtMs: queue.updatedAtMs,
+      reason: 'candidate is far behind staging',
+      confirm: true,
+    } as const;
+
+    it('refuses a confirm:true retire with no directiveRef and leaves the queue alone', async () => {
+      const result = body(await tool.handler(retireArgs as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ ok: false, retired: false, refused: true, reason: 'owner-directive-required' });
+      expect(String((result as { detail?: unknown }).detail)).toMatch(/no directiveRef/);
+      expect(mocks.verifyDirective).not.toHaveBeenCalled();
+      expect(mocks.retire).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the cited directive does not verify, after checking it against the caller', async () => {
+      mocks.verifyDirective.mockResolvedValueOnce({
+        ok: false,
+        reason: 'directive #77 was addressed to su-other, not to you (su-test)',
+      });
+      const result = body(
+        await tool.handler({ ...retireArgs, directiveRef: 77 } as never, { role: 'su' } as never),
+      );
+      expect(mocks.verifyDirective).toHaveBeenCalledWith({
+        directiveId: 77,
+        callerOwnerId: 'su-test',
+        workspaceId: 'ws-1',
+      });
+      expect(result).toMatchObject({ ok: false, retired: false, refused: true, reason: 'owner-directive-required' });
+      expect(String((result as { detail?: unknown }).detail)).toMatch(/addressed to su-other/);
+      expect(mocks.retire).not.toHaveBeenCalled();
+    });
+
+    it('a dry run needs no directive and says confirm will', async () => {
+      const { confirm: _confirm, ...dryArgs } = retireArgs;
+      const result = body(await tool.handler(dryArgs as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ ok: true, dryRun: true, retired: false });
+      expect(String((result as { note?: unknown }).note)).toMatch(/directiveRef/);
+      expect(mocks.retire).not.toHaveBeenCalled();
+    });
+  });
+
   it('is dry-run by default and executes only the exact inspected queue with confirm:true', async () => {
     const args = {
       op: 'retire',
       expectedCandidate: queue.candidate,
       expectedRepairHead: queue.repairHead,
       expectedUpdatedAtMs: queue.updatedAtMs,
-      reason: 'terminal incident cleanup',
+      reason: 'terminal incident cleanup', directiveRef: 4242,
     } as const;
     expect(body(await tool.handler(args as never, { role: 'su' } as never))).toMatchObject({
       ok: true,
@@ -2521,7 +2575,7 @@ describe('release:repair-queue', () => {
       expectedCandidate: queue.candidate,
       expectedRepairHead: queue.repairHead,
       expectedUpdatedAtMs: queue.updatedAtMs,
-      reason: 'terminal incident cleanup',
+      reason: 'terminal incident cleanup', directiveRef: 4242,
       confirm: true,
     } as never, { role: 'su' } as never)) as {
       retired?: boolean;
@@ -2568,7 +2622,7 @@ describe('release:repair-queue', () => {
       expectedCandidate: queue.candidate,
       expectedRepairHead: queue.repairHead,
       expectedUpdatedAtMs: queue.updatedAtMs,
-      reason: 'terminal incident cleanup',
+      reason: 'terminal incident cleanup', directiveRef: 4242,
       confirm: true,
     } as never, { role: 'su' } as never)) as { retired?: boolean; inconclusiveTerminal?: unknown };
 
@@ -2593,7 +2647,7 @@ describe('release:repair-queue', () => {
       expectedCandidate: queue.candidate,
       expectedRepairHead: queue.repairHead,
       expectedUpdatedAtMs: queue.updatedAtMs,
-      reason: 'terminal incident cleanup',
+      reason: 'terminal incident cleanup', directiveRef: 4242,
     } as const;
 
     const retired = body(await tool.handler({ ...args, confirm: true } as never, { role: 'su' } as never)) as {
@@ -2639,7 +2693,7 @@ describe('release:repair-queue', () => {
           expectedCandidate: queue.candidate,
           expectedRepairHead: 'd'.repeat(40),
           expectedUpdatedAtMs: queue.updatedAtMs,
-          reason: 'terminal incident cleanup',
+          reason: 'terminal incident cleanup', directiveRef: 4242,
           confirm: true,
         } as never,
         { role: 'su' } as never,
@@ -2661,7 +2715,7 @@ describe('release:repair-queue', () => {
           expectedCandidate: queue.candidate,
           expectedRepairHead: queue.repairHead,
           expectedUpdatedAtMs: queue.updatedAtMs,
-          reason: 'terminal incident cleanup',
+          reason: 'terminal incident cleanup', directiveRef: 4242,
           confirm: true,
         } as never,
         { role: 'su' } as never,
@@ -2697,7 +2751,7 @@ describe('release:repair-queue', () => {
           expectedCandidate: queue.candidate,
           expectedRepairHead: queue.repairHead,
           expectedUpdatedAtMs: queue.updatedAtMs,
-          reason: 'terminal incident cleanup',
+          reason: 'terminal incident cleanup', directiveRef: 4242,
           confirm: true,
         } as never,
         { role: 'su' } as never,

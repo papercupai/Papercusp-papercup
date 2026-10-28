@@ -1,7 +1,8 @@
 /** Retained evidence for the existing testing:run route; this module launches nothing. */
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { papercuspPath } from '@papercusp/host-platform/home';
 import type { OwnedTestDbCleanupResult } from '@papercusp/test-config/pg';
 import { retainNativeProofPacket, verifyNativeProofPacket,
@@ -45,6 +46,84 @@ export interface TestRunArtifactPaths {
   runtimeInputs: string;
   nativeProof: string;
 }
+
+export interface RetainedDetachedVitestReport {
+  reportPath: string;
+  manifestPath: string;
+  sha256: string;
+  byteLength: number;
+}
+
+async function ensureArtifactDirectory(path: string): Promise<void> {
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  const stat = await lstat(path);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('detached_report_artifact_directory_redirected');
+}
+
+async function writeArtifactAtomically(path: string, bytes: Buffer): Promise<void> {
+  try {
+    const existing = await readFile(path);
+    if (!existing.equals(bytes)) throw new Error('detached_report_artifact_conflict');
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * Keep a private, content-addressed copy of a detached Vitest report before
+ * the run store removes its temporary ingestion sink. The snapshot receives
+ * both paths and the digest, so the bytes remain discoverable after restart.
+ */
+export async function retainDetachedVitestReport(input: {
+  runId: string;
+  root: string;
+  sourcePath: string;
+  reportText: string;
+  scope?: { harnessSlug: string; workspaceId: string };
+  sanitization?: string;
+}): Promise<RetainedDetachedVitestReport> {
+  if (!input.runId || !isAbsolute(input.root) || !isAbsolute(input.sourcePath)) {
+    throw new Error('detached_report_artifact_identity_invalid');
+  }
+  const sourceName = basename(input.sourcePath).replace(/[^A-Za-z0-9._-]/g, '_').slice(-96) || 'report.json';
+  const reportName = sourceName.endsWith('.json') ? sourceName : 'report.json';
+  const bytes = Buffer.from(input.reportText, 'utf8');
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const identity = JSON.stringify({ runId: input.runId, root: input.root, reportName, sha256, scope: input.scope ?? null });
+  const runKey = createHash('sha256').update(input.runId).digest('hex').slice(0, 24);
+  const artifactKey = createHash('sha256').update(identity).digest('hex').slice(0, 24);
+  const base = papercuspPath('test-artifacts', 'testing-run', 'detached-recovery');
+  const runDirectory = join(base, `run-${runKey}`);
+  const packetDirectory = join(runDirectory, `report-${artifactKey}`);
+  const reportsDirectory = join(packetDirectory, 'reports');
+  for (const directory of [base, runDirectory, packetDirectory, reportsDirectory]) {
+    await ensureArtifactDirectory(directory);
+  }
+
+  const reportPath = join(reportsDirectory, reportName);
+  const manifestPath = join(packetDirectory, 'manifest.json');
+  const manifest = Buffer.from(`${JSON.stringify({
+    schemaVersion: 1,
+    kind: 'detached-vitest-report',
+    runId: input.runId,
+    root: input.root,
+    scope: input.scope ?? null,
+    ...(input.sanitization ? { sanitization: input.sanitization } : {}),
+    report: { path: reportPath, sha256, byteLength: bytes.byteLength },
+  }, null, 2)}\n`);
+  await writeArtifactAtomically(reportPath, bytes);
+  await writeArtifactAtomically(manifestPath, manifest);
+  return { reportPath, manifestPath, sha256, byteLength: bytes.byteLength };
+}
+
 export class TestRunArtifactPacket {
   readonly paths: TestRunArtifactPaths;
   childState: 'not-started' | 'pending' | 'closed' = 'not-started';

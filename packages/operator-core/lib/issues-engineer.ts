@@ -248,6 +248,19 @@ export async function deriveLeaderDispatchAdmission(
  * admitWorkItemForFleetTarget's existing selfFiledFalloutAdmission predicate, but
  * mints a private capability for the later claimIssue UPDATE. A scheduler/fleet-store
  * failure fails closed, and the winding-down refusal keeps precedence.
+ *
+ * WI-6554700010042630 / EI-27159299387978888 (owner directive #2586): this capability
+ * used to exist ONLY for a fleet MEMBER, because it was born in the fleet admission seam.
+ * A solo session (or a fleet leader, which resolveFleetScopeContext also returns null for)
+ * therefore could not claim a bug it had filed ITSELF until the promoter admitted it — and a
+ * degraded-dedup row has no fixed bound on that wait (measured: hours, while the admission
+ * routines were down). Outside a fleet-member scope there is no lane spec to contain, so the
+ * creator's identity alone earns it. Everything else is unchanged: `kind === 'bug'` only (a
+ * creator may absorb what it filed as BROKEN, never self-authorize a change/feature), the
+ * capability is server-derived from the row's RECORDED creator rather than a caller flag, and
+ * claimIssue's UPDATE re-checks `created_by` so a row changed after derivation cannot inherit
+ * it. Items filed by anyone else keep the duplicate screen. A fleet member keeps the original
+ * ordering: wind-down refusal first, then the lane predicate.
  */
 export async function deriveSelfFiledFalloutAdmission(
   item: Pick<EngineerIssue, 'id' | 'kind' | 'createdBy'>,
@@ -259,9 +272,13 @@ export async function deriveSelfFiledFalloutAdmission(
     const { resolveFleetScopeContext, fleetControlWindDownRefusal, selfFiledFalloutAdmission } =
       await import('./scheduler/fleet-scope-admission');
     const scope = await resolveFleetScopeContext(target, workspaceId);
-    if (!scope) return null;
-    if (await fleetControlWindDownRefusal(scope, workspaceId)) return null;
-    if (!selfFiledFalloutAdmission(item, scope)) return null;
+    if (!scope) {
+      // Not a fleet member: no lane to contain — the creator taking its own filed bug.
+      if (item.createdBy !== target) return null;
+    } else {
+      if (await fleetControlWindDownRefusal(scope, workspaceId)) return null;
+      if (!selfFiledFalloutAdmission(item, scope)) return null;
+    }
     return mintSelfFiledFalloutAdmission({
       itemId: item.id,
       target,

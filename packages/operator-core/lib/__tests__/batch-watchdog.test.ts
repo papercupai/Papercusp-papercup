@@ -154,6 +154,46 @@ describe('decideWatchdogExpiry', () => {
     ).toEqual({ action: 'kill', reason: 'absolute-ceiling', extendByMs: 0 });
   });
 
+  // Owner #2574 / WI-6554700010042457: on the release gate (`maxMs: null`) a task that is
+  // still emitting is never killed for running long. Measured 2026-10-28: a gate run's
+  // `operator-core :: test:lane-stateful` was SIGKILLed at 5468s with timeoutSource=
+  // history-capped and output still climbing (stalledForSec=13 when the watchdog fired),
+  // which leaves the leg UNDETERMINED so the candidate can never go green.
+  it('with NO ceiling (maxMs:null) keeps extending an advancing task far past 90m', () => {
+    for (const elapsedMs of [90 * 60_000, 6 * 60 * 60_000, 48 * 60 * 60_000]) {
+      expect(
+        decideWatchdogExpiry({ ...EXPIRY_POLICY, maxMs: null, elapsedMs, lastProgressAgeMs: 1_000 }),
+      ).toEqual({ action: 'extend', reason: 'progress-advancing', extendByMs: 5 * 60_000 });
+    }
+  });
+
+  it('with NO ceiling (maxMs:null) still kills a silent task and fails safe without a reading', () => {
+    expect(
+      decideWatchdogExpiry({
+        ...EXPIRY_POLICY,
+        maxMs: null,
+        elapsedMs: 6 * 60 * 60_000,
+        lastProgressAgeMs: 6 * 60_000,
+      }),
+    ).toEqual({ action: 'kill', reason: 'progress-stalled', extendByMs: 0 });
+    expect(
+      decideWatchdogExpiry({ ...EXPIRY_POLICY, maxMs: null, elapsedMs: 2_700_000, lastProgressAgeMs: null }),
+    ).toEqual({ action: 'kill', reason: 'progress-unknown', extendByMs: 0 });
+  });
+
+  it('only an explicit null disables the ceiling: undefined/NaN/Infinity still fail toward the kill', () => {
+    for (const maxMs of [undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        decideWatchdogExpiry({
+          ...EXPIRY_POLICY,
+          maxMs: maxMs as unknown as number,
+          elapsedMs: 2_700_000,
+          lastProgressAgeMs: 0,
+        }),
+      ).toEqual({ action: 'kill', reason: 'absolute-ceiling', extendByMs: 0 });
+    }
+  });
+
   it('clamps the last extension to the remaining ceiling instead of overshooting it', () => {
     expect(
       decideWatchdogExpiry({ ...EXPIRY_POLICY, elapsedMs: 88 * 60_000, lastProgressAgeMs: 0 }),
@@ -384,6 +424,32 @@ describe('createProgressAwareWatchdog', () => {
     }
     expect(kills).toEqual(['absolute-ceiling']);
     expect(watchdog.killReason).toBe('absolute-ceiling');
+  });
+
+  it('on the gate (maxMs:null) never kills a chattering task, however long it runs', () => {
+    const scheduler = fakeScheduler();
+    const kills: string[] = [];
+    const watchdog = createProgressAwareWatchdog({
+      timeoutMs: 45 * MINUTE,
+      maxMs: null,
+      stallWindowMs: 5 * MINUTE,
+      extensionMs: 5 * MINUTE,
+      now: scheduler.now,
+      setTimer: scheduler.setTimer,
+      clearTimer: scheduler.clearTimer,
+      onKill: (d: { reason: string }) => kills.push(d.reason),
+    });
+    // 6h of steady output: the off-gate watchdog would have killed this at 90m.
+    for (let minute = 0; minute < 360; minute += 1) {
+      scheduler.advance(MINUTE);
+      watchdog.noteProgress();
+    }
+    expect(kills).toEqual([]);
+    expect(watchdog.extensions).toBeGreaterThan(60);
+    // ...and it still kills the moment the output goes flat for a stall window.
+    scheduler.advance(20 * MINUTE);
+    expect(kills).toEqual(['progress-stalled']);
+    expect(watchdog.killReason).toBe('progress-stalled');
   });
 
   it('never fires after the task settles on its own', () => {

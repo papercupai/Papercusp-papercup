@@ -10739,6 +10739,15 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
   });
 
   it.each(["number", "string"] as const)("WI-6554700010017061: independent Codex homes progress while shared homes and unkeyed lifecycle calls stay ordered (%s)", async (idEncoding) => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-home-blockers-"));
+    const logFile = path.join(logDir, "events.jsonl");
+    const previousLogFile = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    const events = (): Array<Record<string, any>> => fs.existsSync(logFile)
+      ? fs.readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line))
+      : [];
     let releaseCompletion: () => void = () => {};
     const completionGate = new Promise<void>((resolve) => { releaseCompletion = resolve; });
     let releaseHome: () => void = () => {};
@@ -10776,6 +10785,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     };
     const queuedCount = () => logs.filter((line) => line.includes("queued critical-continuation request")).length;
     try {
+      process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
       const completion = request(port(proxy), JSON.stringify({
         jsonrpc: "2.0", id: 1, method: "tools/call",
         params: { name: "work_items:complete", arguments: { id: "WI-held" } },
@@ -10810,14 +10820,44 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       await waitFor(() => queuedCount() >= 4);
       expect(hits).not.toContain("unkeyed-home");
       expect(hits).not.toContain("lifecycle");
+      const behindGlobal = home("behind-global", "su-home-d", 104);
+      await waitFor(() => queuedCount() >= 5);
+      // This home is disjoint from the active completion; its blocker is the
+      // earlier global waiter, which itself is held by that completion.
+      const health = JSON.parse((await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body);
+      const queuedHome = health.inFlight.criticalContinuationQueue.requests.find(
+        (row: { conflictKeys: string[] | null }) => row.conflictKeys?.includes("codex-home:adv:104"),
+      );
+      expect(queuedHome.blockedBy).toMatchObject({
+        tools: ["rest:/api/adv/sessions/ensure-codex-home"],
+        conflictKeys: null,
+        admissionState: "queued",
+      });
+      expect(hits).not.toContain("behind-global");
+      const isHeldHome = (row: Record<string, any>, kind: string) => row.kind === kind &&
+        row.path?.includes("client=unkeyed-home") && row.blockedBy?.tools?.includes("work_items:complete");
+      await waitFor(() => events().some(row => isHeldHome(row, "critical_continuation_queue_wait")));
+      for (const kind of ["queue_critical_continuation", "critical_continuation_queue_wait"]) {
+        expect(events().find(row => isHeldHome(row, kind))?.blockedBy).toMatchObject({
+          tools: ["work_items:complete"],
+          conflictKeys: ["WI-held"],
+          admissionState: "active",
+          traceId: expect.any(String),
+          ageMs: expect.any(Number),
+        });
+      }
       releaseCompletion();
       expect((await completion).status).toBe(200);
       expect((await malformed).status).toBe(200);
       expect((await lifecycle).status).toBe(200);
+      expect((await behindGlobal).status).toBe(200);
     } finally {
       releaseHome();
       releaseCompletion();
       await Promise.allSettled(pending);
+      if (previousLogFile === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previousLogFile;
+      fs.rmSync(logDir, { recursive: true, force: true });
     }
   }, 10_000);
 

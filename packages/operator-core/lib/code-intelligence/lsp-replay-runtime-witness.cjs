@@ -431,6 +431,11 @@ function startReplayRuntime(options) {
   };
   Module.register = refuseLoader;
   Module.registerHooks = refuseLoader;
+  // process.execve replaces this image in place: same PID, no recorder, no
+  // launch receipt. That would run unwitnessed bytes under a witnessed identity.
+  // Withdraw it so feature-detecting callers (systemd-scope-env-runner) take
+  // their spawn fallback, which prepareLaunch witnesses; a direct call fails.
+  Object.defineProperty(process, 'execve', { value: undefined, writable: false, configurable: true });
   Module.syncBuiltinESMExports();
   emit({ kind: 'ready', coverage: ['esm-load-return', 'commonjs-compile', 'json-load', 'file-read', 'readSync', 'native-load', 'child-launch'] });
   process.argv = [process.execPath, resolve(options.entry), ...(options.args || [])];

@@ -4,86 +4,86 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "Deploying operator-core code: restart papercup-bg-host (not :3070); blueprint prompts are live-from-source"
-description: "Where the autonomous pot loop actually runs (the bg-host DBOS ticker, not the :3070 operator), why dev:restart alone won't deploy a routine/sweep change, how to restart + tune bg-host, and why a blueprint prompt change is live with NO restart."
+title: "Restarting bundled bg-host code safely"
+description: "Use the coordinated dev:restart target:bg-host procedure and verify changes against the running bundle's own source marker."
+type: Insight
 discovered: 2026-06-29
-tags: [operator, deploy, restart, bg-host, dbos, routines, sweeps, systemd, prompts, blueprints]
+tags: ["operator", "deploy", "restart", "bg-host", "dbos", "routines", "sweeps", "systemd", "prompts", "blueprints"]
 status: active
 documents:
-  - packages/operator-core/lib/dbos/routines-workflow.ts
-  - packages/operator-core/lib/scout/draft-review-watchdog.ts
-  - packages/operator-core/lib/pot/watchdog.ts
-  - libs/papercusp/packages/harness/paths.ts
-  - libs/papercusp/packages/orchestrator/src/prompt-resolve.ts
-type: Insight
+  - "packages/operator-core/lib/dbos/routines-workflow.ts"
+  - "packages/operator-core/lib/scout/draft-review-watchdog.ts"
+  - "packages/operator-core/lib/pot/watchdog.ts"
+  - "libs/papercusp/packages/harness/paths.ts"
+  - "libs/papercusp/packages/orchestrator/src/prompt-resolve.ts"
+  - "apps/operator/bin/bundle-host.sh"
+  - "apps/operator/scripts/systemd/papercup-bg-host.service.d/95-bundled-entry.conf"
+  - "packages/operator-core/lib/agent-tools/dev/restart.ts"
+  - "packages/operator-core/lib/agent-tools/dev/pipeline_position.ts"
+  - "packages/operator-core/lib/git-pipeline-position.ts"
+  - "packages/operator-core/lib/serving-runtimes.ts"
 generated:
   by: agent
   at: 2026-06-29
 ---
 
-## What
+## What runs where
 
-The autonomous "pot loop" scheduled machinery — the DBOS `routinesTick` and the
-sweeps it runs (`scoutDraftReviewSweep`, `pausedHiveRecoverySweep`, git-sync,
-scout-cycle, wake-brain) — runs in the **`papercup-bg-host`** systemd `--user`
-service ("dedicated background host — DBOS routines/git-sync ticker"), **NOT** the
-`:3070` operator (`papercup-dev-api.service`). `dev:service_health` lists
-`operator` and `bg-host-ticker` as **separate** services.
+Durable DBOS routines and their sweeps (including git-sync, scout-cycle, and wake delivery) execute on the dedicated `papercup-bg-host` user service. The request-serving `:3070` release operator and `:3170` staging operator are separate processes; restarting either does not reload bg-host.
 
-So to deploy an operator-core CODE change in a routine/sweep
-(`dbos/routines-workflow.ts` + the sweep modules), restart **bg-host**:
+The bg-host uses the canonical shared tree as its integration root. Its systemd drop-in runs `apps/operator/bin/bundle-host.sh` as `ExecStartPre` and starts `node dist-host/hono-host.mjs`. Each start rebuilds the bundle from the current tree. No separate manual build is needed. If that build fails, the service may start on its last-known-good bundle and reports the fallback as stale; a successful process start alone does not prove the edited code loaded.
 
+## Restart safely
+
+Use the coordinated `dev:restart` tool. It handles the shared restart lock, active work drain, cooldown/coalescing, audit, and readiness checks.
+
+First preview the current preflight:
+
+```text
+dev:restart { target: "bg-host" }
 ```
-systemctl --user restart papercup-bg-host.service
+
+When the preflight permits it, perform the restart with explicit authorization and a short reason:
+
+```text
+dev:restart {
+  target: "bg-host",
+  confirm: true,
+  authorize: true,
+  reason: "load the bg-host code update"
+}
 ```
 
-The `dev:restart` TOOL only restarts `papercup-dev-api.service` (`:3070`)
-(dry-run: `would_run: systemctl --user restart papercup-dev-api.service`). It does
-**not** touch bg-host — so `dev:restart` alone will NOT pick up a routine/sweep change.
+Read the returned result. A coalesced request did not restart the process; use its reported runtime state to decide whether the change is already loaded. If git-sync is active, use the tool's `git_sync_drain_sec` option to let it finish. Do not override a normal git-sync collision or issue a raw `systemctl restart`: either can abandon a shared commit or bypass fleet coordination.
 
-## Why it's a trap
+## Verify the loaded bundle
 
-- A sweep code change + green unit tests + `dev:restart` *looks* deployed but isn't:
-  the bg-host is still running the old code. The routine/sweep only goes live when
-  **bg-host** restarts.
-- The reverse holds for BLUEPRINT PROMPTS — they resolve LIVE from the working tree:
-  `promptHarnessRoot()` (`libs/papercusp/packages/harness/paths.ts`) redirects to
-  `PAPERCUSP_INTEGRATION_ROOT` (the live units point it at the working tree) and
-  `resolvePromptFiles` reads it per wake. So a change to e.g.
-  `blueprints/base/prompts/mug.base.md` is live on the **next wake with NO restart
-  / NO deploy**. Only operator-core *code* needs a process restart.
+After the restart, use `dev:service_health` to confirm the bg-host ticker is healthy and making routine ticks. Then inspect the `bg-host` entry in `servingRuntimes` from `dev:pipeline_position`: `bundle.stale` must be false. A true value means the process booted its last-known-good bundle.
 
-## How
+For code containment, call `dev:pipeline_position` with the changed repository path and a distinctive literal marker introduced by that change:
 
-- **bg-host runs from source:** `WorkingDirectory=.../papercusp/apps/operator`,
-  `Environment PAPERCUSP_INTEGRATION_ROOT=.../papercusp`, ExecStart sources
-  `apps/operator/.env.local`. A restart reloads edited TS — no build step. A
-  `papercup-bg-host-watchdog.service` auto-restarts it on journal-silence freeze.
-- **Per-process tunable** (e.g. a sweep threshold env) — systemd drop-in + reload:
-  ```
-  ~/.config/systemd/user/papercup-bg-host.service.d/<name>.conf
-    [Service]
-    Environment="PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC=3600"
-  systemctl --user daemon-reload && systemctl --user restart papercup-bg-host.service
-  ```
-  Reversible: rm the drop-in, daemon-reload, restart.
-- **`:3070` restarts are transparent to MCP clients** via `papercup-mcp-proxy`
-  (`:9071 → :3070`). `dev:restart` (confirm:true) drains/coordinates and also needs
-  `PAPERCUSP_ALLOW_DEV_RESTART=1` on the host.
+```text
+dev:pipeline_position {
+  path: "packages/operator-core/lib/dbos/routines-workflow.ts",
+  marker: "a literal unique to your change"
+}
+```
 
-## Verify
+Inspect `positionsMarker.runtimes.bg-host`. The marker must be present in the running runtime's own bundle; a path mtime, a process start, or the operator's deployed SHA does not establish that. Treat `false`, `null`, an unknown marker result, or `bundle.stale: true` as unverified. Inspect bg-host health/log evidence for a stale-bundle fallback before deciding what to do next.
 
-After a bg-host restart: `dev:service_health` → `bg-host-ticker` reads
-"alive, last routine tick `<N>`s ago"; `systemctl --user show papercup-bg-host.service
--p ExecMainStartTimestamp` shows the new start time; confirm a per-process env took
-with `systemctl --user show papercup-bg-host.service -p Environment`.
+## Per-process tuning
 
-## Forcing a scheduled routine on demand
+A per-process setting can be placed in a user systemd drop-in:
 
-A cron routine (e.g. the scout, `@singleton/bp-singleton-scout-0`,
-`system:blueprint-run{scout}`) can be fired early by retargeting its cron with
-`routines:set { name, installSlug, cron }` to a near-term match (the 30s
-`routinesTick` then claims + fires it), then restoring the original cron. There is
-no "fire once" cron, so a forced run must be **restored** afterward. Forcing only
-runs the cycle — whether the scout produces a draft is its own novelty gate, not
-forced.
+```ini
+~/.config/systemd/user/papercup-bg-host.service.d/<name>.conf
+
+[Service]
+Environment="PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC=3600"
+```
+
+After editing the drop-in, run `systemctl --user daemon-reload`, then use the coordinated `dev:restart { target: "bg-host", confirm: true, authorize: true, reason: "apply the bg-host setting" }` route above. Remove the drop-in and reload systemd to revert it.
+
+## Blueprint prompts
+
+Blueprint prompts are resolved from the working tree on each wake. A prompt-only edit is picked up on the next wake without restarting bg-host or deploying the operator.

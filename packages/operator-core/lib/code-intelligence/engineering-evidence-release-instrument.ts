@@ -13,11 +13,12 @@ export function engineeringEvidenceReleaseInstrument(root: string, plane: 'final
     parse(stdout) {
       try {
         const row = JSON.parse(stdout.trim());
-        const integration = plane !== 'current-build' || (row.integration?.logPath && /^[a-f0-9]{64}$/.test(row.integration?.sha256 ?? '')
+        const integration = plane !== 'current-build' || (row.integration?.logPath && typeof row.integration.sha256 === 'string' && /^[a-f0-9]{64}$/.test(row.integration.sha256)
           && row.integration.files?.length === 4 && row.integration.result?.includes('requested=4 executed=4 matched=4 status=passed'));
         return integration && row.scope === `native-engineering-evidence-${plane}-v1` && row.status === 'pass' && row.plane === plane
-          && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(row.buildSha ?? '') && /^[a-f0-9]{64}$/.test(row.manifestSha256 ?? '')
-          && /^[a-f0-9]{64}$/.test(row.receiptSha256 ?? '') && typeof row.receiptPath === 'string' && row.receiptPath.length > 0
+          && typeof row.buildSha === 'string' && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(row.buildSha)
+          && typeof row.manifestSha256 === 'string' && /^[a-f0-9]{64}$/.test(row.manifestSha256)
+          && typeof row.receiptSha256 === 'string' && /^[a-f0-9]{64}$/.test(row.receiptSha256) && typeof row.receiptPath === 'string' && row.receiptPath.length > 0
           && typeof row.nonce === 'string' && row.nonce.length > 0 ? 0 : null;
       } catch { return null; }
     },

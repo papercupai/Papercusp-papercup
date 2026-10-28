@@ -597,6 +597,47 @@ describe('parseCapacityHeaders — codex dialect (WI-38582)', () => {
 });
 
 describe('probeCodexAccountCapacity (WI-38582)', () => {
+  it('reports revoked authentication before capacity headers and stops retrying the credential', async () => {
+    const token = 'test-codex-secret-123456';
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      error: { code: 'token_revoked', message: `Token ${token} was revoked` },
+    }), { status: 401, headers: { 'x-codex-primary-used-percent': '0', 'x-codex-primary-window-minutes': '10080' } }));
+    const account = { ...codexAcct('revoked'), egressPool: [{}, { proxyUrl: 'http://other:3128' }] };
+    const out = await probeCodexAccountCapacity(account, {
+      ...codexDeps({}), fetchImpl, resolveCodexAuth: async () => ({ accessToken: token, accountId: 'acc' }),
+    });
+    expect(out).toMatchObject({ ok: false, status: 401, authentication: 'relink-required', windows: {}, unwalls: false,
+      httpRefusal: { bodyState: 'parsed', errorCode: 'token_revoked' } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(out)).not.toContain(token);
+  });
+
+  it('distinguishes an unstructured authentication refusal from confirmed relink necessity', async () => {
+    const out = await probeCodexAccountCapacity(codexAcct('unauthorized'), {
+      ...codexDeps({}), fetchImpl: async () => new Response('Unauthorized', { status: 401 }),
+    });
+    expect(out).toMatchObject({ ok: false, status: 401, authentication: 'refused', windows: {}, unwalls: false,
+      httpRefusal: { bodyState: 'unstructured' } });
+  });
+
+  it('reports invalidated refresh credentials without starting an upstream model request', async () => {
+    const fetchImpl = vi.fn();
+    const out = await probeCodexAccountCapacity(codexAcct('invalidated'), {
+      ...codexDeps({}), fetchImpl,
+      resolveCodexAuth: async () => { throw new Error('codex-oauth-proxy: token refresh failed 401 {"error":"refresh_token_invalidated"}'); },
+    });
+    expect(out).toMatchObject({ ok: false, authentication: 'relink-required', windows: {}, unwalls: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps model refusal separate from authentication failure', async () => {
+    const out = await probeCodexAccountCapacity(codexAcct('model'), {
+      ...codexDeps({}), fetchImpl: async () => new Response(JSON.stringify({ error: { code: 'model_not_found' } }), { status: 400 }),
+    });
+    expect(out).toMatchObject({ ok: false, status: 400, httpRefusal: { errorCode: 'model_not_found' } });
+    expect(out).not.toHaveProperty('authentication');
+  });
+
   it('records the x-codex-* reading off a 200 and reports ok', async () => {
     const out = await probeCodexAccountCapacity(
       codexAcct('cx'),

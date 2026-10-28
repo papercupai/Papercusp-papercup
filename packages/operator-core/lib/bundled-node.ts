@@ -109,7 +109,11 @@ export interface ApplicationRuntimeLaunchRequest {
   verifyAcceptance?: (ref: string) => Promise<ApplicationRuntimeAcceptance | null>;
 }
 
-const execRuntime = promisify(execFile);
+// Promisified lazily on first call, never at module scope (EI-10161): an eager
+// promisify(execFile) throws at import time under a narrow node:child_process test mock.
+let cachedExecRuntime: typeof execFile.__promisify__ | undefined;
+const execRuntime = ((...args: Parameters<typeof execFile.__promisify__>) =>
+  (cachedExecRuntime ??= promisify(execFile))(...args)) as typeof execFile.__promisify__;
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const SHA256 = /^[a-f0-9]{64}$/;
 const RUNTIME_IDENTITY = `process.stdout.write(JSON.stringify({

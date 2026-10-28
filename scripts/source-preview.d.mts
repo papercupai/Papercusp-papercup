@@ -1953,11 +1953,11 @@ export function verifierCommandAdmissionEnv({ repo, env, preflight }: {
 }): NodeJS.ProcessEnv;
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
  *   clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs, preparationMaxMs, releaseParentPrivatePg, requestParentPgReleaseImpl, clock }: {
+export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs, preparationMaxMs, prepareChildEnv, releaseParentPrivatePg, requestParentPgReleaseImpl, clock }: {
     repo: string;
     ref: string;
     receiptPath: string;
@@ -1969,6 +1969,9 @@ export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile,
     budgetFrom?: string;
     childEstimateMs?: number;
     preparationMaxMs?: number;
+    prepareChildEnv?: (context: {
+        sourceRoot: string;
+    }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void;
     releaseParentPrivatePg?: boolean;
     requestParentPgReleaseImpl?: (token: string) => Promise<unknown>;
     clock?: {

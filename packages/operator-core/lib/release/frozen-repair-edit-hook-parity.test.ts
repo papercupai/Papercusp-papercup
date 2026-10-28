@@ -1,6 +1,6 @@
 import { mkdtempSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   normalizeRepoPath,
@@ -8,6 +8,7 @@ import {
 } from './frozen-candidate-repair-queue';
 import {
   frozenRepairEditWarning,
+  frozenRepairMarkerPath,
   projectFrozenRepairMarker,
   readFrozenRepairMarker,
   type FrozenRepairEditMarker,
@@ -277,6 +278,38 @@ describe('marker LOCATION parity — the hook reads where the writer writes', ()
 
   it('a missing marker directory reads as no markers', () => {
     expect(hookReadMarkers('/definitely/not/a/marker-dir')).toEqual([]);
+  });
+
+  it('a session-scoped PAPERCUSP_HOME does not move the hook off the operator marker dir (EI-27237474160744241)', () => {
+    // The writer runs in the operator service, which carries NO PAPERCUSP_HOME; the hook runs in
+    // a session that carries a workspace-scoped one. The cases above pin PAPERCUSP_STATE_DIR for
+    // both sides at once, so they cannot see this split; model the two processes separately.
+    const prevHome = process.env.PAPERCUSP_HOME;
+    const prevState = process.env.PAPERCUSP_STATE_DIR;
+    const sessionHome = join(tmpdir(), 'papercusp-workspaces', 'ws-parity', '.papercusp');
+    try {
+      delete process.env.PAPERCUSP_STATE_DIR;
+      delete process.env.PAPERCUSP_HOME;
+      // frozenRepairMarkerPath takes a GateVerdictTarget; `Target` is the projector's wider parameter.
+      const markerTarget = target('papercusp') as Parameters<typeof frozenRepairMarkerPath>[0];
+      const operatorMarker = frozenRepairMarkerPath(markerTarget);
+      expect(operatorMarker).not.toBeNull();
+      expect(operatorMarker!.startsWith(sessionHome)).toBe(false);
+
+      process.env.PAPERCUSP_HOME = sessionHome;
+      expect(hookMarkersDir()).toBe(dirname(operatorMarker!));
+      expect(hookMarkersDir({ PAPERCUSP_HOME: sessionHome })).toBe(dirname(operatorMarker!));
+
+      // PAPERCUSP_STATE_DIR is the one pin, and it moves both sides together.
+      process.env.PAPERCUSP_STATE_DIR = '/pinned/state';
+      expect(hookMarkersDir()).toBe(join('/pinned/state', 'frozen-repair-edit-markers'));
+      expect(dirname(frozenRepairMarkerPath(markerTarget)!)).toBe(hookMarkersDir());
+    } finally {
+      if (prevHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = prevHome;
+      if (prevState === undefined) delete process.env.PAPERCUSP_STATE_DIR;
+      else process.env.PAPERCUSP_STATE_DIR = prevState;
+    }
   });
 });
 

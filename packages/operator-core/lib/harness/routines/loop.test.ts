@@ -104,6 +104,9 @@ import {
   computeLifecycleBackoff,
   TURNS_STALLED_MIN_FIRE_COUNT,
   autoArmFleetMemberLoop,
+  rearmFireStarvedLoop,
+  routeStalledLoopToHostRecovery,
+  retainStalledLoopRecoveryWall,
   readActiveLoopFacts,
   getLoopStatuses,
   computeLoopCadence,
@@ -754,6 +757,93 @@ describe('deactivateLoopForGoal (EI-21123319355080521)', () => {
     const sql = vi.fn();
     await expect(deactivateLoopForGoal('su-x', '   ', { sql: sql as any })).resolves.toBe(false);
     expect(sql).not.toHaveBeenCalled();
+  });
+});
+
+describe('loop recovery schedule transition coverage', () => {
+  const identity = {
+    id: 'rt_recovery',
+    workspace_id: 'ws',
+    install_slug: 'papercusp',
+    name: 'loop-su-recovery',
+    target_role: LOOP_WAKE_ACTION,
+    target_owner_id: 'su-recovery',
+    reschedule_interval_sec: 60,
+  };
+
+  it('records the exact due-now schedule written by fire-starvation recovery', async () => {
+    const nextFireAt = new Date('2026-10-28T18:00:00.000Z');
+    const sql = vi.fn().mockResolvedValueOnce([{ ...identity, next_fire_at: nextFireAt }]);
+
+    await rearmFireStarvedLoop(sql as any, identity.id, 'owner still active');
+
+    expect(recordLoopTransitionSpy).toHaveBeenCalledWith(sql, expect.objectContaining({
+      workspaceId: 'ws',
+      installSlug: 'papercusp',
+      routineId: identity.id,
+      event: 'rearmed',
+      actor: 'loop-fire-starvation-recovery',
+      newNextFireAt: nextFireAt.toISOString(),
+      intervalSec: 60,
+      detail: { reason: 'owner still active' },
+    }));
+  });
+
+  it('records a host-recovery rearm but does not invent one when firing is deferred', async () => {
+    const nextFireAt = new Date('2026-10-28T18:00:00.000Z');
+    const sql = vi.fn().mockResolvedValueOnce([{ ...identity, next_fire_at: nextFireAt }]);
+
+    await expect(routeStalledLoopToHostRecovery(
+      sql as any, identity.id, 'provider host recovered', 'provider-auth',
+    )).resolves.toEqual({ routed: true });
+
+    expect(recordLoopTransitionSpy).toHaveBeenCalledWith(sql, expect.objectContaining({
+      routineId: identity.id,
+      event: 'rearmed',
+      actor: 'stalled-loop-host-recovery',
+      newNextFireAt: nextFireAt.toISOString(),
+      detail: { reason: 'provider host recovered', condition: 'provider-auth' },
+    }));
+
+    recordLoopTransitionSpy.mockClear();
+    const deferredSql = vi.fn().mockResolvedValueOnce([{ ...identity, next_fire_at: nextFireAt }]);
+    await routeStalledLoopToHostRecovery(
+      deferredSql as any, identity.id, 'awaiting carry ACK', 'carry', { deferFire: true },
+    );
+    expect(recordLoopTransitionSpy).not.toHaveBeenCalled();
+  });
+
+  it('records a changed retained-wall deadline and skips an unchanged schedule', async () => {
+    const prior = new Date('2026-10-28T18:00:00.000Z');
+    const next = new Date('2026-10-29T00:00:00.000Z');
+    const wall = {
+      ownerId: identity.target_owner_id,
+      condition: 'provider-auth',
+      reason: 'login required',
+      remedy: 'refresh credentials',
+    };
+    const sql = vi.fn()
+      .mockResolvedValueOnce([{
+        changed: true, prior_next_fire_at: prior, ...identity, next_fire_at: next,
+      }])
+      .mockResolvedValueOnce([{
+        changed: false, prior_next_fire_at: next, ...identity, next_fire_at: next,
+      }]);
+
+    await expect(retainStalledLoopRecoveryWall(sql as any, identity.id, wall))
+      .resolves.toEqual({ retained: true, changed: true });
+    expect(recordLoopTransitionSpy).toHaveBeenCalledWith(sql, expect.objectContaining({
+      routineId: identity.id,
+      event: 'rearmed',
+      actor: 'stalled-loop-recovery-wall',
+      newNextFireAt: next.toISOString(),
+      detail: { reason: wall.reason },
+    }));
+
+    recordLoopTransitionSpy.mockClear();
+    await expect(retainStalledLoopRecoveryWall(sql as any, identity.id, wall))
+      .resolves.toEqual({ retained: true, changed: false });
+    expect(recordLoopTransitionSpy).not.toHaveBeenCalled();
   });
 });
 

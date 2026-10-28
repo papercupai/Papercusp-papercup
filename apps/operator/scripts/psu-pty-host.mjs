@@ -17661,7 +17661,8 @@ export function hostThroughPty(o) {
       // and a silent-but-detectable staleness is strictly better than an undetected one.
       // WI-10001514: record WHY a stale host will not adopt, not merely THAT it is
       // stale. The adoption gate below is
-      // `!quotaRecovery && shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty })`,
+      // `!quotaRecovery && shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty,
+      // allowInteractive, pendingWakeDelivery }) && !freshChildOnly`,
       // and when any condition fails the code falls through to the in-process
       // respawn recording nothing — which makes two very different outcomes
       // indistinguishable after the fact. `bridgeTty` true is a CORRECT refusal (a

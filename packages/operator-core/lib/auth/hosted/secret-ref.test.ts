@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { formatWithOptions } from 'node:util';
 import {
   HOSTED_INTEGRATION_SECRET_REF_PREFIX,
   createHostedSecretRefResolver,
@@ -33,6 +34,48 @@ describe('hosted secret references', () => {
     await expect(
       createHostedSecretRefResolver({ readIntegrationKey: async () => '   ' })('integration:WORKOS_API_KEY'),
     ).rejects.toThrow(/hosted_secret_ref_missing/);
+  });
+
+  it('replaces encrypted-store driver errors with a stable code and safe SQLSTATE', async () => {
+    const sentinel = 'sentinel-db-decryption-key-do-not-leak';
+    const driverError = Object.assign(new Error(`Wrong key or corrupt data: ${sentinel}`, { cause: new Error(sentinel) }), {
+      code: '39000',
+      where: `parameters: $1 = '${sentinel}'`,
+      query: `SELECT pgp_sym_decrypt(payload_ct, '${sentinel}')`,
+      parameters: [sentinel],
+    });
+    const resolve = createHostedSecretRefResolver({
+      readIntegrationKey: async () => { throw driverError; },
+    });
+
+    const failure = await resolve('integration:WORKOS_API_KEY').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    const safe = failure as Error & { code?: string; sqlState?: string; cause?: unknown };
+    expect(safe).toMatchObject({
+      name: 'HostedSecretStoreUnavailableError',
+      code: 'hosted_secret_ref_store_unavailable',
+      sqlState: '39000',
+    });
+    expect(safe.cause).toBeUndefined();
+    expect(safe).not.toBe(driverError);
+    const rendered = [safe.message, safe.stack, JSON.stringify(safe), formatWithOptions({ depth: null }, safe)].join('\n');
+    expect(rendered).not.toContain(sentinel);
+  });
+
+  it.each(['3900', '390000', '39abc', '3900\n'])('drops malformed SQLSTATE values from encrypted-store failures (%j)', async (code) => {
+    const driverError = Object.assign(new Error('driver failure'), { code });
+    const resolve = createHostedSecretRefResolver({
+      readIntegrationKey: async () => { throw driverError; },
+    });
+
+    const failure = await resolve('integration:WORKOS_API_KEY').catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      name: 'HostedSecretStoreUnavailableError',
+      code: 'hosted_secret_ref_store_unavailable',
+    });
+    expect((failure as Error & { sqlState?: string }).sqlState).toBeUndefined();
+    expect((failure as Error & { cause?: unknown }).cause).toBeUndefined();
+    expect((failure as Error).message).not.toContain(code);
   });
 
   it('rejects a malformed integration name before touching the store', async () => {

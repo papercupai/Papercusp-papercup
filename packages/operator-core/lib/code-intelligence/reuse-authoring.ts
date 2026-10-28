@@ -19,7 +19,11 @@ export interface AuthoringReuseDeps {
   providers?: readonly ReuseBriefProvider[];
   recordIssued?: typeof recordReuseBriefIssued;
 }
-const git = promisify(execFile);
+// Promisified lazily on first call, never at module scope (EI-10161): an eager
+// promisify(execFile) throws at import time under a narrow node:child_process test mock.
+let cachedGit: typeof execFile.__promisify__ | undefined;
+const git = ((...args: Parameters<typeof execFile.__promisify__>) =>
+  (cachedGit ??= promisify(execFile))(...args)) as typeof execFile.__promisify__;
 
 /** Root and attribution come from the same scoped caller as the successful
  * authoring operation. Advice cannot roll back or gate that operation. */

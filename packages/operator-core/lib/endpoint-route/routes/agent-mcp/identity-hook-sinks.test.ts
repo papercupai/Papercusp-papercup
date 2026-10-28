@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   evaluateHookContextSinkMock, readAppliedWornRulesMock, turnsExistMock, turnEndHeldWorkMock, turnReadMock, turnChargeMock,
+  tagTurnForInjectionMock,
 } = vi.hoisted(() => ({
   evaluateHookContextSinkMock: vi.fn(),
   readAppliedWornRulesMock: vi.fn(),
@@ -19,6 +20,7 @@ const {
   turnEndHeldWorkMock: vi.fn(),
   turnReadMock: vi.fn(),
   turnChargeMock: vi.fn(),
+  tagTurnForInjectionMock: vi.fn(),
 }));
 
 // The stop port's second leg (WI-6554700010015550) reads modes/claims/awaits from PG; keep it a seam.
@@ -31,6 +33,10 @@ vi.mock('../../../agent-identities/sync-hook-rules', async (importOriginal) => (
   evaluateHookContextSink: evaluateHookContextSinkMock,
   readAppliedWornRules: readAppliedWornRulesMock,
   pgHookTurnStore: () => ({ exists: turnsExistMock, begin: turnReadMock, current: turnReadMock, charge: turnChargeMock }),
+}));
+vi.mock('../../../turn-provenance/turn-provenance', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../turn-provenance/turn-provenance')>()),
+  tagTurnForInjection: tagTurnForInjectionMock,
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
 
@@ -72,6 +78,9 @@ beforeEach(() => {
   // A turn that has already spent far past every sink budget.
   turnReadMock.mockReset().mockResolvedValue({ turnId: 'turn-spent', tokensSpent: 10_000_000, msSpent: 10_000_000 });
   turnChargeMock.mockReset().mockResolvedValue(undefined);
+  tagTurnForInjectionMock.mockReset().mockResolvedValue({
+    taggedText: '⟦turn-origin:stop-hook nonce:aabbccddeeff0011⟧\nSTOP CONTEXT',
+  });
 });
 
 describe('guardRefusalText', () => {
@@ -197,6 +206,17 @@ describe('POST /agent-mcp/stop-context and /agent-mcp/compaction-context', () =>
     expect(evaluateHookContextSinkMock.mock.calls[0]![0]).toMatchObject({ ownerId: 'o', workspaceId: 'w', sink: 'stop' });
     expect(evaluateHookContextSinkMock.mock.calls[0]![0].signal).toBeInstanceOf(AbortSignal);
     expect(out.text).toBe('STOP CONTEXT');
+  });
+
+  it('enrolls Codex Stop-hook context with machine provenance before returning it', async () => {
+    evaluateHookContextSinkMock.mockResolvedValue({ text: 'STOP CONTEXT', result: null });
+    const out = await post('/agent-mcp/stop-context', { owner: 'o', workspace: 'w', client: 'codex' });
+    expect(tagTurnForInjectionMock).toHaveBeenCalledWith({
+      sid: 'o',
+      origin: 'stop-hook',
+      text: 'STOP CONTEXT',
+    });
+    expect(out.text).toBe('⟦turn-origin:stop-hook nonce:aabbccddeeff0011⟧\nSTOP CONTEXT');
   });
 
   it('leads with the held-work refusal and keeps the identity text (WI-6554700010015550)', async () => {

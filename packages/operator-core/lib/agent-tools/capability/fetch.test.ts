@@ -1,9 +1,33 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INLINE_OUTPUT_CAP } from './bash-jobs';
+import capabilityFetch from './fetch';
 import { CapabilityFetchSizeLimitError, readResponseBody } from './fetch';
+import { failureClassOf } from '../../failure-loop-circuit-breaker';
+
+const mocks = vi.hoisted(() => ({
+  fetchWithCapabilityPolicy: vi.fn(),
+  resolveOperationBoundaryProfile: vi.fn(),
+  screen: vi.fn(),
+  labelExternalContent: vi.fn(),
+}));
+
+vi.mock('./fetch-policy', () => ({
+  CapabilityFetchPolicyError: class CapabilityFetchPolicyError extends Error {},
+  DEFAULT_MAX_REDIRECTS: 5,
+  fetchWithCapabilityPolicy: mocks.fetchWithCapabilityPolicy,
+}));
+
+vi.mock('./boundary-profile', () => ({
+  resolveOperationBoundaryProfile: mocks.resolveOperationBoundaryProfile,
+}));
+
+vi.mock('../../external-content', () => ({
+  heuristicScreener: { screen: mocks.screen },
+  labelExternalContent: mocks.labelExternalContent,
+}));
 
 function responseFrom(chunks: string[]): Response {
   let index = 0;
@@ -18,6 +42,78 @@ function responseFrom(chunks: string[]): Response {
   });
   return new Response(stream);
 }
+
+function fetchArgs(status: number, expectedStatuses?: number[]) {
+  const url = 'https://example.test/negative-control';
+  mocks.fetchWithCapabilityPolicy.mockResolvedValueOnce({
+    response: new Response(JSON.stringify({ error: 'invalid_execution_kind' }), { status }),
+    finalUrl: url,
+    finalMethod: 'GET',
+    redirectCount: 0,
+    release: vi.fn(async () => undefined),
+  });
+  return capabilityFetch.handler({ url, ...(expectedStatuses ? { expected_statuses: expectedStatuses } : {}) } as never, {
+    signal: new AbortController().signal,
+  } as never);
+}
+
+function toolResult(value: unknown): { isError?: boolean; content?: Array<{ type: string; text?: string }> } {
+  return value as { isError?: boolean; content?: Array<{ type: string; text?: string }> };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.resolveOperationBoundaryProfile.mockResolvedValue({ kind: 'trusted', reason: 'superuser' });
+  mocks.screen.mockResolvedValue({ decision: 'allow' });
+  mocks.labelExternalContent.mockReturnValue({ kind: 'fetch', host: 'example.test' });
+});
+
+describe('capability:fetch expected HTTP statuses', () => {
+  it('validates a non-empty unique set of HTTP status codes', () => {
+    const parse = (expected_statuses: number[]) => capabilityFetch.args.safeParse({
+      url: 'https://example.test/',
+      expected_statuses,
+    });
+
+    expect(parse([400, 409]).success).toBe(true);
+    expect(parse([]).success).toBe(false);
+    expect(parse([99]).success).toBe(false);
+    expect(parse([600]).success).toBe(false);
+    expect(parse([400, 400]).success).toBe(false);
+    expect(capabilityFetch.args.safeParse({
+      browser: { op: 'open' },
+      expected_statuses: [400],
+    }).success).toBe(false);
+  });
+
+  it('keeps the default non-2xx tool-error behavior', async () => {
+    const result = toolResult(await fetchArgs(400));
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content?.[0]?.text ?? '{}')).toMatchObject({ ok: false, status: 400 });
+    expect(failureClassOf({ ok: true, result } as never)).toBe('refused');
+  });
+
+  it('treats an explicitly expected refusal as a successful tool call and preserves its response', async () => {
+    const result = toolResult(await fetchArgs(400, [400]));
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content?.[0]?.text ?? '{}')).toMatchObject({
+      ok: false,
+      status: 400,
+      body: JSON.stringify({ error: 'invalid_execution_kind' }),
+    });
+    expect(failureClassOf({ ok: true, result } as never)).toBeNull();
+  });
+
+  it('does not suppress an unexpected non-2xx status', async () => {
+    const result = toolResult(await fetchArgs(409, [400]));
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content?.[0]?.text ?? '{}')).toMatchObject({ ok: false, status: 409 });
+    expect(failureClassOf({ ok: true, result } as never)).toBe('refused');
+  });
+});
 
 describe('readResponseBody', () => {
   const roots: string[] = [];

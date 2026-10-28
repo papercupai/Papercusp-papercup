@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,10 @@ import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './lib/task-deadline.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+const writePhaseFile = (path, bytes) => {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, bytes);
+};
 export const ENGINEERING_RELEASE_BUDGET_MS = 45 * 60_000;
 export const CURRENT_ENGINEERING_TEST_FILES = [
   'packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts',
@@ -17,7 +21,7 @@ export const CURRENT_ENGINEERING_TEST_FILES = [
 ];
 /** Fresh execution plus an exact browser artifact; saved passes and missing inputs are UNKNOWN. */
 export function verifyEngineeringRelease({ root, inputsPath, env = process.env, run = spawnSync, read = readFileSync,
-  write = (path, bytes) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); },
+  write = writePhaseFile,
   nonce = randomUUID(), plane = 'final-release', now = Date.now }) {
   const scope = `native-engineering-evidence-${plane}-v1`;
   const phases = {};
@@ -38,7 +42,10 @@ export function verifyEngineeringRelease({ root, inputsPath, env = process.env, 
   // Keep diagnostics even when a child fails before it can emit a proof. Never
   // serialize its environment: the child inherits authentication credentials.
   const retainPhase = (phase, child) => {
-    const stdout = String(child.stdout ?? ''), stderr = String(child.stderr ?? '');
+    const liveStdoutPath = join(runDir, phase + '.stdout.log');
+    const liveStderrPath = join(runDir, phase + '.stderr.log');
+    const stdout = child.stdout == null ? readFileSync(liveStdoutPath, 'utf8') : String(child.stdout);
+    const stderr = child.stderr == null ? readFileSync(liveStderrPath, 'utf8') : String(child.stderr);
     const stdoutPath = join(runDir, `${phase}.stdout.log`), stderrPath = join(runDir, `${phase}.stderr.log`);
     const metadataPath = join(runDir, `${phase}.json`);
     const error = child.error ? { name: child.error.name ?? 'Error', message: String(child.error.message ?? child.error),
@@ -49,6 +56,7 @@ export function verifyEngineeringRelease({ root, inputsPath, env = process.env, 
     write(stdoutPath, stdout); write(stderrPath, stderr);
     write(metadataPath, JSON.stringify(metadata));
     phases[phase] = { ...metadata, metadataPath };
+    return { stdout, stderr };
   };
   const childEnv = { ...env, PAPERCUSP_WORKSPACE: input.workspaceId, PAPERCUSP_SID: env.PAPERCUSP_SID ?? input.clientId,
     PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadlineEpochMs),
@@ -65,6 +73,47 @@ export function verifyEngineeringRelease({ root, inputsPath, env = process.env, 
     return { timeout: budget.childCutoffEpochMs - nowMs,
       env: { ...childEnv, PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(budget.childCutoffEpochMs) } };
   };
+  // With the production file sink, give the child the nonce log files directly.
+  // The kernel then exposes output as it is written, even while spawnSync is still
+  // waiting for a long or stalled phase. Injected sinks keep the existing in-memory
+  // test seam; retainPhase still applies the same hashes and fail-closed contract.
+  const runPhase = (phase, command, args, options) => {
+    if (write !== writePhaseFile) {
+      const child = run(command, args, options);
+      return { ...child, stdout: child.stdout ?? '', stderr: child.stderr ?? '' };
+    }
+    mkdirSync(runDir, { recursive: true });
+    const stdoutPath = join(runDir, phase + '.stdout.log');
+    const stderrPath = join(runDir, phase + '.stderr.log');
+    let stdoutFd, stderrFd, child;
+    try {
+      stdoutFd = openSync(stdoutPath, 'w');
+      stderrFd = openSync(stderrPath, 'w');
+      child = run(command, args, { ...options, stdio: ['ignore', stdoutFd, stderrFd] });
+    } catch (error) {
+      child = { status: null, signal: null, stdout: null, stderr: null, error };
+    } finally {
+      if (stdoutFd !== undefined) closeSync(stdoutFd);
+      if (stderrFd !== undefined) closeSync(stderrFd);
+    }
+    try {
+      // spawnSync enforces maxBuffer for pipes, but not when output is sent to
+      // regular files. Reapply the same per-stream byte ceiling before reading
+      // retained output, and fail closed when either stream exceeded it.
+      const maxBuffer = Math.max(0, Math.floor(options.maxBuffer ?? 1024 * 1024));
+      const stdoutBytes = statSync(stdoutPath).size;
+      const stderrBytes = statSync(stderrPath).size;
+      if (stdoutBytes > maxBuffer || stderrBytes > maxBuffer) {
+        if (stdoutBytes > maxBuffer) truncateSync(stdoutPath, maxBuffer);
+        if (stderrBytes > maxBuffer) truncateSync(stderrPath, maxBuffer);
+        return { ...child, status: null,
+          error: Object.assign(new Error(`spawnSync ${command} ENOBUFS`), { code: 'ENOBUFS' }) };
+      }
+    } catch (error) {
+      return { ...child, status: null, stdout: null, stderr: null, error };
+    }
+    return child;
+  };
   let budget;
   if (plane === 'current-build') {
     // Retain the original canonical integration promise and add the true rename,
@@ -72,16 +121,17 @@ export function verifyEngineeringRelease({ root, inputsPath, env = process.env, 
     // owns a throwaway server and cleans it; it never borrows product data.
     try { budget = phaseBudget(); }
     catch (error) { return unknown(String(error.message)); }
-    const tests = run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--',
+    const tests = runPhase('integration', process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--',
       'npm', 'run', 'lint:as-committed', '--', 'test:file', `--ref=${input.buildSha}`, '--any', '--keep', '--',
       ...CURRENT_ENGINEERING_TEST_FILES], {
       cwd: root, ...budget, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
     });
-    try { retainPhase('integration', tests); }
+    let retained;
+    try { retained = retainPhase('integration', tests); }
     catch { return unknown('The integration phase diagnostics could not be retained.'); }
-    const result = String(tests.stdout).split(/\r?\n/).filter(line => line.startsWith('TEST_FILE_RESULT ')).at(-1);
+    const result = retained.stdout.split(/\r?\n/).filter(line => line.startsWith('TEST_FILE_RESULT ')).at(-1);
     const logPath = join(runDir, 'canonical-integration.log');
-    const output = String(tests.stdout ?? '') + '\n' + String(tests.stderr ?? '');
+    const output = retained.stdout + '\n' + retained.stderr;
     try { write(logPath, output); } catch { return unknown('The integration receipt could not be retained.'); }
     if (tests.error || tests.signal || tests.status !== 0 || !result
       || !result.includes('requested=4 executed=4 matched=4 status=passed')
@@ -91,14 +141,15 @@ export function verifyEngineeringRelease({ root, inputsPath, env = process.env, 
   }
   try { budget = phaseBudget(); }
   catch (error) { return unknown(String(error.message)); }
-  const child = run('bash', [join(root, 'scripts/verify-tauri-headless.sh'), '--',
+  const child = runPhase('browser', 'bash', [join(root, 'scripts/verify-tauri-headless.sh'), '--',
     'bash', '-c', 'exec node --import tsx "$OPERATOR_SOURCE_ROOT/scripts/verify-engineering-evidence-tauri.mjs"'], {
     cwd: root, ...budget, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
   });
-  try { retainPhase('browser', child); }
+  let retainedBrowser;
+  try { retainedBrowser = retainPhase('browser', child); }
   catch { return unknown('The browser phase diagnostics could not be retained.'); }
   if (child.error || child.signal || child.status !== 0) return unknown('The maintained release browser journey did not complete successfully.');
-  const line = String(child.stdout).split(/\r?\n/).find(line => line.startsWith('ENGINEERING_EVIDENCE_JOURNEY_VERIFIED '));
+  const line = retainedBrowser.stdout.split(/\r?\n/).find(line => line.startsWith('ENGINEERING_EVIDENCE_JOURNEY_VERIFIED '));
   if (!line) return unknown('No fresh completed browser receipt was emitted.');
   try {
     const proof = JSON.parse(line.slice('ENGINEERING_EVIDENCE_JOURNEY_VERIFIED '.length));
@@ -114,7 +165,7 @@ export function verifyEngineeringRelease({ root, inputsPath, env = process.env, 
   } catch { return unknown('The emitted browser artifact is missing or malformed.'); }
 }
 
-if (isCliEntry(import.meta.url)) {
+async function main() {
   const root = resolve(process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), '..'));
   const plane = process.argv[3] ?? 'final-release';
   const inputsPath = process.env.PAPERCUSP_ENGINEERING_JOURNEY_INPUTS
@@ -141,4 +192,13 @@ if (isCliEntry(import.meta.url)) {
     },
   });
   if (thrown) throw thrown;
+}
+
+// This entry also belongs to the host bundle graph. Keep the harness awaits
+// inside a function so esbuild never gives its importers an async module init.
+if (isCliEntry(import.meta.url)) {
+  main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });
 }

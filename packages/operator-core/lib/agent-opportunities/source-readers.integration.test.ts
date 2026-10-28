@@ -83,34 +83,41 @@ async function native(provider: 'claude' | 'codex' | 'omp' = 'codex') {
   const path = join(dir, `${sessionId}.jsonl`); await writeFile(path, lines.map(l => JSON.stringify(l)).join('\n') + '\n');
   return { input: { id: activity!.id, actor, provider, sessionId, callId }, path, advId: adv!.id };
 }
-it('hydrates exact canonical request/result IDs from bounded transcripts for all three providers', async () => {
+it('pairs candidate request/result IDs from bounded transcripts for all three providers without granting authority', async () => {
   for (const provider of ['claude', 'codex', 'omp'] as const) {
     const { input, path } = await native(provider);
-    const result = await readers(async () => path).readTranscript(input);
+    const result = await readers(async () => path).readTranscriptCandidate(input);
     expect(result?.sources).toHaveLength(1);
     expect(result?.sources[0]).toMatchObject({ callId: input.callId, provider, namespace: input.sessionId,
       result: { callId: input.callId, provider, namespace: input.sessionId, complete: true, body: { exit_code: 0 } } });
   }
+});
+it('D030 production hydration refuses index-only scope before native body IO', async () => {
+  const { input, path } = await native();
+  let bodyReads = 0;
+  const reader = readers(async () => { bodyReads++; return path; });
+  expect(await reader.readTranscript(input)).toBeNull();
+  expect(bodyReads).toBe(0);
 });
 it('refuses source or session mismatches and rechecks authorization after transcript IO', async () => {
   const { input, path, advId } = await native();
   let reads = 0;
   const reader = readers(async () => { reads++; return path; });
   for (const wrong of [{ actor: 'su-other' }, { sessionId: randomUUID() }, { provider: 'omp' as const }, { callId: 'wrong' }])
-    expect(await reader.readTranscript({ ...input, ...wrong })).toBeNull();
+    expect(await reader.readTranscriptCandidate({ ...input, ...wrong })).toBeNull();
   expect(reads).toBe(0);
-  expect(await readers(async () => { permitted = false; return path; }).readTranscript(input)).toBeNull();
+  expect(await readers(async () => { permitted = false; return path; }).readTranscriptCandidate(input)).toBeNull();
   permitted = true;
   expect(await readers(async () => {
     await f.db.adminSql`UPDATE harness_shared.adv_sessions SET session_id='changed' WHERE id=${advId}::bigint`;
     return path;
-  }).readTranscript(input)).toBeNull();
+  }).readTranscriptCandidate(input)).toBeNull();
 });
 it('keeps incomplete, missing and oversized transcripts UNKNOWN instead of certifying a partial snapshot', async () => {
   const { input, path } = await native();
   const reader = readers(async () => path);
   const original = await readFile(path); await writeFile(path, original.subarray(0, original.length - 1));
-  expect(await reader.readTranscript(input)).toBeNull();
-  await writeFile(path, Buffer.alloc(4 * 1024 * 1024 + 1)); expect(await reader.readTranscript(input)).toBeNull();
-  await rm(path); expect(await reader.readTranscript(input)).toBeNull();
+  expect(await reader.readTranscriptCandidate(input)).toBeNull();
+  await writeFile(path, Buffer.alloc(4 * 1024 * 1024 + 1)); expect(await reader.readTranscriptCandidate(input)).toBeNull();
+  await rm(path); expect(await reader.readTranscriptCandidate(input)).toBeNull();
 });

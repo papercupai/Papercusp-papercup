@@ -5,7 +5,11 @@ import { relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { agentAntipatterns } from './agent-antipatterns.ts';
 
-const run = promisify(execFile);
+// Promisified lazily on first call, never at module scope (EI-10161): an eager
+// promisify(execFile) throws at import time under a narrow node:child_process test mock.
+let cachedRun: typeof execFile.__promisify__ | undefined;
+const run = ((...args: Parameters<typeof execFile.__promisify__>) =>
+  (cachedRun ??= promisify(execFile))(...args)) as typeof execFile.__promisify__;
 async function main() {
   const root = process.cwd(), file = resolve(process.argv[2] ?? '');
   const path = relative(root, file).replaceAll('\\', '/');

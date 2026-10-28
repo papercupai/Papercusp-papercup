@@ -2364,20 +2364,29 @@ describe('getFeedbackCore — origin_task_ref default', () => {
 
 describe('getFeedbackCore — bar-critique records its plan (P-007 / SPEC-P-007-CRITIQUE-REF)', () => {
   it('stores the plan slug as origin_task_ref and the policy on the persisted routing', async () => {
+    const planSlug = `bar-critique-plan-${randomBytes(5).toString('hex')}`;
+    await rootSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, owner)
+      VALUES (${WS}, 'papercusp', ${planSlug}, NULL)`;
     const { deps } = makeDeps(routeOf([cand('agent-a')]));
-    const r = asOk(await getFeedbackCore({ ...baseReq, policy: 'bar-critique', originTaskRef: 'plan-under-critique' }, deps));
-    expect(r.origin_task_ref).toBe('plan-under-critique');
+    const r = asOk(await getFeedbackCore({ ...baseReq, policy: 'bar-critique', originTaskRef: planSlug,
+      harnessSlug: 'papercusp' }, deps));
+    expect(r.origin_task_ref).toBe(planSlug);
     const [row] = (await rootSql`
       SELECT origin_task_ref, routing->>'policy' AS policy
         FROM harness_shared.consult_state WHERE conversation_id = ${r.conversation_id}
     `) as unknown as Array<{ origin_task_ref: string | null; policy: string | null }>;
-    expect(row).toEqual({ origin_task_ref: 'plan-under-critique', policy: 'bar-critique' });
+    expect(row).toEqual({ origin_task_ref: planSlug, policy: 'bar-critique' });
   });
 
   it.each([
     ['omitted', undefined],
     ['null', null],
     ['blank', '  '],
+    ['existing work-item id', 'WI-WIP'],
+    ['incident id', 'EI-26731140517030664'],
+    ['unregistered plan slug', 'not-a-registered-plan'],
   ] as const)('refuses a bar-critique whose origin_task_ref is %s, writing no consult row', async (_label, ref) => {
     // A wip work-item exists, so the omitted case would otherwise DEFAULT to it —
     // exactly the wrong-reference outcome the clause's falsifier names.
@@ -2386,13 +2395,34 @@ describe('getFeedbackCore — bar-critique records its plan (P-007 / SPEC-P-007-
       VALUES ('WI-WIP', ${baseReq.requesterId}, 'wip', ${NOW.toISOString()}::timestamptz)
       ON CONFLICT DO NOTHING`;
     const { originTaskRef: _omit, ...reqNoRef } = baseReq;
-    const req = ref === undefined ? reqNoRef : { ...reqNoRef, originTaskRef: ref };
-    const { deps } = makeDeps(routeOf([cand('agent-a')]));
+    const req = ref === undefined ? { ...reqNoRef, harnessSlug: 'papercusp' }
+      : { ...reqNoRef, originTaskRef: ref, harnessSlug: 'papercusp' };
+    const { deps, routeCalls } = makeDeps(routeOf([cand('agent-a')]));
     const [{ n: before }] = (await rootSql`SELECT count(*)::int AS n FROM harness_shared.consult_state`) as unknown as Array<{ n: number }>;
     const r = await getFeedbackCore({ ...req, policy: 'bar-critique' }, deps);
     expect('error' in r ? r.error : null).toBe('bar_critique_requires_plan');
     const [{ n: after }] = (await rootSql`SELECT count(*)::int AS n FROM harness_shared.consult_state`) as unknown as Array<{ n: number }>;
     expect(after).toBe(before);
+    expect(routeCalls).toHaveLength(0);
+  });
+
+  it.each([
+    ['another harness', 'other-harness', WS],
+    ['another workspace', 'papercusp', 'ws-foreign-plan'],
+  ] as const)('refuses a registered plan slug that belongs to %s', async (_label, planHarness, planWorkspace) => {
+    const planSlug = `out-of-scope-plan-${randomBytes(5).toString('hex')}`;
+    await rootSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, owner)
+      VALUES (${planWorkspace}, ${planHarness}, ${planSlug}, NULL)`;
+    const { deps, routeCalls } = makeDeps(routeOf([cand('agent-a')]));
+    const [{ n: before }] = (await rootSql`SELECT count(*)::int AS n FROM harness_shared.consult_state`) as unknown as Array<{ n: number }>;
+    const r = await getFeedbackCore({ ...baseReq, policy: 'bar-critique', originTaskRef: planSlug,
+      harnessSlug: 'papercusp' }, deps);
+    expect('error' in r ? r.error : null).toBe('bar_critique_requires_plan');
+    const [{ n: after }] = (await rootSql`SELECT count(*)::int AS n FROM harness_shared.consult_state`) as unknown as Array<{ n: number }>;
+    expect(after).toBe(before);
+    expect(routeCalls).toHaveLength(0);
   });
 });
 

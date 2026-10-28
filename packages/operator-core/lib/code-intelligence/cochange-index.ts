@@ -12,7 +12,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { eligibleHistoryPath, safeHistoryPath as safe } from './history-path';
 
-const run = promisify(execFile);
+// Deferred to first call, memoized (lint:no-eager-execfile-promisify): a module-scope
+// promisify(execFile) runs at import in every transitive importer, including mocked tests.
+type RunFile = (file: string, args: string[], opts: Record<string, unknown>) => Promise<{ stdout: string; stderr: string }>;
+let cachedRun: RunFile | null = null;
+const run: RunFile = (file, args, opts) => (cachedRun ??= promisify(execFile) as unknown as RunFile)(file, args, opts);
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 const DAY = 86_400_000;
 const COMMIT_CAP = 1000;

@@ -197,8 +197,14 @@ describe('code:run discloses the clamp on the failure envelope (EI-2157002120735
     );
   });
 
-  it('the arg description leads with the EFFECTIVE ceiling, not the accepted max', () => {
-    expect(runSrc).toMatch(/EFFECTIVE CEILING IS/);
+  it('the arg schema accepts no budget above the EFFECTIVE ceiling, and the description states it', () => {
+    // The original defect: the schema accepted 1..120s while only the transport-capped budget could
+    // ever run, so the description had to explain the accepted-vs-effective gap ("EFFECTIVE CEILING
+    // IS ..."). code:run now closes the gap at the door instead: the foreground timeoutSec is capped
+    // at FOREGROUND_TIMEOUT_CEILING_MS, so an over-cap budget is refused rather than silently lowered,
+    // and the description's "maximum" IS the effective ceiling. Pin that contract, not the old wording.
+    expect(runSrc).toMatch(/\.max\(FOREGROUND_TIMEOUT_CEILING_MS \/ 1000\)/);
+    expect(runSrc).toMatch(/maximum \$\{FOREGROUND_TIMEOUT_CEILING_MS \/ 1000\}s/);
   });
 });
 
@@ -276,7 +282,10 @@ describe('every foreground-capable tool applies the clamp (EI-20645849301780712)
     );
     // A timeout that names no escape route is how an agent ends up hand-rolling `npx tsc -p .`
     // — which checks ZERO files here and reads as clean.
-    expect(src, `${rel} timeout branch must point at the detached run`).toMatch(/run_in_background/);
+    // code:run's detached route is a durable background EXECUTION (execution:{lifecycle:"background"}),
+    // not a bash-style run_in_background flag; every other foreground-capable tool uses the flag.
+    const detachedRoute = rel === 'code/run.ts' ? /lifecycle:\s*"background"/ : /run_in_background/;
+    expect(src, `${rel} timeout branch must point at the detached run`).toMatch(detachedRoute);
   });
 
   // CALIBRATION (permanent control): the assertions above must be capable of FAILING. A guard

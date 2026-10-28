@@ -86,7 +86,10 @@ function generateStopScript(root: string, sourceRoot: string, sourceWork: string
     'ISOLATED_WEBVIEW_ROOT=""',
     'write_xvfb_stop_script() { printf "#!/usr/bin/env bash\\nexit 0\\n" > "$WORK/stop-xvfb.sh"; chmod +x "$WORK/stop-xvfb.sh"; }',
     spaCleanupFunction,
-    reaperFunctions,
+    // Observe the real persisted helper rather than replacing its proc scan.
+    // A stop must inspect all roots in two scans, independent of their count.
+    reaperFunctions.replace('frozen_source_rooted_processes() {',
+      'frozen_source_rooted_processes() {\n  printf \'FROZEN_SOURCE_CENSUS roots=%s\\n\' "$#" >&2'),
     stopFunction,
     "write_frozen_source_reaper_script",
     "write_stop_script",
@@ -354,6 +357,8 @@ describe("verify-tauri-headless frozen-source survivor reaper", () => {
           TEST_STOP: generated.stopPath,
         },
       });
+      expect([...result.stderr.matchAll(/FROZEN_SOURCE_CENSUS roots=(\d+)/g)].map(match => match[1]),
+        result.stderr).toEqual(["3", "3"]);
       if (ownership === "run") {
         expect(result.status, result.stderr).toBe(0);
         expect(result.stdout).toContain("CHILD_AFTER_STOP=exited");

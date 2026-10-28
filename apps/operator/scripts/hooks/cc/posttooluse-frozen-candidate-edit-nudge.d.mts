@@ -15,8 +15,14 @@ export function normalizeRepoPath(value: any): string;
  * silently dropped (⇒ `no-ledgered-hunks` at admission); a leftover ⇒ nudges about a dead
  * repair radius. `frozen-repair-edit-hook-parity.test.ts` pins this default LOCATION against
  * the writer's default, not only the file format.
+ *
+ * EI-27237474160744241: the directory is the HOST-level operator state dir, never one derived
+ * from this process's PAPERCUSP_HOME. The writer runs in the operator service (no
+ * PAPERCUSP_HOME), while this hook runs in a session that carries a workspace-scoped
+ * PAPERCUSP_HOME; resolving through `papercuspPath('state')` read an empty directory there, so
+ * every edit since the freeze went unrecorded. `PAPERCUSP_STATE_DIR` stays the pin for both.
  */
-export function markersDir(): string;
+export function markersDir(env?: NodeJS.ProcessEnv): string;
 /** Every readable scoped marker, in a stable order. A missing directory or a corrupt file
  *  reads as absent — the hook must never fail an edit. */
 export function readMarkers(dir?: string): any[];

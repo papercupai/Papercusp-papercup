@@ -20,7 +20,7 @@
  * difference in a diff of 50 entries is not actionable.
  */
 import { describe, expect, it } from 'vitest';
-import { listSystemActions } from '../harness/routines/system-actions';
+import { getSystemActionEntry, listStandingSystemActions, listSystemActions } from '../harness/routines/system-actions';
 import { SENTINEL_TARGET_ROLES, TARGET_ROLE_SPEND } from './routine-classification';
 
 // Side-effect import: populates the registry. Must come after the imports above so
@@ -33,6 +33,32 @@ function registeredTargetRoles(): string[] {
 }
 
 describe('TARGET_ROLE_SPEND vs the live system-action registry', () => {
+  it('keeps conditional/manual actions on-demand and required seed actions standing', () => {
+    const onDemand = [
+      'foreign-git-sync',
+      'gate-canary-sweep',
+      'oddsmith-error-triage-autofix',
+      'oddsmith-error-triage-ingest',
+      'oddsmith-paper-cycle',
+      'unshipped-plans-audit',
+    ];
+    const standing = [
+      'improvement-correction-decay',
+      'intake-triage-drain',
+      'plan-anchor-freshness',
+      'resolver-whole-corpus',
+      'sweep-orphaned-foreign-harnesses',
+    ];
+    const liveStanding = new Set(listStandingSystemActions());
+    for (const name of onDemand) {
+      expect(getSystemActionEntry(name)?.scheduling, name).toBe('on-demand');
+      expect(liveStanding.has(name), name).toBe(false);
+    }
+    for (const name of standing) {
+      expect(getSystemActionEntry(name)?.scheduling, name).toBe('standing');
+      expect(liveStanding.has(name), name).toBe(true);
+    }
+  });
   it('loads the registry (guards against a silent no-op import)', () => {
     // If the side-effect import ever stops registering — a moved file, a tree-shaken
     // import — every other assertion here would trivially pass against an empty set.

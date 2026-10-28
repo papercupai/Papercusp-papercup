@@ -30,7 +30,9 @@ import { readAssumeTranscriptPin } from '../../../packages/operator-core/lib/ses
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof } from '../../../packages/operator-core/test/isolated-integration-proof';
 
-const nativeRuntimeOptions = isolatedWorkerOptions(180_000);
+// Private runtime observation precedes router collection and governed admission.
+// Keep those bounded startup phases outside the native execution allowance.
+const nativeRuntimeOptions = { ...isolatedWorkerOptions(180_000), testFileExecutionFromStdout: true };
 
 /** The parent observes the original private runtime before the native case runs
  * and retains its teardown. The child executes the same maintained case once. */

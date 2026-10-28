@@ -25,7 +25,7 @@
  * closes the circuit by hand.
  */
 import { getOrgPg, generated } from '@papercusp/db-org';
-import { and, eq, inArray, or, sql as dsql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';
 
 const at = generated.autoloopStateInHarnessShared;
@@ -609,13 +609,26 @@ export async function claimFire(
 }
 
 /** Close the circuit by hand: zero the error counters for a harness (all roles,
- *  or one). The `autoloop:control { op:'reset-errors' }` target. */
-export async function resetFireErrors(slug: string, role?: string): Promise<number> {
+ *  or one). The `autoloop:control { op:'reset-errors' }` target. Internal recovery
+ *  callers may scope it to a workspace and compare the last-fire stamp they read;
+ *  that prevents clearing a newer failure which raced with the recovery. */
+export async function resetFireErrors(
+  slug: string,
+  role?: string,
+  options: { workspaceId?: string; expectedLastFiredAt?: string | null } = {},
+): Promise<number> {
   const { db } = getOrgPg();
-  const ws = activeWorkspaceId();
-  const where = role
+  const ws = options.workspaceId ?? activeWorkspaceId();
+  const scope = role
     ? fireStateWhere(ws, slug, role)
     : and(eq(at.workspaceId, ws), eq(at.harnessSlug, slug));
+  const hasExpectedLastFiredAt = Object.prototype.hasOwnProperty.call(options, 'expectedLastFiredAt');
+  const fireStampUnchanged = !hasExpectedLastFiredAt
+    ? undefined
+    : options.expectedLastFiredAt == null
+      ? isNull(at.lastFiredAt)
+      : dsql`${at.lastFiredAt} = ${options.expectedLastFiredAt}::timestamptz`;
+  const where = fireStampUnchanged ? and(scope, fireStampUnchanged) : scope;
   const res = await db
     .update(at)
     .set({ consecutiveErrors: 0, lastStatus: 'errors-reset' })

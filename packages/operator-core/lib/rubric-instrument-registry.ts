@@ -145,7 +145,8 @@ export function p544QualificationInstruments(root: string): CommandInstrument[] 
         const result = JSON.parse(stdout);
         if (result.scope !== 'P544-composite-check' || result.criterion !== criterion ||
           result.qualification !== 'independent-review-required' ||
-          !/^[a-f0-9]{40}$/.test(result.candidateSha ?? '') || !/^[a-f0-9]{64}$/.test(result.artifactSha256 ?? '')) return null;
+          typeof result.candidateSha !== 'string' || !/^[a-f0-9]{40}$/.test(result.candidateSha) ||
+          typeof result.artifactSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(result.artifactSha256)) return null;
         return result.status === 'pass' ? 1 : result.status === 'fail' ? 0 : null;
       } catch { return null; }
     },

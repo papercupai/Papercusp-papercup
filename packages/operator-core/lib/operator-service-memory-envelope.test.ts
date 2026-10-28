@@ -63,7 +63,9 @@ describe('papercup-dev-api service memory envelope (EI-20340243384897336)', () =
     const aggregateRecycleCeilingMiB =
       MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND + workers * MEMORY_WATCHDOG_LIMIT_MB_REQUEST;
 
-    expect(workers).toBe(6);
+    // WI-6554700010029423: request tier raised 6 -> 9 (see the drop-in's own
+    // comment); the headroom assertion below is what keeps that change safe.
+    expect(workers).toBe(9);
     expect(expectedProcesses).toBe(workers + 1);
     expect(
       resolveClusterWorkers(

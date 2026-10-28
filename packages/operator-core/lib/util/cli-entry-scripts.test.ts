@@ -49,7 +49,10 @@ async function withScript(script: string, bundled: boolean, run: (entry: string,
           }
           build.onResolve({ filter: /^node:child_process$/ }, () => ({ path: 'child', namespace: 'fixture' }));
           build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({
-            contents: 'export function spawnSync(command, args) { console.log(JSON.stringify({ command, args })); return { status: 7 }; }',
+            // `spawn` is reached through @papercusp/verification-harness (guard-rails.ts); it only runs
+            // when a harness configures guard rails, so a bundled CLI that reaches it is a test failure.
+            contents: 'export function spawnSync(command, args) { console.log(JSON.stringify({ command, args })); return { status: 7 }; }\n'
+              + 'export function spawn() { throw new Error("fixture: child_process.spawn is not stubbed"); }',
             loader: 'js',
           }));
         },
@@ -205,7 +208,11 @@ describe('partial-index alignment CLI entry in the operator graph', () => {
 
 describe('engineering evidence release CLI entry in the operator graph', () => {
   const script = 'verify-engineering-evidence-release.mjs';
-  const fixtureEnv = (root: string) => ({ PAPERCUSP_ENGINEERING_JOURNEY_INPUTS: join(root, 'missing-inputs.json') });
+  // The CLI records its run through runHarness; keep that evidence inside the throwaway root.
+  const fixtureEnv = (root: string) => ({
+    PAPERCUSP_ENGINEERING_JOURNEY_INPUTS: join(root, 'missing-inputs.json'),
+    VH_EVIDENCE_ROOT_BASE: join(root, 'vh-evidence'),
+  });
 
   it('stays inert in the host bundle and detects the original entry comparison', async () => {
     await withScript(script, true, (entry, root) => {

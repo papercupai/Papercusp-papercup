@@ -1003,6 +1003,24 @@ const DEFAULTED_SEAM_HELD_MAIN =
   'WI-6554700010018875 adjudicated: the omitted seam has a real production default (?? / else-branch / optional telemetry); ' +
   'injecting it is the test/harness path, omitting it the production one.';
 
+/**
+ * 2026-10-28 (WI-6554700010042603, frozen-lineage-red-burndown-2026-10-27 R5): 11 findings red at
+ * frozen repairHead 7147ef76 and at tip. Every omitted seam was checked at its READER and selects a
+ * real production default, so none is a silent `if (deps.x)` skip:
+ *   - McpProxyOptions.resolveWorkerTargets → mcp-proxy/proxy.ts `(opts.resolveWorkerTargets ?? readMcpWorkerTargets)()`;
+ *     only the git-sync worker fixture and build-routing.test inject a discovered set. The fixture's
+ *     missing resolveTarget/resolveTargets are the alternative target modes (resolveTargetCandidates).
+ *   - ManagedSpawnOptions.spawnFn → managed-spawn.ts `opts.spawnFn ?? spawn`; stage is optional `opts.stage?.(…)` telemetry.
+ *   - GradingAuditRuntimeDeps.currentSource / pendingAcceptanceRefs → release/grading-audit-runtime.ts
+ *     `(deps.currentSource ?? currentSource)` and `(deps.pendingAcceptanceRefs ?? pendingAcceptanceRefs)`; the fixture's
+ *     three constructions each inject only the seam its case asserts on.
+ *   - DefaultHostedWorkspaceAdmissionOptions.startLifecycleWorkflow → auth/hosted/workspace-admission-dependencies.ts
+ *     `(options.startLifecycleWorkflow ?? startWorkspaceHostLifecycleWorkflow)`; the P544 qualification takes the real workflow.
+ */
+const DEFAULTED_SEAM_FROZEN_R5 =
+  'WI-6554700010042603 adjudicated: the omitted seam has a real production default (?? at its reader); ' +
+  'injecting it is the test/harness path, omitting it the production one.';
+
 const FAIL_BASELINE = new Map([
   // Historical seed from the measured `--list` run after the WI-1745363 attribution fix:
   // 28 findings / 22 distinct rows over 7,150 files (was 44 / 33 under shape-based
@@ -1107,8 +1125,6 @@ const FAIL_BASELINE = new Map([
   // correctly omits it. Rows generated from the measured population (--json), never
   // hand-written from a grep.
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/add-decision.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
-  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/add-item.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
-  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/edit.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/ratify-decision.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-content-chunk.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-content.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
@@ -1186,6 +1202,15 @@ const FAIL_BASELINE = new Map([
   ['McpProxyOptions|apps/operator/bin/host-bootstrap.ts|log', DEFAULTED_SEAM_HELD_MAIN],
   ['McpProxyOptions|apps/operator/bin/mcp-proxy.ts|log', DEFAULTED_SEAM_HELD_MAIN],
   ['McpProxyOptions|scripts/bench-work-item-continuations.ts|resolveTarget,resolveTargets', DEFAULTED_SEAM_HELD_MAIN],
+  ['McpProxyOptions|apps/operator/bin/host-bootstrap.ts|resolveWorkerTargets', DEFAULTED_SEAM_FROZEN_R5],
+  ['McpProxyOptions|apps/operator/bin/mcp-proxy.ts|resolveWorkerTargets', DEFAULTED_SEAM_FROZEN_R5],
+  ['McpProxyOptions|scripts/bench-work-item-continuations.ts|resolveWorkerTargets', DEFAULTED_SEAM_FROZEN_R5],
+  ['McpProxyOptions|packages/operator-core/test/git-sync-target-worker-fixture.ts|resolveTarget,resolveTargets', DEFAULTED_SEAM_FROZEN_R5],
+  ['ManagedSpawnOptions|packages/operator-core/lib/blind-review-runtime-backend.ts|spawnFn,stage', DEFAULTED_SEAM_FROZEN_R5],
+  ['ManagedSpawnOptions|packages/operator-core/lib/fleet/forkserver/forkserver-client.ts|spawnFn,stage', DEFAULTED_SEAM_FROZEN_R5],
+  ['ManagedSpawnOptions|packages/operator-core/test/grading-audit-kernel-retirement-fixture.ts|spawnFn,stage', DEFAULTED_SEAM_FROZEN_R5],
+  ['GradingAuditRuntimeDeps|packages/operator-core/test/grading-audit-runtime-fixture.ts|currentSource,pendingAcceptanceRefs', DEFAULTED_SEAM_FROZEN_R5],
+  ['DefaultHostedWorkspaceAdmissionOptions|packages/operator-core/test/hosted-pool-qualification.ts|startLifecycleWorkflow', DEFAULTED_SEAM_FROZEN_R5],
 ]);
 
 /**

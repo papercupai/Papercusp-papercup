@@ -40,6 +40,8 @@ import {
   type MergeCursor,
 } from '../read-merge';
 import type { OpEnvelope } from '../op-envelope-types';
+import { stampOpHlc } from '../hlc-stamp';
+import { HlcClock, newHlcNodeId } from '@papercusp/locks-core';
 
 const TABLE = 'features_consolidated';
 
@@ -102,6 +104,8 @@ class TestPeer {
   readonly remotes = new Map<string, RemoteLog>();
   /** Every envelope the apply sink accepted, in apply order. */
   readonly applied: OpEnvelope[] = [];
+  /** This simulated peer's own HLC (independent, as a real peer process's is). */
+  readonly clock = new HlcClock({ node: newHlcNodeId() });
   /** Watermark snapshots (per-log cursor positions) after each merge pass. */
   private lastPositions = new Map<string, number>();
 
@@ -128,7 +132,13 @@ class TestPeer {
       schema_version: 1,
       author_pubkey: `pk-${this.name}`,
     };
-    await this.own.append(op);
+    // Own-log append HLC-stamps every op (P-010), and `lwwPick` orders by that
+    // HLC. Real peers are separate processes with INDEPENDENT clocks; sharing
+    // the process-global clock across three simulated peers would order the
+    // cross-partition conflict by in-process append interleave instead of each
+    // author's own clock. Pre-stamp from this peer's own clock (a preset `hlc`
+    // is preserved by the append seam).
+    await this.own.append(stampOpHlc(op, this.clock));
   }
 
   /** One incremental merge pass; asserts watermark monotonicity + no truncation. */

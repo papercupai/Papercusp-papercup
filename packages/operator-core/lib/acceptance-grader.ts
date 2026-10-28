@@ -508,10 +508,13 @@ type AcceptanceGraderLogTailReader = (path: string) => string | Promise<string>;
 
 /** Native API-error metadata separates a failed assistant turn from quoted
  * diagnostics in the frozen user brief or a successful assistant answer. */
-function acceptanceGraderNativeApiErrorStatus(rawTranscript: string, sessionId: string): number | null {
+function acceptanceGraderNativeApiErrorEvidence(
+  rawTranscript: string,
+  sessionId: string,
+): { status: number; text: string } | null {
   type NativeTurn = { type?: unknown; sessionId?: unknown; isSidechain?: unknown;
     isApiErrorMessage?: unknown; apiErrorStatus?: unknown;
-    message?: { role?: unknown; stop_reason?: unknown } | null };
+    message?: { role?: unknown; stop_reason?: unknown; content?: unknown } | null };
   let lastTurn: NativeTurn | null = null;
   for (const line of rawTranscript.split(/\r?\n/u)) {
     if (!line.trim()) continue;
@@ -530,11 +533,21 @@ function acceptanceGraderNativeApiErrorStatus(rawTranscript: string, sessionId: 
       lastTurn.isApiErrorMessage !== true || typeof status !== 'number' || status < 400 || status >= 600 ||
       typeof lastTurn.message.stop_reason !== 'string' ||
       !['end_turn', 'stop_sequence'].includes(lastTurn.message.stop_reason)) return null;
-  return status;
+  const content = lastTurn.message.content;
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content.flatMap((item) => {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+          const block = item as { type?: unknown; text?: unknown };
+          return block.type === 'text' && typeof block.text === 'string' ? [block.text] : [];
+        }).join('\n')
+      : '';
+  return { status, text };
 }
 
 export function hasAcceptanceGraderNativeApiError(rawTranscript: string, sessionId: string): boolean {
-  return acceptanceGraderNativeApiErrorStatus(rawTranscript, sessionId) !== null;
+  return acceptanceGraderNativeApiErrorEvidence(rawTranscript, sessionId) !== null;
 }
 
 /**
@@ -630,11 +643,11 @@ export async function detectAcceptanceGraderTerminalFailure(
   if (!logPath) return null;
   const boundedRechecks = Math.max(0, Math.floor(maxRechecks));
   const boundedDelay = Math.max(0, Math.floor(delayMs));
-  const nativeApiErrorStatus = async (): Promise<number | null> => {
+  const nativeApiErrorEvidence = async (): Promise<{ status: number; text: string } | null> => {
     if (!nativeTranscriptPath || !nativeSessionId) return null;
     try {
       const transcript = await readLogTail(nativeTranscriptPath);
-      if (nativeBackend === 'claude') return acceptanceGraderNativeApiErrorStatus(transcript, nativeSessionId);
+      if (nativeBackend === 'claude') return acceptanceGraderNativeApiErrorEvidence(transcript, nativeSessionId);
       // A capacity screen is transient. The native task_complete error is a
       // completed failed turn, even when PTY redraws leave an old Working tail.
       // Reuse the provider classifier, and discard an old error on any later
@@ -656,22 +669,40 @@ export async function detectAcceptanceGraderTerminalFailure(
           status = null;
         }
       }
-      return status;
+      return status === null ? null : { status, text: '' };
     } catch {
       return null;
     }
   };
+  const nativeBillingFailure = (
+    error: { status: number; text: string } | null,
+  ): AcceptanceGraderTerminalFailure | null => {
+    // Claude reports account billing walls as completed assistant API errors
+    // (often HTTP 400) whose message is only "Credit balance is too low".
+    // The PTY may contain that plain text without the separate UI footer used
+    // by the rendered-screen classifier. Use this only for controlled grading
+    // callers, and require both exact final native error metadata and its
+    // billing-specific body so an ordinary 4xx never consumes a fallback.
+    if (!allowInferenceGatewayError || !error || ![400, 402].includes(error.status) ||
+        !/\bcredit balance\s+(?:is\s+)?too low\b/i.test(error.text)) return null;
+    return {
+      code: 'inference_gateway_error',
+      evidence: 'native final assistant billing error status ' + error.status,
+    };
+  };
   let latestRawLog = '';
   for (let recheck = 0; recheck <= boundedRechecks; recheck += 1) {
     latestRawLog = await readLogTail(logPath);
-    const nativeStatus = await nativeApiErrorStatus();
-    if (nativeStatus !== null && nativeStatus >= 500) {
+    const nativeError = await nativeApiErrorEvidence();
+    if (nativeError !== null && nativeError.status >= 500) {
       return {
         code: 'inference_gateway_error',
-        evidence: `native final assistant API error status ${nativeStatus}`,
+        evidence: 'native final assistant API error status ' + nativeError.status,
       };
     }
-    const nativeCompletedApiError = nativeStatus !== null;
+    const billingFailure = nativeBillingFailure(nativeError);
+    if (billingFailure) return billingFailure;
+    const nativeCompletedApiError = nativeError !== null;
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
       allowInferenceGatewayError: allowInferenceGatewayError || nativeCompletedApiError,
@@ -697,14 +728,16 @@ export async function detectAcceptanceGraderTerminalFailure(
   for (let recheck = 0; recheck < boundedStartupRechecks; recheck += 1) {
     await sleep(boundedStartupDelay);
     latestRawLog = await readLogTail(logPath);
-    const nativeStatus = await nativeApiErrorStatus();
-    if (nativeStatus !== null && nativeStatus >= 500) {
+    const nativeError = await nativeApiErrorEvidence();
+    if (nativeError !== null && nativeError.status >= 500) {
       return {
         code: 'inference_gateway_error',
-        evidence: `native final assistant API error status ${nativeStatus}`,
+        evidence: 'native final assistant API error status ' + nativeError.status,
       };
     }
-    const nativeCompletedApiError = nativeStatus !== null;
+    const billingFailure = nativeBillingFailure(nativeError);
+    if (billingFailure) return billingFailure;
+    const nativeCompletedApiError = nativeError !== null;
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
       allowInferenceGatewayError: allowInferenceGatewayError || nativeCompletedApiError,

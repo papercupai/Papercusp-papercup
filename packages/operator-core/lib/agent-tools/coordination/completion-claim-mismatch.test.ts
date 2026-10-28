@@ -18,6 +18,47 @@ describe('completionClaimMismatch', () => {
     });
   });
 
+  it('does not mistake the routed parent plan for a verified draft artifact', () => {
+    expect(completionClaimMismatch({
+      summary: 'Continuing owned BG repair; need overlap/admission answer for derived generation plan',
+      body: [{
+        text: [
+          'I recovered latest loop checkpoint and retained both claims.',
+          'Draft bg-host-committed-generation-2026-10-24 has three dependent items for verified export/build, guarded atomic activation, and cohort acceptance.',
+          'Current service 95 drop-in rebuilds mutable staging; bundle-host already accepts verifier receipts.',
+          'I will repair the derived draft and pursue canonical activation under existing EI-26785152335918923. Please confirm any overlapping implementer or governing decision, and admit the derived plan to the fleet claim spec if its generated items require it.',
+        ].join('\n'),
+      }],
+      planSlug: 'loop-rebase-critical-sweep-floor-2026-10-24',
+      basedOn: read(
+        'work-item:WI-6554700010025840',
+        'plan:bg-host-committed-generation-2026-10-24',
+        'work-item:EI-26785152335918923',
+        'work-item:EI-26890541008406387',
+        'work-item:EI-18752496371939475',
+        'work-item:EI-26883864551800000',
+        'work-item:EI-26881885626002938',
+      ),
+    })).toBeUndefined();
+  });
+
+  it('infers the routed plan only for a direct, affirmative plan-completion clause', () => {
+    expect(completionClaimMismatch({
+      summary: 'The plan is complete.',
+      planSlug: 'loop-rebase-critical-sweep-floor-2026-10-24',
+      basedOn: [],
+    })).toMatchObject({
+      declaredRefs: ['plan:loop-rebase-critical-sweep-floor-2026-10-24'],
+      missingFromBasedOn: ['plan:loop-rebase-critical-sweep-floor-2026-10-24'],
+    });
+
+    expect(completionClaimMismatch({
+      summary: 'The plan will be completed next wake.',
+      planSlug: 'loop-rebase-critical-sweep-floor-2026-10-24',
+      basedOn: [],
+    })).toBeUndefined();
+  });
+
   it('treats a rubric read as the matching persisted plan read', () => {
     expect(
       completionClaimMismatch({

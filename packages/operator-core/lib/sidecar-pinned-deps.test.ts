@@ -119,6 +119,70 @@ function bindLine(mountpoint: string, source: string): string {
   return `901 25 259:2 ${source} ${mountpoint} rw,relatime - ext4 /dev/fixture rw`;
 }
 
+describe('EI-27258232174325640 — verifier standalone desktop dependencies', () => {
+  function desktopFixture() {
+    const t = fixture(), donor = join(t, 'donor'), snap = join(t, 'snap');
+    const desktop = 'papercusp-desktop';
+    const lock = JSON.stringify({ lockfileVersion: 3, packages: {
+      '': { name: 'desktop' }, 'node_modules/@tauri-apps/cli': { version: '2.0.0' },
+    } });
+    for (const root of [donor, snap]) {
+      write(join(root, desktop, 'package.json'), JSON.stringify({ name: 'desktop' }));
+      write(join(root, desktop, 'package-lock.json'), lock);
+    }
+    write(join(donor, desktop, 'node_modules/@tauri-apps/cli/package.json'), '{"version":"2.0.0"}');
+    write(join(donor, desktop, 'node_modules/@tauri-apps/cli/tauri.js'), '#!/usr/bin/env node\n');
+    chmodSync(join(donor, desktop, 'node_modules/@tauri-apps/cli/tauri.js'), 0o755);
+    mkdirSync(join(donor, desktop, 'node_modules/.bin'));
+    symlinkSync('../@tauri-apps/cli/tauri.js', join(donor, desktop, 'node_modules/.bin/tauri'));
+    write(join(donor, 'scripts/npm-install-safe.mjs'), [
+      'import { appendFileSync } from "node:fs";',
+      'import { spawnSync } from "node:child_process";',
+      'appendFileSync(process.env.READER_LOG, process.argv[process.argv.indexOf("--repo-root") + 1] + "\\n");',
+      'const at = process.argv.indexOf("--"), result = spawnSync(process.argv[at+1], process.argv.slice(at+2), {stdio:"inherit"});',
+      'process.exit(result.status ?? 1);',
+    ].join('\n'));
+    return { t, donor, snap, desktop };
+  }
+  function complete(f: ReturnType<typeof desktopFixture>) {
+    return spawnSync('bash', ['-c', [
+      'source "$1"',
+      'source "$(dirname "$1")/../../../apps/operator/bin/release/dependency-generation.sh"',
+      'papercusp_pinned_deps_verifier_desktop "$2" "$3"',
+    ].join('\n'), 'desktop-closure-test', HELPER_PATH, f.donor, f.snap], {
+      encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, NODE_OPTIONS: '', READER_LOG: join(f.t, 'reader.log'),
+        DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(f.t, 'copy.lock') },
+    });
+  }
+  it('copies an omitted desktop install under its own reader with independent bytes and its CLI shim', () => {
+    const f = desktopFixture(), result = complete(f);
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(f.t, 'reader.log'), 'utf8')).toBe(join(f.donor, f.desktop) + '\n');
+    const cli = 'node_modules/@tauri-apps/cli/tauri.js';
+    expect(readFileSync(join(f.snap, f.desktop, cli), 'utf8')).toContain('#!/usr/bin/env node');
+    expect(statSync(join(f.snap, f.desktop, cli)).ino).not.toBe(statSync(join(f.donor, f.desktop, cli)).ino);
+    expect(existsSync(join(f.snap, f.desktop, 'node_modules/.bin/tauri'))).toBe(true);
+  });
+  it('refuses a different donor lock before copying or taking an install reader', () => {
+    const f = desktopFixture();
+    write(join(f.donor, f.desktop, 'package-lock.json'), '{}');
+    const result = complete(f);
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stderr).toContain('donor lock differs');
+    expect(existsSync(join(f.t, 'reader.log'))).toBe(false);
+    expect(existsSync(join(f.snap, f.desktop, 'node_modules'))).toBe(false);
+  });
+  it('refuses a present desktop tree whose executable CLI is missing', () => {
+    const f = desktopFixture();
+    mkdirSync(join(f.snap, f.desktop, 'node_modules'));
+    const result = complete(f);
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stderr).toContain('no executable Tauri CLI');
+    expect(existsSync(join(f.t, 'reader.log'))).toBe(false);
+  });
+});
+
 describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
   beforeAll(() => {
     if (!existsSync(HELPER_PATH)) {

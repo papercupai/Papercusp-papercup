@@ -205,7 +205,9 @@ type StateTable =
   // Migration 1210 — the Settings choice of embedding device, auto|cuda|cpu
   // (memory-reduction-2026-09-24 P-008 / D-008). Read at boot by every process
   // that embeds; a concrete PAPERCUSP_EMBED_DEVICE host override outranks it.
-  | 'operator_embed_device';
+  | 'operator_embed_device'
+  // Migration 1609 — nonsecret CLI link outcomes and restart recovery custody.
+  | 'operator_account_link_state';
 
 // ── operator-state read cache (infra-perf-robustness-audit-2026-06-18 P-004) ────
 //

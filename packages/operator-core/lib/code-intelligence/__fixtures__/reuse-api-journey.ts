@@ -269,6 +269,14 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
       tool_use_id: `controlled-write-${randomUUID()}`, summary: 'Actual controlled CLI fixture write; no model invocation',
       tool_input: { file_path: join(root, targetPath), content: edited } });
     controlledSession = { id: sessionRow, session, editedAt };
+    // The provenance reader reads only harness_shared.edit_attribution_ledger
+    // (50ca13d720). A shell write produces no ledger row, so record the Write
+    // through the production writer, the one locks:release runs for a
+    // hook-mediated CLI Write. Await symbol capture so the labels are durable.
+    const { recordEditAttribution } = await import('../../edit-attribution.ts');
+    await recordEditAttribution({ repoRoot: root, files: [targetPath], agentId: owner, sessionId: session,
+      workspaceId: workspace, goalRef: id, intent: 'Controlled P010 CLI fixture write',
+      dispatchCallId: randomUUID() }, { strict: true, awaitSymbols: true });
     // Prove the native producer's session/scope/assignment join before the
     // expensive nested test. The SQL-seeded size preflight cannot prove this.
     const { readSymbolProvenance } = await import('../change-history.ts');
@@ -277,8 +285,12 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
     console.log('NATIVE_REUSE_PROVENANCE_PRECONDITION=' + JSON.stringify({ workspace, harness,
       workItem: id, controlledSession, provenance }));
     assert.equal(provenance.status, 'measured', JSON.stringify(provenance));
-    assert(provenance.symbols.length > 0 && provenance.symbols.every(symbol => symbol.status === 'measured'
-      && symbol.workItem === id && symbol.edits.some(edit => edit.session === session && edit.owner === owner)),
+    // Per-symbol rows stay 'unknown' by contract (labels are historical evidence,
+    // not current-range continuity); attribution is carried by the recorded
+    // edit rows and the label history.
+    assert(provenance.fileEdits.some(edit => edit.workItem === id && edit.owner === owner && edit.session === session)
+      && provenance.history.length > 0 && provenance.history.every(record => record.status === 'measured'
+        && record.workItems.includes(id)),
     'Actual controlled Write must qualify through the production provenance reader: ' + JSON.stringify(provenance));
   } else {
     await call('capability:edit', { file_path: join(root, targetPath), old_string: before, new_string: edited });

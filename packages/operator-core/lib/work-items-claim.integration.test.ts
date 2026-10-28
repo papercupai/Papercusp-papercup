@@ -745,6 +745,43 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
       expect(row).toEqual({ taken_by: 'su-member', admission: 'pending' });
     });
 
+    // WI-6554700010042630 / EI-27159299387978888: the self-filed capability used to need a
+    // fleet MEMBER scope, so a solo session could not claim a bug it filed itself until the
+    // promoter admitted it. Outside a fleet the recorded creator alone earns it.
+    it('claims an admission-pending bug filed by a claimer that is not a fleet member', async () => {
+      await seedIssue('EI-solo-self-filed-pending', {
+        admission: 'pending',
+        createdBy: 'su-solo',
+      });
+      // beforeEach: resolveFleetScopeContext → null (not a fleet member).
+
+      const claimed = await wi.claimWorkItem('EI-solo-self-filed-pending', 'su-solo', { harness: H });
+
+      expect(claimed?.assignee).toBe('su-solo');
+      const row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
+        SELECT taken_by, admission
+          FROM harness_shared.work_items
+         WHERE feature_id = 'EI-solo-self-filed-pending'`)[0];
+      // Claiming does not admit the row: the duplicate screen still runs on it.
+      expect(row).toEqual({ taken_by: 'su-solo', admission: 'pending' });
+      // The fleet lane predicate is for members only; the solo path never consults it.
+      expect(leaderDispatchAdmission.selfFiledFalloutAdmission).not.toHaveBeenCalled();
+      expect(leaderDispatchAdmission.fleetControlWindDownRefusal).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a bug filed by someone else', 'EI-solo-peer-filed-pending', 'bug', 'su-peer'],
+      ['its own pending change (bug-only exception)', 'EI-solo-self-change-pending', 'change', 'su-solo'],
+      ['a bug with no recorded creator', 'EI-solo-anon-pending', 'bug', null],
+    ] as const)('keeps a non-member claim on %s refused', async (_label, id, kind, createdBy) => {
+      await seedIssue(id, { kind, admission: 'pending', createdBy });
+
+      expect(await wi.claimWorkItem(id, 'su-solo', { harness: H })).toBeNull();
+      const row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
+        SELECT taken_by, admission FROM harness_shared.work_items WHERE feature_id = ${id}`)[0];
+      expect(row).toEqual({ taken_by: null, admission: 'pending' });
+    });
+
     it('EI-226378: claims an exact legacy fleet-scope downgrade row with the server-minted capability', async () => {
       const marker = {
         requestedAssignee: 'su-member',

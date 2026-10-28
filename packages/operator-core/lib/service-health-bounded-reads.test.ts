@@ -49,6 +49,9 @@ describe('service-health bounded datastore reads', () => {
     expect(query).toHaveBeenCalledTimes(1);
     const queryCalls = query.mock.calls as unknown as unknown[][];
     expect(String(queryCalls[0]?.[0])).toContain('MAX(last_fired_at)');
+    // WI-6554700010042546: only DBOS-fired (durable) routines prove the DBOS ticker
+    // alive. Ephemeral-executor fires kept this probe green through a dead DBOS.
+    expect(String(queryCalls[0]?.[0])).toMatch(/\btier\s*=\s*'durable'/);
     expect(boundedPgReadTxnMock).toHaveBeenCalledWith(
       expect.any(Function),
       {

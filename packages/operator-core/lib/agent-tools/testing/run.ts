@@ -885,26 +885,30 @@ function isVitestCheckoutRoot(root: string): boolean {
   return (isWorkspaceCheckoutRoot(root) && hasVitestRunner(root)) || isIndependentVitestCheckoutRoot(root);
 }
 
+/** The route selection contract must agree with runTestFilesCore's root preflight. */
+function isRunnableTestCheckoutRoot(root: string): boolean {
+  return existsSync(join(root, 'scripts', 'test-files.mjs')) || isVitestCheckoutRoot(root);
+}
+
 /**
- * Find the owning checkout for an absolute path, bounded to its ancestors.
+ * Find the nearest runnable checkout for an absolute path, bounded to its ancestors.
  *
- * The nearest npm-workspaces superproject wins. Only when NO ancestor is one
- * does the nearest independent single-package Vitest checkout own the path, so
- * a Vitest-carrying submodule or nested clone inside this tree still routes
- * through the superproject's router (WI-6554700010018010).
+ * A nested git/workspace boundary is not an executor by itself. Skip it when it
+ * has neither the maintained Papercusp router nor a runnable Vitest contract,
+ * then continue to the nearest ancestor that can execute the exact files. This
+ * keeps a submodule without its own runner grouped with files handled by the
+ * enclosing committed-clone router.
  */
 export function checkoutRootForPath(file: string): string | undefined {
   if (!isAbsolute(file)) return undefined;
   let dir = dirname(resolve(file));
-  let independent: string | undefined;
   for (let depth = 0; depth < 64; depth += 1) {
-    if (isWorkspaceCheckoutRoot(dir)) return dir;
-    if (independent === undefined && isIndependentVitestCheckoutRoot(dir)) independent = dir;
+    if (isRunnableTestCheckoutRoot(dir)) return dir;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  return independent;
+  return undefined;
 }
 
 /**

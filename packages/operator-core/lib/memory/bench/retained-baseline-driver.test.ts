@@ -3,6 +3,48 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 describe('retained search baseline edition custody',()=>{
+  it('binds actual adapter captures to exact requests and refuses drift, missing attempts and fabricated success',()=>{
+    const driver=fileURLToPath(new URL('../../../../../scripts/backup/search-bench/run-retained-baseline.py',import.meta.url));
+    const result=execFileSync('python3',['-B','-c',[
+      'import importlib.util,json,tempfile,pathlib,sys',
+      'spec=importlib.util.spec_from_file_location("baseline",sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)',
+      'with tempfile.TemporaryDirectory() as root:',
+      ' p=pathlib.Path(root);program=p/"capture.mjs";program.write_text("// pinned fixture")',
+      ' requests=p/"requests.json";population=[{"id":"a","adapter":"search:fulltext","args":{"query":"test","scope":["work_item"],"limit":2}}];requests.write_text(json.dumps(population))',
+      ' plan={"adapterCapture":{"program":m.fingerprint(program),"requests":m.fingerprint(requests)}}',
+      ' cases=[]',
+      ' for mode in ["pass","relative-program","request-drift","missing","failed","nan","input-drift","outside-source"]:',
+      '  destination=p/mode;destination.mkdir();calls=[]',
+      '  def command(label,args,env):',
+      '   calls.append(label);assert env=={"PRIVATE_DB":"fixture"}',
+      '   assert args[:4]==["node","--import","tsx",str(program)]',
+      '   assert args[4:6]==["--requests",str(requests)]',
+      '   row={"schemaVersion":1,"attemptId":"a","adapter":"search:fulltext","request":population[0]["args"],"exitCode":0,"stdout":json.dumps({"results":[]}),"deliveryWallMs":2}',
+      '   if mode=="request-drift":row["request"]={"query":"changed"}',
+      '   if mode=="failed":row["exitCode"]=1',
+      '   if mode=="nan":row["deliveryWallMs"]=float("nan")',
+      '   if mode=="input-drift":program.write_text("// changed while running")',
+      '   pathlib.Path(args[-1]).write_text(json.dumps([] if mode=="missing" else [row]))',
+      '  try:',
+      '   actual_plan={**plan,"adapterCapture":{**plan["adapterCapture"],"program":{**plan["adapterCapture"]["program"],"path":"capture.mjs"}}} if mode=="relative-program" else plan',
+      '   r=m.capture_adapters(actual_plan,p/"different" if mode=="outside-source" else p,destination,command,{"PRIVATE_DB":"fixture"})',
+      '   assert r["attempted"]==1 and not r["baselineAccepted"] and not r["adapterBehaviorAuthenticated"]',
+      '   assert r["output"]==m.fingerprint(destination/"adapter-captures.json");cases.append([mode,"pass",calls])',
+      '  except ValueError:cases.append([mode,"rejected",calls])',
+      '  program.write_text("// pinned fixture")',
+      ' requests.write_text("[]")',
+      ' try:m.capture_adapters(plan,p,p,command,{})',
+      ' except ValueError:cases.append(["preflight-pin-drift","rejected",[]])',
+      ' print(json.dumps(cases))',
+    ].join('\n'),driver],{encoding:'utf8'});
+    expect(JSON.parse(result)).toEqual([
+      ['pass','pass',['actual-adapters']],
+      ['relative-program','pass',['actual-adapters']],
+      ...['request-drift','missing','failed','nan','input-drift'].map(mode=>[mode,'rejected',['actual-adapters']]),
+      ['outside-source','rejected',[]],['preflight-pin-drift','rejected',[]],
+    ]);
+  });
+
   it('requires every pin, safe table counts, fresh output and immutable execution source',()=>{
     const driver=fileURLToPath(new URL('../../../../../scripts/backup/search-bench/run-retained-baseline.py',import.meta.url));
     const result=execFileSync('python3',['-B','-c',[
@@ -22,6 +64,9 @@ describe('retained search baseline edition custody',()=>{
       ' for label,changes in [("existing",{"outputDirectory":root}),("relative",{"outputDirectory":"relative"}),("negative",{"expectedCounts":{"t":-1}}),("unsafe",{"expectedCounts":{"t;drop":0}})]:',
       '  try:m.validate_plan({**plan,**changes})',
       '  except ValueError:rejected.append(label)',
+      ' for label,empty in [("unsafe-empty",["p;drop"]),("overlap-empty",["session_turns"]),("duplicate-empty",["plans","plans"]),("wrong-empty-type","plans")]:',
+      '  try:m.validate_plan({**plan,"expectedEmptyTables":empty})',
+      '  except ValueError:rejected.append(label)',
       ' for key in ["artifact","declaration","attempts","ledger","exitCode","executed"]:',
       '  altered={**plan,"protocolFixture":{k:v for k,v in fixture.items() if k!=key}}',
       '  try:m.validate_plan(altered)',
@@ -35,6 +80,7 @@ describe('retained search baseline edition custody',()=>{
       ' print(json.dumps(rejected))',
     ].join('\n'),driver],{encoding:'utf8'});
     expect(JSON.parse(result)).toEqual(['consumption','schema','queries','configuration','existing','relative','negative','unsafe',
+      'unsafe-empty','overlap-empty','duplicate-empty','wrong-empty-type',
       'artifact','declaration','attempts','ledger','exitCode','executed','old-edition','wrong-journal-path','empty-journal','pin-drift']);
   });
 
@@ -90,7 +136,7 @@ describe('retained search baseline edition custody',()=>{
       ' destination=p/"output"',
       ' queries={"configuration":{"queryEmbeddingProfile":{"mode":"gemma","profileId":"gemma-embeddinggemma-300m-768@v1"}},"workspaceId":"fixture","pairsPerSource":1,"sources":["session_turn"],"seed":"fixture"}',
       ' schema={"schema":"harness_shared","archives":[{"tables":["session_turns"],"path":"fixture.dump"}],"indexes":[]}',
-      ' plan={"schemaVersion":2,"workItemId":"WI-fixture","outputDirectory":str(destination),"expectedCounts":{"session_turns":0},"configuration":pin("config.json",{}),"consumption":pin("consumption.json",{"files":[]}),"schema":pin("schema.json",schema),"queries":pin("queries.json",queries)}',
+      ' plan={"schemaVersion":2,"workItemId":"WI-fixture","outputDirectory":str(destination),"expectedCounts":{"session_turns":0},"expectedEmptyTables":["harness_plans"],"configuration":pin("config.json",{}),"consumption":pin("consumption.json",{"files":[]}),"schema":pin("schema.json",schema),"queries":pin("queries.json",queries)}',
       ' f=pin("benchmark.json",{});plan["protocolFixture"]={"exitCode":1,"executed":3,**{k:{"path":f["path"]+suffix,"sha256":f["sha256"]} for k,suffix in {"artifact":"","declaration":".declaration.json","attempts":".attempts.jsonl","ledger":".ledger.json"}.items()}}',
       ' file=p/"plan.json";file.write_text(json.dumps(plan))',
       ' os.environ.update(m.RUNTIME_POLICY);os.environ["PAPERCUSP_TEST_PG_ADMIN_URL"]="postgres://localhost:23456/postgres"',
@@ -102,6 +148,11 @@ describe('retained search baseline edition custody',()=>{
       '   return types.SimpleNamespace(returncode=0,stdout=value,stderr="")',
       '  if "--output" in args:',
       '   pathlib.Path(args[args.index("--output")+1]+".report.json").write_text(json.dumps({"qualifiedComponentsOnly":True,"searchAdapterExercised":True}))',
+      '  elif "--requests" in args:',
+      '   assert kwargs["env"]["HARNESS_DATABASE_URL"]==kwargs["env"]["PAPERCUSP_TEST_PG_ADMIN_URL"]',
+      '   assert "/search_baseline_" in kwargs["env"]["HARNESS_DATABASE_URL"]',
+      '   request=json.loads(pathlib.Path(args[args.index("--requests")+1]).read_text())[0]',
+      '   pathlib.Path(args[-1]).write_text(json.dumps([{"schemaVersion":1,"attemptId":request["id"],"adapter":request["adapter"],"request":request["args"],"exitCode":0,"stdout":"{}","deliveryWallMs":1}]))',
       '  elif "--out" in args:',
       '   pathlib.Path(args[args.index("--out")+1]).write_text(json.dumps({"sourceQualification":{"verdict":"pass"},"verdict":"pass","latencyVerdict":"pass"}))',
       '  return types.SimpleNamespace(returncode=0)',
@@ -109,10 +160,32 @@ describe('retained search baseline edition custody',()=>{
       ' with contextlib.redirect_stdout(io.StringIO()):code=m.run(str(file))',
       ' receipt=json.loads((destination/"receipt.json").read_text())',
       ' assert code==0 and "failure" not in receipt',
+      ' assert receipt["emptyAuxiliaryTables"]=={"harness_plans":0}',
       ' assert receipt["phases"][-1]["phase"]=="measured-contributing-baseline"',
       ' pins=receipt["artifacts"];assert any(pathlib.Path(x["path"]).name=="phases.jsonl" for x in pins)',
       ' for recorded in pins:',
       '  assert m.fingerprint(recorded["path"])==recorded, "completed artifact pin differs: "+recorded["path"]',
+      ' def populated_auxiliary(args,**kwargs):',
+      '  if args[0]=="psql" and "count(*) FROM harness_shared.harness_plans" in kwargs.get("input",""):return types.SimpleNamespace(returncode=0,stdout="1",stderr="")',
+      '  return external(args,**kwargs)',
+      ' m.subprocess.run=populated_auxiliary;plan["outputDirectory"]=str(p/"nonempty-auxiliary");file.write_text(json.dumps(plan))',
+      ' with contextlib.redirect_stdout(io.StringIO()):nonempty_code=m.run(str(file))',
+      ' rejected=json.loads((p/"nonempty-auxiliary/receipt.json").read_text())',
+      ' assert nonempty_code==1 and rejected["emptyAuxiliaryTables"]=={"harness_plans":1}',
+      ' assert "auxiliary table unexpectedly contains data" in rejected["failure"]["message"]',
+      ' assert [c["phase"] for c in rejected["commands"]]==["schema-preflight","restore-data-0"]',
+      ' m.subprocess.run=external',
+      ' program=p/"adapter.mjs";program.write_text("// fixture dispatch boundary")',
+      ' plan["adapterCapture"]={"program":m.fingerprint(program),"requests":pin("requests.json",[{"id":"a","adapter":"search:fulltext","args":{"query":"fixture"}}])}',
+      ' plan["outputDirectory"]=str(p/"adapter-output");file.write_text(json.dumps(plan))',
+      ' with contextlib.redirect_stdout(io.StringIO()):adapter_code=m.run(str(file))',
+      ' adapter=json.loads((p/"adapter-output/receipt.json").read_text())',
+      ' assert adapter_code==0 and "failure" not in adapter',
+      ' assert adapter["phases"][-1]["phase"]=="captured-contributing-adapters"',
+      ' assert [c["phase"] for c in adapter["commands"]]==["schema-preflight","restore-data-0","actual-adapters"]',
+      ' assert adapter["adapterCapture"]["attempted"]==1 and not adapter["baselineAccepted"]',
+      ' assert "measurement" not in adapter',
+      ' for recorded in adapter["artifacts"]:assert m.fingerprint(recorded["path"])==recorded',
       ' print(json.dumps({"exitCode":code,"terminalPhase":receipt["phases"][-1]["phase"],"everyArtifactMatches":True}))',
     ].join('\n'),driver],{encoding:'utf8'});
     expect(JSON.parse(result)).toEqual({exitCode:0,terminalPhase:'measured-contributing-baseline',everyArtifactMatches:true});
@@ -143,6 +216,10 @@ describe('retained search baseline edition custody',()=>{
       '  os.environ.update(assignments)',
       '  return m.run(command[command.index("--plan")+1],preflight_only=True)',
       ' m.subprocess.call=isolated',
+      ' invalid={**plan,"outputDirectory":str(p/"must-not-bootstrap"),"expectedCounts":{"session_turns":0,"harness_plans":0}};invalid_file=p/"invalid.json";invalid_file.write_text(json.dumps(invalid))',
+      ' try:m.run_in_test_pg(str(invalid_file),preflight_only=True);raise AssertionError("ownership mismatch accepted")',
+      ' except ValueError as error:assert "archive ownership" in str(error)',
+      ' assert not (p/"must-not-bootstrap").exists()',
       ' cases=[]',
       ' for failed in [False,True]:',
       '  destination=p/("failed" if failed else "success");plan["outputDirectory"]=str(destination);file=p/"plan.json";file.write_text(json.dumps(plan))',

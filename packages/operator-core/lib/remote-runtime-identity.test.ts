@@ -5,6 +5,7 @@
  */
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { hostname } from 'node:os';
+import { execFile } from 'node:child_process';
 import { readProcessIdentity } from './process-identity';
 import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from './runtime-vintage';
 import {
@@ -15,7 +16,8 @@ import {
 } from './remote-runtime-identity';
 const configured = vi.hoisted(() => ({ host: 'https://flags.example.test', projectKey: 'capture-key', personalApiKey: 'server-secret' }));
 vi.mock('./posthog-config', () => ({ getPosthogConfigWithSource: () => ({ config: configured }) }));
-afterEach(() => vi.unstubAllGlobals());
+vi.mock('node:child_process', () => ({ execFile: vi.fn() }));
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.mocked(execFile).mockReset(); });
 
 const UNIT = 'gcp-cloudsql:papercusp-cloud-prod/pc-cloud-prod-pg';
 
@@ -224,6 +226,177 @@ describe('Cloudflare Pages production deployment identity (WI-6554700010015755)'
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe('Cloudflare Worker serving identity (EI-27073086529997529)', () => {
+  const account = 'f896982ea2f6d507e4f29eeecbd26e94';
+  const unit = `cloudflare-worker:${account}/papercusp-cupboard`;
+  const v1 = '968092d7-beeb-4bdb-a1b3-3953d4b9fefc', v2 = '11111111-2222-4333-8444-555555555555';
+  const depId = '89fff309-507b-4223-95c8-66035153f461';
+  const created = '2026-10-26T19:27:30.238526Z';
+  const doc = () => ({ account, script: 'papercusp-cupboard', settingsDigest: 'a'.repeat(64),
+    deployment: { id: depId, created_on: created, versions: [{ version_id: v1, percentage: 100 }] },
+    versions: [{ id: v1, created_on: created, script_etag: 'etag-1', configDigest: 'b'.repeat(64) }] });
+  const settings = () => ({ compatibility_date: '2026-10-01', compatibility_flags: ['nodejs_compat', 'flag_b'],
+    bindings: [{ type: 'plain_text', name: 'PRIVATE_VALUE', text: 'binding-secret' },
+      { type: 'd1', name: 'DB', id: 'database-1' }] });
+  const version = (id: string) => ({ id, metadata: { created_on: created, author_email: 'private@example.test' },
+    resources: { script: { etag: `etag-${id}` }, script_runtime: { compatibility_date: '2026-10-01' },
+      bindings: settings().bindings } });
+  const setupApi = () => {
+    vi.stubEnv('CLOUDFLARE_API_TOKEN', 'worker-server-secret');
+    const deployment = doc().deployment;
+    const config = settings();
+    const fetcher = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
+      const path = String(url);
+      const result = path.endsWith('/deployments') ? { deployments: [deployment] }
+        : path.endsWith('/settings') ? config : version(path.split('/').at(-1)!);
+      return Response.json({ success: true, result });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    return { fetcher, deployment, config };
+  };
+
+  it('recognizes Workers, rejects malformed selectors before any credential or HTTP read', async () => {
+    expect(isRemoteRuntimeUnit(unit)).toBe(true);
+    const reader = describing(doc());
+    for (const invalid of [`cloudflare-worker:${account}/../x`, `cloudflare-worker:${account}/x?y`,
+      `cloudflare-worker:${account}/x/y`, `cloudflare-worker:${account}/-flag`,
+      `cloudflare-worker:${account}/x#fragment`, 'cloudflare-worker:bad/script', `${unit}/`,
+      `cloudflare-worker:${account}/${'x'.repeat(64)}`]) {
+      expect(await measureRemoteRuntimeIdentity(invalid, reader)).toBeNull();
+    }
+    expect(reader.calls).toEqual([]);
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it('changes the environment identity on redeploy, recreate, configuration and traffic changes', async () => {
+    const baseline = await measureRuntimeEnvironment([], [unit], { describe: describing(doc()) });
+    expect(baseline).toMatch(/^[a-f0-9]{64}$/);
+    const changes = [
+      { ...doc(), settingsDigest: 'c'.repeat(64) },
+      { ...doc(), deployment: { ...doc().deployment, id: v2 } },
+      { ...doc(), deployment: { ...doc().deployment, created_on: '2026-10-27T00:00:00Z' } },
+      { ...doc(), versions: [{ ...doc().versions[0]!, created_on: '2026-10-27T00:00:00Z' }] },
+      { ...doc(), versions: [{ ...doc().versions[0]!, configDigest: 'd'.repeat(64) }] },
+      { ...doc(), versions: [{ ...doc().versions[0]!, script_etag: 'new-code' }] },
+    ];
+    for (const changed of changes) {
+      const next = await measureRuntimeEnvironment([], [unit], { describe: describing(changed) });
+      expect(next).toMatch(/^[a-f0-9]{64}$/);
+      expect(next).not.toBe(baseline);
+    }
+    const split = { ...doc(), deployment: { ...doc().deployment,
+      versions: [{ version_id: v1, percentage: 80 }, { version_id: v2, percentage: 20 }] },
+      versions: [...doc().versions, { ...doc().versions[0]!, id: v2 }] };
+    const splitIdentity = await measureRemoteRuntimeIdentity(unit, describing(split));
+    expect(splitIdentity).toMatch(/^[a-f0-9]{64}$/);
+    expect(await measureRemoteRuntimeIdentity(unit, describing({ ...split,
+      deployment: { ...split.deployment, versions: [...split.deployment.versions].reverse() },
+      versions: [...split.versions].reverse() }))).toBe(splitIdentity);
+    expect(await measureRemoteRuntimeIdentity(unit, describing({ ...split,
+      deployment: { ...split.deployment, versions: [{ version_id: v1, percentage: 50 }, { version_id: v2, percentage: 50 }] } })))
+      .not.toBe(splitIdentity);
+  });
+
+  it('returns unknown for missing, foreign, incomplete or inconsistent identities', async () => {
+    for (const invalid of [null, {}, { ...doc(), account: 'other' }, { ...doc(), script: 'other' },
+      { ...doc(), versions: [] }, { ...doc(), settingsDigest: null },
+      { ...doc(), versions: [{ ...doc().versions[0]!, created_on: 'bad' }] },
+      { ...doc(), deployment: { ...doc().deployment, versions: [{ version_id: v1, percentage: 90 }] } },
+      { ...doc(), deployment: { ...doc().deployment, versions: [{ version_id: '../x', percentage: 100 }] } },
+      { ...doc(), deployment: { ...doc().deployment, versions: [doc().deployment.versions[0], doc().deployment.versions[0]] } }]) {
+      expect(await measureRemoteRuntimeIdentity(unit, describing(invalid))).toBeNull();
+    }
+  });
+
+  it('reads only fixed Cloudflare endpoints, hashes binding values and ignores irrelevant metadata/order', async () => {
+    const { fetcher, config } = setupApi();
+    const first = await measureRemoteRuntimeIdentity(unit);
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    expect(fetcher).toHaveBeenCalledTimes(5);
+    for (const [url, init] of fetcher.mock.calls) {
+      expect(String(url)).toMatch(new RegExp(`^https://api\\.cloudflare\\.com/client/v4/accounts/${account}/workers/scripts/papercusp-cupboard/`));
+      expect(init?.redirect).toBe('error');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer worker-server-secret');
+    }
+    config.bindings.reverse(); config.compatibility_flags.reverse();
+    expect(await measureRemoteRuntimeIdentity(unit)).toBe(first);
+    vi.stubEnv('CLOUDFLARE_API_TOKEN', 'rotated-worker-token');
+    expect(await measureRemoteRuntimeIdentity(unit)).toBe(first);
+    config.bindings.find(binding => binding.type === 'plain_text')!.text = 'rotated-binding-secret';
+    const changed = await measureRemoteRuntimeIdentity(unit);
+    expect(changed).toMatch(/^[a-f0-9]{64}$/);
+    expect(changed).not.toBe(first);
+    config.bindings.find(binding => binding.type === 'd1')!.id = 'database-recreated';
+    expect(await measureRemoteRuntimeIdentity(unit)).not.toBe(changed);
+    expect(JSON.stringify([first, changed])).not.toMatch(/worker-server-secret|binding-secret|private@example/);
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it.each(['/deployments', '/settings', `/versions/${v1}`])('returns unknown on failed or ambiguous %s reads', async path => {
+    const { fetcher } = setupApi();
+    const original = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation(async (url, init) => String(url).endsWith(path)
+      ? Response.json({ success: false, errors: [{ code: 9106 }] }, { status: 403 }) : original(url, init));
+    expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
+    fetcher.mockImplementation(async () => { throw new Error('network failure'); });
+    expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
+  });
+
+  it('refuses successful responses that cannot establish a unique, complete serving runtime', async () => {
+    const { fetcher } = setupApi();
+    const original = fetcher.getMockImplementation()!;
+    for (const [path, result] of [
+      ['/deployments', { deployments: [] }],
+      ['/deployments', { deployments: [doc().deployment, { ...doc().deployment, id: v2 }] }],
+      ['/deployments', { deployments: [{ ...doc().deployment, created_on: 'invalid-date' }] }],
+      ['/deployments', { deployments: [{ ...doc().deployment, versions: [{ version_id: v1, percentage: 99 }] }] }],
+      ['/settings', { compatibility_date: '2026-10-01' }],
+      [`/versions/${v1}`, { ...version(v1), id: v2 }],
+      [`/versions/${v1}`, { ...version(v1), resources: { script: { etag: 'etag' } } }],
+    ] as const) {
+      fetcher.mockImplementation(async (url, init) => String(url).endsWith(path)
+        ? Response.json({ success: true, result }) : original(url, init));
+      expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
+    }
+    fetcher.mockImplementation(async () => new Response('not json'));
+    expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
+  });
+
+  it('refuses a deployment or configuration changing during its control-plane read', async () => {
+    const { fetcher, config, deployment } = setupApi();
+    const original = fetcher.getMockImplementation()!;
+    let deployments = 0;
+    fetcher.mockImplementation(async (url, init) => {
+      if (String(url).endsWith('/deployments') && ++deployments === 2) deployment.id = v2;
+      return original(url, init);
+    });
+    expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
+    fetcher.mockImplementation(async (url, init) => {
+      if (String(url).includes('/versions/')) config.compatibility_date = '2026-10-28';
+      return original(url, init);
+    });
+    expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
+  });
+
+  it('reuses Wrangler credentials when the server token is absent and fails closed if unavailable', async () => {
+    setupApi(); vi.stubEnv('CLOUDFLARE_API_TOKEN', '');
+    vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+      const callback = args.at(-1) as (error: Error | null, stdout: string) => void;
+      callback(null, JSON.stringify({ type: 'oauth', token: 'wrangler-private-token' }));
+      return {} as ReturnType<typeof execFile>;
+    });
+    expect(await measureRemoteRuntimeIdentity(unit)).toMatch(/^[a-f0-9]{64}$/);
+    expect(execFile).toHaveBeenCalledWith('npx', ['--no-install', 'wrangler', 'auth', 'token', '--json'],
+      expect.objectContaining({ timeout: 10_000 }), expect.any(Function));
+    vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+      (args.at(-1) as (error: Error) => void)(new Error('not logged in'));
+      return {} as ReturnType<typeof execFile>;
+    });
+    expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
   });
 });
 

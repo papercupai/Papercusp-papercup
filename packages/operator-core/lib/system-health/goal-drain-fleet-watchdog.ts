@@ -982,20 +982,22 @@ export interface GoalDrainFleetPullStallAlert {
   goalId?: string;
   title?: string;
   liveMemberIds: string[];
-  stalledForMs: number;
+  observationWindowMs: number;
+  oldestLiveMemberTenureMs: number;
 }
 
 /**
  * Pure watchdog rule. Unknown liveness or start time suppresses the alarm; a
  * successful `get_next` counts only when its recorded status is `ok` and its
- * scheduler disposition is `claimed` or `no-claim`.
+ * scheduler disposition is `claimed` or `no-claim`. The observation window
+ * measures the no-pull evidence; member tenure is reported separately.
  */
 export function classifyGoalDrainFleetPullStall(input: {
   members: readonly Pick<FleetRosterEntry, 'agentId' | 'agentRole' | 'fleetRole' | 'sessionState' | 'startedAt'>[];
   successfulPullOwnerIds: ReadonlySet<string>;
   nowMs: number;
   windowMs?: number;
-}): { liveMemberIds: string[]; stalledForMs: number } | null {
+}): { liveMemberIds: string[]; observationWindowMs: number; oldestLiveMemberTenureMs: number } | null {
   const windowMs = input.windowMs ?? GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS;
   // A fleet leader supervises the lane; only worker members are expected to
   // call scheduler:get_next. Counting the leader here creates a false pull
@@ -1007,11 +1009,15 @@ export function classifyGoalDrainFleetPullStall(input: {
   const startedAtMs = liveMembers.map((member) => Date.parse(member.startedAt!));
   if (startedAtMs.some((value) => !Number.isFinite(value))) return null;
   const oldestLiveStartMs = Math.min(...startedAtMs);
-  const stalledForMs = input.nowMs - oldestLiveStartMs;
+  const oldestLiveMemberTenureMs = input.nowMs - oldestLiveStartMs;
   const liveMemberIds = new Set(liveMembers.map((member) => member.agentId));
   const hasSuccessfulMemberPull = [...input.successfulPullOwnerIds].some((ownerId) => liveMemberIds.has(ownerId));
-  if (stalledForMs < windowMs || hasSuccessfulMemberPull) return null;
-  return { liveMemberIds: liveMembers.map((member) => member.agentId), stalledForMs };
+  if (oldestLiveMemberTenureMs < windowMs || hasSuccessfulMemberPull) return null;
+  return {
+    liveMemberIds: liveMembers.map((member) => member.agentId),
+    observationWindowMs: windowMs,
+    oldestLiveMemberTenureMs,
+  };
 }
 
 /** Select a successor only from positively-live su members; null/unknown rows never win. */
@@ -1594,7 +1600,8 @@ async function defaultEscalatePullStall(alert: GoalDrainFleetPullStallAlert): Pr
         ? { goalId: alert.goalId, goalWorkspaceId: alert.workspaceId, drainFleet: alert.fleetSlug }
         : { fleetSlug: alert.fleetSlug }),
       liveMemberIds: alert.liveMemberIds,
-      stalledForMs: alert.stalledForMs,
+      observationWindowMs: alert.observationWindowMs,
+      oldestLiveMemberTenureMs: alert.oldestLiveMemberTenureMs,
     },
   });
 }
@@ -2377,7 +2384,7 @@ export async function runGoalDrainFleetSweepOnce(
       await publishGoalDrainChecks([{
         conditionKey: goalDrainPullConditionKey(alert.workspaceId, alert.fleetSlug),
         breached: true, recovered: false,
-        detail: `Workspace ${alert.workspaceId}; fleet ${alert.fleetSlug}; no successful scheduler pull for ${alert.stalledForMs}ms.`,
+        detail: `Workspace ${alert.workspaceId}; fleet ${alert.fleetSlug}; no successful scheduler pull during the ${alert.observationWindowMs}ms observation window; oldest live member tenure is ${alert.oldestLiveMemberTenureMs}ms.`,
       }], deps.rail, (event) => deps.rail?.broadcast?.({
         conditionKey: event.conditionKey, oneShot: true,
         summary: 'Goal drain-fleet obligation', body: event.body,

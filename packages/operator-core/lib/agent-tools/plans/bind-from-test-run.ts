@@ -49,13 +49,13 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
-import ts from 'typescript';
 import { recordedTestLayer, isRecordedInstant, parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment,
   type RecordedTestLayer } from '@papercusp/test-config/execution-details';
 import { parseMutationDescriptor, type MutationDescriptor } from '@papercusp/test-config/mutation-descriptor';
 import { withWorkspace } from '@papercusp/db-org';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
-import { resolveRelative, stripComments } from '../../search/import-graph';
+import { deriveFixtureSupportPaths, deriveSubjectSourcePaths, isTestInfrastructurePath, stripComments } from '../../search/import-graph';
+export { deriveFixtureSupportPaths, deriveSubjectSourcePaths, isTestInfrastructurePath } from '../../search/import-graph';
 import {
   expandRepoFilesEvidenceSourcePathsAtRoot,
   mutationCaughtCaseClaimMessage,
@@ -385,80 +385,6 @@ function executionDetails(raw: unknown): Record<string, unknown> {
     }
   }
   return raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
-}
-
-const TEST_FILE_RE = /\.(test|spec)\.[cm]?[jt]sx?$/;
-const TEST_INFRA_SEGMENTS: ReadonlySet<string> = new Set([
-  'test',
-  'tests',
-  '__tests__',
-  '__fixtures__',
-  'fixtures',
-  '__mocks__',
-]);
-
-/** Test infrastructure is not the proof's SUBJECT: another test, a fixture, a mock, a helper dir. */
-export function isTestInfrastructurePath(repoRelative: string): boolean {
-  if (TEST_FILE_RE.test(repoRelative)) return true;
-  const segments = repoRelative.split('/');
-  return segments.slice(0, -1).some((segment) => TEST_INFRA_SEGMENTS.has(segment));
-}
-
-/** Literal dynamic imports — `await import('./x')` is how a vitest suite loads its subject after vi.mock. */
-function dynamicImportSpecifiers(file: string): string[] {
-  const src = stripComments(readFileSync(file, 'utf8'));
-  return [...src.matchAll(/\bimport\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]);
-}
-
-/** Static runtime declarations, including adjacent imports on the same line. */
-function staticRuntimeSpecifiers(file: string): string[] {
-  const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
-  const specifiers = new Set<string>();
-  for (const statement of source.statements) {
-    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
-      if (!statement.importClause?.isTypeOnly) specifiers.add(statement.moduleSpecifier.text);
-    } else if (
-      ts.isExportDeclaration(statement)
-      && statement.moduleSpecifier
-      && ts.isStringLiteral(statement.moduleSpecifier)
-      && !statement.isTypeOnly
-    ) {
-      specifiers.add(statement.moduleSpecifier.text);
-    }
-  }
-  return [...specifiers];
-}
-
-function firstRingRelativeRuntimeImportPaths(root: string, testPath: string): string[] {
-  const abs = resolve(root, testPath);
-  const out = new Set<string>();
-  for (const specifier of [...staticRuntimeSpecifiers(abs), ...dynamicImportSpecifiers(abs)]) {
-    if (!specifier.startsWith('.')) continue;
-    const target = resolveRelative(abs, specifier);
-    if (!target) continue;
-    const rel = relative(root, target);
-    if (rel.startsWith('..') || isAbsolute(rel)) continue;
-    const posix = rel.split(sep).join('/');
-    if (posix === testPath) continue;
-    out.add(posix);
-  }
-  return [...out].sort();
-}
-
-/**
- * The test file's first ring of relative runtime imports, repo-relative, minus test
- * infrastructure and anything outside `root`. Sorted and de-duplicated so the same run
- * always derives the same measurement recipe.
- */
-export function deriveSubjectSourcePaths(root: string, testPath: string): string[] {
-  return firstRingRelativeRuntimeImportPaths(root, testPath)
-    .filter((importPath) => !isTestInfrastructurePath(importPath));
-}
-
-/** Direct first-party helpers, fixtures and mocks that participate in calibrated test evidence. */
-export function deriveFixtureSupportPaths(root: string, testPath: string): string[] {
-  return firstRingRelativeRuntimeImportPaths(root, testPath)
-    .filter(isTestInfrastructurePath);
 }
 
 function declaresFixtureCalibration(details: Record<string, unknown> | undefined): boolean {
@@ -960,6 +886,7 @@ export function deriveBindingFromTestRun(
   row: TestRunEvidenceRow,
   root: string,
   attribution: HarnessAttribution,
+  mutantSubjectPathAtRoot?: string,
 ): TestRunExpansion {
   const testRunId = Number(row.id);
   const controlsRefusal = mutationCausalControlsRefusal(input, row);
@@ -988,7 +915,7 @@ export function deriveBindingFromTestRun(
     ? parseMutationDescriptor(executionDetails(row.execution_details).mutation)
     : undefined;
   const mutantSubjectPath = mutationDescriptor?.leg === 'mutant'
-    ? repoRelativeTestPath(root, mutationDescriptor.subjectPath)
+    ? mutantSubjectPathAtRoot ?? repoRelativeTestPath(root, mutationDescriptor.subjectPath)
     : null;
   if (mutationDescriptor?.leg === 'mutant' && !mutantSubjectPath) {
     return {
@@ -1165,6 +1092,33 @@ export function deriveBindingFromTestRun(
     ...(input.observedAt ? { observedAt: input.observedAt } : {}),
   };
   return { ok: true, binding, attribution };
+}
+
+/** A mutation descriptor path is relative to the probe subject's Git root, which can be nested. */
+async function mutationSubjectPathAtHarnessRoot(
+  harnessRoot: string,
+  testPath: string,
+  subjectPath: string,
+  git: GitRunner,
+): Promise<string | null> {
+  if (isAbsolute(subjectPath)) return repoRelativeTestPath(harnessRoot, subjectPath);
+  let subjectRepoRoot: string;
+  try {
+    subjectRepoRoot = (await git(dirname(resolve(harnessRoot, testPath)), ['rev-parse', '--show-toplevel'])).trim();
+  } catch {
+    return null;
+  }
+  if (!isAbsolute(subjectRepoRoot)) return null;
+
+  const testWithinRepo = repoRelativeTestPath(subjectRepoRoot, resolve(harnessRoot, testPath));
+  const subjectWithinRepo = repoRelativeTestPath(subjectRepoRoot, resolve(subjectRepoRoot, subjectPath));
+  if (!testWithinRepo || !subjectWithinRepo) return null;
+
+  const harnessRelative = relative(harnessRoot, resolve(subjectRepoRoot, subjectPath));
+  if (!harnessRelative || harnessRelative === '..' || harnessRelative.startsWith(`..${sep}`) || isAbsolute(harnessRelative)) {
+    return null;
+  }
+  return harnessRelative.split(sep).join('/');
 }
 
 /**
@@ -1816,7 +1770,35 @@ async function expandTestRunBindingInScope(
           : ''),
     };
   }
-  const result = deriveBindingFromTestRun(input, { ...row, file_path: testPath }, root, attribution);
+  let mutantSubjectPathAtRoot: string | undefined;
+  if (!input.sourcePaths) {
+    const descriptor = parseMutationDescriptor(executionDetails(row.execution_details).mutation);
+    if (descriptor?.leg === 'mutant' && !isAbsolute(descriptor.subjectPath)) {
+      mutantSubjectPathAtRoot = await mutationSubjectPathAtHarnessRoot(
+        root,
+        testPath,
+        descriptor.subjectPath,
+        deps.git ?? defaultGitRunner,
+      ) ?? undefined;
+      if (!mutantSubjectPathAtRoot) {
+        return {
+          ok: false,
+          error: 'source_paths_underivable',
+          testRunId,
+          message:
+            `test-run ${testRunId} mutation subject ${JSON.stringify(descriptor.subjectPath)} is relative to a Git root ` +
+            `that could not be mapped from ${JSON.stringify(testPath)} into this harness checkout (${root}); pass sourcePaths.`,
+        };
+      }
+    }
+  }
+  const result = deriveBindingFromTestRun(
+    input,
+    { ...row, file_path: testPath },
+    root,
+    attribution,
+    mutantSubjectPathAtRoot,
+  );
   if (result.ok && sibling) {
     result.binding.measurement = { ...result.binding.measurement, rootHarnessSlug: sibling.harnessSlug };
   }

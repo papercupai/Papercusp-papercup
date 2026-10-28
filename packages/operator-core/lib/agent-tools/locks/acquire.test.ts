@@ -389,6 +389,50 @@ describe('locks:acquire — outcome branches', () => {
     }
   });
 
+  it.each(['edit submodule', 'PreToolUse:apply_patch'])(
+    'rejects a superproject alias before creating a second submodule lock (%s)',
+    async (intent) => {
+      const workspace = mkdtempSync(join(tmpdir(), 'locks-acquire-submodule-'));
+      const root = join(workspace, 'papercusp');
+      const submodule = join(root, 'libs', 'test-config');
+      const previousCanonicalTree = process.env.PAPERCUSP_CANONICAL_TREE;
+      mkdirSync(join(root, '.git'), { recursive: true });
+      writeFileSync(join(root, '.git', 'HEAD'), 'ref: refs/heads/staging\n');
+      mkdirSync(join(submodule, 'src'), { recursive: true });
+      writeFileSync(join(submodule, '.git'), 'gitdir: ../../.git/modules/test-config\n');
+      process.env.PAPERCUSP_CANONICAL_TREE = root;
+      routeM.mockResolvedValue({
+        value: { ok: true, lock_id: 'L-submodule', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['src/new.test.ts'] },
+        via: 'local-authority',
+      });
+      try {
+        const refused = body(await call({
+          coordination_domain: root,
+          paths: ['libs/test-config/src/new.test.ts'],
+          intent,
+        }));
+        expect(refused).toMatchObject({ ok: false, error: expect.stringContaining(submodule) });
+        expect(refused.error).toContain('src/new.test.ts');
+        expect(routeM).not.toHaveBeenCalled();
+        expect(tryAcquireM).not.toHaveBeenCalled();
+        expect(insertM).not.toHaveBeenCalled();
+
+        // Manual callers and native hooks must use the same physical domain,
+        // including a new file that does not yet exist in the submodule.
+        expect(body(await call({
+          coordination_domain: submodule,
+          paths: ['src/new.test.ts'],
+          intent,
+        }))).toMatchObject({ ok: true, lock_id: 'L-submodule' });
+        expect(routeM.mock.calls.at(-1)?.[0]).toBe(realpathSync(submodule));
+      } finally {
+        if (previousCanonicalTree === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+        else process.env.PAPERCUSP_CANONICAL_TREE = previousCanonicalTree;
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('fast-path busy with no wait/wake → busy()', async () => {
     routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
     const b = body(await call({}));

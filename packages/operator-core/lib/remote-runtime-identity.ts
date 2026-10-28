@@ -181,6 +181,127 @@ const cloudflarePages: RemoteRuntimeProvider = {
   },
 };
 
+// Workers have their own deployment/version control plane. A Pages deployment (or token
+// file) cannot identify a serving Worker. Keep account/script selectors path-safe.
+const CLOUDFLARE_WORKER_UNIT = /^cloudflare-worker:([0-9a-f]{32})\/([a-z0-9_][a-z0-9_-]{0,62})$/;
+const CLOUDFLARE_VERSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
+const timestamp = (value: unknown): string | null => {
+  const text = str(value);
+  return text && Number.isFinite(Date.parse(text)) ? text : null;
+};
+
+function workerCanonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(workerCanonical).join(',')}]`;
+  const obj = record(value);
+  return obj ? `{${Object.keys(obj).sort().map(key => `${JSON.stringify(key)}:${workerCanonical(obj[key])}`).join(',')}}`
+    : JSON.stringify(value);
+}
+
+/** Config values are hashed here, never returned in a reader document or logged. Only
+ * provider set-like collections are reordered; arrays inside JSON bindings retain meaning. */
+function workerConfigDigest(config: Record<string, unknown>): string {
+  const normalized = { ...config };
+  for (const key of ['bindings', 'compatibility_flags', 'tail_consumers']) {
+    if (Array.isArray(normalized[key])) normalized[key] = normalized[key].map(workerCanonical).sort();
+  }
+  return sha256(workerCanonical(normalized));
+}
+
+async function cloudflareWorkerToken(): Promise<string | null> {
+  const fromEnv = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (fromEnv) return fromEnv;
+  // Reuse Wrangler's supported credential loader, including refresh of its OAuth state.
+  // --no-install forbids fetching a CLI; captured stdout/stderr never leave this function.
+  try {
+    const raw = await new Promise<string>((accept, reject) => execFile('npx',
+      ['--no-install', 'wrangler', 'auth', 'token', '--json'],
+      { timeout: 10_000, maxBuffer: 16_384, env: { ...process.env, WRANGLER_SEND_METRICS: 'false' } },
+      (error, stdout) => error ? reject(error) : accept(stdout)));
+    const credentials = record(JSON.parse(raw));
+    return credentials && ['api_token', 'oauth'].includes(String(credentials.type)) ? str(credentials.token) : null;
+  } catch { return null; }
+}
+
+function workerDeployment(doc: unknown): Record<string, unknown> | null {
+  const deployments = record(doc)?.deployments;
+  if (!Array.isArray(deployments) || deployments.length === 0) return null;
+  const rows = deployments.map(record);
+  if (rows.some(row => !row || !timestamp(row.created_on) || !CLOUDFLARE_VERSION_ID.test(String(row.id)))) return null;
+  rows.sort((a, b) => Date.parse(String(b!.created_on)) - Date.parse(String(a!.created_on)));
+  const current = rows[0]!;
+  // Equal timestamps for different deployments cannot establish a unique serving version.
+  if (rows.some(row => row!.id !== current.id && Date.parse(String(row!.created_on)) === Date.parse(String(current.created_on)))) return null;
+  const versions = current.versions;
+  if (!Array.isArray(versions) || versions.length === 0 || versions.length > 10) return null;
+  const weights = versions.map(record);
+  if (weights.some(v => !v || !CLOUDFLARE_VERSION_ID.test(String(v.version_id)) ||
+    typeof v.percentage !== 'number' || !Number.isFinite(v.percentage) || v.percentage <= 0 || v.percentage > 100) ||
+    new Set(weights.map(v => v!.version_id)).size !== weights.length ||
+    Math.abs(weights.reduce((sum, v) => sum + Number(v!.percentage), 0) - 100) > 0.000001) return null;
+  return { id: current.id, created_on: current.created_on,
+    versions: weights.map(v => ({ version_id: v!.version_id, percentage: v!.percentage }))
+      .sort((a, b) => String(a.version_id).localeCompare(String(b.version_id))) };
+}
+
+const cloudflareWorker: RemoteRuntimeProvider = {
+  prefix: 'cloudflare-worker:',
+  describeArgv(unit) {
+    const match = CLOUDFLARE_WORKER_UNIT.exec(unit);
+    return match ? ['cloudflare-worker', match[1]!, match[2]!] : null;
+  },
+  async describe(argv) {
+    const [, account, script] = argv;
+    const token = await cloudflareWorkerToken();
+    if (!token || !account || !script) return null;
+    const base = `${CLOUDFLARE_API}/accounts/${account}/workers/scripts/${script}`;
+    const get = async (path: string): Promise<unknown> => {
+      const response = await fetch(`${base}${path}`, { headers: { authorization: `Bearer ${token}` },
+        redirect: 'error', signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) throw new Error('Worker identity read failed');
+      const body = record(await response.json());
+      if (body?.success !== true || body.result == null) throw new Error('Worker identity unavailable');
+      return body.result;
+    };
+    try {
+      const deployment = workerDeployment(await get('/deployments'));
+      const settings = record(await get('/settings'));
+      if (!deployment || !settings || !Array.isArray(settings.bindings)) return null;
+      const settingsDigest = workerConfigDigest(settings);
+      const versions = await Promise.all((deployment.versions as Array<{ version_id: string }>).map(async weight => {
+        const version = record(await get(`/versions/${weight.version_id}`));
+        const resources = record(version?.resources), metadata = record(version?.metadata);
+        const scriptData = record(resources?.script), runtime = record(resources?.script_runtime);
+        if (version?.id !== weight.version_id || !timestamp(metadata?.created_on) || !str(scriptData?.etag) ||
+          !runtime || !str(runtime.compatibility_date) || !Array.isArray(resources?.bindings)) return null;
+        return { id: version.id, created_on: metadata!.created_on, script_etag: scriptData!.etag,
+          configDigest: workerConfigDigest({ ...runtime, bindings: resources!.bindings }) };
+      }));
+      if (versions.some(version => !version)) return null;
+      // Re-read both mutable surfaces: a deploy or settings change during the measurement
+      // makes it unknown, rather than constructing an identity that never served.
+      const after = workerDeployment(await get('/deployments'));
+      const settingsAfter = record(await get('/settings'));
+      if (!after || !settingsAfter || workerCanonical(after) !== workerCanonical(deployment) ||
+        workerConfigDigest(settingsAfter) !== settingsDigest) return null;
+      return JSON.stringify({ account, script, deployment, versions, settingsDigest });
+    } catch { return null; }
+  },
+  identity(unit, doc) {
+    const match = CLOUDFLARE_WORKER_UNIT.exec(unit);
+    const deployment = workerDeployment({ deployments: [doc.deployment] });
+    if (!match || doc.account !== match[1] || doc.script !== match[2] || !deployment ||
+      !/^[a-f0-9]{64}$/.test(String(doc.settingsDigest)) || !Array.isArray(doc.versions)) return null;
+    const versions = doc.versions.map(record);
+    const weights = deployment.versions as Array<{ version_id: string }>;
+    if (versions.length !== weights.length || new Set(versions.map(v => v?.id)).size !== versions.length ||
+      versions.some(v => !v || !weights.some(w => w.version_id === v.id) || !timestamp(v.created_on) ||
+        !str(v.script_etag) || !/^[a-f0-9]{64}$/.test(String(v.configDigest)))) return null;
+    return [deployment, doc.settingsDigest, versions.map(v => [v!.id, v!.created_on, v!.script_etag, v!.configDigest])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])))];
+  },
+};
+
 // Reuse the external-runtime evaluator for the separately managed local daemon.
 // Its own read-only socket answer supplies boot-captured source/compiler bytes;
 // systemd selects the process and the kernel independently verifies its lifetime.
@@ -226,7 +347,7 @@ const focusedTsc: RemoteRuntimeProvider = {
   },
 };
 
-const PROVIDERS: readonly RemoteRuntimeProvider[] = [gcpCloudSql, posthogProject, cloudflarePages, focusedTsc];
+const PROVIDERS: readonly RemoteRuntimeProvider[] = [gcpCloudSql, posthogProject, cloudflarePages, cloudflareWorker, focusedTsc];
 
 function providerFor(unit: string): RemoteRuntimeProvider | undefined {
   return PROVIDERS.find((provider) => unit.startsWith(provider.prefix));

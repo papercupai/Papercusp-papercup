@@ -27,6 +27,7 @@ import {
 } from '../../harness/routines/release-actions';
 import { integrationRoot } from '../../release-deploy-launch';
 import { releaseFixerSpawnAlive } from '../../release/fixer-liveness';
+import { verifyOwnerForceDirective } from '../work_items/release-force-guard';
 import { checkpointPidIdentity, readStoredQualification } from '../../release/checkpoint-qualification-transaction';
 import { isPidAlive } from '../../release/in-flight-candidate';
 import {
@@ -480,6 +481,8 @@ const argsSchema = z.preprocess(
         expectedUpdatedAtMs: z.number().int().nonnegative(),
         reason: z.string().min(8).max(2000),
         confirm: z.boolean().optional(),
+        directiveRef: z.number().int().positive().optional()
+          .describe('confirm:true needs this: the id of an open owner-typed directive addressed to you'),
       }),
     ])
     .superRefine((value, refinementCtx) => {
@@ -2978,11 +2981,40 @@ export default defineTool({
         retired: false,
         target: inspected.target,
         repairQueue: inspected.diagnostic,
-        note: 'Pass confirm:true with the same exact identity to execute the compare-and-swap retirement.',
+        note:
+          'Pass confirm:true with the same exact identity AND directiveRef (an open owner-typed ' +
+          'directive addressed to you) to execute the compare-and-swap retirement.',
       });
     }
 
     const identity = readIdentity(ctx);
+    // WI-6554700010042419 (owner #2557; earlier WI-1105109): retiring a frozen queue throws away a
+    // converging repair lineage, which defeats the purpose of freeze-and-converge. That call is the
+    // owner's. So the retire must cite an owner-typed directive addressed to this caller, checked
+    // on the owner's own captured turn, the same rule as an owner-authorized force claim.
+    const ownerDirective =
+      args.directiveRef == null
+        ? ({ ok: false, reason: 'no directiveRef was given' } as const)
+        : await verifyOwnerForceDirective({
+            directiveId: args.directiveRef,
+            callerOwnerId: identity.ownerId,
+            workspaceId: inspected.target.workspaceId,
+          });
+    if (!ownerDirective.ok) {
+      return json({
+        ok: false,
+        op: 'retire',
+        retired: false,
+        refused: true,
+        reason: 'owner-directive-required',
+        detail:
+          `Only the owner retires a frozen repair queue: ${ownerDirective.reason}. Pass directiveRef, ` +
+          'the id of an open directive the owner typed to you asking for this retirement. Without ' +
+          'one, keep converging: admit fixes with op:"admit".',
+        target: inspected.target,
+        repairQueue: inspected.diagnostic,
+      });
+    }
     const retired = await executeWithGateActionReceipt({
       action: 'release:repair-queue', actor: identity.ownerId, ownerId: identity.ownerId,
       conditionKey: ownership?.eventKey ?? '', allowUnowned: true,

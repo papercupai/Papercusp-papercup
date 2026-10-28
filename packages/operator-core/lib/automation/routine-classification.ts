@@ -326,6 +326,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:overwatch-launch': { spend: 'llm', why: 'Launches the overwatch (Kettle) session' },
   'system:gym-cycle': { spend: 'llm', why: 'Runs one bounded gym cycle' },
   'system:improvement-implement': { spend: 'llm', why: 'Returns durableSpawns — dispatches an implementer agent' },
+  'system:clone-family-sweep': {
+    spend: 'llm',
+    why: 'The optional semantic clone sweep uses its configured model in the managed child',
+  },
   'system:hive-canary': { spend: 'llm', why: 'Queues a canary feature the autonomous pipeline carries end to end' },
   'system:unguarded-halt-rescue': { spend: 'llm', why: 'Wakes halted sessions, and a wake bills a turn' },
   'system:loop-wake': { spend: 'llm', why: "Delivers a wake to the loop's owning session" },

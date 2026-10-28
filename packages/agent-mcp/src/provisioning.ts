@@ -15,6 +15,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import type { Sql } from 'postgres';
+import type { Principal } from '@papercusp/tooldef';
 import { withWorkspace } from '@papercusp/db-org';
 import { PRINCIPAL_INVALIDATE_CHANNEL } from './auth';
 
@@ -230,5 +231,109 @@ export async function endPiSession(workspaceId: string, sessionId: string): Prom
        WHERE kind = 'pi' AND harness_slug = ${`pi:${sessionId}`} AND workspace_id = ${workspaceId}
     `;
     await notifyPrincipalChanged(tx, workspaceId, `pi:${sessionId}`);
+  });
+}
+
+/** Supplemental possession credential for one server-issued native runtime.
+ * It grants NO tool capabilities, role, harness, source scope or capture claim.
+ * The trusted launcher must deliver it only to that runtime. Exact host call
+ * observation and current resource authorization remain separate obligations. */
+export interface NativeRuntimeBearerBinding {
+  workspaceId: string;
+  advSessionId: number;
+  ownerId: string;
+  provider: 'claude' | 'codex' | 'omp';
+}
+
+type NativeRuntimeRow = Omit<NativeRuntimeBearerBinding, 'advSessionId'> & {
+  advSessionId: number | string; endedAt: unknown; retiredAt: unknown; name?: string; bearerHash?: string;
+};
+
+function validRuntimeBinding(binding: NativeRuntimeBearerBinding): boolean {
+  return typeof binding.workspaceId === 'string' && !!binding.workspaceId && binding.workspaceId !== '*'
+    && Number.isSafeInteger(binding.advSessionId) && binding.advSessionId > 0
+    && typeof binding.ownerId === 'string' && /^[A-Za-z0-9._:-]{1,256}$/.test(binding.ownerId)
+    && ['claude', 'codex', 'omp'].includes(binding.provider);
+}
+
+function runtimePrincipalName(binding: NativeRuntimeBearerBinding): string {
+  // Retargeting an adv row cannot transfer an old credential to its new owner
+  // or provider. No caller-supplied principal name or inherited root scope.
+  return `native-runtime:${binding.advSessionId}:${hash(JSON.stringify([
+    binding.workspaceId, binding.ownerId, binding.provider,
+  ]))}`;
+}
+
+/** Extend the existing token_index/system_principals issuer, not a second
+ * credential store. `issuer` must come from the launch request's resolver;
+ * this server-only function is never projected as a tool or JSON argument.
+ * Restrict issuance to the existing wildcard authority; a read-only device or
+ * unverified loopback identity cannot turn itself into a runtime issuer. */
+export async function provisionNativeRuntimeBearer(args: {
+  workspaceId: string; advSessionId: number; issuer: Principal;
+}): Promise<{ bearer: string; binding: NativeRuntimeBearerBinding }> {
+  const { workspaceId, advSessionId, issuer } = args;
+  if (!workspaceId || workspaceId === '*' || !Number.isSafeInteger(advSessionId) || advSessionId <= 0
+    || !['trusted', 'verified'].includes(issuer.trust ?? '') || !issuer.slug
+    || !issuer.capabilities.has('*') || ![workspaceId, '*'].includes(issuer.workspaceId)) {
+    throw new Error('native_runtime_issuer_denied');
+  }
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<NativeRuntimeRow[]>`
+      SELECT workspace_id AS "workspaceId", id::text AS "advSessionId", coord_owner_id AS "ownerId",
+             agent AS provider, ended_at AS "endedAt", retired_at AS "retiredAt"
+        FROM harness_shared.adv_sessions
+       WHERE workspace_id = ${workspaceId} AND id = ${advSessionId}
+       FOR UPDATE
+    `;
+    const row = rows[0];
+    const runtime = row ? { ...row, advSessionId: Number(row.advSessionId) } : null;
+    if (rows.length !== 1 || !runtime || !validRuntimeBinding(runtime) || runtime.workspaceId !== workspaceId
+      || runtime.advSessionId !== advSessionId || runtime.endedAt !== null || runtime.retiredAt !== null) {
+      throw new Error('native_runtime_issuance_binding_unavailable');
+    }
+    const binding: NativeRuntimeBearerBinding = { workspaceId, advSessionId,
+      ownerId: runtime.ownerId, provider: runtime.provider };
+    const name = runtimePrincipalName(binding), slug = `system:${name}`;
+    const bearer = genBearer();
+    await tx`
+      INSERT INTO harness_shared.system_principals (workspace_id, name, bearer_hash, capabilities)
+      VALUES (${workspaceId}, ${name}, ${hash(bearer)}, '[]'::jsonb)
+      ON CONFLICT (workspace_id, name) DO UPDATE
+        SET bearer_hash = EXCLUDED.bearer_hash, capabilities = '[]'::jsonb
+    `;
+    await tx`DELETE FROM harness_shared.token_index
+      WHERE workspace_id = ${workspaceId} AND kind = 'system' AND harness_slug = ${slug}`;
+    await tx`INSERT INTO harness_shared.token_index (token, kind, harness_slug, workspace_id)
+      VALUES (${bearer}, 'system', ${slug}, ${workspaceId})`;
+    await notifyPrincipalChanged(tx, workspaceId, slug);
+    return { bearer, binding };
+  });
+}
+
+/** Uncached possession check, independent of normal bearer capability caches.
+ * A token deletion/rotation or runtime end/retarget is visible on the next
+ * check. Success proves only this binding; NEVER use it to scope siblings,
+ * authorize a tool, or append a capture-completeness receipt. */
+export async function verifyNativeRuntimeBearer(bearer: string,
+  expected: NativeRuntimeBearerBinding): Promise<boolean> {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(bearer) || !validRuntimeBinding(expected)) return false;
+  return withWorkspace(expected.workspaceId, async (tx) => {
+    const rows = await tx<NativeRuntimeRow[]>`
+      SELECT a.workspace_id AS "workspaceId", a.id::text AS "advSessionId", a.coord_owner_id AS "ownerId",
+             a.agent AS provider, a.ended_at AS "endedAt", a.retired_at AS "retiredAt",
+             p.name, p.bearer_hash AS "bearerHash"
+        FROM harness_shared.token_index t
+        JOIN harness_shared.system_principals p
+          ON t.workspace_id = p.workspace_id AND t.harness_slug = 'system:' || p.name
+        JOIN harness_shared.adv_sessions a ON a.workspace_id = p.workspace_id
+       WHERE t.token = ${bearer} AND t.kind = 'system'
+         AND a.workspace_id = ${expected.workspaceId} AND a.id = ${expected.advSessionId}
+    `;
+    const row = rows[0];
+    return rows.length === 1 && !!row && row.endedAt === null && row.retiredAt === null
+      && row.workspaceId === expected.workspaceId && String(row.advSessionId) === String(expected.advSessionId)
+      && row.ownerId === expected.ownerId && row.provider === expected.provider
+      && row.name === runtimePrincipalName(expected) && row.bearerHash === hash(bearer);
   });
 }
