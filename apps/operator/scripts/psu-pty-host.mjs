@@ -1657,6 +1657,11 @@ export function carryNativeOwnerInputFreshness({
     for (const { text } of scan.lines) {
       if (!/"role"\s*:\s*"user"/.test(text)) continue;
       const row = JSON.parse(text);
+      // Claude Code also writes `api-request-blob` rows: request payload snapshots
+      // that carry message.role:"user" but no `timestamp`. They are not owner input.
+      // Counting them made every carry check return native-input-clock-missing, so
+      // every carry-respawn was dropped (EI-27188648844771651).
+      if (row?.type === 'api-request-blob') continue;
       const content = nativeUserPromptContent(row);
       if (content == null) continue;
       const prompt = nativeUserPromptText(content);
