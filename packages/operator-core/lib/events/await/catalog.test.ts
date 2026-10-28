@@ -89,6 +89,8 @@ const ID_SCOPED_FIRE_PROOF: Record<string, FireProof> = {
   'escalation-resolved': 'condition',
   'conversation-answered': 'condition',
   'consult-reply': 'change',
+  'consult-answer-posted': 'condition',
+  'consult-closed': 'condition',
   'handoff-accepted': 'condition',
   'report-published': 'condition',
   // event-wait-settlement-2026-10-20 D-005: explicit id scope — `release:deployed:<sha>`.
@@ -131,6 +133,21 @@ describe('events catalog — fireProves classification (event-wait-settlement-20
 });
 
 describe('buildKey', () => {
+  it.each([
+    ['plan-blind-review-posted', { slug: 'my-plan' }, 'plan:blind-review-posted:my-plan'],
+    ['consult-answer-posted', { conversationId: 'conv-123' }, 'consult:answer-posted:conv-123'],
+    ['consult-closed', { conversationId: 'conv-123' }, 'consult:closed:conv-123'],
+  ] as const)('discovers and builds the subject-scoped %s event', (family, params, key) => {
+    expect(catalogEntry(family)).toMatchObject({ exists: true });
+    expect(catalogEntry(family)?.fireProves).toBe(family === 'plan-blind-review-posted' ? undefined : 'condition');
+    expect(buildKey(family, params)).toBe(key);
+    expect(keyMatchesCatalog(key)).toBe(true);
+  });
+
+  it('keeps repeated plan review posts scoped to the plan, with the audit in the payload', () => {
+    expect(subjectScopeOf(catalogEntry('plan-blind-review-posted')!)).toBe('scope');
+  });
+
   it('interpolates a required param', () => {
     expect(buildKey('governor-transition', { kind: 'backlog-unhealthy' })).toBe(
       'governor:transition:backlog-unhealthy',

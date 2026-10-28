@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 991,
+  "count": 992,
   "tools": [
     {
       "name": "ablation:report",
@@ -7452,6 +7452,43 @@
       "guidance": {
         "when": "At turn start; whenever you suspect another agent contacted you.",
         "notWhen": "For agent-presence (\"who is active?\") — use coord:presence. For file locks — use locks:queue. To WAIT for one specific message/handoff — prefer coord:await-inbox (push/wake) over a poll."
+      }
+    },
+    {
+      "name": "coord:judge-coupling-edge",
+      "http": {
+        "path": "/api/agent-tools/coord/judge-coupling-edge",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Judge whether a SHADOW code-dependency coupling edge between two agents was relevant (R-12 precision). op:\"list\" returns the current window's judgeable edges, unjudged first; op:\"judge\" records { a, b, path, symbol, relevant }. Refused for a judge in the plan's implementer lineage and for an edge the scorer excludes. Writes one audit row; never couples or surfaces anything.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "merge-resolver",
+        "content-fixer"
+      ],
+      "guidance": {
+        "when": "You are outside the code-intel-delivery implementer lineage and can say whether one agent's edit to a symbol really mattered to the peer holding a dependent file.",
+        "notWhen": "You want to couple or decouple agents now: that is coord:couple / coord:decouple."
       }
     },
     {
@@ -22560,7 +22597,7 @@
           "POST"
         ]
       },
-      "description": "Append one or many decisions to a plan. Allocates the next D-NNN inside a lock and bumps frontmatter `updated:`; concurrent calls stay collision-free. Single: `{ slug, title, body }`; bulk: `items:[{ slug, title, body, refs?, affects? }]`. `itemRefs` aliases `refs` (refs wins). Tree-fact decisions require `Measured: <file:line or command + result>`; without it, source-like paths return `measurementAdvisory` and a ruling resting on another decision as authority returns `citedRuleAdvisory`. CITE `ref` (`<slug>#D-NNN`) anywhere the decision is quoted onward — a bare `D-NNN` is allocated per-plan, so it is not a reference: `D-001` names 904 different rulings in this harness. Exact `{ title, body }` retries dedupe against the plan's most recent decision instead of appending.",
+      "description": "Append one or many decisions to a plan. Allocates the next D-NNN inside a lock and bumps frontmatter `updated:`; concurrent calls stay collision-free. Single: `{ slug, title, body }`; bulk: `items:[{ slug, title, body, refs?, affects? }]`. Tree-fact decisions require `Measured: <file:line or command + result>`; without it, source-like paths return `measurementAdvisory` and a ruling resting on another decision as authority returns `citedRuleAdvisory`. CITE `ref` (`<slug>#D-NNN`) anywhere the decision is quoted onward — a bare `D-NNN` is allocated per-plan, so it is not a reference: `D-001` names 904 different rulings in this harness. Exact `{ title, body }` retries dedupe against the plan's most recent decision instead of appending.",
       "capabilities": [
         "plans:write"
       ],
@@ -22623,7 +22660,7 @@
       "guidance": {
         "when": "Trade-off resolved, scope ratified, or a choice made. Record it so fresh agents do not relitigate. For current-tree claims, open the tree and add `Measured: <file:line or command + result>`. Design authority is not tree evidence. Use items:[…] for bulk.",
         "notWhen": "Adding work units — use plans:add-item. Flipping status — plans:set-status. Updating overall state — plans:set-now.",
-        "chaining": "Declare refs/itemRefs:[\"P-NNN\"] for the items this decision governs; sharing a plan or mentioning an ID in prose does not establish applicability. affects:[planSlug] is broader plan context. plans:add-decision → graph:query { op:\"evidence\", plan, item } to inspect applicability; optionally plans:set-now referencing the new D-NNN in **State:**."
+        "chaining": "Declare refs:[\"P-NNN\"] for the items this decision governs; sharing a plan or mentioning an ID in prose does not establish applicability. affects:[planSlug] is broader plan context. plans:add-decision → graph:query { op:\"evidence\", plan, item } to inspect applicability; optionally plans:set-now referencing the new D-NNN in **State:**."
       }
     },
     {
@@ -35834,7 +35871,7 @@
           "POST"
         ]
       },
-      "description": "Write or clear work-item checkpoints. Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. Checkpoints preserve successor continuity across task boundaries; replace-on-write by default, `append:true` joins prior text. Writes verify-read; a big shrink keeps prior under your note; peer-held/terminal-item writes are refused while explicit clears remain allowed. `rowsMode:\"merge\"` adds check rows while replacing the body; `\"replace\"` retires rows. Full body+rows replacement requires `append:false, rowsMode:\"replace\", confirmShrink:true, retireIds:[...]`.",
+      "description": "Write or clear work-item checkpoints. Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. Writes replace by default; `append:true` preserves the full prior narrative only when combined text fits the cap. Writes verify-read; a big shrink keeps prior under your note; peer-held/terminal-item writes are refused while explicit clears remain allowed. `rowsMode:\"merge\"` adds check rows while replacing the body; `\"replace\"` retires rows. Full body+rows replacement requires `append:false, rowsMode:\"replace\", confirmShrink:true, retireIds:[...]`.",
       "capabilities": [
         "work_items:write"
       ],

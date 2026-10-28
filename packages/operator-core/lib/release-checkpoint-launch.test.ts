@@ -181,23 +181,37 @@ describe('WI-5377: ANSI escapes are stripped before the persisted log is written
 });
 
 describe('buildCheckpointSystemdArgv', () => {
-  it('transports one launch-anchored cutoff and cannot extend an earlier caller deadline', () => {
+  // WI-6554700010042457 (Avi #2574): a manual main-greening run carries NO wall-clock deadline
+  // of its own. The launch time no longer anchors a cutoff; only a deadline the LAUNCHER itself
+  // inherited is forwarded (the earliest one, so a child can never outlive its caller's scope).
+  it('adds no deadline of its own and forwards only the earliest inherited one', () => {
     const key = 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
-    vi.stubEnv(key, '9000000');
+    const deadlineArgs = (argv: string[]) => argv.filter(value => value.startsWith(`--setenv=${key}=`));
+    vi.stubEnv(key, undefined);
     try {
       const args: Parameters<typeof buildCheckpointSystemdArgv> = ['/tree', '/tmp/cp.log', '/usr/bin'];
-      args[14] = 1000;
-      let argv = buildCheckpointSystemdArgv(...args);
-      expect(argv.filter(value => value.startsWith(`--setenv=${key}=`)))
-        .toEqual([`--setenv=${key}=${1000 + MANUAL_CHECKPOINT_WATCHDOG_MS}`]);
+      args[14] = 1000; // launchStartedAtMs: must NOT produce 1000 + any watchdog/suite budget
+      expect(deadlineArgs(buildCheckpointSystemdArgv(...args))).toEqual([]);
+
+      vi.stubEnv(key, '9000000');
+      expect(deadlineArgs(buildCheckpointSystemdArgv(...args))).toEqual([`--setenv=${key}=9000000`]);
+
       args[11] = { [key]: '200000' };
-      argv = buildCheckpointSystemdArgv(...args);
-      expect(argv.filter(value => value.startsWith(`--setenv=${key}=`))).toEqual([`--setenv=${key}=200000`]);
+      expect(deadlineArgs(buildCheckpointSystemdArgv(...args))).toEqual([`--setenv=${key}=200000`]);
+
+      // A garbage inherited value is ignored rather than becoming a deadline.
+      vi.stubEnv(key, 'not-a-number');
+      args[11] = {};
+      expect(deadlineArgs(buildCheckpointSystemdArgv(...args))).toEqual([]);
     } finally { vi.unstubAllEnvs(); }
   });
 
-  it('targets the manual unit, bounds runtime, and runs the green-checkpoint CLI in the tree root', () => {
-    const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin');
+  it('targets the manual unit, sets no run-level wall clock, and runs the green-checkpoint CLI in the tree root', () => {
+    vi.stubEnv('PAPERCUSP_TASK_DEADLINE_EPOCH_MS', undefined);
+    let argv: string[];
+    try {
+      argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin');
+    } finally { vi.unstubAllEnvs(); }
     expect(argv).toContain(`--unit=${checkpointUnitForRoot('/tree')}`); // per-root (2026-07-01): cross-root manual gates no longer serialize
     expect(argv).toContain('--no-block');
     expect(argv).toContain('--property=CollectMode=inactive-or-failed');
@@ -214,8 +228,9 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(stopPost).toContain('$EXIT_STATUS');
     expect(stopPost).not.toContain('$$SERVICE_RESULT');
     expect(stopPost).toContain('>> "/tmp/cp.log"');
-    expect(argv).toContain(`--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`);
-    expect(CHECKPOINT_MAX_RUNTIME_SEC).toBeGreaterThanOrEqual(3 * 60 * 60);
+    // WI-6554700010042457: systemd must never kill a progressing run on a wall clock.
+    expect(argv.filter(arg => /RuntimeMax/.test(arg))).toEqual([]);
+    expect(argv.filter(arg => arg.startsWith('--setenv=PAPERCUSP_TASK_DEADLINE_EPOCH_MS='))).toEqual([]);
     expect(argv).toContain('--working-directory=/tree');
     expect(argv).toContain('--setenv=PATH=/usr/bin:/bin');
     expect(argv).toContain(`--setenv=${MANUAL_CHECKPOINT_WATCHDOG_ENV}=${MANUAL_CHECKPOINT_WATCHDOG_MS}`);

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -90,18 +90,29 @@ print('GENERATED_CLOSURE_BOOTED')`],
 
   it('names the drifting dependency stage and retains diagnostic inputs before expensive later builds', async () => {
     const f = await fixture();
+    const phases = join(f.custodyRoot, 'phases.jsonl');
+    const runPhase = preview.verifierPhaseRunner(phases,
+      { PAPERCUSP_CHECKPOINT_LOG_DIR: join(f.custodyRoot, 'archive') }, join(f.custodyRoot, 'child.json'));
     const actual = preview.runVerifierDependencyCommand;
     vi.spyOn(preview, 'runVerifierDependencyCommand').mockImplementation(async (command, args, options) => {
       const result = await actual(command, args, options);
       if (args.includes('prebuild')) write(f.root, 'node_modules/dep/index.js', 'changed by build');
       return result;
     });
-    await expect(buildRuntimeGeneratedInputs(f)).rejects.toMatchObject({
+    await expect(buildRuntimeGeneratedInputs({ ...f, runPhase })).rejects.toMatchObject({
       name: 'RuntimeBuildDependencyDrift', stage: 'prebuild', retainVerifierTree: true,
       changes: ['node_modules/dep/index.js'],
     });
     expect(readdirSync(f.custodyRoot).some(name => name.startsWith('broker-build-'))).toBe(true);
     expect(existsSync(join(f.root, 'apps/operator/dist-verify/hono-host.mjs'))).toBe(false);
+    const events = readFileSync(phases, 'utf8').trim().split('\n')
+      .map(line => JSON.parse(line) as { phase: string; event: string });
+    expect(events).toContainEqual(expect.objectContaining({ phase: 'build.prebuild', event: 'completed' }));
+    expect(events).toContainEqual(expect.objectContaining({ phase: 'deps.census', event: 'progress' }));
+    expect(events).toContainEqual(expect.objectContaining({ phase: 'build.prebuild.verify', event: 'failed' }));
+    expect(events.some(event => event.phase === 'build.spa')).toBe(false);
+    rmSync(phases);
+    expect(readFileSync(runPhase.archivePath, 'utf8')).toContain('build.prebuild.verify');
   }, 30_000);
 
   it('retains private build inputs when a dependency command cannot verify process-group exit', async () => {

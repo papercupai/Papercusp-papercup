@@ -1,5 +1,9 @@
 import type { OrgTestDb } from '../../../packages/operator-core/test/_org-test-db';
-import { drainDetached } from '@papercusp/operator-core/lib/detached-imports';
+// `/index` is explicit on purpose: `detached-imports` is a DIRECTORY module, and the operator-core
+// exports map (`./lib/*` -> `./lib/*.ts`) cannot resolve a bare directory specifier. The operator-core
+// typecheck reaches this shim via loop-turn-start-reconcile.integration.test.ts, where that resolution
+// fails with TS2307 (frozen candidate 63442ecf); apps/operator's `paths` resolve either spelling.
+import { drainDetached } from '@papercusp/operator-core/lib/detached-imports/index';
 import { stopInterestWatchSweeper } from '@papercusp/operator-core/lib/events/await/interest-watch';
 import { flushFallbackObservations } from '@papercusp/operator-core/lib/degradation/fallback-observations';
 import { stopInvalidationListener } from '@papercusp/operator-core/lib/sync-sse';

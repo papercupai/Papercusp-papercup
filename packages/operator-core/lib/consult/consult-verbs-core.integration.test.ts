@@ -596,6 +596,14 @@ describe('consultReplyCore — kind rules + transitions', () => {
   it('responder answer: meta row with evidence, awaiting_responder→active, park-key emit to the requester', async () => {
     const id = await seedConsult();
     const { deps, posts, emits } = makeDeps();
+    const emit = deps.emitReplyEvent;
+    deps.emitReplyEvent = async (event) => {
+      if (event.key === `consult:answer-posted:${id}`) {
+        expect((await stateRow(id)).state).toBe('active');
+        expect(await metaRows(id)).toMatchObject([{ kind: 'answer', author_id: RESPONDER }]);
+      }
+      await emit(event);
+    };
     const r = await consultReplyCore(
       { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'answer', body: 'the answer', evidence: EVIDENCE },
       deps,
@@ -625,10 +633,20 @@ describe('consultReplyCore — kind rules + transitions', () => {
     expect(await jsonbShapes(id)).toEqual({ routing_type: 'object', outcome_type: null, cascade_digest_type: 'array' });
 
     // The hard-blocked requester's park key fired, latched, addressed to them.
-    expect(emits).toHaveLength(1);
+    expect(emits).toHaveLength(2);
     expect(emits[0].key).toBe(`consult:reply:${id}`);
     expect(emits[0].to).toEqual([REQUESTER]);
     expect(emits[0].payload.post_id).toBe(r.post_id);
+    expect(emits[1]).toMatchObject({ key: `consult:answer-posted:${id}`, to: [],
+      payload: { conversation_id: id, responder: RESPONDER, kind: 'answer', post_id: r.post_id } });
+  });
+
+  it.each(['clarifying_question', 'new_fact'] as const)('%s does not signal an answer', async (kind) => {
+    const id = await seedConsult();
+    const { deps, emits } = makeDeps();
+    expect(await consultReplyCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id,
+      kind, body: 'More context', evidence: EVIDENCE }, deps)).toMatchObject({ ok: true });
+    expect(emits.map((event) => event.key)).toEqual([`consult:reply:${id}`]);
   });
 
   it('an answer WITHOUT evidence is refused (D-004 grounding) — nothing written', async () => {
@@ -1058,8 +1076,31 @@ describe('consultCloseCore', () => {
       accepted_post_id: String(r.post_id),
     });
 
-    expect(emits).toHaveLength(1);
+    expect(emits.map((event) => event.key)).toEqual([
+      `consult:reply:${id}`, `consult:answer-posted:${id}`, `consult:closed:${id}`,
+    ]);
     expect(emits[0].key).toBe(`consult:reply:${id}`);
+  });
+
+  it('does not publish a close or answer when the close transaction rolls back', async () => {
+    const id = await seedConsult({ state: 'active' });
+    const { deps, emits } = makeDeps();
+    deps.settleConversation = async () => { throw new Error('projection failed'); };
+    await expect(consultCloseCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id,
+      outcome: 'answered', answer: 'an answer', evidence: EVIDENCE }, deps)).rejects.toThrow('projection failed');
+    expect((await stateRow(id)).state).toBe('active');
+    expect(await metaRows(id)).toEqual([]);
+    expect(emits).toEqual([]);
+  });
+
+  it('does not count a requester answer disposition as a responder critique', async () => {
+    const id = await seedConsult({ state: 'active' });
+    const { deps, emits } = makeDeps();
+    expect(await consultCloseCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id,
+      outcome: 'answered', answer: 'resolved independently', evidence: EVIDENCE }, deps))
+      .toMatchObject({ ok: true, state: 'closed_answered' });
+    expect(emits.map((event) => event.key)).toEqual([`consult:closed:${id}`]);
+    expect(emits[0]).toMatchObject({ to: [], payload: { state: 'closed_answered', closed_by: REQUESTER } });
   });
 
   it("cant_help requires the reason; answered requires the answer — outcome validation refuses incomplete closes", async () => {
@@ -1085,7 +1126,7 @@ describe('consultCloseCore', () => {
     if ('error' in r) throw new Error(r.error);
     expect(r.state).toBe('closed_cant_help');
     expect((await stateRow(id)).outcome).toEqual({ reason: 'answered it myself meanwhile' });
-    expect(emits).toHaveLength(0);
+    expect(emits.map((event) => event.key)).toEqual([`consult:closed:${id}`]);
   });
 
   it('a closed consult refuses a second close', async () => {
@@ -1114,7 +1155,7 @@ describe('consultCloseCore', () => {
     expect(posts).toHaveLength(1);
     expect(settlements).toHaveLength(1);
     expect(dispatchCalls).toEqual([]);
-    expect(emits).toEqual([]);
+    expect(emits.map((event) => event.key)).toEqual([`consult:closed:${id}`]);
     expect(await consultCloseCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id, outcome: 'cant_help', reason }, deps))
       .toMatchObject({ error: 'consult_not_open', state: 'closed_cant_help' });
     expect(posts).toHaveLength(1);
@@ -1204,7 +1245,7 @@ describe('consultCloseCore — graduate', () => {
     expect(row.closed_at).not.toBeNull();
 
     // A responder graduate is the terminal reply — the parked requester is woken.
-    expect(emits).toHaveLength(1);
+    expect(emits.map((event) => event.key)).toEqual([`consult:reply:${id}`, `consult:closed:${id}`]);
     expect(emits[0].key).toBe(`consult:reply:${id}`);
   });
 
@@ -1218,7 +1259,7 @@ describe('consultCloseCore — graduate', () => {
     if ('error' in r) throw new Error(r.error);
     expect(r.state).toBe('graduated');
     expect(minted[0].closedBy).toBe(REQUESTER);
-    expect(emits).toHaveLength(0);
+    expect(emits.map((event) => event.key)).toEqual([`consult:closed:${id}`]);
   });
 
   it('graduate requires the reason — refused with nothing written', async () => {
@@ -1407,7 +1448,7 @@ describe('cascade advance (D-005/P-013)', () => {
 
     // …and the requester IS woken, via the latched park key — the disposition
     // reaches the one agent who can act on a void consult.
-    expect(emits).toHaveLength(1);
+    expect(emits.map((event) => event.key)).toEqual([`consult:reply:${id}`, `consult:closed:${id}`]);
     expect(emits[0].key).toBe(`consult:reply:${id}`);
     expect(emits[0].to).toEqual([REQUESTER]);
   });
@@ -1421,7 +1462,7 @@ describe('cascade advance (D-005/P-013)', () => {
     );
     if ('error' in r) throw new Error(r.error);
     // The parked requester is woken by the FIRST responder post…
-    expect(emits).toHaveLength(1);
+    expect(emits.map((event) => event.key)).toEqual([`consult:reply:${id}`, `consult:answer-posted:${id}`]);
     expect(emits[0].key).toBe(`consult:reply:${id}`);
     expect(emits[0].to).toEqual([REQUESTER]);
     // …AND the cascade still advanced behind them.

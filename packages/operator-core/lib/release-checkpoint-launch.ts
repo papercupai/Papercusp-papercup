@@ -12,9 +12,10 @@ import { checkpointLogDirFromEnv } from './release/checkpoint-log-dir';
  *
  * Why DETACHED (mirrors release-deploy-launch.ts): the green-checkpoint suite runs the full
  * test battery under load for up to ~55 min — far past any MCP call budget — so an awaited
- * child would time out the tool. We launch it as a transient systemd unit with a loose
- * RuntimeMaxSec backstop (well above the suite timeout) so systemd never preempts a healthy
- * long run; the suite's own timeout still produces the verdict if it truly runs too long.
+ * child would time out the tool. We launch it as a transient systemd unit with NO run-level
+ * wall clock (WI-6554700010042457): no RuntimeMaxSec and no TASK_DEADLINE of its own, so a
+ * progressing main-greening run always reaches its verdict. The in-process self-watchdog's
+ * IDLE (no-progress) budget is what stops a run that has genuinely gone silent.
  * The OUTCOME lands on /admin/git (the pipeline event the CLI emits), not this caller.
  *
  * OOM-safety: green-checkpoint.ts self-locks (its status vocabulary includes 'skipped-locked'),
@@ -115,9 +116,9 @@ export function checkpointUnitForRoot(root: string): string {
 
 /** Wall-clock ceiling for the detached suite's systemd backstop.
  *
- * Keep this strictly ABOVE the suite's own watchdog (120m15s) so the suite itself
- * still emits a red/verdict path if it genuinely overruns; the systemd cap is only a guard
- * against a truly wedged launch path, not the primary timeout.
+ * WI-6554700010042457: this is NO LONGER applied to the unit (the manual argv carries no
+ * RuntimeMaxSec). It survives only as the reference for the `eta_sec` estimate, which phase 1b
+ * of that item revisits because it now counts down to a ceiling that does not exist.
  */
 export const CHECKPOINT_MAX_RUNTIME_SEC = 3 * 60 * 60;
 
@@ -1927,7 +1928,12 @@ export function buildCheckpointSystemdArgv(
 ): string[] {
   const inheritedDeadlines = [extraEnv[TASK_DEADLINE_EPOCH_MS_ENV], process.env[TASK_DEADLINE_EPOCH_MS_ENV]]
     .map(Number).filter(value => Number.isSafeInteger(value) && value > 0);
-  const callerDeadlineEpochMs = Math.min(launchStartedAtMs + MANUAL_CHECKPOINT_WATCHDOG_MS, ...inheritedDeadlines);
+  // WI-6554700010042457 (Avi #2574): a manual main-greening run has no wall-clock deadline of
+  // its own. Only a deadline the LAUNCHER itself inherited is forwarded (a child cannot outlive
+  // its scope). MANUAL_CHECKPOINT_WATCHDOG_MS below is the run's IDLE (no-progress) budget.
+  // launchStartedAtMs no longer bounds anything; it stays in the signature for its callers.
+  void launchStartedAtMs;
+  const callerDeadlineEpochMs = inheritedDeadlines.length ? Math.min(...inheritedDeadlines) : null;
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
   // `systemd-run --user`, which does NOT inherit the launching process env — so without this it always
@@ -2031,7 +2037,8 @@ export function buildCheckpointSystemdArgv(
     // guards above have proved that replacement is allowed.
     '--property=RefuseManualStop=yes',
     `--property=ExecStopPost=${terminalMarkerCommand}`,
-    `--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`,
+    // WI-6554700010042457: no RuntimeMaxSec. systemd killing a progressing run at 3h discarded
+    // its work; the in-process progress-aware self-watchdog is the stop for a silent run.
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,
     ...greenCheckpointDbPoolSetenvArgs(),
@@ -2041,7 +2048,7 @@ export function buildCheckpointSystemdArgv(
     ...greenCheckpointDbTargetSetenvArgs(),
     `--setenv=${MANUAL_CHECKPOINT_WATCHDOG_ENV}=${MANUAL_CHECKPOINT_WATCHDOG_MS}`,
     ...routedEnv,
-    `--setenv=${TASK_DEADLINE_EPOCH_MS_ENV}=${callerDeadlineEpochMs}`,
+    ...(callerDeadlineEpochMs === null ? [] : [`--setenv=${TASK_DEADLINE_EPOCH_MS_ENV}=${callerDeadlineEpochMs}`]),
     ...verdictEnv,
     ...qualificationEnv,
     ...gateFireEnv,

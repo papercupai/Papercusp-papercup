@@ -57,7 +57,6 @@ import {
 import { parseRatchetShadowHealth, type RatchetShadowHealth } from '../../release/ratchet-shadow';
 import { parseGateRoundPhases, type GateRoundPhases } from '../../release/gate-round-phases';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
-import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
 import {
   composeGateRedOwnership,
   describeGateRedOwnership,
@@ -1162,7 +1161,10 @@ function runScript(
   root: string,
   relScript: string,
   args: string[],
-  timeoutMs: number,
+  /** Wall-clock kill budget. `null` = no run-level wall clock: no kill timer and no
+   *  deadline env, unless this process itself INHERITED a deadline (a child can never
+   *  outlive its scope). WI-6554700010042457: the green-checkpoint suite passes null. */
+  timeoutMs: number | null,
   extraEnv: Record<string, string> = {},
   isolate?: { memoryMaxG: number; terminalContext?: ScheduledCheckpointTerminalContext },
   /** Env keys DELETED from the inherited env before `extraEnv` is applied. `extraEnv` cannot
@@ -1175,8 +1177,11 @@ function runScript(
   // One clock includes boot admission and fallback launches. A retry cannot
   // grant the same caller another complete suite budget.
   const inheritedDeadline = Number(extraEnv[TASK_DEADLINE_EPOCH_MS_ENV] ?? process.env[TASK_DEADLINE_EPOCH_MS_ENV]);
-  const callerDeadlineEpochMs = Math.min(Date.now() + timeoutMs,
+  const ownDeadline = timeoutMs === null ? Infinity : Date.now() + timeoutMs;
+  const boundedDeadline = Math.min(ownDeadline,
     Number.isSafeInteger(inheritedDeadline) && inheritedDeadline > 0 ? inheritedDeadline : Infinity);
+  // Null = unbounded: neither a kill timer nor a deadline env is armed for the child.
+  const callerDeadlineEpochMs: number | null = Number.isFinite(boundedDeadline) ? boundedDeadline : null;
   const base = [tsxBin(root), path.join(root, relScript), ...args];
   // Isolation kill-switch: PAPERCUSP_CHECKPOINT_SCOPE=0 forces the pre-2026-07-01
   // direct spawn (ops escape hatch, peer of PAPERCUSP_GATEWAY_RPM_SMOOTH).
@@ -1209,13 +1214,15 @@ function runScript(
       // papercusp's own DSN under HARNESS_ADMIN_DATABASE_URL while clearing DATABASE_URL).
       const childEnv: NodeJS.ProcessEnv = { ...process.env };
       for (const key of clearEnv) delete childEnv[key];
+      const { [TASK_DEADLINE_EPOCH_MS_ENV]: _droppedDeadline, ...extraEnvWithoutDeadline } = extraEnv;
       const child = spawn(argv[0], argv.slice(1), {
         cwd: root,
         env: {
           ...childEnv,
           PAPERCUSP_INTEGRATION_ROOT: root,
-          ...extraEnv,
-          [TASK_DEADLINE_EPOCH_MS_ENV]: String(callerDeadlineEpochMs),
+          ...extraEnvWithoutDeadline,
+          // The resolved deadline (or none) replaces any copy in either env source.
+          [TASK_DEADLINE_EPOCH_MS_ENV]: callerDeadlineEpochMs === null ? undefined : String(callerDeadlineEpochMs),
           // Reuse the scheduled-run transport: a modern scope sends its terminal-marker
           // runId; the legacy direct path retains the '1' sentinel and mints in the CLI.
           ...(checkpointPaths ? { [CHECKPOINT_SCHEDULED_RUN_ENV]: checkpointPaths.runId } : {}),
@@ -1237,7 +1244,9 @@ function runScript(
       // that observes the deadline-kill directly; everywhere downstream sees only "non-zero
       // exit, no marker", which is the same shape a crash produces.
       let timedOut = false;
-      const killer = setTimeout(() => {
+      // No deadline → no killer. The child's own progress-aware self-watchdog is the only
+      // stop for a run that goes silent (WI-6554700010042457).
+      const killer = callerDeadlineEpochMs === null ? undefined : setTimeout(() => {
         timedOut = true;
         killGroup('SIGTERM');
         // Escalate if a wedged worker ignores SIGTERM, so the group can't linger.
@@ -3141,7 +3150,11 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     root,
     'apps/operator/lib/release/green-checkpoint.ts',
     [],
-    GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
+    // WI-6554700010042457 (Avi #2574): no run-level wall clock on the main-greening run. The
+    // 115m kill (and the deadline env that made affected-tests refuse after a slow typecheck)
+    // discarded runs that were still making progress. The child's progress-aware self-watchdog
+    // still stops a run that goes silent.
+    null,
     // WI-4494: hand the CLI the harness whose gate this run is judging, so the PRODUCER of the
     // verdict is the thing that records it (see release/gate-verdict-target.ts). A CLI old enough
     // not to know the env simply ignores it and never sets `recorded` — we then record below,

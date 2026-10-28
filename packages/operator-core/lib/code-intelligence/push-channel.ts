@@ -1047,18 +1047,23 @@ export const snapshotIncidentLeg: PushLeg = (input, snapshot) => {
     + (canCall(input.recipientToolset ?? UNKNOWN_TOOLSET, 'testing:runs')
       ? '; recover them with testing:runs ' + JSON.stringify({ testRunIds: runIds, harness: input.harness }) : '') + '.'
     : 'Original test-row identity unknown; no exact ledger recovery can be prescribed.';
+  // WI-6554700010042393: formatPushFact keeps lines IN ORDER while they fit the
+  // CODE_INTEL_PUSH_MAX_CHARS cap, so the order is the priority. Measured answers come
+  // first: the recorded run ids (P-006, always inline), then ledger attribution and work
+  // items. Static-graph hypotheses come last; when they are omitted, the marker's
+  // PUSH_OMITTED_QUALIFIER keeps the runtime-unknown caveat.
   return [{
     leg: 'incident',
     subject,
     citedPaths,
     suggestedCall,
     text: 'Observed failing test files: ' + failed.join(', ') + '. The observed failure is authoritative.\n'
-      + 'Static reach candidates (unverified): ' + (dependencies.join(', ') || 'unknown') + '.\n'
-      + 'Symbols on static reach (change status unknown): ' + symbolText + '; observed turn edit strands: ' + changedText + '.\n'
+      + recovery + '\n'
       + 'Recently changed symbols (measured ledger attribution): ' + changedSymbols + '.\n'
-      + 'Work items changed/open on these paths: ' + workItems + '. '
-      + 'File-edit attribution does not prove symbol authorship. Graph paths are hypotheses only; cause, runtime execution and dynamic dispatch are unknown. '
-      + recovery,
+      + 'Work items changed/open on these paths: ' + workItems + '. File-edit attribution does not prove symbol authorship.\n'
+      + 'Static reach candidates (unverified): ' + (dependencies.join(', ') || 'unknown') + '.\n'
+      + 'Symbols on static reach (change status unknown): ' + symbolText + '; observed turn edit strands: ' + changedText + '. '
+      + 'Graph paths are hypotheses only; cause, runtime execution and dynamic dispatch are unknown.',
   }];
 };
 registerCodeIntelPushLeg('incident', snapshotIncidentLeg);

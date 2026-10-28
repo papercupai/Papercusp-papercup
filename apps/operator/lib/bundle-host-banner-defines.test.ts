@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { performance } from 'node:perf_hooks';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -49,6 +50,60 @@ const BARE_PATH_BINDING = /\b(?:const|let|var|function)\s+(?:__dirname|__filenam
 interface SharedBanner {
   banner: string;
   defines: Record<string, string>;
+}
+
+const HOST_READER_CHILD_TIMEOUT_MS = 25_000;
+const HOST_READER_LOCK_TIMEOUT_MS = 20_000;
+
+function boundedOutput(value: string | Buffer | null | undefined): string {
+  const text = String(value ?? '').trim();
+  return text.length > 2_000 ? `… [earlier output omitted]\n${text.slice(-2_000)}` : text || '(empty)';
+}
+
+function hostReaderStageDiagnostic(
+  stage: string,
+  elapsedMs: number,
+  timeoutMs: number,
+  result: {
+    status: number | null;
+    signal: string | null;
+    error?: NodeJS.ErrnoException;
+    stdout: string | Buffer | null;
+    stderr: string | Buffer | null;
+  },
+): string {
+  return [
+    `stage=${stage} elapsedMs=${elapsedMs} timeoutMs=${timeoutMs}`,
+    `status=${result.status ?? 'null'} signal=${result.signal ?? 'none'} errorCode=${result.error?.code ?? 'none'}`,
+    `error=${result.error?.message ?? 'none'}`,
+    `stdout:\n${boundedOutput(result.stdout)}`,
+    `stderr:\n${boundedOutput(result.stderr)}`,
+  ].join('\n');
+}
+
+function runHostReaderStage(
+  stage: string,
+  args: string[],
+  operatorDir: string,
+  timeoutMs = HOST_READER_CHILD_TIMEOUT_MS,
+) {
+  const startedAt = performance.now();
+  const result = spawnSync(process.execPath, args, {
+    cwd: operatorDir,
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    env: {
+      ...process.env,
+      // The default shared-cache lease can wait 180s, longer than this fixture's
+      // 60s Vitest deadline. Bound it so a blocked phase returns its own evidence.
+      PAPERCUSP_FS_MUTEX_TIMEOUT_MS: String(HOST_READER_LOCK_TIMEOUT_MS),
+    },
+  });
+  const elapsedMs = Math.round(performance.now() - startedAt);
+  return {
+    result,
+    diagnostic: hostReaderStageDiagnostic(stage, elapsedMs, timeoutMs, result),
+  };
 }
 
 describe('EI-26045992788438631 — host runtime dependencies', () => {
@@ -101,9 +156,12 @@ describe('EI-26045992788438631 — host runtime dependencies', () => {
 
 describe('WI-10007604 — frozen host source identity', () => {
   const source = readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh'), 'utf8');
-  const block = source.slice(source.indexOf('if [[ -f "$REPO_ROOT/.verifier-source.json" ]]'), source.indexOf('# EI-9413:'));
-  const select = (root: string, receipt = '') => spawnSync('bash', ['-c', 'set -euo pipefail; REPO_ROOT="$1"; COMMITTED_NODE=(node);\n' + block + '\nprintf "%s" "$SOURCE_SHA"', '_', root],
-    { encoding: 'utf8', env: { ...process.env, VERIFY_TAURI_SOURCE_RECEIPT: receipt } });
+  const blockStart = source.indexOf('SOURCE_SHA="$(bundle_host_source_sha');
+  const blockEnd = source.indexOf('# EI-9413:', blockStart);
+  if (blockStart < 0 || blockEnd < 0) throw new Error('bundle-host source identity block markers not found');
+  const block = source.slice(blockStart, blockEnd);
+  const select = (root: string, receipt = '') => spawnSync('bash', ['-c', 'set -euo pipefail; REPO_ROOT="$1"; source "$2"; COMMITTED_NODE=(node);\n' + block + '\nprintf "%s" "$SOURCE_SHA"', '_', root, COMMON_SCRIPT],
+    { encoding: 'utf8', env: { ...process.env, PAPERCUSP_BUNDLE_HOST_COMMON_LOADED: '', VERIFY_TAURI_SOURCE_RECEIPT: receipt } });
   function snapshotRoot() {
     // Match the maintained verifier's ignored scratch boundary. An unignored
     // fixture is rightly refused by the committed-source loader before receipt
@@ -199,9 +257,9 @@ describe('WI-10007604 — frozen host source identity', () => {
       expect(imported.status, imported.stderr).toBe(0);
       const expected = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
       const rootBlock = source.slice(source.indexOf('REPO_ROOT="$(cd'), source.indexOf('# Node helpers run'));
-      const selected = spawnSync('bash', ['-c', 'set -euo pipefail; OPERATOR_DIR="$1/apps/operator"; COMMITTED_NODE=(node);\n' +
-        rootBlock + '\n' + block + '\nprintf "%s" "$SOURCE_SHA"', '_', alias],
-      { encoding: 'utf8', env: { ...process.env, VERIFY_TAURI_SOURCE_RECEIPT: '' } });
+      const selected = spawnSync('bash', ['-c', 'set -euo pipefail; OPERATOR_DIR="$1/apps/operator";\n' +
+        rootBlock + '\nsource "$2"; COMMITTED_NODE=(node);\n' + block + '\nprintf "%s" "$SOURCE_SHA"', '_', alias, COMMON_SCRIPT],
+      { encoding: 'utf8', env: { ...process.env, PAPERCUSP_BUNDLE_HOST_COMMON_LOADED: '', VERIFY_TAURI_SOURCE_RECEIPT: '' } });
       expect(selected.status, selected.stderr).toBe(0);
       expect(selected.stdout).toBe(expected);
       const entry = join(dir, 'entry.ts'), outfile = join(dir, 'bundle.mjs');
@@ -216,6 +274,31 @@ describe('WI-10007604 — frozen host source identity', () => {
 });
 
 describe('EI-25446866026477971 — host build paths across the package-cache reader', () => {
+  it('keeps child timeout output tied to its fixture phase', () => {
+    const diagnostic = hostReaderStageDiagnostic('compile-selected-path', 25_000, 25_000, {
+      status: null,
+      signal: 'SIGTERM',
+      error: Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+      stdout: 'cache reader waiting',
+      stderr: '',
+    });
+
+    expect(diagnostic).toContain('stage=compile-selected-path elapsedMs=25000 timeoutMs=25000');
+    expect(diagnostic).toContain('status=null signal=SIGTERM errorCode=ETIMEDOUT');
+    expect(diagnostic).toContain('cache reader waiting');
+  });
+
+  it('bounds a stalled reader child and reports the phase that timed out', () => {
+    const stalled = runHostReaderStage(
+      'stalled-cache-reader', ['-e', 'setTimeout(() => {}, 5_000)'], REPO_ROOT, 100,
+    );
+
+    expect(stalled.result.status).toBeNull();
+    expect(stalled.result.error?.code).toBe('ETIMEDOUT');
+    expect(stalled.diagnostic).toContain('stage=stalled-cache-reader');
+    expect(stalled.diagnostic).toContain('errorCode=ETIMEDOUT');
+  });
+
   it.each([
     { label: 'documented defaults', args: [], entry: 'bin/hono-host.ts', outfile: 'dist-host/hono-host.mjs' },
     { label: 'relative paths with spaces', args: ['bin/other host.ts', 'dist-other/host output.mjs'], entry: 'bin/other host.ts', outfile: 'dist-other/host output.mjs' },
@@ -231,18 +314,24 @@ describe('EI-25446866026477971 — host build paths across the package-cache rea
       const entryPath = join(operatorDir, entry), outputPath = join(operatorDir, outfile);
       mkdirSync(dirname(entryPath), { recursive: true });
       writeFileSync(entryPath, 'console.log("reader-relative-entry");\n');
-      const selection = spawnSync('bash', ['-c', 'OPERATOR_DIR="$1"; shift;\n' + block + '\nprintf "%s\\0%s" "$ENTRY" "$OUTFILE"', '_', operatorDir, ...args], { encoding: 'utf8' });
-      expect(selection.status, selection.stderr).toBe(0);
+      const selectionStartedAt = performance.now();
+      const selection = spawnSync('bash', ['-c', 'OPERATOR_DIR="$1"; shift;\n' + block + '\nprintf "%s\\0%s" "$ENTRY" "$OUTFILE"', '_', operatorDir, ...args], { encoding: 'utf8', timeout: 5_000 });
+      const selectionDiagnostic = hostReaderStageDiagnostic(
+        'path-selection', Math.round(performance.now() - selectionStartedAt), 5_000, selection,
+      );
+      expect(selection.status, selectionDiagnostic).toBe(0);
       const [selectedEntry, selectedOutput] = selection.stdout.split('\0');
       const reader = [join(REPO_ROOT, 'scripts/npm-install-safe.mjs'), '--repo-root', dir,
         '--exec-under-cache-lock', '--', join(REPO_ROOT, 'node_modules/esbuild/bin/esbuild')];
-      const wrongBase = spawnSync(process.execPath, [...reader, entry, '--bundle', '--platform=node', '--format=esm', '--outfile=' + outfile], { cwd: operatorDir, encoding: 'utf8' });
-      expect(wrongBase.status).not.toBe(0);
-      expect(wrongBase.stderr).toContain('Could not resolve');
+      const wrongBase = runHostReaderStage(
+        'wrong-base-compile', [...reader, entry, '--bundle', '--platform=node', '--format=esm', '--outfile=' + outfile], operatorDir,
+      );
+      expect(wrongBase.result.status, wrongBase.diagnostic).not.toBe(0);
+      expect(wrongBase.result.stderr, wrongBase.diagnostic).toContain('Could not resolve');
       expect(existsSync(outputPath)).toBe(false);
-      const compile = spawnSync(process.execPath, [...reader,
-        selectedEntry, '--bundle', '--platform=node', '--format=esm', '--outfile=' + selectedOutput], { cwd: operatorDir, encoding: 'utf8' });
-      expect(compile.status, compile.stderr).toBe(0);
+      const compile = runHostReaderStage('selected-path-compile', [...reader,
+        selectedEntry, '--bundle', '--platform=node', '--format=esm', '--outfile=' + selectedOutput], operatorDir);
+      expect(compile.result.status, compile.diagnostic).toBe(0);
       expect(readFileSync(outputPath, 'utf8')).toContain('reader-relative-entry');
       expect(existsSync(join(dir, outfile))).toBe(false);
     } finally {

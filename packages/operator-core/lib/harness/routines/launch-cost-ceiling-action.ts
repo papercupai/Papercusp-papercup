@@ -23,10 +23,11 @@ import { operatorHomeHarnessSlug } from '../operator-home-harness';
  *     absolute ceiling alone cannot see a creep until it is already a crisis.
  *  2. ABSOLUTE CEILING — the recent median against a hard number. This catches the
  *     structurally-broken state the regression leg goes quiet about once a bad
- *     level becomes the new normal: a fleet member's compaction limit is 250,000,
- *     so a launch median near it means sessions BREACH their 90% steer point at
- *     birth, before a single tool call. Measured on 2026-09-17: median 305,926 with
- *     p90 391,756 — sessions were being born past their own ceiling.
+ *     level becomes the new normal: a launch median above
+ *     `MAX_FLEET_MEMBER_LAUNCH_TOKENS` leaves a fleet member less than
+ *     `MIN_FLEET_MEMBER_LAUNCH_HEADROOM_PCT` of its compaction limit for work, so it
+ *     reaches its steer points almost at birth. Measured on 2026-09-17: median
+ *     305,926 with p90 391,756 — sessions were being born past their own ceiling.
  *
  * Both legs carry a `<= 0` env kill switch, and the alarm is debounced per LEG
  * through the shared fires ledger — a level that stays bad is not new news nightly,
@@ -48,6 +49,7 @@ import { scanLaunchTranscripts, type ScanReport } from '../../launch-cost/scan-l
 import { recentWatchdogFires, recordFire } from '../../pot/watchdog';
 import { openEscalation } from '../../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+import { MAX_FLEET_MEMBER_LAUNCH_TOKENS } from '../../agent-config-constants';
 
 /** Synthetic identity for the background launch-cost escalation (mirrors the sibling watchdogs'). */
 const LAUNCH_COST_IDENTITY: AgentIdentity = {
@@ -63,11 +65,13 @@ export const DEFAULT_RECENT_DAYS = 2;
 /** Days immediately before the recent window that form the comparison baseline. */
 export const DEFAULT_BASELINE_DAYS = 7;
 /**
- * Absolute median ceiling. 250,000 is not arbitrary: it is the fleet-member
- * compaction limit (`COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP`), so a launch
- * median at or above it means such a session is past its 90% steer point at birth.
+ * Absolute median ceiling. DERIVED, not copied: it is the largest launch context a
+ * fleet member can carry while keeping its required headroom
+ * (`MAX_FLEET_MEMBER_LAUNCH_TOKENS`, from `COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP`).
+ * It used to be a hand-copied 250,000 equal to the cap itself, which alarmed only once
+ * members were already born at 100% of their limit (EI-27206933955519499).
  */
-export const DEFAULT_CEILING_TOKENS = 250_000;
+export const DEFAULT_CEILING_TOKENS = MAX_FLEET_MEMBER_LAUNCH_TOKENS;
 /** Fractional growth of recent-vs-baseline median that counts as a regression. */
 export const DEFAULT_REGRESSION_PCT = 0.2;
 /** One alarm LEG stays debounced this long. A bad level is not new news every night. */

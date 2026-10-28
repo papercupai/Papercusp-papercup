@@ -1180,9 +1180,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   {
     family: 'plan-blind-review-posted',
     keyTemplate: 'plan:blind-review-posted:<slug>',
-    fireProves: 'condition',
     params: [{ name: 'slug', required: true, describe: 'the plan slug awaiting a blind review post' }],
-    describe: 'A blind review and its required session receipt persisted. Payload includes reviewId, activationAuditSeq and outcome; posting does not prove conclusive review or acceptance.',
+    describe: 'A blind review and its required session receipt persisted. Payload includes reviewId, activationAuditSeq and outcome; filter by activationAuditSeq for a specific audit. Posting does not prove conclusive review or acceptance.',
     emitter: 'plans:blind-review op post (packages/operator-core/lib/agent-tools/plans/blind-review.ts)',
     exists: true,
     replacesPoll: 're-polling blind-review sessions for a posted review',

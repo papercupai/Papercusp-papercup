@@ -2992,10 +2992,15 @@ export async function checkCompactionCompliance(
           else if (bootFloor != null) bootBudgetHeld.delete(r.owner_id);
           const held = bootBudgetHeld.get(r.owner_id);
           const safeLimit = Math.max(budget.limit, held != null && held <= budget.ceiling ? held : 0);
-          const selfSetCeiling = selfSetCeilingForWindow(liveWindow, { fleetMember });
           let apply: number | null = null;
           if (r.compaction_limit_explicit) {
-            if (r.compaction_limit > selfSetCeiling) apply = selfSetCeiling;
+            // WI-6554700010042435: an explicit limit is clamped to the WINDOW ceiling only.
+            // Every explicit writer enforces the member role cap at write time (the self
+            // and cross-session setters refuse over-cap writes; the launch seed clamps), and
+            // the only way past it is a verified owner directive. Re-clamping explicit values
+            // to the member cap here silently undid that owner-authorized raise next sweep.
+            const explicitCeiling = selfSetCeilingForWindow(liveWindow, { fleetMember: false });
+            if (r.compaction_limit > explicitCeiling) apply = explicitCeiling;
           } else if (r.compaction_limit > safeLimit) {
             apply = safeLimit;
           } else if (r.compaction_limit < safeLimit) {

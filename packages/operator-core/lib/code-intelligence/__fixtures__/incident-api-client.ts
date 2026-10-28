@@ -208,11 +208,18 @@ try {
     delivered = await postIncident();
   }
   assert.match(delivered.text, /Code intelligence \(incident\)/);
-  assert.match(delivered.text, /Recently changed symbols.*incidentTarget:a-target\.ts:1/);
-  assert(delivered.text.includes(id), delivered.text);
-  assert.match(delivered.text, /file-edit-ledger/);
+  // WI-6554700010042393: the measured answers lead the leg, so they survive the
+  // CODE_INTEL_PUSH_MAX_CHARS cap even when a `Next:` line is present.
+  assert.match(delivered.text, /Recently changed symbols \(measured ledger attribution\): incidentTarget:a-target\.ts:1/);
   assert(delivered.text.includes(String(failure.id)), delivered.text);
-  assert.match(delivered.text, /cause, runtime execution and dynamic dispatch are unknown/);
+  // Lower-priority lines are inline, or the omitted-lines marker accounts for them (P-005).
+  const omittedTail = /\(\+\d+ lines? omitted; static snapshot lower bounds; runtime unknown\)$/.test(delivered.text);
+  const workLine = delivered.text.split('\n').find(line => line.startsWith('Work items changed/open on these paths:'));
+  if (workLine) {
+    assert(workLine.includes(id), workLine);
+    assert.match(workLine, /file-edit-ledger/);
+  } else assert(omittedTail, delivered.text);
+  assert(/cause, runtime execution and dynamic dispatch are unknown/.test(delivered.text) || omittedTail, delivered.text);
   const rows = await getOrgPg().sql<{ id: string; subject: string; chars: number; cited_paths: string[] }[]>`
     SELECT id, subject, chars, cited_paths FROM harness_shared.code_intel_pushes
     WHERE workspace_id = ${workspace} AND owner_id = 'native-incident-private-owner' AND leg = 'incident'`;
@@ -387,9 +394,12 @@ async function runNativeSnapshotJourney({ call, workspace, root, owner, repo, en
   if (leg === 'first-touch') {
     assert.match(delivered.text, /firstTouchTarget:1 >=1 static calls/);
     // P-006: the covering test is inline; a `Next: testing:run …` line appears only for a
-    // session whose tools/list included testing:run (this fixture's owner never listed tools).
+    // session whose tools/list included testing:run. Since 5ba0c6af3e this owner's list is
+    // recorded, so the pointer can push the caveat line past the cap.
     assert.match(delivered.text, new RegExp(`Tests with static import reach[^:]*: ${testPath.replace(/\./g, '\\.')}\\.`), delivered.text);
-    assert.match(delivered.text, /dynamic dispatch.*runtime execution are unknown/);
+    // P-005: the caveat is inline, or the omitted-lines marker carries its qualifier.
+    assert.match(delivered.text,
+      /dynamic dispatch.*runtime execution are unknown|\(\+\d+ lines? omitted; static snapshot lower bounds; runtime unknown\)$/);
   } else {
     assert(delivered.text.includes(`firstTouchTarget: definition ${target}:1`), delivered.text);
     assert.match(delivered.text, /@fixture\/consumer: 1/);

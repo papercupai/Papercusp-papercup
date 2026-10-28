@@ -773,9 +773,10 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
   });
 
   // The member figure is COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP, raised 200k → 250k
-  // by owner directive 2026-09-02 (WI-2142006) as deliberate headroom alongside the
-  // claim-time brief budget going 14k → 50k chars. Leader/solo stay at 400k.
-  it('shapes the [1m] default by fleet role: member → 250k, leader/solo → 450k (owner directives 2026-09-02, raised 2026-09-21)', async () => {
+  // by owner directive 2026-09-02 (WI-2142006), then 250k → 400k (WI-6554700010042436)
+  // once the measured carry-respawn baseline (~195-213k) reached 79-85% of the 250k
+  // limit at birth. Leader/solo stay at 450k.
+  it('shapes the [1m] default by fleet role: member → 400k, leader/solo → 450k (owner directives 2026-09-02, raised 2026-09-21; member raised 2026-10-28)', async () => {
     specMock.mockResolvedValue('sonnet[1m]:high');
     const out = await checkCompactionCompliance(
       fakeSql({
@@ -792,10 +793,10 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
       }),
     );
     expect(out.seeded).toEqual(['su-member', 'su-leader', 'su-solo', 'su-spawned-member']);
-    expect(setLimitMock).toHaveBeenCalledWith('su-member', 250_000, { explicit: false });
+    expect(setLimitMock).toHaveBeenCalledWith('su-member', 400_000, { explicit: false });
     expect(setLimitMock).toHaveBeenCalledWith('su-leader', 450_000, { explicit: false });
     expect(setLimitMock).toHaveBeenCalledWith('su-solo', 450_000, { explicit: false });
-    expect(setLimitMock).toHaveBeenCalledWith('su-spawned-member', 250_000, { explicit: false });
+    expect(setLimitMock).toHaveBeenCalledWith('su-spawned-member', 400_000, { explicit: false });
   });
 
   it('honors the spawn record: explicit tier limit > recorded spec default > resolver (D-006)', async () => {
@@ -1866,7 +1867,7 @@ describe('force rung (agent-managed-compaction P-012, carry-respawn under P-022)
 });
 
 describe('live-config reach (agent-managed-compaction P-017)', () => {
-  it('lowers a stale-above-cap limit on a running MEMBER to the current shaped default (250k)', async () => {
+  it('lowers a stale-above-cap limit on a running MEMBER to the current shaped default (400k)', async () => {
     estimateMock.mockResolvedValue(40_000); // under the new limit ⇒ no force
     specMock.mockResolvedValue('sonnet[1m]:high');
     const out = await checkCompactionCompliance(
@@ -1883,9 +1884,9 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
         ],
       }),
     );
-    expect(setLimitMock).toHaveBeenCalledWith('stale', 250_000);
-    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 250_000 }]);
-    expect(out.overLimit).toEqual([]); // 40k < the corrected 250k
+    expect(setLimitMock).toHaveBeenCalledWith('stale', 400_000);
+    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 400_000 }]);
+    expect(out.overLimit).toEqual([]); // 40k < the corrected 400k
   });
 
   it('preserves an explicit 680k runtime override below the measured self-set ceiling', async () => {
@@ -1906,6 +1907,27 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
     expect(setLimitMock).not.toHaveBeenCalled();
     expect(out.relimited).toEqual([]);
     expect(out.overLimit).toEqual([]);
+  });
+
+  it('preserves an explicit FLEET-MEMBER limit above the member role cap (owner-directive raise, WI-6554700010042435)', async () => {
+    estimateMock.mockResolvedValue(40_000);
+    contextWindowMock.mockResolvedValue(828_400);
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [
+          {
+            owner_id: 'raised-member',
+            owner_label: 'su · raised-member',
+            compaction_limit: 600_000,
+            compaction_limit_explicit: true,
+            fleet_slug: 'frozen-burndown',
+            fleet_role: 'member',
+          },
+        ],
+      }),
+    );
+    expect(setLimitMock).not.toHaveBeenCalled();
+    expect(out.relimited).toEqual([]);
   });
 
   it('lowers an explicit override only when it exceeds the measured self-set ceiling', async () => {
@@ -1960,34 +1982,39 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
   });
 
   it('a re-limit CASCADES: a now-over session (est between old & new limit) force-compacts the same pass', async () => {
-    estimateMock.mockResolvedValue(450_000); // < old 500k (was safe) but ≥ the new 250k
+    // < old 600k (was safe) but ≥ 1.3 × the new 400k = 520k, the P-012 force rung
+    // (FORCE_COMPACT_FRACTION). At 450k the session is over-limit but inside the
+    // grace band, so it would warn without force-compacting.
+    estimateMock.mockResolvedValue(530_000);
     specMock.mockResolvedValue('sonnet[1m]');
     findLiveHostMock.mockReturnValue({ sock: '/tmp/stale.sock', caps: ['compact'] });
     hostSupportsMock.mockReturnValue(true);
     const out = await checkCompactionCompliance(
       fakeSql({
         seeded: [
-          { owner_id: 'stale', owner_label: 'su · stale', compaction_limit: 500_000, fleet_slug: 'backlog-clearance', fleet_role: 'member' },
+          { owner_id: 'stale', owner_label: 'su · stale', compaction_limit: 600_000, fleet_slug: 'backlog-clearance', fleet_role: 'member' },
         ],
       }),
     );
-    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 250_000 }]);
-    expect(out.overLimit).toEqual(['stale']); // 450k ≥ the corrected 250k
+    expect(out.relimited).toEqual([{ owner: 'stale', from: 600_000, to: 400_000 }]);
+    expect(out.overLimit).toEqual(['stale']); // 530k ≥ the corrected 400k
     expect(out.forceCompacted).toEqual(['stale']); // and the P-012 rung fires on the corrected limit
   });
 });
 
 describe('gateway observed total-input floor semantics', () => {
   it('does not re-limit or skip ordinary over-limit handling for a high total-input floor', async () => {
-    estimateMock.mockResolvedValue(300_000);
-    observedPromptFloorMock.mockReturnValue({ tokens: 396_171, observations: 3, at: Date.now() });
+    // Floor ≥ the member default (400k), so the P-009 R-9 boot budget treats it as
+    // reducible history and does NOT raise the limit — the scenario this test pins.
+    estimateMock.mockResolvedValue(450_000);
+    observedPromptFloorMock.mockReturnValue({ tokens: 496_171, observations: 3, at: Date.now() });
     contextWindowMock.mockResolvedValue(1_000_000);
     const out = await checkCompactionCompliance(
       fakeSql({
         seeded: [{
           owner_id: 'floor-bound',
           owner_label: 'su · floor-bound',
-          compaction_limit: 250_000,
+          compaction_limit: 400_000,
           compaction_limit_explicit: false,
           fleet_slug: 'nonp2p-bug-drain-luna-max-50',
           fleet_role: 'member',

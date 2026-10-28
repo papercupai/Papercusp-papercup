@@ -249,6 +249,20 @@ export interface CodexOAuthAdapterOptions {
    * Null ⇒ legacy rotation (a sibling can serve now, or nothing recovers soon).
    */
   transientRecovery?(): { accountId: string; recoverAt: number } | null;
+  /**
+   * Spread a transient hold's wake-up across `[0, transientHoldJitterMs)` so every request held
+   * for the same recovering account does not land on it in one tick and re-trip its burst limit.
+   * Default 0 (no jitter). `random` is injectable for tests (default Math.random).
+   */
+  transientHoldJitterMs?: number;
+  random?(): number;
+  /**
+   * WI-6554700010042440: pick the account to rotate an `account-unavailable` request onto —
+   * the health-best account NOT in `exclude` that can serve NOW. Null ⇒ no such account, so the
+   * request is shed at once with the pool horizon instead of walking walled accounts (each a
+   * permit-queue wait that can only fail again). Absent ⇒ legacy `pool.active()` rotation.
+   */
+  selectRotation?(exclude: ReadonlySet<string>): { accountId: string } | null;
   now?(): number;
 }
 
@@ -781,9 +795,21 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
               auth = undefined;
               authAccount = '';
               const route = routeFor(account, 'rotate', context.currentRoute?.value.modelMode ?? 'public');
-              // +50ms: land just after the pause lifts, not on the boundary tick.
-              return { ...route, delayMs: Math.max(0, recovery.recoverAt - now()) + 50 };
+              // +50ms: land just after the pause lifts, not on the boundary tick. The jitter keeps
+              // every held request from re-hitting the account in the same instant.
+              const jitterMs = Math.floor(Math.max(0, opts.transientHoldJitterMs ?? 0) * (opts.random ?? Math.random)());
+              return { ...route, delayMs: Math.max(0, recovery.recoverAt - now()) + 50 + jitterMs };
             }
+          }
+          if (opts.selectRotation) {
+            const pick = opts.selectRotation(triedAccounts);
+            if (!pick || triedAccounts.has(pick.accountId)) return null;
+            const account = opts.accounts().find(candidate => candidate.accountId === pick.accountId);
+            if (!account) return null;
+            triedAccounts.add(account.accountId);
+            auth = undefined;
+            authAccount = '';
+            return routeFor(account, 'rotate', context.currentRoute?.value.modelMode ?? 'public');
           }
           const next = opts.pool?.active();
           if (!next || triedAccounts.has(next.accountId)) return null;

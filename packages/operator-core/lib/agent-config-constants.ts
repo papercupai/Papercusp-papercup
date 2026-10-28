@@ -1216,12 +1216,16 @@ export const SUPERSEDED_1M_LEADER_CAPS: readonly number[] = [500_000, 400_000];
  * per-turn cache spend. LEADERS keep the full COMPACTION_LIMIT_DEFAULT_1M_CAP:
  * long-lived supervision state is expensive to re-derive after compaction.
  *
- * The current 250k member policy is owner-directed, reversible headroom
- * (2026-09-02, WI-2142006) and was retained after the matched context-policy
- * comparison (measured-agent-productivity-2026-09-06 D-009). Keep historical
- * rationale in those decisions; this source comment describes only the policy
- * the constant enforces now. Previous derived values that the watchdog must
- * recognize remain encoded in SUPERSEDED_1M_FLEET_MEMBER_CAPS.
+ * The current 400k member policy exists because the LAUNCH baseline outgrew the
+ * previous 250k cap: a carry-respawned member measured 195k-213k tokens before its
+ * first tool call (2026-10-28, four sessions; EI-27206933955519499), i.e. 79-85% of
+ * a 250k limit, so the soft-limit nudge fired on arrival and members compacted in a
+ * loop. The cap must leave {@link MIN_FLEET_MEMBER_LAUNCH_HEADROOM_PCT} of the limit
+ * free above that baseline; {@link MAX_FLEET_MEMBER_LAUNCH_TOKENS} is the derived
+ * launch budget the `system:launch-cost-ceiling` routine alarms against. Decision
+ * record: frozen-lineage-red-burndown-2026-10-27 (supersedes the owner-directed 250k
+ * of WI-2142006, which was itself reversible headroom). Previous derived values that
+ * the watchdog must recognize remain encoded in SUPERSEDED_1M_FLEET_MEMBER_CAPS.
  *
  * This shapes the seeded DEFAULT (and, as the fleet-member ceiling in
  * clampCompactionLimit, caps a member's self-set) — a promotion to LEADER re-seeds
@@ -1232,7 +1236,25 @@ export const SUPERSEDED_1M_LEADER_CAPS: readonly number[] = [500_000, 400_000];
  * between 200k and 250k. A Codex member on the measured 258_400 window now seeds
  * 207_000 (its own derivation) instead of being held at 200_000 by this cap.
  */
-export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 250_000;
+export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 400_000;
+
+/**
+ * Share of a fleet member's compaction limit, in whole percent, that must still be
+ * free once its launch context (system prompt + tool catalog + carry document) has
+ * loaded. Below it, a member is born near its 80-90% steer points and spends its
+ * life compacting instead of working (EI-27206933955519499).
+ */
+export const MIN_FLEET_MEMBER_LAUNCH_HEADROOM_PCT = 40;
+
+/**
+ * The largest launch context a fleet member can carry and still keep
+ * {@link MIN_FLEET_MEMBER_LAUNCH_HEADROOM_PCT} of its limit for work. DERIVED from
+ * the member cap, so moving the cap moves the launch-cost alarm with it
+ * (`DEFAULT_CEILING_TOKENS` in harness/routines/launch-cost-ceiling-action.ts).
+ * Integer arithmetic on purpose: a float fraction can floor 240_000 to 239_999.
+ */
+export const MAX_FLEET_MEMBER_LAUNCH_TOKENS =
+  (COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP * (100 - MIN_FLEET_MEMBER_LAUNCH_HEADROOM_PCT)) / 100;
 
 /** Derive the maximum safe limit for a DELIBERATE runtime override from a
  * measured effective model window. Unlike the seeded default, this deliberately
@@ -1362,10 +1384,12 @@ export function derivesFrom1mWindow(spec?: string | null): boolean {
  * this: pinned at 200_000 against a true 1M window while the cap had moved to
  * 250_000, so every successor crossed the line within ~8 minutes and was cut again.
  *
- * History: 300_000 (2026-07-03) → 200_000 (owner directive 2026-07-19) → current
- * {@link COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP}. APPEND the outgoing value
- * here whenever that cap changes; the current value is filtered out automatically. */
-export const SUPERSEDED_1M_FLEET_MEMBER_CAPS: readonly number[] = [300_000, 200_000];
+ * History: 300_000 (2026-07-03) → 200_000 (owner directive 2026-07-19) → 250_000
+ * (owner directive 2026-09-02, WI-2142006) → current
+ * {@link COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP} (2026-10-28,
+ * EI-27206933955519499). APPEND the outgoing value here whenever that cap changes;
+ * the current value is filtered out automatically. */
+export const SUPERSEDED_1M_FLEET_MEMBER_CAPS: readonly number[] = [300_000, 200_000, 250_000];
 
 /** Backend-aware twin of `defaultCompactionLimitForSpec` for a tier row. */
 export function defaultCompactionLimitForTier(

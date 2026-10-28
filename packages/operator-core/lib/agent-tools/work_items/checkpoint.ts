@@ -1227,7 +1227,7 @@ export default defineTool({
   description:
     'Write or clear work-item checkpoints. ' +
     'Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. ' +
-    'Checkpoints preserve successor continuity across task boundaries; replace-on-write by default, `append:true` joins prior text only when the full prior narrative and new append fit under the cap. ' +
+    'Writes replace by default; `append:true` preserves the full prior narrative only when combined text fits the cap. ' +
     // EI-20218215840085630: this clause used to read "block suspicious shrink",
     // which has been false since EI-20232176364474286 taught the tool to RETRY a
     // refused plain shrink as a safe append. The accurate statement lived only in

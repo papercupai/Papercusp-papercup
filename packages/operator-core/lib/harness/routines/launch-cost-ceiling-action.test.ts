@@ -17,6 +17,7 @@ import {
   runLaunchCostCeiling,
   MIN_SAMPLES,
 } from './launch-cost-ceiling-action';
+import { MAX_FLEET_MEMBER_LAUNCH_TOKENS } from '../../agent-config-constants';
 import type { DayStats, LaunchSample } from '../../launch-cost/launch-cost-metrics';
 import type { ScanReport } from '../../launch-cost/scan-launch-transcripts';
 
@@ -201,10 +202,13 @@ describe('evaluateLaunchCost — the detector that should have existed', () => {
     expect(evaluateLaunchCost(days, { ceilingTokens: 0, regressionPct: 0 }).legs).toEqual([]);
   });
 
-  it('pins the ceiling to the fleet-member compaction limit', () => {
-    // Not a magic number: a member session at this launch cost is past its 90% steer
-    // point at birth. If COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP moves, this moves.
-    expect(DEFAULT_CEILING_TOKENS).toBe(250_000);
+  it('pins the ceiling to the fleet-member launch-headroom rule', () => {
+    // Not a magic number: a member session at this launch cost has less than
+    // MIN_FLEET_MEMBER_LAUNCH_HEADROOM_PCT (40%) of its compaction limit left for work at
+    // birth. Derived from COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP — if the cap moves,
+    // this moves (400k cap -> 240k ceiling).
+    expect(DEFAULT_CEILING_TOKENS).toBe(MAX_FLEET_MEMBER_LAUNCH_TOKENS);
+    expect(DEFAULT_CEILING_TOKENS).toBe(240_000);
   });
 
   it('is order-insensitive — days need not arrive sorted', () => {

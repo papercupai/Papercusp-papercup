@@ -5,7 +5,7 @@ import { chmod, cp, lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } fr
 import { isDeepStrictEqual } from 'node:util';
 import { verifierSourceFiles, type VerifierSourceFile } from '@papercusp/test-config/verifier-source';
 import { captureVerifierDependencies, runVerifierDependencyCommand, verifyVerifierSource,
-  type prepareVerifierSource } from '../../../scripts/source-preview.mjs';
+  type prepareVerifierSource, type VerifierPhaseRunner } from '../../../scripts/source-preview.mjs';
 import { captureRuntimeTools, type RuntimeToolSources } from './blind-review-runtime-tools';
 import { buildRuntimeDesktop, type RuntimeDesktopToolchain } from './blind-review-runtime-desktop';
 
@@ -73,9 +73,11 @@ export class RuntimeBuildDependencyDrift extends Error {
   }
 }
 
-async function verifyInputs(root: string, source: Source, dependencies: Dependencies, stage = 'closure'): Promise<void> {
-  await verifyVerifierSource(root, source, { runtimeArtifacts: true });
-  const current = captureVerifierDependencies({ dest: root, receipt: source });
+async function verifyInputs(root: string, source: Source, dependencies: Dependencies, stage = 'closure',
+  runPhase: VerifierPhaseRunner = async (_phase, operation) => operation()): Promise<void> {
+  await runPhase('build.' + stage + '.source', () => verifyVerifierSource(root, source, { runtimeArtifacts: true }));
+  const current = await runPhase('deps.census', () => captureVerifierDependencies({ dest: root, receipt: source,
+    onProgress: progress => runPhase.reportProgress?.('deps.census', progress) }));
   if (!isDeepStrictEqual(current, dependencies)) {
     const flatten = (receipt: Dependencies) => new Map(receipt.trees.flatMap(tree => tree.files.map(file =>
       [tree.path + '/' + file.path, file] as const)));
@@ -101,15 +103,20 @@ export async function verifyRuntimeGeneratedInputs(root: string, source: Source,
 export async function buildRuntimeGeneratedInputs(options: {
   root: string; repositoryRoot: string; custodyRoot: string; source: Source; dependencies: Dependencies;
   signal?: AbortSignal;
+  /** Host-only existing verifier journal; no reviewer-selected path or logger. */
+  runPhase?: VerifierPhaseRunner;
   /** Host-only full runtime preparation; low-level build fixtures may omit it. */
   runtimeTools?: RuntimeToolSources;
   /** Production includes a desktop; fixtures may supply a tiny toolchain. */
   nativeDesktop?: { toolchain?: RuntimeDesktopToolchain };
 }): Promise<RuntimeGeneratedInputs> {
   const { source, dependencies, signal } = options;
+  const runPhase: VerifierPhaseRunner = options.runPhase ?? (async (_phase, operation) => operation());
+  const verify = (stage: string) => runPhase('build.' + stage + '.verify',
+    () => verifyInputs(root, source, dependencies, stage, runPhase));
   signal?.throwIfAborted();
   const root = await realpath(options.root);
-  await verifyInputs(root, source, dependencies);
+  await verify('initial');
   // Never adopt pre-existing generated output as evidence of this invocation.
   for (const path of DIRECTORIES) {
     const info = await lstat(join(root, path)).catch(error => {
@@ -134,26 +141,26 @@ export async function buildRuntimeGeneratedInputs(options: {
       VITE_BUILD_LOG: join(work, 'spa-build.log'), PAPERCUSP_RETAIN_DIST_CHUNKS: '0' };
     const run = (args: string[]) => runVerifierDependencyCommand('/bin/bash', args,
       { cwd: root, env, signal });
-    await run(['apps/operator/scripts/setup-porcupine-runtime.sh', '--source',
-      join(await realpath(options.repositoryRoot), 'apps/operator/public/porcupine/porcupine_params.pv')]);
-    await run(['scripts/pc-heavy.sh', '--', 'npm', '--workspace', '@papercusp/operator-vite', 'run', 'prebuild']);
-    await verifyInputs(root, source, dependencies, 'prebuild');
-    await run(['scripts/pc-heavy.sh', '--', 'npm', '--ignore-scripts', '--workspace', '@papercusp/operator-vite', 'run', 'build']);
+    const model = join(await realpath(options.repositoryRoot), 'apps/operator/public/porcupine/porcupine_params.pv');
+    await runPhase('build.runtime-assets', () => run(['apps/operator/scripts/setup-porcupine-runtime.sh', '--source', model]));
+    await runPhase('build.prebuild', () => run(['scripts/pc-heavy.sh', '--', 'npm', '--workspace', '@papercusp/operator-vite', 'run', 'prebuild']));
+    await verify('prebuild');
+    await runPhase('build.spa', () => run(['scripts/pc-heavy.sh', '--', 'npm', '--ignore-scripts', '--workspace', '@papercusp/operator-vite', 'run', 'build']));
     // The maintained singleflight wrapper owns its staged output variables and
     // publishes <VITE_BUILD_OUT_ROOT>/dist. Copy only that completed tree into
     // the measured closure; private markers and build logs stay outside it.
     await cp(join(work, 'spa-build/dist'), join(root, 'apps/operator/dist-verify/spa'),
       { recursive: true, force: false, errorOnExist: true });
-    await verifyInputs(root, source, dependencies, 'spa');
-    await run(['apps/operator/bin/bundle-host.sh', 'bin/hono-host.ts',
-      join(root, 'apps/operator/dist-verify/hono-host.mjs')]);
-    await verifyInputs(root, source, dependencies, 'host');
-    if (options.nativeDesktop) await buildRuntimeDesktop({ root, work, sourceCommit: source.sourceCommit,
-      env, signal, toolchain: options.nativeDesktop.toolchain });
-    if (options.runtimeTools) await captureRuntimeTools(join(root, 'apps/operator/dist-verify/runtime'),
-      options.runtimeTools, signal);
-    await verifyInputs(root, source, dependencies, 'runtime-tools');
-    const files = (await census(root, source)).map(file => Object.freeze(file));
+    await verify('spa');
+    await runPhase('build.host', () => run(['apps/operator/bin/bundle-host.sh', 'bin/hono-host.ts',
+      join(root, 'apps/operator/dist-verify/hono-host.mjs')]));
+    await verify('host');
+    if (options.nativeDesktop) await runPhase('build.native', () => buildRuntimeDesktop({ root, work, sourceCommit: source.sourceCommit,
+      env, signal, toolchain: options.nativeDesktop!.toolchain }));
+    if (options.runtimeTools) await runPhase('build.runtime-tools', () => captureRuntimeTools(join(root, 'apps/operator/dist-verify/runtime'),
+      options.runtimeTools, signal));
+    await verify('runtime-tools');
+    const files = (await runPhase('build.outputs.census', () => census(root, source))).map(file => Object.freeze(file));
     const receipt = Object.freeze({ version: 1 as const, sourceReceiptSha256: sha(source),
       dependenciesSha256: sha(dependencies), files: Object.freeze(files) });
     produced.add(receipt);

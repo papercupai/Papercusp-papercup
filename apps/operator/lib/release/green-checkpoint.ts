@@ -3540,8 +3540,11 @@ export function armSelfWatchdog(
   opts: {
     /** Maximum permitted idle interval between real phase/command/output progress. */
     ms?: number;
-    /** Absolute wall-clock ceiling. Progress can never extend this deadline. */
-    hardCeilingMs?: number;
+    /** Absolute wall-clock ceiling. Progress can never extend this deadline. `null` means NO
+     *  absolute ceiling: only the idle (no-progress) budget can fire, until tighten() sets one.
+     *  WI-6554700010042457: the main-greening CLI run passes null — a run that keeps making
+     *  progress is never killed for being slow. */
+    hardCeilingMs?: number | null;
     kill?: (pid: number, signal: NodeJS.Signals) => void;
     pid?: number;
     log?: (msg: string) => void;
@@ -3565,7 +3568,8 @@ export function armSelfWatchdog(
   } = {},
 ): SelfWatchdogHandle {
   const ms = Math.max(1, opts.ms ?? SELF_WATCHDOG_MS);
-  const hardCeilingMs = Math.max(1, opts.hardCeilingMs ?? SELF_WATCHDOG_MS);
+  const hardCeilingMs =
+    opts.hardCeilingMs === null ? null : Math.max(1, opts.hardCeilingMs ?? SELF_WATCHDOG_MS);
   const pid = opts.pid ?? process.pid;
   const kill =
     opts.kill ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
@@ -3582,8 +3586,9 @@ export function armSelfWatchdog(
   const startedAtMs = Date.now();
   let lastProgressAtMs = startedAtMs;
   // WI-6554700010009615: mutable because tighten() can pull the ceiling IN (never out).
-  let hardDeadlineAtMs = startedAtMs + hardCeilingMs;
-  let effectiveHardCeilingMs = hardCeilingMs;
+  // An unbounded run's deadline is +Infinity until tighten() pulls a finite one in.
+  let hardDeadlineAtMs = hardCeilingMs === null ? Number.POSITIVE_INFINITY : startedAtMs + hardCeilingMs;
+  let effectiveHardCeilingMs = hardCeilingMs ?? Number.POSITIVE_INFINITY;
   let tightenedBecause: string | null = null;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let hardTimer: ReturnType<typeof setTimeout> | undefined;
@@ -3690,8 +3695,10 @@ export function armSelfWatchdog(
     unref(idleTimer);
   };
   // Arm the absolute timer first so an exact tie cannot be misclassified as an idle timeout.
-  hardTimer = setTimeout(() => fire("absolute-hard-ceiling"), hardCeilingMs);
-  unref(hardTimer);
+  if (hardCeilingMs !== null) {
+    hardTimer = setTimeout(() => fire("absolute-hard-ceiling"), hardCeilingMs);
+    unref(hardTimer);
+  }
   scheduleIdleTimer();
   return {
     cancel: () => {
@@ -27092,11 +27099,12 @@ if (require.main === module) {
       // canceled on every normal exit path below, so it only ever fires when this run
       // misses its configured deadline (see armSelfWatchdog's doc comment).
       const selfWatchdog = selfWatchdogConfigFromEnv();
-      // The transported manual deadline is the resettable IDLE budget. Progress may extend a
-      // healthy late phase, but never beyond the independent 3h ceiling that also bounds the
-      // scheduled parent-death backstop. Keep this ceiling explicit at the CLI seam so progress
-      // can never become an unbounded keepalive.
-      const hardCeilingMs = SELF_WATCHDOG_MS;
+      // The transported manual deadline is the resettable IDLE budget: the run dies only after
+      // that long with NO phase/command/output progress. WI-6554700010042457 (Avi #2574): there
+      // is no absolute wall-clock ceiling on a main-greening run. A run that keeps progressing
+      // runs to its verdict however long it takes. The post-verdict funnel still tightens a
+      // finite ceiling once the verdict exists (enterPostVerdictPhase).
+      const hardCeilingMs = null;
       // WI-6554700010019444: the verdict the return funnel already rendered (set by
       // enterPostVerdictPhase below). Non-null means a kill from here on is post-verdict.
       let postVerdictResult: CheckpointResult | null = null;

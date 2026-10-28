@@ -4334,6 +4334,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** WI-6554700010042440: the longest a Codex request waits for a TRANSIENT account pause (an
    *  upstream burst 429 with a few-second reset) instead of being shed with a gateway 429. */
   const CODEX_TRANSIENT_RECOVERY_WAIT_MAX_MS = 15_000;
+  /** Spread held requests' wake-ups over this window so they do not re-trip the burst limit together. */
+  const CODEX_TRANSIENT_HOLD_JITTER_MS = 1_500;
   /** When NO codex account can serve now but one returns within the transient bound, name it and
    *  its return instant. Null when a sibling is serviceable now (legacy rotation is correct) or
    *  every return is far off (a usage wall: shedding with retry-after is correct). */
@@ -9324,6 +9326,33 @@ export function createInferenceGateway(deps: GatewayDeps) {
             log('warn', `inference-gateway: every Codex account is briefly paused → holding for '${recovery.accountId}' (${Math.max(0, recovery.recoverAt - Date.now())}ms) instead of shedding 429`);
           }
           return recovery;
+        },
+        transientHoldJitterMs: CODEX_TRANSIENT_HOLD_JITTER_MS,
+        // WI-6554700010042440: rotate a paced-out request onto the health-best UNTRIED account that
+        // can serve now — never walk usage-walled ones (each a permit wait that can only fail again).
+        // Null sheds at once with the pool horizon. Auth-parked accounts stay out; a model-refusing
+        // account is skipped for this request's model.
+        selectRotation: (exclude) => {
+          if (!codexCliPool) return null;
+          const at = Date.now();
+          let best: ActiveAccount | null = null;
+          let bestParked = Infinity;
+          let bestKey = Infinity;
+          for (const account of codexCliPool.entries?.() ?? []) {
+            if (exclude.has(account.accountId)) continue;
+            if (bodyModel && codexModelRefusals.isRefused(account.accountId, bodyModel)) continue;
+            const park = codexCliPool.parkState?.(account.accountId);
+            if (park?.cause === 'auth') continue;
+            const key = accountHealthKey(account, at);
+            if (key === Infinity) continue;
+            const parked = park ? 1 : 0;
+            if (!best || parked < bestParked || (parked === bestParked && key < bestKey)) {
+              best = account;
+              bestParked = parked;
+              bestKey = key;
+            }
+          }
+          return best;
         },
         upstreamUrl: codexBackendUrl(url),
         method: req.method ?? 'POST',

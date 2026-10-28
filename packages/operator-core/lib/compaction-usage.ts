@@ -524,28 +524,50 @@ const TOOL_USE_RESULT_KEY = ',"toolUseResult":';
  *  (\"type\":\"prompt_snapshot\") and cannot match. */
 const PROMPT_SNAPSHOT_MARKER = '"type":"prompt_snapshot"';
 
+/** WI-6554700010042482 (the same class as EI-23747373965813124, under new names):
+ *  Claude Code 2.1.312 (first seen 2026-10-28T01:38Z) writes three request-replay
+ *  record types per API call that never enter the model context — `api-request-shape`
+ *  (the full system prompt + tool list, ~300 KB on an su launch), `api-request-blob`
+ *  (each message body, keyed by hash) and `api-request` (params + blob hashes).
+ *  Counted at bytes/4 they made a live su gauge read 365,728 while the API billed
+ *  ~188k for the same request (633 KB of these lines ≈ 158k phantom tokens). They
+ *  are whole out-of-context LINES, discounted exactly like prompt_snapshot. Matched
+ *  only at LINE START (the record's own leading `{"type":…` key), so a line that
+ *  merely carries one of these strings inside its content keeps full weight. The
+ *  closing quote keeps `api-request` from matching the `-shape`/`-blob` variants. */
+const CLAUDE_REQUEST_RECORD_LINE_MARKERS = [
+  '{"type":"api-request-shape"',
+  '{"type":"api-request-blob"',
+  '{"type":"api-request"',
+] as const;
+
 /**
- * Byte ranges `[start, end)` of the COMPLETE prompt_snapshot lines in `visible`.
+ * Byte ranges `[start, end)` of the COMPLETE out-of-context whole lines in `visible`:
+ * prompt_snapshot lines plus Claude Code's api-request-* replay records.
  * Complete-only (both delimiters settled inside the slice) mirrors
  * `toolUseResultExcessIn`: a line clipped by the boundary-scan cap keeps full weight
- * so the estimate errs toward over-counting, never under.
+ * so the estimate errs toward over-counting, never under. Ranges are ascending and
+ * each line appears at most once.
  */
 function promptSnapshotRangesIn(visible: string): Array<[number, number]> {
-  const ranges: Array<[number, number]> = [];
-  let from = 0;
-  for (;;) {
-    const hit = visible.indexOf(PROMPT_SNAPSHOT_MARKER, from);
-    if (hit === -1) break;
-    const start = visible.lastIndexOf('\n', hit) + 1; // 0 when the slice starts mid-file
-    const nl = visible.indexOf('\n', hit);
-    if (nl === -1) break; // trailing partial line — leave it at full weight
-    from = nl + 1;
-    // Several markers on one line must discount that line exactly once.
-    const prev = ranges[ranges.length - 1];
-    if (prev && prev[0] === start) continue;
-    ranges.push([start, nl]);
-  }
-  return ranges;
+  const lineEndByStart = new Map<number, number>();
+  const collect = (marker: string, lineStartOnly: boolean): void => {
+    let from = 0;
+    for (;;) {
+      const hit = visible.indexOf(marker, from);
+      if (hit === -1) break;
+      const start = visible.lastIndexOf('\n', hit) + 1; // 0 when the slice starts mid-file
+      const nl = visible.indexOf('\n', hit);
+      if (nl === -1) break; // trailing partial line — leave it at full weight
+      from = nl + 1;
+      if (lineStartOnly && hit !== start) continue;
+      // Several markers on one line must discount that line exactly once.
+      if (!lineEndByStart.has(start)) lineEndByStart.set(start, nl);
+    }
+  };
+  collect(PROMPT_SNAPSHOT_MARKER, false);
+  for (const marker of CLAUDE_REQUEST_RECORD_LINE_MARKERS) collect(marker, true);
+  return [...lineEndByStart.entries()].sort((a, b) => a[0] - b[0]);
 }
 
 /**

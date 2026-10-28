@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { gzipSync } from 'node:zlib';
 import { verifierSourceFiles, type VerifierSourceFile } from '@papercusp/test-config/verifier-source';
 import { captureVerifierDependencies, prepareVerifierDependencies, prepareVerifierSource, runVerifierDependencyCommand,
-  verifyVerifierSource } from '../../../scripts/source-preview.mjs';
+  verifyVerifierSource, type VerifierPhaseRunner } from '../../../scripts/source-preview.mjs';
 import { buildRuntimeGeneratedInputs, verifyRuntimeGeneratedInputs,
   runtimeInputsMustBeRetained, type RuntimeGeneratedInputs } from './blind-review-generated-inputs';
 import { sealRuntimeSourceHandle } from './blind-review-source-seal';
@@ -266,7 +266,9 @@ export async function packRuntimeSourceImage(options: {
 /** The canonical entry point: the host resolves its repository and exact commit. */
 export async function prepareRuntimeSourceImage(options: {
   repositoryRoot: string; sourceCommit: string; custodyRoot: string; inputs: string[]; signal?: AbortSignal;
+  runPhase?: VerifierPhaseRunner;
 }): Promise<RuntimeSourceImage> {
+  const runPhase: VerifierPhaseRunner = options.runPhase ?? (async (_phase, operation) => operation());
   requireValue(/^[a-f0-9]{40,64}$/.test(options.sourceCommit), 'broker_requires_exact_commit');
   const custodyRoot = await realpath(options.custodyRoot);
   const owned = await mkdtemp(join(custodyRoot, 'broker-prepare-'));
@@ -278,23 +280,23 @@ export async function prepareRuntimeSourceImage(options: {
       // Cross-device snapshots consume an immutable dependency generation.
       // Publish/select the exact ref through the maintained install reader
       // before materializing source, rather than failing halfway through it.
-      await runVerifierDependencyCommand(process.execPath,
+      await runPhase('deps.generation', () => runVerifierDependencyCommand(process.execPath,
         [join(repositoryRoot, 'scripts/npm-install-safe.mjs'), '--exec-under-lock', '--', '/bin/bash',
           join(repositoryRoot, 'apps/operator/bin/release/dependency-generation.sh'),
           '--integration', repositoryRoot, '--ensure-ref', options.sourceCommit,
           '--retain-as', `blind-review-${options.sourceCommit.slice(0, 48)}`],
-        { cwd: repositoryRoot, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, signal: options.signal });
+        { cwd: repositoryRoot, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, signal: options.signal }));
       options.signal?.throwIfAborted();
     }
     const root = join(owned, 'source');
-    const source = await prepareVerifierSource({ repo: resolve(options.repositoryRoot), ref: options.sourceCommit,
-      dest: root, inputs: options.inputs, gitCheckout: true });
+    const source = await runPhase('source.prepare', () => prepareVerifierSource({ repo: resolve(options.repositoryRoot), ref: options.sourceCommit,
+      dest: root, inputs: options.inputs, gitCheckout: true }));
     const dependencies = await prepareVerifierDependencies({ donor: options.repositoryRoot, dest: root,
-      receipt: source, signal: options.signal });
+      receipt: source, signal: options.signal, runPhase });
     const generated = await buildRuntimeGeneratedInputs({ root, repositoryRoot: options.repositoryRoot,
-      custodyRoot, source, dependencies, signal: options.signal, runtimeTools: {}, nativeDesktop: {} });
-    return await packRuntimeSourceImage({ root, custodyRoot, source, dependencies, generated,
-      repositoryRoot: options.repositoryRoot, signal: options.signal });
+      custodyRoot, source, dependencies, signal: options.signal, runtimeTools: {}, nativeDesktop: {}, runPhase });
+    return await runPhase('image.pack', () => packRuntimeSourceImage({ root, custodyRoot, source, dependencies, generated,
+      repositoryRoot: options.repositoryRoot, signal: options.signal }));
   } catch (error) {
     retain = runtimeInputsMustBeRetained(error);
     throw error;

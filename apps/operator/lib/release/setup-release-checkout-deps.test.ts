@@ -61,6 +61,27 @@ const DEPENDENCY_GENERATION_SCRIPT = join(
 );
 const REPO_ROOT = resolve(__dirname, '../../../..');
 
+function spawnFailureDetails(
+  phase: string,
+  elapsedMs: number,
+  result: ReturnType<typeof spawnSync>,
+): string {
+  const error = result.error as NodeJS.ErrnoException | undefined;
+  const outputTail = (label: string, value: string | Buffer | null | undefined): string => {
+    const output = String(value ?? '');
+    const clipped = output.length > 4_000;
+    return `${label} (${output.length} chars${clipped ? ', trailing 4000 shown' : ''}):\n${
+      clipped ? output.slice(-4_000) : output || '(empty)'
+    }`;
+  };
+  return [
+    `phase=${phase} elapsedMs=${elapsedMs} status=${result.status ?? 'null'} signal=${result.signal ?? 'none'}`,
+    `spawnError=${error ? `${error.name} code=${error.code ?? 'unknown'} syscall=${error.syscall ?? 'unknown'} path=${error.path ?? 'unknown'} message=${error.message}` : 'none'}`,
+    outputTail('stdout', result.stdout),
+    outputTail('stderr', result.stderr),
+  ].join('\n');
+}
+
 /**
  * Run the real `need_node_modules()` against the given trees. Returns true when the
  * function decided a re-copy is NEEDED (exit 0) and false when node_modules is
@@ -2383,12 +2404,16 @@ describe('setup-release-checkout.sh --prepare-existing (EI-20336479620858625)', 
     const generationRoot = join(dirname(releaseRoot), 'fixture-generations');
     mkdirSync(join(integrationRoot, 'node_modules/lease-fixture'), { recursive: true });
     writeFileSync(join(integrationRoot, 'node_modules/lease-fixture/package.json'), '{}');
+    const publishStartedAt = Date.now();
     const published = spawnSync('bash', ['-c',
       'set -euo pipefail; source "$1"; dependency_generation_ensure "$2" "$3"; printf "FIXTURE_ID=%s\\n" "$DEPENDENCY_GENERATION_ID"',
       'fixture', DEPENDENCY_GENERATION_SCRIPT, integrationRoot, generationRoot,
     ], { encoding: 'utf8', timeout: 30_000, env: { ...process.env,
       DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(generationRoot, 'fixture-copy.lock') } });
-    expect(published.status, published.stderr).toBe(0);
+    expect(
+      published.status,
+      spawnFailureDetails('publish explicit generation', Date.now() - publishStartedAt, published),
+    ).toBe(0);
     const identity = /^FIXTURE_ID=(v1-[0-9a-f]{64})$/m.exec(published.stdout)?.[1];
     expect(identity).toBeDefined();
 
@@ -2404,6 +2429,7 @@ case " $* " in
 esac
 exec "$REGRESSION_REAL_GIT" "$@"
 `, { mode: 0o755 });
+    const prepareStartedAt = Date.now();
     const result = spawnSync('bash', [SCRIPT_PATH,
       '--integration', integrationRoot, '--release', releaseRoot, '--ref', targetSha,
       '--node-modules', 'force', '--node-modules-copy', 'copy',
@@ -2414,7 +2440,10 @@ exec "$REGRESSION_REAL_GIT" "$@"
       REGRESSION_REAL_GIT: realGit, REGRESSION_GENERATION_ROOT: generationRoot,
       REGRESSION_GENERATION_ID: identity, REGRESSION_LEASE_OBSERVED: observed } });
 
-    expect(result.status, result.stderr).toBe(0);
+    expect(
+      result.status,
+      spawnFailureDetails('prepare existing checkout with explicit generation', Date.now() - prepareStartedAt, result),
+    ).toBe(0);
     const observedLeases = readFileSync(observed, 'utf8').trim();
     expect(observedLeases).toContain('/.leases/selector-');
     expect(observedLeases.split('\n')).toHaveLength(1);
@@ -2496,13 +2525,17 @@ exec "$REGRESSION_REAL_GIT" "$@"
 
     const generationRoot = join(dirname(releaseRoot), 'generations');
     const env = { ...sourceCloneEnv(), PREPARATION_NATIVE_PROBE: nativeProbe };
+    const publishStartedAt = Date.now();
     const published = spawnSync('bash', ['-c',
       'set -euo pipefail; source "$1"; dependency_generation_ensure "$2" "$3"; ' +
         'dependency_generation_publish_input_selector "$3" "$(dependency_generation_input_fingerprint_ref "$2" HEAD)"; ' +
         'printf "FIXTURE_ID=%s\\n" "$DEPENDENCY_GENERATION_ID"',
       'fixture', DEPENDENCY_GENERATION_SCRIPT, integrationRoot, generationRoot,
     ], { encoding: 'utf8', timeout: 30_000, env });
-    expect(published.status, published.stdout + published.stderr).toBe(0);
+    expect(
+      published.status,
+      spawnFailureDetails('publish preparation generation', Date.now() - publishStartedAt, published),
+    ).toBe(0);
     const identity = /^FIXTURE_ID=(v1-[0-9a-f]{64})$/m.exec(published.stdout)?.[1];
     expect(identity).toBeDefined();
     if (fault === 'input-mismatch') {
@@ -2515,15 +2548,22 @@ exec "$REGRESSION_REAL_GIT" "$@"
       git(releaseRoot, 'fetch', '-q', 'origin');
       git(releaseRoot, 'checkout', '-q', '--detach', targetSha);
     }
+    const prepareStartedAt = Date.now();
     const result = spawnSync('bash', [SCRIPT_PATH, '--prepare-existing',
       ...(dependenciesOnly ? ['--dependencies-only'] : []),
       '--integration', integrationRoot, '--release', releaseRoot, '--ref', targetSha,
       '--node-modules', 'force', '--node-modules-copy', 'copy',
       '--node-modules-generation-id', identity!, '--dependency-generation-root', generationRoot,
     ], { encoding: 'utf8', timeout: 30_000, env });
+    const prepareDetails = spawnFailureDetails(
+      `prepare existing checkout (dependenciesOnly=${dependenciesOnly}, fault=${fault})`,
+      Date.now() - prepareStartedAt,
+      result,
+    );
+    expect(result.error, prepareDetails).toBeUndefined();
 
     if (fault !== 'none') {
-      expect(result.status, result.stdout + result.stderr).not.toBe(0);
+      expect(result.status, prepareDetails).not.toBe(0);
       expect(result.stdout).not.toContain('SETUP_RELEASE_DEPENDENCIES_ONLY');
       expect(result.stdout).toContain(fault === 'input-mismatch' ? 'committed input/generation mismatch' :
         fault === 'native-missing' ? 'publish a native-complete generation' : 'materialized dependency tree drift');
@@ -2533,7 +2573,7 @@ exec "$REGRESSION_REAL_GIT" "$@"
       }
       return;
     }
-    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.status, prepareDetails).toBe(0);
     expect(readFileSync(nativeProbe, 'utf8')).toBe('checked');
     expect(readFileSync(join(releaseRoot, 'node_modules/.papercusp-dependency-generation'), 'utf8'))
       .toContain(`identity=${identity}\n`);

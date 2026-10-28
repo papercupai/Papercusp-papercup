@@ -34,6 +34,10 @@ const archiveBlindReviewScratchPlans = vi.fn();
 const findLatestBlindReviewSessionBindingByReviewer = vi.fn();
 const recordBlindReviewSessionPost = vi.fn();
 const verifyBlindReviewSessionBinding = vi.fn();
+const emitAwaitedEvent = vi.fn();
+vi.mock('../../events/await/engine', () => ({
+  emitAwaitedEvent: (...args: unknown[]) => emitAwaitedEvent(...args),
+}));
 vi.mock('../../blind-review-session-bindings', () => ({
   findLatestBlindReviewSessionBindingByReviewer: (...a: unknown[]) => findLatestBlindReviewSessionBindingByReviewer(...a),
   recordBlindReviewSessionPost: (...a: unknown[]) => recordBlindReviewSessionPost(...a),
@@ -102,6 +106,57 @@ beforeEach(() => {
   findLatestBlindReviewSessionBindingByReviewer.mockReset().mockResolvedValue(null);
   recordBlindReviewSessionPost.mockReset().mockResolvedValue(true);
   verifyBlindReviewSessionBinding.mockReset().mockResolvedValue({ ok: true });
+  emitAwaitedEvent.mockReset().mockResolvedValue({ fired: true });
+});
+
+describe('blind review posted event', () => {
+  beforeEach(() => {
+    recordBlindReview.mockResolvedValue({ ok: true, id: 9, activationAuditSeq: 3, gapIds: [] });
+    recordBlindGapDispositions.mockResolvedValue({ ok: true, id: 10, activationAuditSeq: 3, gapIds: ['G-1'] });
+    evaluateBlindReviewGate.mockResolvedValue({ satisfied: true, acceptedReviewIds: [9], rejectedReviews: [] });
+    archiveBlindReviewScratchPlans.mockResolvedValue(null);
+  });
+
+  it('emits the scoped post only after the review and session receipt persist', async () => {
+    findLatestBlindReviewSessionBindingByReviewer.mockResolvedValue({ activationAuditSeq: 3, status: 'ready' });
+    await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX);
+    expect(emitAwaitedEvent).toHaveBeenCalledExactlyOnceWith({
+      key: `plan:blind-review-posted:${SLUG}`, workspaceId: 'ws-resolved', source: 'su-reviewer',
+      summary: expect.any(String),
+      payload: { slug: SLUG, harness: 'papercusp', reviewId: 9, activationAuditSeq: 3,
+        reviewerOwnerId: 'su-reviewer', outcome: 'conclusive' },
+    });
+    expect(recordBlindReview.mock.invocationCallOrder[0]).toBeLessThan(emitAwaitedEvent.mock.invocationCallOrder[0]!);
+    expect(recordBlindReviewSessionPost.mock.invocationCallOrder[0]).toBeLessThan(emitAwaitedEvent.mock.invocationCallOrder[0]!);
+  });
+
+  it('also signals an inconclusive post without claiming acceptance', async () => {
+    evaluateBlindReviewGate.mockResolvedValue({ satisfied: false, acceptedReviewIds: [], rejectedReviews: [] });
+    const { body } = await call({ slug: SLUG, op: 'post', gaps: [], outcome: 'inconclusive' }, REVIEWER_CTX);
+    expect(body).toMatchObject({ ok: true, counts: false });
+    expect(emitAwaitedEvent).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({ outcome: 'inconclusive' }),
+    }));
+  });
+
+  it('does not emit when recording the review fails', async () => {
+    recordBlindReview.mockResolvedValue({ ok: false, code: 'stale_activation_audit', message: 'stale' });
+    expect((await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX)).isError).toBe(true);
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not emit while the required session receipt is pending', async () => {
+    findLatestBlindReviewSessionBindingByReviewer.mockResolvedValue({ activationAuditSeq: 3, status: 'ready' });
+    recordBlindReviewSessionPost.mockResolvedValue(false);
+    expect((await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX)).body)
+      .toMatchObject({ error: 'review_session_receipt_pending' });
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a gap disposition as a new review post', async () => {
+    await call({ slug: SLUG, op: 'dispose', dispositions: [{ reviewId: 9, gapId: 'G-1', itemId: 'P-001' }] }, REVIEWER_CTX);
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+  });
 });
 
 describe('explicit completion outcome contract', () => {

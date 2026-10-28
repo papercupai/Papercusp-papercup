@@ -313,6 +313,26 @@ describe('shared snapshot-backed push channel', () => {
     expect(fact?.text).toContain('Graph paths are hypotheses only');
   });
 
+  it('keeps the measured answers when the cap and a Next pointer push lower lines out (WI-6554700010042393)', () => {
+    const snap = snapshot();
+    snap.importers = new Map([['lib/target.ts', ['app/use.test.ts']]]);
+    const toolset = toolsetFromNames(['testing:run', 'testing:runs']);
+    const raw = snapshotIncidentLeg({ ...input, recipientToolset: toolset, incidentAttribution: {
+      status: 'measured', changedSymbols: ['target:lib/target.ts:7'],
+      workItems: [{ id: 'WI-42', state: 'open', title: 'repair target '.repeat(8), paths: ['lib/target.ts'] }],
+    }, calls: [{ tool: 'testing:run', toolResponse: {
+      status: 'failed', byFile: { 'app/use.test.ts': { failed: 1, runId: 9 } },
+    } }] }, snap)[0]!;
+    const rendered = formatPushFact(withCallableSuggestion(raw, toolset), snap);
+    expect(rendered).toContain('Next: testing:run');
+    // P-006: the run ids are the answer and stay inline; measured attribution follows them.
+    expect(rendered).toContain('Recorded failure rows: test run ids 9');
+    expect(rendered).toContain('Recently changed symbols (measured ledger attribution): target:lib/target.ts:7.');
+    // Static-graph hypotheses are what the cap drops; the marker keeps the runtime caveat.
+    expect(rendered).not.toContain('Static reach candidates');
+    expect(rendered).toMatch(/\(\+\d+ lines? omitted; static snapshot lower bounds; runtime unknown\)$/);
+  });
+
   it('keeps absent reach unknown, bounds cycles and rejects untrusted path/base/commands', () => {
     const changed = { ...input, calls: [editCall()] };
     const snap = snapshot(); snap.importers = new Map();

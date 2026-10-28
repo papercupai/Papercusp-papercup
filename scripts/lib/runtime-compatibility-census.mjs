@@ -34,7 +34,12 @@ function git(root, args, options = {}) {
     maxBuffer: 256 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, ...options, timeout: 120_000 });
 }
 
-/** Exact blobs and pinned gitlinks, with unavailable checkouts explicitly retained. */
+/**
+ * Exact blobs and pinned gitlinks, with unavailable checkouts explicitly retained.
+ * @param {string} root
+ * @param {string} [revision]
+ * @param {{ runGit?: (root: string, args: string[], options?: any) => any }} [options]
+ */
 export function readCommittedSources(root, revision = 'HEAD', { runGit = git } = {}) {
   const sources = [], repositories = [], unresolved = [];
   const visit = (checkout, rev, prefix) => {
@@ -296,6 +301,8 @@ export function classifyNativeInventory(inventory, elfInventory, { packages, pla
  * Nested node_modules must be supplied as their own package roots. Symlinks that
  * escape a package stay gaps; a package walk cannot certify the system loader's
  * resolution, foreign platforms, generated code, or runtime capability behavior.
+ * @param {Array<{ id: string, path: string }>} packages
+ * @param {{ maxEntries?: number, readelf?: (path: string) => any }} [options]
  */
 export async function inventoryNativePackages(packages, { maxEntries = 500_000,
   readelf = inspectElf } = {}) {
@@ -370,6 +377,11 @@ export async function inventoryNativePackages(packages, { maxEntries = 500_000,
  * Cache entries and environment directories are explicit, fingerprinted inputs.
  * This deliberately does not choose a loader winner: inherited RPATH, hwcaps,
  * namespaces, preloads and dlopen require separate runtime evidence.
+ *
+ * @param {any[]} files
+ * @param {{ libraryCache?: Array<{ name: string, path: string }>,
+ *   environmentDirectories?: string[], maxLibraries?: number,
+ *   readelf?: (path: string) => any }} [options]
  */
 export async function inventoryElfLibraryCandidates(files, { libraryCache = [], environmentDirectories = [],
   maxLibraries = 4096, readelf = inspectElf } = {}) {

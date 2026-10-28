@@ -7,6 +7,8 @@ import {
   MODEL_WINDOW_DEFAULT,
   COMPACTION_LIMIT_DEFAULT_1M_CAP,
   COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
+  MIN_FLEET_MEMBER_LAUNCH_HEADROOM_PCT,
+  MAX_FLEET_MEMBER_LAUNCH_TOKENS,
   modelWindowForSpec,
   isDefault1mModelSpec,
   defaultCompactionLimitForSpec,
@@ -33,8 +35,8 @@ import { CODEX_GATEWAY_FALLBACK_LINEUP } from './inference-gateway/gateway';
 
 // opus + fable + sonnet-5 are LAUNCHED at the full 1M window — psu-launcher
 // normalizeModelSpec injects the [1m] marker for all three families — and
-// papercusp compacts [1m] sessions preemptively at 450k, fleet MEMBERS at 250k
-// (the current role policy, retained by measured-agent-productivity D-009).
+// papercusp compacts [1m] sessions preemptively at 450k, fleet MEMBERS at 400k
+// (raised from 250k on 2026-10-28 because the launch baseline outgrew it).
 // Window/limit MATH keys on the [1m] MARKER only, never the bare
 // family name: live-verified via /context on CC 2.1.198 (2026-07-02), a bare
 // `sonnet` session runs a 200k AUTO-COMPACT window (auto-fires ~167k — killed
@@ -231,9 +233,9 @@ describe('selfSetCeilingForSpec — a DELIBERATE self-set may exceed the SEEDED 
     expect(clampCompactionLimit(900_000, 'opus[1m]', { selfSet: false })).toBe(450_000);
   });
 
-  it('fleet MEMBERS cannot self-raise past their 250k role cap — selfSet does not beat role', () => {
-    expect(selfSetCeilingForSpec('opus[1m]', { fleetMember: true })).toBe(250_000);
-    expect(clampCompactionLimit(900_000, 'opus[1m]', { fleetMember: true, selfSet: true })).toBe(250_000);
+  it('fleet MEMBERS cannot self-raise past their 400k role cap — selfSet does not beat role', () => {
+    expect(selfSetCeilingForSpec('opus[1m]', { fleetMember: true })).toBe(400_000);
+    expect(clampCompactionLimit(900_000, 'opus[1m]', { fleetMember: true, selfSet: true })).toBe(400_000);
   });
 
   it('a real small-window spec is unaffected — self-set still derives from ITS window', () => {
@@ -247,7 +249,7 @@ describe('selfSetCeilingForSpec — a DELIBERATE self-set may exceed the SEEDED 
       expect(selfSetCeilingForSpec(spec)).toBe(825_000);
       expect(clampCompactionLimit(682_000, spec, { selfSet: true })).toBe(682_000);
       expect(defaultCompactionLimitForSpec(spec)).toBe(450_000);
-      expect(selfSetCeilingForSpec(spec, { fleetMember: true })).toBe(250_000);
+      expect(selfSetCeilingForSpec(spec, { fleetMember: true })).toBe(400_000);
     },
   );
 
@@ -324,10 +326,10 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
     expect(defaultCompactionLimitForSpec('sonnet[1m]:medium')).toBe(450_000);
     expect(defaultCompactionLimitForSpec('haiku[1m]')).toBe(450_000);
   });
-  it('[1m] fleet MEMBERS default to the current leaner 250k; role never touches a real-window derivation', () => {
-    expect(COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP).toBe(250_000);
-    expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: true })).toBe(250_000);
-    expect(defaultCompactionLimitForSpec('opus[1m]', { fleetMember: true })).toBe(250_000);
+  it('[1m] fleet MEMBERS default to the current leaner 400k; role never touches a real-window derivation', () => {
+    expect(COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: true })).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('opus[1m]', { fleetMember: true })).toBe(400_000);
     // explicit non-member (leader/solo) keeps the full cap
     expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: false })).toBe(450_000);
     // a 200k-window member still derives from the REAL window, not the role
@@ -345,15 +347,15 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
   });
   it('an UNRESOLVABLE spec (null / empty) seeds the [1m] policy default, NOT 158k (WI-3383, owner 2026-07-08)', () => {
     // On this opus[1m]-default fleet a truly-unknown spec is an opus[1m] session:
-    // seed 450k (250k member), never the haiku-sized 158k that mis-seeded a
+    // seed 450k (400k member), never the haiku-sized 158k that mis-seeded a
     // manually-launched su session. Only null/empty lifts — a NON-null bare
     // `opus`/`sonnet` still derives 158k (asserted above).
     expect(defaultCompactionLimitForSpec(null)).toBe(450_000);
     expect(defaultCompactionLimitForSpec(undefined)).toBe(450_000);
     expect(defaultCompactionLimitForSpec('')).toBe(450_000);
     expect(defaultCompactionLimitForSpec('   ')).toBe(450_000);
-    expect(defaultCompactionLimitForSpec(null, { fleetMember: true })).toBe(250_000);
-    expect(defaultCompactionLimitForSpec('', { fleetMember: true })).toBe(250_000);
+    expect(defaultCompactionLimitForSpec(null, { fleetMember: true })).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('', { fleetMember: true })).toBe(400_000);
   });
 });
 
@@ -403,9 +405,9 @@ describe('codex extended-window specs seed the SAME role caps as claude [1m]', (
     }
   });
 
-  it('seeds 250k for a fleet member', () => {
+  it('seeds 400k for a fleet member', () => {
     for (const spec of ['gpt-5.6-sol:high', 'terra', 'gpt-5.4', 'gpt-6-astra:high', 'gpt-6.1-sol:max', 'gpt-6-luna:max']) {
-      expect(defaultCompactionLimitForSpec(spec, { fleetMember: true }), spec).toBe(250_000);
+      expect(defaultCompactionLimitForSpec(spec, { fleetMember: true }), spec).toBe(400_000);
     }
   });
 
@@ -582,15 +584,48 @@ describe('SUPERSEDED_1M_LEADER_CAPS — a leader/solo cap raise does not strand 
 
   it('does not leak the leader list into the fleet-MEMBER population', () => {
     // A member is governed by its own cap and its own superseded list; offering a
-    // leader's 400k to a 250k member would heal it straight past its role ceiling.
-    expect(supersededDerivedCompactionLimits('opus[1m]', { fleetMember: true })).not.toContain(
-      400_000,
-    );
+    // leader-only 500k to a 400k member would heal it straight past its role ceiling.
+    // (400k itself is no longer a usable probe: it is the CURRENT member cap, which
+    // the function filters out for every population, so asserting its absence here
+    // would pass whether or not the leader list leaked.)
+    const member = supersededDerivedCompactionLimits('opus[1m]', { fleetMember: true });
+    expect(member).not.toContain(500_000);
+    expect(member.every((v) => v < COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP)).toBe(true);
   });
 
   it('does not offer a leader list to a spec that does not derive the 1M leader cap', () => {
     // A real 200k-window spec derives 158k; its stale values are not these.
     expect(supersededDerivedCompactionLimits('haiku')).not.toContain(400_000);
+  });
+});
+
+/**
+ * Launch-headroom guard (EI-27206933955519499). The member cap is a COST bound, and
+ * it is only a usable one while a member's launch context fits under it with room to
+ * work. On 2026-10-28 four carry-respawned sessions (su-ead3efbc, su-0a5cfbb7,
+ * su-8f160379, su-14d44480) measured 195k-213k tokens before their first tool call
+ * against a 250k member limit (79-85%), so the soft-limit nudge fired on arrival and
+ * members compacted in a loop. The worst measurement is pinned here; the runtime twin
+ * is `system:launch-cost-ceiling`, which alarms when the LIVE launch median crosses
+ * the same derived budget. Re-measure and update this pin when the launch prompt
+ * changes materially; never lower the cap below what it requires.
+ */
+const MEASURED_MEMBER_LAUNCH_BASELINE_TOKENS = 213_000;
+
+describe('fleet-member launch headroom — the cap must fit the measured launch baseline', () => {
+  it('derives an integer launch budget strictly below the member cap', () => {
+    expect(Number.isInteger(MAX_FLEET_MEMBER_LAUNCH_TOKENS)).toBe(true);
+    expect(MAX_FLEET_MEMBER_LAUNCH_TOKENS).toBe(240_000);
+    expect(MAX_FLEET_MEMBER_LAUNCH_TOKENS).toBeLessThan(COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP);
+  });
+
+  it('keeps the measured launch baseline inside the budget', () => {
+    expect(MEASURED_MEMBER_LAUNCH_BASELINE_TOKENS).toBeLessThanOrEqual(MAX_FLEET_MEMBER_LAUNCH_TOKENS);
+  });
+
+  it('positive control: the same rule rejects the 250k cap that produced the loop', () => {
+    const budgetAt250k = (250_000 * (100 - MIN_FLEET_MEMBER_LAUNCH_HEADROOM_PCT)) / 100;
+    expect(MEASURED_MEMBER_LAUNCH_BASELINE_TOKENS).toBeGreaterThan(budgetAt250k);
   });
 });
 

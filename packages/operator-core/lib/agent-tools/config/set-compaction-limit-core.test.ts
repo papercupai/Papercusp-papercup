@@ -15,6 +15,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP } from '../../agent-config-constants';
+import type { OwnerForceDirectiveRow } from '../work_items/release-force-guard';
 
 const getFleet = vi.fn();
 const setCompactionLimit = vi.fn();
@@ -110,6 +111,83 @@ describe('setCompactionLimitForOwner (P-006 cross-session limit setter)', () => 
     expect(setCompactionLimit).toHaveBeenCalledWith('su-mem', 150_000, { explicit: true }); // within cap → verbatim
     expect(out).toMatchObject({ ok: true, invokedAs: 'queen', compactionLimit: 150_000 });
     expect(out.clamped).toBeUndefined();
+  });
+
+  describe('owner-directive role-cap lift (WI-6554700010042435)', () => {
+    const NOW = 1_800_000_000_000;
+    function directive(over: Partial<OwnerForceDirectiveRow> = {}): OwnerForceDirectiveRow {
+      return {
+        id: 2560,
+        workspaceId: WS,
+        recordedBy: 'su-mem',
+        verbatimText: 'increase your papercusp context limit to the maximum',
+        createdAtMs: NOW - 60_000,
+        dispositionedAtMs: null,
+        capturedByHook: true,
+        ...over,
+      };
+    }
+    /** `persisted` is what the post-write presence re-read returns (the setter reports it back). */
+    function asMemberOfCallersFleet(persisted: number = COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP) {
+      fetchPresenceFleet.mockResolvedValue(fleetMap('su-mem', 'rocket', 'member'));
+      getFleet.mockResolvedValue({ leaderOwnerId: CALLER });
+      getPresence.mockImplementation(async (id: string) =>
+        id === 'su-mem' ? { compactionLimit: persisted } : { agentRole: 'su' },
+      );
+    }
+
+    it('a member with NO directiveRef is still refused above the role cap', async () => {
+      asMemberOfCallersFleet();
+      const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-mem', SELF_SET_1M_CEILING);
+      expect(setCompactionLimit).not.toHaveBeenCalled();
+      expect(out).toMatchObject({ ok: false, error: 'limit_exceeds_cap', cap: COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP });
+    });
+
+    it('a VERIFIED owner directive addressed to the member lifts the cap to the window ceiling', async () => {
+      asMemberOfCallersFleet(SELF_SET_1M_CEILING);
+      const getDirective = vi.fn(async () => directive());
+      const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-mem', SELF_SET_1M_CEILING, {
+        directiveRef: 2560,
+        directiveDeps: { getDirective, now: () => NOW },
+      });
+      expect(getDirective).toHaveBeenCalledWith(2560);
+      expect(setCompactionLimit).toHaveBeenCalledWith('su-mem', SELF_SET_1M_CEILING, { explicit: true });
+      expect(out).toMatchObject({ ok: true, compactionLimit: SELF_SET_1M_CEILING, ownerDirective: { id: 2560 } });
+    });
+
+    it('a verified directive addressed to the CALLER (the leader executing it) also lifts the cap', async () => {
+      asMemberOfCallersFleet(SELF_SET_1M_CEILING);
+      const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-mem', SELF_SET_1M_CEILING, {
+        directiveRef: 2560,
+        directiveDeps: { getDirective: async () => directive({ recordedBy: CALLER }), now: () => NOW },
+      });
+      expect(out).toMatchObject({ ok: true, compactionLimit: SELF_SET_1M_CEILING, ownerDirective: { id: 2560 } });
+    });
+
+    it('the window ceiling still binds under a verified directive: 900k is rejected without a write', async () => {
+      asMemberOfCallersFleet();
+      const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-mem', 900_000, {
+        directiveRef: 2560,
+        directiveDeps: { getDirective: async () => directive(), now: () => NOW },
+      });
+      expect(setCompactionLimit).not.toHaveBeenCalled();
+      expect(out).toMatchObject({ ok: false, error: 'limit_exceeds_cap', cap: SELF_SET_1M_CEILING });
+    });
+
+    it.each([
+      ['agent-recorded (orders:record)', { capturedByHook: false }],
+      ['already dispositioned', { dispositionedAtMs: NOW - 1_000 }],
+      ['addressed to a third session', { recordedBy: 'su-unrelated' }],
+      ['from another workspace', { workspaceId: 'ws-other' }],
+    ])('an %s directive is refused as directive_unverified with no write', async (_label, over) => {
+      asMemberOfCallersFleet();
+      const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-mem', SELF_SET_1M_CEILING, {
+        directiveRef: 2560,
+        directiveDeps: { getDirective: async () => directive(over as Partial<OwnerForceDirectiveRow>), now: () => NOW },
+      });
+      expect(setCompactionLimit).not.toHaveBeenCalled();
+      expect(out).toMatchObject({ ok: false, error: 'directive_unverified', requested: SELF_SET_1M_CEILING });
+    });
   });
 
   it('refuses a caller who is neither the leader nor a queen/owner pane', async () => {

@@ -245,3 +245,82 @@ describe('anchored reads — prompt_snapshot discount (EI-23760035638533818)', (
     expect(currentContextTokensSyncForOwner('anchor-ture')).toBe(expectedTokens(lines));
   });
 });
+
+/**
+ * WI-6554700010042482 — Claude Code 2.1.312 request-replay records.
+ *
+ * From 2026-10-28T01:38Z the CLI writes `api-request-shape` (the full system prompt +
+ * tool list), `api-request-blob` (each message body by hash) and `api-request` (params +
+ * hashes) as whole JSONL lines. None of it enters the model context. Measured on su
+ * session f4e0b2df: 633 KB of these lines put the gauge at 365,728 while the API billed
+ * ~188k for the same request. The fixtures below copy the real records' leading bytes.
+ */
+function requestRecordLine(kind: 'api-request-shape' | 'api-request-blob' | 'api-request', i: number, filler: number): string {
+  return `{"type":"${kind}","sessionId":"s","hash":"h${i}","payload":"${'z'.repeat(filler)}"}`;
+}
+
+function expectedTokensExcluding(lines: string[], isOutOfContext: (l: string) => boolean): number {
+  const total = lines.join('\n').length + 1;
+  const outBytes = lines.filter(isOutOfContext).reduce((n, l) => n + l.length, 0);
+  return Math.floor((total - outBytes) / 4);
+}
+
+const isRequestRecord = (l: string): boolean =>
+  l.startsWith('{"type":"api-request-shape"') ||
+  l.startsWith('{"type":"api-request-blob"') ||
+  l.startsWith('{"type":"api-request"');
+
+describe('api-request-* record discount (WI-6554700010042482)', () => {
+  afterEach(() => resetContextAnchorsForTests());
+
+  it('does NOT count api-request-shape / -blob / api-request lines on the full-scan path', async () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 40; i++) lines.push(ordinaryLine(i));
+    lines.push(requestRecordLine('api-request-shape', 0, 300_000));
+    for (let i = 0; i < 10; i++) {
+      lines.push(requestRecordLine('api-request-blob', i, 20_000));
+      lines.push(requestRecordLine('api-request', i, 1_000));
+    }
+    const p = writeTranscript(lines);
+    const size = fs.statSync(p).size;
+    expect(size).toBeGreaterThan(BOUNDARY_SCAN_MIN);
+
+    const got = await tokensFromFileSize(p);
+    expect(got).toBe(expectedTokensExcluding(lines, isRequestRecord));
+    // Falsifiability control: the records are ~85% of this fixture, so the pre-fix
+    // reading was more than 5x this one.
+    expect(got!).toBeLessThan(Math.floor(size / 4) / 5);
+  });
+
+  it('a request record appended BETWEEN anchored reads does not step the gauge', async () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 160; i++) lines.push(ordinaryLine(i));
+    const p = writeTranscript(lines);
+    expect(fs.statSync(p).size).toBeGreaterThan(BOUNDARY_SCAN_MIN);
+
+    expect(seedContextAnchorForTests('anchor-api-request', p)).toBe(true);
+    const before = currentContextTokensSyncForOwner('anchor-api-request');
+    fs.appendFileSync(p, requestRecordLine('api-request-blob', 0, 200_000) + '\n', 'latin1');
+    fs.appendFileSync(p, requestRecordLine('api-request', 0, 1_000) + '\n', 'latin1');
+    const after = currentContextTokensSyncForOwner('anchor-api-request');
+
+    expect(after).toBe(await tokensFromFileSize(p));
+    // Only the two trailing newlines are real growth.
+    expect(after! - before!).toBeLessThanOrEqual(1);
+  });
+
+  it('still counts an in-context line that merely carries the record name in its content', async () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 150; i++) lines.push(ordinaryLine(i));
+    // A tool result QUOTING a request record (unescaped would be invalid JSON inside a
+    // string, so it arrives escaped) — and one with the marker mid-line — must keep weight.
+    lines.push(JSON.stringify({ type: 'user', message: { content: '{"type":"api-request-blob","x":1}' } }));
+    lines.push(`{"parentUuid":"q","note":{"type":"api-request"},"type":"user"}`);
+    const p = writeTranscript(lines);
+    const size = fs.statSync(p).size;
+    expect(size).toBeGreaterThan(BOUNDARY_SCAN_MIN);
+
+    // Under-counting is the dangerous direction: nothing here may be discounted.
+    expect(await tokensFromFileSize(p)).toBe(Math.floor(size / 4));
+  });
+});
