@@ -12,6 +12,7 @@ import {
   probeMcpHandshake,
   supervisedProcesses,
   PORTLESS_PROBE_NAMES,
+  STAGING_API_BASE_URL,
   type ProbeResult,
 } from "../../service-health";
 import { getTelemetryHealth } from "../../projected-tool-deps";
@@ -621,9 +622,9 @@ export function buildServiceHealthDiagnostic(
 export default defineTool({
   name: "dev:service_health",
   description:
-    'Probe fixed dev endpoints (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith, desktop, bg-host ticker) plus optional systemd units. Returns a compact summary by default; detail:"full" includes complete supervision counters and diagnostic evidence. Services report URL/status/latency; `mcpHandshake` independently validates JSON-RPC initialize, so a green operator GET does not prove MCP health. bg-host-ticker is separate from :3070, and an absent desktop is absent rather than failed. In `supervision[]`, read `healthy` as the verdict and `activeState` as raw systemd state: episodic inactive may be healthy, while enabled/static inactive is not; omitted is unknown. `units` + `scope` query arbitrary user/system units and return `unitStates` + `unitsUnknown`; pass `unitsOnly:true` to skip the full endpoint snapshot when you only need those states. Read unknowns first because nonexistent and stopped units can both appear inactive.',
+    'Probe fixed dev endpoints (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith, desktop, bg-host ticker) plus optional systemd units. Returns a compact summary by default; detail:"full" includes complete supervision counters and diagnostic evidence. Services report URL/status/latency; `mcpHandshake` validates JSON-RPC initialize on :3070 and `stagingMcpHandshake` validates it on :3170, so a green service GET does not prove MCP health. bg-host-ticker is separate from :3070, and an absent desktop is absent rather than failed. In `supervision[]`, read `healthy` as the verdict and `activeState` as raw systemd state: episodic inactive may be healthy, while enabled/static inactive is not; omitted is unknown. `units` + `scope` query arbitrary user/system units and return `unitStates` + `unitsUnknown`; pass `unitsOnly:true` to skip the full endpoint snapshot when you only need those states. Read unknowns first because nonexistent and stopped units can both appear inactive.',
   guidance: {
-    when: 'Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:"staging" }` with `dev:service_health { units:["papercusp-staging-api"], scope:"user", unitsOnly:true }` (read unitsUnknown before unitStates, then probe :3170). Omit unitsOnly when you also want the full fixed-endpoint snapshot; diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.',
+    when: 'Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:"staging" }` with `dev:service_health { units:["papercusp-staging-api"], scope:"user" }` (read unitsUnknown before unitStates, then verify the staging-api HTTP row and stagingMcpHandshake). Use unitsOnly:true only when you intentionally skip endpoint probes; diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.',
     notWhen:
       "File/lock contention — that is locks:queue. Migration drift — db:check_drift.",
     // EI-21678459404022074: `target` is dev:restart's argument, not this tool's — and
@@ -783,10 +784,11 @@ export default defineTool({
         ),
       ),
     );
-    const [unitStates, rawServices, mcpHandshake, supervision, dhtUniverse] = await Promise.all([
+    const [unitStates, rawServices, mcpHandshake, stagingMcpHandshake, supervision, dhtUniverse] = await Promise.all([
       unitStatesPromise,
       measureHealthPhase(healthPhaseTimingsMs, "probeAll", () => probeAll()),
       measureHealthPhase(healthPhaseTimingsMs, "mcpHandshake", () => probeMcpHandshake()),
+      measureHealthPhase(healthPhaseTimingsMs, "stagingMcpHandshake", () => probeMcpHandshake(STAGING_API_BASE_URL)),
       supervisionPromise,
       // WI-10005995: product hosts on an isolated DHT outside a drill. null = systemd unreadable
       // (no verdict); a probe failure must never take the rest of the snapshot down with it.
@@ -817,6 +819,7 @@ export default defineTool({
       ok: true,
       services,
       mcpHandshake,
+      stagingMcpHandshake,
       telemetry: getTelemetryHealth(),
       ...buildMcpProxyTransportBlock(),
       supervision,

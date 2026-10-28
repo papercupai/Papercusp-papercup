@@ -29,6 +29,8 @@
  * so an agent is never double-woken for one transition.
  */
 
+import { WORK_ITEM_ID_PATTERN } from '../../work-item-id';
+
 /** A `<placeholder>` slot in a key template. */
 export interface EventKeyParam {
   /** Placeholder name as it appears in the template, e.g. 'id' for `work-item:done:<id>`. */
@@ -1326,6 +1328,111 @@ export function buildKey(family: string, params: Record<string, string | number 
     key = key.replace(`<${p.name}>`, String(raw));
   }
   return key;
+}
+
+/** A concrete key read back into its family and the param values that built it. */
+export interface ParsedEventKey {
+  family: string;
+  /** Param name -> value, in template order. An omitted optional param is absent. */
+  params: Record<string, string>;
+}
+
+interface KeyTemplateShape {
+  family: string;
+  regex: RegExp;
+  names: string[];
+  /** Characters of literal template text; more literal text = a more specific reading. */
+  literal: number;
+}
+
+/** One matchable shape per way buildKey can render the template (each optional param present or collapsed). */
+function keyTemplateShapes(entry: EventCatalogEntry): KeyTemplateShape[] {
+  const template = String(entry.keyTemplate ?? '');
+  const optional = (entry.params ?? []).filter((p) => !p.required).map((p) => p.name);
+  const shapes: KeyTemplateShape[] = [];
+  for (let mask = 0; mask < 1 << optional.length; mask++) {
+    let rendered = template;
+    let collapsible = true;
+    optional.forEach((name, i) => {
+      if (!(mask & (1 << i))) return;
+      // buildKey collapses an omitted optional param by deleting its `:<name>` segment; a
+      // template where that segment does not exist has no collapsed form to read back.
+      if (!rendered.includes(`:<${name}>`)) collapsible = false;
+      rendered = rendered.replace(`:<${name}>`, '');
+    });
+    if (!collapsible) continue;
+    const parts = rendered.split(/<([^<>]+)>/);
+    const names: string[] = [];
+    let source = '^';
+    let literal = 0;
+    parts.forEach((part, i) => {
+      if (i % 2 === 0) {
+        source += part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        literal += part.length;
+        return;
+      }
+      names.push(part);
+      // The LAST placeholder stays greedy, as familyKeyArity treats it: a value may contain `:`.
+      source += i === parts.length - 2 ? '(.+)' : '([^:]+)';
+    });
+    shapes.push({ family: entry.family, regex: new RegExp(`${source}$`), names, literal });
+  }
+  return shapes;
+}
+
+/**
+ * WI-6554700010030578 — the INVERSE of {@link buildKey}: which family produced a concrete
+ * key, and with which param values. Derived from each family's `keyTemplate` and `params`,
+ * so it cannot drift from buildKey (D-005: one place per key shape). An optional param may be
+ * absent, exactly as buildKey collapses it. When several families admit the key (a shorter
+ * template shadowing a longer one), the one with the most literal template text wins: the
+ * most specific reading. Build the parser once per batch — it compiles every template.
+ */
+export function createEventKeyParser(
+  entries: readonly EventCatalogEntry[] = EVENT_CATALOG,
+): (key: string) => ParsedEventKey | null {
+  const shapes = entries.flatMap(keyTemplateShapes);
+  return (key: string) => {
+    const k = String(key ?? '').trim();
+    if (!k) return null;
+    let best: { shape: KeyTemplateShape; match: RegExpExecArray } | null = null;
+    for (const shape of shapes) {
+      if (best && best.shape.literal >= shape.literal) continue;
+      const match = shape.regex.exec(k);
+      if (match) best = { shape, match };
+    }
+    if (!best) return null;
+    const { shape, match } = best;
+    const params: Record<string, string> = {};
+    shape.names.forEach((name, i) => {
+      params[name] = match[i + 1] ?? '';
+    });
+    return { family: shape.family, params };
+  };
+}
+
+/** One-shot form of {@link createEventKeyParser}. */
+export function parseEventKeyParams(
+  key: string,
+  entries: readonly EventCatalogEntry[] = EVENT_CATALOG,
+): ParsedEventKey | null {
+  return createEventKeyParser(entries)(key);
+}
+
+const WORK_ITEM_ID_RE = new RegExp(WORK_ITEM_ID_PATTERN);
+
+/**
+ * The work item a parsed key is ABOUT: the first param value (template order) shaped like a
+ * work-item id (`claim:released:<id>`, `work-item:done:<id>`). Read from the value, so a new
+ * family that carries an item id is covered without a hand-kept "this param is an item" flag.
+ * Null for a key no family produces, or one that names no work item.
+ */
+export function eventKeySubjectItemId(parsed: ParsedEventKey | null): string | null {
+  if (!parsed) return null;
+  for (const value of Object.values(parsed.params)) {
+    if (WORK_ITEM_ID_RE.test(value)) return value;
+  }
+  return null;
 }
 
 /**

@@ -26,6 +26,7 @@ import {
   type RepairManifestSummary,
 } from './repair-manifest';
 import { createHash } from 'node:crypto';
+import type { AppliedAdmissionSource } from './multi-source-admission';
 import { parseRepairLimbExecutor, type RepairLimbExecutor } from './repair-limb-executor';
 import { casesForFile, newRepairSignatureKeys } from './case-level-signature';
 import type { AdmissionRadius, FixPrecheckFileResult, FixPrecheckVerdict } from './admission-fix-precheck';
@@ -855,7 +856,7 @@ export interface FrozenRepairAdmission {
    * `foreignHunksAccepted` / `foreignAgents` say how much and whose, and `reason` says why.
    * Absent on a pre-P-020 entry (which was whole-blob by construction).
    */
-  mode?: 'hunk-exact' | 'whole-blob' | 'committed-patch';
+  mode?: 'hunk-exact' | 'whole-blob' | 'committed-patch' | 'multi-source';
   /**
    * P-006 / R6 (D-002): what the admission pre-check established at the built commit BEFORE
    * publication. `ran:true` carries the measured population; `ran:false` names why it did not
@@ -885,6 +886,8 @@ export interface FrozenRepairAdmission {
   patch?: { commit: string; parent: string; sha256: string };
   /** Ordered reviewed deltas replayed before the single admission; patch is the final member. */
   patches?: Array<{ commit: string; parent: string; sha256: string }>;
+  /** multi-source (R-2): every source applied, in order; each patch source carries its own patches. */
+  sources?: AppliedAdmissionSource[];
   /** hunk-exact: per admitted path, how many ledgered hunks were replayed and by whom. */
   hunks?: Record<string, { applied: number; agents: string[] }>;
   /** Exact ledger rows captured by this hunk source; later edits are not consumed. Whole-blob and
@@ -1117,6 +1120,7 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       patches.at(-1).commit === patch.commit && patches.at(-1).parent === patch.parent &&
       patches.at(-1).sha256 === patch.sha256;
     const precheck = parseAdmissionPrecheckRecord(e.precheck);
+    const appliedSources = e.mode === 'multi-source' ? parseAppliedAdmissionSources(e.sources) : null;
     const parsed: FrozenRepairAdmission = {
       atMs: e.atMs as number,
       actor: e.actor as string,
@@ -1128,6 +1132,7 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       blobs,
       ...(nonBlank(e.reason) ? { reason: e.reason as string } : {}),
       ...(e.mode === 'hunk-exact' || e.mode === 'whole-blob' || e.mode === 'committed-patch' ? { mode: e.mode } : {}),
+      ...(appliedSources ? { mode: 'multi-source' as const, sources: appliedSources } : {}),
       ...(validPatch ? { patch: { commit: patch.commit as string, parent: patch.parent as string, sha256: patch.sha256 as string } } : {}),
       ...(validPatches ? { patches: patches.map((p) => ({ commit: p.commit, parent: p.parent, sha256: p.sha256 })) } : {}),
       ...(hunksValid ? { hunks } : {}),
@@ -1153,6 +1158,37 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
  * field by field without it, so the first rewrite after an admission erased it (0 of 25 live
  * admissions carried one). An unrecognisable record is dropped rather than guessed at.
  */
+/** R-2: parse a recorded multi-source admission's `sources`; null when any entry is malformed. */
+export function parseAppliedAdmissionSources(raw: unknown): AppliedAdmissionSource[] | null {
+  const sha = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{40,64}$/.test(v);
+  const paths = (v: unknown): v is string[] =>
+    Array.isArray(v) && v.length >= 1 && v.every((p) => typeof p === 'string' && p.length > 0);
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 20) return null;
+  const out: AppliedAdmissionSource[] = [];
+  for (const entry of raw) {
+    const s = entry as Record<string, unknown> | null;
+    if (!s || typeof s !== 'object' || typeof s.index !== 'number' || !paths(s.paths) || !sha(s.headAfter)) return null;
+    if (s.kind === 'whole-blob' && sha(s.sourceCommit) && typeof s.pinned === 'boolean') {
+      out.push({ index: s.index, kind: 'whole-blob', paths: [...s.paths], sourceCommit: s.sourceCommit, pinned: s.pinned, headAfter: s.headAfter });
+    } else if (
+      s.kind === 'committed-patch' && Array.isArray(s.patches) && s.patches.length >= 1 && s.patches.length <= 20 &&
+      s.patches.every((p) => p && typeof p === 'object' && sha(p.commit) && sha(p.parent) &&
+        typeof p.sha256 === 'string' && /^[0-9a-f]{64}$/.test(p.sha256))
+    ) {
+      out.push({
+        index: s.index,
+        kind: 'committed-patch',
+        paths: [...s.paths],
+        patches: (s.patches as Array<{ commit: string; parent: string; sha256: string }>).map((p) => ({ commit: p.commit, parent: p.parent, sha256: p.sha256 })),
+        headAfter: s.headAfter,
+      });
+    } else {
+      return null;
+    }
+  }
+  return out;
+}
+
 export function parseAdmissionPrecheckRecord(
   value: unknown,
 ): NonNullable<FrozenRepairAdmission['precheck']> | undefined {

@@ -60,6 +60,11 @@ import {
   type EditAttributionRow,
   type HunkExactSuccess,
 } from '../../release/hunk-exact-admission';
+import {
+  MAX_ADMISSION_SOURCES,
+  normalizeAdmissionSources,
+  type MultiSourceSuccess,
+} from '../../release/multi-source-admission';
 import { integrationBranch } from '../../release/judged-sha-containment';
 import { realAdmissionGit } from '../../release/repair-head-admission';
 // WI-10005223: admission and frozen-lineage Git work runs on the admission worker thread,
@@ -319,6 +324,32 @@ async function emitRetiredUnjudgedRepairHeadTerminal(
  */
 export const REPAIR_QUEUE_ADMIT_MAX_PATHS = 200;
 
+/** R-2: one source of a multi-source admit. Mode rules are checked by normalizeAdmissionSources. */
+const admissionSourcesSchema = z
+  .array(
+    z.object({
+      paths: z.array(z.string().min(1)).min(1).max(REPAIR_QUEUE_ADMIT_MAX_PATHS),
+      wholeBlob: z.boolean().optional(),
+      sourceCommit: z.string().regex(FULL_COMMIT_SHA).optional(),
+      patchCommit: z.string().regex(FULL_COMMIT_SHA).optional(),
+      patchCommits: z.array(z.string().regex(FULL_COMMIT_SHA)).min(1).max(20).optional(),
+    }),
+  )
+  .min(1)
+  .max(MAX_ADMISSION_SOURCES);
+
+/** The union of the sources' paths, first-appearance order — what `paths` defaults to. */
+function sourcesPathUnion(sources: unknown): string[] {
+  if (!Array.isArray(sources)) return [];
+  const union: string[] = [];
+  for (const s of sources) {
+    const paths = s && typeof s === 'object' ? (s as { paths?: unknown }).paths : undefined;
+    if (!Array.isArray(paths)) continue;
+    for (const p of paths) if (typeof p === 'string' && !union.includes(p)) union.push(p);
+  }
+  return union;
+}
+
 const argsSchema = z.preprocess(
   (value) => {
     // The read branch has no arguments. Treat an omitted op on an otherwise
@@ -338,6 +369,11 @@ const argsSchema = z.preprocess(
       // normalized `get`, so downstream readers see one canonical value.
       if (record.op === 'status') {
         return { ...record, op: 'get' };
+      }
+      // R-2: a multi-source admit may omit `paths`; it is the union of the sources' paths.
+      if ((record.op === 'admit' || record.op === 'converge') && record.paths === undefined) {
+        const union = sourcesPathUnion(record.sources);
+        if (union.length > 0) return { ...record, paths: union };
       }
     }
     return value;
@@ -373,6 +409,8 @@ const argsSchema = z.preprocess(
           .optional(),
         /** Ordered reviewed deltas for dependent fixes; every selected path must change in each commit. */
         patchCommits: z.array(z.string().regex(FULL_COMMIT_SHA)).min(1).max(20).optional(),
+        /** R-2: several sources applied in order as ONE admission commit and one pre-check. Each names paths plus wholeBlob(+sourceCommit) or patchCommit(s). */
+        sources: admissionSourcesSchema.optional(),
         /** P-006 (R6, D-002): opt OUT of the admission pre-check for a deliberate wide admission. Requires `precheckReason`; recorded on the ledger entry. */
         skipPrecheck: z.boolean().optional(),
         precheckReason: z.string().min(8).max(2000).optional(),
@@ -397,6 +435,7 @@ const argsSchema = z.preprocess(
           .regex(/^[0-9a-f]{40,64}$/)
           .optional(),
         patchCommits: z.array(z.string().regex(FULL_COMMIT_SHA)).min(1).max(20).optional(),
+        sources: admissionSourcesSchema.optional(),
         skipPrecheck: z.boolean().optional(),
         precheckReason: z.string().min(8).max(2000).optional(),
         retryPrecheck: z.boolean().optional(),
@@ -444,6 +483,27 @@ const argsSchema = z.preprocess(
     ])
     .superRefine((value, refinementCtx) => {
       if (value.op !== 'admit' && value.op !== 'converge') return;
+      if (value.sources !== undefined) {
+        const issue = (message: string) =>
+          refinementCtx.addIssue({ code: z.ZodIssueCode.custom, path: ['sources'], message });
+        if (
+          value.wholeBlob !== undefined || value.sourceCommit !== undefined || value.patchCommit !== undefined ||
+          value.patchCommits !== undefined || value.includeHunksFrom !== undefined || value.ledgerRowIds !== undefined
+        ) {
+          issue('sources replaces wholeBlob, sourceCommit, patchCommit(s), includeHunksFrom and ledgerRowIds — name each mode inside its source');
+        }
+        if (!value.reason || value.reason.trim().length < 8) issue('a multi-source admit needs a reason of at least 8 characters');
+        const normalized = normalizeAdmissionSources(value.sources);
+        if (!normalized.ok) {
+          issue(normalized.sourceIndex !== undefined ? `source #${normalized.sourceIndex}: ${normalized.detail}` : normalized.detail);
+        } else {
+          const given = new Set(value.paths);
+          if (given.size !== normalized.paths.length || normalized.paths.some((p) => !given.has(p))) {
+            issue('paths must equal the union of the sources\' paths (omit paths to use that union)');
+          }
+        }
+        return;
+      }
       if (
         (value.patchCommit !== undefined || value.patchCommits !== undefined) &&
         (value.wholeBlob === true ||
@@ -1011,7 +1071,7 @@ export default defineTool({
   timeoutSec: 295,
   profile: 'engineer',
   description:
-    'Inspect, admit exact paths onto, claim a manifest leg of, or retire the frozen repair queue for the selected harness (operator home if unscoped). For gate-red fixes, `admit{paths}` is the only door: it replays named integration-branch paths onto repairHead as one proved commit; `wholeBlob:true, sourceCommit:<ancestor SHA>` pins reviewed source against staging drift. Dry-run unless `confirm:true`. R6 test files first return `precheck-running`; no background leg publishes. `converge` aliases `admit`; `retire` uses exact-identity CAS and is dry-run unless confirmed.',
+    'Inspect, admit exact paths onto, claim a manifest leg of, or retire the frozen repair queue for the selected harness (operator home if unscoped). For gate-red fixes, `admit{paths}` is the only door: it replays named integration-branch paths onto repairHead as one proved commit. Dry-run unless `confirm:true`. R6 test files first return `precheck-running`; no background leg publishes. `converge` aliases `admit`; `retire` uses exact-identity CAS and is dry-run unless confirmed.',
   capability: 'operator:write',
   abortCompletionReceipt: repairQueueAbortCompletionReceipt,
   effectForCall: (args) => {
@@ -1032,7 +1092,7 @@ export default defineTool({
     notWhen:
       'Use the selected harness scope, not a harness/workspace key in the payload. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.',
     chaining:
-      '`get` → preview `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. Pin whole-blob source with `wholeBlob:true, sourceCommit:<reviewed ancestor SHA>, reason`. On `precheck-running`, read `get`; confirm only after pass with fresh identity. Retry only a terminal failed pre-check. For missed hooks, `patchCommit:<full SHA>, reason` replays one delta; `patchCommits:[<older SHA>,<newer SHA>], reason` replays dependent deltas before one R6/publication; each path must change in each commit. Retire only with `retireAllowed` and exact identity.',
+      '`get` → preview `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. Pin whole-blob source with `wholeBlob:true, sourceCommit:<reviewed ancestor SHA>, reason`. On `precheck-running`, read `get`; confirm only after pass with fresh identity. Retry only a terminal failed pre-check. For missed hooks, `patchCommit:<full SHA>, reason` replays one delta; `patchCommits:[<older SHA>,<newer SHA>], reason` replays dependent deltas before one R6/publication; each path must change in each commit. One commit from mixed sources: `sources:[{paths, wholeBlob|patchCommit(s)}], reason` (all-or-nothing). Retire only with `retireAllowed` and exact identity.',
     returns:
       '{ ok, op, verdict?, repairQueueRead?, admitted?, precheckOperation?, previewOperation?, admissionPreview?, dryRun?, judgedSha?, nextAction?, containment?, proof?, inconclusiveTerminal? }. A slow dry run returns `previewOperation`; read `get{previewOperationId}` for its `admissionPreview` or await its settle event. Read `nextAction`; a successful retire of an unjudged repairHead emits the exact-SHA inconclusive terminal and reports its wake status.',
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
@@ -1349,7 +1409,10 @@ export default defineTool({
       const root = scopeRoot;
       const branch = integrationBranch();
       const queue = inspected.queue;
-      const paths = Array.isArray(args.paths) ? args.paths.filter((p) => typeof p === 'string' && p.trim()) : [];
+      // P-002: a direct handler call (no schema preprocess) still derives paths from `sources`.
+      const paths = Array.isArray(args.paths)
+        ? args.paths.filter((p) => typeof p === 'string' && p.trim())
+        : args.sources !== undefined ? sourcesPathUnion(args.sources) : [];
       const base = {
         op: 'admit' as const,
         target: inspected.target,
@@ -1482,8 +1545,9 @@ export default defineTool({
       let wholeBlob = args.wholeBlob === true;
       const includeHunksFrom = (args.includeHunksFrom ?? []).map((a) => a.trim()).filter((a) => a.length > 0);
       const hasPatchSource = args.patchCommit !== undefined || args.patchCommits !== undefined;
-      let mode: 'committed-patch' | 'whole-blob' | 'hunk-exact' =
-        hasPatchSource ? 'committed-patch' : wholeBlob ? 'whole-blob' : 'hunk-exact';
+      const multiSourceArgs = args.sources;
+      let mode: 'committed-patch' | 'whole-blob' | 'hunk-exact' | 'multi-source' =
+        multiSourceArgs !== undefined ? 'multi-source' : hasPatchSource ? 'committed-patch' : wholeBlob ? 'whole-blob' : 'hunk-exact';
       if (
         hasPatchSource &&
         (wholeBlob ||
@@ -1613,7 +1677,33 @@ export default defineTool({
       let patch: FrozenRepairAdmission['patch'];
       let patches: FrozenRepairAdmission['patches'];
       let foreign: ReturnType<typeof summarizeForeignHunks> = { count: 0, agents: [], byPath: {} };
-      if (hasPatchSource) {
+      let multiSource: MultiSourceSuccess | null = null;
+      if (multiSourceArgs !== undefined) {
+        // R-2: every source applied in order onto repairHead as ONE source commit; the first
+        // refused source refuses the whole call before anything is built or published.
+        const refusedMulti = (code: string, detail: string, extra: Record<string, unknown> = {}) =>
+          json({ ...base, ok: false, admitted: false, refused: true, dryRun, verdict: 'refused', mode,
+            reason: code, detail, ...extra, judgedSha: queue.repairHead });
+        const normalized = normalizeAdmissionSources(multiSourceArgs);
+        if (!normalized.ok) {
+          return refusedMulti(normalized.code, normalized.detail,
+            normalized.sourceIndex !== undefined ? { sourceIndex: normalized.sourceIndex } : {});
+        }
+        const built = await runJob('multi-source', {
+          kind: 'multi-source',
+          input: { root, repairHead: queue.repairHead, integrationRef: branch, sources: normalized.sources, reason: effectiveReason! },
+        });
+        if (!built.ok) {
+          return refusedMulti(built.code, built.detail, {
+            ...(built.sourceIndex !== undefined ? { sourceIndex: built.sourceIndex } : {}),
+            ...(built.path !== undefined ? { path: built.path } : {}),
+          });
+        }
+        multiSource = built;
+        sourceRef = built.sourceCommit;
+        const wholeBlobPaths = built.applied.flatMap((a) => (a.kind === 'whole-blob' ? a.paths : []));
+        foreign = summarizeForeignHunks(ledgerRows, wholeBlobPaths, identity.ownerId, includeHunksFrom);
+      } else if (hasPatchSource) {
         const commits = args.patchCommits ?? [args.patchCommit!];
         for (let i = 1; i < commits.length; i++) {
           const order = await runJob('committed-patch-order', {
@@ -1836,7 +1926,11 @@ export default defineTool({
           // are rebuilt from this spec on the worker thread (admissionPreflightFromSpec).
           preflight: {
             probeRef: wholeBlob && effectiveSourceCommit !== undefined ? sourceRef : branch,
-            ...(wholeBlob ? { enforceSourceCohort: true as const } : {}),
+            // P-002: a multi-source call checks each REAL whole-blob source's cohort against the
+            // combined admitted set (the synthesized commit's own diff is just the admitted paths).
+            ...(multiSource
+              ? { cohortSources: multiSource.cohortSources }
+              : wholeBlob ? { enforceSourceCohort: true as const } : {}),
           },
         });
       // Build the immutable candidate first. Publication is the effect boundary,
@@ -2275,7 +2369,19 @@ export default defineTool({
       const hunksRecord: Record<string, { applied: number; agents: string[] }> | null = hunkExact
         ? Object.fromEntries(hunkExact.perPath.map((p) => [p.path, { applied: p.applied, agents: p.agents }]))
         : null;
-      const provenance = patch
+      // P-002: a multi-source entry records its patches inside sources[] and leaves the
+      // top-level patch/patches unset, so committed-patch validation is untouched.
+      const provenance = multiSource
+        ? {
+            mode,
+            sources: multiSource.applied,
+            source: { ref: sourceRef, root },
+            foreignHunksAccepted: foreign.count,
+            foreignAgents: foreign.agents,
+            foreignHunksByPath: foreign.byPath,
+            ...carriedRecord,
+          }
+        : patch
         ? { mode, patch, ...(patches ? { patches } : {}), source: { ref: sourceRef, root }, ...carriedRecord }
         : hunkExact
           ? {
@@ -2346,7 +2452,9 @@ export default defineTool({
         ...outcome.entry,
         mode,
         precheck: precheckEntry,
-        ...(patch
+        ...(multiSource
+          ? { sources: multiSource.applied, foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents, ...carriedRecord }
+          : patch
           ? { patch, ...(patches ? { patches } : {}), ...carriedRecord }
           : hunksRecord
             ? { hunks: hunksRecord, ledgerRowIds: hunkExact?.ledgerRowIds }
@@ -2494,7 +2602,9 @@ export default defineTool({
         unchanged: outcome.entry.unchanged,
         precheckRadius: population.radius ?? null,
         mode,
-        ...(patch
+        ...(multiSource
+          ? { sources: multiSource.applied, foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents, ...carriedRecord }
+          : patch
           ? { patch, ...(patches ? { patches } : {}), ...carriedRecord }
           : hunksRecord
             ? { hunks: hunksRecord, ledgerRowIds: hunkExact?.ledgerRowIds }
@@ -2543,7 +2653,7 @@ export default defineTool({
               effectRef: `release:repair-queue:admit:${effectReceipt.receiptId}`,
             } }
           : {}),
-        ...(patch ? { source: { ref: sourceRef, root } } : {}),
+        ...(patch || multiSource ? { source: { ref: sourceRef, root } } : {}),
         repairQueue: persisted
           ? diagnoseFrozenCandidateRepairQueue(next, { nowMs: Date.now(), fixerAlive: inspected.fixerAlive })
           : inspected.diagnostic,
@@ -2923,7 +3033,9 @@ export default defineTool({
           dryRun: true,
           verdict: 'timeout',
           reason: 'admission-preview-timeout',
-          mode: args.wholeBlob === true ? 'whole-blob' : 'hunk-exact',
+          mode: args.sources !== undefined ? 'multi-source'
+            : args.patchCommit !== undefined || args.patchCommits !== undefined ? 'committed-patch'
+            : args.wholeBlob === true ? 'whole-blob' : 'hunk-exact',
           timedOutStep: err.stepName ?? err.jobKind,
           timeoutMs: err.timeoutMs,
           detail:
@@ -2942,7 +3054,9 @@ export default defineTool({
           dryRun: true,
           verdict: 'refused',
           reason: 'admission-preview-timeout-unavailable',
-          mode: args.wholeBlob === true ? 'whole-blob' : 'hunk-exact',
+          mode: args.sources !== undefined ? 'multi-source'
+            : args.patchCommit !== undefined || args.patchCommits !== undefined ? 'committed-patch'
+            : args.wholeBlob === true ? 'whole-blob' : 'hunk-exact',
           detail: err.message,
           timings: clock?.summary() ?? null,
         });

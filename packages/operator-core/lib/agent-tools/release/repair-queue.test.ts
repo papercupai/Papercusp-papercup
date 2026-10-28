@@ -93,6 +93,7 @@ const mocks = vi.hoisted(() => ({
   // P-020: the hunk-exact source builder + the ledger read the admit op consults first.
   hunkExact: vi.fn(),
   committedPatch: vi.fn(),
+  multiSource: vi.fn(),
   foreign: vi.fn(),
   ledger: vi.fn(),
   importPreflight: vi.fn(),
@@ -170,6 +171,11 @@ vi.mock('../../release/hunk-exact-admission', async (importOriginal) => ({
   buildHunkExactSource: mocks.hunkExact,
   buildCommittedPatchSource: mocks.committedPatch,
   summarizeForeignHunks: mocks.foreign,
+}));
+vi.mock('../../release/multi-source-admission', async (importOriginal) => ({
+  // The REAL normalizeAdmissionSources: the door's source validation runs end-to-end.
+  ...(await importOriginal<typeof import('../../release/multi-source-admission')>()),
+  buildMultiSourceAdmissionSource: mocks.multiSource,
 }));
 vi.mock('../../release/frozen-repair-edit-ledger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/frozen-repair-edit-ledger')>()),
@@ -3053,6 +3059,105 @@ describe('release:repair-queue', () => {
         expect((mocks.write.mock.calls[0]![1] as Written).admissions[0]).toMatchObject({ patch: second, patches: [patch, second] });
         expect(JSON.parse(mocks.audit.mock.calls[0]![1][5])).toMatchObject({ patches: [patch, second] });
       } else expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    describe('P-002 multi-source admission (R-2)', () => {
+      const pinned = '7'.repeat(40);
+      const { patchCommit: _single, paths: _paths, ...multiBase } = patchArgs;
+      const sources = [
+        { paths: ['lib/a.ts'], wholeBlob: true },
+        { paths: ['lib/red.test.ts'], patchCommit: patch.commit },
+      ];
+      const applied = [
+        { index: 0, kind: 'whole-blob', paths: ['lib/a.ts'], sourceCommit: pinned, pinned: false, headAfter: ALT_HEAD },
+        { index: 1, kind: 'committed-patch', paths: ['lib/red.test.ts'], patches: [patch], headAfter: HX_SOURCE },
+      ];
+      const jobsOfKind = (kind: string) =>
+        mocks.admissionJobOptions.mock.calls.filter(([job]) => (job as { kind: string }).kind === kind);
+
+      it.each([false, true])(
+        'one admit with mixed sources builds ONE multi-source source, ONE proof and ONE pre-check, confirm=%s',
+        async (confirm) => {
+          mocks.multiSource.mockReturnValue({
+            ok: true, sourceCommit: HX_SOURCE, tree: 'a'.repeat(40), paths: ['lib/a.ts', 'lib/red.test.ts'],
+            applied, patches: [patch], cohortSources: [{ sourceCommit: pinned, paths: ['lib/a.ts'] }], integrationTip: pinned,
+          });
+          mocks.admit.mockReturnValue(admissionOf(confirm));
+          const args = { ...multiBase, sources, confirm };
+          expect(tool.args.safeParse(args).success).toBe(true);
+          const result = body(await tool.handler(args as never, ctx));
+          expect(result.reason, `refused: ${String(result.detail)}`).toBeUndefined();
+          expect(result).toMatchObject({ ok: true, admitted: confirm, mode: 'multi-source', sources: applied });
+          expect(result.source).toEqual({ ref: HX_SOURCE, root: '/repo' });
+          expect(result).not.toHaveProperty('patch');
+          expect(mocks.multiSource).toHaveBeenCalledTimes(1);
+          expect(mocks.multiSource).toHaveBeenCalledWith(expect.objectContaining({
+            root: '/repo', repairHead: queue.repairHead, integrationRef: 'staging',
+            sources: [
+              { index: 0, kind: 'whole-blob', paths: ['lib/a.ts'] },
+              { index: 1, kind: 'committed-patch', paths: ['lib/red.test.ts'], commits: [patch.commit] },
+            ],
+          }));
+          expect(mocks.committedPatch).not.toHaveBeenCalled();
+          expect(mocks.hunkExact).not.toHaveBeenCalled();
+          expect(jobsOfKind('multi-source')).toHaveLength(1);
+          // One proof build (plus the single publication when confirmed) — never one per source.
+          expect(jobsOfKind('admit')).toHaveLength(confirm ? 2 : 1);
+          expect(mocks.population).toHaveBeenCalledTimes(1);
+          for (const [job] of jobsOfKind('admit')) {
+            const spec = job as { input: { paths: string[]; source: { ref: string } }; preflight: Record<string, unknown> };
+            expect(spec.input.paths).toEqual(['lib/a.ts', 'lib/red.test.ts']);
+            expect(spec.input.source).toEqual({ ref: HX_SOURCE });
+            // The cohort check runs per REAL whole-blob source, not on the synthesized commit.
+            expect(spec.preflight).toEqual({ probeRef: 'staging', cohortSources: [{ sourceCommit: pinned, paths: ['lib/a.ts'] }] });
+          }
+          if (confirm) {
+            const entry = (mocks.write.mock.calls[0]![1] as Written).admissions[0];
+            expect(entry).toMatchObject({ mode: 'multi-source', sources: applied });
+            expect(entry).not.toHaveProperty('patch');
+            expect(entry).not.toHaveProperty('patches');
+            expect(entry).not.toHaveProperty('hunks');
+            expect(JSON.parse(mocks.audit.mock.calls[0]![1][5])).toMatchObject({ mode: 'multi-source', sources: applied });
+          } else {
+            expect(mocks.write).not.toHaveBeenCalled();
+            expect(mocks.audit).not.toHaveBeenCalled();
+          }
+        },
+      );
+
+      it('ANY refused source refuses the whole call: nothing is built, published or written, and repairHead is unchanged', async () => {
+        mocks.multiSource.mockReturnValue({
+          ok: false, code: 'patch-conflict', sourceIndex: 1, path: 'lib/red.test.ts', detail: 'delta does not apply',
+        });
+        const result = body(await tool.handler({ ...multiBase, sources, confirm: true } as never, ctx));
+        expect(result).toMatchObject({
+          ok: false, admitted: false, refused: true, mode: 'multi-source', reason: 'patch-conflict',
+          sourceIndex: 1, path: 'lib/red.test.ts', judgedSha: queue.repairHead,
+        });
+        expect(mocks.admit).not.toHaveBeenCalled();
+        expect(mocks.write).not.toHaveBeenCalled();
+        expect(mocks.transition).not.toHaveBeenCalled();
+        expect(mocks.audit).not.toHaveBeenCalled();
+        const after = await mocks.read();
+        expect((after as { repairHead: string }).repairHead).toBe(queue.repairHead);
+      });
+
+      it('refuses sources mixed with a single-mode source field, a short reason, or a paths set that is not their union', async () => {
+        for (const extra of [
+          { wholeBlob: true },
+          { patchCommit: patch.commit },
+          { reason: 'short' },
+          { paths: ['lib/a.ts'] },
+        ]) {
+          expect(tool.args.safeParse({ ...multiBase, sources, ...extra }).success).toBe(false);
+        }
+        expect(tool.args.safeParse({ ...multiBase, sources, paths: ['lib/red.test.ts', 'lib/a.ts'] }).success).toBe(true);
+        // Overwriting an earlier source's path with a later whole-blob source is refused before any build.
+        const overwrite = [{ paths: ['lib/red.test.ts'], patchCommit: patch.commit }, { paths: ['lib/red.test.ts'], wholeBlob: true }];
+        expect(body(await tool.handler({ ...multiBase, sources: overwrite } as never, ctx)))
+          .toMatchObject({ ok: false, refused: true, reason: 'invalid-sources' });
+        expect(mocks.multiSource).not.toHaveBeenCalled();
+      });
     });
 
     it('rejects conflicting, duplicate or empty series sources before building', async () => {

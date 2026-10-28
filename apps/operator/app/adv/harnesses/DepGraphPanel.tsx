@@ -65,7 +65,7 @@ import {
 } from './dep-graph-model';
 
 /** Edge classes, each with its own arrowhead marker (see the ARROWHEADS note in the canvas). */
-const EDGE_VARIANTS = ['default', 'satisfied', 'dangling', 'wait', 'await', 'wait-stale', 'condition'] as const;
+const EDGE_VARIANTS = ['default', 'satisfied', 'dangling', 'wait', 'await', 'wait-stale', 'condition', 'subject'] as const;
 type EdgeVariant = (typeof EDGE_VARIANTS)[number];
 /**
  * P-009 (D-003): the wait kinds draw DIFFERENTLY. `wait` is the item's own event/gate
@@ -76,6 +76,8 @@ type EdgeVariant = (typeof EDGE_VARIANTS)[number];
  * Staleness wins over kind: a stale wait is nobody's live wait, whichever kind it was.
  */
 function edgeVariant(e: DepGraphEdge): EdgeVariant {
+  // A subject link is provenance (the item an event key names), not a wait or a blocker.
+  if (e.subject) return 'subject';
   if (e.wait) {
     if (e.wait.stale) return 'wait-stale';
     if (e.wait.kind === 'session-awaits-event') return 'await';
@@ -96,7 +98,8 @@ function eventNodeLabel(n: DepGraphNode): string {
   if (!ev) return n.id;
   const proof = ev.certification === 'proving' ? 'proving key' : `${ev.certification ?? 'unknown'} key`;
   const by = ev.announcedBy ? ` · declared by ${ev.announcedBy}` : '';
-  return `event · ${plural(ev.waitCount)} · ${proof}${by}`;
+  const about = ev.subjectItemId ? ` · about ${ev.subjectItemId}` : '';
+  return `event · ${plural(ev.waitCount)} · ${proof}${by}${about}`;
 }
 
 /** One row of `workItems.depEdges` (see lib/sync-resolver/dependency-graph-edges.ts). */
@@ -266,6 +269,10 @@ function DepGraphLegend() {
         <span>
           item blocked on a runtime or human condition no event can prove (re-checked on a date)
         </span>
+      </li>
+      <li>
+        {edge('subject')}
+        <span>the work item an event is about (its key names it) — not a blocker, no depth</span>
       </li>
       {/*
         ⚠ The node marks are wrapped in a <g class="pc-depgraph__node"> with the <rect> as

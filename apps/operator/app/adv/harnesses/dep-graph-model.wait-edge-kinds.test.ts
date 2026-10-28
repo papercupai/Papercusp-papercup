@@ -74,3 +74,74 @@ describe('SPEC-P-009 — a session wait and an item\'s own blocker get different
     expect(kinds).toEqual(['item-waits-on-event', 'session-awaits-event']);
   });
 });
+
+describe('WI-6554700010030578 — an event node links to the work item its key names', () => {
+  const doneKey = 'work-item:done:WI-2';
+
+  it('draws a subject edge item -> event that counts toward neither depth nor waits', () => {
+    const g = buildDepSubgraph({
+      items: [item('WI-1'), item('WI-2')],
+      edges: [],
+      waits: [{ ...blockerWait('WI-1', doneKey), subjectItemId: 'WI-2' }],
+    });
+
+    const subject = g.edges.filter((e) => e.subject);
+    expect(subject).toHaveLength(1);
+    expect(subject[0]).toMatchObject({
+      id: `subject:WI-2->${eventNodeId(doneKey)}`,
+      source: 'WI-2',
+      target: eventNodeId(doneKey),
+      subject: { eventKey: doneKey },
+    });
+    expect(subject[0].wait).toBeUndefined();
+    const depth = (id: string) => g.nodes.find((n) => n.id === id)?.depth;
+    expect(depth('WI-1')).toBe(1); // its own blocker wait counts
+    expect(depth('WI-2')).toBe(0); // being the subject of an event blocks nothing
+    expect(g.waitCount).toBe(1);
+    expect(g.nodes.find((n) => n.id === eventNodeId(doneKey))?.event?.subjectItemId).toBe('WI-2');
+  });
+
+  it('scopes through the subject edge: selecting the subject item reaches the event and its waiter', () => {
+    const g = buildDepSubgraph({
+      items: [item('WI-1'), item('WI-2'), item('WI-3')],
+      edges: [],
+      waits: [{ ...blockerWait('WI-1', doneKey), subjectItemId: 'WI-2' }],
+      selectedId: 'WI-2',
+    });
+    expect(g.nodes.map((n) => n.id).sort()).toEqual(['WI-1', 'WI-2', eventNodeId(doneKey)].sort());
+  });
+
+  it('draws no subject edge when the subject is an item already waiting on that event', () => {
+    const key = 'claim:released:WI-1';
+    const g = buildDepSubgraph({
+      items: [item('WI-1')],
+      edges: [],
+      waits: [{ ...sessionWait('WI-1', key), subjectItemId: 'WI-1' }],
+    });
+    expect(g.edges.some((e) => e.subject)).toBe(false);
+    expect(g.nodes.find((n) => n.id === eventNodeId(key))?.event?.subjectItemId).toBe('WI-1');
+  });
+
+  it('draws no subject edge to an item outside the graph, but keeps the id on the event node', () => {
+    const key = 'work-item:done:WI-9';
+    const g = buildDepSubgraph({
+      items: [item('WI-1')],
+      edges: [],
+      waits: [{ ...blockerWait('WI-1', key), subjectItemId: 'WI-9' }],
+    });
+    expect(g.edges.some((e) => e.subject)).toBe(false);
+    expect(g.nodes.some((n) => n.id === 'WI-9')).toBe(false);
+    expect(g.nodes.find((n) => n.id === eventNodeId(key))?.event?.subjectItemId).toBe('WI-9');
+  });
+
+  it('never pulls an event into scope on its own: health mode with only a live wait draws no subject edge', () => {
+    const g = buildDepSubgraph({
+      items: [item('WI-1'), item('WI-2')],
+      edges: [],
+      waits: [{ ...blockerWait('WI-1', doneKey), subjectItemId: 'WI-2' }],
+      healthOnly: true,
+    });
+    expect(g.edges.some((e) => e.subject)).toBe(false);
+    expect(g.nodes.some((n) => n.id === eventNodeId(doneKey))).toBe(false);
+  });
+});

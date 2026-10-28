@@ -3,7 +3,7 @@
 import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { RunSummary, Scenario, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
 import { claimableWatchBeforeSleep } from '../../../agent-tools/events/watch';
-import { IDLE_PULL_MISS_ADVICE } from '../../../agent-tools/scheduler/get_next';
+import { IDLE_PULL_MISS_ADVICE } from '../../../agent-tools/scheduler/idle-pull-miss-advice';
 import { decodeToolsInvokeArgs } from '../../../agent-tools/tools/invoke-args';
 import { effectiveToolCall } from './_asserts';
 import { SU_RUBRIC } from '../../rubrics/su';

@@ -267,6 +267,60 @@ describe('PgWorkItemAdmissionQueueStore', () => {
     }
   }, 30_000);
 
+  it('attributes a real PostgreSQL row-lock timeout during cancellation to the locked-row lookup', async () => {
+    const first = instance('cancel-row-lock-phase');
+    const idempotencyKey = 'real-pg-cancel-row-lock-phase';
+    await first.governor.admit({ idempotencyKey, admissionClass: 'agent' });
+
+    let releaseLock!: () => void;
+    let reportLockAcquired!: () => void;
+    let reportLockFailure!: (error: unknown) => void;
+    const lockAcquired = new Promise<void>((resolve, reject) => {
+      reportLockAcquired = resolve;
+      reportLockFailure = reject;
+    });
+    const holdLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const lockHolder = db.sql.begin(async (tx) => {
+      try {
+        const rows = await tx<Array<{ feature_id: string }>>`
+          SELECT feature_id
+            FROM harness_shared.work_items
+           WHERE workspace_id = 'ws-governor'
+             AND payload->'resource_governor'->>'idempotencyKey' = ${idempotencyKey}
+           FOR UPDATE`;
+        if (rows.length !== 1) throw new Error(`expected one queue row lock, received ${rows.length}`);
+        reportLockAcquired();
+        await holdLock;
+      } catch (error) {
+        reportLockFailure(error);
+        throw error;
+      }
+    });
+
+    try {
+      await lockAcquired;
+      let timeout: unknown;
+      try {
+        await first.governor.cancel(idempotencyKey, 'row-lock phase probe');
+      } catch (error) {
+        timeout = error;
+      }
+
+      // This distinguishes a real SELECT ... FOR UPDATE wait (lock_timeout / 55P03)
+      // from the neighboring integration case's delayed terminal UPDATE (statement_timeout / 57014).
+      expect(timeout).toBeInstanceOf(OrgTxnTimeoutError);
+      expect(timeout).toMatchObject({ pgCode: '55P03' });
+      expect((timeout as Error).message).toContain(
+        '[phase: resource-governor.cancel.locked-row-lookup]',
+      );
+    } finally {
+      releaseLock();
+      await lockHolder;
+    }
+  }, 30_000);
+
   it('reclaims an expired lease, rejects its stale token, and expires overdue queued work', async () => {
     const clock = { now: 20_000 };
     const producer = instance('producer', () => clock.now);

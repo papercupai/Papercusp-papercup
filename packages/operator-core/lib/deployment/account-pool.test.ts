@@ -17,6 +17,7 @@ import {
   recordAccountCredentialFailure,
   recordAccountReset,
   recordAccountWindow,
+  setAccountModelRefusal,
   recordProbeFailure,
   accountReadingStatus,
   isAvailable,
@@ -942,5 +943,44 @@ describe('partially-hydrated rows (WI-3068 — codex CLI-bridge read as permanen
     // a fully-formed row round-trips unchanged
     const full = getAccount(poolOf('a'), 'a')!;
     expect(normalizeAccount(full)).toEqual(full);
+  });
+});
+
+/** WI-6554700010030570 — the durable Codex per-model refusal field the gateway re-seeds from. */
+describe('setAccountModelRefusal', () => {
+  const codexPool = (): AccountPool =>
+    registerAccount(emptyPool(), { id: 'cx', provider: 'codex', credentialRef: 'codex-cli:/tmp/cx' }, T0);
+  const refusal = (model: string, reportUntil: number) => ({
+    model, since: T0, lastAt: T0, until: T0 + 30 * MIN, reportUntil, hits: 1, detail: 'not supported',
+  });
+
+  it('writes under the lower-cased model key and clears it with null', () => {
+    let p = setAccountModelRefusal(codexPool(), 'cx', 'GPT-5.6-Sol', refusal('GPT-5.6-Sol', T0 + 60 * MIN), T0);
+    expect(getAccount(p, 'cx')!.rate.modelRefusals).toEqual({ 'gpt-5.6-sol': refusal('GPT-5.6-Sol', T0 + 60 * MIN) });
+    p = setAccountModelRefusal(p, 'cx', 'gpt-5.6-sol', null, T0 + MIN);
+    expect(getAccount(p, 'cx')!.rate).not.toHaveProperty('modelRefusals');
+  });
+
+  it('prunes entries past their report horizon on any write, and never stores an already-lapsed one', () => {
+    let p = setAccountModelRefusal(codexPool(), 'cx', 'old', refusal('old', T0 + 10 * MIN), T0);
+    p = setAccountModelRefusal(p, 'cx', 'keep', refusal('keep', T0 + 90 * MIN), T0);
+    p = setAccountModelRefusal(p, 'cx', 'new', refusal('new', T0 + 120 * MIN), T0 + 20 * MIN);
+    expect(Object.keys(getAccount(p, 'cx')!.rate.modelRefusals ?? {}).sort()).toEqual(['keep', 'new']);
+    p = setAccountModelRefusal(p, 'cx', 'stale', refusal('stale', T0 + 20 * MIN), T0 + 20 * MIN);
+    expect(Object.keys(getAccount(p, 'cx')!.rate.modelRefusals ?? {}).sort()).toEqual(['keep', 'new']);
+  });
+
+  it('is a no-op for an unknown account', () => {
+    const p = codexPool();
+    expect(setAccountModelRefusal(p, 'nope', 'm', refusal('m', T0 + 60 * MIN), T0)).toEqual(p);
+  });
+
+  it('survives a rate reset in both modes — a refusal is an entitlement, not a rate reading', () => {
+    const p = setAccountModelRefusal(codexPool(), 'cx', 'm', refusal('m', T0 + 60 * MIN), T0);
+    for (const resetWindows of [false, true]) {
+      expect(getAccount(recordAccountReset(p, 'cx', { resetWindows }), 'cx')!.rate.modelRefusals)
+        .toEqual({ m: refusal('m', T0 + 60 * MIN) });
+    }
+    expect(getAccount(recordAccountReset(codexPool(), 'cx'), 'cx')!.rate).not.toHaveProperty('modelRefusals');
   });
 });

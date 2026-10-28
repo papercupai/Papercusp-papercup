@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  codeDependencyPairKey,
   deriveCouplings,
   deriveCouplingsFromCoordExchange,
   deriveCouplingsFromHeldFiles,
@@ -11,6 +12,8 @@ import {
   deriveCouplingsFromPlanBlocking,
   deriveCouplingsFromRoster,
   obligationPhrase,
+  type CodeDependencyEvidence,
+  type CodeDependencyShadowResult,
   type DerivationRow,
   type ObligationEdge,
 } from './coupling-derivation';
@@ -1003,6 +1006,58 @@ describe('the obligation leg inside deriveCouplings', () => {
       obligations: async () => {
         throw new Error('consult table unreachable');
       },
+      recentPartners: async () => ['su-peer'],
+    });
+    expect(derived.map((d) => d.relation)).toEqual(['coord-exchange']);
+  });
+});
+
+describe('the code-dependency leg inside deriveCouplings (P-011, shadow mode)', () => {
+  const roster = [row({ ownerId: 'su-me' }), row({ ownerId: 'su-peer' })];
+  const evidence = (over: Partial<CodeDependencyEvidence> = {}): CodeDependencyEvidence => ({
+    editorOwnerId: 'su-me',
+    symbol: 'readHistoryCommits',
+    path: 'lib/change-history.ts',
+    callers: 'measured',
+    holders: [{ ownerId: 'su-peer', path: 'lib/query.ts', via: 'lock', live: true }],
+    editorWorkTerminal: false,
+    editorSessionLive: true,
+    ...over,
+  });
+
+  it('logs the would-be edge to the shadow log and adds nothing to the delivered union', async () => {
+    const logged: CodeDependencyShadowResult[] = [];
+    const derived = await deriveCouplings('su-me', roster, {
+      codeDependency: async () => ({ evidence: [evidence()], suppressedPairs: [] }),
+      shadowLog: (r) => void logged.push(r),
+    });
+    expect(derived).toEqual([]);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]!.mode).toBe('shadow');
+    expect(logged[0]!.edges).toEqual([
+      expect.objectContaining({ a: 'su-me', b: 'su-peer', symbol: 'readHistoryCommits' }),
+    ]);
+  });
+
+  it('hands the caller’s decouples to the leg, so a decoupled pair logs no edge', async () => {
+    const logged: CodeDependencyShadowResult[] = [];
+    await deriveCouplings('su-me', roster, {
+      codeDependency: async () => ({
+        evidence: [evidence()],
+        suppressedPairs: [codeDependencyPairKey('su-me', 'su-peer')],
+      }),
+      shadowLog: (r) => void logged.push(r),
+    });
+    expect(logged).toHaveLength(1);
+    expect(logged[0]!.edges).toEqual([]);
+  });
+
+  it('survives a throwing code-dependency source without losing the other legs', async () => {
+    const derived = await deriveCouplings('su-me', roster, {
+      codeDependency: async () => {
+        throw new Error('callers index unreachable');
+      },
+      shadowLog: () => undefined,
       recentPartners: async () => ['su-peer'],
     });
     expect(derived.map((d) => d.relation)).toEqual(['coord-exchange']);

@@ -382,6 +382,19 @@
   fill-opacity: 0.75;
 }
 
+/* WI-6554700010030578 — a SUBJECT edge links the work item an event key names
+ * (`work-item:done:WI-1`) to that event node. It is provenance, not a wait, so it is drawn in
+ * the muted foreground rather than the wait accent, fine-dotted, so it never reads as a blocker. */
+.pc-depgraph__edge--subject {
+  stroke: var(--fg-mute, #7f9bb4);
+  stroke-opacity: 0.55;
+  stroke-dasharray: 1 2;
+}
+.pc-depgraph__arrowhead--subject {
+  fill: var(--fg-mute, #7f9bb4);
+  fill-opacity: 0.6;
+}
+
 /* P-012 — plan provenance (`source_plan_slug`), drawn as a left edge-marker.
  *
  * ⚠ SPECIFICITY IS LOAD-BEARING HERE, not incidental. The marker is a <rect> INSIDE

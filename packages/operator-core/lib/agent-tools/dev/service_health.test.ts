@@ -22,6 +22,7 @@ vi.mock("../../service-health", () => ({
     substrateSidecar: "substrate-sidecar",
     embedSidecar: "embed-sidecar",
   },
+  STAGING_API_BASE_URL: "http://127.0.0.1:3170",
 }));
 // EI-13221: probeServiceStart shells out to `systemctl`/`ps` — stub it so the
 // handler tests never touch the real OS; default "not determinable" (ok:false)
@@ -71,7 +72,7 @@ vi.mock("./dht-universe-probe", () => ({
   dhtUniverseNextVerb: vi.fn((unit: string) => `fix-dht:${unit}`),
 }));
 
-import { probeAll, probeMcpHandshake } from "../../service-health";
+import { probeAll, probeMcpHandshake, STAGING_API_BASE_URL } from "../../service-health";
 import { mockResolvedOnceTyped, mockResolvedTyped } from "../../testing/typed-mock";
 import { getTelemetryHealth } from "../../projected-tool-deps";
 import { supervisionSnapshot } from "../../supervision/unit-reconciler";
@@ -114,13 +115,13 @@ beforeEach(() => {
   vi.stubEnv("PAPERCUSP_SPAWNER_SIDECAR", "0");
   vi.stubEnv("PAPERCUSP_SPAWNER_SIDECAR_MODE", "0");
   dhtM.mockResolvedValue(null);
-  mcpHandshakeM.mockResolvedValue({
+  mcpHandshakeM.mockImplementation(async (baseUrl = "http://127.0.0.1:3070") => ({
     ok: true,
     latencyMs: 3,
     status: 200,
     protocolVersion: "2025-06-18",
-    url: "http://127.0.0.1:3070/api/mcp?client=mcp-health",
-  });
+    url: `${baseUrl}/api/mcp?client=mcp-health`,
+  }));
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -190,7 +191,9 @@ describe("dev:service_health handler", () => {
 
     const response = tool.handler({ units: ["papercusp-staging-api"], scope: "user" } as never, {} as never);
     expect(probeM).toHaveBeenCalledTimes(1);
-    expect(mcpHandshakeM).toHaveBeenCalledTimes(1);
+    expect(mcpHandshakeM).toHaveBeenCalledTimes(2);
+    expect(mcpHandshakeM).toHaveBeenNthCalledWith(1);
+    expect(mcpHandshakeM).toHaveBeenNthCalledWith(2, STAGING_API_BASE_URL);
     resolveUnits({ states: [], unitsUnknown: ["papercusp-staging-api.service"], scopesUnavailable: [] });
     const result = body((await response) as Out);
     expect(result.unitsUnknown).toEqual(["papercusp-staging-api.service"]);
@@ -247,7 +250,8 @@ describe("dev:service_health handler", () => {
   it("documents the canonical staging unit read after dev:restart", () => {
     const when = (tool as { guidance?: { when?: string } }).guidance?.when ?? "";
     expect(when).toContain('dev:restart { target:"staging" }');
-    expect(when).toContain('dev:service_health { units:["papercusp-staging-api"], scope:"user", unitsOnly:true }');
+    expect(when).toContain('dev:service_health { units:["papercusp-staging-api"], scope:"user" }');
+    expect(when).toContain("stagingMcpHandshake");
   });
 
   it("surfaces the probe snapshot under { ok, services }", async () => {
@@ -301,6 +305,7 @@ describe("dev:service_health handler", () => {
       requestedUnitStates: expect.any(Number),
       probeAll: expect.any(Number),
       mcpHandshake: expect.any(Number),
+      stagingMcpHandshake: expect.any(Number),
       supervision: expect.any(Number),
       dhtUniverse: expect.any(Number),
     }));
@@ -335,6 +340,38 @@ describe("dev:service_health handler", () => {
     expect(b.services).toEqual([{ name: "operator", up: true, latencyMs: 2 }]);
     expect(b.mcpHandshake).toMatchObject({ ok: false, latencyMs: 2000 });
     expect(b.mcpHandshake.note).toMatch(/timed out/);
+  });
+
+  it("surfaces a failed staging MCP initialize even when staging HTTP is green", async () => {
+    const services = [
+      { name: "operator", up: true, status: 200, latencyMs: 2, url: "http://127.0.0.1:3070/api/desktop/version" },
+      { name: "staging-api", up: true, status: 200, latencyMs: 3, url: `${STAGING_API_BASE_URL}/api/desktop/version` },
+    ];
+    probeM.mockResolvedValue(services);
+    mcpHandshakeM
+      .mockResolvedValueOnce({
+        ok: true,
+        latencyMs: 3,
+        status: 200,
+        protocolVersion: "2025-06-18",
+        url: "http://127.0.0.1:3070/api/mcp?client=mcp-health",
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        latencyMs: 2000,
+        url: `${STAGING_API_BASE_URL}/api/mcp?client=mcp-health`,
+        note: "MCP initialize timed out after 2000ms",
+      });
+
+    const b = body((await tool.handler({} as never, {} as never)) as Out);
+
+    expect(b.services).toEqual(services);
+    expect(b.mcpHandshake).toMatchObject({ ok: true });
+    expect(b.stagingMcpHandshake).toMatchObject({
+      ok: false,
+      latencyMs: 2000,
+      url: `${STAGING_API_BASE_URL}/api/mcp?client=mcp-health`,
+    });
   });
 
   it("does not report a stale local spawner give-up on a request-only host without the sidecar opt-in", async () => {

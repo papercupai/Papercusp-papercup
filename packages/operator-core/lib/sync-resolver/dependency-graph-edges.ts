@@ -63,6 +63,7 @@
  */
 import type { Sql } from 'postgres';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
+import { createEventKeyParser, eventKeySubjectItemId } from '../events/await/catalog';
 import { EXPLICIT_PARK_NOTE_MARKER } from '../events/await/types';
 import {
   activeExternalBlockers,
@@ -371,6 +372,14 @@ export interface DependencyGraphWait {
    * is NOT an event key — `certification` is then 'not-an-event'.
    */
   eventKey: string;
+  /**
+   * The work item `eventKey` is ABOUT, when the key's catalog family carries one
+   * (`claim:released:<id>`, `work-item:done:<id>`) — read from the key through the catalog's
+   * own templates, never a hand-kept list. The graph draws it as a provenance link from that
+   * item to the event node (WI-6554700010030578). Null for 'item-condition' (its ref is not an
+   * event key), for an uncatalogued key, and for a key that names no work item.
+   */
+  subjectItemId: string | null;
   /** 'session-await' only: the `event_awaits` row id. */
   awaitId: string | null;
   /** 'item-blocker' ('event' | 'gate') and 'item-condition' ('runtime' | 'human'): the blocker's kind. */
@@ -674,6 +683,9 @@ export async function resolveDependencyGraphWaits(
   const certify = (key: string): DependencyGraphWaitCertification =>
     uncertifiedConditionReason(key, announcer.has(key)) ?? 'proving';
   const announcement = (key: string) => ({ announced: announcer.has(key), announcedBy: announcer.get(key) ?? null });
+  // Compiled once per resolve: the parser builds a regex for every catalog template.
+  const parseKey = createEventKeyParser();
+  const subjectOf = (key: string): string | null => eventKeySubjectItemId(parseKey(key));
   const nowMs = Date.now();
 
   const itemFields = (r: WaitItemRow) => ({
@@ -697,6 +709,7 @@ export async function resolveDependencyGraphWaits(
       ...itemFields(r),
       waitKind: 'session-await',
       eventKey: r.event_key,
+      subjectItemId: subjectOf(r.event_key),
       awaitId: String(r.await_id),
       blockerKind: null,
       capability: null,
@@ -723,6 +736,7 @@ export async function resolveDependencyGraphWaits(
       ...itemFields(w.item),
       waitKind: 'item-blocker',
       eventKey: w.ref,
+      subjectItemId: subjectOf(w.ref),
       awaitId: null,
       blockerKind: w.kind,
       capability: null,
@@ -744,6 +758,7 @@ export async function resolveDependencyGraphWaits(
       ...itemFields(item),
       waitKind: 'item-park',
       eventKey: trigger,
+      subjectItemId: subjectOf(trigger),
       awaitId: null,
       blockerKind: null,
       capability: null,
@@ -765,6 +780,7 @@ export async function resolveDependencyGraphWaits(
       ...itemFields(w.item),
       waitKind: 'item-condition',
       eventKey: w.ref,
+      subjectItemId: null,
       awaitId: null,
       blockerKind: w.kind,
       capability: w.capability,

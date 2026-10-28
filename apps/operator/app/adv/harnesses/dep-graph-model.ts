@@ -136,6 +136,13 @@ export interface DepGraphWaitInput {
   staleReason?: string | null;
   /** The resolver leg that produced this row hit its cap. */
   legTruncated?: boolean;
+  /**
+   * The work item `eventKey` is ABOUT (`work-item:done:<id>`), parsed by the resolver from the
+   * catalog's own templates. Drawn as a `subject` edge from that item to the event node
+   * (WI-6554700010030578). Null/absent for a condition, an uncatalogued key, or a key that
+   * names no item.
+   */
+  subjectItemId?: string | null;
 }
 
 /**
@@ -180,7 +187,18 @@ export interface DepGraphNode extends DepGraphItem {
    * `stale` when EVERY wait on it is stale — a key a live agent still waits on is not dead.
    * `announcedBy` is the producer that declared the key, or null when none did.
    */
-  event?: { key: string; certification: string | null; stale: boolean; waitCount: number; announcedBy: string | null };
+  event?: {
+    key: string;
+    certification: string | null;
+    stale: boolean;
+    waitCount: number;
+    announcedBy: string | null;
+    /**
+     * The work item the key names, or null. Carried on the node even when no `subject` edge is
+     * drawn (the item is outside the graph), so the link is never silently lost.
+     */
+    subjectItemId: string | null;
+  };
   /**
    * Set only on a CONDITION node (kind 'condition'): a runtime or human blocker no event can
    * prove. `recheckAt` is the EARLIEST re-check date among the items blocked on it.
@@ -236,6 +254,14 @@ export interface DepGraphEdge {
     /** Set only on an 'item-waits-on-condition' edge. */
     condition?: { capability: string | null; recheckAt: string | null };
   };
+  /**
+   * Set only on a SUBJECT edge: a PROVENANCE link from the work item an event key names to
+   * that event node (`work-item:done:WI-1` -> WI-1), drawn item -> event (WI-6554700010030578).
+   * It says what the event is ABOUT, not that anything waits on the item, so it never counts
+   * toward depth, the critical path, readiness or the integrity findings, and it is not a wait
+   * (`waitCount` excludes it).
+   */
+  subject?: { eventKey: string };
 }
 
 export interface DepSubgraph {
@@ -669,6 +695,7 @@ export function buildDepSubgraph(opts: {
         stale: (prior?.stale ?? true) && stale,
         waitCount: (prior?.waitCount ?? 0) + 1,
         announcedBy: prior?.announcedBy ?? w.announcedBy ?? null,
+        subjectItemId: prior?.subjectItemId ?? w.subjectItemId ?? null,
       });
     }
     allWaitEdges.push({
@@ -691,6 +718,30 @@ export function buildDepSubgraph(opts: {
         ...(isPark ? { park: { by: w.parkedBy ?? null, recheckAt: w.recheckAt ?? null } } : {}),
         ...(isCondition ? { condition: { capability: w.capability ?? null, recheckAt: w.recheckAt ?? null } } : {}),
       },
+    });
+  }
+  // Subject links (WI-6554700010030578): one per event node whose key names a work item, drawn
+  // item -> event. Skipped when the item already waits on that event (the wait edge connects
+  // them) and when the item is not in the graph at all — its id stays on the event node's
+  // `subjectItemId`, so nothing is lost. A filter does not drop it: the event endpoint survived
+  // (its wait did), and the `blocks` rule above keeps an edge with one surviving endpoint.
+  const waitTargetsByEvent = new Map<string, Set<string>>();
+  for (const e of allWaitEdges) {
+    const targets = waitTargetsByEvent.get(e.source) ?? new Set<string>();
+    targets.add(e.target);
+    waitTargetsByEvent.set(e.source, targets);
+  }
+  const allSubjectEdges: DepGraphEdge[] = [];
+  for (const [nodeId, event] of eventNodes) {
+    const subject = event.subjectItemId;
+    if (!subject || waitTargetsByEvent.get(nodeId)?.has(subject) || !itemFor(subject)) continue;
+    allSubjectEdges.push({
+      id: `subject:${subject}->${nodeId}`,
+      source: subject,
+      target: nodeId,
+      satisfied: false,
+      dangling: false,
+      subject: { eventKey: event.key },
     });
   }
   /** The EVENT or CONDITION node a wait edge starts at, or undefined for an item id. */
@@ -726,7 +777,12 @@ export function buildDepSubgraph(opts: {
   // Health mode keeps the waits nobody is keeping alive — the wait analogue of an edge that
   // gates nothing.
   const waitEdges = opts.healthOnly ? allWaitEdges.filter((e) => e.wait?.stale) : allWaitEdges;
-  const scopingEdges = waitEdges.length > 0 ? [...rawEdges, ...waitEdges] : rawEdges;
+  // A subject link only rides along with an event node some drawn wait already brings in: it
+  // must never pull an event into scope on its own (in health mode that would surface a live
+  // wait's event with no wait edge).
+  const drawnEventIds = new Set(waitEdges.map((e) => e.source));
+  const subjectEdges = allSubjectEdges.filter((e) => drawnEventIds.has(e.target));
+  const scopingEdges = waitEdges.length > 0 ? [...rawEdges, ...waitEdges, ...subjectEdges] : rawEdges;
 
   // Which nodes are in scope, before the budget.
   let scopeIds: Set<string>;

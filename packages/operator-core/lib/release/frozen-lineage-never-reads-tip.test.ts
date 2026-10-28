@@ -169,9 +169,16 @@ describe('the ready-to-verify path verifies the repair head at its own sha, neve
     const start = GATE_SOURCE.indexOf('decision.kind === "verify-repair"');
     expect(start, 'the verify-repair branch must exist').toBeGreaterThan(-1);
     const rest = GATE_SOURCE.slice(start);
-    const end = rest.indexOf('// QUIET CUT');
-    expect(end, 'the quiet-cut block must follow the branch').toBeGreaterThan(-1);
-    const branch = rest.slice(0, end);
+    // The branch ends at the first statement after the decision chain. Until d6c5a4202f
+    // (2026-10-23) that was the inline `// QUIET CUT` block; candidate selection (quiet cut
+    // included) now lives in a helper declared BEFORE the chain, and the first statement after
+    // it is the up-to-date short-circuit. Accept whichever comes first, so the slice is the
+    // branch alone on either shape (WI-6554700010030799).
+    const ends = ['// QUIET CUT', 'if (candidate === lastReady)']
+      .map((marker) => rest.indexOf(marker))
+      .filter((index) => index > -1);
+    expect(ends.length, 'a statement after the decision chain must bound the branch').toBeGreaterThan(0);
+    const branch = rest.slice(0, Math.min(...ends));
     // The deps OBJECT handed to verifyRepairHead is an incidental local (`deps` before
     // 2026-09-11T00:00Z, `verifyDeps` after it); what this guard pins is the SECOND
     // argument — the frozen queue row, never the tip. Match either spelling of the
@@ -245,18 +252,18 @@ describe('no age, stall or fossil clock ever clears a queue row (P-009/P-010)', 
     }
   });
 
-  it('every queue-clearing write sits on a sanctioned path: promotion, or the WI-2141347 converged-head retest', () => {
+  it('every queue-clearing write sits on a sanctioned path: promotion only', () => {
     // The CAS writer now passes options after null; the comma is part of each
     // real clear site and prevents a no-argument lookalike from satisfying this guard.
     const sites = [...GATE_SOURCE.matchAll(/writeFrozenRepairQueue!?\??\.?\(\s*null\s*,/g)];
     // Exactly the sanctioned shapes. A new one must be argued into this list, not added.
-    // 2 (P-013) + 2 (P-008, 2026-09-04: the post-promotion staging bridge and its crash
-    // recovery — both run only AFTER `main` has already advanced to the proven lineage).
-    expect(sites.length, 'a new writeFrozenRepairQueue(null) site appeared').toBe(4);
+    // 1 (P-013 promotion) + 2 (P-008, 2026-09-04: the post-promotion staging bridge and its
+    // crash recovery — both run only AFTER `main` has already advanced to the proven lineage).
+    // The fourth, WI-2141347's converged-head retest, was removed on purpose by D-090/P-041
+    // (42dc7aade7, 2026-10-22): capacity can no longer retire a candidate, so the queue row is
+    // preserved and its admitted repair head verified instead (WI-6554700010030799).
+    expect(sites.length, 'a new writeFrozenRepairQueue(null) site appeared').toBe(3);
     const SANCTIONED = [
-      // The lineage's own repairHead has converged past the frozen candidate: its bookkeeping row
-      // is dropped but the CONVERGED repairHead (a sha on the lineage) is what gets tested next.
-      /WI-2141347/,
       // `main` was fast-forwarded to the lineage: the queue has done its job.
       /repairPromotionAdvance/,
       // P-008 (D-004): staging absorbs the ALREADY-PROMOTED lineage (`merge -s ours`), then the

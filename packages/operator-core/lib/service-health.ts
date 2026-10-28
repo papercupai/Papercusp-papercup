@@ -84,6 +84,8 @@ export interface EndpointSpec {
  * into a CRITICAL escalation even though the live
  * product (:3070) was healthy — see `onDemand` on `EndpointSpec` for the fix.
  */
+export const STAGING_API_BASE_URL = "http://127.0.0.1:3170";
+
 export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   { name: 'operator', url: 'http://127.0.0.1:3070/api/desktop/version' }, // 200 + build-info SHA (P-011)
   // EI-6902: vite's dev-server request handler can legitimately take 4-6s+ to answer
@@ -114,7 +116,7 @@ export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   // several times a day by design — see STAGING_API_DOWN_CONFIRM_TICKS.
   // The name matches its SUPERVISED_PROCESSES entry so the probe and the
   // supervision row join, per this file's naming convention.
-  { name: 'staging-api', url: 'http://127.0.0.1:3170/api/desktop/version' },
+  { name: 'staging-api', url: `${STAGING_API_BASE_URL}/api/desktop/version` },
   // WI-6149 / P-013 (D-010 item 4): the oddsmith sidecar — the single
   // most-asked-about unprobed unit in the 7d corpus (73 `is-active` reads, plus
   // 28 of the 32 raw `systemctl --user restart` atoms, which is why

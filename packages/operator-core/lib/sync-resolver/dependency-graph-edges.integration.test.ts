@@ -464,6 +464,22 @@ describe('resolveDependencyGraphWaits — event waits on items', () => {
     expect(got.find((w) => w.blockerKind === 'event')).toMatchObject({ announced: false, since: '2026-10-21T00:00:00.000Z' });
   });
 
+  it('WI-6554700010030578: names the work item an event key is about, read from the catalog templates; null for a key that names none and for a condition', async () => {
+    await heldItem('WI-1', null, {
+      blockers: [
+        blocker('event', 'work-item:done:WI-5'),
+        blocker('gate', 'fleet:alpha:schema-ready'),
+        blocker('runtime', 'pc-heavy queue'),
+      ],
+    });
+
+    const got = await waits();
+    const byKey = (key: string) => got.find((w) => w.eventKey === key);
+    expect(byKey('work-item:done:WI-5')).toMatchObject({ waitKind: 'item-blocker', subjectItemId: 'WI-5' });
+    expect(byKey('fleet:alpha:schema-ready')).toMatchObject({ waitKind: 'item-blocker', subjectItemId: null });
+    expect(byKey('pc-heavy queue')).toMatchObject({ waitKind: 'item-condition', subjectItemId: null });
+  });
+
   it('WI-6554700010030344 G-2: returns an item\'s own active runtime and human blockers as item-condition waits, with capability and re-check date, never as event waits', async () => {
     await heldItem('WI-C1', 'su-holder', {
       blockers: [

@@ -53,6 +53,7 @@ import {
 import { pinModuleState } from '@papercusp/module-singleton';
 import { expandWorkspaces } from '../../../../scripts/assert-workspace-links.mjs';
 import { expandAffectedWorkspaceNames, pinnedNonWorkspacePathRoutes } from '../../../../scripts/lib/affected-path-routes.mjs';
+import { buildMultiSourceAdmissionSource } from './multi-source-admission';
 import {
   chainAdmissionPreflights,
   lockfileManifestConsistencyPreflight,
@@ -67,7 +68,10 @@ export interface AdmissionPreflightSpec {
   probeRef: string;
   /** D-045: whole-blob admissions also close the same-source cohort. Omitted = forward check only. */
   enforceSourceCohort?: true;
+  /** P-002 multi-source: one cohort check per real whole-blob source (replaces the single check). */
+  cohortSources?: Array<{ sourceCommit: string; paths: string[] }>;
 }
+type MultiSourceInput = Omit<Parameters<typeof buildMultiSourceAdmissionSource>[0], 'git'>;
 
 type CommittedPatchInput = Omit<Parameters<typeof buildCommittedPatchSource>[0], 'git'>;
 type RetractInput = Omit<Parameters<typeof retractAdmission>[0], 'git'>;
@@ -549,6 +553,7 @@ export type AdmissionJob =
   | { kind: 'containment'; paths: string[]; judgedSha: string; root: string; branch: string }
   | { kind: 'committed-patch'; input: CommittedPatchInput }
   | { kind: 'hunk-exact'; input: Omit<BuildHunkExactSourceInput, 'git'> }
+  | { kind: 'multi-source'; input: MultiSourceInput }
   | {
       kind: 'admit';
       input: Omit<AdmitPathsInput, 'git' | 'preflight'>;
@@ -563,6 +568,7 @@ export interface AdmissionJobResults {
   containment: ReturnType<typeof containmentForPaths>;
   'committed-patch': ReturnType<typeof buildCommittedPatchSource>;
   'hunk-exact': HunkExactSourceOutcome;
+  'multi-source': ReturnType<typeof buildMultiSourceAdmissionSource>;
   admit: AdmissionOutcome;
   retract: boolean;
 }
@@ -580,6 +586,7 @@ export function admissionPreflightFromSpec(
       root,
       probeRef: spec.probeRef,
       ...(spec.enforceSourceCohort ? { enforceSourceCohort: true } : {}),
+      ...(spec.cohortSources ? { cohortSources: spec.cohortSources } : {}),
     }),
     lockfileManifestConsistencyPreflight({ root, probeRef: spec.probeRef }),
   );
@@ -601,6 +608,8 @@ export async function executeAdmissionJob(job: AdmissionJob): Promise<AdmissionJ
       return buildCommittedPatchSource(job.input);
     case 'hunk-exact':
       return buildHunkExactSource(job.input);
+    case 'multi-source':
+      return buildMultiSourceAdmissionSource(job.input);
     case 'admit':
       return admitPathsOntoRepairHead({
         ...job.input,
