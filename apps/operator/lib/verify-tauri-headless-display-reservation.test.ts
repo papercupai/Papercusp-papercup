@@ -13,6 +13,7 @@
  * readiness also exercises the production startup function with controlled
  * process fixtures, without opening an X display or booting Tauri.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -61,7 +62,7 @@ ${fn}
 start_display_server
 `], {
       encoding: 'utf8', timeout: 25_000, killSignal: 'SIGTERM',
-      env: { ...process.env, PATH: root + ':' + process.env.PATH, WORK: root,
+      env: { ...hermeticSpawnEnv(), PATH: root + ':' + process.env.PATH, WORK: root,
         DISPLAY_TEST_MODE: mode, DISPLAY_NUM: '9999', VERIFY_SCOPE_BASE: 'fixture',
         TAURI_LAUNCH_PROVENANCE: 'fixture', XVFB_SCREEN_W: '640', XVFB_SCREEN_H: '480' },
     });

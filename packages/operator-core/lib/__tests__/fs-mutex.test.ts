@@ -1222,7 +1222,7 @@ describe('fs-mutex lease reclamation', () => {
       '  timeoutMs: 1000, staleMs: 5000, retryMs: 5,',
       '});',
     ].join('\n');
-    const childEnv = { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: dir };
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: dir };
     // test:file injects the committed-source loader through NODE_OPTIONS. This
     // child must exercise the working-tree implementation under test, not the
     // committed blob silently substituted into spawned Node processes.

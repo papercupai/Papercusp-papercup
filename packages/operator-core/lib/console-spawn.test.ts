@@ -2648,6 +2648,22 @@ describe('spawnHeadless boot receipt — a member that dies AFTER the probe (EI-
     expect((r as { error: string }).error).toMatch(/disabled Claude subscription access/);
   }, 10_000);
 
+  it('keeps an unrelated issue reference out of the prompt-tiling boot failure reason', async () => {
+    spawnMock.mockImplementation(() => fakeChild(6006));
+    const tilingDeath =
+      'psu: POST /api/agent-mcp/console/bootstrap-su (HTTP 400) — su.md tiling is unsound\n' +
+      '[papercusp] initial terminal command exited with status 1; terminal left open for inspection.\n';
+    const r = await spawnHeadless({
+      envelope,
+      spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => false },
+      bootProbes: { readLog: () => tilingDeath, sleep: TICK, windowMs: 60 },
+    });
+    expect(r.status).toBe('error');
+    const error = (r as { error: string }).error;
+    expect(error).toContain('su.md tiling is unsound');
+    expect(error).not.toContain('EI-19311623077693508');
+  }, 10_000);
+
   it('sentinel appearing LATE (after the early-exit probe) is still caught', async () => {
     spawnMock.mockImplementation(() => fakeChild(6002));
     let reads = 0;

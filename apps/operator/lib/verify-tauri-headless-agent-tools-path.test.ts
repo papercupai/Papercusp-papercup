@@ -6,6 +6,7 @@
  * not the managed ~/.local/nodeNN/bin directory, so the command exited 127 and
  * the origin guard mislabeled that dependency failure as an unreachable app.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -43,12 +44,15 @@ describe('verify-tauri-headless tauri-agent-tools dependency', () => {
     const result = spawnSync('bash', [SCRIPT, '--boot-only'], {
       cwd: resolve(__dirname, '../../..'),
       env: {
-        ...process.env,
+        ...hermeticSpawnEnv(),
         PAPERCUSP_SID: 'test-agent-tools-preflight',
         // The test is exercising the script's own dependency preflight, not
         // capability:bash's task-lifetime guard.  Clear the managed-task marker
         // inherited when this suite runs through a detached verifier.
         PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: '',
+        // The runner's own task deadline would trip the verifier's deadline
+        // admission (exit 2) before the preflight under test (WI-6554700010030899).
+        PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '',
         TMPDIR: dir,
         VERIFY_TAURI_AGENT_TOOLS_BIN: missing,
       },

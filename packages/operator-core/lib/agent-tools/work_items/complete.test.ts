@@ -235,6 +235,13 @@ const dispatchPendingGradingAudits = vi.hoisted(() => vi.fn());
 vi.mock('../../grading-integrity', () => ({
   dispatchPendingGradingAudits: (...a: unknown[]) => dispatchPendingGradingAudits(...a),
 }));
+// P-011 / R-10: the close-coverage READ is replaced (it queries Postgres); the warning TEXT
+// builder stays real, so the door cases below assert the words a closer actually receives.
+const closeCoverageRead = vi.hoisted(() => ({ compute: vi.fn(async (..._a: unknown[]): Promise<unknown> => null) }));
+vi.mock('../../work-item-close-coverage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-item-close-coverage')>()),
+  computeCloseCoverage: (...a: unknown[]) => closeCoverageRead.compute(...a),
+}));
 
 import { z } from 'zod';
 
@@ -8667,5 +8674,106 @@ describe('work_items:complete — change-kind proof gate (change-kind-declared-p
     const r = await one({ id: 'F-12', state: 'dropped', completion: { summary: 'superseded by F-13' } });
     expect(r.stateError ?? '').not.toContain('change-kind');
     expect(r.changeKindProof).toBeUndefined();
+  });
+});
+
+// P-011 / R-10 (change-provenance-and-admission-throughput-2026-10-27): the close-coverage
+// warning at the work_items:complete DOOR. work-item-close-coverage.test.ts pins the
+// classifier with injected rows; these cases pin that the door CALLS it over the item's claim
+// window, returns its words on the close response, and never lets it refuse or fail the close.
+// Deleting the call in complete.ts turns the first case red (no warning, no read).
+describe('work_items:complete — close-coverage warning at the door (P-011 / R-10)', () => {
+  const TAKEN_AT = '2026-10-12T16:00:00.000Z';
+  const held = { ...item, id: 'F-COV', assignee: 'su-tester', takenAt: TAKEN_AT };
+  const completion = {
+    summary: 'changed the classifier',
+    verification: {
+      verifiedHow: 'unit',
+      testsRun: 'npm run test:file -- packages/operator-core/lib/b.test.ts',
+      testResult: '3 passed, 0 failed',
+      filesChanged: ['packages/operator-core/lib/a.ts', 'packages/operator-core/lib/b.ts'],
+    },
+  };
+  const report = (over: Record<string, unknown> = {}) => ({
+    windowStartMs: Date.parse(TAKEN_AT),
+    windowEndMs: Date.parse(TAKEN_AT) + 3_600_000,
+    editedFiles: ['packages/operator-core/lib/a.ts', 'packages/operator-core/lib/b.ts'],
+    coveredFiles: ['packages/operator-core/lib/b.ts'],
+    uncoveredFiles: ['packages/operator-core/lib/a.ts'],
+    runsConsidered: 2,
+    passingRuns: 2,
+    anyCleanPass: false,
+    cleanTree: 'dirty-only',
+    dirtyOnlyFiles: ['packages/operator-core/lib/b.ts'],
+    unknownTreeFiles: [],
+    runsTruncated: false,
+    ...over,
+  });
+
+  beforeEach(() => {
+    closeCoverageRead.compute.mockReset();
+    getWorkItem.mockResolvedValue(held);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...held, state: 'done' }));
+  });
+  afterEach(() => {
+    closeCoverageRead.compute.mockReset();
+    closeCoverageRead.compute.mockResolvedValue(null);
+  });
+
+  it('returns the uncovered file and the dirty-only file on the close response, and the close still advances', async () => {
+    closeCoverageRead.compute.mockResolvedValue(report());
+    const r = await one({ id: 'F-COV', state: 'done', completion });
+
+    expect(r.ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo.mock.calls.at(-1)?.[1]).toBe('done');
+    // The read is scoped to THIS item over ITS claim window.
+    expect(closeCoverageRead.compute).toHaveBeenCalledTimes(1);
+    expect(closeCoverageRead.compute.mock.calls[0]?.[0]).toMatchObject({
+      workItemId: 'F-COV',
+      windowStartMs: Date.parse(TAKEN_AT),
+    });
+    const warning = String(r.closeCoverageWarning ?? '');
+    expect(warning).toContain('the close is not refused');
+    expect(warning).toContain('exercised by no recorded test run in its claim window: packages/operator-core/lib/a.ts');
+    expect(warning).toContain('passed only on a DIRTY tree');
+    expect(warning).toMatch(/DIRTY tree[^;]*packages\/operator-core\/lib\/b\.ts/);
+  });
+
+  it('CONTROL — fully covered edits that passed on a clean tree carry no warning key', async () => {
+    closeCoverageRead.compute.mockResolvedValue(
+      report({
+        coveredFiles: ['packages/operator-core/lib/a.ts', 'packages/operator-core/lib/b.ts'],
+        uncoveredFiles: [],
+        anyCleanPass: true,
+        cleanTree: 'clean-pass',
+        dirtyOnlyFiles: [],
+      }),
+    );
+    const r = await one({ id: 'F-COV', state: 'done', completion });
+
+    expect(r.ok).toBe(true);
+    expect(closeCoverageRead.compute).toHaveBeenCalledTimes(1);
+    expect(r).not.toHaveProperty('closeCoverageWarning');
+  });
+
+  it('a failing coverage read neither refuses nor fails the close', async () => {
+    closeCoverageRead.compute.mockRejectedValue(new Error('test_runs read failed'));
+    const r = await one({ id: 'F-COV', state: 'done', completion });
+
+    expect(r.ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo.mock.calls.at(-1)?.[1]).toBe('done');
+    expect(r).not.toHaveProperty('closeCoverageWarning');
+    expect(String(r.stateError ?? '')).not.toMatch(/coverage/i);
+  });
+
+  it('an item with no claim window is never read', async () => {
+    getWorkItem.mockResolvedValue({ ...held, takenAt: null, createdAt: null });
+    closeCoverageRead.compute.mockResolvedValue(report());
+    const r = await one({ id: 'F-COV', state: 'done', completion });
+
+    expect(r.ok).toBe(true);
+    expect(closeCoverageRead.compute).not.toHaveBeenCalled();
+    expect(r).not.toHaveProperty('closeCoverageWarning');
   });
 });

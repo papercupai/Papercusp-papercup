@@ -11,12 +11,20 @@ export function pureProofCaptureSliceSize(env?: Record<string, string | undefine
  * Which pure-lane files to capture, in order (D-005 §1 "Population" and "Order"). PURE.
  *
  * Excluded: files with a fail/error row at the sha (the co-residency rail: capture never mints a
- * proof over a failure), and files already holding a fresh proof AT the sha. Then, by path within
- * each tier:
+ * proof over a failure), and files already holding a fresh proof AT the sha. Then the tiers:
  *   (i)   ranPassed — passed in this sha's suite (the radius the next candidate most likely shares);
  *   (ii)  unproven  — no usable proof (none, or from another runner identity);
- *   (iii) refresh   — a usable proof at an older sha, oldest first. A proof never expires (owner
- *         #2143), but the further its sha is from the judged one, the more drift can invalidate it.
+ *   (iii) refresh   — a usable proof at an older sha. A proof never expires (owner #2143), but the
+ *         further its sha is from the judged one, the more drift can invalidate it.
+ *
+ * Within every tier the STALEST proof goes first: no usable proof, then the oldest recorded_at,
+ * then path. WI-6554700010030941: ranPassed used to be ordered by path. On a frozen lineage every
+ * repair head is a new sha, so nothing is ever "proven at the sha" and ranPassed is nearly the
+ * whole lane (4,243 of 4,260 at a171bb05). Each budget-bounded run therefore re-captured the same
+ * ~310-file alphabetical head (identical 310/23/4236 in runs eee67205 and 6370d1ad), and ~4,200
+ * files kept week-old proofs that a global-input change had invalidated (lane-pure reused 25/4190
+ * on 81733f27). Staleness order makes the frontier advance: a file captured this run carries the
+ * newest recorded_at, so the next run starts where this one stopped.
  *
  * @param {object} o
  * @param {string[]} o.laneFiles repo-relative pure-lane files

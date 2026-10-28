@@ -5,6 +5,7 @@
  * repository, checking session provenance, creating a work directory, or
  * allocating any Xvfb/Tauri resources.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -22,7 +23,7 @@ describe('EI-20209569220764298 — verify-tauri-headless help is side-effect-fre
       const result = spawnSync('bash', [SCRIPT, flag], {
         cwd: ROOT,
         env: {
-          ...process.env,
+          ...hermeticSpawnEnv(),
           PAPERCUSP_REPO_DIR: join(scratch, 'missing-repo'),
           PAPERCUSP_SID: '',
           TMPDIR: scratch,

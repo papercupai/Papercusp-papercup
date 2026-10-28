@@ -1,3 +1,4 @@
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -25,8 +26,8 @@ describe('real native verifier process boundary', () => {
       symlinkSync(join(root, 'node_modules'), join(source, 'node_modules'));
       writeFileSync(join(source, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true, noEmit: true }, files: ['a.ts'] }));
       writeFileSync(join(source, 'a.ts'), 'export const a: number = "wrong";');
-      await expect(withNativeVerifierTypeService(source, { ...process.env,
-        PAPERCUSP_TSC_SERVICE_SOCKET: '/wrong/shared.sock', PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: 'wrong' }, async env => {
+      await expect(withNativeVerifierTypeService(source, { ...hermeticSpawnEnv(),
+        PAPERCUSP_TSC_SERVICE_SOCKET: '/wrong/shared.sock', PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: 'wrong' }, async (env: NodeJS.ProcessEnv) => {
         socket = env.PAPERCUSP_TSC_SERVICE_SOCKET!;
         expect(env.PAPERCUSP_TSC_SERVICE_ROOT).toBe(realpathSync(source));
         expect(env.PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE).toBe('');
@@ -258,7 +259,7 @@ describe('real native verifier process boundary', () => {
   });
 
   it('keeps the parent unit rail active while the real child has no unit runner or fake census', () => {
-    const parent = { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1', VITEST: 'true',
+    const parent = { ...hermeticSpawnEnv(), PAPERCUSP_FORBID_REAL_PG: '1', VITEST: 'true',
       VITEST_WORKER_ID: '9', VITEST_POOL_ID: '2', PAPERCUSP_SID: 'test-owner',
       PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: '/test-only-census.json',
       PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: 'admitted-by-vitest',

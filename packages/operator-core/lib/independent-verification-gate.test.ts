@@ -26,6 +26,11 @@ const SCOPE = [
   { spec_id: 'AUTO-BAR-R-3-P-011', revision: 4, evidence_plane: 'live', source_bar_key: 'R-3' },
 ];
 
+const PAIR_CANDIDATE = {
+  id: '37146', spec_id: 'AUTO-BAR-R-1-P-008', verified_binding_id: '37145',
+  created_by: 'su-verifier', verified_created_by: 'su-impl',
+};
+
 describe('independent verification gate — what a recruited verifier cites', () => {
   it('lists the live implementer bindings per open clause', async () => {
     const { sql, calls } = fakeSql([
@@ -60,6 +65,96 @@ describe('independent verification gate — what a recruited verifier cites', ()
     );
     expect(verdict).toMatchObject({ satisfied: false, code: 'independent_verification_unavailable' });
   });
+
+  it.each(['source', 'environment'] as const)(
+    'rejects an otherwise independent, fingerprint-equal pair when %s currentness is stale',
+    async (staleDimension) => {
+      const { sql, calls } = fakeSql([
+        SCOPE.slice(0, 1),
+        [PAIR_CANDIDATE],
+        [{ id: '37145', spec_id: 'AUTO-BAR-R-1-P-008' }],
+      ]);
+      let requestedBindingIds: number[] = [];
+      const dimensions = staleDimension === 'source' ? { source: 'stale' } : { environment: 'stale' };
+      const verdict = await evaluateIndependentVerificationGate(
+        { planSlug: 'p', harnessSlug: 'h', workspaceId: 'ws' },
+        {
+          sql,
+          resolveImplementers: async () => ['su-impl'],
+          lineageRelated: async () => false,
+          listEvidence: async (options) => {
+            requestedBindingIds = options.bindingIds ?? [];
+            return [37146, 37145].map((id) => ({
+              id,
+              currentness: { overall: 'stale' as const, dimensions },
+            }));
+          },
+        },
+      );
+
+      // The database still sees equal stored fingerprints; independent measurement now
+      // rejects that copied snapshot when its source or runtime has moved.
+      expect(calls[1]).toMatch(/src\.source_fingerprint = iv\.source_fingerprint/);
+      expect(calls[1]).toMatch(/src\.environment_fingerprint IS NOT DISTINCT FROM iv\.environment_fingerprint/);
+      expect(requestedBindingIds.sort()).toEqual([37145, 37146]);
+      expect(verdict).toMatchObject({ satisfied: false, code: 'independent_verification_missing' });
+      expect(verdict.gaps[0]).toMatchObject({
+        specId: 'AUTO-BAR-R-1-P-008',
+        reason: 'non-current-evidence',
+        nonCurrentBindingIds: [37146, 37145],
+      });
+    },
+  );
+
+  it('accepts an independent pair only when both server-measured bindings are current', async () => {
+    const { sql } = fakeSql([
+      SCOPE.slice(0, 1),
+      [PAIR_CANDIDATE],
+      [{ id: '37145', spec_id: 'AUTO-BAR-R-1-P-008' }],
+    ]);
+    let requestedBindingIds: number[] = [];
+    const verdict = await evaluateIndependentVerificationGate(
+      { planSlug: 'p', harnessSlug: 'h', workspaceId: 'ws' },
+      {
+        sql,
+        resolveImplementers: async () => ['su-impl'],
+        lineageRelated: async () => false,
+        listEvidence: async (options) => {
+          requestedBindingIds = options.bindingIds ?? [];
+          return [37146, 37145].map((id) => ({
+            id,
+            currentness: { overall: 'current' as const, dimensions: { source: 'current', environment: 'current' } },
+          }));
+        },
+      },
+    );
+
+    expect(requestedBindingIds.sort()).toEqual([37145, 37146]);
+    expect(verdict).toMatchObject({ satisfied: true, applicable: true, inScope: 1, gaps: [] });
+  });
+
+  it('refuses when the currentness read omits a binding in the pair', async () => {
+    const { sql } = fakeSql([
+      SCOPE.slice(0, 1),
+      [PAIR_CANDIDATE],
+      [{ id: '37145', spec_id: 'AUTO-BAR-R-1-P-008' }],
+    ]);
+    const verdict = await evaluateIndependentVerificationGate(
+      { planSlug: 'p', harnessSlug: 'h', workspaceId: 'ws' },
+      {
+        sql,
+        resolveImplementers: async () => ['su-impl'],
+        lineageRelated: async () => false,
+        listEvidence: async () => [{ id: 37146, currentness: { overall: 'current' } }],
+      },
+    );
+
+    expect(verdict).toMatchObject({
+      satisfied: false,
+      code: 'independent_verification_unavailable',
+      readFailure: 'currentness of the independent-verification evidence pairs: measured 1 of 2 requested bindings',
+    });
+  });
 });
 
 describe('renderIndependentVerificationBrief', () => {
@@ -84,5 +179,13 @@ describe('renderIndependentVerificationBrief', () => {
     expect(brief).toContain('- AUTO-BAR-R-3-P-011@4 (R-3, live): no live implementer binding to cite');
     // A contradicting observation must never become a binding.
     expect(brief).toMatch(/contradicts the receipt, do not bind/);
+  });
+
+  it('names stale or unmeasurable evidence pairs in the verifier brief', () => {
+    const brief = renderIndependentVerificationBrief('p', 'h', [gap({
+      reason: 'non-current-evidence',
+      nonCurrentBindingIds: [37145, 37146],
+    })]);
+    expect(brief).toContain('binding(s) 37145, 37146 are stale or could not be measured current');
   });
 });

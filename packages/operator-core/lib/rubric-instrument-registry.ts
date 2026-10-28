@@ -65,6 +65,7 @@ import {
   LEG_OUTCOMES_INSTRUMENT_KEY, codeIntelLegOutcomesRescore,
 } from './code-intelligence/native-adoption';
 import { COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY, codeIntelCouplingShadowRescore } from './code-intelligence/coupling-shadow-window';
+import { STRAGGLER_DISPOSITIONS_INSTRUMENT_KEY, codeIntelStragglerDispositionsRescore } from './code-intelligence/straggler-dispositions';
 import {
   WORK_OVERHEAD_INSTRUMENT_KEYS, measureWorkOverheadWindow, rateWorkOverhead, workOverheadCriterionForInstrument,
 } from './agent-work-overhead-metrics';
@@ -820,6 +821,8 @@ export function platformComputedInstrumentKeys(): string[] {
     LEG_OUTCOMES_INSTRUMENT_KEY,
     // code-intel-delivery-and-outcomes-2026-10-26 P-012 (R-12): coupling shadow-window verdict.
     COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY,
+    // code-intel-delivery-and-outcomes-2026-10-26 P-016 (R-11): straggler dispositions.
+    STRAGGLER_DISPOSITIONS_INSTRUMENT_KEY,
     // code-cleanup-campaigns-2026-10-26 P-008: the campaign outcome rubric's three metrics.
     ...Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS),
   ];
@@ -854,6 +857,7 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
         : key === CODE_INTEL_LIVENESS_INSTRUMENT_KEY ? { rescore: codeIntelLivenessRescore() }
         : key === LEG_OUTCOMES_INSTRUMENT_KEY ? { rescore: codeIntelLegOutcomesRescore() }
         : key === COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY ? { rescore: codeIntelCouplingShadowRescore() }
+        : key === STRAGGLER_DISPOSITIONS_INSTRUMENT_KEY ? { rescore: codeIntelStragglerDispositionsRescore() }
         : cleanupMetric ? { rescore: cleanupOutcomeRescore(cleanupMetric) } : reuseMetric ? { rescore: {
         windowMs: 28 * 86_400_000, unit: reuseMetric === 'redundancy' || reuseMetric === 'providerOutcomes' ? 'count' as const : '%' as const,
         scope: 'harness' as const,

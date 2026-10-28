@@ -15,6 +15,7 @@
  * fragment under bash, plus the verifier's REAL env-line block, so the probed
  * database and the launched one cannot silently diverge again.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -191,14 +192,14 @@ describe('live verifier authenticated runtime precondition', () => {
       }
     `);
     const server = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
-      env: { ...process.env, PAPERCUSP_HOME: serverHome, OPERATOR_DEV_PORT: '45911' }, stdio: 'ignore',
+      env: { ...hermeticSpawnEnv(), PAPERCUSP_HOME: serverHome, OPERATOR_DEV_PORT: '45911' }, stdio: 'ignore',
     });
     await new Promise<void>((resolve, reject) => { server.once('spawn', resolve); server.once('error', reject); });
     try {
       const evidence = join(tmp, 'auth.json');
       const result = spawnSync(process.execPath, [helper,
         '--runtime-mcp', String(server.pid), '45911', evidence], { encoding: 'utf8',
-        env: { ...process.env, PAPERCUSP_REPO_DIR: tmp, PAPERCUSP_HOME: callerHome,
+        env: { ...hermeticSpawnEnv(), PAPERCUSP_REPO_DIR: tmp, PAPERCUSP_HOME: callerHome,
           PAPERCUSP_SID: 'test-runtime-auth', PAPERCUSP_WORKSPACE: 'test-auth-workspace' } });
       expect(result.status, result.stderr).toBe(exitCode ? 2 : 0);
       const raw = readFileSync(evidence, 'utf8');
@@ -286,7 +287,7 @@ describe('WI-10007640 — the verifier hands the launcher the preflight env file
       'shared_schema_readiness_preflight',
       'test "$HARNESS_ADMIN_DATABASE_URL" = "$EXPECTED_URL"',
       'node -e "if (process.env.HARNESS_ADMIN_DATABASE_URL !== process.env.EXPECTED_URL) process.exit(1)"',
-    ].join('\n')], { encoding: 'utf8', env: { ...process.env,
+    ].join('\n')], { encoding: 'utf8', env: { ...hermeticSpawnEnv(),
       REPO_DIR: tmp, DESKTOP_DIR: desktop, TMPDIR: work, EXPECTED_URL: url,
     } });
     return { result, work };

@@ -1146,3 +1146,43 @@ export function formatReuseExclusionLines(wsName, exclusions, { runGroupId, jour
   })}`;
   return { records, sample };
 }
+
+/** Exclusion reasons whose evidence names the input path that blocked reuse. */
+const PATHED_EXCLUSION_REASONS = new Set(["globalInput", "inputChanged", "legacyFormatDrift"]);
+
+/**
+ * WI-6554700010030941: one bounded line per task naming WHICH inputs blocked reuse. A collapse
+ * such as lane-pure reused=25 of 4190 with globalInput=3777 (gate run 81733f27) printed only the
+ * counts, so three investigations could not name the drifted file. This aggregates the exclusion
+ * records `selectReusablePasses` already returns: a per-reason count, and the `top` input paths by
+ * number of files they blocked. Diagnostic only; it cannot change `skip`. PURE.
+ * @param {string} wsName
+ * @param {Array<{ reason: string, evidence?: Record<string, unknown> }>} exclusions
+ * @param {{ top?: number }} [o]
+ */
+export function formatReuseExclusionCauseLine(wsName, exclusions, { top = 5 } = {}) {
+  /** @type {Record<string, number>} */
+  const byReason = {};
+  /** @type {Map<string, { reason: string, path: string, files: number }>} */
+  const byInput = new Map();
+  for (const e of exclusions) {
+    byReason[e.reason] = (byReason[e.reason] ?? 0) + 1;
+    const p = e.evidence && typeof e.evidence.path === "string" ? e.evidence.path : null;
+    if (p === null || !PATHED_EXCLUSION_REASONS.has(e.reason)) continue;
+    const key = `${e.reason}\u0000${p}`;
+    const hit = byInput.get(key);
+    if (hit) hit.files += 1;
+    else byInput.set(key, { reason: e.reason, path: p, files: 1 });
+  }
+  const topPaths = [...byInput.values()]
+    .sort((a, b) => b.files - a.files || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+    .slice(0, Math.max(0, top));
+  return `TEST_PASS_REUSE_EXCLUSION_CAUSES ${JSON.stringify({
+    version: 1,
+    ws: wsName,
+    total: exclusions.length,
+    byReason,
+    distinctPaths: byInput.size,
+    topPaths,
+  })}`;
+}

@@ -7,6 +7,7 @@
  * the generated Tauri launcher boundary; the dev-operator's later defaults
  * cannot protect Tauri's beforeDevCommand or stale socket adoption.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -25,7 +26,7 @@ const hostResolver = src.match(/^verify_tauri_dev_host\(\) \{[\s\S]*?^\}/m)?.[0]
 const urlBuilder = src.match(/^verify_tauri_dev_url\(\) \{[\s\S]*?^\}/m)?.[0];
 
 function resolveVerifierUrl(host?: string): string {
-  const env = { ...process.env };
+  const env = { ...hermeticSpawnEnv() };
   if (host === undefined) delete env.VERIFY_TAURI_DEV_HOST;
   else env.VERIFY_TAURI_DEV_HOST = host;
   return execFileSync('bash', ['-c', [
@@ -66,7 +67,7 @@ describe('verifier assertion display handoff', () => {
         xdotool getdisplaygeometry
       `], {
         encoding: 'utf8', timeout: 10_000,
-        env: { ...process.env, DISPLAY: inheritedDisplay },
+        env: { ...hermeticSpawnEnv(), DISPLAY: inheritedDisplay },
       });
       expect(result.trim()).toBe('640 480');
     },
@@ -91,7 +92,7 @@ describe('EI-20210154033151684 — verifier launch scrubs ambient runtime env', 
       export KOPIA_BACKUP_STATE_DIR=/tmp/host-state
       eval "env $DEV_CALLER_OVERRIDES printenv KOPIA_BACKUP_LOCK_PATH KOPIA_BACKUP_STATE_DIR"
     `], { encoding: 'utf8', env: {
-      ...process.env,
+      ...hermeticSpawnEnv(),
       KOPIA_BACKUP_LOCK_PATH: '/run/lock/papercusp/kopia-global.lock',
       KOPIA_BACKUP_STATE_DIR: '/tmp/inherited-host-state',
     } });

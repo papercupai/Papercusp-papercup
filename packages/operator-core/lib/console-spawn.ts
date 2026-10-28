@@ -2926,8 +2926,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
           status: 'error',
           error:
             `headless member launched but its agent command died at boot (exit ${failed[1]})` +
-            ` — the shell stays open holding a DEAD session, so this never surfaced as a` +
-            ` process exit (EI-19311623077693508)${installBoundaryNote(installLease)}` +
+            ` — the login shell stayed open after its agent command exited${installBoundaryNote(installLease)}` +
             `${tail ? ` — log tail: ${tail}` : ` — see ${logPath}`}`,
           code: 502,
           logPath,

@@ -1410,8 +1410,11 @@ export function pushMapped<Row, Out>(out: Out[], rows: readonly Row[], mapRow: (
   for (const row of rows) out.push(mapRow(row));
 }
 
-async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: number | null): Promise<WorkItem[]> {
-  const { sql } = getOrgPg();
+async function listWorkItemsWithLimit(
+  filter: ListWorkItemsFilter,
+  rowLimit: number | null,
+  sql: OrgSql = getOrgPg().sql,
+): Promise<WorkItem[]> {
   const q = filter.q?.trim();
   // assignedBy is an issue-family-only concept, so it excludes all feature rows.
   const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
@@ -1533,7 +1536,7 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
     };
     const issues =
       rowLimit === null
-        ? await listAllIssuesForFileExport(issueFilter)
+        ? await listAllIssuesForFileExport(issueFilter, sql)
         : await listIssues({ ...issueFilter, limit: rowLimit });
     pushMapped(out, issues, issueToWorkItem);
   }
@@ -1552,8 +1555,11 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
  * Callers must keep the rows off the model transport and return bounded
  * metadata only.
  */
-export async function listAllWorkItemsForFileExport(filter: ListWorkItemsFilter = {}): Promise<WorkItem[]> {
-  return listWorkItemsWithLimit(filter, null);
+export async function listAllWorkItemsForFileExport(
+  filter: ListWorkItemsFilter = {},
+  sql?: OrgSql,
+): Promise<WorkItem[]> {
+  return listWorkItemsWithLimit(filter, null, sql);
 }
 
 /**

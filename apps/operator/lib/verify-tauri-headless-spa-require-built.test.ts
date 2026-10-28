@@ -19,6 +19,7 @@
  * the verifier itself, which boots a real Xvfb/Tauri stack and so cannot be run
  * end to end in a unit test.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -55,7 +56,7 @@ function run(fn: string, args: string[], env: Record<string, string> = {}, prelu
     encoding: 'utf8',
     timeout: 60_000,
     env: {
-      ...process.env,
+      ...hermeticSpawnEnv(),
       PAPERCUSP_SPA_REQUIRE_BUILT_WAIT_SEC: '0',
       PAPERCUSP_SPA_REQUIRE_BUILT_POLL_SEC: '1',
       ...env,
@@ -329,7 +330,7 @@ describe('EI-25443239493326581 — maintained SPA rebuild trigger', () => {
       encoding: 'utf8',
       timeout: 10_000,
       env: {
-        ...process.env,
+        ...hermeticSpawnEnv(),
         PATH: `${bin}:${process.env.PATH}`,
         SPA_FIXTURE_CALLS: join(root, 'npm-calls'),
         SPA_FIXTURE_BUILD_EXIT: String(buildExit),

@@ -6107,6 +6107,65 @@ _WRITE_CALL_SITE_RE = re.compile(
     r'|createWriteStream\s*\('
 )
 
+# A Path constructor is only a candidate target when it is connected to a
+# write-shaped use. Treating every Path(...) as a destination makes a read
+# (read_bytes(), stat(), etc.) look writable whenever an unrelated scratch
+# write makes the inline body pass _body_indicates_file_write.
+_PATH_METHOD_CHAIN = r'(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*\s*(?:\([^()]*\))?)*'
+_PATH_DIRECT_WRITE_SUFFIX_RE = re.compile(
+    r'^\s*' + _PATH_METHOD_CHAIN + r'\s*\.\s*(?:write_(?:text|bytes)|unlink)\s*\('
+)
+_PATH_DIRECT_OPEN_WRITE_SUFFIX_RE = re.compile(
+    r'''^\s*'''
+    + _PATH_METHOD_CHAIN
+    + r'''\s*\.\s*open\s*\(\s*(['"])[waxWAX][b+t]?\1'''
+)
+_PATH_ASSIGNMENT_PREFIX_RE = re.compile(
+    r'(?:^|[\n;])[ \t]*(?:(?:const|let|var)[ \t]+)?'
+    r'([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*$'
+)
+
+
+def _path_constructor_is_write_target(body, call_start, call_end, write_spans):
+    # Direct receiver form: Path("tree/file").write_text(...), including
+    # property/method chains whose final operation is a known write.
+    _suffix = body[call_end:]
+    if (_PATH_DIRECT_WRITE_SUFFIX_RE.match(_suffix)
+            or _PATH_DIRECT_OPEN_WRITE_SUFFIX_RE.match(_suffix)):
+        return True
+
+    # Preserve the common assigned-Path forms too: target = Path(...); then
+    # target.write_text(...) or open(target, "w"). Follow only simple aliases
+    # in statement-boundary assignments; this remains a literal static scan,
+    # not language-level dataflow.
+    _lhs = _PATH_ASSIGNMENT_PREFIX_RE.search(body[:call_start])
+    if not _lhs:
+        return False
+    _aliases = {_lhs.group(1)}
+    for _assignment in _SIMPLE_ASSIGN_RE.finditer(body, call_end):
+        _name = _assignment.group(1)
+        _value = _assignment.group(2).strip()
+        if _value in _aliases:
+            _aliases.add(_name)
+        elif _name in _aliases:
+            _aliases.remove(_name)
+
+    for _name in _aliases:
+        _prefix = rf'\b{re.escape(_name)}\s*{_PATH_METHOD_CHAIN}'
+        if re.search(
+            _prefix + r'\s*\.\s*(?:write_(?:text|bytes)|unlink)\s*\(',
+            _suffix,
+        ) or re.search(
+            _prefix + r'''\s*\.\s*open\s*\(\s*(['"])[waxWAX][b+t]?\1''',
+            _suffix,
+        ):
+            return True
+        for _span in write_spans:
+            _first = _first_call_arg_text(_span)
+            if _first is not None and _first.strip() == _name:
+                return True
+    return False
+
 
 def _write_call_arg_spans(body):
     # The parenthesized argument list of each recognized write/file-construct
@@ -6116,6 +6175,7 @@ def _write_call_arg_spans(body):
     # parens never balance (truncated body, unterminated construct) — there
     # is nothing safe to scan past a call site like that.
     spans = []
+    path_calls = []
     for _m in _WRITE_CALL_SITE_RE.finditer(body):
         _start = _m.end() - 1  # index of the call's opening '('
         _depth = 0
@@ -6128,9 +6188,16 @@ def _write_call_arg_spans(body):
             elif _ch == ')':
                 _depth -= 1
                 if _depth == 0:
-                    spans.append(body[_start:_i + 1])
+                    _span = body[_start:_i + 1]
+                    if _m.group(0).startswith('Path'):
+                        path_calls.append((_m.start(), _i + 1, _span))
+                    else:
+                        spans.append(_span)
                     break
             _i += 1
+    for _call_start, _call_end, _span in path_calls:
+        if _path_constructor_is_write_target(body, _call_start, _call_end, spans):
+            spans.append(_span)
     return spans
 
 

@@ -285,12 +285,15 @@ async function run(
 async function runPost(
   input: object,
   extraEnv: Record<string, string> = {},
+  preserveOperation = false,
 ): Promise<{ status: number | null; stdout: string }> {
   // These pre-existing post-hook cases verify tokens cached by the old hook
   // across an upgrade. Seed that legacy cache shape explicitly. The separate
   // lock-operation-fence suite exercises new operation completion/recovery.
-  for (const file of fs.readdirSync(cache)) {
-    if (file.endsWith('.operation.json')) fs.rmSync(join(cache, file));
+  if (!preserveOperation) {
+    for (const file of fs.readdirSync(cache)) {
+      if (file.endsWith('.operation.json')) fs.rmSync(join(cache, file));
+    }
   }
   const { status, stdout } = await runHookProcess("bash", [POST_HOOK], {
     input: JSON.stringify(input),
@@ -1164,6 +1167,129 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
       phase: "parent-recovery-queue",
       owner: "test-queue-unknown-owner",
     });
+  });
+
+  it.each(["success", "no-proof", "failure"] as const)(
+    "nested Codex exec attribution requires surfaced apply_patch %s evidence",
+    async (scenario) => {
+      const identity = {
+        PAPERCUSP_LOCK_SID: "test-nested-proof-owner",
+        PAPERCUSP_SID: "test-nested-proof-owner",
+      };
+      const toolUseId = `tu-nested-proof-${scenario}`;
+      const path = `sub/nested-proof-${scenario}.ts`;
+      const patch = [
+        "*** Begin Patch",
+        `*** Update File: ${path}`,
+        "@@",
+        "-before",
+        "+after",
+        "*** End Patch",
+      ].join("\n");
+      const parentInput = {
+        tool_name: "functions.exec",
+        tool_input: {
+          source: `const result = await tools.apply_patch(${JSON.stringify(patch)}); text(result);`,
+        },
+        tool_use_id: toolUseId,
+        session_id: "s",
+        cwd: repo,
+      };
+
+      nextInner = { ok: true, lock_id: `lock-${scenario}` };
+      const pre = await run(parentInput, identity);
+      expect(pre.status).toBe(0);
+      expect(pre.stdout).toBe("");
+      const acquire = requests.find(
+        (request) => request.body.params.name === "locks:acquire",
+      );
+      expect(acquire?.body.params.arguments).toMatchObject({ paths: [path] });
+      expect(fs.existsSync(join(cache, `${toolUseId}.operation.json`))).toBe(
+        true,
+      );
+
+      const nestedCall = {
+        tool_name: "apply_patch",
+        result: {
+          ok: scenario === "success",
+          ...(scenario === "failure" ? { error: "patch context mismatch" } : {}),
+          content: [{ type: "text", text: `Updated ${path}` }],
+        },
+      };
+      const toolResponse =
+        scenario === "success"
+          ? {
+              status: "completed",
+              // The same nested result may be surfaced in both structured and
+              // text output. It must count once, while still proving the patch.
+              tool_results: [nestedCall],
+              content: [{ type: "text", text: JSON.stringify(nestedCall) }],
+            }
+          : scenario === "failure"
+            ? { status: "completed", tool_results: [nestedCall] }
+            : {
+                // A completed parent exec says nothing about whether its
+                // nested apply_patch result was returned successfully.
+                status: "completed",
+                content: [{ type: "text", text: "Script completed" }],
+              };
+      const post = await runPost(
+        { ...parentInput, tool_response: toolResponse },
+        identity,
+        true,
+      );
+
+      expect(post.status).toBe(0);
+      const settlement = requests.at(-1)?.body.params;
+      expect(settlement?.name).toBe(
+        scenario === "success" ? "locks:release" : "locks:cancel_wait",
+      );
+      if (scenario === "success") {
+        expect(settlement?.arguments.native_edit_proof).toMatchObject({
+          success: true,
+          source: "codex",
+          tool: "apply_patch",
+          paths: [path],
+          sessionId: "s",
+        });
+      } else {
+        expect(settlement?.arguments).not.toHaveProperty("native_edit_proof");
+      }
+    },
+  );
+
+  it("refuses a nested Codex apply_patch call whose patch is computed dynamically", async () => {
+    const identity = {
+      PAPERCUSP_LOCK_SID: "test-nested-dynamic-owner",
+      PAPERCUSP_SID: "test-nested-dynamic-owner",
+    };
+    const toolUseId = "tu-nested-dynamic";
+    const pre = await run(
+      {
+        tool_name: "functions.exec",
+        tool_input: {
+          source: "const patch = buildPatch(); await tools.apply_patch(patch);",
+        },
+        tool_use_id: toolUseId,
+        session_id: "s",
+        cwd: repo,
+      },
+      identity,
+    );
+
+    expect(pre.status).toBe(0);
+    const out = JSON.parse(pre.stdout);
+    expect(out.hookSpecificOutput).toMatchObject({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+    });
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(
+      /nested Codex apply_patch paths are not statically known/i,
+    );
+    expect(requests).toHaveLength(0);
+    expect(fs.existsSync(join(cache, `${toolUseId}.operation.json`))).toBe(
+      false,
+    );
   });
 
   it("retains the release token when an HTTP-200 locks:release verdict is unconfirmed", async () => {

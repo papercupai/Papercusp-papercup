@@ -2154,8 +2154,11 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   )`;
 }
 
-async function listIssuesWithLimit(filter: ListIssuesFilter, rowLimit: number | null): Promise<EngineerIssue[]> {
-  const { sql } = getOrgPg();
+async function listIssuesWithLimit(
+  filter: ListIssuesFilter,
+  rowLimit: number | null,
+  sql: OrgSql = getOrgPg().sql,
+): Promise<EngineerIssue[]> {
   // Complete metric reads do not need a database sort of large text/JSON rows.
   // Keep the same created-time ordering after mapping. Limited reads must sort
   // before LIMIT; every ordinary full/detail caller also retains its SQL order.
@@ -2270,8 +2273,11 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
  * rows to files and returns only counts, so no unbounded result crosses the
  * model transport.
  */
-export async function listAllIssuesForFileExport(filter: ListIssuesFilter = {}): Promise<EngineerIssue[]> {
-  return listIssuesWithLimit(filter, null);
+export async function listAllIssuesForFileExport(
+  filter: ListIssuesFilter = {},
+  sql?: OrgSql,
+): Promise<EngineerIssue[]> {
+  return listIssuesWithLimit(filter, null, sql);
 }
 
 /**

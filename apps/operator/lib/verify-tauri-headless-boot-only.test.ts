@@ -3,6 +3,7 @@
  * --boot-only port-lock keeper must clear teardown before waiting, otherwise
  * a normal wrapper exit destroys the isolated app it just handed to the user.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -83,7 +84,7 @@ describe('EI-21587904634585710 — boot-only task lifetime is explicit', () => {
       const result = spawnSync('bash', [SCRIPT, '--boot-only'], {
         cwd: ROOT,
         env: {
-          ...process.env,
+          ...hermeticSpawnEnv(),
           PAPERCUSP_REPO_DIR: join(scratch, 'missing-repo'),
           PAPERCUSP_SID: 'test-boot-only-task-lifetime',
           PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'task-under-test',

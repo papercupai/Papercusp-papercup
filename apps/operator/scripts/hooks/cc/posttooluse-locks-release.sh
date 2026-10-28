@@ -59,6 +59,8 @@ operator_url, token_path, agent_id, cache_dir, hook_dir, fallback_operator_url =
 sys.path.insert(0, hook_dir)
 from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
 from mcp_response import read_lock_operation, settle_lock_operation, parent_tool_terminal, with_native_session
+from mcp_response import (extract_nested_codex_apply_patches, codex_apply_patch_paths,
+                          nested_codex_apply_patch_results)
 raw = read_hook_payload()
 token = read_token_file(token_path)
 
@@ -392,22 +394,65 @@ def native_edit_result_succeeded(response):
     return False
 
 
-def native_edit_proof(tool, response, paths):
-    """Build positive proof for one successful Claude or Codex native edit."""
+def nested_codex_paths_match(patches, paths, coordination_domain):
+    """Match the statically parsed nested patches to the acquired lock paths."""
+    if (not isinstance(coordination_domain, str) or not os.path.isabs(coordination_domain)
+            or not isinstance(paths, list) or not paths
+            or not all(isinstance(path, str) and path for path in paths)
+            or len(set(paths)) != len(paths)):
+        return False
+    root = os.path.realpath(coordination_domain)
+    cwd = payload.get('cwd') if isinstance(payload.get('cwd'), str) else os.getcwd()
+    actual = set()
+    for patch in patches:
+        for path in codex_apply_patch_paths(patch):
+            try:
+                absolute = os.path.abspath(path if os.path.isabs(path) else os.path.join(cwd, path))
+                relative = os.path.relpath(absolute, root)
+            except (OSError, TypeError, ValueError):
+                return False
+            if relative == os.pardir or relative.startswith(os.pardir + os.sep) or os.path.isabs(relative):
+                return False
+            actual.add(relative.replace(os.sep, '/'))
+    return bool(actual) and actual == set(paths)
+
+
+def native_edit_proof(tool, response, paths, tool_input=None, coordination_domain=None):
+    """Build positive proof for a successful native edit or surfaced nested Codex patch."""
+    proof_tool = tool
+    nested_proof = False
     if tool in CLAUDE_NATIVE_EDIT_TOOLS:
         source = 'claude'
     elif tool in CODEX_NATIVE_EDIT_TOOLS:
         source = 'codex'
+    elif tool in ('exec', 'functions.exec', 'functions__exec'):
+        source = 'codex'
+        proof_tool = 'apply_patch'
+        nested = extract_nested_codex_apply_patches(tool, tool_input)
+        if (not isinstance(nested, dict) or nested.get('found') is not True
+                or nested.get('complete') is not True):
+            return None
+        patches = nested.get('patches')
+        if not isinstance(patches, list) or not patches:
+            return None
+        results = nested_codex_apply_patch_results(response)
+        if (len(results) != len(patches)
+                or not all(native_edit_result_succeeded(result) for result in results)
+                or not nested_codex_paths_match(patches, paths, coordination_domain)):
+            return None
+        nested_proof = True
     else:
         return None
-    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p for p in paths):
+    if (not isinstance(paths, list) or not paths
+            or not all(isinstance(p, str) and p for p in paths)
+            or len(set(paths)) != len(paths)):
         return None
-    if not native_edit_result_succeeded(response):
+    if not nested_proof and not native_edit_result_succeeded(response):
         return None
     proof = {
         'success': True,
         'source': source,
-        'tool': tool,
+        'tool': proof_tool,
         'paths': list(paths),
     }
     if isinstance(session_id, str) and session_id:
@@ -465,7 +510,10 @@ def recover_failed_code_mode_edit(current_cache_path):
         domain = record.get('coordination_domain')
         if not domain or not all(path_named_in_patch(path, domain) for path in record['paths']):
             continue
-        proof = native_edit_proof(tool_name, payload.get('tool_response', payload.get('toolResponse')), record['paths']) if native_retry else None
+        proof = native_edit_proof(
+            tool_name, payload.get('tool_response', payload.get('toolResponse')),
+            record['paths'], tool_input, record.get('coordination_domain'),
+        ) if native_retry else None
         if settle_lock_operation(str(operation_file), record, call_tool, proof):
             cleanup_sidecars(base)
         else:
@@ -549,7 +597,10 @@ operation_path = os.path.join(cache_dir, tool_use_id + '.operation.json')
 if os.path.exists(operation_path):
     record = read_lock_operation(operation_path, owner, session_id)
     if record:
-        proof = native_edit_proof(tool_name, payload.get('tool_response', payload.get('toolResponse')), record['paths'])
+        proof = native_edit_proof(
+            tool_name, payload.get('tool_response', payload.get('toolResponse')),
+            record['paths'], tool_input, record.get('coordination_domain'),
+        )
         if settle_lock_operation(operation_path, record, call_tool, proof):
             cleanup_sidecars(operation_path[:-len('.operation.json')])
             mark_release_success('operation-finish')
@@ -588,7 +639,10 @@ def attest_retained_edit():
     domain = attest.get('domain')
     if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p for p in paths):
         return
-    proof = native_edit_proof(tool_name, payload.get('tool_response', payload.get('toolResponse')), paths)
+    proof = native_edit_proof(
+        tool_name, payload.get('tool_response', payload.get('toolResponse')),
+        paths, tool_input, domain,
+    )
     if proof is None:
         # A failed or unrecognized edit is not evidence of a mutation.
         return
@@ -676,7 +730,10 @@ if coordination_domain:
 # EI-21641025582934324: lock acquisition is intent, not mutation. Only a
 # successful recognized Claude edit result may accompany the release, and the
 # proof paths must come from the cached paths that this grant actually released.
-proof = native_edit_proof(tool_name, payload.get('tool_response', payload.get('toolResponse')), release_paths)
+proof = native_edit_proof(
+    tool_name, payload.get('tool_response', payload.get('toolResponse')),
+    release_paths, tool_input, coordination_domain,
+)
 if proof is not None:
     release_args['native_edit_proof'] = proof
 

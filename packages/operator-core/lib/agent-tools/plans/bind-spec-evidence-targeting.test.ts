@@ -217,6 +217,14 @@ describe('RSR-P-043-A: bind-time targeting agrees with the evaluator', () => {
     { name: 'scenario clause, own specId (fallback only applies with NO scenarios)', clause: scenarioClause, targeted: 'spec-003-01' },
     { name: 'scenario clause, no target', clause: scenarioClause, targeted: undefined },
     { name: 'no-scenario clause, own specId (D-009 fallback)', clause: () => clause(), targeted: 'spec-003-01' },
+    {
+      name: 'observation/probe falsifier without scenarios, own specId',
+      clause: () => clause({ falsifier: {
+        observation: 'The measured behavior contradicts the declared outcome.',
+        probeMethod: 'Run the canonical probe and inspect its measured case.',
+      } }),
+      targeted: 'spec-003-01',
+    },
     { name: 'no-scenario clause, boolean target', clause: () => clause(), targeted: true },
     { name: 'no-scenario clause, sibling spec id', clause: () => clause(), targeted: 'spec-003-02' },
     { name: 'no-scenario clause, no target', clause: () => clause(), targeted: undefined },

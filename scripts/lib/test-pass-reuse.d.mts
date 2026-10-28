@@ -508,6 +508,22 @@ export function formatReuseExclusionLines(wsName: string, exclusions: Array<{
     records: string[];
     sample: string;
 };
+/**
+ * WI-6554700010030941: one bounded line per task naming WHICH inputs blocked reuse. A collapse
+ * such as lane-pure reused=25 of 4190 with globalInput=3777 (gate run 81733f27) printed only the
+ * counts, so three investigations could not name the drifted file. This aggregates the exclusion
+ * records `selectReusablePasses` already returns: a per-reason count, and the `top` input paths by
+ * number of files they blocked. Diagnostic only; it cannot change `skip`. PURE.
+ * @param {string} wsName
+ * @param {Array<{ reason: string, evidence?: Record<string, unknown> }>} exclusions
+ * @param {{ top?: number }} [o]
+ */
+export function formatReuseExclusionCauseLine(wsName: string, exclusions: Array<{
+    reason: string;
+    evidence?: Record<string, unknown>;
+}>, { top }?: {
+    top?: number;
+}): string;
 /** Env kill switch: `0`/`false`/`off`/`no` disables reuse entirely (default: ON). */
 export const TEST_REUSE_ENV: "AFFECTED_TEST_REUSE";
 /** The channel that carries the skip list to vitest-config (a JSON array of repo-relative paths). */

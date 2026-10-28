@@ -33,6 +33,7 @@
  * on /adv while a fresh run lands on first-run) was verified live, as a
  * control/treatment pair, on the work-item.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -175,7 +176,7 @@ describe('Quick Access native shortcut seed', () => {
         'validate_isolated_shortcut && seed_isolated_shortcut',
       ].join('\n'), 'seed-test', root], {
         encoding: 'utf8',
-        env: { ...process.env, HOME: home, VERIFY_TAURI_ISOLATED_DB: isolated, VERIFY_TAURI_ISOLATED_SHORTCUT: shortcut },
+        env: { ...hermeticSpawnEnv(), HOME: home, VERIFY_TAURI_ISOLATED_DB: isolated, VERIFY_TAURI_ISOLATED_SHORTCUT: shortcut },
       });
       expect(readFileSync(ownerChoice, 'utf8')).toBe('{"accelerator":null}');
       const path = resolve(privateHome, 'docs-search-shortcut.json');

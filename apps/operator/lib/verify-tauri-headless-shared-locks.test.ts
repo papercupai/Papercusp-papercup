@@ -1,3 +1,4 @@
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -47,7 +48,7 @@ const pickAndLockPortsFunction = extractFunctionWithLocalHelpers('pick_and_lock_
 
 function commonEnv(root: string, privateTmpdir: string, runtimeDir: string, home: string) {
   return {
-    ...process.env,
+    ...hermeticSpawnEnv(),
     FEDERATION_ASSERTS: ASSERTS,
     PRIVATE_TMPDIR: privateTmpdir,
     XDG_RUNTIME_DIR: runtimeDir,
@@ -281,7 +282,7 @@ describe('verify-tauri-headless shares reservation locks across isolated TMPDIRs
     ].join('\n');
     const result = spawnSync('bash', ['-c', script], {
       env: {
-        ...process.env,
+        ...hermeticSpawnEnv(),
         TMP_A: tmpA,
         TMP_B: tmpB,
         XDG_RUNTIME_DIR: '',

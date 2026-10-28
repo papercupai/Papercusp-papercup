@@ -38,6 +38,7 @@
  * Tauri/Xvfb stack, so its env wiring can only be asserted at the wiring site
  * (same rationale as verify-tauri-headless-spa-isolation.test.ts).
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -70,7 +71,7 @@ describe('snapshot marker admission before database and native boot', () => {
         'verify_snapshot_marker_preflight',
       ].join('\n')], {
         encoding: 'utf8', timeout: 5_000,
-        env: { ...process.env, SNAPSHOT_SCOPE: scope, SPA_DIST: dir,
+        env: { ...hermeticSpawnEnv(), SNAPSHOT_SCOPE: scope, SPA_DIST: dir,
           OPERATOR_HOST_BUNDLE: artifact, VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS: marker },
       });
     } finally { rmSync(dir, { recursive: true, force: true }); }

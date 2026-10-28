@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import {
+  summarizeInterfaceEligibility,
   SHADOW_WINDOW_BOUNDS, derivationFingerprint, fingerprintEpochs, recordAndReport, scoreShadowWindow, shadowEdgeKey,
   type ShadowRow, type ShadowWindowInput,
 } from './coupling-shadow-window';
@@ -173,14 +174,109 @@ describe('scoreShadowWindow (R-12)', () => {
     expect([unshown.grade, unshown.verdict]).toEqual(['unknown', 'unknown']);
   });
 
+  // Reviewer objection thread-post:1208764 (1): the shared liveness reader's shape carries no
+  // eligibleLineages, so the D-020 rule was never evaluable live and a closed window passed.
+  it('grades a closed window unknown, never enable or a passing keep-shadow, when the interface leg lacks eligibleLineages (live reader shape)', () => {
+    const rows = edgeRows(30);
+    const breakages = [{ ts: T0 + DAY, editorOwnerId: 'ag-1', holderOwnerId: 'ag-2' }];
+    const liveShape = { eligible: 40, eligibleMutations: 40, allTrackedMutations: 90, outputs: 0, outsideLineageOutputs: 0 };
+    const wouldEnable = scoreShadowWindow(input({ windowRows: rows, judgments: judgeAll(rows, true), breakages, interfaceLeg: liveShape }));
+    expect([wouldEnable.status, wouldEnable.disposition, wouldEnable.grade, wouldEnable.verdict]).toEqual(['closed', 'keep-shadow', 'unknown', 'unknown']);
+    expect(wouldEnable.reasons.join(' ')).toMatch(/D-020 rule not evaluable/);
+    const wouldKeep = scoreShadowWindow(input({ windowRows: rows, judgments: judgeAll(rows, false), breakages, interfaceLeg: liveShape }));
+    expect([wouldKeep.grade, wouldKeep.verdict]).toEqual(['unknown', 'unknown']);
+    // Over half the eligible edits unknown, with no lineage count: never a pass.
+    const unknown = Array.from({ length: 21 }, (_, i) => ({ ts: T0 + i, kind: 'unknown', mode: 'shadow', editorOwnerId: 'ag-1', symbol: `u${i}`, path: 'src/u.ts' }));
+    const deadish = scoreShadowWindow(input({ windowRows: [...rows, ...unknown], judgments: judgeAll(rows, false), breakages, interfaceLeg: liveShape }));
+    expect(deadish.verdict).not.toBe('pass');
+  });
+
+  // Reviewer objection thread-post:1208764 (2): the D-006 real-fleet floors were only
+  // enable-refusal reasons, so a keep-shadow close passed without a real-fleet window.
+  it('grades a keep-shadow close unknown when the window spans < 3 live agents or < 3 outside lineages', () => {
+    const breakages = [{ ts: T0 + DAY, editorOwnerId: 'ag-1', holderOwnerId: 'ag-2' }];
+    const twoAgents = edgeRows(30).map(r => ({ ...r, a: 'ag-1', b: 'ag-2', editorOwnerId: 'ag-1' }));
+    const s = scoreShadowWindow(input({ windowRows: twoAgents, judgments: judgeAll(twoAgents, true), breakages }));
+    expect(s.liveAgents).toBeLessThan(SHADOW_WINDOW_BOUNDS.minLiveAgents);
+    expect([s.status, s.disposition, s.grade, s.verdict]).toEqual(['closed', 'keep-shadow', 'unknown', 'unknown']);
+    expect(s.reasons.join(' ')).toMatch(/window spans \d live agent/);
+    // Four agents but one lineage: the lineage floor alone keeps the close unknown.
+    const rows = edgeRows(30);
+    const oneLineage = scoreShadowWindow(input({ windowRows: rows, judgments: judgeAll(rows, false), breakages,
+      lineageOf: new Map(agents.map(a => [a, 'lin-shared'])) }));
+    expect(oneLineage.lineages).toBeLessThan(SHADOW_WINDOW_BOUNDS.minLineages);
+    expect([oneLineage.grade, oneLineage.verdict]).toEqual(['unknown', 'unknown']);
+  });
+
   it('fails when an edge leaves shadow mode with no enable disposition', () => {
     const s = scoreShadowWindow(input({ windowRows: edgeRows(30, { mode: 'live' }) }));
     expect([s.grade, s.verdict]).toEqual(['broken', 'fail']);
   });
 
-  it('orders fingerprint epochs by first appearance and skips unstamped rows', () => {
-    expect(fingerprintEpochs([{ ts: 5, fingerprint: 'b' }, { ts: 1, fingerprint: 'a' }, { ts: 3, fingerprint: null }, { ts: 9, fingerprint: 'a' }]))
-      .toEqual([{ fingerprint: 'a', firstTs: 1 }, { fingerprint: 'b', firstTs: 5 }]);
+  it('builds fingerprint epochs from the ts-ordered change sequence and skips unstamped rows', () => {
+    expect(fingerprintEpochs([{ ts: 5, fingerprint: 'b' }, { ts: 1, fingerprint: 'a' }, { ts: 3, fingerprint: null }, { ts: 2, fingerprint: 'a' }, { ts: 9, fingerprint: 'a' }]))
+      .toEqual([{ fingerprint: 'a', firstTs: 1 }, { fingerprint: 'b', firstTs: 5 }, { fingerprint: 'a', firstTs: 9 }]);
+  });
+
+  it('restarts the window when the fingerprint changes back to an earlier value (A→B→A), and counts it toward the cap', () => {
+    const epochs = fingerprintEpochs([
+      { ts: T0, fingerprint: 'a' }, { ts: T0 + DAY, fingerprint: 'b' },
+      { ts: T0 + 5 * DAY, fingerprint: 'a' }, { ts: T0 + 6 * DAY, fingerprint: 'a' },
+    ]);
+    const s = scoreShadowWindow(input({ epochs, now: T0 + 8 * DAY }));
+    expect([s.restarts, s.fingerprint, s.windowStart, s.status, s.fingerprints]).toEqual([2, 'a', T0 + 5 * DAY, 'open', ['a', 'b', 'a']]);
+    expect(s.days).toBeCloseTo(3);
+    // A↔B oscillation is four restarts: the window closes keep-shadow as unknown.
+    const flip = fingerprintEpochs(['a', 'b', 'a', 'b', 'a'].map((fingerprint, i) => ({ ts: T0 + i, fingerprint })));
+    const capped = scoreShadowWindow(input({ epochs: flip }));
+    expect([capped.restarts, capped.status, capped.disposition, capped.grade, capped.verdict]).toEqual([4, 'closed', 'keep-shadow', 'unknown', 'unknown']);
+  });
+
+  it('counts unknown outcomes per edit, so repeated unknowns on one symbol push the share over half and grade broken', () => {
+    const repeated = Array.from({ length: 21 }, (_, i) => ({ ts: T0 + i, kind: 'unknown', mode: 'shadow', editorOwnerId: 'ag-2', symbol: 'u0', path: 'src/u.ts' }));
+    const s = scoreShadowWindow(input({ windowRows: [...edgeRows(30), ...repeated] }));
+    expect([s.grade, s.verdict, s.unknownOutcomes]).toEqual(['broken', 'fail', 21]);
+  });
+
+  it('counts unknown outcomes only for editors outside the implementer lineages, the same population as the eligible count', () => {
+    const lineageOf = new Map([...agents.map(a => [a, `lin-${a}`] as [string, string]), ['impl-2', 'lin-impl-1']]);
+    const mk = (editorOwnerId: string | undefined, n: number): ShadowRow[] => Array.from({ length: n }, (_, i) =>
+      ({ ts: T0 + i, kind: 'unknown', mode: 'shadow', ...(editorOwnerId ? { editorOwnerId } : {}), symbol: `u${i}`, path: 'src/u.ts' }));
+    const s = scoreShadowWindow(input({ lineageOf, windowRows: [...edgeRows(30), ...mk('impl-1', 30), ...mk('impl-2', 30), ...mk(undefined, 30)] }));
+    expect(s.unknownOutcomes).toBe(0);
+    expect(s.grade).not.toBe('broken');
+    // The same 21 unknowns from an outside editor do cross the 0.5 share.
+    const outside = scoreShadowWindow(input({ lineageOf, windowRows: [...edgeRows(30), ...mk('impl-1', 30), ...mk('ag-3', 21)] }));
+    expect([outside.unknownOutcomes, outside.grade, outside.verdict]).toEqual([21, 'broken', 'fail']);
+  });
+});
+
+describe('summarizeInterfaceEligibility (R-12 D-020 inputs outside the implementer)', () => {
+  const lineageOf = new Map([['ag-1', 'lin-a'], ['ag-2', 'lin-a'], ['ag-3', 'lin-b'], ['impl-1', 'lin-impl'], ['impl-child', 'lin-impl']]);
+  const impl = new Set(['impl-1']);
+  const implLin = new Set(['lin-impl']);
+
+  it('excludes implementer owners and their lineage, and counts distinct outside lineages', () => {
+    const r = summarizeInterfaceEligibility([
+      { owner: 'ag-1', eligible: 10, observed: 12 }, { owner: 'ag-2', eligible: 5, observed: 5 },
+      { owner: 'ag-3', eligible: 7, observed: 9 }, { owner: 'impl-1', eligible: 50, observed: 50 },
+      { owner: 'impl-child', eligible: 40, observed: 40 }, { owner: null, eligible: 30, observed: 30 },
+      { owner: 'ag-4', eligible: 0, observed: 3 },
+    ], lineageOf, impl, implLin);
+    expect(r).toEqual({ eligible: 22, eligibleLineages: 2 });
+  });
+
+  it('is unmeasured (null, never zero) when the detector observed no interface row', () => {
+    expect(summarizeInterfaceEligibility([], lineageOf, impl, implLin)).toEqual({ eligible: null, eligibleLineages: null });
+    expect(summarizeInterfaceEligibility([{ owner: 'ag-1', eligible: 0, observed: 0 }], lineageOf, impl, implLin))
+      .toEqual({ eligible: null, eligibleLineages: null });
+  });
+
+  it('feeds a dead-derivation verdict only when outside lineages reach the floor', () => {
+    const rows = [{ owner: 'ag-1', eligible: 20, observed: 20 }, { owner: 'ag-3', eligible: 20, observed: 20 }, { owner: 'ag-9', eligible: 5, observed: 5 }];
+    const leg = summarizeInterfaceEligibility(rows, lineageOf, impl, implLin);
+    expect(leg).toEqual({ eligible: 45, eligibleLineages: 3 });
+    expect(scoreShadowWindow(input({ windowRows: [], interfaceLeg: leg })).grade).toBe('broken');
   });
 });
 

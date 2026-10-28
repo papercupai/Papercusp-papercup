@@ -17,6 +17,7 @@
  * records the options it receives, so it measures what the rig actually passes,
  * not how the source is spelled.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -79,7 +80,7 @@ async function runBootScript(opts: { withResourceProfile: boolean }): Promise<Ru
 
   const child = spawn(process.execPath, [bootPath], {
     env: {
-      ...process.env,
+      ...hermeticSpawnEnv(),
       ISOLATED_PG_REPO_DIR: fakeRepo,
       ISOLATED_PG_DATA_DIR: join(work, 'data'),
       ISOLATED_PG_SQL_DIR: join(work, 'sql'),

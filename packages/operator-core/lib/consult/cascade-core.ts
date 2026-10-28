@@ -274,6 +274,8 @@ export type CascadeDispatch = (opts: {
    *  dispatcher's verification wait, and the reply gate refuses an author the
    *  row does not name yet. The post-dispatch stamp stays as the backstop. */
   onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+  /** Refresh the selected responder's TTL after persisted native kickoff proof. */
+  onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
 }) => Promise<{ woke: number; answeringOwnerId?: string | null; pending?: boolean; targetCapacityUnavailable?: string }>;
 
 function routingWithUnavailableTarget(routing: unknown, detail?: string): Record<string, unknown> {
@@ -321,7 +323,7 @@ export async function continueCascadeDispatchCore(
   const sql = deps.getSql();
   const now = () => deps.now?.() ?? new Date();
   const token = randomUUID();
-  const rows = await sql<Array<{ cascade_cursor: number; routing: { cascadeDispatch: {
+  const rows = await sql<Array<{ cascade_cursor: number; expires_at: string | Date; latency_contract: string; routing: { cascadeDispatch: {
     responder: string; summary: string; body: string; evidence?: CascadeSelectionEntry['evidence']; attempts?: number;
   } } }>>`
     UPDATE harness_shared.consult_state
@@ -335,7 +337,7 @@ export async function continueCascadeDispatchCore(
        AND COALESCE((routing #>> '{cascadeDispatch,attempts}')::int, 0) < 3
        AND routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'answeringOwnerId'] IS NULL
        AND COALESCE((routing #>> '{cascadeDispatch,leaseUntil}')::timestamptz, '-infinity'::timestamptz) <= ${now().toISOString()}::timestamptz
-    RETURNING cascade_cursor, routing`;
+    RETURNING cascade_cursor, expires_at, latency_contract, routing`;
   const row = rows[0];
   if (!row) return false;
   const routing = typeof row.routing === 'string' ? JSON.parse(row.routing) as typeof row.routing : row.routing;
@@ -357,6 +359,8 @@ export async function continueCascadeDispatchCore(
        RETURNING conversation_id`;
     return current.length > 0;
   };
+  let expectedKickoffExpiry: string | Date = row.expires_at;
+  let kickoffExpiryRefreshed = false;
   try {
     const onAnsweringOwner = async (owner: string) => {
         if (!(await isCurrent())) throw new Error('consult-cascade-dispatch-lease-lost');
@@ -374,6 +378,24 @@ export async function continueCascadeDispatchCore(
       responder: pending.responder, conversationId, summary: pending.summary, body: pending.body,
       ...(pending.evidence ? { evidence: pending.evidence } : {}),
       onAnsweringOwner,
+      onKickoff: async (kickoffAt, answeringOwnerId) => {
+        if (!(await isCurrent())) return false;
+        const refreshedExpiry = await refreshCascadeExpiryAfterKickoff(sql, {
+          workspaceId,
+          conversationId,
+          cursor: row.cascade_cursor,
+          responder: pending.responder,
+          answeringOwnerId,
+          expectedExpiresAt: expectedKickoffExpiry,
+          latencyContract: row.latency_contract,
+          kickoffAt,
+          leaseToken: token,
+        });
+        if (!refreshedExpiry) return false;
+        expectedKickoffExpiry = refreshedExpiry;
+        kickoffExpiryRefreshed = true;
+        return true;
+      },
     });
     if (result.answeringOwnerId && await isCurrent()) await onAnsweringOwner(result.answeringOwnerId);
     // A refusal has no answering session. Make it due now so the maintained
@@ -386,6 +408,8 @@ export async function continueCascadeDispatchCore(
                ELSE routing - 'cascadeDispatch' END) || ${sql.json(result.targetCapacityUnavailable
                  ? { targetCapacityUnavailable: result.targetCapacityUnavailable } : {})}::jsonb,
              expires_at = CASE WHEN ${result.woke === 0 && !result.answeringOwnerId}::boolean
+                 AND ${!kickoffExpiryRefreshed}::boolean
+                 AND expires_at IS NOT DISTINCT FROM ${row.expires_at}::timestamptz
                THEN ${now().toISOString()}::timestamptz - interval '1 millisecond' ELSE expires_at END
        WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
          AND cascade_cursor = ${row.cascade_cursor} AND closed_at IS NULL
@@ -398,6 +422,8 @@ export async function continueCascadeDispatchCore(
            ${sql.json({ leaseToken: null, leaseUntil: attempts < 3 ? new Date(now().getTime() + 30_000).toISOString() : null,
              attempts, lastError: String(error).slice(0, 500) } as never)}::jsonb),
              expires_at = CASE WHEN ${attempts >= 3}::boolean
+                 AND ${!kickoffExpiryRefreshed}::boolean
+                 AND expires_at IS NOT DISTINCT FROM ${row.expires_at}::timestamptz
                THEN ${now().toISOString()}::timestamptz - interval '1 millisecond' ELSE expires_at END
        WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
          AND cascade_cursor = ${row.cascade_cursor} AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}`;
@@ -527,6 +553,43 @@ async function stampAnsweringOwner(
   if (stamped[0]?.answering_owner_id !== answeringOwnerId) {
     throw new Error('consult-cascade-answering-owner-stamp-not-persisted');
   }
+}
+
+/** Move a selected responder's existing reply window to the instant its native
+ * kickoff was durably recorded. The selected slot and prior deadline form the
+ * CAS; queued recovery adds its lease token so a replaced continuation cannot
+ * extend a responder it no longer owns. */
+async function refreshCascadeExpiryAfterKickoff(
+  sql: Sql,
+  args: {
+    workspaceId: string;
+    conversationId: string;
+    cursor: number;
+    responder: string;
+    answeringOwnerId: string;
+    expectedExpiresAt: string | Date | null;
+    latencyContract: string;
+    kickoffAt: string;
+    leaseToken?: string;
+  },
+): Promise<string | null> {
+  const expiryMs = args.latencyContract === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS;
+  const expiresAt = new Date(Date.parse(args.kickoffAt) + expiryMs).toISOString();
+  const rows = await sql`
+    UPDATE harness_shared.consult_state
+       SET expires_at = ${expiresAt}::timestamptz,
+           updated_at = ${args.kickoffAt}::timestamptz
+     WHERE workspace_id = ${args.workspaceId} AND conversation_id = ${args.conversationId}
+       AND cascade_cursor = ${args.cursor}
+       AND responder_id = ${args.responder}
+       AND closed_at IS NULL AND state IN ('awaiting_responder', 'active')
+       AND expires_at IS NOT DISTINCT FROM ${args.expectedExpiresAt}::timestamptz
+       AND routing #>> ARRAY['selection', 'selected', ${String(args.cursor)}, 'ownerId'] = ${args.responder}
+       AND routing #>> ARRAY['selection', 'selected', ${String(args.cursor)}, 'answeringOwnerId'] = ${args.answeringOwnerId}
+       AND (${args.leaseToken ?? null}::text IS NULL
+         OR routing #>> '{cascadeDispatch,leaseToken}' = ${args.leaseToken ?? null}::text)
+    RETURNING conversation_id`;
+  return rows.length > 0 ? expiresAt : null;
 }
 
 export async function advanceCascade(
@@ -777,6 +840,7 @@ export async function advanceCascade(
             digest,
             extension: 'min-answers refill',
           });
+          let expectedKickoffExpiry: string | Date = expiresAt;
           const r = await dispatch({
             responder: first.ownerId,
             conversationId: params.conversationId,
@@ -784,6 +848,21 @@ export async function advanceCascade(
             body: copy.body,
             ...(first.evidence ? { evidence: first.evidence } : {}),
             onAnsweringOwner: (owner) => stampAnsweringOwner(sql, params, cursorIdx, owner),
+            onKickoff: async (kickoffAt, answeringOwnerId) => {
+              const refreshedExpiry = await refreshCascadeExpiryAfterKickoff(sql, {
+                workspaceId: params.workspaceId,
+                conversationId: params.conversationId,
+                cursor: cursorIdx,
+                responder: first.ownerId,
+                answeringOwnerId,
+                expectedExpiresAt: expectedKickoffExpiry,
+                latencyContract: params.latencyContract,
+                kickoffAt,
+              });
+              if (!refreshedExpiry) return false;
+              expectedKickoffExpiry = refreshedExpiry;
+              return true;
+            },
           });
           woke = r.woke;
           // Backstop for a dispatcher that does not call the hook. Stamped on
@@ -912,6 +991,7 @@ export async function advanceCascade(
       next,
       digest,
     });
+    let expectedKickoffExpiry: string | Date = expiresAt;
     const r = await dispatch({
       responder: next.ownerId,
       conversationId: params.conversationId,
@@ -919,6 +999,21 @@ export async function advanceCascade(
       body: copy.body,
       ...(next.evidence ? { evidence: next.evidence } : {}),
       onAnsweringOwner: (owner) => stampAnsweringOwner(sql, params, nextIdx, owner),
+      onKickoff: async (kickoffAt, answeringOwnerId) => {
+        const refreshedExpiry = await refreshCascadeExpiryAfterKickoff(sql, {
+          workspaceId: params.workspaceId,
+          conversationId: params.conversationId,
+          cursor: nextIdx,
+          responder: next.ownerId,
+          answeringOwnerId,
+          expectedExpiresAt: expectedKickoffExpiry,
+          latencyContract: params.latencyContract,
+          kickoffAt,
+        });
+        if (!refreshedExpiry) return false;
+        expectedKickoffExpiry = refreshedExpiry;
+        return true;
+      },
     });
     woke = r.woke;
     // Backstop, on the answering identity and never on `woke` — as above.

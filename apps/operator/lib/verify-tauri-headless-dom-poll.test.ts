@@ -3,6 +3,7 @@
  * completed. The isolated Tauri verifier must offer a bounded DOM poll instead
  * of making callers guess a fixed sleep that races cold-boot queries.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
@@ -48,7 +49,7 @@ describe('EI-10822 — verify-tauri-headless DOM polling', () => {
     const result = spawnSync(helperPath, ['--selector', 'body', '--text', 'ready'], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...hermeticSpawnEnv(),
         PATH: `${dir}${delimiter}${process.env.PATH ?? ''}`,
         VERIFY_TAURI_PID: '4242',
         VERIFY_TAURI_DOM_TIMEOUT: '5',
@@ -72,7 +73,7 @@ describe('EI-10822 — verify-tauri-headless DOM polling', () => {
     const result = spawnSync(helperPath, ['--selector', 'body', '--text', 'ready'], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...hermeticSpawnEnv(),
         PATH: `${dir}${delimiter}${process.env.PATH ?? ''}`,
         VERIFY_TAURI_PID: '4242',
         VERIFY_TAURI_DOM_TIMEOUT: '0',
@@ -99,7 +100,7 @@ describe('EI-10822 — verify-tauri-headless DOM polling', () => {
       {
         encoding: 'utf8',
         env: {
-          ...process.env,
+          ...hermeticSpawnEnv(),
           PATH: `${dir}${delimiter}${process.env.PATH ?? ''}`,
           VERIFY_TAURI_PID: '4242',
           VERIFY_TAURI_DOM_TIMEOUT: '0',
@@ -158,7 +159,7 @@ describe('EI-18781011720418569 — negative assertions cannot pass against an em
     const result = spawnSync(helperPath, argv, {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...hermeticSpawnEnv(),
         PATH: `${dir}${delimiter}${process.env.PATH ?? ''}`,
         VERIFY_TAURI_PID: '4242',
         VERIFY_TAURI_DOM_TIMEOUT: '0',

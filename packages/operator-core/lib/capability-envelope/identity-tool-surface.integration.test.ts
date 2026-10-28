@@ -74,7 +74,9 @@ it('measures the production identity policy read in a private background runtime
         const sourceDir = join(potPath, '.papercusp');
         const blueprintDir = join(sourceDir, 'blueprints');
         await mkdir(blueprintDir, { recursive: true });
-        await writeFile(join(blueprintDir, 'parent.yaml'), [
+        const parentBlueprintDir = join(blueprintDir, 'parent');
+        await mkdir(parentBlueprintDir, { recursive: true });
+        await writeFile(join(parentBlueprintDir, 'blueprint.yaml'), [
           'id: parent',
           'fleet:',
           '  workerRoles:',

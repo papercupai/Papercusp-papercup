@@ -6,6 +6,7 @@
  * `to: /settings/p2p` instead of the quoted JS string, so the run is invalid.
  * Keep the documented outer-double/single-JS-quote recipe executable here.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
@@ -143,7 +144,7 @@ esac
   const result = spawnSync('bash', [COUNT_SURFACES_SCRIPT], {
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...hermeticSpawnEnv(),
       PAPERCUSP_SID: 'p014-regression',
       P014_FAKE_CAPTURE_MODE: captureMode,
       VERIFY_COUNT_SURFACES_OUTPUT: output,
@@ -173,7 +174,7 @@ describe('EI-20207763368144905 — nested HUD assertion quoting', () => {
     const result = spawnSync('bash', ['-c', recipe], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...hermeticSpawnEnv(),
         PATH: `${dir}${delimiter}${process.env.PATH ?? ''}`,
         VERIFY_TAURI_PID: '4242',
         VERIFY_TAURI_POLL: fakePoll,

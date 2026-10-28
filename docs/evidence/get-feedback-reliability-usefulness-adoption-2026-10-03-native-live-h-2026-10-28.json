@@ -1,0 +1,862 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "get-feedback P-006 native receipt + answering matrix, Rounds G and H on staging (live plane, DB-state claim)",
+  "framework": "operational",
+  "command": [
+    "node scripts/mcp-call.mjs consult:get_feedback --port 3170 nativeConsult per cell (request keys gf-r6-20261028g-claudeended-claude-v1, gf-r6-20261028h-claudeended-codex-v1, gf-r6-20261028h-codexlive-codex-v1)",
+    "SELECT harness_shared.consult_state.dispatch_attempts + coord_thread_posts per conversation; session_ports for port cells",
+    "python3 .papercusp/scratch/gf-r6-live-h-gen.py (this generator; rows .papercusp/scratch/gf-p007/r6h-rows.json)"
+  ],
+  "startedAt": "2026-10-28T03:53:57Z",
+  "finishedAt": "2026-10-28T06:58:00.085345Z",
+  "exitCode": 0,
+  "summary": "All three defined matrix cells (Claude ended source to Claude fork, Claude ended source to Codex conversion, Codex live source to Codex session port) dispatched natively and received a substantive answer from the dispatched session, distinct from the requester and the source (claude-ended-to-claude-fork on 40d2cc3229, claude-ended-to-codex-conversion on 06332a9467, codex-live-to-codex-session-port on 96cbf1656f; every build contains fix commit 86c0d67fd5). Earlier failed and capacity-walled trials are kept inside their rows.",
+  "assertions": [
+    {
+      "id": "matrix-claude-ended-to-claude-fork-dispatched-and-answered",
+      "passed": true,
+      "evidence": "conv-request-bf94c945f4f1db8727f9c22d621540942e31167cfb8f049a46903be5363b6bc3 (request key gf-r6-20261028g-claudeended-claude-v1, build 40d2cc3229): native fork su-3ad5b251-04d1-47ff-ad97-a7ca58524d67 -> claude/fable as su-880a1084-7f21-4f62-840a-782389834070 at 2026-10-28T03:54:39.842Z (no session_ports row: same-backend fork path, EI-27110821654149363); consult state active cascade_cursor 0 attempts 1; source su-3ad5b251-04d1-47ff-ad97-a7ca58524d67; answer post 1208573 by su-880a1084-7f21-4f62-840a-782389834070 at 2026-10-27T23:57:26.927-04:00 (6549 chars). checks={\"native_fork_dispatched\": true, \"fork_backend_matches_cell\": true, \"distinct_answering_session\": true, \"requester_is_me\": true, \"rows_file_names_judged_session\": true, \"substantive_answer_posted\": true, \"answer_author_distinct_from_requester_and_source\": true, \"answer_author_is_dispatched_session\": true, \"build_contains_fix_commit\": true}"
+    },
+    {
+      "id": "matrix-claude-ended-to-codex-conversion-dispatched-and-answered",
+      "passed": true,
+      "evidence": "conv-request-cf0190b6585b3b35ef583e5b71d28ade7591734f93154f1e71e12e851f06b7c0 (request key gf-r6-20261028h-claudeended-codex-v1, build 06332a9467): port ef35fe33-26c2-433c-a480-6150532ad50a claude->codex model gpt-5.6-sol status delivered prepared 2026-10-28T02:51:39.6607-04:00 delivered 2026-10-28T02:51:49.251066-04:00 adv 40097->53570 (attempt transcript session 53570); convert as su-bf9360ef-3093-44f2-b30f-76b0680ef897; consult state closed_answered cascade_cursor 2 attempts 3; source su-2f1f6a3b-d60a-47d2-bd4a-7f6c2d8743a6; answer post 1208722 by su-bf9360ef-3093-44f2-b30f-76b0680ef897 at 2026-10-28T02:53:40.234-04:00 (2958 chars). checks={\"port_delivered\": true, \"backends_match_cell\": true, \"distinct_target_session\": true, \"port_is_judged_attempts_target\": true, \"requester_is_me\": true, \"rows_file_names_judged_session\": true, \"substantive_answer_posted\": true, \"answer_author_distinct_from_requester_and_source\": true, \"answer_author_is_dispatched_session\": true, \"build_contains_fix_commit\": true}"
+    },
+    {
+      "id": "matrix-codex-live-to-codex-session-port-dispatched-and-answered",
+      "passed": true,
+      "evidence": "conv-request-b399e82f4d3889514daa7828137155e7725a91a8c412c9a453f1dd7a9d79c535 (request key gf-r6-20261028h-codexlive-codex-v1, build 96cbf1656f): port 4a51ad22-af2c-4724-b6d2-20f798ac6817 codex->codex model gpt-5.6-sol status delivered prepared 2026-10-28T02:44:11.406176-04:00 delivered 2026-10-28T02:44:22.075954-04:00 adv 51637->53562 (attempt transcript session 53562); convert as su-98dac655-544d-48f7-954a-787542011347; consult state closed_answered cascade_cursor 0 attempts 1; source su-12da384f-8b83-4dd0-8884-cd15f2cd6231; answer post 1208705 by su-98dac655-544d-48f7-954a-787542011347 at 2026-10-28T02:45:45.008-04:00 (2784 chars). checks={\"port_delivered\": true, \"backends_match_cell\": true, \"distinct_target_session\": true, \"port_is_judged_attempts_target\": true, \"requester_is_me\": true, \"rows_file_names_judged_session\": true, \"substantive_answer_posted\": true, \"answer_author_distinct_from_requester_and_source\": true, \"answer_author_is_dispatched_session\": true, \"build_contains_fix_commit\": true}"
+    },
+    {
+      "id": "all-three-defined-cells-checked",
+      "passed": true,
+      "evidence": "checked cells ['claude-ended-to-claude-fork', 'claude-ended-to-codex-conversion', 'codex-live-to-codex-session-port']; missing []"
+    },
+    {
+      "id": "db-state-claim-runtime-scope",
+      "passed": true,
+      "evidence": "Claim is durable DB state (consult_state dispatch attempts, delivered session_ports rows where the mechanism uses one, answer posts in coord_thread_posts by the dispatched sessions, distinct from requester and source). Per consult answer post 1207200 the binding pins postgres:5432, not hono-host:3170."
+    }
+  ],
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "planItem": "P-006",
+  "workItemId": "WI-6554700010030189",
+  "requesterId": "su-2fde89b1-645a-4d95-832b-2ad86e206ca1",
+  "runtime": {
+    "consultRoute": "staging operator :3170 (claude-ended-to-claude-fork on 40d2cc3229, claude-ended-to-codex-conversion on 06332a9467, codex-live-to-codex-session-port on 96cbf1656f)",
+    "healthAtGeneration": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "06332a9467",
+      "version": "0.0.0",
+      "claimSpec": {
+        "specVersion": "1.0",
+        "revisionAdoption": [
+          "first"
+        ]
+      },
+      "ts": "2026-10-28T06:58:00.084Z"
+    },
+    "boundRuntimeUnits": [
+      "postgres:5432"
+    ],
+    "launcher": "psu-launcher on psu-pty-host, canonical staging tree"
+  },
+  "matrix": {
+    "definition": "Three cells: Claude ended source to Claude fork; Claude ended source to Codex conversion; non-Claude (Codex) live source to Codex session port.",
+    "cells": [
+      {
+        "cell": "claude-ended-to-claude-fork",
+        "mode": "fork",
+        "status": "checked",
+        "build": "40d2cc3229",
+        "requestKey": "gf-r6-20261028g-claudeended-claude-v1",
+        "conversationId": "conv-request-bf94c945f4f1db8727f9c22d621540942e31167cfb8f049a46903be5363b6bc3",
+        "portId": null,
+        "port": null,
+        "judgedAttempt": {
+          "at": "2026-10-28T03:54:39.842Z",
+          "agent": "claude",
+          "model": "fable",
+          "detail": "fork of su-3ad5b251-04d1-47ff-ad97-a7ca58524d67 \u2192 claude/fable as su-880a1084-7f21-4f62-840a-782389834070: live host registered after 2ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-fork-su-880a1084-7f21-898352-1793159656138.log).",
+          "attempts": [
+            {
+              "rank": 1,
+              "agent": "claude",
+              "model": "fable",
+              "detail": "fork of su-3ad5b251-04d1-47ff-ad97-a7ca58524d67 \u2192 claude/fable as su-880a1084-7f21-4f62-840a-782389834070: live host registered after 2ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-fork-su-880a1084-7f21-898352-1793159656138.log).",
+              "outcome": "dispatched",
+              "operation": "fork"
+            }
+          ],
+          "verified": true,
+          "operation": "fork",
+          "dispatched": true,
+          "sourceOwnerId": "su-3ad5b251-04d1-47ff-ad97-a7ca58524d67",
+          "answeringOwnerId": "su-880a1084-7f21-4f62-840a-782389834070"
+        },
+        "attemptTimeline": [
+          {
+            "at": "2026-10-28T03:54:39.842Z",
+            "operation": "fork",
+            "agent": "claude",
+            "model": "fable",
+            "sourceOwnerId": "su-3ad5b251-04d1-47ff-ad97-a7ca58524d67",
+            "answeringOwnerId": "su-880a1084-7f21-4f62-840a-782389834070",
+            "transcriptAdvSession": null,
+            "detail": "fork of su-3ad5b251-04d1-47ff-ad97-a7ca58524d67 \u2192 claude/fable as su-880a1084-7f21-4f62-840a-782389834070: live host registered after 2ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-fork-su-880a1084-7f21-898352-1793159656138.log).",
+            "posts": [
+              {
+                "id": 1208573,
+                "len": 6549,
+                "kind": "reply"
+              }
+            ]
+          }
+        ],
+        "consultState": "active",
+        "closedAt": null,
+        "sourceOwnerId": "su-3ad5b251-04d1-47ff-ad97-a7ca58524d67",
+        "answeringOwnerId": "su-880a1084-7f21-4f62-840a-782389834070",
+        "answerPostId": 1208573,
+        "answerPostIds": [
+          1208573
+        ],
+        "checks": {
+          "native_fork_dispatched": true,
+          "fork_backend_matches_cell": true,
+          "distinct_answering_session": true,
+          "requester_is_me": true,
+          "rows_file_names_judged_session": true,
+          "substantive_answer_posted": true,
+          "answer_author_distinct_from_requester_and_source": true,
+          "answer_author_is_dispatched_session": true,
+          "build_contains_fix_commit": true
+        },
+        "priorTrials": [
+          {
+            "round": "F",
+            "build": "40d2cc3229",
+            "window": "2026-10-28T03:48Z-03:53Z",
+            "conversationId": "conv-request-2bb15309afa5b3fcb6a05ca0441c2b13ac549952fa046ef542ae7d7ac34a2057",
+            "classification": "cell-mechanism-mismatch",
+            "reason": "The routed Claude source su-fe8c2627 was historical: its native session id had rotated after a cold /clear, so planDispatchOperation (packages/operator-core/lib/consult/consult-dispatch.ts) correctly chose convert, not fork, which forks only for claude->claude with a non-historical source. The converted session su-af0a4f0c answered (post 1208572), but a convert does not exercise the fork cell, so the row was re-run as Round G with a question routed to a non-historical ended source.",
+            "counted": "Not counted for the fork cell; the answer it produced is real and is not presented as a failure of routing.",
+            "dbSummary": {
+              "state": "active",
+              "createdAt": "2026-10-27T23:48:40.928006-04:00",
+              "closedAt": null,
+              "attempts": [
+                {
+                  "at": "2026-10-28T03:49:21.546Z",
+                  "operation": "convert",
+                  "agent": "claude",
+                  "model": "fable",
+                  "sourceOwnerId": "su-fe8c2627-224e-4bcc-89b8-8ff352250cb1",
+                  "answeringOwnerId": "su-af0a4f0c-02b2-4eb6-8984-04413fe44a5f",
+                  "transcriptAdvSession": null,
+                  "detail": "convert of su-fe8c2627-224e-4bcc-89b8-8ff352250cb1 \u2192 claude/fable as su-af0a4f0c-02b2-4eb6-8984-04413fe44a5f: live host registered after 98ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-af0a4f0c-02b2-898352-1793159339148.log).",
+                  "posts": [
+                    {
+                      "id": 1208572,
+                      "len": 5736,
+                      "kind": "reply"
+                    }
+                  ]
+                }
+              ],
+              "posts": [
+                {
+                  "id": 1208572,
+                  "author": "su-af0a4f0c-02b2-4eb6-8984-04413fe44a5f",
+                  "len": 5736
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "cell": "claude-ended-to-codex-conversion",
+        "mode": "port",
+        "status": "checked",
+        "build": "06332a9467",
+        "requestKey": "gf-r6-20261028h-claudeended-codex-v1",
+        "conversationId": "conv-request-cf0190b6585b3b35ef583e5b71d28ade7591734f93154f1e71e12e851f06b7c0",
+        "portId": "ef35fe33-26c2-433c-a480-6150532ad50a",
+        "port": {
+          "id": "ef35fe33-26c2-433c-a480-6150532ad50a",
+          "logical_request_key": "7eadf78d7e82ad185e148a56c1fc07261cfb59b8157d87da2d71ed795e79104d",
+          "source_backend": "claude",
+          "target_backend": "codex",
+          "target_model": "gpt-5.6-sol",
+          "status": "delivered",
+          "source_adv_session_id": 40097,
+          "target_adv_session_id": 53570,
+          "prepared_at": "2026-10-28T02:51:39.6607-04:00",
+          "pending_at": "2026-10-28T02:51:41.771383-04:00",
+          "delivered_at": "2026-10-28T02:51:49.251066-04:00",
+          "failed_at": null,
+          "error": null
+        },
+        "judgedAttempt": {
+          "at": "2026-10-28T06:52:09.328Z",
+          "agent": "codex",
+          "model": "sol",
+          "detail": "convert of su-2f1f6a3b-d60a-47d2-bd4a-7f6c2d8743a6 \u2192 codex/sol as su-bf9360ef-3093-44f2-b30f-76b0680ef897: live host registered after 3ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-bf9360ef-3093-585316-1793170296524.log). First reply not written 20003ms after kickoff, so it was not checked for a provider rejection yet; the consult expiry sweep re-checks it.",
+          "attempts": [
+            {
+              "rank": 3,
+              "agent": "codex",
+              "model": "sol",
+              "detail": "convert of su-2f1f6a3b-d60a-47d2-bd4a-7f6c2d8743a6 \u2192 codex/sol as su-bf9360ef-3093-44f2-b30f-76b0680ef897: live host registered after 3ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-bf9360ef-3093-585316-1793170296524.log). First reply not written 20003ms after kickoff, so it was not checked for a provider rejection yet; the consult expiry sweep re-checks it.",
+              "outcome": "dispatched",
+              "operation": "convert",
+              "firstTurnUnjudged": {
+                "agent": "codex",
+                "kickoffAt": "2026-10-28T06:51:49.325Z",
+                "transcriptPath": "~/.papercusp/su-codex-homes/session-53570/sessions/2026/10/28/rollout-2026-10-28T02-51-43-01a18147-697a-7d00-8201-50c51583d676.jsonl"
+              }
+            }
+          ],
+          "verified": true,
+          "operation": "convert",
+          "dispatched": true,
+          "sourceOwnerId": "su-2f1f6a3b-d60a-47d2-bd4a-7f6c2d8743a6",
+          "answeringOwnerId": "su-bf9360ef-3093-44f2-b30f-76b0680ef897"
+        },
+        "attemptTimeline": [
+          {
+            "at": "2026-10-28T06:49:56.461Z",
+            "operation": "convert",
+            "agent": "codex",
+            "model": "sol",
+            "sourceOwnerId": "su-8cec8a78-4938-450e-95bd-6508e5ebfa7f",
+            "answeringOwnerId": "su-0764b80b-a71c-417f-aa05-7c27aecefde9",
+            "transcriptAdvSession": 53568,
+            "detail": "convert of su-8cec8a78-4938-450e-95bd-6508e5ebfa7f \u2192 codex/sol as su-0764b80b-a71c-417f-aa05-7c27aecefde9: live host registered after 9ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-0764b80b-a71c-585316-1793170160884.log). First reply not written 20004ms after kickoff, so it was not checked for a provider rejection yet; the consult exp",
+            "posts": [
+              {
+                "id": 1208714,
+                "len": 548,
+                "kind": "decline"
+              }
+            ]
+          },
+          {
+            "at": "2026-10-28T06:51:14.495Z",
+            "operation": "convert",
+            "agent": "codex",
+            "model": "sol",
+            "sourceOwnerId": "su-ffacf48e-095b-4eba-89c6-8ec92d0564d8",
+            "answeringOwnerId": "su-20ab7bb5-0d50-4881-b301-800003d62583",
+            "transcriptAdvSession": 53569,
+            "detail": "convert of su-ffacf48e-095b-4eba-89c6-8ec92d0564d8 \u2192 codex/sol as su-20ab7bb5-0d50-4881-b301-800003d62583: live host registered after 2ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-20ab7bb5-0d50-585316-1793170238237.log). First reply not written 20003ms after kickoff, so it was not checked for a provider rejection yet; the consult exp",
+            "posts": [
+              {
+                "id": 1208718,
+                "len": 1900,
+                "kind": "reply"
+              }
+            ]
+          },
+          {
+            "at": "2026-10-28T06:52:09.328Z",
+            "operation": "convert",
+            "agent": "codex",
+            "model": "sol",
+            "sourceOwnerId": "su-2f1f6a3b-d60a-47d2-bd4a-7f6c2d8743a6",
+            "answeringOwnerId": "su-bf9360ef-3093-44f2-b30f-76b0680ef897",
+            "transcriptAdvSession": 53570,
+            "detail": "convert of su-2f1f6a3b-d60a-47d2-bd4a-7f6c2d8743a6 \u2192 codex/sol as su-bf9360ef-3093-44f2-b30f-76b0680ef897: live host registered after 3ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-bf9360ef-3093-585316-1793170296524.log). First reply not written 20003ms after kickoff, so it was not checked for a provider rejection yet; the consult exp",
+            "posts": [
+              {
+                "id": 1208722,
+                "len": 2958,
+                "kind": "reply"
+              },
+              {
+                "id": 1208726,
+                "len": 901,
+                "kind": "close"
+              }
+            ]
+          }
+        ],
+        "consultState": "closed_answered",
+        "closedAt": "2026-10-28T02:54:03.599-04:00",
+        "sourceOwnerId": "su-2f1f6a3b-d60a-47d2-bd4a-7f6c2d8743a6",
+        "answeringOwnerId": "su-bf9360ef-3093-44f2-b30f-76b0680ef897",
+        "answerPostId": 1208722,
+        "answerPostIds": [
+          1208714,
+          1208718,
+          1208722,
+          1208726
+        ],
+        "checks": {
+          "port_delivered": true,
+          "backends_match_cell": true,
+          "distinct_target_session": true,
+          "port_is_judged_attempts_target": true,
+          "requester_is_me": true,
+          "rows_file_names_judged_session": true,
+          "substantive_answer_posted": true,
+          "answer_author_distinct_from_requester_and_source": true,
+          "answer_author_is_dispatched_session": true,
+          "build_contains_fix_commit": true
+        },
+        "priorTrials": [
+          {
+            "round": "B",
+            "build": "a876f44cc1",
+            "window": "2026-10-27T05:42Z-06:01Z",
+            "conversationId": "conv-request-ad5b23e3616c190b712706ad81f99b323817ac5059a51fe2cb96ace6d52af8a9",
+            "classification": "measured-capacity-wall",
+            "reason": "Claude ended source su-3ad5b251 to Codex: every allowed Codex rank (codex/sol, codex/gpt-6-astra, codex/gpt-6.1-sol) launch-failed for two candidate sources because no Codex account served the model while the paid pool was usage-walled; the dispatcher recorded each launch failure and walked the cascade, so no request was left stranded. Closed cant_help.",
+            "counted": "A measured capacity wall is not a pass. The row was re-run after the wall cleared.",
+            "dbSummary": {
+              "state": "closed_cant_help",
+              "createdAt": "2026-10-27T01:52:32.478012-04:00",
+              "closedAt": "2026-10-27T02:00:50.811-04:00",
+              "attempts": [
+                {
+                  "at": "2026-10-27T05:52:58.394Z",
+                  "operation": null,
+                  "agent": null,
+                  "model": null,
+                  "sourceOwnerId": "su-3ad5b251-04d1-47ff-ad97-a7ca58524d67",
+                  "answeringOwnerId": null,
+                  "transcriptAdvSession": null,
+                  "detail": "every allowed expert model was exhausted for su-3ad5b251-04d1-47ff-ad97-a7ca58524d67 (3 rank(s) tried): #3 codex/sol launch-failed; #4 codex/gpt-6-astra launch-failed; #5 codex/gpt-6.1-sol launch-failed",
+                  "posts": []
+                },
+                {
+                  "at": "2026-10-27T05:58:04.393Z",
+                  "operation": null,
+                  "agent": null,
+                  "model": null,
+                  "sourceOwnerId": "su-3633bdcb-453b-4177-a7fc-dfa2ed6c8ff9",
+                  "answeringOwnerId": null,
+                  "transcriptAdvSession": null,
+                  "detail": "every allowed expert model was exhausted for su-3633bdcb-453b-4177-a7fc-dfa2ed6c8ff9 (3 rank(s) tried): #3 codex/sol launch-failed; #4 codex/gpt-6-astra launch-failed; #5 codex/gpt-6.1-sol launch-failed",
+                  "posts": []
+                },
+                {
+                  "at": "2026-10-27T06:00:53.289Z",
+                  "operation": null,
+                  "agent": null,
+                  "model": null,
+                  "sourceOwnerId": "su-3c2fe9d8-28c1-4f97-bffd-297fa9ee6223",
+                  "answeringOwnerId": null,
+                  "transcriptAdvSession": null,
+                  "detail": "consult conv-request-ad5b23e3616c190b712706ad81f99b323817ac5059a51fe2cb96ace6d52af8a9 is no longer open; skipped codex/gpt-6.1-sol before spawn",
+                  "posts": []
+                }
+              ],
+              "posts": [
+                {
+                  "id": 1207831,
+                  "author": "su-2fde89b1-645a-4d95-832b-2ad86e206ca1",
+                  "len": 271
+                }
+              ]
+            }
+          },
+          {
+            "round": "F",
+            "build": "40d2cc3229",
+            "window": "2026-10-28T03:48Z-06:49Z",
+            "conversationId": "conv-request-82027ba63cbb37dc33544ed4c5b176079713396835be997361c44bbad01d5055",
+            "classification": "measured-capacity-wall",
+            "reason": "Ran during the Codex usage wall. Rank 3 codex/sol was skipped as account-walled; rank 4 codex/gpt-6-astra converted to su-efeb23db, whose Codex CLI exhausted its retries on 429 Too Many Requests and shut down without posting. The consult then stayed awaiting_responder with no re-walk.",
+            "defect": "EI-27204901167458428",
+            "counted": "A measured capacity wall is not a pass. The stranded request is a filed defect, not hidden.",
+            "dbSummary": {
+              "state": "awaiting_responder",
+              "createdAt": "2026-10-27T23:48:40.934289-04:00",
+              "closedAt": null,
+              "attempts": [
+                {
+                  "at": "2026-10-28T03:49:32.004Z",
+                  "operation": "convert",
+                  "agent": "codex",
+                  "model": "gpt-6-astra",
+                  "sourceOwnerId": "su-e647f512-9f13-4f11-8e0f-a0b9624f37bc",
+                  "answeringOwnerId": "su-efeb23db-a203-4d3a-8775-f771c8018813",
+                  "transcriptAdvSession": 53487,
+                  "detail": "convert of su-e647f512-9f13-4f11-8e0f-a0b9624f37bc \u2192 codex/gpt-6-astra as su-efeb23db-a203-4d3a-8775-f771c8018813: live host registered after 3ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-efeb23db-a203-898352-1793159339150.log). First reply not written 20018ms after kickoff, so it was not checked for a provider rejection yet; the con",
+                  "posts": []
+                }
+              ],
+              "posts": []
+            }
+          }
+        ]
+      },
+      {
+        "cell": "codex-live-to-codex-session-port",
+        "mode": "port",
+        "status": "checked",
+        "build": "96cbf1656f",
+        "requestKey": "gf-r6-20261028h-codexlive-codex-v1",
+        "conversationId": "conv-request-b399e82f4d3889514daa7828137155e7725a91a8c412c9a453f1dd7a9d79c535",
+        "portId": "4a51ad22-af2c-4724-b6d2-20f798ac6817",
+        "port": {
+          "id": "4a51ad22-af2c-4724-b6d2-20f798ac6817",
+          "logical_request_key": "d87652a8d36e0ea3d8da031e8a4546b6c6d99d8e8928d848c1dcd35d06615659",
+          "source_backend": "codex",
+          "target_backend": "codex",
+          "target_model": "gpt-5.6-sol",
+          "status": "delivered",
+          "source_adv_session_id": 51637,
+          "target_adv_session_id": 53562,
+          "prepared_at": "2026-10-28T02:44:11.406176-04:00",
+          "pending_at": "2026-10-28T02:44:14.031221-04:00",
+          "delivered_at": "2026-10-28T02:44:22.075954-04:00",
+          "failed_at": null,
+          "error": null
+        },
+        "judgedAttempt": {
+          "at": "2026-10-28T06:44:42.184Z",
+          "agent": "codex",
+          "model": "sol",
+          "detail": "convert of su-12da384f-8b83-4dd0-8884-cd15f2cd6231 \u2192 codex/sol as su-98dac655-544d-48f7-954a-787542011347: live host registered after 4ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-98dac655-544d-35470-1793169847732.log). First reply not written 20005ms after kickoff, so it was not checked for a provider rejection yet; the consult expiry sweep re-checks it.",
+          "attempts": [
+            {
+              "rank": 3,
+              "agent": "codex",
+              "model": "sol",
+              "detail": "convert of su-12da384f-8b83-4dd0-8884-cd15f2cd6231 \u2192 codex/sol as su-98dac655-544d-48f7-954a-787542011347: live host registered after 4ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-98dac655-544d-35470-1793169847732.log). First reply not written 20005ms after kickoff, so it was not checked for a provider rejection yet; the consult expiry sweep re-checks it.",
+              "outcome": "dispatched",
+              "operation": "convert",
+              "firstTurnUnjudged": {
+                "agent": "codex",
+                "kickoffAt": "2026-10-28T06:44:22.177Z",
+                "transcriptPath": "~/.papercusp/su-codex-homes/session-53562/sessions/2026/10/28/rollout-2026-10-28T02-44-16-01a18140-96cf-72d3-94f2-b7aa516940df.jsonl"
+              }
+            }
+          ],
+          "verified": true,
+          "operation": "convert",
+          "dispatched": true,
+          "sourceOwnerId": "su-12da384f-8b83-4dd0-8884-cd15f2cd6231",
+          "answeringOwnerId": "su-98dac655-544d-48f7-954a-787542011347"
+        },
+        "attemptTimeline": [
+          {
+            "at": "2026-10-28T06:44:42.184Z",
+            "operation": "convert",
+            "agent": "codex",
+            "model": "sol",
+            "sourceOwnerId": "su-12da384f-8b83-4dd0-8884-cd15f2cd6231",
+            "answeringOwnerId": "su-98dac655-544d-48f7-954a-787542011347",
+            "transcriptAdvSession": 53562,
+            "detail": "convert of su-12da384f-8b83-4dd0-8884-cd15f2cd6231 \u2192 codex/sol as su-98dac655-544d-48f7-954a-787542011347: live host registered after 4ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-98dac655-544d-35470-1793169847732.log). First reply not written 20005ms after kickoff, so it was not checked for a provider rejection yet; the consult expi",
+            "posts": [
+              {
+                "id": 1208705,
+                "len": 2784,
+                "kind": "reply"
+              },
+              {
+                "id": 1208706,
+                "len": 1018,
+                "kind": "close"
+              }
+            ]
+          }
+        ],
+        "consultState": "closed_answered",
+        "closedAt": "2026-10-28T02:46:04.143-04:00",
+        "sourceOwnerId": "su-12da384f-8b83-4dd0-8884-cd15f2cd6231",
+        "answeringOwnerId": "su-98dac655-544d-48f7-954a-787542011347",
+        "answerPostId": 1208705,
+        "answerPostIds": [
+          1208705,
+          1208706
+        ],
+        "checks": {
+          "port_delivered": true,
+          "backends_match_cell": true,
+          "distinct_target_session": true,
+          "port_is_judged_attempts_target": true,
+          "requester_is_me": true,
+          "rows_file_names_judged_session": true,
+          "substantive_answer_posted": true,
+          "answer_author_distinct_from_requester_and_source": true,
+          "answer_author_is_dispatched_session": true,
+          "build_contains_fix_commit": true
+        },
+        "priorTrials": [
+          {
+            "round": "B",
+            "build": "a876f44cc1",
+            "window": "2026-10-27T05:42Z-06:01Z",
+            "conversationId": "conv-request-7488592ca5bc8f972996b6a08703c1c6ff927fce98fdb9618e32b83d6053c2d9",
+            "classification": "avoidable-failure",
+            "reason": "Codex live source su-12da384f converted to codex/sol as su-d65f6bc1; the target was routed to a free-plan account while paid accounts were usage-walled and its first model call was rejected (model_not_found for gpt-5.6-sol). The dispatch attempt read \"First reply not written 20003ms after kickoff, so it was not checked for a provider rejection\"; nothing re-judged it, and the consult sat awaiting_responder for 18 minutes until the requester closed it cant_help.",
+            "defect": "EI-27111739698817170",
+            "fix": {
+              "commit": "86c0d67fd5",
+              "change": "consult expiry sweep re-judges dispatched attempts whose first turn was never judged, using the same first-turn classifier, and fails the attempt and advances the cascade on a terminal rejection (packages/operator-core/lib/consult/consult-expiry-core.ts, consult-dispatch.ts)",
+              "regressionTests": [
+                "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+                "packages/operator-core/lib/consult/consult-expiry-core.integration.test.ts",
+                "packages/operator-core/lib/consult/consult-expiry-action.test.ts"
+              ],
+              "mutationProbe": "test_runs:22412098 (sweep re-judge rejected branch disabled: caught)"
+            },
+            "counted": "This avoidable failure occurred on a build without the fix. Rounds G/H ran on builds that contain it.",
+            "dbSummary": {
+              "state": "closed_cant_help",
+              "createdAt": "2026-10-27T01:42:53.077405-04:00",
+              "closedAt": "2026-10-27T02:00:50.656-04:00",
+              "attempts": [
+                {
+                  "at": "2026-10-27T05:43:45.612Z",
+                  "operation": "convert",
+                  "agent": "codex",
+                  "model": "sol",
+                  "sourceOwnerId": "su-12da384f-8b83-4dd0-8884-cd15f2cd6231",
+                  "answeringOwnerId": "su-d65f6bc1-198f-40a3-a1d8-fdf2c2e1d949",
+                  "transcriptAdvSession": null,
+                  "detail": "convert of su-12da384f-8b83-4dd0-8884-cd15f2cd6231 \u2192 codex/sol as su-d65f6bc1-198f-40a3-a1d8-fdf2c2e1d949: live host registered after 1ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-d65f6bc1-198f-2482210-1793079781164.log). First reply not written 20003ms after kickoff, so it was not checked for a provider rejection.",
+                  "posts": []
+                }
+              ],
+              "posts": [
+                {
+                  "id": 1207830,
+                  "author": "su-2fde89b1-645a-4d95-832b-2ad86e206ca1",
+                  "len": 313
+                }
+              ]
+            }
+          },
+          {
+            "round": "F",
+            "build": "40d2cc3229",
+            "window": "2026-10-28T03:48Z-04:30Z",
+            "conversationId": "conv-request-c8b8facd627dc32e90e5b13d046b300b462720b81e898ed667073a80a146d34c",
+            "classification": "measured-capacity-wall",
+            "reason": "Ran during the Codex usage wall (all 8 Codex accounts usage-walled). One convert to codex/gpt-6-astra was dispatched and never posted; the next three candidate sources dispatched nothing because every allowed Codex rank was account-walled. See dbSummary for the recorded attempts.",
+            "counted": "A measured capacity wall is not a pass. The row was re-run as Round H after the wall cleared.",
+            "dbSummary": {
+              "state": "awaiting_responder",
+              "createdAt": "2026-10-27T23:48:40.930026-04:00",
+              "closedAt": null,
+              "attempts": [
+                {
+                  "at": "2026-10-28T03:49:59.138Z",
+                  "operation": "convert",
+                  "agent": "codex",
+                  "model": "gpt-6-astra",
+                  "sourceOwnerId": "su-c6cc0753-b651-4ffb-976b-2a42242d1209",
+                  "answeringOwnerId": "su-250d71e8-6800-43ca-a120-19c414fdc739",
+                  "transcriptAdvSession": 53488,
+                  "detail": "convert of su-c6cc0753-b651-4ffb-976b-2a42242d1209 \u2192 codex/gpt-6-astra as su-250d71e8-6800-43ca-a120-19c414fdc739: live host registered after 1ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-250d71e8-6800-898352-1793159366351.log). First reply not written 20003ms after kickoff, so it was not checked for a provider rejection yet; the con",
+                  "posts": []
+                },
+                {
+                  "at": "2026-10-28T03:52:33.927Z",
+                  "operation": null,
+                  "agent": null,
+                  "model": null,
+                  "sourceOwnerId": "su-d286b3ad-c2ee-4183-9239-d197c4a90013",
+                  "answeringOwnerId": null,
+                  "transcriptAdvSession": null,
+                  "detail": "every allowed expert model was exhausted for su-d286b3ad-c2ee-4183-9239-d197c4a90013 (3 rank(s) tried): #3 codex/sol account-walled; #4 codex/gpt-6-astra account-walled; #5 codex/gpt-6.1-sol account-walled",
+                  "posts": []
+                },
+                {
+                  "at": "2026-10-28T03:52:34.179Z",
+                  "operation": null,
+                  "agent": null,
+                  "model": null,
+                  "sourceOwnerId": "su-d88e29d2-9f01-4dae-ae48-8ecbd686110b",
+                  "answeringOwnerId": null,
+                  "transcriptAdvSession": null,
+                  "detail": "every allowed expert model was exhausted for su-d88e29d2-9f01-4dae-ae48-8ecbd686110b (3 rank(s) tried): #3 codex/sol account-walled; #4 codex/gpt-6-astra account-walled; #5 codex/gpt-6.1-sol account-walled",
+                  "posts": []
+                },
+                {
+                  "at": "2026-10-28T03:52:34.602Z",
+                  "operation": null,
+                  "agent": null,
+                  "model": null,
+                  "sourceOwnerId": "su-d3ab4703-05c2-43ef-910c-5295d172baff",
+                  "answeringOwnerId": null,
+                  "transcriptAdvSession": null,
+                  "detail": "every allowed expert model was exhausted for su-d3ab4703-05c2-43ef-910c-5295d172baff (3 rank(s) tried): #3 codex/sol account-walled; #4 codex/gpt-6-astra account-walled; #5 codex/gpt-6.1-sol account-walled",
+                  "posts": []
+                }
+              ],
+              "posts": []
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "eightThreadReview": {
+    "retainedIn": "binding 71412 / test-run 22258824",
+    "artifact": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-26.json",
+    "deterministicReview": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json qualityReview",
+    "disclosure": "The deterministic review (window 2026-10-03T05:21:32.561Z to 2026-10-05T20:27:24Z) has 4 eligible threads against a target of 8 (shortfall 4); 2 of its 4 requester decisions are recorded and 2 are unknown. Per R-6 this shortfall and these unknowns are disclosed and are not scored healthy."
+  },
+  "priorTrialPartition": {
+    "rule": "R-6: preserve failures inside checked; a measured capacity wall is unavailable and never passes.",
+    "avoidableFailures": [
+      {
+        "round": "B",
+        "build": "a876f44cc1",
+        "window": "2026-10-27T05:42Z-06:01Z",
+        "conversationId": "conv-request-7488592ca5bc8f972996b6a08703c1c6ff927fce98fdb9618e32b83d6053c2d9",
+        "classification": "avoidable-failure",
+        "reason": "Codex live source su-12da384f converted to codex/sol as su-d65f6bc1; the target was routed to a free-plan account while paid accounts were usage-walled and its first model call was rejected (model_not_found for gpt-5.6-sol). The dispatch attempt read \"First reply not written 20003ms after kickoff, so it was not checked for a provider rejection\"; nothing re-judged it, and the consult sat awaiting_responder for 18 minutes until the requester closed it cant_help.",
+        "defect": "EI-27111739698817170",
+        "fix": {
+          "commit": "86c0d67fd5",
+          "change": "consult expiry sweep re-judges dispatched attempts whose first turn was never judged, using the same first-turn classifier, and fails the attempt and advances the cascade on a terminal rejection (packages/operator-core/lib/consult/consult-expiry-core.ts, consult-dispatch.ts)",
+          "regressionTests": [
+            "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "packages/operator-core/lib/consult/consult-expiry-core.integration.test.ts",
+            "packages/operator-core/lib/consult/consult-expiry-action.test.ts"
+          ],
+          "mutationProbe": "test_runs:22412098 (sweep re-judge rejected branch disabled: caught)"
+        },
+        "counted": "This avoidable failure occurred on a build without the fix. Rounds G/H ran on builds that contain it.",
+        "dbSummary": {
+          "state": "closed_cant_help",
+          "createdAt": "2026-10-27T01:42:53.077405-04:00",
+          "closedAt": "2026-10-27T02:00:50.656-04:00",
+          "attempts": [
+            {
+              "at": "2026-10-27T05:43:45.612Z",
+              "operation": "convert",
+              "agent": "codex",
+              "model": "sol",
+              "sourceOwnerId": "su-12da384f-8b83-4dd0-8884-cd15f2cd6231",
+              "answeringOwnerId": "su-d65f6bc1-198f-40a3-a1d8-fdf2c2e1d949",
+              "transcriptAdvSession": null,
+              "detail": "convert of su-12da384f-8b83-4dd0-8884-cd15f2cd6231 \u2192 codex/sol as su-d65f6bc1-198f-40a3-a1d8-fdf2c2e1d949: live host registered after 1ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-d65f6bc1-198f-2482210-1793079781164.log). First reply not written 20003ms after kickoff, so it was not checked for a provider rejection.",
+              "posts": []
+            }
+          ],
+          "posts": [
+            {
+              "id": 1207830,
+              "author": "su-2fde89b1-645a-4d95-832b-2ad86e206ca1",
+              "len": 313
+            }
+          ]
+        },
+        "cell": "codex-live-to-codex-session-port"
+      }
+    ],
+    "measuredCapacityWalls": [
+      {
+        "round": "F",
+        "build": "40d2cc3229",
+        "window": "2026-10-28T03:48Z-04:30Z",
+        "conversationId": "conv-request-c8b8facd627dc32e90e5b13d046b300b462720b81e898ed667073a80a146d34c",
+        "classification": "measured-capacity-wall",
+        "reason": "Ran during the Codex usage wall (all 8 Codex accounts usage-walled). One convert to codex/gpt-6-astra was dispatched and never posted; the next three candidate sources dispatched nothing because every allowed Codex rank was account-walled. See dbSummary for the recorded attempts.",
+        "counted": "A measured capacity wall is not a pass. The row was re-run as Round H after the wall cleared.",
+        "dbSummary": {
+          "state": "awaiting_responder",
+          "createdAt": "2026-10-27T23:48:40.930026-04:00",
+          "closedAt": null,
+          "attempts": [
+            {
+              "at": "2026-10-28T03:49:59.138Z",
+              "operation": "convert",
+              "agent": "codex",
+              "model": "gpt-6-astra",
+              "sourceOwnerId": "su-c6cc0753-b651-4ffb-976b-2a42242d1209",
+              "answeringOwnerId": "su-250d71e8-6800-43ca-a120-19c414fdc739",
+              "transcriptAdvSession": 53488,
+              "detail": "convert of su-c6cc0753-b651-4ffb-976b-2a42242d1209 \u2192 codex/gpt-6-astra as su-250d71e8-6800-43ca-a120-19c414fdc739: live host registered after 1ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-250d71e8-6800-898352-1793159366351.log). First reply not written 20003ms after kickoff, so it was not checked for a provider rejection yet; the con",
+              "posts": []
+            },
+            {
+              "at": "2026-10-28T03:52:33.927Z",
+              "operation": null,
+              "agent": null,
+              "model": null,
+              "sourceOwnerId": "su-d286b3ad-c2ee-4183-9239-d197c4a90013",
+              "answeringOwnerId": null,
+              "transcriptAdvSession": null,
+              "detail": "every allowed expert model was exhausted for su-d286b3ad-c2ee-4183-9239-d197c4a90013 (3 rank(s) tried): #3 codex/sol account-walled; #4 codex/gpt-6-astra account-walled; #5 codex/gpt-6.1-sol account-walled",
+              "posts": []
+            },
+            {
+              "at": "2026-10-28T03:52:34.179Z",
+              "operation": null,
+              "agent": null,
+              "model": null,
+              "sourceOwnerId": "su-d88e29d2-9f01-4dae-ae48-8ecbd686110b",
+              "answeringOwnerId": null,
+              "transcriptAdvSession": null,
+              "detail": "every allowed expert model was exhausted for su-d88e29d2-9f01-4dae-ae48-8ecbd686110b (3 rank(s) tried): #3 codex/sol account-walled; #4 codex/gpt-6-astra account-walled; #5 codex/gpt-6.1-sol account-walled",
+              "posts": []
+            },
+            {
+              "at": "2026-10-28T03:52:34.602Z",
+              "operation": null,
+              "agent": null,
+              "model": null,
+              "sourceOwnerId": "su-d3ab4703-05c2-43ef-910c-5295d172baff",
+              "answeringOwnerId": null,
+              "transcriptAdvSession": null,
+              "detail": "every allowed expert model was exhausted for su-d3ab4703-05c2-43ef-910c-5295d172baff (3 rank(s) tried): #3 codex/sol account-walled; #4 codex/gpt-6-astra account-walled; #5 codex/gpt-6.1-sol account-walled",
+              "posts": []
+            }
+          ],
+          "posts": []
+        },
+        "cell": "codex-live-to-codex-session-port"
+      },
+      {
+        "round": "B",
+        "build": "a876f44cc1",
+        "window": "2026-10-27T05:42Z-06:01Z",
+        "conversationId": "conv-request-ad5b23e3616c190b712706ad81f99b323817ac5059a51fe2cb96ace6d52af8a9",
+        "classification": "measured-capacity-wall",
+        "reason": "Claude ended source su-3ad5b251 to Codex: every allowed Codex rank (codex/sol, codex/gpt-6-astra, codex/gpt-6.1-sol) launch-failed for two candidate sources because no Codex account served the model while the paid pool was usage-walled; the dispatcher recorded each launch failure and walked the cascade, so no request was left stranded. Closed cant_help.",
+        "counted": "A measured capacity wall is not a pass. The row was re-run after the wall cleared.",
+        "dbSummary": {
+          "state": "closed_cant_help",
+          "createdAt": "2026-10-27T01:52:32.478012-04:00",
+          "closedAt": "2026-10-27T02:00:50.811-04:00",
+          "attempts": [
+            {
+              "at": "2026-10-27T05:52:58.394Z",
+              "operation": null,
+              "agent": null,
+              "model": null,
+              "sourceOwnerId": "su-3ad5b251-04d1-47ff-ad97-a7ca58524d67",
+              "answeringOwnerId": null,
+              "transcriptAdvSession": null,
+              "detail": "every allowed expert model was exhausted for su-3ad5b251-04d1-47ff-ad97-a7ca58524d67 (3 rank(s) tried): #3 codex/sol launch-failed; #4 codex/gpt-6-astra launch-failed; #5 codex/gpt-6.1-sol launch-failed",
+              "posts": []
+            },
+            {
+              "at": "2026-10-27T05:58:04.393Z",
+              "operation": null,
+              "agent": null,
+              "model": null,
+              "sourceOwnerId": "su-3633bdcb-453b-4177-a7fc-dfa2ed6c8ff9",
+              "answeringOwnerId": null,
+              "transcriptAdvSession": null,
+              "detail": "every allowed expert model was exhausted for su-3633bdcb-453b-4177-a7fc-dfa2ed6c8ff9 (3 rank(s) tried): #3 codex/sol launch-failed; #4 codex/gpt-6-astra launch-failed; #5 codex/gpt-6.1-sol launch-failed",
+              "posts": []
+            },
+            {
+              "at": "2026-10-27T06:00:53.289Z",
+              "operation": null,
+              "agent": null,
+              "model": null,
+              "sourceOwnerId": "su-3c2fe9d8-28c1-4f97-bffd-297fa9ee6223",
+              "answeringOwnerId": null,
+              "transcriptAdvSession": null,
+              "detail": "consult conv-request-ad5b23e3616c190b712706ad81f99b323817ac5059a51fe2cb96ace6d52af8a9 is no longer open; skipped codex/gpt-6.1-sol before spawn",
+              "posts": []
+            }
+          ],
+          "posts": [
+            {
+              "id": 1207831,
+              "author": "su-2fde89b1-645a-4d95-832b-2ad86e206ca1",
+              "len": 271
+            }
+          ]
+        },
+        "cell": "claude-ended-to-codex-conversion"
+      },
+      {
+        "round": "F",
+        "build": "40d2cc3229",
+        "window": "2026-10-28T03:48Z-06:49Z",
+        "conversationId": "conv-request-82027ba63cbb37dc33544ed4c5b176079713396835be997361c44bbad01d5055",
+        "classification": "measured-capacity-wall",
+        "reason": "Ran during the Codex usage wall. Rank 3 codex/sol was skipped as account-walled; rank 4 codex/gpt-6-astra converted to su-efeb23db, whose Codex CLI exhausted its retries on 429 Too Many Requests and shut down without posting. The consult then stayed awaiting_responder with no re-walk.",
+        "defect": "EI-27204901167458428",
+        "counted": "A measured capacity wall is not a pass. The stranded request is a filed defect, not hidden.",
+        "dbSummary": {
+          "state": "awaiting_responder",
+          "createdAt": "2026-10-27T23:48:40.934289-04:00",
+          "closedAt": null,
+          "attempts": [
+            {
+              "at": "2026-10-28T03:49:32.004Z",
+              "operation": "convert",
+              "agent": "codex",
+              "model": "gpt-6-astra",
+              "sourceOwnerId": "su-e647f512-9f13-4f11-8e0f-a0b9624f37bc",
+              "answeringOwnerId": "su-efeb23db-a203-4d3a-8775-f771c8018813",
+              "transcriptAdvSession": 53487,
+              "detail": "convert of su-e647f512-9f13-4f11-8e0f-a0b9624f37bc \u2192 codex/gpt-6-astra as su-efeb23db-a203-4d3a-8775-f771c8018813: live host registered after 3ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-efeb23db-a203-898352-1793159339150.log). First reply not written 20018ms after kickoff, so it was not checked for a provider rejection yet; the con",
+              "posts": []
+            }
+          ],
+          "posts": []
+        },
+        "cell": "claude-ended-to-codex-conversion"
+      }
+    ],
+    "cellMechanismMismatches": [
+      {
+        "round": "F",
+        "build": "40d2cc3229",
+        "window": "2026-10-28T03:48Z-03:53Z",
+        "conversationId": "conv-request-2bb15309afa5b3fcb6a05ca0441c2b13ac549952fa046ef542ae7d7ac34a2057",
+        "classification": "cell-mechanism-mismatch",
+        "reason": "The routed Claude source su-fe8c2627 was historical: its native session id had rotated after a cold /clear, so planDispatchOperation (packages/operator-core/lib/consult/consult-dispatch.ts) correctly chose convert, not fork, which forks only for claude->claude with a non-historical source. The converted session su-af0a4f0c answered (post 1208572), but a convert does not exercise the fork cell, so the row was re-run as Round G with a question routed to a non-historical ended source.",
+        "counted": "Not counted for the fork cell; the answer it produced is real and is not presented as a failure of routing.",
+        "dbSummary": {
+          "state": "active",
+          "createdAt": "2026-10-27T23:48:40.928006-04:00",
+          "closedAt": null,
+          "attempts": [
+            {
+              "at": "2026-10-28T03:49:21.546Z",
+              "operation": "convert",
+              "agent": "claude",
+              "model": "fable",
+              "sourceOwnerId": "su-fe8c2627-224e-4bcc-89b8-8ff352250cb1",
+              "answeringOwnerId": "su-af0a4f0c-02b2-4eb6-8984-04413fe44a5f",
+              "transcriptAdvSession": null,
+              "detail": "convert of su-fe8c2627-224e-4bcc-89b8-8ff352250cb1 \u2192 claude/fable as su-af0a4f0c-02b2-4eb6-8984-04413fe44a5f: live host registered after 98ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-af0a4f0c-02b2-898352-1793159339148.log).",
+              "posts": [
+                {
+                  "id": 1208572,
+                  "len": 5736,
+                  "kind": "reply"
+                }
+              ]
+            }
+          ],
+          "posts": [
+            {
+              "id": 1208572,
+              "author": "su-af0a4f0c-02b2-4eb6-8984-04413fe44a5f",
+              "len": 5736
+            }
+          ]
+        },
+        "cell": "claude-ended-to-claude-fork"
+      }
+    ],
+    "currentBuildRound": "Round G (cell 1) and Round H (cells 2 and 3); claude-ended-to-claude-fork on 40d2cc3229, claude-ended-to-codex-conversion on 06332a9467, codex-live-to-codex-session-port on 96cbf1656f; each build contains fix commit 86c0d67fd5."
+  },
+  "details": {
+    "residue": [
+      "Round G cell 1 ran on staging build 40d2cc3229 (2026-10-28T03:53:57Z); Round H cells 2 and 3 ran on 06332a9467 and 96cbf1656f. Every launch gated on the served build carrying the same blobs as staging for apps/operator/scripts/psu-launcher.mjs (682b1fa418) and packages/operator-core/lib/consult/consult-dispatch.ts (r6h-launch.sh --check).",
+      "Round H cell 2 walked the cascade three times, every step a rank-3 codex/sol conversion of a Claude ended source. Attempt 1 at 06:49:56Z: su-8cec8a78 converted through port e66dfad2-7018-4c02-b99a-1d63293339cc (delivered 06:49:36Z) to su-0764b80b, which called consult:decline with a grounded reason (post 1208714, 548 chars: its source transcript held no evidence on mutation-probe.sh containment). Attempt 2 at 06:51:14Z: su-ffacf48e converted through port c46b4cdb-db83-4a2c-b390-e76323b77544 (delivered 06:50:54Z) to su-20ab7bb5, which called consult:reply (post 1208718, 1900 chars). The cascade then dispatched the next expert with the feedback so far (cascade_digest kinds decline, answer, answer). Attempt 3 at 06:52:09Z: su-2f1f6a3b converted through port ef35fe33-26c2-433c-a480-6150532ad50a (delivered 06:51:49Z) to su-bf9360ef, which replied (post 1208722, 2958 chars) and closed the consult answered at 06:54:03Z (post 1208726, cascade_cursor 2). The cell is judged on attempt 3, the closing answer; attempt 2's answer is recorded in the cell's attempt timeline.",
+      "Round F cell 2 (conv-request-82027ba63cbb37dc33544ed4c5b176079713396835be997361c44bbad01d5055, build 40d2cc3229, 03:49Z, during the Codex usage wall): rank 3 codex/sol was skipped as account-walled and rank 4 codex/gpt-6-astra converted to su-efeb23db, whose Codex CLI exhausted retries on 429 Too Many Requests and shut down without posting. The consult then sat awaiting_responder with no re-walk (bug EI-27204901167458428). This was a measured capacity wall, not a pass."
+    ]
+  }
+}

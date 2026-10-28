@@ -1,4 +1,5 @@
 /** Behavioral guard for frozen operator-source survivor cleanup. */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -54,7 +55,7 @@ function runCwdReaper(sourceRoot: string, childToken: string, reaperToken: strin
     encoding: "utf8",
     timeout: 25_000,
     env: {
-      ...process.env,
+      ...hermeticSpawnEnv(),
       TEST_SOURCE: sourceRoot,
       TEST_READY: ready,
       TEST_CHILD_TOKEN: childToken,
@@ -94,7 +95,7 @@ function generateStopScript(root: string, sourceRoot: string, sourceWork: string
     encoding: "utf8",
     timeout: 8000,
     env: {
-      ...process.env,
+      ...hermeticSpawnEnv(),
       TEST_WORK: work,
       TEST_PROVENANCE: token,
       TEST_SOURCE: sourceRoot,
@@ -115,7 +116,7 @@ describe("verify-tauri-headless frozen-source survivor reaper", () => {
         'reap_frozen_source_survivors "$TEST_SOURCE" this-run',
       ].join("\n")], {
         encoding: "utf8", timeout: 8000,
-        env: { ...process.env, TEST_SOURCE: fixture.sourceRoot },
+        env: { ...hermeticSpawnEnv(), TEST_SOURCE: fixture.sourceRoot },
       });
       expect(result.status, result.stderr).toBe(1);
       expect(result.stderr).toContain("cannot census frozen operator source");
@@ -142,7 +143,7 @@ describe("verify-tauri-headless frozen-source survivor reaper", () => {
     ].join('\n');
     const result = spawnSync('bash', ['-c', script], {
       encoding: 'utf8', timeout: 12_000,
-      env: { ...process.env, PAPERCUSP_TAURI_LAUNCH_PROVENANCE: 'this-run' },
+      env: { ...hermeticSpawnEnv(), PAPERCUSP_TAURI_LAUNCH_PROVENANCE: 'this-run' },
     });
     expect(result.stderr).toContain('EXIT_DURING_OWNERSHIP');
     expect(result.status, result.stderr).toBe(0);
@@ -169,7 +170,7 @@ describe("verify-tauri-headless frozen-source survivor reaper", () => {
     try {
       const result = spawnSync('bash', ['-c', script], {
         encoding: 'utf8', timeout: 12_000,
-        env: { ...process.env, TEST_READY: ready, PAPERCUSP_TAURI_LAUNCH_PROVENANCE: 'this-run' },
+        env: { ...hermeticSpawnEnv(), TEST_READY: ready, PAPERCUSP_TAURI_LAUNCH_PROVENANCE: 'this-run' },
       });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stderr).not.toContain('UNEXPECTED_SIGNAL');
@@ -203,7 +204,7 @@ describe("verify-tauri-headless frozen-source survivor reaper", () => {
     try {
       const result = spawnSync('bash', ['-c', script], {
         encoding: 'utf8', timeout: 12_000,
-        env: { ...process.env, PAPERCUSP_TAURI_LAUNCH_PROVENANCE: ownership === 'owned' ? 'this-run' : 'another-run' },
+        env: { ...hermeticSpawnEnv(), PAPERCUSP_TAURI_LAUNCH_PROVENANCE: ownership === 'owned' ? 'this-run' : 'another-run' },
       });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain(`STOP_STATUS=${preserved ? 1 : 0} CHILD_STATE=${preserved ? 'alive' : 'exited'}`);
@@ -229,7 +230,7 @@ describe("verify-tauri-headless frozen-source survivor reaper", () => {
     ].join('\n');
     const result = spawnSync('bash', ['-c', script], {
       encoding: 'utf8', timeout: 12_000,
-      env: { ...process.env, PAPERCUSP_TAURI_LAUNCH_PROVENANCE: 'this-run' },
+      env: { ...hermeticSpawnEnv(), PAPERCUSP_TAURI_LAUNCH_PROVENANCE: 'this-run' },
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain(`STOP_STATUS=${refuseSignals ? 1 : 0} CHILD_STATE=${refuseSignals ? 'alive' : 'exited'}`);
@@ -289,7 +290,7 @@ describe("verify-tauri-headless frozen-source survivor reaper", () => {
         encoding: "utf8",
         timeout: 25_000,
         env: {
-          ...process.env,
+          ...hermeticSpawnEnv(),
           TEST_SOURCE: fixture.sourceRoot,
           TEST_MAPPED_FILE: mappedFile,
           TEST_READY: ready,
@@ -346,7 +347,7 @@ describe("verify-tauri-headless frozen-source survivor reaper", () => {
         encoding: "utf8",
         timeout: 25_000,
         env: {
-          ...process.env,
+          ...hermeticSpawnEnv(),
           TEST_CHILD_TOKEN: ownership === "run" ? token : `${token}-other`,
           TEST_BUSY_ROOT: busyRoot,
           TEST_READY: ready,
@@ -398,7 +399,7 @@ describe("verify-tauri-headless frozen-source survivor reaper", () => {
         encoding: "utf8",
         timeout: 25_000,
         env: {
-          ...process.env,
+          ...hermeticSpawnEnv(),
           TEST_TOKEN: token,
           TEST_SOURCE: sourceRoot,
           TEST_SOURCE_WORK: sourceWork,

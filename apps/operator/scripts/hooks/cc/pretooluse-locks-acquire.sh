@@ -79,6 +79,7 @@ from mcp_response import (prepare_lock_operation, write_lock_operation,
                           lock_operation_arguments, settle_lock_operation, with_native_session)
 from mcp_response import (origin_operation_protocol_qualified,  # noqa: E402
                           forget_origin_operation_protocol, retire_inert_lock_operation)
+from mcp_response import (extract_nested_codex_apply_patches, codex_apply_patch_paths)
 raw = read_hook_payload()
 token = read_token_file(token_path)
 
@@ -325,6 +326,20 @@ elif tool_name == 'apply_patch':
     for m in re.finditer(r'^\*\*\* Move to: (.+)$',
                          patch_text(tool_input), re.MULTILINE):
         raw_paths.append(m.group(1).strip())
+elif tool_name in ('exec', 'functions.exec', 'functions__exec'):
+    nested = extract_nested_codex_apply_patches(tool_name, tool_input)
+    if not isinstance(nested, dict) or nested.get('found') is not True:
+        allow()  # Ordinary exec calls do not edit through the native patch tool.
+    if nested.get('complete') is not True:
+        deny('file-lock refused: nested Codex apply_patch paths are not statically known; pass a literal patch string or call apply_patch directly.')
+    patches = nested.get('patches')
+    if not isinstance(patches, list) or not patches:
+        deny('file-lock refused: nested Codex apply_patch did not expose a complete patch.')
+    for patch in patches:
+        raw_paths.extend(codex_apply_patch_paths(patch))
+    raw_paths = list(dict.fromkeys(raw_paths))
+    if not raw_paths:
+        deny('file-lock refused: nested Codex apply_patch has no lockable file paths.')
 elif tool_name in ('write_file', 'edit_file'):
     p = tool_input.get('path') or tool_input.get('file_path') \
         if isinstance(tool_input, dict) else None

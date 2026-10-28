@@ -233,6 +233,14 @@ export async function readStragglerSnapshot(sql: Sql, workspaceId: string): Prom
   return { targets, queried, nowText };
 }
 
+/**
+ * The scorer grades in rubric terms (healthy / broken / unknown); the rescore ledger records
+ * pass / fail / unknown. Map explicitly so a scorer verdict never leaks into the ledger shape.
+ */
+export function stragglerRescoreVerdict(verdict: StragglerScore['verdict']): 'pass' | 'fail' | 'unknown' {
+  return verdict === 'healthy' ? 'pass' : verdict === 'broken' ? 'fail' : 'unknown';
+}
+
 /** Rubric-instrument rescore adapter for {@link STRAGGLER_DISPOSITIONS_INSTRUMENT_KEY}. */
 export function codeIntelStragglerDispositionsRescore() {
   return {
@@ -245,7 +253,7 @@ export function codeIntelStragglerDispositionsRescore() {
         const { getOrgPg } = await import('@papercusp/db-org');
         const sql = getOrgPg().sql as unknown as Sql;
         const score = scoreStragglerDispositions(await readStragglerSnapshot(sql, window.workspaceId));
-        return { verdict: score.verdict, detail: summarizeStragglerScore(score), value: score.disposed };
+        return { verdict: stragglerRescoreVerdict(score.verdict), detail: summarizeStragglerScore(score), value: score.disposed };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { verdict: 'unknown' as const, detail: `straggler read failed (${msg.slice(0, 200)})` };

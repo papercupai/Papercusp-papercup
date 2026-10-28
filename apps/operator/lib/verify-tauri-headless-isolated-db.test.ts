@@ -24,6 +24,7 @@
  * asserted at the wiring site, not by actually running it (same rationale as
  * verify-tauri-headless-spa-isolation.test.ts / tty-title-target.test.ts).
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -93,7 +94,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
         'mkdir -p "$ISOLATED_HOME"',
         'prepare_isolated_bearer',
       ].join('\n'), 'probe', isolatedHome], {
-        encoding: 'utf8', env: { ...process.env, HOME: realHome },
+        encoding: 'utf8', env: { ...hermeticSpawnEnv(), HOME: realHome },
       });
       expect(result.status, result.stderr).toBe(0);
       const isolatedToken = join(isolatedHome, 'superuser-token');
@@ -144,7 +145,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
         'verify_isolated_storage_sentinel',
       ].join('\n')], {
         encoding: 'utf8', timeout: 5000,
-        env: { ...process.env, VH_RUN_DIR: '', FIXTURE_ROOT: work,
+        env: { ...hermeticSpawnEnv(), VH_RUN_DIR: '', FIXTURE_ROOT: work,
           VERIFY_TAURI_AGENT_TOOLS_BIN: tools, FIXTURE_STDOUT: stdout,
           FIXTURE_STDERR: stderr, FIXTURE_PROBE_EXIT: String(probeExit) },
       });
@@ -175,7 +176,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
         'printf "%s %s %s" "$ec" "$step" "$artifacts_retained"',
       ].join('\n')], {
         encoding: 'utf8', timeout: 5000,
-        env: { ...process.env, FIXTURE_ROOT: work, FIXTURE_INITIAL_EXIT: String(initialExit) },
+        env: { ...hermeticSpawnEnv(), FIXTURE_ROOT: work, FIXTURE_INITIAL_EXIT: String(initialExit) },
       });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toBe(`1 ${initialExit ? 'isolated-webview-storage' : 'generated-stop-script'} 0`);
@@ -205,7 +206,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
         'eval "$ISOLATED_ENV_LINE node \\"$WORK/probe.cjs\\""',
       ].join('\n');
       const result = spawnSync('bash', ['-c', script, 'probe', work], {
-        encoding: 'utf8', env: { ...process.env, PAPERCUSP_WORKSPACE_ID: 'live-owner', PAPERCUSP_WORKSPACE: 'live-owner', PAPERCUSP_WORKSPACES_ROOT: '/do-not-touch-live-registry', PAPERCUSP_OPERATOR_BASE: 'http://127.0.0.1:3070', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070' },
+        encoding: 'utf8', env: { ...hermeticSpawnEnv(), PAPERCUSP_WORKSPACE_ID: 'live-owner', PAPERCUSP_WORKSPACE: 'live-owner', PAPERCUSP_WORKSPACES_ROOT: '/do-not-touch-live-registry', PAPERCUSP_OPERATOR_BASE: 'http://127.0.0.1:3070', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070' },
       });
       expect(result.status, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({ id: 'verify-tauri-isolated-test', legacy: 'verify-tauri-isolated-test', root: join(work, 'workspaces'), codexHomes: join(work, 'su-codex-homes'), ghConfig: join(work, 'gh-config'), operatorBase: 'http://127.0.0.1:33799', operatorUrl: 'http://127.0.0.1:33799' });
@@ -267,7 +268,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
         ].join('\n');
         const result = await promisify(execFile)('bash', ['-c', script], {
           cwd: resolve(__dirname, '../../..'), encoding: 'utf8', timeout: 30_000,
-          env: { ...process.env, PAPERCUSP_PSU_PTY_DIR: live.psuPtyDir,
+          env: { ...hermeticSpawnEnv(), PAPERCUSP_PSU_PTY_DIR: live.psuPtyDir,
             FIXTURE_OWNER: owner, FIXTURE_ROOT: isolatedRoot, FIXTURE_NODE: process.execPath, FIXTURE_PROBE: probe },
         });
         return JSON.parse(result.stdout.trim());
@@ -311,7 +312,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
         'TAURI_CONFIG="{}"; LAUNCH_PREFIX=()', writer, 'bash "$WORK/launch.sh"',
       ].join('\n');
       const result = spawnSync('bash', ['-c', script, 'test', work], {
-        encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+        encoding: 'utf8', env: { ...hermeticSpawnEnv(), PATH: `${bin}:${process.env.PATH}` },
       });
       expect(result.status, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({ base: 'http://127.0.0.1:33801', url: 'http://127.0.0.1:33801', port: '33801' });
@@ -400,7 +401,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     const helper = src.match(/find_pid_by_env\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
     expect(helper).toBeTruthy();
     const marker = `verifier-pid-selector-${process.pid}-${Date.now()}`;
-    const env = { ...process.env, VERIFY_TAURI_PID_SELECTOR: marker };
+    const env = { ...hermeticSpawnEnv(), VERIFY_TAURI_PID_SELECTOR: marker };
     const first = spawn('sleep', ['30'], { env, stdio: 'ignore' });
     const second = spawn('sleep', ['30'], { env, stdio: 'ignore' });
     const waitForSpawn = (child: ReturnType<typeof spawn>) => new Promise<void>((resolveSpawn, rejectSpawn) => {
@@ -420,7 +421,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
       ].join('\n');
       const result = spawnSync('bash', ['-c', script], {
         encoding: 'utf8',
-        env: { ...process.env, FAKE_PID_1: String(first.pid), FAKE_PID_2: String(second.pid), MATCH_VALUE: marker },
+        env: { ...hermeticSpawnEnv(), FAKE_PID_1: String(first.pid), FAKE_PID_2: String(second.pid), MATCH_VALUE: marker },
       });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stderr).toBe('');

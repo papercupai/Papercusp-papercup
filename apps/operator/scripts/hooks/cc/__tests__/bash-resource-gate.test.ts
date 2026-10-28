@@ -5337,6 +5337,35 @@ describe('read-only tree references do not trip the write guard (EI-188983659953
     );
   });
 
+  it('allows read-only Python Path references to repo files alongside a /tmp write', () => {
+    const command = [
+      'python3 - <<\'PY\'',
+      'from pathlib import Path',
+      "Path('apps/operator/scripts/hooks/cc/pretooluse-bash-resource-gate.sh').read_bytes()",
+      "Path('apps/operator/scripts/hooks/cc/__tests__/bash-resource-gate.test.ts').read_bytes()",
+      "Path('packages/operator-core/lib/code-intelligence/reuse-source-population.ts').stat()",
+      "Path('packages/operator-core/lib/session-port/cleanup.ts').read_bytes()",
+      "Path('/tmp/ei-26745732189410562-readonly-source-probe.json').write_text('{}')",
+      'PY',
+    ].join('\n');
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('still denies an in-tree Path target held in a variable when sibling Path references are read-only', () => {
+    const command = [
+      'python3 - <<\'PY\'',
+      'from pathlib import Path',
+      "Path('packages/operator-core/lib/code-intelligence/reuse-source-population.ts').read_bytes()",
+      "target = Path('apps/operator/generated.ts')",
+      "target.write_text('x')",
+      "Path('/tmp/ei-26745732189410562-readonly-source-probe.json').write_text('{}')",
+      'PY',
+    ].join('\n');
+    const reason = denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('EI-18691482279179647');
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+
   // The guard must still catch the thing it exists for: the SAME shape, but with
   // the write itself aimed into the tree. Without this, the two allows above could
   // be satisfied by a guard that had simply stopped working.

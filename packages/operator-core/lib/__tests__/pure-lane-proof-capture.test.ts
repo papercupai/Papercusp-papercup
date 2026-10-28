@@ -87,7 +87,7 @@ describe('orderCaptureCandidates', () => {
     expect(r.excluded).toEqual({ failed: 1, proven: 0 });
   });
 
-  it('orders ran-and-passed first, then unproven, then refresh oldest-first; by path within a tier', () => {
+  it('orders ran-and-passed first, then unproven, then refresh oldest-first; no proof before any proof within a tier', () => {
     const r = orderCaptureCandidates({
       ...base,
       laneFiles: ['z-ran.test.ts', 'a-ran.test.ts', 'm-none.test.ts', 'b-none.test.ts', 'r-new.test.ts', 'r-old.test.ts'],
@@ -107,6 +107,47 @@ describe('orderCaptureCandidates', () => {
       'r-new.test.ts',
     ]);
     expect(r.tiers).toEqual({ ranPassed: 2, unproven: 2, refresh: 2 });
+  });
+
+  it('WI-6554700010030941: orders ran-and-passed by proof staleness, not by path', () => {
+    const r = orderCaptureCandidates({
+      ...base,
+      laneFiles: ['a-fresh.test.ts', 'b-week.test.ts', 'c-none.test.ts', 'd-day.test.ts', 'e-nan.test.ts'],
+      passedInSuite: new Set(['a-fresh.test.ts', 'b-week.test.ts', 'c-none.test.ts', 'd-day.test.ts', 'e-nan.test.ts']),
+      proofs: new Map([
+        ['a-fresh.test.ts', proof(OLD, HOUR)],
+        ['b-week.test.ts', proof(OLD, 7 * 24 * HOUR)],
+        ['d-day.test.ts', proof(OLD, 24 * HOUR)],
+        ['e-nan.test.ts', { recordedSha: OLD, recordedAtMs: Number.NaN, runnerIdentity: RUNNER }],
+      ]),
+    });
+    // No usable proof, then an unreadable timestamp, then oldest-first.
+    expect(r.order).toEqual(['c-none.test.ts', 'e-nan.test.ts', 'b-week.test.ts', 'd-day.test.ts', 'a-fresh.test.ts']);
+    expect(r.tiers).toEqual({ ranPassed: 5, unproven: 0, refresh: 0 });
+  });
+
+  it('WI-6554700010030941: on a new repair-head sha the next run resumes where the last one stopped', () => {
+    // A frozen lineage: every run judges a NEW sha, so nothing is ever proven at it and every
+    // passing file lands in ranPassed. With path order, a budget of 2 files re-captured a,b forever.
+    const files = ['a.test.ts', 'b.test.ts', 'c.test.ts', 'd.test.ts', 'e.test.ts'];
+    const proofs = new Map(files.map((f) => [f, proof(OLD, 7 * 24 * HOUR)] as const));
+    const captured: string[] = [];
+    for (let run = 0; run < 3; run += 1) {
+      const runSha = `${run}`.repeat(40);
+      const r = orderCaptureCandidates({
+        ...base,
+        sha: runSha,
+        laneFiles: files,
+        passedInSuite: new Set(files),
+        proofs,
+      });
+      expect(r.excluded.proven).toBe(0);
+      const budget = r.order.slice(0, 2);
+      captured.push(...budget);
+      // Capture records each file's proof at this run's sha, newest of all.
+      budget.forEach((f, i) => proofs.set(f, { recordedSha: runSha, recordedAtMs: NOW + run * HOUR + i, runnerIdentity: RUNNER }));
+    }
+    expect(captured).toEqual(['a.test.ts', 'b.test.ts', 'c.test.ts', 'd.test.ts', 'e.test.ts', 'a.test.ts']);
   });
 
   it('treats a proof from another runner identity as no proof', () => {

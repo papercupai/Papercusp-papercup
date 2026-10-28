@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { userInfo } from 'node:os';
 import { ramTmpRoot } from '@papercusp/orchestrator';
 import { z } from 'zod';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -143,7 +144,10 @@ export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string
       taskId: row.taskId, browserSessionId: id, workspaceId: ctx.workspaceId,
     }), { flag: 'wx', mode: 0o600 });
     server = await browserStartupStage(ctx, 'chromium-launch', () => chromium.launchServer({ executablePath: wrapper, headless: true, host: '127.0.0.1', timeout: remaining(),
-      env: { ...scrubExecEnv(process.env), TMPDIR: root },
+      // A private HOME (no host browser profile) would otherwise give fontconfig a cold
+      // cache, which it rebuilds on EVERY launch (~6-11s vs ~0.2s warm — WI-6554700010030904).
+      // Pin a dedicated, persistent, cache-only dir under the real account home instead.
+      env: { ...scrubExecEnv(process.env), TMPDIR: root, XDG_CACHE_HOME: join(userInfo().homedir, '.cache', 'papercusp-browser-session') },
       args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--disable-features=WebTransport', '--enable-logging=stderr'] }));
     const child = server.process();
     const spawned = markSpawned(row.taskId, { pid: child.pid, processIdentity: child.pid ? readProcessIdentity(child.pid) : null,

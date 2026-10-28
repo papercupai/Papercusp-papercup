@@ -495,6 +495,62 @@ describe('dispatchConsultResponder — the fork leg', () => {
     expect(r).toMatchObject({ dispatched: true, operation: 'fork', answeringOwnerId: 'su-answer-1' });
   });
 
+  it('runs the kickoff callback after persisted native proof and before host verification', async () => {
+    const { deps, calls } = makeFakes();
+    const order: string[] = [];
+    const onKickoff = vi.fn(async (kickoffAt: string, answeringOwnerId: string) => {
+      order.push('kickoff');
+      expect(calls.spawn).toHaveLength(1);
+      expect(calls.verify).toHaveLength(0);
+      expect(kickoffAt).toBe(new Date(NOW_MS).toISOString());
+      expect(answeringOwnerId).toBe('su-answer-1');
+      return true;
+    });
+    deps.verifyResumeStarted = async (ownerId) => {
+      order.push('verify');
+      return { started: true, waitedMs: 1, expectedSessionId: null, actualSessionId: null, mismatch: false };
+    };
+
+    const result = await dispatchConsultResponder({ ...OPTS, onKickoff }, CTX, deps);
+
+    expect(onKickoff).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['kickoff', 'verify']);
+    expect(result).toMatchObject({ dispatched: true, answeringOwnerId: 'su-answer-1' });
+  });
+
+  it('stops a kicked-off child when its expiry refresh loses the selected-slot CAS', async () => {
+    const { deps, calls } = makeFakes();
+    const onKickoff = vi.fn(async () => false);
+
+    const result = await dispatchConsultResponder({ ...OPTS, onKickoff }, CTX, deps);
+
+    expect(onKickoff).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      dispatched: false,
+      answeringOwnerId: null,
+      attempts: [expect.objectContaining({ reason: 'kickoff-expiry-refresh-failed' })],
+    });
+    expect(calls.stopped).toEqual(['task-1']);
+    // The kickoff was persisted, so this is a real child stop, not the
+    // never-ran cleanup used for missing kickoff proof.
+    expect(calls.stoppedNeverRan).toEqual([null]);
+    expect(calls.verify).toHaveLength(0);
+  });
+
+  it('does not run the expiry callback when the native kickoff was not persisted', async () => {
+    const { deps, calls } = makeFakes(
+      { loadRanks: async () => [{ rank: 1, agent: 'claude', model: 'fable' }] },
+      { spawnStatuses: ['no-proof'] },
+    );
+    const onKickoff = vi.fn(async () => true);
+
+    const result = await dispatchConsultResponder({ ...OPTS, onKickoff }, CTX, deps);
+
+    expect(result).toMatchObject({ dispatched: false, attempts: [expect.objectContaining({ reason: 'kickoff-not-persisted' })] });
+    expect(onKickoff).not.toHaveBeenCalled();
+    expect(calls.stoppedNeverRan).toEqual([{ answeringOwnerId: 'su-answer-1' }]);
+  });
+
   it('publishes the fork responder before startup verification can admit a first reply', async () => {
     const { deps, calls } = makeFakes();
     const order: string[] = [];

@@ -12,6 +12,8 @@ const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
   publicBrief: false,
   metricItemsUnavailable: false as false | 'sync' | 'async',
+  captureMetricPlannerSetting: false,
+  metricSourceParallelTupleCost: null as string | null,
 }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -26,9 +28,14 @@ vi.mock('../../work-items', async (orig) => {
   const actual = await orig<typeof import('../../work-items')>();
   return {
     ...actual,
-    listAllWorkItemsForFileExport: (...args: Parameters<typeof actual.listAllWorkItemsForFileExport>) => {
+    listAllWorkItemsForFileExport: async (...args: Parameters<typeof actual.listAllWorkItemsForFileExport>) => {
       if (h.metricItemsUnavailable === 'sync') throw new Error('fixture item reader unavailable');
       if (h.metricItemsUnavailable === 'async') return Promise.reject(new Error('fixture item reader unavailable'));
+      if (h.captureMetricPlannerSetting && args[0]?.payloadProjection === 'fleetMetricsCensus' && args[1]) {
+        const [settings] = await args[1]<{ value: string }[]>`
+          SELECT current_setting('parallel_tuple_cost') AS value`;
+        h.metricSourceParallelTupleCost = settings?.value ?? null;
+      }
       return actual.listAllWorkItemsForFileExport(...args);
     },
   };
@@ -92,6 +99,8 @@ afterAll(async () => {
 beforeEach(async () => {
   h.publicBrief = false;
   h.metricItemsUnavailable = false;
+  h.captureMetricPlannerSetting = false;
+  h.metricSourceParallelTupleCost = null;
   await sql`TRUNCATE harness_shared.work_items,
                          harness_shared.coord_presence,
                          harness_shared.fleet_membership_events,
@@ -386,15 +395,42 @@ describe('default fleet reports over the real current-spec queue', () => {
     expect(await explainIssueClaimFloors(HARNESS, ids, opts)).toEqual(baseline);
   });
 
-  it('one public leader-brief call retains complete current-spec partitions and unknown counts through shaping', async () => {
-    await seedFleet();
+  it('one public leader-brief call with a bug-only current spec retains complete partitions and unknown counts through shaping', async () => {
+    await seedFleet('implementation', { all: [
+      { field: 'kind', op: '=', value: 'bug' },
+      { field: 'id', op: 'in', value: ids },
+    ] });
     await seedQueue();
     h.publicBrief = true;
+    h.captureMetricPlannerSetting = true;
+    const [parallelTupleCostBefore] = await sql`SELECT current_setting('parallel_tuple_cost') AS value`;
+    const metadata: Record<string, unknown>[] = [];
     const response = await (leaderBriefTool as unknown as {
       handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, any> }>;
-    }).handler({ fleet: FLEET, harness: HARNESS }, CTX);
+    }).handler({ fleet: FLEET, harness: HARNESS }, {
+      isSuperuser: true,
+      uiClientId: 'burn-down-integration',
+      workspaceId: 'default',
+      metadata: (value: Record<string, unknown>) => metadata.push(value),
+    } as never);
     expect(response.data.ok).toBe(true);
     expect(response.data.fleetMetrics.ok).toBe(true);
+    expect(h.metricSourceParallelTupleCost).toBe('0');
+    const [parallelTupleCostAfter] = await sql`SELECT current_setting('parallel_tuple_cost') AS value`;
+    expect(parallelTupleCostAfter?.value).toBe(parallelTupleCostBefore?.value);
+    const metricTiming = metadata.map(row => row.fleetMetricReadTiming)
+      .filter((value): value is Record<string, any> => Boolean(value)).at(-1);
+    expect(metricTiming).toMatchObject({
+      schemaVersion: 'fleet-metric-read-timing-v1',
+      fleet: FLEET,
+      harness: HARNESS,
+      phases: {
+        resolveFleetMetricScope: { status: 'completed' },
+        readFleetMetricSource: { status: 'completed' },
+        buildFleetMetricsResult: { status: 'completed' },
+      },
+    });
+    expect(metricTiming?.elapsedMs).toBeLessThan(5_000);
     const snapshot = response.data.fleetMetrics.snapshot;
     const floors = await explainIssueClaimFloors(HARNESS, ids, { includeAllFloors: true });
     expect(snapshot.remaining).toMatchObject({ total: 4, buckets: {

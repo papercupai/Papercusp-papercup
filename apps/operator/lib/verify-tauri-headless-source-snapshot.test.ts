@@ -7,6 +7,7 @@
  * protects the bundle served by the rig, but it cannot protect this wrapper's
  * own source. Pin the startup snapshot/re-exec contract on the real script.
  */
+import { hermeticSpawnEnv } from "./__tests__/hermetic-spawn-env";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -65,7 +66,7 @@ describe('EI-26928176238125992 — one admission for frozen SPA preparation', ()
         prepare, 'prepare_verifier_spa || exit $?',
         '[ "$VERIFIER_SPA_DIST" = "$WORK/verifier-spa/dist" ]',
       ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: {
-        ...process.env, TEST_ROOT: fixture, TEST_STATUS: String(status), WORK: resolve(fixture, 'work'),
+        ...hermeticSpawnEnv(), TEST_ROOT: fixture, TEST_STATUS: String(status), WORK: resolve(fixture, 'work'),
         VERIFY_TAURI_SOURCE_REF: 'selected-commit', VERIFY_TAURI_SOURCE_REPO_DIR: '/selected/source',
         PAPERCUSP_SHARED_SPA_DIST: '/private/candidate/spa',
       } });
@@ -127,7 +128,7 @@ describe('EI-26928176238125992 — one admission for frozen SPA preparation', ()
         'prepare_verifier_spa || exit $?',
         '[ "$VERIFIER_SPA_DIST" = "$EXPECTED_DIST" ]',
       ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: {
-        ...process.env, PATH: `${fixture}/bin:${process.env.PATH}`,
+        ...hermeticSpawnEnv(), PATH: `${fixture}/bin:${process.env.PATH}`,
         WORK: resolve(fixture, 'work'), REPO_DIR: resolve(fixture, 'donor'),
         OPERATOR_SOURCE_ROOT: frozen, VERIFY_TAURI_SOURCE_RECEIPT: receipt,
         VERIFY_TAURI_SOURCE_REF: 'fixture-commit', PAPERCUSP_SHARED_SPA_DIST: '',
@@ -166,7 +167,7 @@ describe('WI-6554700010027579 — committed native runtime asset inputs', () => 
         'git() { printf "%s\\n" "$*" > "$TEST_ROOT/git-args"; cat "$TEST_ROOT/selected-setup.sh"; }',
         'curl() { echo unexpected-network >&2; return 99; }; export -f curl',
         preflight, 'preflight_verifier_runtime_assets /selected/source',
-      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: { ...process.env, TEST_ROOT: fixture } });
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: { ...hermeticSpawnEnv(), TEST_ROOT: fixture } });
       expect(result.status, result.stderr).toBe(mode === 'valid' ? 0 : 1);
       expect(readFileSync(resolve(fixture, 'git-args'), 'utf8')).toContain(
         '-C /selected/source cat-file blob selected-commit:apps/operator/scripts/setup-porcupine-runtime.sh');
@@ -244,7 +245,7 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
       teardown, `(exit ${exitCode}); teardown`,
     ].join('\n')], {
       encoding: 'utf8', timeout: 10_000,
-      env: { ...process.env, TEST_SOURCE: source, TEST_WORK: work, TEST_EVIDENCE: options.noHarness ? '' : evidence },
+      env: { ...hermeticSpawnEnv(), TEST_SOURCE: source, TEST_WORK: work, TEST_EVIDENCE: options.noHarness ? '' : evidence },
     });
     return { fixture, source, evidence, attachment, result };
   }
@@ -336,7 +337,7 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
         normalizer,
         'normalize_operator_source_root "$TEST_ROOT"',
         'printf "%s\\n" "$OPERATOR_SOURCE_ROOT"',
-      ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: aliasRoot } });
+      ].join('\n')], { encoding: 'utf8', env: { ...hermeticSpawnEnv(), TEST_ROOT: aliasRoot } });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout.trim()).toBe(physicalRoot);
     } finally { rmSync(fixture, { recursive: true, force: true }); }
@@ -369,7 +370,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
           archiveOnly ? committed.replace('--git-checkout', '') : committed,
           'snapshot_committed_operator_source',
         ].join('\n')], { encoding: 'utf8', timeout: 10_000,
-          env: { ...process.env, TEST_ROOT: fixture, TEST_ORDER: orderFile } });
+          env: { ...hermeticSpawnEnv(), TEST_ROOT: fixture, TEST_ORDER: orderFile } });
         const order = readFileSync(orderFile, 'utf8');
         if (archiveOnly) {
           expect(result.status).toBe(1);
@@ -416,7 +417,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
       'printf "donor:%s\\n" "$REPO_DIR" >> "$WORK/order"',
     ].join('\n'));
     const env: NodeJS.ProcessEnv = {
-      ...process.env, TMPDIR: temp, PAPERCUSP_REPO_DIR: donor,
+      ...hermeticSpawnEnv(), TMPDIR: temp, PAPERCUSP_REPO_DIR: donor,
       TEST_ROOT: fixture, TEST_DONOR: donor, TEST_DISTINCT: distinct ? '1' : '0', TEST_INPUTS_FILE: inputsFile,
     };
     delete env.VERIFY_TAURI_SOURCE_SNAPSHOT_PATH;
@@ -455,7 +456,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         dependencySnapshotSource,
         committedSnapshotSource(end),
         'snapshot_committed_operator_source',
-      ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture, TEST_INPUTS_FILE: inputsFile } });
+      ].join('\n')], { encoding: 'utf8', env: { ...hermeticSpawnEnv(), TEST_ROOT: fixture, TEST_INPUTS_FILE: inputsFile } });
       expect(result.status, result.stderr).toBe(0);
       const order = readFileSync(resolve(fixture, 'order'), 'utf8');
       expect(order).toContain(`--inputs-file\n${inputsFile}\n`);
@@ -484,7 +485,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         committed,
         'snapshot_committed_operator_source',
         'printf "desktop:%s\\n" "$DESKTOP_DIR" >> "$WORK/order"',
-      ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture, TEST_TAMPER: '0' } });
+      ].join('\n')], { encoding: 'utf8', env: { ...hermeticSpawnEnv(), TEST_ROOT: fixture, TEST_TAMPER: '0' } });
       expect(result.status, result.stderr).toBe(0);
       const order = readFileSync(resolve(fixture, 'order'), 'utf8');
       expect(order.indexOf('verifier-verify')).toBeGreaterThan(order.indexOf('verifier-prepare'));
@@ -499,7 +500,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'cp() { echo mutation-after-refusal >&2; return 99; }',
         dependencySnapshotSource,
         committed, 'snapshot_committed_operator_source',
-      ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture } });
+      ].join('\n')], { encoding: 'utf8', env: { ...hermeticSpawnEnv(), TEST_ROOT: fixture } });
       expect(refused.status).toBe(1);
       expect(refused.stderr).not.toContain('mutation-after-refusal');
     } finally { rmSync(fixture, { recursive: true, force: true }); }
@@ -519,7 +520,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "${!#}"; }',
         dependencySnapshotSource,
         committedSnapshotSource(end), 'snapshot_committed_operator_source',
-      ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture, TEST_MODE: mode } });
+      ].join('\n')], { encoding: 'utf8', env: { ...hermeticSpawnEnv(), TEST_ROOT: fixture, TEST_MODE: mode } });
       const order = readFileSync(resolve(fixture, 'order'), 'utf8');
       if (mode === 'admit') {
         expect(result.status, result.stderr).toBe(0);
@@ -549,7 +550,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         committedSnapshotSource(end),
         'status=0; snapshot_committed_operator_source || status=$?',
         'printf "status=%s\\n" "$status" >> "$WORK/order"',
-      ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture } });
+      ].join('\n')], { encoding: 'utf8', env: { ...hermeticSpawnEnv(), TEST_ROOT: fixture } });
       expect(result.status, result.stderr).toBe(0);
       const order = readFileSync(resolve(fixture, 'order'), 'utf8');
       expect(order).toContain('verifier-inputs-check');
@@ -602,7 +603,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
           encoding: "utf8",
           timeout: 10_000,
           env: {
-            ...process.env,
+            ...hermeticSpawnEnv(),
             REPO_DIR: repo,
             PAPERCUSP_WORKSPACE: "fixture-workspace",
             TEST_PTOOL_RESPONSE: response,
@@ -728,7 +729,7 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
   const smokeSource = src.slice(smokeStartIdx, smokeEndIdx);
 
   function runSmoke(bundleSource: string, timeoutSec: number | string | null = 3, arenaCap?: string,
-    configuredBudget?: string, inheritedEnv: NodeJS.ProcessEnv = process.env) {
+    configuredBudget?: string, inheritedEnv: NodeJS.ProcessEnv = hermeticSpawnEnv()) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-host-import-smoke-"));
     const bundle = resolve(fixture, "hono-host.mjs");
     writeFileSync(bundle, bundleSource);
@@ -816,7 +817,7 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
 
   it('isolates the standalone smoke fixture from a failing outer-runner preload', () => {
     const result = runSmoke("console.log('PAPERCUSP_HOST_IMPORT_SMOKE_OK');\n", 3, undefined, undefined, {
-      ...process.env,
+      ...hermeticSpawnEnv(),
       NODE_OPTIONS: '--import=data:text/javascript,throw%20new%20Error(%22outer%20runner%20preload%20leaked%22)',
     });
     expect(result.status, result.stderr).toBe(0);
@@ -928,7 +929,7 @@ describe("EI-21590235587564636 — verifier source is immutable for the run", ()
         'declare -F spa_require_built_gate >/dev/null',
         'printf "HELPER_LOADED_FROM_ORIGINAL_REPO\\n"',
       ].join('\n'));
-      const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: temp };
+      const env: NodeJS.ProcessEnv = { ...hermeticSpawnEnv(), TMPDIR: temp };
       delete env.PAPERCUSP_REPO_DIR;
       delete env.VERIFY_TAURI_SOURCE_SNAPSHOT_PATH;
       delete env.VERIFY_TAURI_ORIGINAL_REPO_DIR;
@@ -1177,7 +1178,7 @@ describe("dependency snapshot root follows the selected maintained mode", () => 
         'cat "$OPERATOR_SOURCE_ROOT/source.txt"',
         'printf "bulk:%s\\n" "$TMPDIR"',
       ].join('\n')], { encoding: 'utf8', timeout: 15_000, env: {
-        ...process.env, TMPDIR: preferred, TEST_SOURCE: sourceRepo, TEST_DONOR: donor,
+        ...hermeticSpawnEnv(), TMPDIR: preferred, TEST_SOURCE: sourceRepo, TEST_DONOR: donor,
         TEST_ROOT: fixture, TEST_REF: ref, TEST_NODE: process.execPath,
         VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'hardlink',
         TEST_CLONE_PROGRAM: cloneProgram,
@@ -1219,7 +1220,7 @@ describe("dependency snapshot root follows the selected maintained mode", () => 
         {
           encoding: "utf8",
           env: {
-            ...process.env,
+            ...hermeticSpawnEnv(),
             REPO_DIR: donor,
             TMPDIR: preferred,
             VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: mode,
@@ -1358,7 +1359,7 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
         {
           encoding: "utf8",
           env: {
-            ...process.env,
+            ...hermeticSpawnEnv(),
             DESKTOP_DIR: desktop,
             REPO_DIR: fixture,
             OPERATOR_SNAPSHOT_PARENT: resolve(fixture, "source"),
@@ -1458,7 +1459,7 @@ describe("independent copy memory admission precedes native preparation", () => 
         src.slice(start, end),
         'echo native-capacity-started',
       ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: {
-        ...process.env, REPO_DIR: fixture, VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'copy',
+        ...hermeticSpawnEnv(), REPO_DIR: fixture, VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'copy',
       } });
       expect(result.status, result.stderr).toBe(limit ? 0 : 2);
       expect(result.stdout.includes('native-capacity-started')).toBe(Boolean(limit));
@@ -1471,7 +1472,7 @@ describe("independent copy memory admission precedes native preparation", () => 
     const result = spawnSync('bash', ['-c', [
       'verifier_run_step() { shift; "$@"; }', src.slice(start, end),
     ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: {
-      ...process.env, REPO_DIR: '/unused', VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'hardlink',
+      ...hermeticSpawnEnv(), REPO_DIR: '/unused', VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'hardlink',
     } });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toBe('');
@@ -1500,7 +1501,7 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
         "set -euo pipefail", dependencySnapshotSource,
         'snapshot_verifier_pinned_deps "$TEST_FROZEN" "$TEST_HELPER"',
       ].join("\n")], { encoding: "utf8", timeout: 10_000, env: {
-        ...process.env, WORK: fixture, REPO_DIR: "/canonical-donor",
+        ...hermeticSpawnEnv(), WORK: fixture, REPO_DIR: "/canonical-donor",
         TEST_FROZEN: frozen, TEST_HELPER: helper,
         VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: mode,
       } });
@@ -1649,7 +1650,7 @@ describe("WI-6554700010008536 — the frozen pinned-deps helper keeps its relati
         {
           encoding: "utf8",
           env: {
-            ...process.env,
+            ...hermeticSpawnEnv(),
             TEST_WORK: work,
             TEST_SNAPSHOT: snapshot,
             TEST_HELPER: helper,

@@ -388,8 +388,12 @@ export async function readFleetMetricSourceItems(scope: ResolvedFleetMetricScope
   return readFleetMetricRows(scope);
 }
 
-async function readFleetMetricRows(scope: ResolvedFleetMetricScope, notTerminal = false, metricProjection = false): Promise<WorkItem[]> {
-  const { sql } = getOrgPg();
+async function readFleetMetricRows(
+  scope: ResolvedFleetMetricScope,
+  notTerminal = false,
+  metricProjection = false,
+  sql: OrgSql = getOrgPg().sql,
+): Promise<WorkItem[]> {
   const { compileFilter } = await import('../../scheduler/get-next');
   const filters = [scope.claimSpec.current, ...scope.claimSpec.segments.map(segment => segment.spec)]
     .map(spec => spec.view.filter);
@@ -420,7 +424,7 @@ async function readFleetMetricRows(scope: ResolvedFleetMetricScope, notTerminal 
     notTerminal,
     payloadProjection: 'fleetMetricsCensus',
     ...(bodyProjection ? { bodyProjection } : {}),
-  });
+  }, sql);
 }
 
 /** Terminal rows contribute counts and complete identities, never synthetic work-item rows. */
@@ -506,7 +510,8 @@ export async function readFleetMetricSource(scope: ResolvedFleetMetricScope): Pr
   });
   void terminalContributions.catch(() => undefined);
   try {
-    return { items: await readFleetMetricRows(scope, true, true), terminalContributions };
+    const items = await withFleetMetricReadSql(sql => readFleetMetricRows(scope, true, true, sql));
+    return { items, terminalContributions };
   } catch (error) {
     // Drain the independent transaction on failure as well as success.
     await terminalContributions.catch(() => undefined);

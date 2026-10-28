@@ -6,6 +6,7 @@
  * cargo metadata and otherwise fails only after the verifier has allocated its
  * rig. Keep cargo resolution and PATH repair before that allocation boundary.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import {
   chmodSync,
   mkdtempSync,
@@ -86,12 +87,15 @@ describe('EI-21281971092880743 — verify-tauri-headless cargo preflight', () =>
       const result = spawnSync('bash', [SCRIPT, '--boot-only'], {
         cwd: ROOT,
         env: {
-          ...process.env,
+          ...hermeticSpawnEnv(),
           PAPERCUSP_REPO_DIR: ROOT,
           PAPERCUSP_SID: 'test-cargo-preflight',
           // Exercise cargo resolution itself rather than the managed-task
           // --boot-only lifetime refusal inherited from capability:inspect.
           PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: '',
+          // The runner's own task deadline would trip the verifier's deadline
+          // admission (exit 2) before the preflight under test (WI-6554700010030899).
+          PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '',
           TMPDIR: dir,
           VERIFY_TAURI_AGENT_TOOLS_BIN: fakeAgentTools,
           VERIFY_TAURI_CARGO_BIN: missingCargo,

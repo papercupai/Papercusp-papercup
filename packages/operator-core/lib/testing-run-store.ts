@@ -25,7 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { closeSync, constants, openSync } from 'node:fs';
 import { open, readFile, readdir, rm } from 'node:fs/promises';
-import { basename, dirname, join, isAbsolute, relative as pathRelative, posix } from 'node:path';
+import { basename, dirname, join, isAbsolute, relative as pathRelative, resolve as pathResolve, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
@@ -1209,13 +1209,31 @@ async function expandDetachedReportArtifacts(
   return expanded.flat();
 }
 
-function hasCompleteRouterReportCoverage(
-  artifacts: PreparedDetachedReportArtifact[],
-  requestedFiles: string[] | undefined,
-  reports: Array<{ rows: HarnessTestFileRow[] | null }>,
-): boolean {
-  if (!artifacts.some(artifact => artifact.routerReports)) return true;
+function normalizedRequestedReportPaths(rootAbs: string, requestedFiles: unknown): string[] | null {
   const requested = requestedFilesFromValue(requestedFiles);
+  if (!requested) return null;
+  const root = pathResolve(rootAbs);
+  const normalized = requested.map(file => {
+    const absolute = pathResolve(root, file);
+    const relative = pathRelative(root, absolute);
+    if (!relative || relative === '..' || relative.startsWith('../') || relative.startsWith('..\\')
+      || isAbsolute(relative)) return null;
+    return relative.split(/[/\\]/).join(posix.sep);
+  });
+  if (normalized.some(file => file === null) || new Set(normalized).size !== normalized.length) return null;
+  return normalized as string[];
+}
+
+function hasCompleteReportCoverage(
+  artifacts: PreparedDetachedReportArtifact[],
+  requestedFiles: unknown,
+  reports: Array<{ rows: HarnessTestFileRow[] | null }>,
+  requireExactCoverage = false,
+): boolean {
+  if (!requireExactCoverage && !artifacts.some(artifact => artifact.routerReports)) return true;
+  const root = artifacts[0]?.root;
+  if (!root || artifacts.some(artifact => artifact.root !== root)) return false;
+  const requested = normalizedRequestedReportPaths(root, requestedFiles);
   const rows = reports.flatMap(report => report.rows ?? []);
   const measured = new Set(rows.map(row => row.filePath));
   return requested !== null && requested.length > 0
@@ -1263,16 +1281,17 @@ function detachedArtifactsFromRow(snapshot: RunSnapshot, row: DurableRunSnapshot
 function completedDetachedReport(
   text: string,
   root: string,
-  environment: Readonly<Record<string, string | undefined>>,
+  environment?: Readonly<Record<string, string | undefined>>,
+  requestedFiles?: unknown,
 ): HarnessTestFileRow[] | null {
   try {
-    const safeText = redactSensitiveText(text, [], environment);
+    const safeText = redactSensitiveText(text, [], environment ?? process.env);
     const report = JSON.parse(safeText);
     if (typeof report.success !== 'boolean' || !Array.isArray(report.testResults)
       || report.testResults.length === 0 || report.testResults.some((file: VitestJsonFile) =>
         !file || !Number.isFinite(file.startTime) || !Number.isFinite(file.endTime)
         || file.endTime! < file.startTime! || !Array.isArray(file.assertionResults))) return null;
-    const rows = parseVitestJsonForHarnessRows(safeText, root, environment);
+    const rows = parseVitestJsonForHarnessRows(safeText, root, environment ?? process.env);
     if (rows.length !== report.testResults.length || rows.some(r => !r.execution)
       || new Set(rows.map(r => r.filePath)).size !== rows.length) return null;
     const counts = rows.reduce((sum, r) => ({
@@ -1284,7 +1303,28 @@ function completedDetachedReport(
       || report.numPendingTests + report.numTodoTests !== counts.skipped
       || report.numTotalTests !== counts.passed + counts.failed + counts.skipped
       || report.success !== !rows.some(r => r.status === 'fail' || r.status === 'error')) return null;
-    return rows;
+    if (environment) return rows;
+
+    // After a restart the launch-time child environment is gone. Keep recovery
+    // available from a complete exact-file report, but persist only enums,
+    // counts, and timestamps: failure text and assertion titles may contain
+    // opaque child-only secrets that this process cannot redact by value.
+    const requested = normalizedRequestedReportPaths(root, requestedFiles);
+    if (!requested || rows.some(row => !requested.includes(row.filePath))) return null;
+    return rows.map(row => ({
+      filePath: row.filePath,
+      status: row.status,
+      durationMs: row.durationMs,
+      startedAt: row.startedAt,
+      finishedAt: row.finishedAt,
+      outputTail: null,
+      ...(row.execution ? { execution: {
+        passed: row.execution.passed,
+        failed: row.execution.failed,
+        skipped: row.execution.skipped,
+        collectionFailed: row.execution.collectionFailed,
+      } } : {}),
+    }));
   } catch { return null; }
 }
 
@@ -1292,10 +1332,6 @@ async function reconcilePersistedReportArtifact(
   snapshot: RunSnapshot, row: DurableRunSnapshotRow, sql: SqlLike,
   environment?: Readonly<Record<string, string | undefined>>,
 ): Promise<RunSnapshot> {
-  // A process restart drops the original child environment. Do not recover raw
-  // report/output artifacts with a different process.env: it may no longer
-  // contain the values that appeared in the child report.
-  if (!environment) return snapshot;
   const noVerdict = snapshot.status === 'error' && snapshot.exitCode === null
     && snapshot.output.includes('[detached-recovery]') && snapshot.output.includes('no test verdict was observed');
   const closed = snapshot.status === 'pass' || snapshot.status === 'fail';
@@ -1308,15 +1344,18 @@ async function reconcilePersistedReportArtifact(
     || epochMs(row.task_ended_at ?? null) === null) return snapshot;
   const artifacts = detachedArtifactsFromRow(snapshot, row);
   if (artifacts.length === 0) return snapshot;
+  const requestedFiles = snapshot.requestedFiles ?? requestedFilesFromTaskDetail(row.task_detail) ?? undefined;
   const outputArtifact = artifacts.find(artifact => artifact.stdoutPath || artifact.stderrPath);
   await appendDetachedOutput(snapshot, outputArtifact ?? null, environment);
   try {
     const expanded = await expandDetachedReportArtifacts(artifacts);
     const reports = await Promise.all(expanded.map(async artifact => ({
-      artifact, rows: completedDetachedReport(await readFile(artifact.reportPath, 'utf8'), artifact.root, environment),
+      artifact, rows: completedDetachedReport(
+        await readFile(artifact.reportPath, 'utf8'), artifact.root, environment, requestedFiles,
+      ),
     })));
     if (reports.some(report => report.rows === null)
-      || !hasCompleteRouterReportCoverage(artifacts, snapshot.requestedFiles, reports)) return snapshot;
+      || !hasCompleteReportCoverage(artifacts, requestedFiles, reports, !environment)) return snapshot;
     const recovered = await boundedOrgTxn(async tx => {
       const scopedSql = tx as unknown as SqlLike;
       // Sibling recovery readers share one transaction lock. Ingestion and the

@@ -7,6 +7,7 @@
  * isolated desktop resources; otherwise a transient missing package is
  * misreported as a Tauri/operator boot failure.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { tmpdir } from 'node:os';
@@ -48,13 +49,16 @@ describe('EI-21107555111779921 — verifier detects install-safe transitions', (
       const result = spawnSync('bash', [SCRIPT, '--boot-only'], {
         cwd: ROOT,
         env: {
-          ...process.env,
+          ...hermeticSpawnEnv(),
           PAPERCUSP_REPO_DIR: ROOT,
           PAPERCUSP_SID: 'test-install-preflight',
           // Keep this unit test on the install/dependency preflight path; a
           // detached capability:bash marker would intentionally stop --boot-only
           // first with the task-lifetime guard (exit 2).
           PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: '',
+          // The runner's own task deadline would trip the verifier's deadline
+          // admission (exit 2) before the preflight under test (WI-6554700010030899).
+          PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '',
           PAPERCUSP_FS_MUTEX_LOCK_DIR: lockRoot,
           TMPDIR: scratch,
           VERIFY_TAURI_AGENT_TOOLS_BIN: missingTool,

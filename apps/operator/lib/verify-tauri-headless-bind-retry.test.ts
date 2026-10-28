@@ -23,6 +23,7 @@
  * Tauri/Xvfb/sidecar stack, so this wiring can only be asserted at the wiring
  * site, not by running it in CI.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -71,7 +72,7 @@ describe('WI-6554700010008930 — boot bind evidence survives retry and cleanup'
       expect(invalid.status).toBe(2);
       expect(invalid.stderr).toContain('ERR_SOCKET_BAD_PORT');
       expect(invalid.stderr).not.toContain('EADDRINUSE');
-      const failedChild = probe(address.port, { ...process.env, NODE_OPTIONS: '--require=/papercusp-missing-bind-probe-preload.cjs' });
+      const failedChild = probe(address.port, { ...hermeticSpawnEnv(), NODE_OPTIONS: '--require=/papercusp-missing-bind-probe-preload.cjs' });
       expect(failedChild.status).toBe(1);
       expect(failedChild.stderr).not.toContain('VERIFY_TAURI_PORT_BIND_PROBE');
     } finally {
@@ -156,7 +157,7 @@ describe('WI-6554700010008930 — boot bind evidence survives retry and cleanup'
       mkdirSync(bin);
       writeFileSync(join(bin, 'ss'), `#!/bin/sh\necho private-diagnostic-must-not-be-retained >&2\nexit ${status}\n`, { mode: 0o755 });
       writeFileSync(join(dir, 'tauri.log'), 'attempt log\n');
-      const run = captureAttempt(dir, 34567, { ...process.env, PATH: `${bin}:${process.env.PATH}` });
+      const run = captureAttempt(dir, 34567, { ...hermeticSpawnEnv(), PATH: `${bin}:${process.env.PATH}` });
       expect(run.status, run.stderr).toBe(0);
       const text = readFileSync(join(dir, 'retained/phases/boot/operator-startup/attempt-1/listeners.json'), 'utf8');
       expect(JSON.parse(text).observations[0]).toMatchObject(status === 0
@@ -173,7 +174,7 @@ describe('WI-6554700010008930 — boot bind evidence survives retry and cleanup'
       mkdirSync(bin);
       writeFileSync(join(bin, 'ss'), '#!/bin/sh\nif [ "$1" = "-tlnpH" ]; then exit 7; fi\necho "LISTEN 0 128 127.0.0.1:34567 0.0.0.0:*"\n', { mode: 0o755 });
       writeFileSync(join(dir, 'tauri.log'), 'attempt log\n');
-      const run = captureAttempt(dir, 34567, { ...process.env, PATH: `${bin}:${process.env.PATH}` });
+      const run = captureAttempt(dir, 34567, { ...hermeticSpawnEnv(), PATH: `${bin}:${process.env.PATH}` });
       expect(run.status, run.stderr).toBe(0);
       const report = JSON.parse(readFileSync(join(dir, 'retained/phases/boot/operator-startup/attempt-1/listeners.json'), 'utf8'));
       expect(report.observations[0]).toMatchObject({ status: 'listening', holderStatus: 'unknown', holderErrorCode: 7,

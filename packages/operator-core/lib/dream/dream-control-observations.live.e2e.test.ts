@@ -76,6 +76,17 @@ describe('Dream observation request diagnostics', () => {
       /Dream observation failed phase=fetch origin=http:\/\/127\.0\.0\.1:3170 endpoint=\/api\/zero-harness\/rest-query elapsedMs=\d+: TimeoutError:/,
     );
   });
+
+  it('identifies a timeout while consuming the response body separately from fetch', async () => {
+    const response = new Response('{}', { status: 200 });
+    response.json = async () => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    };
+    const request: typeof fetch = async () => response;
+    await expect(observe('http://127.0.0.1:3170', {}, request)).rejects.toThrow(
+      /Dream observation failed phase=response-json origin=http:\/\/127\.0\.0\.1:3170 endpoint=\/api\/zero-harness\/rest-query elapsedMs=\d+: TimeoutError:/,
+    );
+  });
 });
 
 describe.skipIf(!enabled)('Dream control observation live METHOD', () => {

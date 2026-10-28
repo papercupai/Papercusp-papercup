@@ -159,6 +159,15 @@ def nested_codex_apply_patch_results(response):
     results = []
     visited = set()
 
+    def add_result(result):
+        try:
+            marker = ('json', json.dumps(result, sort_keys=True, separators=(',', ':')))
+        except Exception:
+            marker = ('id', id(result))
+        if marker not in visited:
+            visited.add(marker)
+            results.append(result)
+
     def is_result(value):
         return isinstance(value, dict) and (
             isinstance(value.get('content'), list)
@@ -187,13 +196,10 @@ def nested_codex_apply_patch_results(response):
         if isinstance(name, str) and name.lower() in ('apply_patch', 'functions.apply_patch'):
             result = value.get('result', value.get('tool_response', value.get('toolResponse', value)))
             if is_result(result):
-                results.append(result)
+                add_result(result)
             return
         if serialized and is_result(value):
-            marker = id(value)
-            if marker not in visited:
-                visited.add(marker)
-                results.append(value)
+            add_result(value)
             return
 
         for key in ('result', 'tool_result', 'toolResult', 'tool_results', 'toolResults',

@@ -5,6 +5,7 @@
  * instance. A malformed tauri-agent-tools invocation must be rejected before
  * that expensive boundary, with no tool or cargo process started.
  */
+import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
 import {
   chmodSync,
   mkdirSync,
@@ -68,7 +69,7 @@ function runAssertion(assertionSource: string, useBashC = false, command?: strin
   const result = spawnSync('bash', [SCRIPT, '--', ...args], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...hermeticSpawnEnv(),
       PAPERCUSP_REPO_DIR: dir,
       PAPERCUSP_SID: 'test-assertion-preflight',
       PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: '',
@@ -100,7 +101,7 @@ function runAssertionPreflightOnly(assertionSource: string) {
     'ASSERTION_ARGS=(bash -c "$VERIFY_TEST_ASSERTION_SOURCE")',
     'validate_assertion_command_preflight',
   ].join('\n')], {
-    env: { ...process.env, REPO_DIR: ROOT, VERIFY_TEST_ASSERTION_SOURCE: assertionSource },
+    env: { ...hermeticSpawnEnv(), REPO_DIR: ROOT, VERIFY_TEST_ASSERTION_SOURCE: assertionSource },
     encoding: 'utf8',
     timeout: 15_000,
     killSignal: 'SIGKILL',
@@ -134,7 +135,7 @@ function runManifestPreflight(actual: string, claimed: string, claimedRoot?: str
     'validate_assertion_command_preflight',
   ].join('\n')], {
     env: {
-      ...process.env,
+      ...hermeticSpawnEnv(),
       REPO_DIR: ROOT,
       VERIFY_TEST_ASSERTION_PATH: assertion,
     },
@@ -173,7 +174,7 @@ describe('EI-21974634479405756 — assertion command preflight', () => {
     try {
       const result = spawnSync(process.execPath, [resolve(ROOT, 'scripts/lib/verify-tauri-deadline.mjs'),
         'prepare', '1', '0', '0', '30'], {
-        encoding: 'utf8', timeout: 15_000, env: { ...process.env,
+        encoding: 'utf8', timeout: 15_000, env: { ...hermeticSpawnEnv(),
           PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 200_000),
           VERIFY_TAURI_PREPARE_ESTIMATE_MS: '1', VERIFY_TAURI_BUDGET_FROM: calibration,
         },
@@ -220,7 +221,7 @@ describe('EI-21974634479405756 — assertion command preflight', () => {
     const result = spawnSync(process.execPath,
       [resolve(ROOT, 'scripts/lib/verify-tauri-assertion-env.mjs'), '--command', 'bash', '-c', 'true'], {
         encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', env: {
-          ...process.env, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: parkedProfile,
+          ...hermeticSpawnEnv(), PAPERCUSP_APP_OPERATION_LIVE_PROFILE: parkedProfile,
           VERIFY_TAURI_ISOLATED_DB: value.isolated, PAPERCUSP_WORKSPACE: value.workspace,
           PAPERCUSP_SID: value.sid, PAPERCUSP_PARKED_CURRENT_LIVE: value.current,
           PAPERCUSP_PARKED_AUDIT_OWNER: value.owner,
@@ -250,7 +251,7 @@ describe('EI-21974634479405756 — assertion command preflight', () => {
     const result = spawnSync(process.execPath,
       [resolve(ROOT, 'scripts/lib/verify-tauri-assertion-env.mjs'), '--command', 'bash', '-c', 'true'], {
         encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', env: {
-          ...process.env, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: parkedProfile,
+          ...hermeticSpawnEnv(), PAPERCUSP_APP_OPERATION_LIVE_PROFILE: parkedProfile,
           PAPERCUSP_WORKSPACE: 'app-workspace', VERIFY_TAURI_ISOLATED_DB: '0',
           PAPERCUSP_SID: 'caller', PAPERCUSP_PARKED_CURRENT_LIVE: '0', PAPERCUSP_PARKED_AUDIT_OWNER: 'caller',
         },
@@ -289,7 +290,7 @@ describe('EI-21974634479405756 — assertion command preflight', () => {
     try {
       const result = spawnSync(process.execPath,
         [resolve(ROOT, 'scripts/lib/verify-tauri-assertion-env.mjs'), '--command', 'node', '--import', 'tsx', assertion],
-        { encoding: 'utf8', env: { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://user:fixture-secret@ledger/db',
+        { encoding: 'utf8', env: { ...hermeticSpawnEnv(), PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://user:fixture-secret@ledger/db',
           VERIFY_TEST_SECOND: value }, timeout: 15_000, killSignal: 'SIGKILL' });
       expect(result.status, result.stderr).toBe(2);
       expect(result.stderr).toContain('VERIFY_TEST_SECOND is required before verifier preparation');
@@ -315,7 +316,7 @@ describe('EI-21974634479405756 — assertion command preflight', () => {
       'ASSERTION_MODE=1',
       'ASSERTION_ARGS=(node --import tsx "$REPO_DIR/scripts/tauri-surface-verify-' + driver + '.mts" --e2e)',
       'validate_assertion_command_preflight',
-    ].join('\n')], { encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', env: { ...process.env, REPO_DIR: ROOT,
+    ].join('\n')], { encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', env: { ...hermeticSpawnEnv(), REPO_DIR: ROOT,
       PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://user:fixture-secret@ledger/db', PAPERCUSP_TEST_RUN_WORKSPACE: 'native-owner-fixture',
       PAPERCUSP_TEST_RUN_GROUP: 'native-owner-fixture-run' } });
     expect(result.status, result.stderr).toBe(0);

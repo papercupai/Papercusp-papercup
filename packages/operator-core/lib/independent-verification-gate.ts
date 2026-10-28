@@ -22,10 +22,11 @@
  *
  * A row qualifies when it is a non-retracted `independent-verification` binding at the
  * clause's current revision; it cites a non-retracted, non-IV binding on the same spec;
- * the fingerprints match; and its author is not lineage-related to any plan implementer
- * or to the author of the binding it cites.
+ * both bindings independently measure current through `listSpecEvidence`; their stored
+ * fingerprints match; and its author is not lineage-related to any plan implementer or
+ * to the author of the binding it cites.
  *
- * Fails CLOSED: an unreadable scope, binding set, or lineage refuses with
+ * Fails CLOSED: an unreadable scope, binding set, currentness measurement, or lineage refuses with
  * `independent_verification_unavailable`, so a broken read never ships an unverified
  * live claim. It is a distinct code, like `spec_coverage_unavailable`, because a failed
  * MEASUREMENT is not author repair work and must not be ranked as one.
@@ -33,6 +34,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
+import { listSpecEvidence, type ListSpecEvidenceOptions } from './agent-tools/plans/spec-evidence-store';
 
 /** Clause revisions created before this instant predate the door and are not in scope. */
 export const INDEPENDENT_VERIFICATION_REQUIRED_AFTER = '2026-10-11T03:00:00.000Z';
@@ -42,6 +44,8 @@ export const INDEPENDENT_VERIFICATION_PLANES = ['live', 'deployed'] as const;
 export type IndependentVerificationGapReason =
   /** No live independent-verification row cites a live implementer binding at this revision. */
   | 'no-independent-binding'
+  /** A cited pair exists, but at least one side is stale or cannot be measured current. */
+  | 'non-current-evidence'
   /** Rows exist, but every author is lineage-related to an implementer or to the cited binder. */
   | 'only-lineage-related';
 
@@ -53,6 +57,8 @@ export interface IndependentVerificationGap {
   reason: IndependentVerificationGapReason;
   /** Independent-verification row ids that were considered and rejected for lineage. */
   rejectedBindingIds: number[];
+  /** Binding ids in candidate pairs that were stale or could not be measured current. */
+  nonCurrentBindingIds?: number[];
   /** Live implementer (non-IV) bindings at this revision that a verifier can cite. */
   citableBindingIds: number[];
 }
@@ -79,14 +85,25 @@ interface ScopeRow {
 interface CandidateRow {
   id: number | string;
   spec_id: string;
+  verified_binding_id: number | string;
   created_by: string | null;
   verified_created_by: string | null;
+}
+
+interface EvidenceCurrentnessRow {
+  id: number;
+  currentness: {
+    overall: 'current' | 'stale' | 'unknown';
+    dimensions?: { source?: string; environment?: string };
+  };
 }
 
 export interface IndependentVerificationDeps {
   sql?: ReturnType<typeof getOrgPg>['sql'];
   resolveImplementers?: (planSlug: string, workspaceId: string) => Promise<string[]>;
   lineageRelated?: (a: string, b: string, workspaceId: string) => Promise<boolean>;
+  /** Injectable seam for the canonical, server-measured evidence currentness read. */
+  listEvidence?: (options: ListSpecEvidenceOptions) => Promise<EvidenceCurrentnessRow[]>;
 }
 
 export async function evaluateIndependentVerificationGate(
@@ -99,6 +116,7 @@ export async function evaluateIndependentVerificationGate(
     deps.resolveImplementers ?? ((plan, ws) => resolvePlanImplementerIdentities(plan, { workspaceId: ws }));
   const lineageRelated =
     deps.lineageRelated ?? ((a, b, ws) => areAcceptanceLineageRelated(a, b, { workspaceId: ws }));
+  const listEvidence = deps.listEvidence ?? listSpecEvidence;
 
   const refuseUnreadable = (what: string, error: unknown): IndependentVerificationVerdict => {
     const detail = error instanceof Error ? error.message : String(error);
@@ -148,7 +166,8 @@ export async function evaluateIndependentVerificationGate(
       WITH in_scope AS (
         SELECT * FROM unnest(${specIds}::text[], ${revisions}::int[]) AS s(spec_id, revision)
       )
-      SELECT iv.id, iv.spec_id, iv.created_by, src.created_by AS verified_created_by
+      SELECT iv.id, iv.spec_id, src.id AS verified_binding_id,
+             iv.created_by, src.created_by AS verified_created_by
         FROM harness_shared.spec_evidence_bindings iv
         JOIN in_scope s
           ON s.spec_id = iv.spec_id
@@ -171,6 +190,35 @@ export async function evaluateIndependentVerificationGate(
        ORDER BY iv.id`;
   } catch (error) {
     return refuseUnreadable('the independent-verification bindings', error);
+  }
+
+  // Matching fingerprints only proves the verifier copied the same snapshot. Measure
+  // both immutable rows against current source/runtime state before accepting the pair.
+  const evidenceBindingIds = [...new Set(candidates.flatMap((row) => [
+    Number(row.id), Number(row.verified_binding_id),
+  ]))];
+  const currentnessByBindingId = new Map<number, EvidenceCurrentnessRow['currentness']['overall']>();
+  if (evidenceBindingIds.length > 0) {
+    let measuredEvidence: EvidenceCurrentnessRow[];
+    try {
+      measuredEvidence = await listEvidence({
+        harnessSlug: input.harnessSlug,
+        workspaceId,
+        planSlugs: [input.planSlug],
+        bindingIds: evidenceBindingIds,
+        limit: evidenceBindingIds.length,
+      });
+    } catch (error) {
+      return refuseUnreadable('currentness of the independent-verification evidence pairs', error);
+    }
+    for (const row of measuredEvidence) currentnessByBindingId.set(Number(row.id), row.currentness.overall);
+    if (currentnessByBindingId.size !== evidenceBindingIds.length ||
+        evidenceBindingIds.some((id) => !currentnessByBindingId.has(id))) {
+      return refuseUnreadable(
+        'currentness of the independent-verification evidence pairs',
+        new Error(`measured ${currentnessByBindingId.size} of ${evidenceBindingIds.length} requested bindings`),
+      );
+    }
   }
 
   // What a recruited verifier would cite (WI-6554700010008529): the refusal names the
@@ -228,8 +276,15 @@ export async function evaluateIndependentVerificationGate(
     for (const clause of scope) {
       const rows = candidates.filter((row) => row.spec_id === clause.spec_id);
       const rejected: number[] = [];
+      const nonCurrent = new Set<number>();
       let satisfied = false;
       for (const row of rows) {
+        const pairIds = [Number(row.id), Number(row.verified_binding_id)];
+        const nonCurrentPairIds = pairIds.filter((id) => currentnessByBindingId.get(id) !== 'current');
+        if (nonCurrentPairIds.length > 0) {
+          for (const id of nonCurrentPairIds) nonCurrent.add(id);
+          continue;
+        }
         if (await isIndependent(row.created_by, row.verified_created_by)) {
           satisfied = true;
           break;
@@ -242,8 +297,13 @@ export async function evaluateIndependentVerificationGate(
           revision: clause.revision,
           evidencePlane: clause.evidence_plane,
           barKey: clause.source_bar_key,
-          reason: rows.length === 0 ? 'no-independent-binding' : 'only-lineage-related',
+          reason: rows.length === 0
+            ? 'no-independent-binding'
+            : nonCurrent.size > 0
+              ? 'non-current-evidence'
+              : 'only-lineage-related',
           rejectedBindingIds: rejected,
+          ...(nonCurrent.size > 0 ? { nonCurrentBindingIds: [...nonCurrent] } : {}),
           citableBindingIds: citable.filter((row) => row.spec_id === clause.spec_id).map((row) => Number(row.id)),
         });
       }
@@ -258,7 +318,9 @@ export async function evaluateIndependentVerificationGate(
     `${gap.specId}@${gap.revision} (${gap.barKey}, ${gap.evidencePlane}): ` +
     (gap.reason === 'no-independent-binding'
       ? 'no independent-verification binding cites a live implementer binding at this revision'
-      : `binding(s) ${gap.rejectedBindingIds.join(', ')} were recorded inside the implementer lineage`),
+      : gap.reason === 'non-current-evidence'
+        ? `binding(s) ${(gap.nonCurrentBindingIds ?? []).join(', ')} are stale or could not be measured current`
+        : `binding(s) ${gap.rejectedBindingIds.join(', ')} were recorded inside the implementer lineage`),
   );
   return {
     satisfied: false,
@@ -291,12 +353,15 @@ export function renderIndependentVerificationBrief(
 ): string {
   if (gaps.length === 0) return '';
   const scope = `slug:${JSON.stringify(planSlug)}, harness:${JSON.stringify(harnessSlug)}`;
-  const lines = gaps.map((gap) =>
-    `- ${gap.specId}@${gap.revision} (${gap.barKey}, ${gap.evidencePlane}): ` +
-    (gap.citableBindingIds.length > 0
+  const lines = gaps.map((gap) => {
+    const citable = gap.citableBindingIds.length > 0
       ? `implementer binding(s) ${gap.citableBindingIds.join(', ')}`
-      : 'no live implementer binding to cite; rate the criterion on what you can observe and say so'),
-  );
+      : 'no live implementer binding to cite; rate the criterion on what you can observe and say so';
+    const currentnessNote = gap.reason === 'non-current-evidence'
+      ? `; binding(s) ${(gap.nonCurrentBindingIds ?? []).join(', ')} are stale or could not be measured current`
+      : '';
+    return `- ${gap.specId}@${gap.revision} (${gap.barKey}, ${gap.evidencePlane}): ${citable}${currentnessNote}`;
+  });
   return [
     `INDEPENDENT VERIFICATION — do this BEFORE scorecards:emit. ${gaps.length} live/deployed outcome bar(s) of ` +
       `plan '${planSlug}' carry implementer evidence that nobody outside the implementers' lineage has re-observed, ` +

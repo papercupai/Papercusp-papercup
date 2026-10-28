@@ -51,6 +51,11 @@ import factsAssert from '../facts/assert';
 import { bulkRunReport } from '../inbox/bulk-run';
 import agentReview from '../improvements/agent-review';
 import captureTool from '../improvements/capture';
+// Registers scheduler:get_next in the live projected-tool registry: the
+// explicit-name/omittedTools test requests it and asserts it is omitted by the
+// RESULT BUDGET, which requires it to be in the corpus (unknown names are
+// excluded from omittedTools by design — see exactToolNamesInCorpus).
+import '../scheduler/get_next';
 import recipesRun from '../recipes/run';
 import rubricsPropose from '../rubrics/propose';
 import './invoke';

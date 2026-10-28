@@ -334,6 +334,7 @@ export type DispatchSkipReason =
   | 'first-turn-rejected'
   | 'first-turn-provider-error'
   | 'answering-owner-stamp-failed'
+  | 'kickoff-expiry-refresh-failed'
   | 'approval-ineligible'
   | 'consult-closed';
 
@@ -1604,6 +1605,9 @@ export async function dispatchConsultResponder(
      * after launch. The caller persists it here; failures are best-effort.
      */
     onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+    /** Called only after the launcher proves the native kickoff was persisted.
+     * False means this dispatch no longer owns the selected reply window. */
+    onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
   },
   ctx: ConsultDispatchContext,
   deps: Partial<ConsultDispatchDeps> = {},
@@ -2021,7 +2025,7 @@ async function walkConsultDispatch(
       attempts.push(...replaced, attempt.record);
       // Closure is not a failed rank. Continuing would spend more launch
       // capacity on a consult whose terminal answer already won the race.
-      if (attempt.record.reason === 'consult-closed') {
+      if (attempt.record.reason === 'consult-closed' || attempt.record.reason === 'kickoff-expiry-refresh-failed') {
         return give(attempt.record.detail);
       }
       // WI-10004645: every fork rank replays the SAME source history, and a
@@ -2154,6 +2158,7 @@ async function launchAnsweringSession(
     citedTurns?: CitedTranscriptTurn[];
     brief: string | ((operation: DispatchOperation) => string);
     onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+    onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
     checkApprover?: import('./acceptance-bar-amendment-review').AmendmentReviewerScreen;
   },
   ctx: ConsultDispatchContext,
@@ -2397,6 +2402,34 @@ async function launchAnsweringSession(
   }
   // The first-turn wait below is bounded from this instant (WI-10004645).
   const kickoffSeenAtMs = d.nowMs();
+  if (opts.onKickoff) {
+    let refreshed = false;
+    let refreshError: string | null = null;
+    try {
+      refreshed = await opts.onKickoff(new Date(kickoffSeenAtMs).toISOString(), answeringOwnerId);
+    } catch (error) {
+      refreshError = String(error).slice(0, 300);
+    }
+    if (!refreshed) {
+      let stopped: string;
+      try {
+        stopped = await d.stopFailedLaunch(spawn.taskId);
+      } catch (error) {
+        stopped = `stop failed: ${String(error).slice(0, 200)}`;
+      }
+      return {
+        record: {
+          ...base,
+          outcome: 'failed',
+          reason: 'kickoff-expiry-refresh-failed',
+          detail: `native kickoff was persisted, but the selected reply window could not be refreshed` +
+            `${refreshError ? ` (${refreshError})` : ''}; stopped the answering child: ${stopped}`,
+        },
+        answeringOwnerId: null,
+        verified: null,
+      };
+    }
+  }
 
   // Race host registration against a durable child-death observation, so the
   // result cannot report a booting session for a process that already died.
@@ -2644,6 +2677,8 @@ export function makeConsultReachDispatcher(
   /** Persist the answering identity before a fork is launched, or before a
    *  conversion's verification wait, so the first reply is already authorized. */
   onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+  /** Refresh a cascade reply deadline after native kickoff persistence. */
+  onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
 }) => Promise<{
   queued: number;
   woke: number;
@@ -2686,6 +2721,7 @@ export function makeConsultReachDispatcher(
         ...(checkApprover ? { checkApprover } : {}),
         ...(opts.evidence ? { evidence: opts.evidence } : {}),
         ...(opts.onAnsweringOwner ? { onAnsweringOwner: opts.onAnsweringOwner } : {}),
+        ...(opts.onKickoff ? { onKickoff: opts.onKickoff } : {}),
         // Per-rank, because a walled rank-1 can turn a fork into a conversion and
         // the two inherit history differently.
         brief: (operation) =>

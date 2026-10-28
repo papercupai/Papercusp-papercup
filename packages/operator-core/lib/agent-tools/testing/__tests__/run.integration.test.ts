@@ -2137,7 +2137,7 @@ describe('testing:run (integration)', () => {
     await sealScratchTestCheckout(root);
 
     const credential = 'synthetic-child-only-credential-value-1234567890';
-    const credentialKey = `PAPERCUSP_SYNTHETIC_CREDENTIAL_${randomUUID().replaceAll('-', '')}`;
+    const credentialKey = `PAPERCUSP_SYNTHETIC_API_KEY_${randomUUID().replaceAll('-', '')}`;
     expect(process.env[credentialKey]).toBeUndefined();
     const testName = 'suite > keeps inherited credentials private';
     const runRouterFn = vi.fn(async (args: string[], _cwd: string, environment: NodeJS.ProcessEnv) => {

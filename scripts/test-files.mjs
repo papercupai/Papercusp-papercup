@@ -3491,6 +3491,64 @@ export async function preflightPrivateIntegrationPg() {
   return getHarnessAdminUrlWithSource();
 }
 
+const REQUIRED_TEST_CONFIG_COVERAGE_EXPORTS = ['./test-coverage-map', './test-coverage-store'];
+
+/**
+ * A receipt-backed focused run measures committed source. Check the same
+ * superproject-pinned test-config manifest that the committed-source loader
+ * belongs to; the checked-out submodule can be newer than HEAD's gitlink.
+ */
+export function assertCommittedTestConfigCoverageExports(root = REPO_ROOT) {
+  const repoRoot = resolve(root);
+  const pinResult = run('git', ['rev-parse', '--verify', 'HEAD:libs/test-config'], { cwd: repoRoot });
+  const pinnedCommit = (pinResult?.stdout ?? '').trim();
+  if (pinResult?.error || pinResult?.status !== 0 || !/^[a-f0-9]{40}$/.test(pinnedCommit)) {
+    throw new Error('cannot resolve the committed libs/test-config gitlink from HEAD');
+  }
+
+  const submoduleRoot = resolve(repoRoot, 'libs/test-config');
+  const manifestResult = run('git', ['-C', submoduleRoot, 'show', `${pinnedCommit}:package.json`], { cwd: repoRoot });
+  if (manifestResult?.error || manifestResult?.status !== 0) {
+    throw new Error(`cannot read package.json from pinned libs/test-config@${pinnedCommit.slice(0, 12)}`);
+  }
+  let manifest;
+  try { manifest = JSON.parse(manifestResult.stdout); }
+  catch { throw new Error(`pinned libs/test-config@${pinnedCommit.slice(0, 12)} has invalid package.json`); }
+  const exports = manifest?.exports;
+  const treeResult = run('git', ['-C', submoduleRoot, 'ls-tree', '-r', '--name-only', pinnedCommit], { cwd: repoRoot });
+  if (treeResult?.error || treeResult?.status !== 0) {
+    throw new Error(`cannot inspect the pinned libs/test-config@${pinnedCommit.slice(0, 12)} tree`);
+  }
+  const pinnedFiles = new Set((treeResult.stdout ?? '').split(/\r?\n/).filter(Boolean));
+  const failures = [];
+  const targetsFor = value => typeof value === 'string' ? [value]
+    : value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.values(value).flatMap(targetsFor) : [];
+  for (const subpath of REQUIRED_TEST_CONFIG_COVERAGE_EXPORTS) {
+    if (!exports || typeof exports !== 'object' || Array.isArray(exports) || !Object.hasOwn(exports, subpath)) {
+      failures.push(`missing required export ${subpath}`);
+      continue;
+    }
+    const targets = targetsFor(exports[subpath]);
+    if (targets.length === 0) {
+      failures.push(`${subpath} has no file target`);
+      continue;
+    }
+    for (const target of targets) {
+      const relativeTarget = typeof target === 'string' && target.startsWith('./') ? target.slice(2) : '';
+      if (!relativeTarget || relativeTarget.includes('\\') || relativeTarget.includes('*')
+        || relativeTarget.split('/').includes('..') || !pinnedFiles.has(relativeTarget)) {
+        failures.push(`${subpath} target ${String(target)} is absent or invalid in the pinned tree`);
+      }
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(`committed test-config coverage export preflight failed for libs/test-config@${pinnedCommit.slice(0, 12)}: ` +
+      `${failures.join('; ')}; required by packages/operator-core/lib/code-intelligence/test-coverage-map.ts`);
+  }
+  return pinnedCommit;
+}
+
 export async function main(
   argv = process.argv.slice(2),
   {
@@ -3500,6 +3558,7 @@ export async function main(
       await loadGovernedExecutionModule();
       return import('../libs/test-config/src/admin-test-runs-reporter.ts');
     },
+    testConfigExportPreflightImpl = assertCommittedTestConfigCoverageExports,
     runGovernedTestProcessImpl = runGovernedTestProcess,
     createRouterProofCustodyImpl = createRouterProofCustody,
     runCapturedTestProcessImpl = runCapturedTestProcess,
@@ -3720,6 +3779,7 @@ export async function main(
       const missing = ['shouldRecordTestRunPath', 'missingTestRunReceiptPaths']
         .filter(name => typeof receiptReporter?.[name] !== 'function');
       if (missing.length > 0) throw new Error(`reporter lacks required function exports: ${missing.join(', ')}`);
+      testConfigExportPreflightImpl(repoRoot);
     } catch (error) {
       console.error(
         `TEST_FILE_LEDGER_RECEIPT_PREFLIGHT status=not-measured ` +

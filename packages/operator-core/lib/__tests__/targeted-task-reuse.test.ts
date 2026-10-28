@@ -437,10 +437,19 @@ describe('armTargetedTaskReuse', () => {
     expect(armed.recording).toBe(true);
     expect(armed.env.PC_EXECUTED_SOURCE_MAP_WORKSPACE).toBe(WS);
     expect(armed.env.PC_EXECUTED_SOURCE_MAP_NO_PERSIST).toBeUndefined();
-    expect(armed.lines).toHaveLength(1);
+    expect(armed.lines).toHaveLength(2);
     expect(armed.lines[0]).toMatch(
       /^TARGETED_TEST_PASS_REUSE ws=@fixture\/lane-ws::test:lane-stateful candidates=2 reused=1 .*inputChanged=1 .* scope=targeted-gate rows=2 sha=aaaaaaaaaaaa auditRate=0 lane=stateful otherLane=0 runtime=/,
     );
+    // WI-6554700010030941: the exclusion's cause path is named, not only counted.
+    const causesPrefix = 'TARGETED_TEST_PASS_REUSE_EXCLUSION_CAUSES ';
+    expect(armed.lines[1]!.startsWith(causesPrefix)).toBe(true);
+    const causes = JSON.parse(armed.lines[1]!.slice(causesPrefix.length));
+    expect(causes).toMatchObject({ version: 1, ws: '@fixture/lane-ws::test:lane-stateful', total: 1, byReason: { inputChanged: 1 }, distinctPaths: 1 });
+    expect(causes.topPaths).toHaveLength(1);
+    expect(causes.topPaths[0]).toMatchObject({ reason: 'inputChanged', files: 1 });
+    expect(typeof causes.topPaths[0].path).toBe('string');
+    expect(causes.topPaths[0].path.length).toBeGreaterThan(0);
     const runtime = JSON.parse(decodeURIComponent(armed.lines[0]!.split(' runtime=')[1]!));
     expect(runtime).toEqual({ version: 1, judgedSha: HEAD, runnerIdentity: RUNNER,
       runContext: CTX, runGroupId: null, dirty: false });

@@ -182,12 +182,15 @@ describe('durable detached snapshots', () => {
     expect(vi.mocked(sql).mock.calls[1]?.[0]?.join(' ')).toContain('FROM harness_shared.test_runs');
   });
 
-  it('prefers the local process-control snapshot without querying shared storage', async () => {
+  it('preserves the local snapshot while reconciling its durable task lifecycle', async () => {
     const local = startRun({ kind: 'vitest', label: 'local', command: 'node', args: ['-e', ''] });
     const sql = vi.fn(async () => []) as unknown as Sql;
 
     await expect(getRunAsync(local.runId, sql)).resolves.toMatchObject({ runId: local.runId, status: 'running' });
-    expect(sql).not.toHaveBeenCalled();
+    expect(sql).toHaveBeenCalledTimes(1);
+    const query = vi.mocked(sql).mock.calls[0]?.[0]?.join(' ');
+    expect(query).toContain('FROM harness_shared.testing_run_snapshots AS snapshot');
+    expect(query).toContain('LEFT JOIN harness_shared.task_ledger AS task_ledger');
   });
 
   it('persists snapshots fail-soft and serializes command argv as JSON', async () => {
@@ -341,7 +344,7 @@ describe('distillVitestRun', () => {
 
   it('redacts launch-environment secrets in every Vitest report projection', () => {
     const credential = 'synthetic-child-credential-value-never-present-in-parent-env';
-    const environment = { SYNTHETIC_CHILD_CREDENTIAL: credential };
+    const environment = { SYNTHETIC_CHILD_API_KEY: credential };
     const json = report([{
       name: `${ROOT}/pkg/credential.test.ts`, status: 'failed',
       assertionResults: [{

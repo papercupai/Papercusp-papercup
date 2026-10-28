@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   STRAGGLER_EXCLUDED_REF, STRAGGLER_ITEMS, STRAGGLER_SUBJECT_PLAN, dropNote, nowSection, parseDisposition,
-  scoreStragglerDispositions, summarizeStragglerScore, type RefTarget, type StragglerSnapshot,
+  scoreStragglerDispositions, stragglerRescoreVerdict, summarizeStragglerScore, type RefTarget, type StragglerSnapshot,
 } from './straggler-dispositions';
+
+describe('stragglerRescoreVerdict', () => {
+  it('maps rubric verdicts onto the rescore ledger shape', () => {
+    expect(stragglerRescoreVerdict('healthy')).toBe('pass');
+    expect(stragglerRescoreVerdict('broken')).toBe('fail');
+    expect(stragglerRescoreVerdict('unknown')).toBe('unknown');
+  });
+});
 
 const NATIVE_P026 = 'native-code-intelligence-ecosystem-and-dream-2026-10-09#P-026';
 const OTHER = 'some-successor-plan-2026-11-01';

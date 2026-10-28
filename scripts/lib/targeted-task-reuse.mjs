@@ -65,6 +65,7 @@ import {
   reuseRunnerIdentity,
   recordGateReuseDecision,
   selectReusablePasses,
+  formatReuseExclusionCauseLine,
   testReuseAuditRate,
   testReuseEnabled,
   writeReuseSkipList,
@@ -575,7 +576,7 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
       return off(`lane-filter-unavailable(${token(err)})`);
     }
   }
-  const { skip, summary } = selectReusablePasses({
+  const { skip, summary, exclusions } = selectReusablePasses({
     candidates,
     proofs: loaded.proofs,
     judgedSha: head,
@@ -638,6 +639,8 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
           runGroupId: runGroupId ?? null, dirty: false },
       ),
   );
+  // WI-6554700010030941: name the inputs that blocked reuse, not only how many files they blocked.
+  lines.push(TARGETED_REUSE_LINE_PREFIX + formatReuseExclusionCauseLine(label, exclusions ?? []));
   await record({ summary });
   return result(reused);
 }

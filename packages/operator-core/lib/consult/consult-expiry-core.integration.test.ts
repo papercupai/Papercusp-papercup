@@ -270,6 +270,72 @@ describe('sweepExpiredConsults', () => {
     expect(alerts).toHaveLength(0);
     await rootSql`DELETE FROM harness_shared.consult_state WHERE workspace_id = ${WS} AND conversation_id IN (${live}, ${recover})`;
   });
+
+  it('queued cascade recovery starts the reply TTL at persisted kickoff under its lease token', async () => {
+    const id = await seedConsult({
+      latency: 'hard-blocked',
+      expiresAt: PAST,
+      routing: {
+        ...menuSnapshot(['resp-1']),
+        cascadeDispatch: { version: 1, cursor: 0, responder: 'resp-1', summary: 's', body: 'b', leaseUntil: PAST },
+      },
+    });
+    const kickoffAt = new Date(NOW.getTime() + 17 * 60_000).toISOString();
+    const answeringOwnerId = 'resp-1-fork';
+
+    expect(await continueCascadeDispatchCore(WS, id, {
+      getSql: () => rootSql,
+      now: () => NOW,
+      dispatch: () => async (opts) => {
+        await opts.onAnsweringOwner?.(answeringOwnerId);
+        expect(await opts.onKickoff?.(kickoffAt, answeringOwnerId)).toBe(true);
+        return { woke: 1, answeringOwnerId };
+      },
+    })).toBe(true);
+
+    const [row] = await rootSql<Array<{ expires_at: string; answering_owner_id: string; queued: unknown }>>`
+      SELECT expires_at,
+             routing #>> '{selection,selected,0,answeringOwnerId}' AS answering_owner_id,
+             routing->'cascadeDispatch' AS queued
+        FROM harness_shared.consult_state WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    expect(row.answering_owner_id).toBe(answeringOwnerId);
+    expect(row.queued).toBeNull();
+    expect(new Date(row.expires_at).toISOString()).toBe(
+      new Date(Date.parse(kickoffAt) + 30 * 60_000).toISOString(),
+    );
+  });
+
+  it('does not refresh or overwrite expiry after the queued continuation lease is replaced', async () => {
+    const id = await seedConsult({
+      latency: 'hard-blocked',
+      expiresAt: PAST,
+      routing: {
+        ...menuSnapshot(['resp-1']),
+        cascadeDispatch: { version: 1, cursor: 0, responder: 'resp-1', summary: 's', body: 'b', leaseUntil: PAST },
+      },
+    });
+    const answeringOwnerId = 'resp-1-fork';
+    const replacementToken = 'replacement-lease';
+    await continueCascadeDispatchCore(WS, id, {
+      getSql: () => rootSql,
+      now: () => NOW,
+      dispatch: () => async (opts) => {
+        await opts.onAnsweringOwner?.(answeringOwnerId);
+        await rootSql`
+          UPDATE harness_shared.consult_state
+             SET routing = jsonb_set(routing, '{cascadeDispatch,leaseToken}', to_jsonb(${replacementToken}::text))
+           WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+        expect(await opts.onKickoff?.(NOW.toISOString(), answeringOwnerId)).toBe(false);
+        return { woke: 0 };
+      },
+    });
+
+    const [row] = await rootSql<Array<{ expires_at: string; lease_token: string }>>`
+      SELECT expires_at, routing #>> '{cascadeDispatch,leaseToken}' AS lease_token
+        FROM harness_shared.consult_state WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    expect(new Date(row.expires_at).toISOString()).toBe(PAST);
+    expect(row.lease_token).toBe(replacementToken);
+  });
   it('flips ONLY past-due open rows to expired; hard-blocked rows get the latched park-key emit', async () => {
     const hardDue = await seedConsult({ latency: 'hard-blocked', conversationUpdatedAt: FUTURE });
     const proceedDue = await seedConsult({ latency: 'proceed' });
@@ -928,6 +994,31 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(reachCalls[0]).toMatchObject({ responder: 'resp-2', conversationId: id, workspaceId: WS });
     expect(reachCalls[0].body).toContain('reviewer 2/2');
     expect(reachCalls[0].body).toContain('- resp-1 (expired):');
+  });
+
+  it('direct cascade refreshes the selected responder deadline from delayed persisted kickoff', async () => {
+    const id = await seedConsult({
+      latency: 'hard-blocked',
+      routing: menuSnapshot(['resp-1', 'resp-2']),
+    });
+    const kickoffAt = new Date(NOW.getTime() + 17 * 60_000).toISOString();
+    const answeringOwnerId = 'resp-2-fork';
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    deps.dispatch = async (opts) => {
+      reachCalls.push(opts);
+      await opts.onAnsweringOwner?.(answeringOwnerId);
+      expect(await opts.onKickoff?.(kickoffAt, answeringOwnerId)).toBe(true);
+      return { woke: 1, answeringOwnerId };
+    };
+
+    const result = await sweepExpiredConsults(deps);
+
+    expect(result).toMatchObject({ advanced: 1, expired: 0 });
+    const row = await cascadeRow(id);
+    expect(row).toMatchObject({ responder_id: 'resp-2', cascade_cursor: 1, closed_at: null });
+    expect(new Date(row.expires_at as string).toISOString()).toBe(
+      new Date(Date.parse(kickoffAt) + 30 * 60_000).toISOString(),
+    );
   });
 
   it('EI-24351703367365896: an expired slot followed only by refused launches expires in this sweep', async () => {
