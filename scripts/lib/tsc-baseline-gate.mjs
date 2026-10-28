@@ -2435,7 +2435,7 @@ export async function runCrossLegConsumer({
       log(
         `TSC_SERVICE consumer used=1 named=${named.length} members=${result.members.length} ` +
         `nonMembers=${result.nonMembers.length} errors=${served.errorCount} ` +
-        `queuedMs=${served.queuedMs} checkMs=${served.checkMs}`,
+        `queuedMs=${served.queuedMs} refreshMs=${served.refreshMs} checkMs=${served.checkMs}`,
       );
     } else {
       const legDiagnostics = diagnose ?? (await import('./tsc-cross-leg-check.mjs')).legFileDiagnostics;

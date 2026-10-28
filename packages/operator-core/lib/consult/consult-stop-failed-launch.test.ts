@@ -12,10 +12,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const killTask = vi.fn();
+const closeTask = vi.fn();
 const getLatestActiveAdvSessionByOwner = vi.fn();
 const markAdvSessionEnded = vi.fn();
 
 vi.mock('../task-manager/control', () => ({ killTask: (...a: unknown[]) => killTask(...a) }));
+vi.mock('../task-manager/store', () => ({ closeTask: (...a: unknown[]) => closeTask(...a) }));
 vi.mock('../adv-sessions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../adv-sessions')>()),
   getLatestActiveAdvSessionByOwner: (...a: unknown[]) => getLatestActiveAdvSessionByOwner(...a),
@@ -29,6 +31,7 @@ const OWNER = 'su-answer-fresh';
 describe('defaultStopFailedLaunch never-ran row close (WI-10006690)', () => {
   beforeEach(() => {
     killTask.mockReset().mockResolvedValue({ ok: true });
+    closeTask.mockReset().mockResolvedValue(true);
     getLatestActiveAdvSessionByOwner.mockReset().mockResolvedValue({ id: 35186, coordOwnerId: OWNER });
     markAdvSessionEnded.mockReset().mockResolvedValue(true);
   });
@@ -36,6 +39,7 @@ describe('defaultStopFailedLaunch never-ran row close (WI-10006690)', () => {
   it('closes the answering identity’s open row as cleanup after a confirmed kill', async () => {
     const out = await defaultStopFailedLaunch('task-1', { answeringOwnerId: OWNER });
     expect(killTask).toHaveBeenCalledWith('task-1');
+    expect(closeTask).not.toHaveBeenCalled();
     expect(getLatestActiveAdvSessionByOwner).toHaveBeenCalledWith(OWNER);
     expect(markAdvSessionEnded).toHaveBeenCalledWith(35186, null, 'cleanup');
     expect(out).toBe('stopped task task-1; closed adv_session #35186 as never-ran (cleanup)');
@@ -52,7 +56,29 @@ describe('defaultStopFailedLaunch never-ran row close (WI-10006690)', () => {
     killTask.mockResolvedValue({ ok: false, error: 'task_not_found' });
     const out = await defaultStopFailedLaunch('task-1', { answeringOwnerId: OWNER });
     expect(out).toBe('stop of task task-1 refused: task_not_found');
+    expect(closeTask).not.toHaveBeenCalled();
     expect(markAdvSessionEnded).not.toHaveBeenCalled();
+  });
+
+  it('reconciles the exact task row when its systemd scope is positively already gone', async () => {
+    killTask.mockResolvedValue({
+      ok: false, taskId: 'task-1', action: 'kill', error: 'already_gone',
+      detail: 'scope task-1.scope is no longer known to systemd',
+    });
+    const out = await defaultStopFailedLaunch('task-1', { answeringOwnerId: OWNER });
+    expect(closeTask).toHaveBeenCalledWith('task-1', {
+      state: 'ended_unobserved',
+      exitReason: 'scope already gone during failed-launch containment',
+    });
+    expect(markAdvSessionEnded).toHaveBeenCalledWith(35186, null, 'cleanup');
+    expect(out).toBe('verified task task-1 scope already gone; recorded ended_unobserved; closed adv_session #35186 as never-ran (cleanup)');
+  });
+
+  it('does not claim a ledger update when already-gone evidence races a terminal row or missing row', async () => {
+    killTask.mockResolvedValue({ ok: false, error: 'already_gone' });
+    closeTask.mockResolvedValue(false);
+    const out = await defaultStopFailedLaunch('task-1');
+    expect(out).toBe('verified task task-1 scope already gone; ledger row already terminal or unavailable');
   });
 
   it('leaves the row open when the kill throws', async () => {

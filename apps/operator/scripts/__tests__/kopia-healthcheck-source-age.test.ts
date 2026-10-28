@@ -49,10 +49,18 @@ interface UnitCgroupFixture {
   subStates: string[];
 }
 
+interface AlertFixture {
+  stateDir?: string;
+  exitCode?: number;
+  executable?: boolean;
+  force?: boolean;
+}
+
 function runHealthcheck(
   dumpSnapshotAgeSeconds: number,
   status: Record<string, unknown> = {},
   unitCgroup?: UnitCgroupFixture,
+  alertFixture: AlertFixture = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), 'kopia-healthcheck-source-age-'));
   tempDirs.push(root);
@@ -84,7 +92,7 @@ function runHealthcheck(
   const scriptDir = join(root, 'script');
   const fakeBin = join(root, 'bin');
   const logDir = join(root, 'logs');
-  const stateDir = join(root, 'state');
+  const stateDir = alertFixture.stateDir ?? join(root, 'state');
   const fakeKopia = join(fakeBin, 'kopia');
   const testScript = join(scriptDir, 'kopia-healthcheck.sh');
   const alertStub = join(root, 'alert-stub.sh');
@@ -133,8 +141,15 @@ function runHealthcheck(
   );
   chmodSync(fakeSudo, 0o755);
 
-  writeFileSync(alertStub, '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$TEST_ALERT_LOG"\n');
-  chmodSync(alertStub, 0o755);
+  writeFileSync(
+    alertStub,
+    [
+      '#!/usr/bin/env bash',
+      'printf "%s\\n" "$*" >> "$TEST_ALERT_LOG"',
+      'exit "${TEST_ALERT_EXIT_CODE:-0}"',
+    ].join('\n') + '\n',
+  );
+  chmodSync(alertStub, alertFixture.executable === false ? 0o644 : 0o755);
 
   const source = readFileSync(SOURCE_SCRIPT, 'utf8');
   writeFileSync(testScript, source);
@@ -156,6 +171,9 @@ function runHealthcheck(
       KOPIA_TEST_EXPECT_LOG_DIR: join(root, 'kopia-cli-logs'),
       KOPIA_HEALTHCHECK_LOG_DIR: logDir,
       HEALTHCHECK_STATE_DIR: stateDir,
+      ALERT_REFILE_S: '14400',
+      BACKUP_ALERT_FORCE: alertFixture.force ? '1' : '',
+      TEST_ALERT_EXIT_CODE: String(alertFixture.exitCode ?? 0),
       ODDSMITH_DISCOVERY: join(root, 'missing-oddsmith.json'),
       KOPIA_VM_VERIFY_MARKER: join(root, 'missing-vm-marker'),
       BACKUP_ALERT_CMD: alertStub,
@@ -197,6 +215,30 @@ describe('Kopia healthcheck dump-source recency', () => {
     expect(run.result.status, [run.result.stdout, run.result.stderr, run.log].join('\n')).toBe(0);
     expect(run.log).toContain('OK: dump ');
     expect(run.alertLog).toBe('');
+  });
+});
+
+describe('Kopia healthcheck alert delivery marker', () => {
+  it.each([
+    { mode: 'executable alert command', executable: true },
+    { mode: 'bash fallback', executable: false },
+  ])('retries after exit 42 through the $mode without advancing last-alert', ({ executable }) => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'kopia-healthcheck-alert-state-'));
+    tempDirs.push(stateDir);
+    const marker = join(stateDir, 'last-alert');
+    const alertFixture = { stateDir, exitCode: 42, executable, force: true };
+
+    const first = runHealthcheck(3 * 60 * 60, {}, undefined, alertFixture);
+    expect(first.result.status, [first.result.stdout, first.result.stderr, first.log].join('\n')).toBe(1);
+    expect(first.alertLog.trim().split('\n')).toHaveLength(1);
+    expect(first.log).toContain('ALERT COMMAND FAILED (exit 42)');
+    expect(existsSync(marker)).toBe(false);
+
+    const second = runHealthcheck(3 * 60 * 60, {}, undefined, alertFixture);
+    expect(second.result.status, [second.result.stdout, second.result.stderr, second.log].join('\n')).toBe(1);
+    expect(second.alertLog.trim().split('\n')).toHaveLength(1);
+    expect(second.log).toContain('ALERT COMMAND FAILED (exit 42)');
+    expect(existsSync(marker)).toBe(false);
   });
 });
 

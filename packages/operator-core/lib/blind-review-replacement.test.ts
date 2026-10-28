@@ -17,6 +17,9 @@ describe('replacement launch custody', () => {
     expect(replacementLaunchReceipt({ isError: true, data: { launch: { opened: 1, ownerIds: ['su-new'],
       freshVerdict: { sessions: [{ ownerId: 'su-new', advSessionId: 7, sessionId: 'native' }] } } } }))
       .toEqual({ kind: 'native', ownerId: 'su-new', advSessionId: 7, sessionId: 'native' });
+    expect(replacementLaunchReceipt({ isError: true, data: { launch: { opened: 1, ownerIds: ['su-new'],
+      freshVerdict: { sessions: [{ ownerId: 'su-new', advSessionId: 7, sessionId: null }] } } } }))
+      .toEqual({ kind: 'uncertain' });
   });
 
   it('recognizes an explicit pre-spawn refusal and a measured zero-process launch', () => {

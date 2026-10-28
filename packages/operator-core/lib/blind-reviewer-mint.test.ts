@@ -468,6 +468,7 @@ describe('mintBlindGapReviewer', () => {
   function deps(brief: BlindReviewBrief | null = BRIEF) {
     // Returns unknown, like the real launcher envelope, so a case can install a refusal.
     const handler = vi.fn(async (): Promise<unknown> => ({ data: { launch: {
+      opened: 1,
       ownerIds: ['su-reviewer-1'],
       freshVerdict: { sessions: [{ ownerId: 'su-reviewer-1', advSessionId: 42, sessionId: 'native-review-1' }] },
     } } }));
@@ -562,7 +563,58 @@ describe('mintBlindGapReviewer', () => {
     d.handler.mockImplementation(async () => unproven);
     const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
     expect(d.handler).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ ok: true, launch: unproven, binding: null });
+    expect(result).toMatchObject({ ok: true, launch: unproven, binding: null, launchStatus: 'uncertain' });
+  });
+
+  it('binds an exact native receipt carried with isError and reuses the activation launch key', async () => {
+    const d = deps();
+    const partial = { isError: true, data: { launch: { opened: 1, partial: true,
+      ownerIds: ['su-reviewer-1'], freshVerdict: { sessions: [
+        { ownerId: 'su-reviewer-1', advSessionId: 42, sessionId: 'native-review-1' },
+      ] } } } };
+    d.handler.mockResolvedValue(partial);
+    const first = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    const replay = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(first).toMatchObject({ ok: true, launchStatus: 'partial', binding: {
+      reviewerOwnerId: 'su-reviewer-1', advSessionId: 42, nativeSessionId: 'native-review-1',
+    } });
+    expect(replay).toMatchObject({ ok: true, launchStatus: 'partial', binding: {
+      reviewerOwnerId: 'su-reviewer-1', nativeSessionId: 'native-review-1',
+    } });
+    const keys = d.handler.mock.calls.map(call =>
+      (call as unknown as [{ idempotencyKey: string }])[0].idempotencyKey);
+    expect(keys[0]).toMatch(/^blind-review-mint:[a-f0-9]{64}$/);
+    expect(keys[1]).toBe(keys[0]);
+    expect(d.createSessionBinding).toHaveBeenCalledTimes(2);
+
+    const nextActivation = deps({ ...BRIEF, activationAuditSeq: BRIEF.activationAuditSeq + 1 });
+    await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, nextActivation.deps);
+    const nextKey = (nextActivation.handler.mock.calls[0] as unknown as [{ idempotencyKey: string }])[0].idempotencyKey;
+    expect(nextKey).not.toBe(keys[0]);
+  });
+
+  it('uses the exact ADV row to bind a delayed native session id', async () => {
+    const d = deps();
+    const delayed = { isError: true, data: { launch: { opened: 1, partial: true,
+      ownerIds: ['su-reviewer-1'], freshVerdict: { sessions: [
+        { ownerId: 'su-reviewer-1', advSessionId: 42, sessionId: null },
+      ] } } } };
+    d.handler.mockResolvedValue(delayed);
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result).toMatchObject({ ok: true, launchStatus: 'partial', binding: { nativeSessionId: 'native-review-1' } });
+    expect(d.createSessionBinding).toHaveBeenCalledWith(expect.objectContaining({
+      reviewerOwnerId: 'su-reviewer-1', advSessionId: 42, nativeSessionId: null,
+    }));
+  });
+
+  it('keeps a thrown or lost launch reply uncertain and does not continue the backend ladder', async () => {
+    const d = deps();
+    d.handler.mockRejectedValue(new Error('reply lost after spawn'));
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result).toMatchObject({ ok: true, launchStatus: 'uncertain', binding: null,
+      launch: { uncertain: 'reply lost after spawn' } });
+    expect(d.handler).toHaveBeenCalledTimes(1);
+    expect(d.createSessionBinding).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -600,6 +652,7 @@ describe('mintBlindGapReviewer', () => {
       effort: 'xhigh',
       account: 'auto',
       mcpTarget: 'spawn-host',
+      idempotencyKey: expect.stringMatching(/^blind-review-mint:[a-f0-9]{64}$/),
     });
     // The reviewer routes through the gateway pool, never the box's own system login: a
     // revoked/limited 'default' login killed every reviewer on its first turn

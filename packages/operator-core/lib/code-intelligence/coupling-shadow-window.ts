@@ -26,6 +26,16 @@ export const COUPLING_SHADOW_WINDOW_ACTION = 'coord.coupling.code-dependency.win
 /** A relevance judgment of one shadow edge: details { edgeKey, relevant, judgeOwnerId }. */
 export const COUPLING_EDGE_JUDGMENT_ACTION = 'coord.coupling.code-dependency.judgment';
 export const COUPLING_SHADOW_SUBJECT_PLAN = 'code-intel-delivery-and-outcomes-2026-10-26';
+/**
+ * The serving plane whose shadow rows the window counts (plan D-036): this workspace's
+ * deployed operator. The writer stamps `servingHost` from serving-host-identity, so the
+ * value is that module's `port-<n>` label. Staging (:3170) serves the same workspace from a
+ * different build, so its rows can carry a different derivation fingerprint on the same
+ * clock; counting both alternates the fingerprint and inflates restarts. Rows with no plane
+ * stamp are excluded too, so the window opens once the stamping build reaches :3070 (D-029).
+ * The instrument runs on bg-host, so it cannot use its own serving identity here.
+ */
+export const SHADOW_WINDOW_PLANE = 'port-3070';
 
 const DAY_MS = 86_400_000;
 export const SHADOW_WINDOW_BOUNDS = Object.freeze({
@@ -170,6 +180,8 @@ export interface ShadowWindowInput {
   windowRows: ShadowRow[];
   /** Rows with no fingerprint stamp (pre-stamp builds, bundled builds). */
   unstampedRows: number;
+  /** Fingerprint-stamped rows from another serving plane, or with no plane stamp (D-036). */
+  offPlaneRows?: number;
   judgments: EdgeJudgment[];
   /** Null when no breakage reader is available: recall is then unmeasured. */
   breakages: CrossAgentBreakage[] | null;
@@ -214,6 +226,7 @@ export interface ShadowWindowScore {
   unknownOutcomes: number | null;
   interfaceEligible: number | null;
   unstampedRows: number;
+  offPlaneRows: number;
   reviewBy: number | null;
   reasons: string[];
 }
@@ -253,10 +266,10 @@ export function scoreShadowWindow(input: ShadowWindowInput): ShadowWindowScore {
     windowStart: latest?.firstTs ?? null, days: 0, sample: 0, liveAgents: 0, lineages: 0, judged: 0,
     precision: null, recall: null, recallState: 'reader-unavailable', breakages: null, tokenMeanChars: null,
     unknownOutcomes: input.interfaceLeg?.unknown ?? null, interfaceEligible: input.interfaceLeg?.eligible ?? null,
-    unstampedRows: input.unstampedRows, reviewBy: null, reasons: [],
+    unstampedRows: input.unstampedRows, offPlaneRows: input.offPlaneRows ?? 0, reviewBy: null, reasons: [],
   };
   if (!latest) {
-    base.reasons.push('no fingerprint-stamped shadow rows: the P-011 writer is not serving a stamping build yet');
+    base.reasons.push(`no fingerprint-stamped shadow rows on ${SHADOW_WINDOW_PLANE}: the P-011 writer is not serving a stamping build there yet`);
     return base;
   }
   if (restarts > B.restartCap) {
@@ -394,7 +407,7 @@ export function summarizeShadowWindow(s: ShadowWindowScore): string {
     `precision=${pct(s.precision)}`, `recall=${pct(s.recall)} (${s.recallState})`,
     `tokenMeanChars=${s.tokenMeanChars === null ? 'n/a' : Math.round(s.tokenMeanChars)}`,
     `unknown=${s.unknownOutcomes ?? 'n/a'}`, `interfaceEligible=${s.interfaceEligible ?? 'n/a'}`,
-    `unstamped=${s.unstampedRows}`,
+    `unstamped=${s.unstampedRows}`, `offPlane=${s.offPlaneRows}`,
     ...(s.reviewBy ? [`reviewBy=${new Date(s.reviewBy).toISOString().slice(0, 10)}`] : []),
     ...s.reasons,
   ].join('; ');
@@ -452,7 +465,14 @@ async function readInterfaceEligibility(sql: Sql, workspaceId: string, start: nu
 type Json = Record<string, unknown>;
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v : undefined);
 
-async function readShadowWindowInput(sql: Sql, workspaceId: string, now: number): Promise<Omit<ShadowWindowInput, 'lineageOf' | 'implementerOwners' | 'implementerLineages' | 'interfaceLeg'>> {
+/**
+ * Read one plane's shadow window from audit_log. Exported for the reader test. Every
+ * shadow-row query is restricted to `plane` (D-036): the change points, so epochs are per
+ * plane, and the window rows. Rows from other planes are only counted (offPlaneRows).
+ */
+export async function readShadowWindowInput(
+  sql: Sql, workspaceId: string, now: number, plane: string = SHADOW_WINDOW_PLANE,
+): Promise<Omit<ShadowWindowInput, 'lineageOf' | 'implementerOwners' | 'implementerLineages' | 'interfaceLeg'>> {
   // Change points only: every row whose fingerprint differs from the previous stamped row
   // in ts order, so A→B→A yields three epochs (see fingerprintEpochs).
   const changeRows = await sql<{ fingerprint: string; first_ts: string }[]>`
@@ -461,20 +481,25 @@ async function readShadowWindowInput(sql: Sql, workspaceId: string, now: number)
                    lag(details->>'fingerprint') OVER (ORDER BY ts, id) AS prev
               FROM harness_shared.audit_log
              WHERE workspace_id = ${workspaceId} AND action = ${COUPLING_SHADOW_ROW_ACTION}
-               AND details->>'fingerprint' IS NOT NULL) s
+               AND details->>'fingerprint' IS NOT NULL
+               AND details->>'servingHost' = ${plane}) s
      WHERE prev IS DISTINCT FROM fingerprint
      ORDER BY ts, id`;
-  const [unstamped] = await sql<{ n: string }[]>`
-    SELECT count(*)::text AS n FROM harness_shared.audit_log
-     WHERE workspace_id = ${workspaceId} AND action = ${COUPLING_SHADOW_ROW_ACTION}
-       AND details->>'fingerprint' IS NULL`;
+  const [counts] = await sql<{ unstamped: string; off_plane: string }[]>`
+    SELECT count(*) FILTER (WHERE details->>'fingerprint' IS NULL)::text AS unstamped,
+           count(*) FILTER (WHERE details->>'fingerprint' IS NOT NULL
+                              AND details->>'servingHost' IS DISTINCT FROM ${plane})::text AS off_plane
+      FROM harness_shared.audit_log
+     WHERE workspace_id = ${workspaceId} AND action = ${COUPLING_SHADOW_ROW_ACTION}`;
   const epochs = fingerprintEpochs(changeRows.map(r => ({ ts: Number(r.first_ts), fingerprint: r.fingerprint })));
-  const unstampedRows = Number(unstamped?.n ?? 0);
+  const unstampedRows = Number(counts?.unstamped ?? 0);
+  const offPlaneRows = Number(counts?.off_plane ?? 0);
   const latest = epochs[epochs.length - 1];
-  if (!latest) return { now, epochs, windowRows: [], unstampedRows, judgments: [], breakages: null };
+  if (!latest) return { now, epochs, windowRows: [], unstampedRows, offPlaneRows, judgments: [], breakages: null };
   const rows = await sql<{ ts: string; details: Json }[]>`
     SELECT ts::text AS ts, details FROM harness_shared.audit_log
      WHERE workspace_id = ${workspaceId} AND action = ${COUPLING_SHADOW_ROW_ACTION}
+       AND details->>'servingHost' = ${plane}
        AND details->>'fingerprint' = ${latest.fingerprint} AND ts >= ${latest.firstTs}
      ORDER BY ts LIMIT 50000`;
   const windowRows: ShadowRow[] = rows.map(r => ({
@@ -494,7 +519,7 @@ async function readShadowWindowInput(sql: Sql, workspaceId: string, now: number)
   });
   // No cross-agent breakage ledger exists yet (gate/lint red per held file joined to
   // the import graph, D-014): recall stays reader-unavailable, so enabling is refused.
-  return { now, epochs, windowRows, unstampedRows, judgments, breakages: null };
+  return { now, epochs, windowRows, unstampedRows, offPlaneRows, judgments, breakages: null };
 }
 
 async function recordWindow(sql: Sql, workspaceId: string, now: number, score: ShadowWindowScore): Promise<void> {

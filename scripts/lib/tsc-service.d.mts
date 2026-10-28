@@ -382,6 +382,7 @@ export function baselineWithinScope(baselineByFile: Record<string, number>, judg
  *   namedNotInProgram: string[],
  *   snapshotAgeMs: number,
  *   queuedMs: number,
+ *   refreshMs: number,
  *   checkMs: number,
  *   requestId?: string,
  *   kind?: string,
@@ -495,6 +496,7 @@ export type TscServiceResponse = {
     namedNotInProgram: string[];
     snapshotAgeMs: number;
     queuedMs: number;
+    refreshMs: number;
     checkMs: number;
     requestId?: string;
     kind?: string;

@@ -1365,8 +1365,25 @@ export async function defaultStopFailedLaunch(
   try {
     const { killTask } = await import('../task-manager/control');
     const outcome = await killTask(taskId);
-    if (!outcome.ok) return `stop of task ${taskId} refused: ${outcome.error ?? 'unknown'}`;
-    stopped = `stopped task ${taskId}`;
+    if (!outcome.ok) {
+      if (outcome.error !== 'already_gone') {
+        return `stop of task ${taskId} refused: ${outcome.error ?? 'unknown'}`;
+      }
+      // `killTask` only returns `already_gone` after systemd confirms that this
+      // exact task scope has been collected. Its exit watcher may not have
+      // persisted the terminal ledger row yet, so reconcile through the task
+      // store before the reviewer recruiter re-reads task state.
+      const { closeTask } = await import('../task-manager/store');
+      const closed = await closeTask(taskId, {
+        state: 'ended_unobserved',
+        exitReason: 'scope already gone during failed-launch containment',
+      });
+      stopped = closed
+        ? `verified task ${taskId} scope already gone; recorded ended_unobserved`
+        : `verified task ${taskId} scope already gone; ledger row already terminal or unavailable`;
+    } else {
+      stopped = `stopped task ${taskId}`;
+    }
   } catch (e) {
     return `stop of task ${taskId} threw: ${(e as Error)?.message ?? String(e)}`;
   }

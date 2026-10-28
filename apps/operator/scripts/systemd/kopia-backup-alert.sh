@@ -84,8 +84,19 @@ if [ -n "$REPO" ] && [ -f "$REPO/scripts/mcp-call.mjs" ]; then
   # was swallowed by `>/dev/null 2>&1 || true`: the fleet was never told. That is
   # EI-10733's own failure shape (an alarm ringing in an empty room) wearing a new
   # costume — which is why the suppression below is deliberately NOT restored.
-  BODY=$(printf '{"to":["*"],"expects":"none","conditionKey":"papercusp-db-backup-failing","summary":"BACKUP FAILING: %s","body":[{"text":"papercusp-db-backup is not producing usable dumps. See %s and %s/db-backup.log. EI-10733 is the last time this rotted silently — for 30 days."}]}' \
-           "$REASON" "$MARKER" "$DUMP")
+  BODY=$(node -e '
+    const [reason, marker, dump] = process.argv.slice(1);
+    process.stdout.write(JSON.stringify({
+      to: ["*"],
+      expects: "none",
+      conditionKey: "papercusp-db-backup-failing",
+      summary: "BACKUP FAILING: " + reason,
+      body: [{
+        text: "papercusp-db-backup is not producing usable dumps. See " + marker +
+          " and " + dump + "/db-backup.log. EI-10733 is the last time this rotted silently — for 30 days."
+      }]
+    }));
+  ' "$REASON" "$MARKER" "$DUMP")
   # Non-fatal (the operator may itself be down — exactly when backups matter most),
   # but NEVER silent: stderr goes to the journal so a broken leg is visible.
   if ! (cd "$REPO" && timeout 30 node scripts/mcp-call.mjs coord:send "$BODY" \

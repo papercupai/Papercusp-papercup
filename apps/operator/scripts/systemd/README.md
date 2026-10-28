@@ -1298,8 +1298,10 @@ effective-UID namespaces. The dedicated non-sticky subdirectory avoids the host'
 creates the directory and lock with shared-write permissions for either identity.
 `KOPIA_BACKUP_LOCK_PATH` remains available for isolated tests or an explicitly managed deployment.
 `kopia-protected-snapshot.sh SOURCE...` is the supported manual entrypoint. The remaining
-`db-backup.sh` and `backup-alert.sh` scripts are still managed under `~/.config/kopia/` and are
-outside this snapshot-serialization contract.
+`papercusp-db-backup.sh` dump producer and `kopia-backup-alert.sh` alarm are tracked in this
+directory. The database backup service invokes the producer from the checkout; the alert unit
+keeps its `~/.config/kopia/backup-alert.sh` path through the symlink in the install recipe. Both
+are outside this snapshot-serialization contract.
 
 New database dumps live at /mnt/cold-a/Backup/db-dumps. The previous
 /mnt/backup/db-dumps tree is retained as legacy data; this relocation does not
@@ -1326,6 +1328,7 @@ ln -sf "$(pwd)/kopia-snapshot-all.sh" ~/.config/kopia/snapshot-all.sh
 ln -sf "$(pwd)/kopia-home-snapshot.sh" ~/.config/kopia/home-snapshot.sh
 ln -sf "$(pwd)/kopia-healthcheck.sh" ~/.config/kopia/healthcheck.sh
 ln -sf "$(pwd)/kopia-protected-snapshot.sh" ~/.config/kopia/kopia-protected-snapshot.sh
+ln -sf "$(pwd)/kopia-backup-alert.sh" ~/.config/kopia/backup-alert.sh
 systemctl --user daemon-reload
 # Re-arm active timers after changing their targets; this restarts only the timer
 # units and leaves any in-flight backup worker alone.
@@ -1334,12 +1337,13 @@ systemctl --user enable --now papercusp-db-backup.timer kopia-snapshots.timer \
   kopia-healthcheck.timer kopia-home-snapshot.timer
 ```
 
-You must still recreate `~/.config/kopia/db-backup.sh` and `backup-alert.sh` on a new machine;
-those two scripts are not version-controlled. The Kopia snapshot, home/VM, healthcheck, shared
-cache bootstrap, global guard, and supported protected/manual entrypoints are restored by the
-symlinks above. The cache bootstrap creates a missing target behind an existing `~/.cache/kopia`
-symlink without unlinking or replacing that symlink, and fails closed when the target is not a
-writable directory.
+The database backup service invokes tracked `papercusp-db-backup.sh` directly; do not recreate an
+untracked `~/.config/kopia/db-backup.sh` copy. The install recipe links tracked
+`kopia-backup-alert.sh` to the stable `~/.config/kopia/backup-alert.sh` path used by the alert
+unit. The Kopia snapshot, home/VM, healthcheck, shared cache bootstrap, global guard, and
+supported protected/manual entrypoints are restored by the symlinks above. The cache bootstrap
+creates a missing target behind an existing `~/.cache/kopia` symlink without unlinking or
+replacing that symlink, and fails closed when the target is not a writable directory.
 
 ## Manual/protected snapshot
 

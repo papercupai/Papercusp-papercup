@@ -956,6 +956,7 @@ export function baselineWithinScope(baselineByFile, judged) {
  *   namedNotInProgram: string[],
  *   snapshotAgeMs: number,
  *   queuedMs: number,
+ *   refreshMs: number,
  *   checkMs: number,
  *   requestId?: string,
  *   kind?: string,
@@ -1120,7 +1121,7 @@ export function formatTscServiceBanner(response, { routedAway = [] } = {}) {
   const lines = [
     `TSC_SERVICE used=1 checked=${response.checked.length} named=${response.counts.named} ` +
       `typeReferencing=${response.counts.typeReferencing} importers=${response.counts.importers} ` +
-      `errors=${response.errorCount} queuedMs=${response.queuedMs} checkMs=${response.checkMs} ` +
+      `errors=${response.errorCount} queuedMs=${response.queuedMs} refreshMs=${response.refreshMs} checkMs=${response.checkMs} ` +
       `snapshotAgeMs=${response.snapshotAgeMs}`,
     `   (shared typecheck service: judged your files and resolved importers, including barrels ` +
       `— not the whole project. Unrelated files are judged by the bare run; ` +

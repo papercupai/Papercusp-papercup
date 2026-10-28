@@ -194,6 +194,16 @@ describe('typed blind-review session bindings', () => {
     expect(readConfinementMock).toHaveBeenCalledWith('su-reviewer', 'ws-1');
   });
 
+  it('reconciles a delayed native session id only from the matching ADV row', async () => {
+    const unresolved = await createBlindReviewSessionBinding({ ...input, nativeSessionId: null });
+    expect(unresolved).toMatchObject({ ok: false, code: 'native_session_unresolved' });
+    state.adv = { ...state.adv, session_id: 'native-review-delayed' };
+    const resolved = await createBlindReviewSessionBinding({ ...input, nativeSessionId: null });
+    expect(resolved).toMatchObject({ ok: true, binding: {
+      reviewerOwnerId: 'su-reviewer', advSessionId: 42, nativeSessionId: 'native-review-delayed',
+    } });
+  });
+
   it('refuses a changed owner, account profile, recruiter lineage or confinement', async () => {
     state.adv = { ...state.adv, coord_owner_id: 'su-other' };
     expect(await createBlindReviewSessionBinding(input)).toMatchObject({ ok: false, code: 'adv_session_mismatch' });

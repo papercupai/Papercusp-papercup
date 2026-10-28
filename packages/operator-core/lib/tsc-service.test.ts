@@ -743,14 +743,15 @@ describe('focused service protocol', () => {
   const frame = (request: Request, value: Request) => JSON.stringify({ kind: 'result', requestId: request.requestId,
     identity: request.identity, runtime: { pid: process.pid, startedAt: Date.now() }, ...value }) + '\n';
 
-  async function withCompiler(check: (args: { root: string; request: Request; socketPath: string; child: ReturnType<typeof spawn>; output: () => string }) => Promise<void>) {
+  async function withCompiler(check: (args: { root: string; request: Request; socketPath: string; child: ReturnType<typeof spawn>; output: () => string }) => Promise<void>,
+    extraEnv: Record<string, string> = {}) {
     const root = mkdtempSync(join(tmpdir(), 'tsc-protocol-live-'));
     const socketPath = join(root, 'service.sock');
     const project = join(root, 'tsconfig.json');
     writeFileSync(project, JSON.stringify({ compilerOptions: { noEmit: true, strict: true, types: [] }, files: ['a.ts'] }));
     writeFileSync(join(root, 'a.ts'), 'export const a = 1;');
     const child = spawn(process.execPath, [fileURLToPath(new URL('../../../scripts/tsc-service/server.mjs', import.meta.url))],
-      { env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_TSC_SERVICE_ROOT: root, PAPERCUSP_TSC_SERVICE_SOCKET: socketPath },
+      { env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_TSC_SERVICE_ROOT: root, PAPERCUSP_TSC_SERVICE_SOCKET: socketPath, ...extraEnv },
         stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stdout!.on('data', data => { output += data; });
@@ -872,6 +873,47 @@ describe('focused service protocol', () => {
       expect(lines.join('\n')).not.toContain('used=1');
     });
   }, 15_000);
+
+  it('reports queue wait separately from snapshot refresh behind an overwide request', async () => {
+    await withCompiler(async ({ root, request, socketPath, output }) => {
+      const project = request.project as string;
+      writeFileSync(project, JSON.stringify({ compilerOptions: { noEmit: true, strict: true, types: [] },
+        files: ['a.ts', 'b.ts'] }));
+      writeFileSync(join(root, 'b.ts'), "import { a } from './a'; export const b = a;");
+
+      const firstRequest: Request = { ...request, v: 2, files: ['a.ts'], scope: 'dependencies',
+        requestId: 'overwide-before-selected' };
+      firstRequest.identity = tscServiceIdentity(firstRequest);
+      let accepted!: () => void;
+      const firstAccepted = new Promise<void>(resolve => { accepted = resolve; });
+      const firstResultPromise = requestTscService({ socketPath, request: firstRequest, timeoutMs: 15_000,
+        onProgress: progress => {
+          if (['accepted', 'queued'].includes((progress as { phase?: string }).phase ?? '')) accepted();
+        } });
+      await firstAccepted;
+
+      const selectedRequest: Request = { ...firstRequest, scope: 'named', requestId: 'selected-after-overwide' };
+      selectedRequest.identity = tscServiceIdentity(selectedRequest);
+      const selectedResultPromise = requestTscService({ socketPath, request: selectedRequest, timeoutMs: 15_000 });
+      const [firstResult, selectedResult] = await Promise.all([firstResultPromise, selectedResultPromise]);
+      expect(firstResult).toMatchObject({ ok: false, reason: 'scope-too-wide' });
+      if (!selectedResult?.ok) throw new Error('selected request did not complete');
+
+      const phaseElapsed = (phase: string) => {
+        const line = output().split('\n').find(entry => entry.includes('requestId=selected-after-overwide ')
+          && entry.includes(' phase=' + phase + ' '));
+        const match = /elapsedMs=(\d+)/.exec(line ?? '');
+        expect(match).not.toBeNull();
+        return Number(match?.[1]);
+      };
+      const refreshStartMs = phaseElapsed('refresh');
+      const refreshEndMs = phaseElapsed('refreshed');
+      expect(selectedResult.queuedMs).toBeGreaterThan(0);
+      expect(Math.abs(selectedResult.queuedMs - refreshStartMs)).toBeLessThanOrEqual(5);
+      expect(selectedResult.refreshMs).toBeGreaterThan(0);
+      expect(Math.abs(selectedResult.refreshMs - (refreshEndMs - refreshStartMs))).toBeLessThanOrEqual(5);
+    }, { PAPERCUSP_TSC_SERVICE_MAX_FILES: '1' });
+  }, 20_000);
 
   it('refuses a wrong checkout without falling back when the caller requires its service', async () => {
     await withCompiler(async ({ socketPath, request, root }) => {

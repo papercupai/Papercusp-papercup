@@ -332,6 +332,7 @@ describe('scoped runs ask the shared typecheck service first (WI-10003415)', () 
     namedNotInProgram: [],
     snapshotAgeMs: 5,
     queuedMs: 7,
+    refreshMs: 9,
     checkMs: 11,
     ...extra,
   });
@@ -436,7 +437,7 @@ describe('scoped runs ask the shared typecheck service first (WI-10003415)', () 
       otherErrorCount: 1,
       exitCode: 0,
       compilerExitCode: 1,
-      serviceScope: { checkedFiles: 2, named: 1, typeReferencing: 0, importers: 1, queuedMs: 7, checkMs: 11 },
+      serviceScope: { checkedFiles: 2, named: 1, typeReferencing: 0, importers: 1, queuedMs: 7, refreshMs: 9, checkMs: 11 },
     });
     expect(raw.data).not.toHaveProperty('serviceFallback');
     expect(raw.data).not.toHaveProperty('parseWarning');

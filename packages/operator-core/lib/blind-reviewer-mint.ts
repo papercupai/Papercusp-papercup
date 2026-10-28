@@ -17,6 +17,7 @@
  * Out of scope (D-041 (4)): reads that are not MCP calls (native Read, or capability:bash
  * `cat` of a plan file). The ceiling closes the MCP half only.
  */
+import { createHash } from 'node:crypto';
 import {
   SCRATCH_PLAN_TOOLS,
   validProductReadBoundary,
@@ -68,12 +69,44 @@ function receiptRecord(value: unknown): Record<string, unknown> | null {
  */
 export function launchProvablyNotStarted(value: unknown): boolean {
   const env = receiptRecord(value);
-  const data = receiptRecord(env?.data);
+  const data = receiptRecord(env?.data) ?? receiptRecord(env?.structuredContent);
   const failure = receiptRecord(data?.launchFailure);
   if (failure?.stage === 'pre-spawn' && failure.processesOpened === 0) return true;
   const launch = receiptRecord(data?.launch) ?? receiptRecord(env?.launch) ?? env;
   return !!launch && launch.mode !== 'deduped' && launch.opened === 0 && launch.partial === false
     && Array.isArray(launch.tasks) && launch.tasks.length === 0;
+}
+
+export type BlindReviewLaunchReceipt =
+  | { kind: 'not-started' }
+  | { kind: 'native'; ownerId: string; advSessionId: number; sessionId: string | null }
+  | { kind: 'uncertain' };
+
+/** Classify the launch from evidence; an MCP isError bit alone says nothing about spawn. */
+export function blindReviewLaunchReceipt(value: unknown): BlindReviewLaunchReceipt {
+  if (launchProvablyNotStarted(value)) return { kind: 'not-started' };
+  const env = receiptRecord(value);
+  const data = receiptRecord(env?.data) ?? receiptRecord(env?.structuredContent);
+  const launch = receiptRecord(data?.launch) ?? receiptRecord(env?.launch) ?? env;
+  if (!launch || launch.mode === 'deduped' || launch.opened !== 1 ||
+      !Array.isArray(launch.ownerIds) || launch.ownerIds.length !== 1) return { kind: 'uncertain' };
+  const sessions = receiptRecord(launch.freshVerdict)?.sessions;
+  if (!Array.isArray(sessions) || sessions.length !== 1) return { kind: 'uncertain' };
+  const session = receiptRecord(sessions[0]);
+  const ownerId = launch.ownerIds[0];
+  const advSessionId = Number(session?.advSessionId);
+  if (typeof ownerId !== 'string' || session?.ownerId !== ownerId ||
+      !Number.isSafeInteger(advSessionId) || advSessionId <= 0 ||
+      session?.sessionId != null && typeof session.sessionId !== 'string') return { kind: 'uncertain' };
+  const sessionId = typeof session.sessionId === 'string' && session.sessionId.trim() ? session.sessionId : null;
+  return { kind: 'native', ownerId, advSessionId, sessionId };
+}
+
+function blindReviewMintIdempotencyKey(input: {
+  workspaceId: string; harnessSlug: string; planSlug: string; activationAuditSeq: number;
+}): string {
+  const scope = JSON.stringify([input.workspaceId, input.harnessSlug, input.planSlug, input.activationAuditSeq]);
+  return `blind-review-mint:${createHash('sha256').update(scope).digest('hex')}`;
 }
 
 /**
@@ -225,7 +258,8 @@ export interface MintBlindGapReviewerDeps {
 }
 
 export type MintBlindGapReviewerResult =
-  | { ok: true; launch: unknown; kickoff: string; activationAuditSeq: number; scratchPrefix: string | null; binding: BlindReviewSessionBinding | null }
+  | { ok: true; launch: unknown; kickoff: string; activationAuditSeq: number; scratchPrefix: string | null;
+      binding: BlindReviewSessionBinding | null; launchStatus: 'bound' | 'partial' | 'not-started' | 'uncertain' }
   | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'no_source_turns' | 'invalid_product_reads'
       | 'how_to_run_outside_ceiling' | 'session_binding_failed'; message: string; refusedTools?: string[] };
 
@@ -298,42 +332,42 @@ export async function mintBlindGapReviewer(
   // else (spawned, partial, or an isError that may follow a spawn) stops the walk, so no
   // second reviewer starts.
   let launch: unknown = null;
+  const idempotencyKey = blindReviewMintIdempotencyKey({ workspaceId, harnessSlug: input.harness,
+    planSlug: input.slug, activationAuditSeq: brief.activationAuditSeq });
   for (const backend of BLIND_REVIEWER_BACKENDS) {
-    launch = await handler(
-      {
-        brief: kickoff,
-        harness: input.harness,
-        headless: true,
-        agent: backend.agent,
-        ...(backend.model ? { model: backend.model } : {}),
-        ...(backend.effort ? { effort: backend.effort } : {}),
-        account: BLIND_GAP_REVIEW_ACCOUNT,
-        // A confined reviewer must reach the door and product on the build that
-        // minted it. The stable endpoint may still serve an older tool catalog.
-        mcpTarget: 'spawn-host',
-      },
-      systemCtx as never,
-    );
+    try {
+      launch = await handler(
+        {
+          brief: kickoff,
+          harness: input.harness,
+          headless: true,
+          agent: backend.agent,
+          ...(backend.model ? { model: backend.model } : {}),
+          ...(backend.effort ? { effort: backend.effort } : {}),
+          account: BLIND_GAP_REVIEW_ACCOUNT,
+          // A confined reviewer must reach the door and product on the build that
+          // minted it. The stable endpoint may still serve an older tool catalog.
+          mcpTarget: 'spawn-host',
+          // One reviewer per activation, including lost replies and partial launches.
+          idempotencyKey,
+        },
+        systemCtx as never,
+      );
+    } catch (error) {
+      // A thrown reply may follow spawn. Preserve uncertainty and stop the ladder.
+      launch = { uncertain: error instanceof Error ? error.message : String(error) };
+      break;
+    }
     if (!launchProvablyNotStarted(launch)) break;
   }
-  if ((launch as { isError?: unknown } | null)?.isError === true) {
+  const receipt = blindReviewLaunchReceipt(launch);
+  if (receipt.kind === 'not-started' || receipt.kind === 'uncertain') {
     return { ok: true, launch, kickoff, activationAuditSeq: brief.activationAuditSeq,
-      scratchPrefix: scratchPlans?.scratchPrefix ?? null, binding: null };
+      scratchPrefix: scratchPlans?.scratchPrefix ?? null, binding: null, launchStatus: receipt.kind };
   }
-  const launchData = (launch as { data?: { launch?: Record<string, unknown> } } | null)?.data?.launch;
-  const ownerIds = Array.isArray(launchData?.ownerIds) ? launchData.ownerIds : [];
-  const sessions = (launchData?.freshVerdict as { sessions?: unknown } | undefined)?.sessions;
-  const reviewerOwnerId = typeof ownerIds[0] === 'string' ? ownerIds[0] : null;
-  const nativeSession = Array.isArray(sessions)
-    ? sessions.find((entry) => !!entry && typeof entry === 'object' &&
-      (entry as Record<string, unknown>).ownerId === reviewerOwnerId) as Record<string, unknown> | undefined
-    : undefined;
-  const advSessionId = Number(nativeSession?.advSessionId);
-  const nativeSessionId = typeof nativeSession?.sessionId === 'string' ? nativeSession.sessionId : null;
-  if (!reviewerOwnerId || !Number.isSafeInteger(advSessionId) || advSessionId <= 0 || !nativeSessionId) {
-    return { ok: false, code: 'session_binding_failed',
-      message: 'The launch returned no exact native session receipt, so it cannot be bound safely. Do not mint a second reviewer for this activation.' };
-  }
+  const reviewerOwnerId = receipt.ownerId;
+  const advSessionId = receipt.advSessionId;
+  const nativeSessionId = receipt.sessionId;
   let bindingResult;
   try {
     bindingResult = await (deps.createSessionBinding ?? createBlindReviewSessionBinding)({
@@ -347,13 +381,21 @@ export async function mintBlindGapReviewer(
       message: 'The reviewer launched, but its exact session binding could not be persisted: ' +
         (error instanceof Error ? error.message : String(error)) + '. Do not mint or repost again until the binding is reconciled.' };
   }
+  if (!bindingResult.ok && bindingResult.code === 'native_session_unresolved') {
+    return { ok: true, launch, kickoff, activationAuditSeq: brief.activationAuditSeq,
+      scratchPrefix: scratchPlans?.scratchPrefix ?? null, binding: null, launchStatus: 'uncertain' };
+  }
   if (!bindingResult.ok) {
     return { ok: false, code: 'session_binding_failed',
       message: 'The reviewer launched, but its exact session binding was refused (' + bindingResult.code +
         '): ' + bindingResult.message + '. Do not mint or repost again until the binding is reconciled.' };
   }
+  const launchData = receiptRecord(receiptRecord(launch)?.data)?.launch;
+  const launchSummary = receiptRecord(launchData) ?? receiptRecord(receiptRecord(launch)?.launch);
+  const partial = receiptRecord(launch)?.isError === true || launchSummary?.partial === true || launchSummary?.agentStarted === false;
   return { ok: true, launch, kickoff, activationAuditSeq: brief.activationAuditSeq,
-    scratchPrefix: scratchPlans?.scratchPrefix ?? null, binding: bindingResult.binding };
+    scratchPrefix: scratchPlans?.scratchPrefix ?? null, binding: bindingResult.binding,
+    launchStatus: partial ? 'partial' : 'bound' };
 }
 
 export type ResumeBlindGapReviewerResult =

@@ -5581,6 +5581,23 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
     expect(result).not.toHaveProperty('unreadRunLint');
   });
 
+  it('does not pair completed HTTP/JSON proof with a separate pending loop-status read (EI-26785326704021888)', async () => {
+    const body = [
+      'Completed and read HTTP evidence 21829544 and 21830124.',
+      'Read /tmp/su51f-fidelity-runtime-ready-current.json.',
+      'A separate loop-status CLI read 53849 is still running.',
+    ].join('\n');
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-UNRELATED-CONTROL-READ', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-UNRELATED-CONTROL-READ', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('unreadRunLint');
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalled();
+  });
+
   it('stays absent for an ordinary progress checkpoint', async () => {
     const body = 'Implemented the compatibility path and the focused test passes 7/7.';
     getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-CLEAN', harness: 'papercup' });

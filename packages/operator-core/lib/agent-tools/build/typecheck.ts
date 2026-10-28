@@ -1359,6 +1359,7 @@ export default defineTool({
                       ...service.response.counts,
                       snapshotAgeMs: service.response.snapshotAgeMs,
                       queuedMs: service.response.queuedMs,
+                      refreshMs: service.response.refreshMs,
                       checkMs: service.response.checkMs,
                     },
                     scopeCaveat:

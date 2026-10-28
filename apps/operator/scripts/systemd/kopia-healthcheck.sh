@@ -226,15 +226,19 @@ fail() {
       #   1. page anyway, through the interpreter — a wrong mode must not cost a page;
       #   2. say so LOUDLY, to both the log and the journal, so the mode gets fixed;
       #   3. never record a page that did not happen, or the dedup window hides the next one.
+      local alert_status=""
       if [ -x "$ALERT" ]; then
-        "$ALERT" "$*"
-        echo "$now" > "$marker"
+        if "$ALERT" "$*"; then alert_status=0; else alert_status=$?; fi
       elif [ -f "$ALERT" ]; then
         echo "[$(date -Iseconds)] ALARM SCRIPT NOT EXECUTABLE: $ALERT — paged via bash anyway; fix its mode (chmod 755)" | tee -a "$LOG" >&2
-        bash "$ALERT" "$*"
-        echo "$now" > "$marker"
+        if bash "$ALERT" "$*"; then alert_status=0; else alert_status=$?; fi
       else
         echo "[$(date -Iseconds)] ALARM SCRIPT MISSING: $ALERT — NOBODY WAS PAGED; deliberately NOT recording a page, so the next run retries instead of deduping against a page that never went out" | tee -a "$LOG" >&2
+      fi
+      if [ "$alert_status" = 0 ]; then
+        echo "$now" > "$marker"
+      elif [ -n "$alert_status" ]; then
+        echo "[$(date -Iseconds)] ALERT COMMAND FAILED (exit $alert_status): $ALERT — delivery was not confirmed; NOT recording the page, so the next check retries" | tee -a "$LOG" >&2
       fi
     fi
   fi

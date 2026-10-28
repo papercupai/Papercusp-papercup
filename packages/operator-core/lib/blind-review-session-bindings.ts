@@ -43,7 +43,8 @@ export type BlindReviewSessionBinding = {
 };
 
 type FailureCode = 'adv_session_mismatch' | 'launch_profile_mismatch' | 'confinement_mismatch' |
-  'binding_conflict' | 'binding_not_found' | 'binding_unavailable' | 'resume_busy' | 'resume_lease_lost';
+  'binding_conflict' | 'binding_not_found' | 'binding_unavailable' | 'native_session_unresolved' |
+  'resume_busy' | 'resume_lease_lost';
 export type BlindReviewBindingResult =
   | { ok: true; created?: boolean; binding: BlindReviewSessionBinding }
   | { ok: false; code: FailureCode; message: string };
@@ -222,13 +223,19 @@ export async function findLatestBlindReviewSessionBindingByReviewer(input: {
 
 export async function createBlindReviewSessionBinding(input: {
   workspaceId: string; harnessSlug: string; planSlug: string; activationAuditSeq: number;
-  reviewerOwnerId: string; advSessionId: number; nativeSessionId: string;
+  reviewerOwnerId: string; advSessionId: number; nativeSessionId: string | null;
   launchParentOwner: string; confinement: SessionToolConfinement;
   replacementAttemptId?: number;
 }, deps: { sql?: Sql } = {}): Promise<BlindReviewBindingResult> {
   const sql = deps.sql ?? getOrgPg().sql;
   try {
-    const profile = inspectAdv(await readAdv(sql, input.workspaceId, input.advSessionId), input);
+    const adv = await readAdv(sql, input.workspaceId, input.advSessionId);
+    const nativeSessionId = input.nativeSessionId?.trim() ||
+      (typeof adv?.session_id === 'string' && adv.session_id.trim() ? adv.session_id : null);
+    if (!nativeSessionId) return { ok: false, code: 'native_session_unresolved',
+      message: 'The exact ADV session is open, but its native session id has not been recorded yet.' };
+    const bindingInput = { ...input, nativeSessionId };
+    const profile = inspectAdv(adv, bindingInput);
     if (!profile.ok) return profile;
     const actualConfinement = await readSessionConfinement(input.reviewerOwnerId, input.workspaceId);
     if (!actualConfinement || stable(actualConfinement) !== stable(input.confinement)) {
@@ -238,7 +245,7 @@ export async function createBlindReviewSessionBinding(input: {
       const [row] = await sql<Row[]>`
         UPDATE harness_shared.plan_blind_review_sessions
            SET reviewer_owner_id = ${input.reviewerOwnerId}, adv_session_id = ${input.advSessionId},
-               native_session_id = ${input.nativeSessionId}, account_route = ${profile.accountRoute},
+              native_session_id = ${nativeSessionId}, account_route = ${profile.accountRoute},
                model_spec = ${profile.modelSpec}, status = 'ready', updated_at = now()
          WHERE id = ${input.replacementAttemptId} AND replacement_of IS NOT NULL
            AND workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug}
@@ -256,7 +263,7 @@ export async function createBlindReviewSessionBinding(input: {
         (workspace_id, harness_slug, plan_slug, activation_audit_seq, reviewer_owner_id,
          adv_session_id, native_session_id, launch_parent_owner, account_route, model_spec, confinement_snapshot)
       VALUES (${input.workspaceId}, ${input.harnessSlug}, ${input.planSlug}, ${input.activationAuditSeq},
-              ${input.reviewerOwnerId}, ${input.advSessionId}, ${input.nativeSessionId},
+              ${input.reviewerOwnerId}, ${input.advSessionId}, ${nativeSessionId},
               ${input.launchParentOwner}, ${profile.accountRoute}, ${profile.modelSpec},
               ${sql.json(input.confinement as never)})
       ON CONFLICT DO NOTHING
@@ -268,7 +275,7 @@ export async function createBlindReviewSessionBinding(input: {
       id: existing?.id ?? 0, workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
       planSlug: input.planSlug, activationAuditSeq: input.activationAuditSeq,
       reviewerOwnerId: input.reviewerOwnerId, advSessionId: input.advSessionId,
-      nativeSessionId: input.nativeSessionId, launchParentOwner: input.launchParentOwner,
+      nativeSessionId, launchParentOwner: input.launchParentOwner,
       accountRoute: profile.accountRoute, modelSpec: profile.modelSpec, confinementSnapshot: input.confinement,
       status: existing?.status ?? 'ready', resumeLeaseId: existing?.resumeLeaseId ?? null,
       resumeLeaseExpiresAt: existing?.resumeLeaseExpiresAt ?? null, reviewId: existing?.reviewId ?? null,

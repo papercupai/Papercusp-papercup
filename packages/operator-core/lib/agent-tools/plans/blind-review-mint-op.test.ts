@@ -29,13 +29,13 @@ const envelope = (body: unknown, isError = false) => ({
   ...(isError ? { isError: true as const } : {}),
 });
 
-// A successful launch carries the exact native-session receipt the mint binds the
-// reviewer to; a launch without it is refused as session_binding_failed.
+// A successful launch carries the exact native-session receipt the mint binds the reviewer to.
 const RECEIPT = { launch: {
+  opened: 1,
   ownerIds: ['su-reviewer-1'],
   freshVerdict: { sessions: [{ ownerId: 'su-reviewer-1', advSessionId: 42, sessionId: 'native-review-1' }] },
 } };
-const launched = (body: unknown) => ({ ...envelope(body), data: RECEIPT });
+const launched = (body: unknown, isError = false) => ({ ...envelope(body, isError), data: RECEIPT });
 
 function deps(launchResult: unknown, brief: BlindReviewBrief | null = BRIEF) {
   const handler = vi.fn(async () => launchResult);
@@ -44,7 +44,8 @@ function deps(launchResult: unknown, brief: BlindReviewBrief | null = BRIEF) {
     ok: true as const, created: true,
     binding: {
       id: 7, workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: SLUG, activationAuditSeq: 7,
-      reviewerOwnerId: input.reviewerOwnerId, advSessionId: input.advSessionId, nativeSessionId: input.nativeSessionId,
+      reviewerOwnerId: input.reviewerOwnerId, advSessionId: input.advSessionId,
+      nativeSessionId: input.nativeSessionId ?? 'native-review-1',
       launchParentOwner: BLIND_GAP_REVIEW_ACTOR, accountRoute: 'auto', modelSpec: null,
       confinementSnapshot: input.confinement, status: 'ready' as const, resumeLeaseId: null,
       resumeLeaseExpiresAt: null, reviewId: null,
@@ -120,12 +121,34 @@ describe('runBlindReviewMintOp', () => {
     expect(JSON.stringify(out.payload)).not.toContain(SECRET_TURN);
   });
 
-  it('returns launch_failed with the launcher reason when the launch is refused', async () => {
+  it('keeps an uncertain launch from claiming that no reviewer is running or advising a fresh mint', async () => {
     const d = deps(envelope({ error: 'account_unavailable', message: 'no route' }, true));
     const out = await runBlindReviewMintOp(INPUT, d.deps);
     expect(out.isError).toBe(true);
-    expect(out.payload).toMatchObject({ error: 'launch_failed', slug: SLUG, activationAuditSeq: 7, launch: { error: 'account_unavailable' } });
+    expect(out.payload).toMatchObject({ error: 'launch_uncertain', slug: SLUG, activationAuditSeq: 7,
+      launch: { error: 'account_unavailable' } });
+    expect(out.payload.message).toContain('Do not start a second reviewer');
+    expect(out.payload.message).toContain('reuses its idempotency key');
+    expect(out.payload.message).not.toMatch(/no reviewer is running|mint again/i);
     expect(out.payload.ok).toBeUndefined();
+  });
+
+  it('reports a bound native reviewer when launcher verification fails after open', async () => {
+    const d = deps(launched({ error: 'startup_not_verified' }, true));
+    const out = await runBlindReviewMintOp(INPUT, d.deps);
+    expect(out).toMatchObject({ isError: true, payload: { error: 'launch_partial', slug: SLUG,
+      binding: { reviewerOwnerId: 'su-reviewer-1', advSessionId: 42, nativeSessionId: 'native-review-1' } } });
+    expect(out.payload.message).toContain('Do not mint again');
+  });
+
+  it('advises retry only when the launcher proves zero processes opened', async () => {
+    const refusal = { ...envelope({ error: 'account_unavailable' }, true),
+      data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } };
+    const d = deps(refusal);
+    const out = await runBlindReviewMintOp(INPUT, d.deps);
+    expect(out).toMatchObject({ isError: true, payload: { error: 'launch_failed' } });
+    expect(out.payload.message).toContain('No reviewer process opened');
+    expect(out.payload.message).toContain('then retry');
   });
 
   it('passes the mint refusals through without launching', async () => {
@@ -140,11 +163,11 @@ describe('runBlindReviewMintOp', () => {
     expect(unscoped.loadBrief).not.toHaveBeenCalled();
     expect(unscoped.handler).not.toHaveBeenCalled();
 
-    // A launch that returns no native-session receipt cannot be bound, so the adapter
-    // reports the mint's refusal instead of a running reviewer.
+    // A launch with no exact native-session receipt remains uncertain; it cannot be
+    // described as though no process started.
     const unbound = deps(envelope({ ok: true, ownerId: 'su-reviewer-1' }));
     const out3 = await runBlindReviewMintOp(INPUT, unbound.deps);
-    expect(out3).toMatchObject({ isError: true, payload: { error: 'session_binding_failed', slug: SLUG } });
+    expect(out3).toMatchObject({ isError: true, payload: { error: 'launch_uncertain', slug: SLUG } });
     expect(unbound.createSessionBinding).not.toHaveBeenCalled();
   });
 });

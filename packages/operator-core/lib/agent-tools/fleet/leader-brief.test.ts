@@ -2515,7 +2515,7 @@ describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {
     }
   });
 
-  it('does NOT flag a member already parked on an event (parked-awaiting-capability shape)', () => {
+  it('does NOT flag a claimable waiter when the queue count is missing', () => {
     const s = computeBenchSuggestion({
       stalled: false,
       verdict: 'parked-awaiting-capability',
@@ -2525,6 +2525,39 @@ describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {
       queued: [],
     });
     expect(s).toBeUndefined();
+  });
+
+  it('flags a member parked solely on the claimable event when supply predates the await', () => {
+    const s = computeBenchSuggestion(
+      {
+        stalled: false,
+        verdict: 'parked-awaiting-capability',
+        parkedOn: ['work-item:claimable'],
+        doing: null,
+        load: 0,
+        queued: [],
+      },
+      2,
+    );
+    expect(s?.kind).toBe('idle-with-claimable');
+  });
+
+  it('keeps other and compound event waits suppressed even when work is claimable', () => {
+    for (const parkedOn of [['some:event'], ['work-item:claimable', 'some:event']]) {
+      expect(
+        computeBenchSuggestion(
+          {
+            stalled: false,
+            verdict: 'parked-awaiting-capability',
+            parkedOn,
+            doing: null,
+            load: 0,
+            queued: [],
+          },
+          2,
+        ),
+      ).toBeUndefined();
+    }
   });
 
   it('does NOT flag a member holding a real claim (load>0) or with queued work', () => {
@@ -3924,6 +3957,24 @@ describe('EI-19313376980892266 — the brief must not call an AT-CAPACITY member
       heldIds: [],
     });
     expect(s?.kind).toBe('idle-with-claimable');
+  });
+
+  it('counts a claimable-event waiter in the summary alert when eligible supply predates its await', () => {
+    const parked = computeBenchSuggestion(
+      { ...idleShape, verdict: 'parked-awaiting-capability', parkedOn: ['work-item:claimable'] },
+      2,
+      null,
+      false,
+      { blocked: false, activeClaims: 0, heldIds: [] },
+    );
+    const idleWithClaimable = [parked].filter((s) => s?.kind === 'idle-with-claimable');
+    const alert = computeIdleWithClaimableAlert({
+      claimableCount: 2,
+      idleMemberCount: idleWithClaimable.length,
+      idleMemberIds: ['su-parked'],
+    });
+    expect(idleWithClaimable).toHaveLength(1);
+    expect(alert?.reason).toMatch(/1 member\(s\)/);
   });
 
   it('fails OPEN when no verdict was read — an unread oracle must not silence a real starvation signal', () => {

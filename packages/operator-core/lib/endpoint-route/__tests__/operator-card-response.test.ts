@@ -199,7 +199,7 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     expect(commitResponse).not.toHaveBeenCalled();
     vi.mocked(findConverseCard).mockResolvedValue(null);
     expect((await post({ correlationId: reg.correlationId, workspaceId: ws,
-      action: 'submit', payload: { picks: ['a'] } })).status).toBe(409);
+      action: 'submit', payload: { picks: ['a'] } })).status).toBe(404);
     expect(commitResponse).not.toHaveBeenCalled();
   });
 
@@ -216,14 +216,14 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     expect(await reg.result).toEqual(winner);
   });
 
-  it('decline path resolves with action:decline', async () => {
+  it('durable decline persists action without the legacy-only reason', async () => {
     const reg = scopedPendingCard();
     const res = await post({
       correlationId: reg.correlationId, workspaceId: ws,
       action: 'decline', reason: 'nope',
     });
     expect(res.status).toBe(200);
-    expect(await reg.result).toEqual({ action: 'decline', reason: 'nope' });
+    expect(await reg.result).toEqual({ action: 'decline' });
   });
 
   it('cross-workspace correlationId returns 404 (defense-in-depth)', async () => {

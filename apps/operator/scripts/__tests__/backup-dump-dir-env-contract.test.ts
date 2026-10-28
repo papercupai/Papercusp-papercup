@@ -159,3 +159,18 @@ describe(`systemd units that read ${ENV_VAR}`, () => {
     expect(pairs.map((p) => p.unit)).toContain('papercusp-db-backup.service');
   });
 });
+
+describe('systemd backup install recipe', () => {
+  it('installs the tracked alert at the path its failure unit executes', () => {
+    const readme = readFileSync(resolve(SYSTEMD_DIR, 'README.md'), 'utf8');
+    const alertUnit = readFileSync(resolve(SYSTEMD_DIR, 'papercusp-db-backup-alert.service'), 'utf8');
+    const backupUnit = readFileSync(resolve(SYSTEMD_DIR, 'papercusp-db-backup.service'), 'utf8');
+
+    expect(readme).toContain('ln -sf "$(pwd)/kopia-backup-alert.sh" ~/.config/kopia/backup-alert.sh');
+    expect(readme).not.toMatch(/recreate\s+`~\/\.config\/kopia\/db-backup\.sh`/i);
+    expect(alertUnit).toContain('ExecStart=%h/.config/kopia/backup-alert.sh');
+    expect(backupUnit).toContain('papercusp-db-backup.sh');
+    expect(existsSync(resolve(SYSTEMD_DIR, 'kopia-backup-alert.sh'))).toBe(true);
+    expect(existsSync(resolve(SYSTEMD_DIR, 'papercusp-db-backup.sh'))).toBe(true);
+  });
+});

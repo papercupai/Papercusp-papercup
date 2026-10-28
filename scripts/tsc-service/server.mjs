@@ -195,8 +195,9 @@ async function refresh(projects, trace) {
   dependencyCache.clear();
 }
 
-async function serve({ request, arrivedAt, trace, isCancelled }) {
+async function serve({ request, arrivedAt, refreshStartedAt, refreshFinishedAt, trace, isCancelled }) {
   const started = Date.now();
+  const refreshMs = refreshFinishedAt - refreshStartedAt;
   if (isCancelled()) return null;
   trace('program-files');
   const project = state.snapshot.getProject(request.project);
@@ -285,7 +286,8 @@ async function serve({ request, arrivedAt, trace, isCancelled }) {
     counts: { named: scope.named, typeReferencing: scope.typeReferencing, importers: scope.importers },
     namedNotInProgram: scope.namedNotInProgram,
     snapshotAgeMs: now - state.snapshotAt,
-    queuedMs: started - arrivedAt,
+    queuedMs: Math.max(0, started - arrivedAt - refreshMs),
+    refreshMs,
     checkMs: now - started,
   };
 }
@@ -320,13 +322,17 @@ async function drain() {
       const projects = [...new Set(batch.map((item) => item.request.project))];
       const detachRefreshAbort = abortRefreshIfUnobserved(batch);
       try {
+      let refreshStartedAt = Date.now();
+      let refreshFinishedAt = refreshStartedAt;
       let refreshFailed = false;
       let refreshError;
       try {
+        refreshStartedAt = Date.now();
         for (const item of batch) item.trace('refresh');
         await refresh(projects, (phase) => {
           for (const item of batch) item.trace(phase);
         });
+        refreshFinishedAt = Date.now();
         for (const item of batch) item.trace('refreshed');
       } catch (error) {
         refreshFailed = true;
@@ -341,7 +347,8 @@ async function drain() {
         const item = batch[i];
         if (item.cancelled) continue;
         try {
-          const response = await serve({ ...item, isCancelled: () => item.cancelled });
+          const response = await serve({ ...item, refreshStartedAt, refreshFinishedAt,
+            isCancelled: () => item.cancelled });
           if (!response || item.cancelled) {
             item.trace('cancelled');
             continue;
@@ -351,7 +358,7 @@ async function drain() {
           log(
             response.ok
               ? `served ${relative(ROOT, item.request.project)} named=${item.request.files.length} checked=${response.checked.length} ` +
-                  `errors=${response.errorCount} queuedMs=${response.queuedMs} checkMs=${response.checkMs} ` +
+                  `errors=${response.errorCount} queuedMs=${response.queuedMs} refreshMs=${response.refreshMs} checkMs=${response.checkMs} ` +
                   `tsgoRssGiB=${(tsgoRssBytes() / 1024 ** 3).toFixed(2)}`
               : `declined ${relative(ROOT, item.request.project)}: ${response.reason} ${response.detail ?? ''}`,
           );

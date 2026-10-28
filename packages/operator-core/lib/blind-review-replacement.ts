@@ -10,7 +10,7 @@ import { blindReviewCompletion, loadBlindReviewBrief } from './blind-review-gate
 import { briefTurnCount } from './blind-review-brief';
 import { validProductReadBoundary, type ProductReadBoundary, type SessionToolConfinement } from './capability-envelope/session-confinement';
 import { blindReviewScratchPrefix } from './blind-review-scratch-plans';
-import { blindReviewerConfinement, buildBlindReviewerKickoff, BLIND_GAP_REVIEW_ACCOUNT, BLIND_REVIEWER_BACKENDS, defaultKnownToolNames, launchProvablyNotStarted,
+import { blindReviewLaunchReceipt, blindReviewerConfinement, buildBlindReviewerKickoff, BLIND_GAP_REVIEW_ACCOUNT, BLIND_REVIEWER_BACKENDS, defaultKnownToolNames, launchProvablyNotStarted,
   howToRunOutsideCeilingMessage, howToRunToolsOutsideCeiling, type BlindReviewerProductReads } from './blind-reviewer-mint';
 import { BLIND_GAP_REVIEW_ACTOR, createBlindReviewSessionBinding, recordBlindReviewSessionPost } from './blind-review-session-bindings';
 import { TERMINAL_TASK_STATES } from './task-manager/types';
@@ -118,32 +118,15 @@ export async function validateReplacementProductReads(reads: ProductReadBoundary
   }
 }
 
-/** isError alone never proves no process started. Unknown/partial receipts stay reserved. */
-function openedNativeIdentity(value: unknown): { ownerId: string; advSessionId: number; sessionId: string | null } | null {
-  const env = obj(value);
-  const launch = obj(obj(env?.data)?.launch) ?? obj(env?.launch) ?? env;
-  if (!launch || launch.mode === 'deduped') return null;
-  const sessions = obj(launch.freshVerdict)?.sessions;
-  const owners = launch.ownerIds;
-  if (launch.opened !== 1 || !Array.isArray(owners) || owners.length !== 1 ||
-      !Array.isArray(sessions) || sessions.length !== 1) return null;
-  const session = obj(sessions[0]);
-  const adv = Number(session?.advSessionId);
-  return typeof owners[0] === 'string' && session?.ownerId === owners[0] &&
-    (session.sessionId == null || typeof session.sessionId === 'string') && Number.isSafeInteger(adv) && adv > 0
-    ? { ownerId: owners[0], advSessionId: adv, sessionId: session.sessionId || null } : null;
-}
-
+/** Preserve the replacement API while sharing the original mint's receipt rules. */
 export function replacementLaunchReceipt(value: unknown):
   | { kind: 'not-started' }
   | { kind: 'native'; ownerId: string; advSessionId: number; sessionId: string }
   | { kind: 'uncertain' } {
-  if (launchProvablyNotStarted(value)) return { kind: 'not-started' };
-  const env = obj(value);
-  const launch = obj(obj(env?.data)?.launch) ?? obj(env?.launch) ?? env;
-  if (!launch || launch.mode === 'deduped') return { kind: 'uncertain' };
-  const identity = openedNativeIdentity(value);
-  return identity?.sessionId ? { kind: 'native', ...identity, sessionId: identity.sessionId } : { kind: 'uncertain' };
+  const receipt = blindReviewLaunchReceipt(value);
+  return receipt.kind === 'native' && receipt.sessionId
+    ? { kind: 'native', ownerId: receipt.ownerId, advSessionId: receipt.advSessionId, sessionId: receipt.sessionId }
+    : receipt.kind === 'not-started' ? receipt : { kind: 'uncertain' };
 }
 
 function publicAttempt(row: Attempt) {
@@ -306,13 +289,14 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
     }
     if (attempt.status === 'launching' || attempt.status === 'uncertain') {
       let receipt = replacementLaunchReceipt(outcome);
-      if (receipt.kind === 'uncertain') {
+      const detailedReceipt = blindReviewLaunchReceipt(outcome);
+      if (receipt.kind === 'uncertain' && detailedReceipt.kind === 'native' && !detailedReceipt.sessionId) {
         // The launcher can return before Codex records its native id. Its
         // immutable summary then stays incomplete even after ADV is ready.
         // Recover only the exact opened identity; bind below still validates
         // its recruiter profile, confinement and independent lineage.
-        const opened = openedNativeIdentity(outcome);
-        if (opened && !opened.sessionId) {
+        const opened = detailedReceipt;
+        if (opened) {
           const [native] = await sql<Array<{ session_id: string | null }>>`
             SELECT session_id FROM harness_shared.adv_sessions
              WHERE workspace_id = ${input.workspaceId} AND id = ${opened.advSessionId}

@@ -1899,7 +1899,19 @@ export function computeBenchSuggestion(
   // `fleet:bench` parks the member on a completion event, so benching a member that is
   // mid-call sleeps it on top of live work.
   if (a.longCallInFlight) return undefined;
-  if ((a.parkedOn?.length ?? 0) > 0) return undefined;
+  const parkedOn = a.parkedOn ?? [];
+  const parkedOnlyOnClaimable = parkedOn.length === 1 && parkedOn[0] === 'work-item:claimable';
+  // A claimable await only wakes on a future transition. If eligible work already exists,
+  // a member parked solely on that event is asleep through supply it could claim. Surface
+  // that exact idle shape, but keep every other wait (and unknown/empty supply) suppressed.
+  const parkedClaimableHasSupply =
+    parkedOnlyOnClaimable &&
+    a.load === 0 &&
+    (a.queued?.length ?? 0) === 0 &&
+    a.doing == null &&
+    claimableCount != null &&
+    claimableCount > 0;
+  if (parkedOn.length > 0 && !parkedClaimableHasSupply) return undefined;
   const protectiveClaimHealth = a.claimHealth?.find((h) => !shouldRecoverClaimFromHealth(h));
   if (protectiveClaimHealth) return undefined;
   if (a.verdict === 'speaking' || a.verdict === 'first-turn-done') {

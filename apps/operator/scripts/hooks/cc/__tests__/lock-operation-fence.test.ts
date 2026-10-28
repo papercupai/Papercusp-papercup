@@ -171,8 +171,8 @@ function success(id = 'edit-one', paths = ['sub/one.ts']) {
   return { ...payload(id, paths), tool_response: { success: true, output: 'Success. Updated the following files.' } };
 }
 
-function parent(response: unknown) {
-  const input = payload('parent');
+function parent(response: unknown, paths = ['sub/one.ts']) {
+  const input = payload('parent', paths);
   return { ...input, tool_name: 'functions.exec',
     tool_input: `await tools.apply_patch(${JSON.stringify(input.tool_input)});`, tool_response: response };
 }

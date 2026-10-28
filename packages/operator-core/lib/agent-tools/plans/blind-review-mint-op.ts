@@ -72,7 +72,7 @@ export async function runBlindReviewMintOp(
     return { isError: true, payload: { error: minted.code, slug: input.slug, message: minted.message } };
   }
   const launch = readLaunchEnvelope(minted.launch);
-  if (launch.isError) {
+  if (minted.launchStatus === 'not-started') {
     return {
       isError: true,
       payload: {
@@ -80,9 +80,25 @@ export async function runBlindReviewMintOp(
         slug: input.slug,
         activationAuditSeq: minted.activationAuditSeq,
         launch: launch.body,
-        message: 'The reviewer launch was refused, so no reviewer is running. Fix the cause named in launch, then mint again.',
+        message: 'No reviewer process opened for this activation. Fix the cause named in launch, then retry; the zero-process receipt makes this activation key reusable.',
       },
     };
+  }
+  if (minted.launchStatus === 'uncertain') {
+    return { isError: true, payload: {
+      error: 'launch_uncertain', slug: input.slug, activationAuditSeq: minted.activationAuditSeq,
+      launch: launch.body,
+      message: 'The launch may have opened a reviewer, but its exact native identity is not available yet. Do not start a second reviewer or use a fresh key; retrying this same activation reuses its idempotency key and can reconcile the original launch.',
+    } };
+  }
+  if (minted.launchStatus === 'partial') {
+    return { isError: true, payload: {
+      error: 'launch_partial', slug: input.slug, activationAuditSeq: minted.activationAuditSeq,
+      launch: launch.body,
+      binding: minted.binding ? { reviewerOwnerId: minted.binding.reviewerOwnerId,
+        advSessionId: minted.binding.advSessionId, nativeSessionId: minted.binding.nativeSessionId } : null,
+      message: 'A reviewer process opened and its exact native session is bound, but startup verification failed. Do not mint again; inspect or resume this bound reviewer.',
+    } };
   }
   return {
     isError: false,

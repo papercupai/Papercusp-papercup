@@ -2566,10 +2566,250 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
   },
 ]);
 
-// These reviewed rows belong to the P-014/P-013 inventory prefixes rather than
-// the P-016 release lane. Keep them in the shared bypass registry without
+// Supplemental reviewed rows join the shared scanner registry without
 // inflating P016_DISPOSITION_REGISTRY or its exact lane census.
 const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
+  {
+    path: "apps/operator/scripts/psu-carry-fence.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "The pending WeakSet tracks only unbound legacy carry messages while their delivery is active; it does not strongly retain payloads. A scalar count lets fence() refuse safely until each message settles, and end() deletes each weak key idempotently. This is lifecycle state, not queued resource work.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source, "psu-carry-fence.mjs");
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return source.includes("const pending = new WeakSet();") &&
+        source.includes("let pendingLegacyCount = 0;") &&
+        source.includes("const isWeakKey = value => value !== null &&") &&
+        source.includes("message?.carryNonce === undefined") &&
+        source.includes("!pending.has(message)") &&
+        source.includes("pending.add(message);") &&
+        source.includes("pending.delete(message)") &&
+        source.includes("pendingLegacyCount > 0") &&
+        source.includes("pendingLegacyCount += 1;") &&
+        source.includes("pendingLegacyCount -= 1;") &&
+        writers.length === 1 && writers[0][1] === "pending";
+    },
+  },
+  {
+    path: "packages/operator-core/lib/agent-identities/idop-p001-stack-population.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "The implication worklist is local to one pure population calculation. Mode ids are validated against the finite registry, the seen Set prevents implication cycles, and overlay enumeration is explicitly limited to 16 axes; it starts no resident work.",
+    matchesSource: (source) => {
+      const start = source.indexOf("export function enumerateIdopP001Stacks(");
+      const end = source.indexOf("\ntype GeneratedComponent", start);
+      if (start < 0 || end < 0) return false;
+      const section = source.slice(start, end);
+      const code = stripCommentsAndStrings(section, "idop-p001-stack-population.ts");
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return section.includes("overlays.length > 16") &&
+        section.includes("const queue = selected.flatMap(mode => [...mode.implies]);") &&
+        section.includes("const id = queue.shift()!;") &&
+        section.includes("if (seen.has(id)) continue;") &&
+        section.includes("seen.add(id);") &&
+        section.includes("queue.push(...implied.implies);") &&
+        writers.length === 1 && writers[0][1] === "queue";
+    },
+  },
+  {
+    path: "packages/operator-core/lib/agent-tools/plans/tree-instruments.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "The committed-submodule worklist now tracks each canonical repository path plus commit and fails closed on a repeated pair, preventing symlink aliases from making the walk recurse forever. Each remaining entry is a distinct checked-out repository snapshot in this synchronous census; it is not resident service work.",
+    matchesSource: (source) => {
+      const start = source.indexOf("async function notificationCensusAtCommit(");
+      const end = source.indexOf("\n  const sources: Record<string, string> = {};", start);
+      if (start < 0 || end < 0) return false;
+      const section = source.slice(start, end);
+      const code = stripCommentsAndStrings(section, "tree-instruments.ts");
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return section.includes("const pending = [{ repo: '.', commit }];") &&
+        section.includes("const visitedRepos = new Set<string>();") &&
+        section.includes("const repoKey = JSON.stringify([await realpath(dir), next.commit]);") &&
+        section.includes("visitedRepos.has(repoKey)") &&
+        section.includes("visitedRepos.add(repoKey);") &&
+        section.includes("const next = pending.shift()!;") &&
+        section.includes("pending.push({ repo: path, commit: entry.object });") &&
+        writers.length === 1 && writers[0][1] === "pending";
+    },
+  },
+  {
+    path: "packages/operator-core/lib/memory/bench/runtime-file-opens.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "The pending Map correlates unfinished strace records by thread while parsing one already-retained trace string. Duplicate starts, unmatched resumes, and leftovers fail closed; the map is discarded when this parser returns and starts no work.",
+    matchesSource: (source) => {
+      const start = source.indexOf("export function bindRuntimeModelOpens(");
+      if (start < 0) return false;
+      const nextExport = source.indexOf("\nexport function ", start + 1);
+      const section = source.slice(start, nextExport < 0 ? source.length : nextExport);
+      const code = stripCommentsAndStrings(section, "runtime-file-opens.mjs");
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return section.includes("const pending = new Map(), lines = [], edges = [];") &&
+        section.includes("pending.set(tid, { call: call.slice(0, -16), atMs });") &&
+        section.includes("pending.delete(tid);") &&
+        section.includes("if (pending.size) throw new Error('incomplete strace capture');") &&
+        writers.length === 1 && writers[0][1] === "pending";
+    },
+  },
+  {
+    path: "packages/operator-core/lib/memory/bench/runtime-source-capture.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "Each worker's pending Map is protocol-response correlation for the bounded enable/breakpoint/resume handshake. Responses and transport errors delete entries; source capture holds the worker paused until reads settle, and the process terminal receipt exposes any leftover request. This diagnostic census does not queue independent resident work.",
+    matchesSource: (source) => {
+      const start = source.indexOf("export function startRuntimeSourceCapture(");
+      const end = source.indexOf("\nif (process.env.PAPERCUSP_RUNTIME_SOURCE_CAPTURE)", start);
+      if (start < 0 || end < 0) return false;
+      const section = source.slice(start, end);
+      const code = stripCommentsAndStrings(section, "runtime-source-capture.mjs");
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return section.includes("pending: new Map(), nextId: 0, live: true") &&
+        section.includes("target.pending.set(requestId, callback);") &&
+        section.includes("child.pending.get(message.id)") &&
+        section.includes("child.pending.delete(message.id);") &&
+        section.includes("target.pending.delete(requestId)") &&
+        section.includes("target.sourcePending = (target.sourcePending ?? 0) + 1;") &&
+        section.includes("if (!target.paused || target.sourcePending || !target.live) return;") &&
+        section.includes("target.pending.size + (target.sourcePending ?? 0)") &&
+        writers.length === 1 && writers[0][1] === "target.pending";
+    },
+  },
+  {
+    path: "scripts/check-fire-and-forget-classification.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "The queue and detachedQueue are local graph traversals over the already-parsed symbol population. queued prevents duplicate pending symbols and detached prevents duplicate propagation; this analysis creates no background work.",
+    matchesSource: (source) => {
+      const start = source.indexOf("const reverse = new Map();");
+      const end = source.indexOf("const occurrences = new Map();", start);
+      if (start < 0 || end < 0) return false;
+      const section = source.slice(start, end);
+      const code = stripCommentsAndStrings(section, "check-fire-and-forget-classification.mjs");
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return section.includes("const queue = [...symbols.values()].filter(s => s.roots.size).map(s => s.id);") &&
+        section.includes("const queued = new Set(queue);") &&
+        section.includes("if (changed && !queued.has(receiver)) { queued.add(receiver); queue.push(receiver); }") &&
+        section.includes("const detachedQueue = [];") &&
+        section.includes("if (id && !detached.has(id)) { detached.add(id); detachedQueue.push(id); }") &&
+        writers.length === 2 && writers.some(match => match[1] === "queue") &&
+        writers.some(match => match[1] === "detachedQueue");
+    },
+  },
+  {
+    path: "scripts/lib/affected-path-routes.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "The local queue computes reverse-dependency closure for one route selection. Every discovered workspace enters affected before enqueue, so each finite graph node is processed at most once; it starts no resident work.",
+    matchesSource: (source) => {
+      const start = source.indexOf("export function expandAffectedWorkspaceNames(");
+      const end = source.indexOf("\n}", start);
+      if (start < 0 || end < 0) return false;
+      const section = source.slice(start, end);
+      const code = stripCommentsAndStrings(section, "affected-path-routes.mjs");
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return section.includes("const affected = new Set(included);") &&
+        section.includes("const queue = [...seeds];") &&
+        section.includes("if (affected.has(name)) continue;") &&
+        section.includes("affected.add(name);") &&
+        section.includes("queue.push(name);") &&
+        section.includes("return affected;") &&
+        writers.length === 1 && writers[0][1] === "queue";
+    },
+  },
+  {
+    path: "scripts/lib/pure-lane-proof-capture.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "This per-invocation queue partitions the finite plan.order file list into slices. A timeout replaces one slice with disjoint sub-slices from that same list, and a single-file hang is terminal, so queued file count is conserved and no persistent service queue is created.",
+    matchesSource: (source) => {
+      const start = source.indexOf("  const queue = [];");
+      const end = source.indexOf("\n  summary.state = \"done\";", start);
+      if (start < 0 || end < 0) return false;
+      const section = source.slice(start, end);
+      const code = stripCommentsAndStrings(section, "pure-lane-proof-capture.mjs");
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return section.includes("queue.push(plan.order.slice(i, i + sliceSize));") &&
+        section.includes("const slice = queue[0];") &&
+        section.includes("queue.shift();") &&
+        section.includes("const parts = splitTimedOutSlice(slice);") &&
+        section.includes("queue.unshift(...parts);") &&
+        source.includes("if (slice.length <= 1) return [];") &&
+        source.includes("out.push(slice.slice(i, i + size));") &&
+        writers.length === 1 && writers[0][1] === "queue";
+    },
+  },
+  {
+    path: "scripts/lib/runtime-compatibility-census.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "The pending array is a local traversal of the pinned ELF dependency graph. realpath inspection and traversed sets deduplicate nodes, while maxLibraries is validated as a positive safe integer and bounds the inspected population; no resident service work is queued.",
+    matchesSource: (source) => {
+      const start = source.indexOf("const libraries = [], edges = [], unresolved = [], inspected = new Map(), pending = [], traversed = new Set();");
+      const end = source.indexOf("const result = { schema: 'papercusp-elf-library-candidates-v1'", start);
+      if (start < 0 || end < 0) return false;
+      const section = source.slice(start, end);
+      const code = stripCommentsAndStrings(section, "runtime-compatibility-census.mjs");
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return source.includes("!Number.isSafeInteger(maxLibraries) || maxLibraries < 1") &&
+        section.includes("inspected.set(realPath, null);") &&
+        section.includes("if (inspected.size > maxLibraries)") &&
+        section.includes("pending.push(row);") &&
+        section.includes("traversed.add(source.realPath);") &&
+        section.includes("pending.push(target);") &&
+        writers.length === 2 && writers.every(match => match[1] === "pending");
+    },
+  },
+  {
+    path: "scripts/lib/tsc-service.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "takeTscServiceProjectBatch drains the caller-owned queue into a local snapshot, removes cancelled entries, returns one project batch, and puts only the unchanged remaining entries back. Queue cardinality cannot grow in this helper; the actual service queue has its own upstream disposition.",
+    matchesSource: (source) => {
+      const start = source.indexOf("export function takeTscServiceProjectBatch(queue)");
+      const end = source.indexOf("\n}", start);
+      if (start < 0 || end < 0) return false;
+      const section = source.slice(start, end);
+      const code = stripCommentsAndStrings(section, "tsc-service.mjs");
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return section.includes("const pending = queue.splice(0).filter(item => !item.cancelled);") &&
+        section.includes("const project = pending[0]?.request.project;") &&
+        section.includes("if (item.request.project === project) batch.push(item);") &&
+        section.includes("else queue.push(item);") &&
+        section.includes("return batch;") &&
+        writers.length === 1 && writers[0][1] === "queue";
+    },
+  },
+  {
+    path: "scripts/lib/verify-tauri-assertion-env.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "The parser worklist contains only suffixes of one finite shell command after comment newlines. Each pushed suffix consumes a newline from its parent, so this is local tokenization state, not queued resource work.",
+    matchesSource: (source) => {
+      const start = source.indexOf("const pending = [command];");
+      const end = source.indexOf("\n    if (hasPlaywrightTest(tokens))", start);
+      if (start < 0 || end < 0) return false;
+      const section = source.slice(start, end);
+      const code = stripCommentsAndStrings(section, "verify-tauri-assertion-env.mjs");
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return section.includes("while (pending.length) {") &&
+        section.includes("parse(pending.shift(), key => key === 'OPERATOR_SOURCE_ROOT'") &&
+        section.includes("if (newline >= 0) pending.push(token.comment.slice(newline + 1));") &&
+        section.includes("else tokens.push(token);") &&
+        writers.length === 1 && writers[0][1] === "pending";
+    },
+  },
   {
     path: "apps/operator/bin/release/dependency-lock-equivalence.mjs",
     code: "resource-start-outside-admission",

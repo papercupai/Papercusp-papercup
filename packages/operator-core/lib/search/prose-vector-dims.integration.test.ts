@@ -242,6 +242,19 @@ function expectedWidths(): Map<string, { dims: number; why: string }> {
     dims: 768,
     why: 'physical storage contract from migration 1170 (event key registry)',
   });
+  // Migration 1327 renamed personal_documents -> documents and left a
+  // compatibility VIEW whose embedding column inherits the base vector(768).
+  m.set(key('personal_documents', 'embedding'), {
+    dims: 768,
+    why: 'compatibility view from migration 1327 (personal_documents -> documents)',
+  });
+  // Migration 1568 declares an UNCONSTRAINED `vector` (atttypmod -1): the
+  // semantic code index stores whatever width its code-embedding model emits,
+  // so the catalog reports -1. Pin that, so a width change here is deliberate.
+  m.set(key('semantic_code_functions', 'embedding'), {
+    dims: -1,
+    why: 'unconstrained vector from migration 1568 (semantic code index)',
+  });
   return m;
 }
 
