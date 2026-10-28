@@ -40,6 +40,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { createTextCollector } from '../child-output.js';
+import { parseGithubUrl, type ParsedGithubUrl } from './github-url';
 
 // Lazy: this server module is pulled into the operator-vite SPA bundle, where
 // node:util is browser-stubbed (promisify === undefined). Calling promisify at
@@ -49,53 +50,10 @@ import { createTextCollector } from '../child-output.js';
 const execFileP: (...a: unknown[]) => Promise<{ stdout: string; stderr: string }> = (...a) =>
   (promisify(execFile) as (...x: unknown[]) => Promise<{ stdout: string; stderr: string }>)(...a);
 
-/**
- * Accepted GitHub URL shapes:
- *   - https://github.com/<owner>/<repo>
- *   - https://github.com/<owner>/<repo>.git
- *   - git@github.com:<owner>/<repo>
- *   - git@github.com:<owner>/<repo>.git
- *
- * Owner + repo segments are restricted to GitHub's actual rules:
- *   - 1-39 chars
- *   - alphanum, hyphen, underscore, dot
- *   - cannot start/end with separator (we allow it for owner since
- *     GitHub does too in practice; repo regex is strict)
- *
- * Anything else (other hosts, paths with extra segments, query strings,
- * fragments) is rejected to keep this helper exclusively for the
- * GitHub-URL create-harness flow.
- */
-const GITHUB_HTTPS_RE =
-  /^https:\/\/github\.com\/([A-Za-z0-9][A-Za-z0-9_.-]{0,38})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,99}?)(?:\.git)?\/?$/;
-const GITHUB_SSH_RE =
-  /^git@github\.com:([A-Za-z0-9][A-Za-z0-9_.-]{0,38})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,99}?)(?:\.git)?$/;
-
-export interface ParsedGithubUrl {
-  owner: string;
-  repo: string;
-  /** Normalized HTTPS URL we'll actually invoke `git clone` with. */
-  cloneUrl: string;
-}
-
-export function parseGithubUrl(url: string): ParsedGithubUrl | null {
-  const trimmed = url.trim();
-  if (!trimmed) return null;
-  let m = GITHUB_HTTPS_RE.exec(trimmed);
-  if (!m) m = GITHUB_SSH_RE.exec(trimmed);
-  if (!m) return null;
-  const owner = m[1];
-  const repo = m[2];
-  // Final guard: catch a few owner/repo strings the broad regex would
-  // accept but GitHub doesn't allow. Owner can't be all dots; repo
-  // can't be just '.' or '..'.
-  if (/^\.+$/.test(owner) || /^\.+$/.test(repo)) return null;
-  return {
-    owner,
-    repo,
-    cloneUrl: `https://github.com/${owner}/${repo}.git`,
-  };
-}
+// The pure URL parser lives in ./github-url so sync-resolver read paths can use it
+// without reaching node:child_process (WI-6554700010030738). Re-exported here for the
+// clone-flow callers that already import it from this module.
+export { parseGithubUrl, type ParsedGithubUrl } from './github-url';
 
 /**
  * Default directory where cloned repos land. Workspace-scoped so each

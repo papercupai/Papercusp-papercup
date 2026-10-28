@@ -2109,7 +2109,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { githubUrl } = args as { githubUrl: string };
       try {
-        const { parseGithubUrl } = await import('../harness/clone-github');
+        const { parseGithubUrl } = await import('../harness/github-url');
         const parsed = parseGithubUrl(githubUrl);
         if (!parsed) return [];
         const [{ fetchRepoIntegrationFacts }, { recommendIntegrationMode }, { integrationModeQuestion }, policy] =
