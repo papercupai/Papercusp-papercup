@@ -190,11 +190,21 @@ function stripUndefined<T extends object>(o: T): Partial<T> {
 
 function citesPassingTestRun(e: ChangeKindEvidence): string[] {
   const missing: string[] = [];
-  const run = e.testsRun ?? '';
+  const phases = e.testResultPhases;
+  let currentPhase: NonNullable<ChangeKindEvidence['testResultPhases']>[number] | undefined;
+  if (phases !== undefined) {
+    const currentPhases = phases.filter((phase) => phase.phase === 'current');
+    if (currentPhases.length !== 1 || !phases.some((phase) => phase.phase === 'baseline')) {
+      missing.push('`testResultPhases` with at least one baseline and exactly one current phase');
+      return missing;
+    }
+    currentPhase = currentPhases[0];
+  }
+  const run = currentPhase ? currentPhase.testsRun : e.testsRun ?? '';
   if (!TEST_RUNNER_COMMAND_RE.test(run) && !TEST_FILE_RE.test(run)) {
     missing.push('`testsRun` naming the test command or test files that ran (for example `testing:run { files }`)');
   }
-  const result = e.testResult ?? '';
+  const result = currentPhase ? currentPhase.testResult : e.testResult ?? '';
   // A runner's explicit zero count is not a FAIL verdict; retain other FAIL markers.
   const uncountedResult = result.replace(/\b0\s+FAIL\b/g, '');
   if (!result) missing.push('`testResult` reporting the run passed');

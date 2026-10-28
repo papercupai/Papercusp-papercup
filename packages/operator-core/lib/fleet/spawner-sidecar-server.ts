@@ -374,7 +374,7 @@ export function runSpawnerSidecarServer(deps: {
           const report = (event: 'slow' | 'progress' | 'request-settled'): void => {
             try {
               const poolAcquisitions = pgAcquireTimingSnapshot();
-              console.info('[spawner-process-exec-stage]', {
+              const detail = {
                 event, serverGeneration, connectionId,
                 clientConnectionId: connection.clientConnectionId,
                 requestId: id, diagnosticRequestId, method: 'process:exec', sidecarPid: processExecIdentity.pid,
@@ -392,7 +392,12 @@ export function runSpawnerSidecarServer(deps: {
                   : null,
                 poolAcquisitions: poolAcquisitions?.acquisitions ?? [],
                 poolAcquisitionsOmitted: poolAcquisitions?.omitted ?? 0,
-              });
+              };
+              // Keep the searchable marker and its correlation fields in one journal
+              // record. console's object formatter can span a single object over many
+              // MESSAGE lines; logs:read filters each line independently, orphaning the
+              // request/client IDs from the marker line.
+              console.info('[spawner-process-exec-stage]', JSON.stringify(detail));
             } catch { /* diagnostics must not interrupt the execution/drain fence */ }
           };
           const slowTimer = setTimeout(() => { slow = true; report('slow'); }, deps.slowExecMs ?? 5_000);

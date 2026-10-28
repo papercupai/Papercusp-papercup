@@ -261,7 +261,7 @@ function hasPopulatedMcpResultValue(parsed: unknown): boolean {
   // Keep these explicit so control metadata alone does not suppress warnings for true empties.
   for (const key of [
     'results', 'items', 'data', 'result', 'value', 'presence', 'facts', 'hits', 'agents',
-    'sessions', 'turns', 'watch', 'fact', 'issue', 'held', 'scorecard', 'scorecards', 'loop', 'spec', 'specs', 'evidence', 'rows',
+    'sessions', 'turns', 'watch', 'fact', 'issue', 'held', 'scorecard', 'scorecards', 'loop', 'spec', 'specs', 'evidence', 'rows', 'columns',
     'workItem', 'event_inspection',
   ]) {
     if (!(key in body)) continue;
@@ -291,7 +291,7 @@ function hasPopulatedCodeRunSummary(summary: unknown): boolean {
   const record = summary as Record<string, unknown>;
   const resultFields = [
     'results', 'items', 'data', 'result', 'value', 'presence', 'facts', 'fact', 'hits', 'agents',
-    'issue', 'held', 'scorecard', 'scorecards', 'loop', 'spec', 'specs', 'evidence', 'rows',
+    'issue', 'held', 'scorecard', 'scorecards', 'loop', 'spec', 'specs', 'evidence', 'rows', 'columns',
     'workItem', 'event_inspection', 'entries', 'runs',
   ];
   if (resultFields.some((key) => key in record)) {

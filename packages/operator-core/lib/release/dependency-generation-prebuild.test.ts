@@ -118,12 +118,12 @@ describe('dependency generation background prebuild', () => {
   });
 
   it('claims candidate+input once, publishes through the existing helper, then persists/emits ready', async () => {
-    const calls: string[][] = [];
+    const calls: Array<{ command: string; args: string[]; options: { cwd: string } }> = [];
     let state: DependencyPrebuildState | null = null;
     const emitted: DependencyPrebuildState[] = [];
     let clock = 1_000;
-    const command: DependencyPrebuildCommand = vi.fn(async (_command, args, options) => {
-      calls.push(args);
+    const command: DependencyPrebuildCommand = vi.fn(async (invokedCommand, args, options) => {
+      calls.push({ command: invokedCommand, args, options });
       if (args.includes('--fingerprint-ref')) return fingerprintResult(CANDIDATE_A);
       options.onSpawn?.(4321);
       options.onProgress?.();
@@ -169,8 +169,24 @@ describe('dependency generation background prebuild', () => {
 
     expect(outcome).toBe('ready');
     expect(calls).toHaveLength(2);
-    expect(calls[0]).toContain('--fingerprint-ref');
-    expect(calls[1]).toContain('--ensure-ref');
+    const installSafeScript = join('/tooling', 'scripts/npm-install-safe.mjs');
+    const generationScript = join('/tooling', 'apps/operator/bin/release/dependency-generation.sh');
+    expect(calls[0]).toEqual({
+      command: process.execPath,
+      args: [
+        installSafeScript, '--repo-root', '/tooling', '--exec-under-lock', '--', 'bash',
+        generationScript, '--integration', '/integration', '--fingerprint-ref', CANDIDATE_A,
+      ],
+      options: expect.objectContaining({ cwd: '/tooling' }),
+    });
+    expect(calls[1]).toEqual({
+      command: process.execPath,
+      args: [
+        installSafeScript, '--repo-root', '/integration', '--exec-under-lock', '--', 'bash',
+        generationScript, '--integration', '/integration', '--ensure-ref', CANDIDATE_A,
+      ],
+      options: expect.objectContaining({ cwd: '/tooling' }),
+    });
     expect(state).toMatchObject({
       status: 'ready',
       candidate: CANDIDATE_A,

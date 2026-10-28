@@ -363,7 +363,11 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
     const expiresAt = this.#ttlMs > 0 ? new Date(this.#now() + this.#ttlMs) : null;
     const chunks = chunkBody(bytes);
     const orderedHex = chunks.map((chunk) => chunk.hex);
-    const distinct = [...new Map(chunks.map((chunk) => [chunk.hex, chunk])).values()];
+    // The manifest must preserve body order, but concurrent writers must acquire
+    // shared chunk-row locks in one canonical order regardless of body order.
+    const distinct = [...new Map(chunks.map((chunk) => [chunk.hex, chunk])).values()].sort(
+      (left, right) => (left.hex < right.hex ? -1 : left.hex > right.hex ? 1 : 0),
+    );
     const refreshAfterMs = Math.floor(this.#chunkGraceMs / 2);
     // EI-21880026143110293: a bulk-load/VACUUM window on this table can push the
     // write past pg's lock_timeout/statement_timeout (55P03/57014) with nothing
@@ -381,16 +385,23 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
           // chunks idle for the full grace. A manifest that fails to land leaves orphan
           // chunks, which the sweep reclaims after the grace.
           const present = await this.#sql<{ h: string }[]>`
-            WITH want AS (
+            WITH want AS MATERIALIZED (
               SELECT DISTINCT decode(t.h, 'hex') AS chunk_hash
                 FROM unnest(${distinct.map((chunk) => chunk.hex)}::text[]) AS t(h)
+            ), stale AS MATERIALIZED (
+              SELECT c.chunk_hash
+                FROM harness_shared.gateway_payload_chunks AS c
+                JOIN want ON c.chunk_hash = want.chunk_hash
+               WHERE c.workspace_id = ${this.#workspaceId}
+                 AND c.last_ref_at < now() - (${refreshAfterMs} * interval '1 millisecond')
+               ORDER BY c.chunk_hash
+               FOR UPDATE OF c
             ), refreshed AS (
               UPDATE harness_shared.gateway_payload_chunks AS c
                  SET last_ref_at = now()
-                FROM want
+                FROM stale
                WHERE c.workspace_id = ${this.#workspaceId}
-                 AND c.chunk_hash = want.chunk_hash
-                 AND c.last_ref_at < now() - (${refreshAfterMs} * interval '1 millisecond')
+                 AND c.chunk_hash = stale.chunk_hash
               RETURNING c.chunk_hash
             )
             SELECT encode(chunk_hash, 'hex') AS h FROM refreshed
@@ -412,6 +423,7 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
                   ${missing.map((chunk) => zstdCompressSync(chunk.raw).toString('base64'))}::text[],
                   ${missing.map((chunk) => chunk.raw.byteLength)}::int[]
                 ) AS t(h, z, n)
+              ORDER BY t.h
               ON CONFLICT (workspace_id, chunk_hash) DO UPDATE SET last_ref_at = now()`;
           }
           await this.#sql`

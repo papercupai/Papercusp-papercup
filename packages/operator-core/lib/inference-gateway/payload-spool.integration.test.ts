@@ -29,8 +29,8 @@
  * exercised against a real `harness_shared.gateway_payload_blobs` table so a
  * regression in the real SQL fails a real assertion instead of a string match.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { sha256Hex } from '@papercusp/artifact-registry';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { contentDefinedChunks, sha256Hex } from '@papercusp/artifact-registry';
 import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   DEFAULT_PAYLOAD_SPOOL_LEGACY_GRACE_MS,
@@ -39,6 +39,7 @@ import {
   createGatewayPayloadSpool,
   memoryGatewayPayloadSpool,
   type GatewayPayloadSpool,
+  type SpoolResult,
 } from './payload-spool';
 
 const WS = 'ws-payload-spool-it';
@@ -404,6 +405,113 @@ describe('D-017 content-defined chunk storage — real Postgres', () => {
     db.sql`UPDATE harness_shared.gateway_payload_chunks SET last_ref_at = now() - interval '2 hours' WHERE workspace_id = ${WS}`;
   const dropManifest = (ref: string) =>
     db.sql`DELETE FROM harness_shared.gateway_payload_blobs WHERE workspace_id = ${WS} AND blob_key = ${ref}`;
+
+  it('keeps overlapping concurrent writes safe when their bodies order shared chunks oppositely', async () => {
+    const workspaceId = `${WS}-opposite-order`;
+    const rawChunks = contentDefinedChunks(prng(300_000, 31)).slice(0, 2).map((chunk) => Buffer.from(chunk));
+    expect(rawChunks).toHaveLength(2);
+    let [chunkA, chunkB] = rawChunks as [Buffer, Buffer];
+    let hashA = await sha256Hex(chunkA);
+    let hashB = await sha256Hex(chunkB);
+    if (hashA > hashB) {
+      [chunkA, chunkB] = [chunkB, chunkA];
+      [hashA, hashB] = [hashB, hashA];
+    }
+    expect(hashA < hashB).toBe(true);
+
+    const bodyAB = Buffer.concat([chunkA, chunkB]);
+    const bodyBA = Buffer.concat([chunkB, chunkA]);
+    const refAB = await sha256Hex(bodyAB);
+    const refBA = await sha256Hex(bodyBA);
+    const chunksOf = (bytes: Buffer) => contentDefinedChunks(bytes).map((chunk) => Buffer.from(chunk));
+    expect(chunksOf(bodyAB)).toEqual([chunkA, chunkB]);
+    expect(chunksOf(bodyBA)).toEqual([chunkB, chunkA]);
+
+    const barrierClass = 24_257;
+    let releaseBarrier = () => {};
+    let markBarrierHeld = () => {};
+    const barrierReleased = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+    const barrierHeld = new Promise<void>((resolve) => { markBarrierHeld = resolve; });
+    const settle = (promise: Promise<SpoolResult>) =>
+      promise.then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+    const pending: Array<ReturnType<typeof settle>> = [];
+    let controller: Promise<unknown> | null = null;
+
+    try {
+      await db.sql.unsafe(`DROP TRIGGER IF EXISTS test_payload_chunk_order_barrier ON harness_shared.gateway_payload_chunks`);
+      await db.sql.unsafe(`DROP FUNCTION IF EXISTS harness_shared.test_payload_chunk_order_barrier()`);
+      await db.sql.unsafe(`CREATE FUNCTION harness_shared.test_payload_chunk_order_barrier() RETURNS trigger
+        LANGUAGE plpgsql AS $body$
+        BEGIN
+          IF NEW.workspace_id = '${workspaceId}'
+             AND NEW.chunk_hash = decode('${hashB}', 'hex')
+             AND pg_try_advisory_xact_lock(${barrierClass}, 2) THEN
+            PERFORM pg_advisory_xact_lock(${barrierClass}, 1);
+          END IF;
+          RETURN NEW;
+        END $body$`);
+      await db.sql.unsafe(`CREATE TRIGGER test_payload_chunk_order_barrier
+        BEFORE INSERT ON harness_shared.gateway_payload_chunks
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.test_payload_chunk_order_barrier()`);
+
+      controller = db.sql.begin(async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(${barrierClass}, 1)`;
+        markBarrierHeld();
+        await barrierReleased;
+      });
+      await Promise.race([barrierHeld, controller]);
+
+      const createSpool = () => createGatewayPayloadSpool({ sql: db.sql, workspaceId });
+      const first = settle(createSpool().spool(bodyAB));
+      pending.push(first);
+      await vi.waitFor(async () => {
+        const waiting = await db.sql`
+          SELECT a.pid
+            FROM pg_locks AS l
+            JOIN pg_stat_activity AS a ON a.pid = l.pid
+           WHERE l.locktype = 'advisory'
+             AND l.classid = ${barrierClass}::oid
+             AND l.objid = 1::oid
+             AND l.objsubid = 2
+             AND NOT l.granted
+             AND a.query ILIKE '%gateway_payload_chunks%'`;
+        expect(waiting).toHaveLength(1);
+      }, { timeout: 5_000, interval: 10 });
+
+      const second = settle(createSpool().spool(bodyBA));
+      pending.push(second);
+      await vi.waitFor(async () => {
+        const waiting = await db.sql`
+          SELECT a.pid, pg_blocking_pids(a.pid) AS blockers
+            FROM pg_stat_activity AS a
+           WHERE a.datname = current_database()
+             AND a.query ILIKE '%gateway_payload_chunks%'
+             AND a.wait_event_type = 'Lock'
+             AND a.wait_event = 'transactionid'`;
+        expect(waiting).toHaveLength(1);
+        expect(waiting[0]!.blockers.length).toBeGreaterThan(0);
+      }, { timeout: 5_000, interval: 10 });
+    } finally {
+      releaseBarrier();
+      await controller;
+      await Promise.all(pending);
+      await db.sql.unsafe(`DROP TRIGGER IF EXISTS test_payload_chunk_order_barrier ON harness_shared.gateway_payload_chunks`);
+      await db.sql.unsafe(`DROP FUNCTION IF EXISTS harness_shared.test_payload_chunk_order_barrier()`);
+    }
+
+    const outcomes = await Promise.all(pending);
+    const failures = outcomes.filter((outcome) => !outcome.ok);
+    expect(failures.map((failure) => String(failure.error)), 'opposite-order chunk writes must not deadlock').toEqual([]);
+    const successful = outcomes.filter((outcome): outcome is { ok: true; value: SpoolResult } => outcome.ok);
+    expect(successful).toHaveLength(2);
+    expect(successful.map((outcome) => outcome.value.payloadRef).sort()).toEqual([refAB, refBA].sort());
+    const reader = createGatewayPayloadSpool({ sql: db.sql, workspaceId });
+    expect(Buffer.compare((await reader.read(refAB))!, bodyAB)).toBe(0);
+    expect(Buffer.compare((await reader.read(refBA))!, bodyBA)).toBe(0);
+  });
 
   it('stores a multi-chunk body as chunks with no inline bytes, and reads back the exact bytes', async () => {
     const spool = spoolFor();

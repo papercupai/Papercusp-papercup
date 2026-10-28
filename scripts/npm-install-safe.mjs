@@ -777,6 +777,26 @@ export async function verifyDepsExtracted({
     npmArgs,
     deps,
   });
+  const allWorkspaceDirs = resolveWorkspaceDirs(repoRoot, deps);
+  const auditNestedWorkspaceLockTrees = () => allWorkspaceDirs.flatMap((workspace) => {
+    const workspacePath = resolve(repoRoot, workspace);
+    let realWorkspacePath;
+    try {
+      realWorkspacePath = realpathSync(workspacePath);
+      if (!isStrictlyWithin(realpathSync(repoRoot), realWorkspacePath)) return [];
+    } catch {
+      return [];
+    }
+    const shrinkwrapPath = join(realWorkspacePath, "npm-shrinkwrap.json");
+    const lockPath = existsSync(shrinkwrapPath)
+      ? shrinkwrapPath
+      : join(realWorkspacePath, "package-lock.json");
+    if (!existsSync(lockPath)) return [];
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    const audit = auditLockfile({ lock, lockDir: workspace, treeRoot: repoRoot });
+    if (!audit.installed || audit.defects.length === 0) return [];
+    return [{ workspace, entries: audit.entries, defects: audit.defects }];
+  });
   const inspect = async () => {
     // A scoped reify can leave another workspace's old, resolvable hoisting in
     // place after manifest-only resolution changed the root lock's topology.
@@ -792,6 +812,7 @@ export async function verifyDepsExtracted({
           treeRoot: repoRoot,
         }).defects
       : [];
+    const nestedLockTrees = auditNestedWorkspaceLockTrees();
     const declared = await findUnextractedDepsWithRetry({
       repoRoot,
       workspaceDirs,
@@ -820,6 +841,7 @@ export async function verifyDepsExtracted({
     )
       return {
         lockTreeDefects,
+        nestedLockTrees,
         missing: declared.missing,
         incomplete: packageLocal.incomplete,
         invalidVersions: packageVersions.invalid,
@@ -834,6 +856,7 @@ export async function verifyDepsExtracted({
     });
     return {
       lockTreeDefects,
+      nestedLockTrees,
       missing: [],
       incomplete: [],
       invalidVersions: [],
@@ -845,6 +868,7 @@ export async function verifyDepsExtracted({
 
   const report = ({
     lockTreeDefects,
+    nestedLockTrees,
     missing,
     incomplete,
     invalidVersions,
@@ -854,6 +878,9 @@ export async function verifyDepsExtracted({
   }) => {
     for (const defect of lockTreeDefects)
       console.error(`NPM_INSTALL_SAFE lock-tree ${defect.kind}: ${defect.path} (${defect.detail})`);
+    for (const tree of nestedLockTrees)
+      for (const defect of tree.defects)
+        console.error(`NPM_INSTALL_SAFE nested-lock-tree ${defect.kind}: ${defect.path} (${defect.detail})`);
     if (missing.length > 0) console.error(formatMissing(missing));
     if (incomplete.length > 0)
       console.error(formatIncompleteWorkspacePackages(incomplete));
@@ -869,6 +896,7 @@ export async function verifyDepsExtracted({
 
   const healthy = ({
     lockTreeDefects,
+    nestedLockTrees,
     missing,
     incomplete,
     invalidVersions,
@@ -877,6 +905,7 @@ export async function verifyDepsExtracted({
     brokenBinLinks,
   }) =>
     lockTreeDefects.length === 0 &&
+    nestedLockTrees.length === 0 &&
     missing.length === 0 &&
     incomplete.length === 0 &&
     invalidVersions.length === 0 &&
@@ -971,27 +1000,71 @@ export async function verifyDepsExtracted({
   // `npm install` under NODE_ENV=production prunes every devDependency, so a
   // repair that dropped it deleted the very toolchain it was repairing
   // (WI-6554700010029990).
-  const repairArgs = developmentInstallArgs(repoRoot, [
-    ...REPAIR_ARGS,
-    ...(first.lockTreeDefects.length > 0 || runtimeFindings.length > 0 ? [] : repairWorkspaceArgs),
-    ...dependencySelectionArgs(npmArgs),
-  ]);
-  console.error(
-    `NPM_INSTALL_SAFE repairing: npm ${repairArgs.join(" ")} (one bounded attempt, still holding the lock)`,
-  );
-  const repairStatus = await runRepair(
-    repairArgs,
-    {
-      cwd: repoRoot,
+  const needsRootRepair =
+    first.lockTreeDefects.length > 0 ||
+    first.missing.length > 0 ||
+    first.incomplete.length > 0 ||
+    first.invalidVersions.length > 0 ||
+    first.unsatisfiedRanges.length > 0 ||
+    first.runtimeFailures.length > 0 ||
+    first.brokenBinLinks.length > 0;
+  if (needsRootRepair) {
+    const repairArgs = developmentInstallArgs(repoRoot, [
+      ...REPAIR_ARGS,
+      ...(first.lockTreeDefects.length > 0 || runtimeFindings.length > 0 ? [] : repairWorkspaceArgs),
+      ...dependencySelectionArgs(npmArgs),
+    ]);
+    console.error(
+      `NPM_INSTALL_SAFE repairing: npm ${repairArgs.join(" ")} (one bounded attempt, still holding the lock)`,
+    );
+    const repairStatus = await runRepair(
+      repairArgs,
+      {
+        cwd: repoRoot,
+        stdio: "inherit",
+        env,
+      },
+    ) ?? 1;
+    if (repairStatus !== 0) {
+      console.error(
+        `NPM_INSTALL_SAFE_FATAL: repair npm exited ${repairStatus}; dependency integrity is unverified.`,
+      );
+      return 1;
+    }
+  }
+
+  // The enclosing npm workspace install owns hoisted dependencies, but a
+  // workspace with its own lockfile can also be published as an isolated tree.
+  // Reify that already-installed local tree explicitly after the root repair;
+  // --workspaces=false keeps npm on the workspace's own lockfile.
+  for (const tree of first.nestedLockTrees) {
+    const workspaceRoot = resolve(repoRoot, tree.workspace);
+    const realWorkspaceRoot = realpathSync(workspaceRoot);
+    if (!isStrictlyWithin(realpathSync(repoRoot), realWorkspaceRoot)) {
+      throw new Error(`refusing nested workspace lock repair outside repo root: ${workspaceRoot}`);
+    }
+    const repairArgs = developmentInstallArgs(realWorkspaceRoot, [
+      "ci",
+      "--legacy-peer-deps",
+      "--workspaces=false",
+      "--no-audit",
+      "--no-fund",
+      ...dependencySelectionArgs(npmArgs),
+    ]);
+    console.error(
+      `NPM_INSTALL_SAFE repairing nested workspace lock tree: npm ${repairArgs.join(" ")} (workspace=${tree.workspace}, still holding the root lock)`,
+    );
+    const repairStatus = await runRepair(repairArgs, {
+      cwd: realWorkspaceRoot,
       stdio: "inherit",
       env,
-    },
-  ) ?? 1;
-  if (repairStatus !== 0) {
-    console.error(
-      `NPM_INSTALL_SAFE_FATAL: repair npm exited ${repairStatus}; dependency integrity is unverified.`,
-    );
-    return 1;
+    }) ?? 1;
+    if (repairStatus !== 0) {
+      console.error(
+        `NPM_INSTALL_SAFE_FATAL: nested workspace repair exited ${repairStatus} for ${tree.workspace}; dependency integrity is unverified.`,
+      );
+      return 1;
+    }
   }
 
   const second = await inspect();

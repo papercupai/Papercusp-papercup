@@ -885,9 +885,22 @@ export async function runDependencyGenerationPrebuild(
     throw new Error(`dependency prebuild candidate is not a full commit: ${request.candidate}`);
   }
   const generationScript = join(request.toolingRoot, 'apps/operator/bin/release/dependency-generation.sh');
+  const installSafeScript = join(request.toolingRoot, 'scripts/npm-install-safe.mjs');
   const fingerprintResult = await command(
-    'bash',
-    [generationScript, '--integration', request.integrationRoot, '--fingerprint-ref', candidate],
+    process.execPath,
+    [
+      installSafeScript,
+      '--repo-root',
+      request.toolingRoot,
+      '--exec-under-lock',
+      '--',
+      'bash',
+      generationScript,
+      '--integration',
+      request.integrationRoot,
+      '--fingerprint-ref',
+      candidate,
+    ],
     {
       cwd: request.toolingRoot,
       idleTimeoutMs: 2 * 60_000,
@@ -958,7 +971,6 @@ export async function runDependencyGenerationPrebuild(
     building = { ...building, ...patch, updatedAtMs: at };
     void heartbeatState(target, building).catch(() => {});
   };
-  const installSafeScript = join(request.toolingRoot, 'scripts/npm-install-safe.mjs');
   const result = await command(
     process.execPath,
     [

@@ -205,12 +205,36 @@ export const changeKindReasonArg = () =>
 
 const nonEmpty = () => z.string().trim().min(1).max(4000);
 
+const testResultPhaseSchema = z
+  .object({
+    phase: z.enum(['baseline', 'current']),
+    testsRun: nonEmpty().describe('The command or probe for this phase.'),
+    testResult: nonEmpty().describe('The observed result for this phase.'),
+  })
+  .strict();
+
+const testResultPhasesSchema = z
+  .array(testResultPhaseSchema)
+  .min(2)
+  .max(10)
+  .superRefine((phases, ctx) => {
+    const currentCount = phases.filter((phase) => phase.phase === 'current').length;
+    if (currentCount !== 1) {
+      ctx.addIssue({ code: 'custom', message: 'testResultPhases must contain exactly one current phase.' });
+    }
+  });
+
 export const ChangeKindEvidenceSchema = z
   .object({
     kind: z.enum(CHANGE_KINDS),
     summary: nonEmpty().optional(),
     testsRun: nonEmpty().optional().describe('The command or probe run for this kind.'),
-    testResult: nonEmpty().optional().describe('What it returned or observed.'),
+    testResult: nonEmpty().optional().describe('The current run result. Use testResultPhases when retaining baseline results.'),
+    testResultPhases: testResultPhasesSchema
+      .optional()
+      .describe(
+        'Structured test history: at least one baseline phase and exactly one current phase. Only the current phase proves passing behavior; historical baseline failures remain visible without being treated as current failures.',
+      ),
     artifacts: z
       .array(nonEmpty())
       .max(50)

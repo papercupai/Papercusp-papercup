@@ -46,6 +46,7 @@ it('records a real node:test child when the focused router starts without a TS l
 // The production entrypoint deliberately stays executable by plain Node.
 import {
   aggregateGroupResults,
+  assertCommittedTestConfigCoverageExports,
   assertExecutedProofOutputCustody,
   assertPrivateIntegrationEvidence,
   buildNodeTestArgs,
@@ -197,6 +198,79 @@ describe('test-files router', () => {
     });
     expect(discoverVitestRoute('apps/operator/bin/desktop-portal-persistence.test.ts').config)
       .toBe('vitest.config.ts');
+  });
+
+  it('checks coverage exports from the superproject-pinned test-config commit', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pinned-test-config-exports-'));
+    const submodule = join(root, 'libs/test-config');
+    mkdirSync(submodule, { recursive: true });
+    const git = (cwd: string, args: string[]) => {
+      const result = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
+      if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(' ')} failed`);
+      return result.stdout.trim();
+    };
+    const commitSubmodule = (message: string) => {
+      git(submodule, ['add', '-A']);
+      git(submodule, ['-c', 'user.name=Papercusp test', '-c', 'user.email=papercusp-test@example.invalid',
+        'commit', '-qm', message]);
+      return git(submodule, ['rev-parse', 'HEAD']);
+    };
+    const commitRoot = (message: string) => git(root, ['-c', 'user.name=Papercusp test',
+      '-c', 'user.email=papercusp-test@example.invalid', 'commit', '--allow-empty', '-qm', message]);
+    try {
+      git(root, ['init', '-q']);
+      git(submodule, ['init', '-q']);
+      writeFileSync(join(submodule, 'package.json'), JSON.stringify({ name: '@papercusp/test-config', exports: {} }));
+      const oldPin = commitSubmodule('coverage exports missing');
+      git(root, ['update-index', '--add', '--cacheinfo', `160000,${oldPin},libs/test-config`]);
+      commitRoot('pin test-config without coverage exports');
+
+      mkdirSync(join(submodule, 'src'), { recursive: true });
+      writeFileSync(join(submodule, 'src/test-coverage-map.ts'), 'export {};\n');
+      writeFileSync(join(submodule, 'src/test-coverage-store.ts'), 'export {};\n');
+      writeFileSync(join(submodule, 'package.json'), JSON.stringify({ name: '@papercusp/test-config', exports: {
+        './test-coverage-map': './src/test-coverage-map.ts',
+        './test-coverage-store': './src/test-coverage-store.ts',
+      } }));
+      const newPin = commitSubmodule('coverage exports present');
+      expect(() => assertCommittedTestConfigCoverageExports(root)).toThrow('missing required export ./test-coverage-map');
+
+      git(root, ['update-index', '--cacheinfo', `160000,${newPin},libs/test-config`]);
+      commitRoot('pin test-config coverage exports');
+      expect(assertCommittedTestConfigCoverageExports(root)).toBe(newPin);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses receipt collection before Vitest when the committed coverage-export preflight fails', async () => {
+    const receiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+    const holdAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+    process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = join(tmpdir(), 'missing-test-config-export-receipt.jsonl');
+    const check = vi.fn(() => { throw new Error('committed test-config coverage export preflight failed'); });
+    const list = vi.fn(), run = vi.fn();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const code = await main(['packages/operator-core/lib/__tests__/committed-source-loader.test.ts'], {
+        restrictedHoldPreflightImpl: () => ({ verdict: 'admit' }),
+        loadVitestReceiptReporterImpl: async () => ({
+          shouldRecordTestRunPath: () => true,
+          missingTestRunReceiptPaths: () => [],
+        }),
+        testConfigExportPreflightImpl: check,
+        runVitestListImpl: list,
+        runCapturedTestProcessImpl: run,
+      });
+      expect(code).toBe(2);
+      expect(check.mock.calls).toEqual([[REPO_ROOT]]);
+      expect(list).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('committed test-config coverage export preflight failed'));
+    } finally {
+      if (receiptFile === undefined) delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = receiptFile;
+      if (holdAdmission === undefined) delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      else process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT = holdAdmission;
+      error.mockRestore();
+    }
   });
 
   it('keeps the explicit private receipt sink separate from product database discovery', () => {

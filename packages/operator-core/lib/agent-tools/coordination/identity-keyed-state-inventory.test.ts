@@ -150,6 +150,21 @@ const ALLOWLIST: Record<string, Classification> = {
       'delivery evidence beside code_intel_pushes, not a current-holder claim or presence-tied reaper; ' +
       'rebinding would rewrite which session context missed a fact.',
   },
+  'code_intel_reuse_measurements.owner_id': {
+    status: 'exempt',
+    reason:
+      'Migration 1598 moves reuse-measurement, reuse-metrics and reuse-provider-action records out of ' +
+      'code_intel_pushes (reuse-measurement.ts). They are per-turn measurement history keyed by the measured ' +
+      'session, compaction epoch and turn, not a current-holder claim or presence-tied reaper; rebinding would ' +
+      'rewrite which session context a measurement describes.',
+  },
+  'session_exposed_tools.owner_id': {
+    status: 'exempt',
+    reason:
+      'Migration 1598 caches the tool list a session was last shown by tools/list (push-toolset.ts), upserted ' +
+      'on every listing. It is not a holder claim and nothing reaps by it. A rebound identity writes its own row ' +
+      'on its next listing; until then no row means an unknown toolset, so pushes name no tool (the safe default).',
+  },
   'gateway_request_outcomes.owner_id': {
     status: 'exempt',
     reason:

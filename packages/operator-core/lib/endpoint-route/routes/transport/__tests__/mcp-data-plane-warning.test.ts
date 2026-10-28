@@ -63,6 +63,27 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it('does not warn for populated dev:pg_query describe metadata', () => {
+    const body = {
+      mode: 'describe',
+      relation: 'harness_shared.consult_state',
+      kind: 'table',
+      columns: [{ name: 'workspace_id', type: 'text' }],
+      indexes: [],
+      constraints: [],
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-23T11:38:46.934Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+  });
+
   it.each([
     ['line body', {
       ok: true,

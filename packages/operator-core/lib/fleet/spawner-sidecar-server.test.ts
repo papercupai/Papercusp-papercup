@@ -133,12 +133,19 @@ describe('spawner sidecar health', () => {
         command: 'node', args: ['-e', '0'], cwd: directory,
       })).resolves.toMatchObject({ code: 0, stdout: '', stderr: '' });
 
-      const settled = logs.mock.calls
+      const stageLines = logs.mock.calls
         .filter(([message]) => message === '[spawner-process-exec-stage]')
-        .map(([, detail]) => detail as Record<string, unknown>)
+        .map(([, detail]) => {
+          expect(typeof detail).toBe('string');
+          expect(String(detail)).not.toMatch(/[\r\n]/);
+          return JSON.parse(String(detail)) as Record<string, unknown>;
+        });
+      const settled = stageLines
         .find((detail) => detail.event === 'request-settled');
       expect(settled).toBeDefined();
       expect(settled).toMatchObject({
+        requestId: expect.anything(),
+        clientConnectionId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
         diagnosticRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
         admissionPhases: [{ phase: 'enqueue', state: 'fulfilled', elapsedMs: 5 }],
         poolAcquisitionContext: {

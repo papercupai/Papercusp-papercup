@@ -9,8 +9,61 @@
  * WI-10005137 (headless agent launches wait on this lock).
  */
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, globSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+
+function isPathWithin(parent, child) {
+  const rel = relative(parent, child);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/** Root npm workspace directories declared by a package manifest. */
+function workspaceRoots(root) {
+  const manifestPath = join(root, "package.json");
+  if (!existsSync(manifestPath)) return [];
+
+  let patterns;
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const workspaces = manifest.workspaces ?? [];
+    patterns = Array.isArray(workspaces) ? workspaces : workspaces.packages ?? [];
+  } catch {
+    return [];
+  }
+
+  const included = patterns.filter((pattern) => typeof pattern === "string" && !pattern.startsWith("!"));
+  const excluded = patterns.filter((pattern) => typeof pattern === "string" && pattern.startsWith("!")).map((pattern) => pattern.slice(1));
+  const dirs = [];
+  for (const pattern of included) {
+    try {
+      dirs.push(...globSync(pattern, { cwd: root, exclude: excluded }));
+    } catch {
+      // An invalid workspace glob cannot establish ownership of this path.
+    }
+  }
+  return [...new Set(dirs)]
+    .filter((dir) => existsSync(join(root, dir, "package.json")))
+    .map((dir) => resolve(root, dir));
+}
+
+/**
+ * Find the nearest enclosing npm workspace root that owns this path. A nested
+ * workspace install and a root install both mutate the root's lockfile and
+ * hoisted node_modules, so they must share one mutex even when `--repo-root`
+ * names the nested integration directory.
+ */
+export function installLockRootForPath(repoRoot) {
+  const target = realpathSync(resolve(repoRoot));
+  let ancestor = dirname(target);
+  while (ancestor !== dirname(ancestor)) {
+    const owner = workspaceRoots(ancestor).find((workspaceRoot) =>
+      isPathWithin(workspaceRoot, target) || isPathWithin(target, workspaceRoot),
+    );
+    if (owner) return realpathSync(ancestor);
+    ancestor = dirname(ancestor);
+  }
+  return target;
+}
 
 /**
  * realpath so the `papercup` -> `papercusp` symlink and the canonical path
@@ -22,7 +75,7 @@ import { resolve } from "node:path";
  * @returns {string}
  */
 export function installLockNameForRoot(repoRoot) {
-  const real = realpathSync(resolve(repoRoot));
+  const real = installLockRootForPath(repoRoot);
   const digest = createHash("sha1").update(real).digest("hex").slice(0, 12);
   return `npm-install-${digest}`;
 }

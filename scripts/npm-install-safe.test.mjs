@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
@@ -1628,6 +1628,29 @@ test("npmChildEnv preserves an explicit caller install choice in offline-safe mo
   );
 });
 
+test("repoLockName maps nested npm workspaces to their enclosing install root", () => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-workspace-lock-root-"));
+  const integrationRoot = join(root, "libs/papercusp");
+  const workspaceRoot = join(integrationRoot, "packages/embedded-postgres-server");
+  const unrelatedRoot = join(root, "kits/standalone");
+  mkdirSync(workspaceRoot, { recursive: true });
+  mkdirSync(unrelatedRoot, { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({
+    name: "outer",
+    private: true,
+    workspaces: ["libs/papercusp/packages/*"],
+  }));
+  writeFileSync(join(integrationRoot, "package.json"), JSON.stringify({ name: "integration" }));
+  writeFileSync(join(workspaceRoot, "package.json"), JSON.stringify({ name: "embedded-postgres-server" }));
+  try {
+    assert.equal(repoLockName(integrationRoot), repoLockName(root));
+    assert.equal(repoLockName(workspaceRoot), repoLockName(root));
+    assert.notEqual(repoLockName(unrelatedRoot), repoLockName(root));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 for (const scenario of ["NODE_ENV", "npm-config", "npmrc", "save-dev", "fresh-save-dev", "explicit-production"]) {
   test(`development install protects dev tools: ${scenario}`, { timeout: 60_000 }, () => {
     const root = mkdtempSync(join(tmpdir(), "install-safe-dev-selection-"));
@@ -1808,6 +1831,92 @@ test("verifyDepsExtracted passes the selected npm environment to bounded repairs
       stdio: "inherit",
       env,
     });
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("verifyDepsExtracted repairs a nested workspace lock tree after the root reify", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-nested-lock-tree-"));
+  const workspaceRel = "libs/papercusp/packages/embedded-postgres-server";
+  const workspaceRoot = join(repoRoot, workspaceRel);
+  const rootPackage = {
+    name: "outer-fixture",
+    version: "1.0.0",
+    private: true,
+    workspaces: ["libs/papercusp/packages/*"],
+    dependencies: { "root-dep": "1.0.0" },
+  };
+  const workspacePackage = {
+    name: "embedded-postgres-server",
+    version: "1.0.0",
+    dependencies: { "nested-dep": "2.0.0" },
+  };
+  const writeJson = (path, value) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
+  };
+  mkdirSync(join(repoRoot, "node_modules"), { recursive: true });
+  mkdirSync(join(workspaceRoot, "node_modules"), { recursive: true });
+  writeJson(join(repoRoot, "package.json"), rootPackage);
+  writeJson(join(workspaceRoot, "package.json"), workspacePackage);
+  const rootLock = {
+    lockfileVersion: 3,
+    packages: {
+      "": {
+        name: rootPackage.name,
+        version: rootPackage.version,
+        workspaces: rootPackage.workspaces,
+        dependencies: rootPackage.dependencies,
+      },
+      [workspaceRel]: {
+        name: workspacePackage.name,
+        version: workspacePackage.version,
+        dependencies: workspacePackage.dependencies,
+      },
+      "node_modules/root-dep": { version: "1.0.0" },
+      "node_modules/nested-dep": { version: "2.0.0" },
+    },
+  };
+  const nestedLock = {
+    lockfileVersion: 3,
+    packages: {
+      "": { name: workspacePackage.name, version: workspacePackage.version, dependencies: workspacePackage.dependencies },
+      "node_modules/nested-dep": { version: "2.0.0" },
+    },
+  };
+  writeJson(join(repoRoot, "package-lock.json"), rootLock);
+  writeJson(join(workspaceRoot, "package-lock.json"), nestedLock);
+  writeJson(join(repoRoot, "node_modules/nested-dep/package.json"), { name: "nested-dep", version: "2.0.0" });
+  const rootLockBefore = readFileSync(join(repoRoot, "package-lock.json"), "utf8");
+  const nestedLockBefore = readFileSync(join(workspaceRoot, "package-lock.json"), "utf8");
+  const calls = [];
+
+  try {
+    const status = await verifyDepsExtracted({
+      repoRoot,
+      npmArgs: ["install"],
+      probeSpecifiers: [],
+      env: {},
+      deps: { sleep: async () => {} },
+      runNpm: (args, options) => {
+        calls.push({ args, options });
+        if (options.cwd === repoRoot) {
+          writeJson(join(repoRoot, "node_modules/root-dep/package.json"), { name: "root-dep", version: "1.0.0" });
+        } else if (options.cwd === workspaceRoot) {
+          writeJson(join(workspaceRoot, "node_modules/nested-dep/package.json"), { name: "nested-dep", version: "2.0.0" });
+        }
+        return 0;
+      },
+    });
+
+    assert.equal(status, 0);
+    assert.deepEqual(calls.map(({ args, options }) => ({ args, cwd: options.cwd })), [
+      { args: ["install", "--legacy-peer-deps"], cwd: repoRoot },
+      { args: ["ci", "--legacy-peer-deps", "--workspaces=false", "--no-audit", "--no-fund"], cwd: workspaceRoot },
+    ]);
+    assert.equal(readFileSync(join(repoRoot, "package-lock.json"), "utf8"), rootLockBefore);
+    assert.equal(readFileSync(join(workspaceRoot, "package-lock.json"), "utf8"), nestedLockBefore);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

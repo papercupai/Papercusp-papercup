@@ -13,7 +13,13 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { CHANGE_KIND_CATALOG, CHANGE_KINDS, type ChangeKind, type ChangeKindEvidence } from './change-kind-catalog';
+import {
+  CHANGE_KIND_CATALOG,
+  CHANGE_KINDS,
+  ChangeKindEvidenceSchema,
+  type ChangeKind,
+  type ChangeKindEvidence,
+} from './change-kind-catalog';
 import {
   CHANGE_KIND_GATE_CUTOVER,
   claimPredatesChangeKindCutover,
@@ -152,6 +158,63 @@ describe('root completion proof representations', () => {
       root: { testsRun: ['npm run test:file -- first.test.ts'], testResult: ['2 passed', '1 failed'] },
     })));
     expect(missingFor(result, 'test-only')).toContain('`testResult` reporting a passing run');
+  });
+
+  it('uses the explicit current phase and preserves a failing baseline as history', async () => {
+    const testResultPhases = [
+      {
+        phase: 'baseline' as const,
+        testsRun: 'testing:run { files: ["packages/operator-core/lib/change-kind-proof.test.ts"] }',
+        testResult: 'Baseline: 9 failed, 0 passed',
+      },
+      {
+        phase: 'current' as const,
+        testsRun: 'testing:run { files: ["packages/operator-core/lib/change-kind-proof.test.ts"] }',
+        testResult: 'Fixed focused: 9 passed, 0 failed; full file: 353 passed, 0 failed, 0 skipped',
+      },
+    ];
+    expect(ChangeKindEvidenceSchema.safeParse({ kind: 'logic', testResultPhases }).success).toBe(true);
+
+    const result = await evaluateChangeKindGate(input({
+      kinds: ['logic'],
+      root: {
+        testsRun: 'testing:run { files: ["packages/operator-core/lib/change-kind-proof.test.ts"] }',
+        testResult: 'Baseline: 9 failed, 0 passed; fixed focused: 9 passed, 0 failed',
+      },
+      kindEvidence: [{ kind: 'logic', testResultPhases }],
+    }));
+    expect(result).toEqual({ applicable: true, outcome: 'pass', kinds: ['logic'] });
+  });
+
+  it('still refuses a failing current phase even when the baseline phase is also present', async () => {
+    const result = expectRefused(await evaluateChangeKindGate(input({
+      kinds: ['logic'],
+      kindEvidence: [{
+        kind: 'logic',
+        testResultPhases: [
+          {
+            phase: 'baseline',
+            testsRun: 'testing:run { files: ["packages/operator-core/lib/change-kind-proof.test.ts"] }',
+            testResult: 'Baseline: 9 failed, 0 passed',
+          },
+          {
+            phase: 'current',
+            testsRun: 'testing:run { files: ["packages/operator-core/lib/change-kind-proof.test.ts"] }',
+            testResult: 'Current: 1 failed, 0 passed',
+          },
+        ],
+      }],
+    })));
+    expect(missingFor(result, 'logic')).toContain('`testResult` reporting a passing run');
+  });
+
+  it('rejects structured test history without exactly one current phase', () => {
+    const baseline = {
+      phase: 'baseline' as const,
+      testsRun: 'testing:run { files: ["packages/operator-core/lib/change-kind-proof.test.ts"] }',
+      testResult: 'Baseline: 9 failed, 0 passed',
+    };
+    expect(ChangeKindEvidenceSchema.safeParse({ kind: 'logic', testResultPhases: [baseline, baseline] }).success).toBe(false);
   });
 
   it('refuses an empty command array even when the result passes', async () => {
