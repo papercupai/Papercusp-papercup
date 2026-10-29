@@ -2648,12 +2648,21 @@ type GitSyncCommand = {
   cwd_truncated?: true;
   started_at: number;
 };
+type GitSyncCompletedCommand = GitSyncCommand & {
+  completed_at: number;
+  duration_ms: number;
+  status: 'succeeded' | 'failed' | 'threw';
+  exit_code?: number;
+};
 type GitSyncCommandSnapshot = {
   /** Only the existing runGitSync runner seam, not unrelated sidecar work. */
   scope: 'local-sync-runner';
   active_count: number;
   omitted_count: number;
   active: GitSyncCommand[];
+  completed_count: number;
+  completed_omitted_count: number;
+  completed: GitSyncCompletedCommand[];
 };
 type GitSyncTimeoutSnapshot = {
   at: number;
@@ -3808,15 +3817,21 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // or env: Git config/remote arguments may carry credentials. Bound each durable
   // snapshot while reporting omitted active commands explicitly.
   const activeGitCommands = new Map<number, GitSyncCommand>();
+  const completedGitCommands: GitSyncCompletedCommand[] = [];
+  let completedGitCommandCount = 0;
   let nextGitCommandId = 0;
   let timeoutSnapshot: GitSyncTimeoutSnapshot | undefined;
   const snapshotGitCommands = (): GitSyncCommandSnapshot => {
     const active = [...activeGitCommands.values()].slice(0, 16).map((command) => ({ ...command }));
+    const completed = completedGitCommands.map((command) => ({ ...command }));
     return {
       scope: 'local-sync-runner',
       active_count: activeGitCommands.size,
       omitted_count: activeGitCommands.size - active.length,
       active,
+      completed_count: completedGitCommandCount,
+      completed_omitted_count: completedGitCommandCount - completed.length,
+      completed,
     };
   };
   const withActivityOwner = (activity: GitSyncActivityFields): GitSyncActivityMarker => ({
@@ -4409,13 +4424,17 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           liveness.assertActive();
           const commandId = ++nextGitCommandId;
           const subcommand = gitSubcommandOf(args);
-          activeGitCommands.set(commandId, {
+          const command: GitSyncCommand = {
             id: commandId,
             subcommand: subcommand && /^[a-z][a-z0-9-]{0,63}$/.test(subcommand) ? subcommand : null,
             cwd: cwd.slice(0, 1024),
             ...(cwd.length > 1024 ? { cwd_truncated: true as const } : {}),
             started_at: Date.now(),
-          });
+          };
+          const commandStartedAt = performance.now();
+          activeGitCommands.set(commandId, command);
+          let commandStatus: GitSyncCompletedCommand['status'] = 'threw';
+          let exitCode: number | undefined;
           try {
             const execution = runGitBounded(args, cwd, gitTimeoutMsFor(args), {
               // WI-10006705: forward the attributed commit's private GIT_INDEX_FILE.
@@ -4429,11 +4448,23 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             });
             activeGitExecutions.add(execution);
             try {
-              return await execution;
+              const result = await execution;
+              exitCode = result.code;
+              commandStatus = result.code === 0 ? 'succeeded' : 'failed';
+              return result;
             } finally {
               activeGitExecutions.delete(execution);
             }
           } finally {
+            completedGitCommandCount += 1;
+            completedGitCommands.push({
+              ...command,
+              completed_at: Date.now(),
+              duration_ms: Math.max(0, Math.round(performance.now() - commandStartedAt)),
+              status: commandStatus,
+              ...(exitCode === undefined ? {} : { exit_code: exitCode }),
+            });
+            if (completedGitCommands.length > 16) completedGitCommands.shift();
             activeGitCommands.delete(commandId);
           }
         },

@@ -133,6 +133,39 @@ afterEach(() => {
 });
 
 describe('Remote access screen', () => {
+  it.each(['refused', 'unreachable', 'different-default'])(
+    'keeps the window workspace when registry discovery is %s', async (registry) => {
+      H.query = {};
+      const previous = window.__PAPERCUSP_WS__;
+      window.__PAPERCUSP_WS__ = 'window-workspace';
+      const fetchRegistry = vi.fn(async () => {
+        if (registry === 'unreachable') throw new Error('offline');
+        return new Response(JSON.stringify({ current: 'other-workspace', workspaces: [] }), {
+          status: registry === 'refused' ? 403 : 200,
+        });
+      });
+      vi.stubGlobal('fetch', fetchRegistry);
+      try {
+        render(<RemoteAccessSettingsPage />);
+        await waitFor(() => expect(fetchRegistry).toHaveBeenCalledWith('/api/workspaces'));
+        await waitFor(() => expect(H.setters.ws).toHaveBeenCalled());
+        expect(H.setters.ws.mock.calls.map(([value]) => value)).toEqual(['window-workspace']);
+        expect(window.__PAPERCUSP_WS__).toBe('window-workspace');
+      } finally {
+        if (previous === undefined) delete window.__PAPERCUSP_WS__;
+        else window.__PAPERCUSP_WS__ = previous;
+      }
+    },
+  );
+
+  it('preserves an explicitly selected workspace when registry discovery is refused', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 403 })));
+    render(<RemoteAccessSettingsPage />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/workspaces'));
+    expect(H.setters.ws).not.toHaveBeenCalled();
+    expect(screen.getByTestId('ws-select').textContent).toBe('ws1');
+  });
+
   it('offers computer, internet, phone and app setup together and links to the setup sections', () => {
     render(<RemoteAccessSettingsPage />);
     expect(screen.getByRole('link', { name: 'Set up a computer' }).getAttribute('href')).toBe('#ssh-setup');

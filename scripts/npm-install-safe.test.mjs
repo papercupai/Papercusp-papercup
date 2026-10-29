@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdtempSync,
@@ -1836,8 +1837,8 @@ test("verifyDepsExtracted passes the selected npm environment to bounded repairs
   }
 });
 
-for (const ignoredNestedLock of [false, true]) {
-test(`verifyDepsExtracted ${ignoredNestedLock ? "ignores an untracked ignored nested lock" : "repairs a nested workspace lock tree after the root reify"}`, async () => {
+for (const [ignoredNestedLock, rootOwned] of [[false, false], [true, false], [false, true]]) {
+test(`verifyDepsExtracted ${rootOwned ? "ignores a stale nested lock owned by the enclosing workspace lock" : ignoredNestedLock ? "ignores an untracked ignored nested lock" : "repairs a nested workspace lock tree after the root reify"}`, async () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-nested-lock-tree-"));
   const workspaceRel = "libs/papercusp/packages/embedded-postgres-server";
   const workspaceRoot = join(repoRoot, workspaceRel);
@@ -1886,6 +1887,8 @@ test(`verifyDepsExtracted ${ignoredNestedLock ? "ignores an untracked ignored ne
       "node_modules/nested-dep": { version: "2.0.0" },
     },
   };
+  if (!rootOwned) delete rootLock.packages[workspaceRel];
+  if (rootOwned) nestedLock.packages["node_modules/nested-dep"].version = "99.0.0";
   writeJson(join(repoRoot, "package-lock.json"), rootLock);
   writeJson(join(workspaceRoot, "package-lock.json"), nestedLock);
   if (ignoredNestedLock) {
@@ -1918,7 +1921,7 @@ test(`verifyDepsExtracted ${ignoredNestedLock ? "ignores an untracked ignored ne
     assert.equal(status, 0);
     assert.deepEqual(calls.map(({ args, options }) => ({ args, cwd: options.cwd })), [
       { args: ["install", "--legacy-peer-deps"], cwd: repoRoot },
-      ...ignoredNestedLock ? [] : [{ args: ["ci", "--legacy-peer-deps", "--workspaces=false", "--no-audit", "--no-fund"], cwd: workspaceRoot }],
+      ...(ignoredNestedLock || rootOwned ? [] : [{ args: ["ci", "--legacy-peer-deps", "--workspaces=false", "--no-audit", "--no-fund"], cwd: workspaceRoot }]),
     ]);
     assert.equal(readFileSync(join(repoRoot, "package-lock.json"), "utf8"), rootLockBefore);
     assert.equal(readFileSync(join(workspaceRoot, "package-lock.json"), "utf8"), nestedLockBefore);
@@ -2755,6 +2758,27 @@ test("parseCliArgs treats a leading --help / -h as a wrapper help request", () =
   assert.deepEqual(parseCliArgs(["--legacy-peer-deps"]).npmArgs, ["install", "--legacy-peer-deps"]);
 });
 
+
+test("the installer bootstraps from source without node_modules", () => {
+  const root = mkdtempSync(join(tmpdir(), "npm-install-safe-bootstrap-"));
+  const repo = fileURLToPath(new URL("../", import.meta.url));
+  try {
+    cpSync(join(repo, "scripts"), join(root, "scripts"), { recursive: true });
+    for (const path of ["packages/operator-core/lib/util/cli-entry.ts", "apps/operator/bin/release/dependency-lock-tree-audit.mjs"]) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      cpSync(join(repo, path), join(root, path));
+    }
+    const result = spawnSync(process.execPath, [join(root, "scripts/npm-install-safe.mjs"), "--help"], {
+      encoding: "utf8", timeout: 20_000,
+      env: { ...process.env, NODE_OPTIONS: "", NODE_PATH: "" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, USAGE);
+    assert.equal(existsSync(join(root, "node_modules")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("the CLI prints usage for --help and exits 0 without spawning npm or taking the mutex", () => {
   const cli = fileURLToPath(new URL("./npm-install-safe.mjs", import.meta.url));

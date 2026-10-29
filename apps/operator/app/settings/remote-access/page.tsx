@@ -24,6 +24,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
+import { getBrowserWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
 import { Button } from '@/app/harness/Button';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { ConfirmModal } from '@/app/harness/ConfirmModal';
@@ -186,21 +187,23 @@ export default function RemoteAccessSettingsPage() {
 
   useEffect(() => {
     let cancelled = false;
+    // The host pins this window's workspace. Registry discovery supplies picker
+    // options, not permission to switch to its global default on a failed read.
+    if (!ws) void setWs(getBrowserWorkspaceId(), { history: 'replace' });
     void (async () => {
       try {
         const res = await fetch('/api/workspaces');
         const body = res.ok ? ((await res.json()) as { current?: string; workspaces?: WorkspaceOption[] }) : {};
         if (cancelled) return;
         setWorkspaces(body.workspaces ?? []);
-        if (!ws) void setWs(body.current ?? body.workspaces?.[0]?.id ?? 'default');
       } catch {
-        if (!cancelled && !ws) void setWs('default');
+        // Preserve the window pin when the selected machine cannot be reached.
       }
     })();
     return () => {
       cancelled = true;
     };
-    // Resolve the default workspace once; the URL owns it afterwards.
+    // Mirror this window's workspace once; the URL owns explicit choices afterwards.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

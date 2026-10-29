@@ -48,7 +48,7 @@ import {
 /** How many held ids the refusal names before summarising the rest. */
 export const TURN_END_HELD_WORK_LISTED_CAP = 8;
 
-/** A known, recent pending host receipt is an accepted continuation boundary. */
+/** A fresh host receipt proves carry acceptance, but is not itself a wake guarantee. */
 export function isFreshPendingCarryRespawn(prior: PriorRespawn): boolean {
   return (
     prior.outcome === 'pending' &&
@@ -163,13 +163,23 @@ export async function evaluateTurnEndHeldWorkStop(input: {
       deps.hasPendingDeliberateWakeDelivery(ownerId),
       deps.hasFreshPendingCarryRespawn(ownerId),
     ]);
-    if (pendingDelivery || pendingCarryRespawn) return safeStop();
+    if (pendingDelivery) return safeStop();
     // The gate's own rewake timer is a backstop for a stop the gate refused, not a wake source the
     // agent chose: counting it would silence the refusal on every later stop.
     const chosen = parked.filter((a) => !isTurnEndRewakeKey(a.eventKey));
     const targets = await deps.readAwaitTargets(chosen);
     const guaranteedWake = chosen.some((a) => guaranteesWake(a, targets, INBOX_WAKE_KEY_PREFIX));
     if (guaranteedWake) return safeStop();
+    if (pendingCarryRespawn) {
+      // The host may still terminally drop an accepted carry. Let the pty go quiet only after
+      // retaining this bounded fallback; a failed/exhausted timer keeps the refusal in force.
+      const fallback = await deps.armRewake({ ownerId, held }).catch(() => null);
+      if (fallback?.kind === 'armed') return '';
+      const refusal = turnEndHeldWorkStopText({ autonomyModes, held, loopActive, guaranteedWake });
+      return fallback
+        ? [refusal, turnEndRewakeRefusalLine(fallback)].join('\n')
+        : refusal;
+    }
     const refusal = turnEndHeldWorkStopText({ autonomyModes, held, loopActive, guaranteedWake });
     if (!refusal) return '';
     // The refusal fires once; the adapters drop the next stop. The timer covers an agent that

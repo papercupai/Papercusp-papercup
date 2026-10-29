@@ -232,6 +232,12 @@ it('continues pending census passes with fresh effect guards in the observed pri
   ], expectedReclaimCases: 3, census: false,
   observedSources: ['packages/operator-core/lib/storage/retention-census-walk.ts',
     'packages/operator-core/lib/storage/disk-census-detached-walk.ts'] }, context), options.testTimeoutMs);
+it('prepares independent census walks after a delegate failure in the observed private background runtime',
+  context => runSelection({ reclaimTitles: [
+    'prepares independent capped roots despite a delegate failure without resuming effects',
+  ], expectedReclaimCases: 1, census: false,
+  observedSources: ['packages/operator-core/lib/storage/retention-census-walk.ts',
+    'packages/operator-core/lib/storage/disk-census-detached-walk.ts'] }, context), options.testTimeoutMs);
 it('adopts the same native census completion in the observed private background runtime',
   context => runSelection({
     assertion: 'packages/operator-core/lib/storage/retention-census-walk.integration.test.ts',

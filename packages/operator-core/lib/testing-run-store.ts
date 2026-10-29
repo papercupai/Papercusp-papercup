@@ -40,6 +40,7 @@ import {
   type ConfigurationSnapshot,
 } from '@papercusp/test-config/configuration-snapshot';
 import { redactSensitiveText, redactSensitiveValue } from './sensitive-text';
+import { isVitestAssertionFailure } from '@papercusp/test-config/vitest-failure-classification';
 import { resolveGitContext } from './testing-branch-resolve';
 import type { TestRunSource } from './testing-run-source';
 import { captureWorktreeSnapshot, captureWorktreeSnapshotAsync, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
@@ -2415,7 +2416,11 @@ function countVitestAssertions(assertions: VitestJsonAssertion[]): HarnessTestFi
         break;
       case 'failed':
         failed += 1;
-        if (isRecordedCaseTitle(assertion.fullName)) failedCaseTitles.add(assertion.fullName);
+        // A failed Vitest case can be a runtime exception before any assertion
+        // executes. Keep it in the failure count, but only record titles whose
+        // JSON reporter error stack identifies an AssertionError as evidence.
+        if (isVitestAssertionFailure(assertion.failureMessages)
+          && isRecordedCaseTitle(assertion.fullName)) failedCaseTitles.add(assertion.fullName);
         break;
       // Vitest's completed JSON reporter calls filtered-out tests "pending".
       case 'skipped':

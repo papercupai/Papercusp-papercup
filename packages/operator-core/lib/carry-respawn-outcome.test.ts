@@ -174,6 +174,18 @@ describe('deriveLastRespawnOutcome', () => {
     expect(out.ageMs).toBeNull();
     expect(out.ts).toBeUndefined();
   });
+  it('reports initial host acceptance as pending before the first rearm row', () => {
+    const acceptedAt = '2026-08-04T00:46:30.000Z';
+    const out = deriveLastRespawnOutcome(
+      [{ ts: acceptedAt, kind: 'respawn-carry-accepted', mode: 'carry-respawn', capMs: 360_000 }],
+      { now: NOW },
+    );
+    expect(out).toMatchObject({
+      outcome: 'pending',
+      ts: acceptedAt,
+      capMs: 360_000,
+    });
+  });
 });
 
 describe('deriveCurrentIncarnationRespawnOutcome', () => {

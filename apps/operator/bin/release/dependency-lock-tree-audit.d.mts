@@ -27,6 +27,13 @@ export function auditLockfile({ lock, lockDir, treeRoot, fs }: {
     }[];
 };
 /**
+ * The enclosing lockfile that declares `lockDir` as one of its workspaces, if any. A
+ * workspace member's own lockfile is never installed standalone: the enclosing lockfile
+ * owns that directory's node_modules (as `<member>/node_modules/…` keys), so auditing the
+ * member lockfile against it would report the enclosing install's hoisting as defects.
+ */
+export function enclosingWorkspaceOwner(lockDir: any, auditedLocks: any): any;
+/**
  * Audit every lockfile named by the manifest, shallowest first so an enclosing lockfile is
  * known before its workspace members. `lockfiles[]` in the result records each decision:
  * status audited | not-installed | workspace-member (with `owner`).

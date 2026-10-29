@@ -701,6 +701,57 @@ describe('ptool tool catalog request budget (EI-20224721374462856)', () => {
     );
   });
 
+  it('enforces one catalog deadline across pages and reports attempt progress', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      const progress: Array<Record<string, unknown>> = [];
+      const timeout = Object.assign(new Error('Request timed out'), { code: -32001 });
+      const client = {
+        listTools: vi.fn()
+          .mockImplementationOnce(async (_params, options) => {
+            expect(options).toEqual({ timeout: 80, maxTotalTimeout: 80 });
+            await vi.advanceTimersByTimeAsync(80);
+            return { tools: [{ name: 'first' }], nextCursor: 'next-page' };
+          })
+          .mockImplementationOnce(async (_params, options) => {
+            expect(options).toEqual({ timeout: 20, maxTotalTimeout: 20 });
+            await vi.advanceTimersByTimeAsync(options.timeout);
+            throw timeout;
+          }),
+      };
+      const startedAt = Date.now();
+
+      await expect(listAllTools(client, {
+        retryLocalErrors: true,
+        timeoutMs: 80,
+        totalTimeoutMs: 100,
+        maxAttempts: 1,
+        onProgress: (event) => progress.push(event),
+      })).rejects.toMatchObject({ code: 'PTOOL_TOOLS_LIST_DEADLINE' });
+
+      expect(Date.now() - startedAt).toBe(100);
+      expect(client.listTools).toHaveBeenCalledTimes(2);
+      expect(progress.map((event) => event.progressKind)).toEqual([
+        'page-start',
+        'attempt-start',
+        'attempt-complete',
+        'page-complete',
+        'page-start',
+        'attempt-start',
+        'attempt-failed',
+        'deadline-exhausted',
+        'page-failed',
+      ]);
+      expect(progress.find((event) => event.progressKind === 'attempt-failed')).toMatchObject({
+        page: 2,
+        errorCode: -32001,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('allows a caller-owned budget when explicitly set to zero', async () => {
     const client = { listTools: vi.fn().mockResolvedValue({ tools: [] }) };
 

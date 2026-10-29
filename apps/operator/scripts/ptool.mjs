@@ -3789,6 +3789,24 @@ function isLocalOperatorUrl(operatorUrl) {
   return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
 }
 
+function emitPtoolCatalogProgress(onProgress, detail) {
+  if (typeof onProgress !== 'function') return;
+  try {
+    onProgress(detail);
+  } catch {
+    // Diagnostic callbacks must never turn a successful catalog read into a failure.
+  }
+}
+
+function ptoolCatalogDeadlineError(totalTimeoutMs, elapsedMs, cause) {
+  const error = new Error(
+    `ptool tools/list catalog discovery exceeded its ${totalTimeoutMs}ms total deadline after ${elapsedMs}ms`,
+  );
+  error.code = 'PTOOL_TOOLS_LIST_DEADLINE';
+  if (cause) error.cause = cause;
+  return error;
+}
+
 /**
  * Retry the bounded, pre-dispatch failures that can occur while discovering
  * the tool catalog. Proxy-generated handshake refusals never reached the
@@ -3807,42 +3825,87 @@ export async function listToolsWithLocalRetry(
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     rand = Math.random,
     retryJitterMs = PTOOL_RETRY_JITTER_MS,
+    deadlineAtMs,
+    onProgress,
   } = {},
 ) {
-  const enforceDeadline = timeoutMs > 0 && totalTimeoutMs > 0;
   const startedAt = Date.now();
+  const enforceDeadline = timeoutMs > 0 && (totalTimeoutMs > 0 || Number.isFinite(deadlineAtMs));
+  const effectiveDeadlineAtMs = enforceDeadline
+    ? (Number.isFinite(deadlineAtMs) ? deadlineAtMs : startedAt + totalTimeoutMs)
+    : null;
+  const remainingBudgetMs = () => effectiveDeadlineAtMs === null
+    ? null
+    : effectiveDeadlineAtMs - Date.now();
+  const reportProgress = (detail) => emitPtoolCatalogProgress(onProgress, {
+    ...detail,
+    elapsedMs: Date.now() - startedAt,
+    remainingBudgetMs: remainingBudgetMs() === null ? null : Math.max(0, remainingBudgetMs()),
+  });
   let lastError;
   let proxyUpstreamErrorAttempts = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const remainingTotalMs = enforceDeadline
-      ? totalTimeoutMs - (Date.now() - startedAt)
-      : null;
-    if (remainingTotalMs !== null && remainingTotalMs <= 0) break;
+    const remainingTotalMs = remainingBudgetMs();
+    if (remainingTotalMs !== null && remainingTotalMs <= 0) {
+      const deadlineError = ptoolCatalogDeadlineError(totalTimeoutMs, Date.now() - startedAt, lastError);
+      reportProgress({
+        progressKind: 'deadline-exhausted',
+        attempt,
+        failureKind: 'catalog-deadline',
+        errorCode: deadlineError.code,
+      });
+      throw deadlineError;
+    }
     const requestTimeoutMs = timeoutMs > 0
       ? Math.min(timeoutMs, remainingTotalMs ?? timeoutMs)
       : 0;
+    const attemptStartedAt = Date.now();
+    reportProgress({ progressKind: 'attempt-start', attempt, attemptTimeoutMs: requestTimeoutMs });
     try {
-      return await client.listTools(
+      const result = await client.listTools(
         params,
         requestTimeoutMs > 0
           ? { timeout: requestTimeoutMs, maxTotalTimeout: requestTimeoutMs }
           : undefined,
       );
+      reportProgress({
+        progressKind: 'attempt-complete',
+        attempt,
+        attemptElapsedMs: Date.now() - attemptStartedAt,
+        toolCount: Array.isArray(result?.tools) ? result.tools.length : null,
+      });
+      return result;
     } catch (error) {
       lastError = error;
       if (classifyConnectFailure(error) === 'proxy-upstream-502') {
         proxyUpstreamErrorAttempts += 1;
       }
-      const remainingAfterFailure = enforceDeadline
-        ? totalTimeoutMs - (Date.now() - startedAt)
-        : null;
+      const remainingAfterFailure = remainingBudgetMs();
+      reportProgress({
+        progressKind: 'attempt-failed',
+        attempt,
+        attemptElapsedMs: Date.now() - attemptStartedAt,
+        failureKind: classifyConnectFailure(error),
+        errorCode: typeof error?.code === 'string' || typeof error?.code === 'number'
+          ? error.code
+          : null,
+      });
+      if (remainingAfterFailure !== null && remainingAfterFailure <= 0) {
+        const deadlineError = ptoolCatalogDeadlineError(totalTimeoutMs, Date.now() - startedAt, error);
+        reportProgress({
+          progressKind: 'deadline-exhausted',
+          attempt,
+          failureKind: 'catalog-deadline',
+          errorCode: deadlineError.code,
+        });
+        throw deadlineError;
+      }
       if (
         !(isRetryableLocalHttpConnectFailure(error) || isTransportFailure(error)) ||
         (proxyUpstreamErrorAttempts >= PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS &&
           classifyConnectFailure(error) === 'proxy-upstream-502') ||
-        attempt === maxAttempts ||
-        (remainingAfterFailure !== null && remainingAfterFailure <= 0)
+        attempt === maxAttempts
       ) {
         throw error;
       }
@@ -3853,6 +3916,12 @@ export async function listToolsWithLocalRetry(
         { rand, jitterMs: retryJitterMs },
       );
       if (retryWaitMs == null) break;
+      reportProgress({
+        progressKind: 'retry-scheduled',
+        attempt,
+        retryWaitMs,
+        failureKind: classifyConnectFailure(error),
+      });
       await sleep(retryWaitMs);
     }
   }
@@ -4242,7 +4311,8 @@ async function connect(
  * maxTotalTimeout?: number}) => Promise<{tools?: ToolCatalogEntry[], nextCursor?: string}>}} client
  * @param {{timeoutMs?: number, retryLocalErrors?: boolean, maxAttempts?: number,
  * retryDelayMs?: number, totalTimeoutMs?: number, sleep?: (ms: number) => Promise<void>,
- * rand?: () => number, retryJitterMs?: number}} [options]
+ * rand?: () => number, retryJitterMs?: number, deadlineAtMs?: number,
+ * onProgress?: (detail: object) => void}} [options]
  */
 export async function listAllTools(
   client,
@@ -4261,27 +4331,86 @@ export async function listAllTools(
     // real randomized pacing exactly as before.
     rand,
     retryJitterMs,
+    deadlineAtMs,
+    onProgress,
   } = {},
 ) {
   const all = [];
+  const startedAt = Date.now();
+  const enforceDeadline = timeoutMs > 0 && (totalTimeoutMs > 0 || Number.isFinite(deadlineAtMs));
+  const catalogDeadlineAtMs = enforceDeadline
+    ? (Number.isFinite(deadlineAtMs) ? deadlineAtMs : startedAt + totalTimeoutMs)
+    : null;
+  const remainingBudgetMs = () => catalogDeadlineAtMs === null
+    ? null
+    : catalogDeadlineAtMs - Date.now();
+  const reportProgress = (detail) => emitPtoolCatalogProgress(onProgress, {
+    ...detail,
+    catalogElapsedMs: Date.now() - startedAt,
+    remainingBudgetMs: remainingBudgetMs() === null ? null : Math.max(0, remainingBudgetMs()),
+  });
   let cursor;
+  let pageNumber = 0;
   do {
-    const page = retryLocalErrors
-      ? await listToolsWithLocalRetry(client, cursor ? { cursor } : {}, {
-        timeoutMs,
-        maxAttempts,
-        retryDelayMs,
-        totalTimeoutMs,
-        sleep,
-        ...(rand === undefined ? {} : { rand }),
-        ...(retryJitterMs === undefined ? {} : { retryJitterMs }),
-      })
-      : await client.listTools(
-        cursor ? { cursor } : {},
-        timeoutMs > 0 ? { timeout: timeoutMs, maxTotalTimeout: timeoutMs } : undefined,
-      );
+    pageNumber += 1;
+    const remainingBeforePage = remainingBudgetMs();
+    if (remainingBeforePage !== null && remainingBeforePage <= 0) {
+      const deadlineError = ptoolCatalogDeadlineError(totalTimeoutMs, Date.now() - startedAt);
+      reportProgress({
+        progressKind: 'deadline-exhausted',
+        page: pageNumber,
+        failureKind: 'catalog-deadline',
+        errorCode: deadlineError.code,
+      });
+      throw deadlineError;
+    }
+    reportProgress({ progressKind: 'page-start', page: pageNumber });
+    let page;
+    try {
+      if (retryLocalErrors) {
+        page = await listToolsWithLocalRetry(client, cursor ? { cursor } : {}, {
+          timeoutMs,
+          maxAttempts,
+          retryDelayMs,
+          totalTimeoutMs,
+          deadlineAtMs: catalogDeadlineAtMs,
+          sleep,
+          ...(rand === undefined ? {} : { rand }),
+          ...(retryJitterMs === undefined ? {} : { retryJitterMs }),
+          onProgress: (attemptProgress) => reportProgress({ ...attemptProgress, page: pageNumber }),
+        });
+      } else {
+        const requestTimeoutMs = timeoutMs > 0
+          ? Math.min(timeoutMs, remainingBeforePage ?? timeoutMs)
+          : 0;
+        page = await client.listTools(
+          cursor ? { cursor } : {},
+          requestTimeoutMs > 0
+            ? { timeout: requestTimeoutMs, maxTotalTimeout: requestTimeoutMs }
+            : undefined,
+        );
+      }
+    } catch (error) {
+      reportProgress({
+        progressKind: 'page-failed',
+        page: pageNumber,
+        failureKind: error?.code === 'PTOOL_TOOLS_LIST_DEADLINE'
+          ? 'catalog-deadline'
+          : classifyConnectFailure(error),
+        errorCode: typeof error?.code === 'string' || typeof error?.code === 'number'
+          ? error.code
+          : null,
+      });
+      throw error;
+    }
     if (Array.isArray(page.tools)) all.push(...page.tools);
     cursor = page.nextCursor;
+    reportProgress({
+      progressKind: 'page-complete',
+      page: pageNumber,
+      toolCount: Array.isArray(page.tools) ? page.tools.length : 0,
+      hasNextPage: Boolean(cursor),
+    });
   } while (cursor);
   return all;
 }
@@ -4694,6 +4823,21 @@ async function main() {
     describePtoolOperatorRoute(operatorUrl),
     operation,
   );
+  const listCatalogTools = (targetClient, deadlineAtMs) => listAllTools(targetClient, {
+    retryLocalErrors: isLocalOperatorUrl(operatorUrl),
+    deadlineAtMs: deadlineAtMs ?? Date.now() + PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS,
+    onProgress: (progress) => {
+      if (
+        progress.catalogElapsedMs < PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS &&
+        ['page-start', 'attempt-start', 'attempt-complete', 'page-complete'].includes(progress.progressKind)
+      ) return;
+      emitPtoolConnectionTrace(activeConnectionTrace, 'phase-progress', {
+        stage: 'tools-list',
+        route: describePtoolOperatorRoute(operatorUrl),
+        ...progress,
+      });
+    },
+  });
   const tracedToolCall = (callClient, params, options) => withInvocationPhase(
     'tools-call', () => callToolWithReplayRecovery(callClient, params, options),
   );
@@ -4876,6 +5020,7 @@ async function main() {
       }
     }
 
+    const catalogDeadlineAtMs = Date.now() + PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS;
     let tools;
     try {
       const discovery = await withInvocationPhase('tools-list', () => listToolsWithNativeSessionFallback(client, {
@@ -4889,7 +5034,7 @@ async function main() {
           tokenPaths,
           ptoolTokenPathByClient.get(targetClient),
           (tokenFile) => connectOperator({ tokenFile }),
-          (listedClient) => listAllTools(listedClient, { retryLocalErrors: isLocalOperatorUrl(operatorUrl) }),
+          (listedClient) => listCatalogTools(listedClient, catalogDeadlineAtMs),
         ),
         reconnectWithoutNativeSession: () => connectOperator({ nativeSessionOverride: null }),
       }));
@@ -4934,9 +5079,8 @@ async function main() {
           let fallbackClient = null;
           try {
             fallbackClient = await connectOperator({ preferredIndex: recoveryIndex, onlyCandidate: true });
-            const fallbackTools = await withInvocationPhase('tools-list', () => listAllTools(fallbackClient, {
-              retryLocalErrors: isLocalOperatorUrl(operatorUrl),
-            }));
+            const fallbackTools = await withInvocationPhase('tools-list', () =>
+              listCatalogTools(fallbackClient, catalogDeadlineAtMs));
             const fallbackTool = fallbackTools.find((entry) => entry?.name === args.tool);
             const fallbackGeneration = fallbackTool?._meta?.['papercusp/servingGeneration'];
             if (
@@ -4993,9 +5137,8 @@ async function main() {
             let directClient = null;
             try {
               directClient = await connectOperator({ preferredIndex: directRecoveryIndex, onlyCandidate: true });
-              const directTools = await withInvocationPhase('tools-list', () => listAllTools(directClient, {
-                retryLocalErrors: isLocalOperatorUrl(operatorUrl),
-              }));
+              const directTools = await withInvocationPhase('tools-list', () =>
+                listCatalogTools(directClient, catalogDeadlineAtMs));
               if (
                 catalogSupportsBuildSelector(args.tool, inputArgs, directTools) &&
                 hasCurrentPtoolServingGeneration(args.tool, inputArgs, directTools)
@@ -5192,9 +5335,7 @@ async function main() {
         callArgs,
         idempotencyKey,
         error,
-        listTools: (targetClient) => withInvocationPhase('tools-list', () => listAllTools(targetClient, {
-          retryLocalErrors: isLocalOperatorUrl(operatorUrl),
-        })),
+        listTools: (targetClient) => withInvocationPhase('tools-list', () => listCatalogTools(targetClient)),
       });
       currentTool = refreshed.tool;
       return refreshed.params;

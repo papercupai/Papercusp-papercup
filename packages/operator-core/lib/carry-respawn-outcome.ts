@@ -45,8 +45,12 @@ const RESPAWN_TERMINAL_OK = new Set(['respawn-carry-delivered']);
 // carry attempt just like `respawn-carry-dropped`; omitting it makes the reader
 // report an already-failed request as `pending` forever.
 const RESPAWN_TERMINAL_FAIL = new Set(['respawn-carry-dropped', 'respawn-failed']);
-/** Non-terminal: an attempt is still re-polling for an idle window. */
-const RESPAWN_IN_FLIGHT = new Set(['respawn-rearm-queued', 'respawn-rearm-superseded']);
+/** Non-terminal: the host accepted a carry or is still re-polling for an idle window. */
+const RESPAWN_IN_FLIGHT = new Set([
+  'respawn-carry-accepted',
+  'respawn-rearm-queued',
+  'respawn-rearm-superseded',
+]);
 
 /**
  * `respawn-carry-dropped {reason:'superseded'}` is the host RETIRING a moot request, not

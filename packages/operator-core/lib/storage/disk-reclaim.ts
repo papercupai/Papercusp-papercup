@@ -110,9 +110,11 @@ export interface DiskReclaimReceipt {
   /** Physical roots actually enforced; aliases share identity, selection and holder evidence. */
   roots?: Array<{ path: string; classId: string; aliases: string[] }>;
   scan?: { inspectedNodes: number; retainedRecentTrees: number; stoppedAtRoot: string | null; incompleteRoots?: string[] };
-  /** One scalar observation per initial root census; never persist its inventory. */
+  /** One scalar observation per preparation or initial root census; never persist its inventory. */
   censuses?: Array<{ root: string; classId: string; elapsedMs: number; inspectedNodes: number;
-    timing?: RetentionCensusTiming; error?: string; pendingWalk?: PendingRetentionCensus }>;
+    timing?: RetentionCensusTiming; error?: string; pendingWalk?: PendingRetentionCensus;
+    /** Enrollment diagnostics only: never selection or drain continuation evidence. */
+    preparationOnly?: boolean }>;
   effects?: Array<{
     root: string; selected: number; processed: number; remaining: number;
     nextPath: string | null; elapsedMs: number; stopped: boolean;
@@ -160,7 +162,7 @@ export interface DiskReclaimOptions {
   /** Persistent production route for the initial complete capped-root census.
    * Fresh per-effect inspection always uses inspectTrees instead. */
   inspectInitialCappedTrees?: (root: string,
-    options: Parameters<typeof import('./disk-consumer-census').inspectRetentionTrees>[1],
+    options: Parameters<typeof import('./disk-consumer-census').inspectRetentionTrees>[1] & { prepareOnly?: boolean },
     mutex?: RetentionMutexContext) => Promise<DetachedRetentionCensus>;
   /** Production supplies an enrolled privileged remover. Only policy-selected,
    * remeasured agent children reach it, after fresh host holder evidence. */
@@ -198,7 +200,7 @@ export async function drainScheduledDiskReclaim(
     const started = Date.parse(receipt.startedAt), finished = Date.parse(receipt.finishedAt);
     if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) return { ...result, stop: 'error' };
     notAfterMs ??= started + maxElapsedMs;
-    const pending = receipt.censuses?.find(census => census.error === RETENTION_CENSUS_PENDING_ERROR &&
+    const pending = receipt.censuses?.find(census => !census.preparationOnly && census.error === RETENTION_CENSUS_PENDING_ERROR &&
       census.pendingWalk?.root === census.root)?.pendingWalk;
     if (pending && limits.awaitPendingCensus &&
         receipt.errors.length > 0 && receipt.errors.every(error => error === `inspect:${pending.root}: ${RETENTION_CENSUS_PENDING_ERROR}`) &&
@@ -1089,7 +1091,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         // its consumer the first turn before later roots can spend the next
         // budget and let the completed result expire without adoption.
         const pendingCensus = options.inspectInitialCappedTrees && previous.censuses?.some(census =>
-          roots[index]?.aliases.includes(census.root) &&
+          !census.preparationOnly && roots[index]?.aliases.includes(census.root) &&
           census.error === 'retention census pending; managed walk continues for adoption');
         // Failed inline scans and productive partial effects still rotate past
         // the slow root so they cannot starve their independent peers.
@@ -1103,6 +1105,37 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       // A registered workspace's tool run dirs belong exclusively to scratch-gc.
       const workspaceIds = (options.registeredWorkspaces ?? (() => readRegistry().workspaces.map((x) => x.id)))();
       const progress = receipt.scan = { inspectedNodes: 0, retainedRecentTrees: 0, stoppedAtRoot: null as string | null, incompleteRoots: [] as string[] };
+      // Enroll independent measurements before any one wait spends the pass.
+      // Failed delegates still stop the scheduled drain, but cannot prevent a
+      // later capped root from preparing its read-only measurement. Preparation
+      // never consumes output or supplies selection/continuation authority.
+      if (options.yieldAfterPendingCensus && options.inspectTrees && options.inspectInitialCappedTrees) {
+        for (const root of roots) {
+          const cls = policy.classes.get(root.classId)!;
+          if (retentionRootSizeCap(cls) === undefined) continue;
+          if (Date.now() >= runDeadline) break;
+          yield* yieldToWaiter();
+          if (Date.now() >= runDeadline) break;
+          const began = performance.now();
+          let prepared: DetachedRetentionCensus | undefined, error: string | undefined;
+          try {
+            const names = await measure('rootEntriesReadMs', () => readdir(root.path));
+            const excludedPaths = names.map(name => join(root.path, name)).filter(path =>
+              !deletionClassFor(path, censusPolicy, started) || containsClassRoot(path, policy));
+            prepared = await options.inspectInitialCappedTrees(root.path, {
+              prepareOnly: true, retainAfterMs: Infinity, includeRecent: true, excludedPaths,
+              collectBuildDirs: cls.keep.kind === 'max-age' && cls.keep.buildDirMaxAgeHours !== undefined,
+              timeoutMs: Math.max(1, runDeadline - Date.now()), progressTimeoutMs: options.budgetMs ?? 60_000,
+            }, mutex);
+          } catch (err) { error = message(err); }
+          const measured = { root: root.path, classId: root.classId, preparationOnly: true,
+            elapsedMs: performance.now() - began, inspectedNodes: 0,
+            ...(prepared?.pendingWalk ? { pendingWalk: prepared.pendingWalk } : {}),
+            ...(prepared?.error || error ? { error: prepared?.error ?? error } : {}) };
+          (receipt.censuses ??= []).push(measured);
+          await record('progress', { phase: 'census-prepare', ...measured });
+        }
+      }
       for (const root of roots) {
         activeRoot = root.path;
         if (Date.now() >= runDeadline) throw new Error('retention run budget exhausted');
@@ -1980,13 +2013,16 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     inspectRetentionTrees(root, { ...options, requirePrivilege: true });
   const { inspectDetachedRetentionTrees } = await import('./retention-census-walk');
   const { createHash } = await import('node:crypto');
-  const inspectInitialCappedTrees: NonNullable<DiskReclaimOptions['inspectInitialCappedTrees']> = (root, options, retentionMutex) =>
-    inspectDetachedRetentionTrees(root, { ...options, requirePrivilege: true }, {
+  const inspectInitialCappedTrees: NonNullable<DiskReclaimOptions['inspectInitialCappedTrees']> = (root, options, retentionMutex) => {
+    const { prepareOnly, ...inspection } = options;
+    return inspectDetachedRetentionTrees(root, { ...inspection, requirePrivilege: true }, {
       retentionMutex,
+      prepareOnly,
       dir: join(defaultRetentionDir(), 'retention-census', createHash('sha256').update(resolve(root)).digest('hex')),
       workerPath: join(repoRoot, 'scripts/retention-census-worker.mjs'),
       waitMs: options.timeoutMs ?? DEFAULT_RECLAIM_RUN_BUDGET_MS,
     });
+  };
   const holders = createRetentionHolderScanner();
   return runScheduledDiskReclaimWithFailureReceipt(() => runDiskReclaimOnce({ ...options, yieldAfterProductiveEffects: true, yieldAfterPendingCensus: true,
     previousReceipt, delegates, readProtection, inspectTrees, inspectInitialCappedTrees,

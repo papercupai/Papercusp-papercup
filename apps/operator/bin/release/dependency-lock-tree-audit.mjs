@@ -152,7 +152,7 @@ function lockDirOf(rel) {
  * owns that directory's node_modules (as `<member>/node_modules/…` keys), so auditing the
  * member lockfile against it would report the enclosing install's hoisting as defects.
  */
-function enclosingWorkspaceOwner(lockDir, auditedLocks) {
+export function enclosingWorkspaceOwner(lockDir, auditedLocks) {
   for (const { dir, lock } of auditedLocks) {
     if (dir === lockDir) continue;
     if (dir !== '' && !lockDir.startsWith(`${dir}/`)) continue;

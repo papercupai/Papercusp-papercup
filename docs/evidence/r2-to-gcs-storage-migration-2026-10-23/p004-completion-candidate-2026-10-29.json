@@ -1,0 +1,165 @@
+{
+  "schemaVersion": "r2gcs-p004-completion-candidate-v1",
+  "workItemId": "WI-6554700010025563",
+  "plan": "r2-to-gcs-storage-migration-2026-10-23",
+  "status": "candidate-only-independent-audits-pending",
+  "fullMigrationAccepted": false,
+  "shipped": false,
+  "sourceBackedCompositionReview": "thread-post:1209843",
+  "bindings": {
+    "archive": [
+      73797,
+      73798,
+      73803
+    ],
+    "private": [
+      73799,
+      73800,
+      73808,
+      73817
+    ],
+    "finalization": [
+      73801,
+      73802,
+      73804,
+      73805
+    ],
+    "multipart": [
+      70597,
+      70598,
+      73820,
+      73822
+    ],
+    "withdrawnHistoricalOperational": [
+      73701,
+      73702,
+      73704
+    ],
+    "withdrawnDirtyControls": [
+      70584,
+      70585,
+      70590,
+      70591,
+      70592,
+      70593
+    ]
+  },
+  "certificates": {
+    "archive": "EI-27270501357731811",
+    "collision": "EI-27270516734266730",
+    "finalization": "EI-27271749891498489",
+    "multipart": "EI-27271808483094865",
+    "private": "EI-27271835737222185"
+  },
+  "auditSnapshot": {
+    "archive": {
+      "state": "passed",
+      "auditIssueId": "EI-27272190708622851"
+    },
+    "collision": "pending",
+    "finalization": "pending",
+    "multipart": "pending",
+    "private": "pending"
+  },
+  "awaits": {
+    "386154": "scorecard:grading-audit:EI-27271808483094865",
+    "386155": "scorecard:grading-audit:EI-27270516734266730",
+    "386156": "scorecard:grading-audit:EI-27271749891498489",
+    "386157": "scorecard:grading-audit:EI-27270501357731811",
+    "386158": "scorecard:grading-audit:EI-27271835737222185"
+  },
+  "invariants": [
+    "Original receipt bytes and withdrawn bindings remain immutable audit history.",
+    "No65-test suite,14-check Worker journey or12-check archive journey repeated.",
+    "22576579 has no execution-time runtime witness; operational bindings make no live/deployed environment claim.",
+    "Manual live bindings only measure current Worker identity and source at binding time; no historical timestamp is invented.",
+    "No full migration, historical R2 census, deployed publish Worker, P003 release, gate operation or P544 cost qualification claimed."
+  ],
+  "next": "Read settled audit events and canonical card state. Once every current audit passes, use the prepared payload with validateOnly:true; fix remaining contract failures together. Only after verification succeeds remove validateOnly for actual close. Continue migration P002/P005/P006 and D090 before P544 under D086. Do not duplicate active P003 peer work.",
+  "preparedCompletion": {
+    "id": "WI-6554700010025563",
+    "harness": "papercusp",
+    "state": "done",
+    "validateOnly": true,
+    "assumptions": "none",
+    "completion": {
+      "summary": "P004 GCS storage-port implementation and bounded live verification: Cupboard preserves private visibility, create-only writes, multipart reconnect/replay and unfinalized denial; maintained archive restores exact private-GCS bytes/metadata with tenant isolation and fenced cleanup. Six exact spec evaluators pass; independent grading audits remain pending, so no full migration or shipment claim.",
+      "testsRun": "Reuse canonical tests and saved operational runs: clean archive22578350/61/70; private22578351/63/71; finalization22578352/64/72; multipart controls bindings70597/70598; collision binding69021/run21892728 and unit68711/68715; mechanical70487/70488; operational22576579 and22577190. No65/14/archive rerun this continuation.",
+      "testResult": "Baselines pass with no skips; each deliberate violation is caught; saved canonical Worker17assertions and archive12assertions pass with completed generation-fenced cleanup. Current exact-source and environment observations are independently server-measured. Audit verdicts not yet settled.",
+      "verifiedHow": "plans:get-spec-evidence independent readback of73797-73803,73804/73805,73808/73817,73820/73822; plans:evaluate-spec-test-adequacy full unfiltered Worker clauses pass; all6 clauses pass before grading-audit completion. Source-backed independent composition review thread-post:1209843. Historical73701/02/04 retained as immutable withdrawn audit rows, replaced by current manual runtime observations and separate canonical execution proof without inventing runtime timestamps.",
+      "filesChanged": [
+        "libs/generic/artifact-registry/src/gcs-object-store.ts",
+        "libs/generic/artifact-registry/src/gcs-credentials.ts",
+        "apps/operator-public/src/routes/self-describing-artifacts.ts",
+        "apps/operator-public/src/routes/creator-drafts.ts",
+        "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+        "apps/operator-public/src/routes/gcs-storage.test.ts",
+        "apps/papercusp-publish/src/r2-archive.ts",
+        "apps/papercusp-publish/src/archive-storage.test.ts",
+        "apps/papercusp-publish/scripts/verify-archive.ts",
+        "apps/papercusp-publish/scripts/verify-archive.test.ts",
+        "scripts/lib/workspace-host-gcs-publication.mjs",
+        "scripts/lib/workspace-host-gcs-publication.d.mts",
+        "scripts/publish-workspace-host-artifacts.test.ts"
+      ],
+      "kindEvidence": [
+        {
+          "kind": "service",
+          "testsRun": "Canonical deployed Cupboard22576579 and real-GCS archive22577190; source-level clean clause baselines and caught violations73797-73802.",
+          "testResult": "Saved operations pass with exact generation-pinned bytes, expected visibility/auth denials, same multipart identity on reconnect and same generation on completion replay; owned fixtures removed with generation fences.",
+          "build": "Cupboard Worker version968092d7-beeb-4bdb-a1b3-3953d4b9fefc, remote unit cloudflare-worker:f896982ea2f6d507e4f29eeecbd26e94/papercusp-cupboard, server-measured environment89a820f9bf69e5ed77f1e68b6ac2b59c680fdd165c40648690ec9f38d0baf2e6; clean causal controls443ebb84aba506fc69f172daec1f4599759ce1df. Archive executed5f07eaf39cba2f094bd193b3361c64070cd584c7, source hashes in retained receipt; no deployed publish Worker asserted."
+        },
+        {
+          "kind": "logic",
+          "testsRun": "Canonical baselines/copy baselines/mutants22578350/61/70,22578351/63/71,22578352/64/72 plus retained mechanical/multipart/collision proof.",
+          "testResult": "Baselines pass and three deliberate changes caught: corrupted archive byte, private artifact leak, unfinalized public leak; source integrity preserved."
+        },
+        {
+          "kind": "config",
+          "readBack": "Retained production receipt plus independently current runtime bindings73804/73808/73820 confirm the same deployed Cupboard Worker. Original deployment readback contains GCS_BUCKET=pc-p317-host-bundle-20260917 and GCS secret, with no R2 bucket binding; exact runtime fingerprint remains current. Archive operation injects maintained GCS port against the named private bucket; configured publish Worker absence in verified account remains outside deployed-service claims."
+        }
+      ],
+      "verification": {
+        "coverage": {
+          "population": [
+            "Cupboard public exact-byte access",
+            "Cupboard private visibility and authorization",
+            "create-only collision preservation",
+            "multipart reconnect and completion replay",
+            "unfinalized public download denial",
+            "archive exact bytes metadata and tenant isolation"
+          ],
+          "checked": [
+            "Cupboard public exact-byte access",
+            "Cupboard private visibility and authorization",
+            "create-only collision preservation",
+            "multipart reconnect and completion replay",
+            "unfinalized public download denial",
+            "archive exact bytes metadata and tenant isolation"
+          ],
+          "notChecked": [],
+          "notApplicable": [],
+          "residue": []
+        }
+      },
+      "contributesTo": [
+        "R-4"
+      ]
+    },
+    "projection": {
+      "pick": [
+        "ok",
+        "counts",
+        "results[].id",
+        "results[].ok",
+        "results[].error",
+        "results[].reason",
+        "results[].validation",
+        "results[].completionGate"
+      ]
+    },
+    "specAdequacy": {
+      "classRef": "plan-class-migration"
+    }
+  }
+}

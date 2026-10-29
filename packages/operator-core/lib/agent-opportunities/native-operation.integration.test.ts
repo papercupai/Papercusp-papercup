@@ -138,6 +138,24 @@ it('R26-PROVIDERS', async () => {
   expect(groupNativeOperations(partial.observations).chains).toEqual([]);
 });
 
+it.each([
+  ['before', '2026-10-23T23:59:59.999Z', false],
+  ['start', '2026-10-24T00:00:00Z', true],
+  ['last', '2026-10-24T23:59:59.999Z', true],
+  ['end', '2026-10-25T00:00:00Z', false],
+  ['invalid', 'not-a-time', false],
+] as const)('D030 canonical event at %s cannot inherit the selected receipt timestamp', async (_boundary, at, admitted) => {
+  const id = await seed();
+  transcripts.get(id)!.at = at;
+  const page = await fetchNativeOperations(opts());
+  expect(page.coverage.scanned).toBe(1);
+  expect(page.observations.filter(o => o.resultAvailable)).toHaveLength(admitted ? 1 : 0);
+  expect(page.coverage.matrix.find(c => c.provider === 'codex' && c.kind === 'shell' && c.source === 'transcript')?.status)
+    .toBe(admitted ? 'measured' : 'missing');
+  expect(page.coverage.incomplete).toBe(admitted ? 0 : 1);
+  expect(page.coverage.complete).toBe(false);
+});
+
 it('R25-PASSIVE', async () => {
   const path = `/tmp/native-mining-sentinel-${process.pid}-${Date.now()}`;
   await seed({ args: { cmd: `touch ${path}` } });

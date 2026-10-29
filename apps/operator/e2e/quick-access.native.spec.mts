@@ -127,7 +127,21 @@ test('Quick Access opens as an independent native launcher with reports and exac
     expect(JSON.parse(await readFile(configHome + '/docs-search-shortcut.json', 'utf8')))
       .toEqual({ accelerator: 'CmdOrCtrl+Shift+K' });
     await test.step('R-1: OS shortcut, hidden main window, retained tools and singleton reentry', async () => {
-      await evaluate('window.__TAURI_INTERNALS__.invoke("plugin:window|hide", {label:"main"})', 'main');
+      // Hide the real X11 window without asking the webview for an ungranted
+      // core:window:allow-hide permission. Before first entry only main exists.
+      const { stdout: mainWindows } = await exec('xdotool',
+        ['search', '--sync', '--onlyvisible', '--pid', pid], { env: displayEnv, timeout: 15_000 });
+      const mainWindowIds = mainWindows.trim().split('\n').filter(Boolean);
+      expect(mainWindowIds).toHaveLength(1);
+      const mainWindowId = mainWindowIds[0];
+      expect(mainWindowId).toMatch(/^\d+$/);
+      await exec('xdotool', ['windowunmap', '--sync', mainWindowId], { env: displayEnv, timeout: 15_000 });
+      const { stdout: mainWindowState } = await exec('xwininfo', ['-id', mainWindowId], { env: displayEnv, timeout: 5_000 });
+      expect(mainWindowState).toMatch(/Map State:\s+IsUnMapped/);
+      await info.attach('Hidden native main window', {
+        body: JSON.stringify({ mainWindowId, method: 'xdotool windowunmap --sync', mainWindowState }),
+        contentType: 'application/json',
+      });
       async function shortcut() {
         await exec('xdotool', ['windowactivate', '--sync', decoyWindowId], { env: displayEnv, timeout: 15_000 });
         await expect.poll(async () => (await exec('xdotool', ['getwindowfocus'], { env: displayEnv })).stdout.trim(), { timeout: 15_000 }).toBe(decoyWindowId);

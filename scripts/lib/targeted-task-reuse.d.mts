@@ -88,6 +88,7 @@ export function restoreDisposableCheckpoint({ root, expectedSha, checkpointRoot,
         runnerIdentity: typeof defaultRunnerIdentity;
         proofFormat: (root: any) => string | null;
         connect: (env: any) => Promise<import("pg").Client>;
+        loadProofFiles: typeof loadReuseProofFiles;
         loadProofs: typeof loadReuseProofs;
         changedBetween: (root: any, onUnknown: any) => import("./related-tests.mjs").ChangedBetween;
         inertGlobalChange: (root: any) => (rel: string, fromSha: string, toSha: string) => boolean;
@@ -123,6 +124,7 @@ export function restoreCandidateCheckpointForReuse({ root, judgedSha, env, deps 
         runnerIdentity: typeof defaultRunnerIdentity;
         proofFormat: (root: any) => string | null;
         connect: (env: any) => Promise<import("pg").Client>;
+        loadProofFiles: typeof loadReuseProofFiles;
         loadProofs: typeof loadReuseProofs;
         changedBetween: (root: any, onUnknown: any) => import("./related-tests.mjs").ChangedBetween;
         inertGlobalChange: (root: any) => (rel: string, fromSha: string, toSha: string) => boolean;
@@ -185,6 +187,7 @@ export function armTargetedTaskReuse({ root, workspace, script, expectedSha, env
         runnerIdentity: typeof defaultRunnerIdentity;
         proofFormat: (root: any) => string | null;
         connect: (env: any) => Promise<import("pg").Client>;
+        loadProofFiles: typeof loadReuseProofFiles;
         loadProofs: typeof loadReuseProofs;
         changedBetween: (root: any, onUnknown: any) => import("./related-tests.mjs").ChangedBetween;
         inertGlobalChange: (root: any) => (rel: string, fromSha: string, toSha: string) => boolean;
@@ -210,5 +213,6 @@ export const TARGETED_REUSE_LINE_PREFIX: "TARGETED_";
 export const TARGETED_REUSE_PROOF_READ_TIMEOUT_MS: 15000;
 import { recordGateReuseDecision } from "./test-pass-reuse.mjs";
 declare function defaultGit(root: any, args: any): string | null;
+import { loadReuseProofFiles } from "./executed-source-map.mjs";
 import { loadReuseProofs } from "./executed-source-map.mjs";
 export {};

@@ -1769,6 +1769,29 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(stats).toMatchObject({ claimed: 3, dropped: 1, inbox: 1, coalesced: 1, delivered: 0 });
   });
 
+  it('drops a warm loop wake that reaches only the inbox instead of recording a delivered turn', async () => {
+    h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'inbox' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([workRow({
+      id: 43,
+      subscriberId: 'su-a',
+      eventKey: 'coord:inbox-wake:su-a',
+      source: 'loop:rt-loop-warm',
+      // Warm loop markers omit `carry`; wakeCount + routineId still identify them.
+      payload: { wakeCount: 7, harness: 'papercusp', routineId: 'rt-loop-warm' },
+      createdAt: new Date(4_000).toISOString(),
+    })]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(
+      43,
+      expect.stringContaining('loop turn was not started'),
+    );
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryFailed).not.toHaveBeenCalled();
+    expect(stats).toMatchObject({ claimed: 1, dropped: 1, delivered: 0, inbox: 0, parked: 0 });
+  });
+
   it('drop and error settle visibly (dropped / failed-with-backoff)', async () => {
     h.executeWake
       .mockResolvedValueOnce({ kind: 'drop', reason: 'dead waiter' })
@@ -2138,9 +2161,9 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     expect(stats.suppressed).toBe(0);
   });
 
-  it('requests cancellation only for an exact shown non-actionable msg_id group and settles on the host receipt', async () => {
+  it('cancels an accepted unread FYI using P-024 classification and settles on the host receipt', async () => {
     const acceptedReason = 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable';
-    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(6000).toISOString() });
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(1000).toISOString() });
     h.getLineEnvelopeById.mockResolvedValueOnce({
       msg_id: 'm-fyi',
       ts: new Date(5000).toISOString(),

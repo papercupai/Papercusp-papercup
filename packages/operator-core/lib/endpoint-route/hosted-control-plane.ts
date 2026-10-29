@@ -53,6 +53,7 @@ import { createHostedWorkspaceConnectorRoutes, HOSTED_WORKSPACE_CONNECTOR_ROUTES
 import { createHostedCliRoutes, HOSTED_CLI_ROUTES, type HostedCliStore } from './routes/hosted-cli';
 import { createHostedDirectoryBindingRoutes, HOSTED_DIRECTORY_BINDING_ROUTES } from './routes/hosted-directory-bindings';
 import type { HostedDirectoryBindingManager } from '../auth/hosted/governance';
+import { createHostedLeadBindingRoutes, HOSTED_LEAD_BINDING_ROUTES } from './routes/hosted-lead-binding';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -94,6 +95,9 @@ export interface HostedControlPlaneConfig {
   readonly connectorGateway?: HostedWorkspaceConnectorGateway;
   readonly providerDelegationManager?: HostedProviderDelegationManagerFactory;
   readonly directoryBindingManager?: HostedDirectoryBindingManager;
+  /** Constructed with current operator/graph authority by the deployment host.
+   * Browser configuration cannot provide issuance or background CRM authority. */
+  readonly leadBinding?: Pick<Parameters<typeof createHostedLeadBindingRoutes>[0], 'service' | 'environment'>;
   /**
    * psu CLI sign-in + terminal tickets (WI-10002874). Mounted only beside a connector gateway,
    * which is what the terminal route issues tickets through.
@@ -188,21 +192,24 @@ export function assembleHostedControlPlane(config: HostedControlPlaneConfig): As
       ...(config.randomBytes ? { randomBytes: config.randomBytes } : {}),
     },
     resolvePrincipal,
-    ...(config.routes || config.connectorGateway || config.providerDelegationManager || config.directoryBindingManager
+    ...(config.routes || config.connectorGateway || config.providerDelegationManager || config.directoryBindingManager || config.leadBinding
       ? { routes: [
           ...(config.routes ?? []),
           ...(config.connectorGateway ? createHostedWorkspaceConnectorRoutes(config.connectorGateway) : []),
           ...(config.providerDelegationManager ? createHostedProviderDelegationRoutes(config.providerDelegationManager) : []),
           ...(config.directoryBindingManager ? createHostedDirectoryBindingRoutes(config.directoryBindingManager) : []),
+          ...(config.leadBinding ? createHostedLeadBindingRoutes({ ...config.leadBinding,
+            origin: config.publicOrigin, controlPlaneWorkspaceId }) : []),
           ...cliRoutes,
         ] }
       : {}),
-    ...(config.staticAllowlist || config.connectorGateway || config.providerDelegationManager || config.directoryBindingManager
+    ...(config.staticAllowlist || config.connectorGateway || config.providerDelegationManager || config.directoryBindingManager || config.leadBinding
       ? { staticAllowlist: [
           ...(config.staticAllowlist ?? []),
           ...(config.connectorGateway ? HOSTED_WORKSPACE_CONNECTOR_ROUTES : []),
           ...(config.providerDelegationManager ? HOSTED_PROVIDER_DELEGATION_ROUTES : []),
           ...(config.directoryBindingManager ? HOSTED_DIRECTORY_BINDING_ROUTES : []),
+          ...(config.leadBinding ? HOSTED_LEAD_BINDING_ROUTES : []),
           ...(cliRoutes.length > 0 ? HOSTED_CLI_ROUTES : []),
         ] }
       : {}),

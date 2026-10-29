@@ -233,6 +233,14 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }: {
     dependencies: ReturnType<typeof captureVerifierDependencies>;
 }): {
     plugin: import("esbuild").Plugin;
+    readToolchainInput: (path: string) => {
+        contents: Buffer<ArrayBufferLike>;
+        identity: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+    };
     consumed: () => {
         path: string;
         realpath: string;
@@ -1191,10 +1199,23 @@ export function publishBgVerifierLogicalOutputSet(args: {
         buildRecordSha256: string;
         originalSourceReceiptSha256: string;
         compilerVersion: string;
+        compilerApi: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
         binary: {
             path: string;
             realpath: string;
             sha256: string;
+        };
+        compilerBinary: {
+            kind: string;
+            sha256: string;
+            bytes: string;
+            dev: string;
+            ino: string;
+            launches: number;
         };
         consumed: {
             path: string;
@@ -1477,10 +1498,23 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
         buildRecordSha256: string;
         originalSourceReceiptSha256: string;
         compilerVersion: string;
+        compilerApi: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
         binary: {
             path: string;
             realpath: string;
             sha256: string;
+        };
+        compilerBinary: {
+            kind: string;
+            sha256: string;
+            bytes: string;
+            dev: string;
+            ino: string;
+            launches: number;
         };
         consumed: {
             path: string;
@@ -1769,10 +1803,23 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
         buildRecordSha256: string;
         originalSourceReceiptSha256: string;
         compilerVersion: string;
+        compilerApi: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
         binary: {
             path: string;
             realpath: string;
             sha256: string;
+        };
+        compilerBinary: {
+            kind: string;
+            sha256: string;
+            bytes: string;
+            dev: string;
+            ino: string;
+            launches: number;
         };
         consumed: {
             path: string;
@@ -1806,8 +1853,9 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
 /** The shared shell recipe delegates one EXACT recorded compiler invocation
  * here. Use its private API and binary, pass the digest-checked buffers to
  * esbuild, then fence source/dependencies again before writing any output.
- * This does not qualify resolver metadata, compiler self-consumption, runtime
- * imports, a complete multi-entry host build, or service readiness.
+ * The compiler API is evaluated from its validated buffer with builtin-only
+ * imports and no module cache. Its native service consumes a retained sealed
+ * descriptor. Runtime imports, full host closure and service readiness remain separate.
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
  *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string, runPhase?: VerifierPhaseRunner }} args
  */
@@ -1833,10 +1881,23 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
     buildRecordSha256: string;
     originalSourceReceiptSha256: string;
     compilerVersion: string;
+    compilerApi: {
+        path: string;
+        realpath: string;
+        sha256: string;
+    };
     binary: {
         path: string;
         realpath: string;
         sha256: string;
+    };
+    compilerBinary: {
+        kind: string;
+        sha256: string;
+        bytes: string;
+        dev: string;
+        ino: string;
+        launches: number;
     };
     consumed: {
         path: string;

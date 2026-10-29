@@ -134,7 +134,9 @@ describe('spawner sidecar health', () => {
       await once(server, 'listening');
       await expect(client.call('process:exec', {
         command: 'node', args: ['-e', '0'], cwd: directory,
-        diagnosticTags: { runId, commandClass: 'git', argv: ['secret'], env: { PRIVATE: 'secret' }, paths: ['/private'] },
+        diagnosticTags: {
+          runId, commandClass: 'git', gitSubcommand: 'fetch', argv: ['secret'], env: { PRIVATE: 'secret' }, paths: ['/private'],
+        },
       })).resolves.toMatchObject({ code: 0, stdout: '', stderr: '' });
 
       const stageLines = logs.mock.calls
@@ -151,7 +153,7 @@ describe('spawner sidecar health', () => {
         requestId: expect.anything(),
         clientConnectionId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
         diagnosticRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
-        diagnosticTags: { runId, commandClass: 'git' },
+        diagnosticTags: { runId, commandClass: 'git', gitSubcommand: 'fetch' },
         admissionPhases: [{ phase: 'enqueue', state: 'fulfilled', elapsedMs: 5 }],
         poolAcquisitionContext: {
           requestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
@@ -160,7 +162,7 @@ describe('spawner sidecar health', () => {
         poolAcquisitions: [{ pool: 'org-app', outcome: 'acquired' }],
         poolAcquisitionsOmitted: 0,
       });
-      expect(settled?.diagnosticTags).toEqual({ runId, commandClass: 'git' });
+      expect(settled?.diagnosticTags).toEqual({ runId, commandClass: 'git', gitSubcommand: 'fetch' });
       expect(JSON.stringify(settled)).not.toMatch(/secret|PRIVATE|paths|argv|\/private/);
       expect(executedParams).not.toHaveProperty('diagnosticTags');
       expect(settled?.poolAcquisitionContext).toMatchObject({ requestId: settled?.diagnosticRequestId });
@@ -194,6 +196,7 @@ describe('spawner sidecar health', () => {
       const malformed = [
         { runId: 'not-a-uuid', commandClass: 'git' },
         { runId: '35118a11-cd1d-4470-8652-e59592c0197c', commandClass: 'git-sync' },
+        { runId: '35118a11-cd1d-4470-8652-e59592c0197c', commandClass: 'git', gitSubcommand: 'FETCH\nPRIVATE' },
       ];
       for (const diagnosticTags of malformed) {
         await expect(client.call('process:exec', {
@@ -205,9 +208,13 @@ describe('spawner sidecar health', () => {
         .filter(([message]) => message === '[spawner-process-exec-stage]')
         .map(([, detail]) => JSON.parse(String(detail)) as Record<string, unknown>)
         .filter((detail) => detail.event === 'request-settled');
-      expect(settled).toHaveLength(2);
-      expect(settled.every((detail) => !Object.hasOwn(detail, 'diagnosticTags'))).toBe(true);
-      expect(executedParams).toHaveLength(2);
+      expect(settled).toHaveLength(3);
+      expect(settled.slice(0, 2).every((detail) => !Object.hasOwn(detail, 'diagnosticTags'))).toBe(true);
+      expect(settled[2]?.diagnosticTags).toEqual({
+        runId: '35118a11-cd1d-4470-8652-e59592c0197c',
+        commandClass: 'git',
+      });
+      expect(executedParams).toHaveLength(3);
       expect(executedParams.every((params) => !Object.hasOwn(params, 'diagnosticTags'))).toBe(true);
     } finally {
       client.close();

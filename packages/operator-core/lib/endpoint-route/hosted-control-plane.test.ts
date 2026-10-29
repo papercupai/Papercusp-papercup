@@ -107,6 +107,7 @@ describe('assembleHostedControlPlane', () => {
     // so keep the tenant runner hermetic instead of attempting a real SQL read.
     const runTenant = vi.fn(async (_context: VerifiedTenantServerContext) => ({ record: null, reviews: [] }) as never);
     const recordTransportFallback = vi.fn(() => true);
+    const binding = { redeem: vi.fn(async () => null), read: vi.fn(async () => null), revoke: vi.fn(async () => false) };
     const browser = createHostedBrowserRoutes({
       publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE_ID,
       dependencies: { runTenant, recordTransportFallback },
@@ -115,6 +116,7 @@ describe('assembleHostedControlPlane', () => {
       provider: createFakeHostedIdentityProvider(), publicOrigin: ORIGIN,
       sessionCookieSecret: COOKIE_SECRET, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE_ID,
       sessionStore, flowStore: new MemoryFlowStore(), clock: () => NOW,
+      leadBinding: { service: binding, environment: 'production' },
       identityDirectory: {
         resolveLinkedUser: async () => ({ userId: USER_ID }),
         resolveOrganization: async () => ({ organizationId: ORGANIZATION_ID }),
@@ -130,6 +132,12 @@ describe('assembleHostedControlPlane', () => {
       staticAllowlist: [...HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST, ...browser.allowlist],
     });
     const cookie = plane.components.sessionCookieCodec.serialize(SESSION_ID, new Date(NOW.getTime() + 60_000), NOW).split(';')[0];
+    const bindingPath = '/api/hosted/browser/lead-binding?graphWorkspaceId=graph-a&personRef=PER-a';
+    expect((await plane.app.request(bindingPath)).status).toBe(401);
+    expect(binding.read).not.toHaveBeenCalled();
+    expect((await plane.app.request(bindingPath, { headers: { cookie } })).status).toBe(404);
+    expect(binding.read).toHaveBeenCalledWith({ graphWorkspaceId: 'graph-a', personRef: 'PER-a', environment: 'production' },
+      expect.objectContaining({ userId: USER_ID, activeOrganizationId: ORGANIZATION_ID }));
     const path = `/api${HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH}?scope=account&version=3`;
     expect((await plane.app.request('/api/health')).status).toBe(200);
     expect((await plane.app.request(path)).status).toBe(401);
@@ -184,6 +192,8 @@ describe('assembleHostedControlPlane', () => {
     })).status).toBe(404);
     expect(recordTransportFallback).toHaveBeenCalledTimes(1);
     active = false;
+    expect((await plane.app.request(bindingPath, { headers: { cookie } })).status).toBe(403);
+    expect(binding.read).toHaveBeenCalledTimes(1);
     expect((await plane.app.request(path, { headers: { cookie } })).status).toBe(403);
     expect((await plane.app.request(diagnosticsPath, {
       method: 'POST', headers: { cookie, origin: ORIGIN }, body: transportBody,

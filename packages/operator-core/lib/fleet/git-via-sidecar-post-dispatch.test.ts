@@ -123,9 +123,9 @@ describe('unsignalled process:exec transport failures', () => {
 
     await expect(runCommandViaSpawnerSidecar('git', ['fetch'], {
       cwd: '/tmp', timeoutMs: 5000,
-      diagnosticTags: { runId, commandClass: 'git' },
+      diagnosticTags: { runId, commandClass: 'git', gitSubcommand: 'fetch' },
     })).resolves.toMatchObject({ code: 0, stdout: '', stderr: '' });
 
-    expect(sentParams).toMatchObject({ diagnosticTags: { runId, commandClass: 'git' } });
+    expect(sentParams).toMatchObject({ diagnosticTags: { runId, commandClass: 'git', gitSubcommand: 'fetch' } });
   });
 });

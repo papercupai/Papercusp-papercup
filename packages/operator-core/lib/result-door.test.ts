@@ -22,6 +22,7 @@ import {
   applyResultDoorAsync,
   beginResultDoorAggregate,
   buildProjectionHint,
+  detectResultEvidence,
   measureResultContextBytes,
   resetResultDoorAggregatesForTests,
   RESULT_DOOR_TOKENS,
@@ -3771,6 +3772,65 @@ describe('applyResultDoor', () => {
       expect(emittedText).toContain('⚠');
     });
 
+    it('keeps a nested projection inline when its upstream partial warning survived only in metadata', () => {
+      const pick = [
+        'snapshot.contentHash',
+        'snapshot.updatedAtMs',
+        'snapshot.noteRowsOmitted',
+        'snapshot.length',
+      ];
+      const note = 'the corpus this projection filtered was ALREADY TRUNCATED before this stage ran ' +
+        '(payload tier=trimmed, 39 field(s)/row(s) omitted upstream) — matches shown come from the ' +
+        'RETAINED portion only. For an exhaustive answer, re-call loop:checkpoint with payloadTier:\'full\'.';
+      const body = {
+        snapshot: { contentHash: 'abc123', updatedAtMs: 1793225079195, noteRowsOmitted: 2, length: 4 },
+      };
+      const result = {
+        content: [{ type: 'text' as const, text: JSON.stringify(body) }],
+        _meta: {
+          payloadProjection,
+          resultProjection: { applied: true, spec: { pick }, notes: [note] },
+        },
+      };
+
+      const doored = applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'loop:checkpoint',
+        effect: 'read',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        preservePaths: pick,
+        // This regression is specifically about avoiding a synchronous spill
+        // for small, already-selected metadata when its omitted source fields
+        // are explicitly disclosed.
+        scratchWriteFailure: { error: Object.assign(new Error('scratch must not be touched'), { code: 'EIO' }) },
+      });
+      const textItems = doored.content.filter(
+        (item) => item.type === 'text',
+      ) as Array<{ type: 'text'; text: string }>;
+
+      expect(textItems).toHaveLength(2);
+      expect(textItems[0].text).toContain('ALREADY TRUNCATED');
+      expect(JSON.parse(textItems[1].text)).toMatchObject(body);
+      expect(JSON.stringify(doored)).not.toContain('papercusp.output-envelope/v1');
+      expect(measureResultContextBytes(doored)).toBeLessThanOrEqual(BUDGET_CHARS);
+    });
+
+    it('limits spill evidence references to caller-selected paths', () => {
+      const content = [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          summary: 'run complete',
+          similarRecipes: [{ authorityRefs: { fleets: ['fleet-1'] } }],
+        }),
+      }];
+
+      expect(detectResultEvidence(content, ['summary'])).toEqual([]);
+      expect(detectResultEvidence(content, ['similarRecipes[].authorityRefs.fleets'])).toMatchObject([
+        { evidenceClass: 'fleet', jsonPointers: ['/similarRecipes/0/authorityRefs/fleets'] },
+      ]);
+    });
+
     it(
       'a result WITHOUT any marker gets the HONEST default wording — never an unconditional ' +
         '"FULL result" claim (EI-18762253154342502: no marker firing proves nothing was cut ' +
@@ -4557,7 +4617,7 @@ describe('applyResultDoor', () => {
       if (!parsed.ok) throw new Error(parsed.error);
 
       const projected = applyResultProjection(
-        { content: [{ type: 'text' as const, text: source }] },
+        { content: [{ type: 'text' as const, text: source }] } as DoorableResult,
         parsed.spec,
         { toolName: 'coord:feed', effect: 'read' },
       );
@@ -4581,6 +4641,62 @@ describe('applyResultDoor', () => {
       expect(doored).toBe(projected);
       expect(doored.content.filter((item) => item.type === 'text').map((item) => item.text).join('\n'))
         .toContain('body_truncated');
+    });
+
+    it('keeps coord:feed metadata inline when upstream projection truncation and excluded body_truncated overlap', () => {
+      const source = JSON.stringify({
+        rows: [{
+          msg_id: 'm1',
+          summary: 'selected-summary',
+          body: 'x'.repeat(2_000),
+          body_truncated: true,
+        }],
+      });
+      const parsed = parseProjection({ pick: ['rows[].msg_id', 'rows[].summary'] });
+      if (!parsed.ok) throw new Error(parsed.error);
+
+      const projected = applyResultProjection(
+        {
+          content: [{ type: 'text' as const, text: source }],
+          _meta: {
+            payloadProjection: {
+              truncated: true as const,
+              tier: 'trimmed',
+              forced: true,
+              originalChars: 9_000,
+              returnedChars: 2_000,
+              omittedCount: 1,
+            },
+          },
+        } as DoorableResult,
+        parsed.spec,
+        { toolName: 'coord:feed', effect: 'read' },
+      );
+      const projection = (projected._meta as {
+        resultProjection?: { bodyContentIndex?: number; notes?: string[] };
+      }).resultProjection;
+      expect(projection?.notes?.join('\n')).toContain('ALREADY TRUNCATED');
+      // payloadProjection is the stronger upstream signal, so this projection
+      // does not duplicate the excluded field-level marker in its warning.
+      expect(projection?.notes?.join('\n')).not.toContain('body_truncated');
+
+      const doored = applyResultDoor(projected, {
+        toolName: 'coord:feed',
+        workspaceId: 'ws-1',
+        runId: 'coord-feed-upstream-and-field-truncated',
+        scratchWriteFailure: { error: Object.assign(new Error('scratch must not be needed'), { code: 'ENOSPC' }) },
+      });
+      const textItems = doored.content.filter(
+        (item) => item.type === 'text',
+      ) as Array<{ type: 'text'; text: string }>;
+
+      expect(textItems.map((item) => item.text).join('\n')).toContain('ALREADY TRUNCATED');
+      expect(textItems.map((item) => item.text).join('\n')).not.toContain('body_truncated');
+      expect(JSON.parse(textItems.at(-1)!.text)).toEqual({
+        rows: [{ msg_id: 'm1', summary: 'selected-summary' }],
+      });
+      expect(JSON.stringify(doored)).not.toContain('papercusp.output-envelope/v1');
+      expect(measureResultContextBytes(doored)).toBeLessThanOrEqual(BUDGET_CHARS);
     });
   });
 });

@@ -81,14 +81,24 @@ const SAFE_PROCESS_EXEC_CALLER_LABELS = new Set<ProcessExecCallerLabel>(
   Object.values(PROCESS_EXEC_CALLER_LABELS),
 );
 const SAFE_DIAGNOSTIC_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-type SafeProcessExecDiagnosticTags = { runId: string; commandClass: 'git' | 'other' };
+const SAFE_GIT_SUBCOMMAND = /^[a-z][a-z0-9-]{0,63}$/;
+type SafeProcessExecDiagnosticTags = { runId: string; commandClass: 'git' | 'other'; gitSubcommand?: string };
 
 function safeProcessExecDiagnosticTags(value: unknown): SafeProcessExecDiagnosticTags | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
   if (typeof candidate.runId !== 'string' || !SAFE_DIAGNOSTIC_RUN_ID.test(candidate.runId) ||
       (candidate.commandClass !== 'git' && candidate.commandClass !== 'other')) return null;
-  return { runId: candidate.runId.toLowerCase(), commandClass: candidate.commandClass };
+  const gitSubcommand = candidate.commandClass === 'git'
+    && typeof candidate.gitSubcommand === 'string'
+    && SAFE_GIT_SUBCOMMAND.test(candidate.gitSubcommand)
+    ? candidate.gitSubcommand
+    : undefined;
+  return {
+    runId: candidate.runId.toLowerCase(),
+    commandClass: candidate.commandClass,
+    ...(gitSubcommand ? { gitSubcommand } : {}),
+  };
 }
 
 // JSON-RPC 2.0 response builders

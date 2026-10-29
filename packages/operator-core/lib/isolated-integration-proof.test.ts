@@ -34,6 +34,21 @@ it('keeps isolated worker phase ceilings independent of a widened outer file bud
     executeMs: 480_000, executeMaxMs: 480_000, teardownMaxMs: 600_000 });
 });
 
+it('composes explicit per-phase maxima into an exact bounded enclosing file budget', () => {
+  const options = isolatedWorkerOptions(120_000, {}, 120_000, {
+    bootstrapMaxMs: 325_000,
+    finalizeMaxMs: 45_000,
+    teardownMaxMs: 45_000,
+  });
+  expect(options.phaseTimeouts).toMatchObject({
+    bootstrapMaxMs: 325_000,
+    executeMaxMs: 120_000,
+    finalizeMaxMs: 45_000,
+    teardownMaxMs: 45_000,
+  });
+  expect(options.testTimeoutMs).toBe(600_000);
+});
+
 it('rejects a short enclosing proof budget before reading source or allocating a worker', async () => {
   vi.stubEnv('PAPERCUSP_TEST_FILE_TIMEOUT_MS', '');
   const execute = vi.fn();
@@ -74,7 +89,7 @@ async function withCapturedRouter(options: Parameters<typeof captureIsolatedWork
   }
 }
 
-const routerPhaseOptions = { phaseTimeouts: { bootstrapMs: 100, executeMs: 80, teardownMs: 30 },
+const routerPhaseOptions = { phaseTimeouts: { bootstrapMs: 100, executeMs: 80, finalizeMs: 30, teardownMs: 30 },
   killGraceMs: 10, drainGraceMs: 10, testFileExecutionFromStdout: true };
 
 it('keeps supervised router startup outside the test execution budget', async () => {
@@ -119,6 +134,79 @@ it('bounds cleanup when a supervised router stops before test execution', async 
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     child.emit('close');
     expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'teardown' });
+  });
+});
+
+it('keeps completed router provenance outside execution and bounds finalization without renewing it', async () => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    await vi.advanceTimersByTimeAsync(75);
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(child.kill).not.toHaveBeenCalled();
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    await vi.advanceTimersByTimeAsync(19);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
+  });
+});
+
+it('gives runtime shutdown its own bounded allowance after provenance finalization', async () => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    await vi.advanceTimersByTimeAsync(20);
+    child.emit('message', { kind: 'isolated-runtime-stopping' });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(child.kill).not.toHaveBeenCalled();
+    // A replayed finalizer or cleanup receipt cannot renew runtime shutdown.
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    child.emit('message', { kind: 'isolated-runtime-stopping' });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'teardown' });
+  });
+});
+
+it.each([false, true])('cannot use provenance output to escape bootstrap or disabled router observation: %s', async enabled => {
+  await withCapturedRouter({ ...routerPhaseOptions, testFileExecutionFromStdout: enabled }, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    await vi.advanceTimersByTimeAsync(99);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'bootstrap' });
+  });
+});
+
+it.each([0, 1, 2])('extends bounded finalization only for advancing source census counts: %s', async nextCount => {
+  const options = { ...routerPhaseOptions, phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts,
+    finalizeMaxMs: 90 } };
+  await withCapturedRouter(options, async (child, result) => {
+    const progress = (completedFiles: number) => child.stderr!.emit('data',
+      'TEST_FILE_FINALIZATION ' + JSON.stringify({ phase: 'provenance-progress',
+        step: 'source-census', event: 'progress', completedFiles, totalFiles: 2 }) + '\n');
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    await vi.advanceTimersByTimeAsync(20);
+    progress(1);
+    await vi.advanceTimersByTimeAsync(39);
+    expect(child.kill).not.toHaveBeenCalled();
+    progress(nextCount);
+    await vi.advanceTimersByTimeAsync(1);
+    if (nextCount === 2) {
+      expect(child.kill).not.toHaveBeenCalled();
+      // Even continuing file progress cannot grow the original absolute ceiling.
+      await vi.advanceTimersByTimeAsync(30);
+    }
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
   });
 });
 

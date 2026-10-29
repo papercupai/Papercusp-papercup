@@ -246,7 +246,7 @@ describe('bounded scheduled retention drain', () => {
     expect((await drainScheduledDiskReclaim(run)).stop).toBe('error');
     expect(run).toHaveBeenCalledOnce();
   });
-  it.each(['failed-wait', 'holder-error', 'expired-deadline', 'wrong-root', 'wrong-error'])('does not resume unsafe pending census: %s', async mode => {
+  it.each(['failed-wait', 'holder-error', 'expired-deadline', 'wrong-root', 'wrong-error', 'preparation-only'])('does not resume unsafe pending census: %s', async mode => {
     const pendingWalk = { root: '/scratch', dir: '/retention/slot', attempt: 1, requestKey: 'exact', launchedAt: 0 };
     const pending = partial({ entries: [], effects: [],
       censuses: [{ root: '/scratch', classId: 'scratch', elapsedMs: 1000, inspectedNodes: 0, pendingWalk,
@@ -256,6 +256,7 @@ describe('bounded scheduled retention drain', () => {
     if (mode === 'expired-deadline') pending.finishedAt = new Date(900_000).toISOString();
     if (mode === 'wrong-root') pendingWalk.root = '/other';
     if (mode === 'wrong-error') pending.censuses![0]!.error = 'stale or changed retention census result';
+    if (mode === 'preparation-only') pending.censuses![0]!.preparationOnly = true;
     const run = vi.fn().mockResolvedValue(pending);
     const awaitPendingCensus = vi.fn(async () => false);
     await drainScheduledDiskReclaim(run, { awaitPendingCensus });

@@ -51,6 +51,25 @@ export interface PlanSpecQualityResult {
   details: {
     uncoveredPlanItemIds: string[];
     invalidExemptionSpecIds: string[];
+    exemptionCensus: {
+      specSetHash: string;
+      currentClauseCount: number;
+      exemptClauseCount: number;
+      validExemptionSpecIds: string[];
+      invalidExemptionSpecIds: string[];
+      censusSha256: string;
+      rows: Array<{
+        specId: string;
+        revision: number;
+        planItemId: string;
+        lifecycleStatus: SpecClauseRevision['lifecycleStatus'];
+        behaviorClass: SpecClauseRevision['behaviorClass'];
+        exemptionDeclared: boolean;
+        valid: boolean | null;
+        hasJustification: boolean;
+        hasProvenance: boolean;
+      }>;
+    };
     draftSpecIds: string[];
     atomicityClauseDiagnostics: SpecQualityAtomicityClauseDiagnostic[];
     atomicityDetectorControls: Array<{ behavior: string; expected: 'atomic' | 'compound'; actual: 'atomic' | 'compound'; passed: boolean }>;
@@ -571,7 +590,44 @@ export function evaluatePlanSpecQuality(input: {
   const behavioral = currentSet.filter((clause) => CONTRACT_STATUSES.has(clause.lifecycleStatus));
   const exemptions = currentSet.filter((clause) => clause.lifecycleStatus === 'exempt');
   const validExemptions = exemptions.filter(validExplicitExemption);
+  const invalidExemptionSpecIds = exemptions
+    .filter((clause) => !validExplicitExemption(clause))
+    .map((clause) => clause.specId);
   const specSetHash = computeSpecSetHash(currentSet);
+  const exemptionCensusRows = currentSet.map((clause) => {
+    const exemptionDeclared = clause.lifecycleStatus === 'exempt';
+    const hasJustification = typeof clause.exemption?.justification === 'string' &&
+      Boolean(clause.exemption.justification.trim());
+    const hasProvenance = typeof clause.exemption?.provenance === 'string' &&
+      Boolean(clause.exemption.provenance.trim());
+    return {
+      specId: clause.specId,
+      revision: clause.revision,
+      planItemId: clause.planItemId,
+      lifecycleStatus: clause.lifecycleStatus,
+      behaviorClass: clause.behaviorClass,
+      exemptionDeclared,
+      valid: exemptionDeclared ? validExplicitExemption(clause) : null,
+      hasJustification,
+      hasProvenance,
+    };
+  });
+  const exemptionCensusSha256 = createHash('sha256').update(JSON.stringify(exemptionCensusRows)).digest('hex');
+  const exemptionCensus = {
+    specSetHash,
+    currentClauseCount: currentSet.length,
+    exemptClauseCount: exemptions.length,
+    validExemptionSpecIds: validExemptions.map((clause) => clause.specId),
+    invalidExemptionSpecIds,
+    censusSha256: exemptionCensusSha256,
+    rows: exemptionCensusRows,
+  };
+  const exemptionCensusEvidence =
+    `Exact clause scope ${specSetHash} contains ${currentSet.length} current row(s); ` +
+    `${exemptions.length} exempt (${JSON.stringify(exemptions.map((clause) => `${clause.specId}@${clause.revision}`))}), ` +
+    `${validExemptions.length} valid and ${invalidExemptionSpecIds.length} invalid; ` +
+    `invalid ids=${JSON.stringify(invalidExemptionSpecIds)}; row census SHA-256=${exemptionCensusSha256}. ` +
+    'Replay this exact snapshot and compare details.exemptionCensus.rows.';
   const ratings = {} as Record<SpecQualityCriterion, SpecQualityRatingEntry>;
 
   const seenSpecIds = new Set<string>();
@@ -894,17 +950,14 @@ export function evaluatePlanSpecQuality(input: {
           )
         : pass('No active/accepted behavior clause is coupled to an implementation detail covered by the detector.' + implementationIndependenceCoverage);
 
-  const invalidExemptionSpecIds = exemptions
-    .filter((clause) => !validExplicitExemption(clause))
-    .map((clause) => clause.specId);
   ratings['explicit-non-behavioral-exemptions'] = invalidExemptionSpecIds.length
     ? fail(
-        `Invalid exemption(s): ${invalidExemptionSpecIds.join(', ')}.`,
+        `${exemptionCensusEvidence} Invalid exemption(s): ${invalidExemptionSpecIds.join(', ')}.`,
         'Use lifecycleStatus=exempt, behaviorClass=non-automated, and non-empty justification + provenance.',
       )
     : exemptions.length
-      ? pass(`${exemptions.length} non-behavioral exemption(s) carry explicit justification and provenance.`)
-      : { rating: 'not-applicable', evidence: 'No clause claims a non-behavioral exemption.' };
+      ? pass(`${exemptionCensusEvidence} Every exemption carries explicit justification and provenance.`)
+      : { rating: 'not-applicable', evidence: `${exemptionCensusEvidence} No clause claims a non-behavioral exemption.` };
 
   const classFit = planClassFit(input.classRef, itemBehavioral);
   const everyItemExplicitlyExempt =
@@ -984,6 +1037,7 @@ export function evaluatePlanSpecQuality(input: {
     details: {
       uncoveredPlanItemIds,
       invalidExemptionSpecIds,
+      exemptionCensus,
       draftSpecIds,
       atomicityClauseDiagnostics,
       atomicityDetectorControls,

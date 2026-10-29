@@ -4015,6 +4015,35 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(taggedCall?.[3]).toMatchObject({ diagnosticTags });
   });
 
+  it('persists bounded duration summaries for completed local Git commands', async () => {
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      const opts = raw as unknown as RunGitSyncOpts;
+      for (let index = 0; index < 20; index += 1) {
+        await opts.runGit!(['status', '--porcelain'], repoDir);
+      }
+      return syncedOutcome;
+    });
+
+    await action(ctx);
+
+    const marker = gitSyncActivityPatches().at(-1)!;
+    expect(marker.git_commands).toMatchObject({
+      active_count: 0,
+      completed_count: 20,
+      completed_omitted_count: 4,
+      completed: Array.from({ length: 16 }, (_, index) => ({
+        id: index + 5,
+        subcommand: 'status',
+        cwd: repoDir,
+        started_at: expect.any(Number),
+        completed_at: expect.any(Number),
+        duration_ms: expect.any(Number),
+        status: 'succeeded',
+        exit_code: 0,
+      })),
+    });
+  });
+
   it('bounds concurrent command diagnostics, omits private argv, and clears settled commands', async () => {
     vi.useFakeTimers();
     vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '25');

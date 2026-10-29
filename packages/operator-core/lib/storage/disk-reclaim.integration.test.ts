@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod, copyFile, open, link } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod, copyFile, open, link, readdir } from 'node:fs/promises';
 import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,16 +65,32 @@ vi.mock('../task-manager/managed-spawn', async (original) => {
         const inspect = async (pid: number, depth: number): Promise<void> => {
           try {
             const base = `/proc/${pid}`;
-            const [name, wait, children, status, input, cgroup] = await Promise.all([
+            const cgroup = await readFile(`${base}/cgroup`, 'utf8');
+            if (!cgroup.trim().endsWith(`/pc-${taskId}.scope`)) {
+              processes.push({ pid, scopeMismatch: true });
+              return;
+            }
+            const [name, wait, children, status, input, cmdline, cwd, syscall, descriptors] = await Promise.all([
               readFile(`${base}/comm`, 'utf8'), readFile(`${base}/wchan`, 'utf8'),
               readFile(`${base}/task/${pid}/children`, 'utf8'),
               readFile(`${base}/status`, 'utf8'),
               readlink(`${base}/fd/0`).catch(error => `unavailable:${error.code}`),
-              readFile(`${base}/cgroup`, 'utf8'),
+              readFile(`${base}/cmdline`, 'utf8'),
+              readlink(`${base}/cwd`).catch(error => `unavailable:${error.code}`),
+              readFile(`${base}/syscall`, 'utf8').catch(error => `unavailable:${error.code}`),
+              readdir(`${base}/fd`).catch(() => [] as string[]),
             ]);
+            const fdLinks = await Promise.all(descriptors.slice(0, 32).map(async fd => ({ fd,
+              path: await readlink(`${base}/fd/${fd}`).catch(error => `unavailable:${error.code}`),
+            })));
             // wchan can be zero for an elevated child we cannot ptrace. State
             // and signal masks distinguish a stopped child from that unknown.
+            // A directory-read wait alone cannot identify its cause. Keep the
+            // command and open descriptors from this exact enrolled scope so
+            // the syscall's fd can be matched to the directory being read.
             processes.push({ pid, name: name.trim(), wait: wait.trim(), input,
+              argv: cmdline.split('\0').filter(Boolean).map(arg => arg.slice(0, 2048)),
+              cwd, syscall: syscall.trim(), fdLinks,
               cgroup: cgroup.trim(), status: status.split('\n').filter(line =>
                 /^(State|PPid|TracerPid|Uid|SigPnd|ShdPnd|SigBlk|SigIgn|SigCgt):/.test(line)) });
             if (depth < 3) for (const next of children.trim().split(/\s+/).filter(Boolean).slice(0, 4)) await inspect(Number(next), depth + 1);
@@ -724,6 +740,41 @@ describe('retention on a real fixture tree', () => {
     expect(fresh).toHaveBeenCalledWith(root, expect.objectContaining({ paths: [source] }));
   });
 
+  it('prepares independent capped roots despite a delegate failure without resuming effects', async () => {
+    const { root, options } = await setup();
+    const later = join(fixture!, 'later'); await mkdir(later);
+    for (const path of [root, later]) await writeFile(join(path, 'data'), 'retain until a fresh complete pass');
+    const launches = vi.fn(async () => ({ pid: 999_999_999, taskId: 'prepared', confined: true }));
+    const fresh = vi.fn(inspectRetentionTrees), holders = vi.fn(options.scanHolders);
+    const receipts: DiskReclaimReceipt[] = [];
+    const run = vi.fn(async () => {
+      const receipt = await runDiskReclaimOnce({ ...options, yieldAfterPendingCensus: true,
+        roots: [root, later].map(path => ({ path, classId: 'fixture' })),
+        policy: options.policy.map(cls => ({ ...cls, roots: [root, later], maxBytes: 1 })),
+        delegates: [{ classId: 'independent-owner', run: async () => ({ ok: false, detail: 'unavailable' }) }],
+        inspectTrees: fresh, scanHolders: holders,
+        inspectInitialCappedTrees: (path, input, retentionMutex) => inspectDetachedRetentionTrees(path, input, {
+          retentionMutex, dir: join(fixture!, path === root ? 'first-slot' : 'later-slot'),
+          prepareOnly: input.prepareOnly, waitMs: 60_000, pollMs: 2, launch: launches, isAlive: () => true,
+          sleep: async () => { throw new DetachedWalkAbandoned(); },
+        }),
+      });
+      receipts.push(receipt); return receipt;
+    });
+    const awaitPendingCensus = vi.fn(async () => true);
+    expect(await drainScheduledDiskReclaim(run, { awaitPendingCensus })).toMatchObject({ batches: 1, stop: 'error' });
+    expect(run).toHaveBeenCalledOnce(); expect(awaitPendingCensus).not.toHaveBeenCalled();
+    expect(launches).toHaveBeenCalledTimes(2);
+    expect(receipts[0]!.censuses?.filter(row => row.preparationOnly).map(row => row.root)).toEqual([root, later]);
+    expect(receipts[0]!.entries).toEqual([]); expect(receipts[0]!.caps ?? []).toEqual([]);
+    expect(fresh).not.toHaveBeenCalled(); expect(holders).not.toHaveBeenCalled();
+    for (const name of ['first-slot', 'later-slot']) {
+      expect((await readWalkState(join(fixture!, name)))?.attempt).toBe(1);
+      await expect(stat(join(fixture!, name, 'consumed'))).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    for (const path of [root, later]) expect(await readFile(join(path, 'data'), 'utf8')).toBe('retain until a fresh complete pass');
+  });
+
   it.each(['remove', 'new-pin', 'changed-entry'] as const)('continues a pending census outside admission and rechecks %s before effects', async mode => {
     const { root, options } = await setup();
     const source = join(root, 'expired'); await mkdir(source); await writeFile(join(source, 'data'), 'old');
@@ -744,9 +795,9 @@ describe('retention on a real fixture tree', () => {
           previousReceipt: receipts.at(-1), yieldAfterPendingCensus: true, inspectTrees: inspectRetentionTrees,
           readProtection: async () => { protections.push(pinned); return { paths: pinned ? [source] : [] }; },
           inspectInitialCappedTrees: async (path, input, retentionMutex) => {
-            inspections.push(path);
+            if (!input.prepareOnly) inspections.push(path);
             return path === root ? inspectDetachedRetentionTrees(path, input, { retentionMutex, dir: slot,
-              waitMs: 60_000, pollMs: 2, launch: launcher, isAlive: () => receipts.length === 0,
+              prepareOnly: input.prepareOnly, waitMs: 60_000, pollMs: 2, launch: launcher, isAlive: () => receipts.length === 0,
               // Abandon after enrollment reaches its wait, independently of
               // filesystem setup latency. The real FIFO case has its own test.
               sleep: async () => { throw new DetachedWalkAbandoned(); },
@@ -758,7 +809,7 @@ describe('retention on a real fixture tree', () => {
         expect(inspections).toEqual([root]);
         expect(receipts[0]!.errors).toEqual([`inspect:${root}: retention census pending; managed walk continues for adoption`]);
         expect(receipts[0]!.entries).toEqual([]);
-        expect(receipts[0]!.censuses?.[0]?.pendingWalk).toEqual(pending);
+        expect(receipts[0]!.censuses?.find(row => !row.preparationOnly)?.pendingWalk).toEqual(pending);
         // A pin writer obtains the actual mutex while the workflow is paused.
         await withRetentionMutex(async () => {
           pinned = mode === 'new-pin';

@@ -573,6 +573,50 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
   };
 }
 
+/**
+ * A scoped repair-queue operation must keep the install selected by the caller.
+ * `--harness` is the strongest local signal; the operator-home pointer covers
+ * calls that intentionally omit a per-call harness.
+ */
+export function resolveRepairQueueExpectedInstallSlug(flags = {}, env = process.env) {
+  const explicit = typeof flags.harness === 'string' ? flags.harness.trim() : '';
+  const home = typeof env.PAPERCUSP_POT_HOME_SLUG === 'string'
+    ? env.PAPERCUSP_POT_HOME_SLUG.trim()
+    : '';
+  return explicit || home || null;
+}
+
+/** The read-only repair-queue operations that can safely serve as a scope probe. */
+export function isRepairQueueRead(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return true;
+  if (Object.keys(args).length === 0) return true;
+  return args.op === 'get' || args.op === 'status';
+}
+
+/** Compare the endpoint's reported repair-queue target with the caller's scope. */
+export function repairQueueTargetScopeMismatch(expectedInstallSlug, result) {
+  const expected = typeof expectedInstallSlug === 'string' ? expectedInstallSlug.trim() : '';
+  if (!expected) return null;
+  const payload = result && typeof result === 'object' ? result : {};
+  const target = payload.target ?? payload.data?.target;
+  const actual = typeof target?.installSlug === 'string' && target.installSlug.trim()
+    ? target.installSlug.trim()
+    : null;
+  return actual === expected ? null : { expected, actual };
+}
+
+function reportRepairQueueScopeMismatch(expectedInstallSlug, mismatches) {
+  const observed = [...new Set(mismatches.map(({ port, actual }) =>
+    `port ${port}=${actual ?? 'target unavailable'}`,
+  ))].join(', ');
+  console.error(
+    `mcp-call: refusing release:repair-queue; expected install scope ${JSON.stringify(expectedInstallSlug)}, ` +
+    `but reachable endpoint(s) reported ${observed || 'no matching target'}. No repair-queue operation was sent. ` +
+    'Choose a port serving that install or omit the scope only when its operator-home target is intended.',
+  );
+  process.exit(MCP_CALL_TOOL_NOT_OK_EXIT);
+}
+
 export function buildSuperuserBearerDiagnostic({ tokenPath, port, tokenFallbackAttempted = false }) {
   return 'mcp-call: the operator on port ' + port + ' rejected the bearer read from ' + tokenPath +
     ' (superuser_invalid_bearer). Set PAPERCUSP_OPERATOR_URL or PAPERCUSP_HONO_PORT to the ' +
@@ -1068,7 +1112,7 @@ async function main() {
     idempotencyKey: flags.idempotencyKey,
     outputGroupId: randomUUID(),
   });
-  const init = {
+  const buildRequestInit = (params) => ({
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -1078,19 +1122,27 @@ async function main() {
       jsonrpc: '2.0',
       id: REQUEST_ID,
       method: 'tools/call',
-      params: callParams,
+      params,
     }),
-  };
-  const initForToken = (token) => ({
-    ...init,
-    headers: { ...init.headers, authorization: 'Bearer ' + token },
   });
-  const fetchCandidate = async (port, token, query) => {
+  const init = buildRequestInit(callParams);
+  const repairQueueExpectedInstall = tool === 'release:repair-queue'
+    ? resolveRepairQueueExpectedInstallSlug(flags)
+    : null;
+  const repairQueueNeedsPreflight = Boolean(repairQueueExpectedInstall) && !isRepairQueueRead(args);
+  const repairQueueScopeProbeInit = repairQueueNeedsPreflight
+    ? buildRequestInit(buildMcpCallParams('release:repair-queue', { op: 'get' }, { outputGroupId: randomUUID() }))
+    : null;
+  const initForToken = (token, requestInit = init) => ({
+    ...requestInit,
+    headers: { ...requestInit.headers, authorization: 'Bearer ' + token },
+  });
+  const fetchCandidate = async (port, token, query, requestInit = init) => {
     for (let admissionAttempt = 1; ; admissionAttempt += 1) {
       stampRequestSent();
       const candidateRes = await fetchWithConnectionRecovery(
         'http://localhost:' + port + '/api/mcp?' + query,
-        initForToken(token),
+        initForToken(token, requestInit),
         {
           // An explicit pin means the caller deliberately chose this operator
           // and must not be silently routed to another port while it restarts.
@@ -1121,6 +1173,19 @@ async function main() {
       await sleep(delayMs);
     }
   };
+  const fetchCandidateCall = async (port, token, query, requestInit = init) => {
+    let queryUsed = query;
+    let response = await fetchCandidate(port, token, queryUsed, requestInit);
+    if (shouldRetryWithoutNativeSession(response.candidateOut.error, { client, query: queryUsed })) {
+      console.error(
+        'mcp-call: operator rejected the inherited Codex native-session claim before dispatch; ' +
+          'retrying once with the same client identity and no native-session claim.',
+      );
+      queryUsed = buildMcpSessionQuery({ ...queryArgs, nativeSessionOverride: null });
+      response = await fetchCandidate(port, token, queryUsed, requestInit);
+    }
+    return { ...response, queryUsed };
+  };
 
   let res;
   let raw;
@@ -1130,6 +1195,7 @@ async function main() {
   let authorityFallback = false;
   let configuredPortError = null;
   const attempts = [];
+  const repairQueueScopeMismatches = [];
   let tokenIndex = 0;
   let stopEndpointSearch = false;
   for (let index = 0; transport !== 'uds' && index < candidatePorts.length; index += 1) {
@@ -1140,26 +1206,48 @@ async function main() {
       const tokenCandidate = tokenCandidates[tokenIndex];
       responseTokenPath = tokenCandidate.path;
       try {
-        let { candidateRes, candidateRaw, candidateOut } = await fetchCandidate(
+        if (repairQueueNeedsPreflight) {
+          const probe = await fetchCandidateCall(
+            port,
+            tokenCandidate.token,
+            qs,
+            repairQueueScopeProbeInit,
+          );
+          if (hasEndpointFallback && isRecoverableAuthorityDenial(probe.candidateRaw)) {
+            authorityFallback = true;
+            tryNextEndpoint = true;
+            break;
+          }
+          if (
+            isInvalidSuperuserBearerResult(probe.candidateOut.error) &&
+            tokenIndex + 1 < tokenCandidates.length
+          ) {
+            tokenFallbackAttempted = true;
+            continue;
+          }
+          if (probe.candidateOut.error || toolResultNotOkReason(probe.candidateOut.result) !== null) {
+            res = probe.candidateRes;
+            raw = probe.candidateRaw;
+            responsePort = port;
+            break;
+          }
+          const mismatch = repairQueueTargetScopeMismatch(
+            repairQueueExpectedInstall,
+            probe.candidateOut.result,
+          );
+          if (mismatch) {
+            repairQueueScopeMismatches.push({ port, ...mismatch });
+            tryNextEndpoint = true;
+            break;
+          }
+        }
+
+        const { candidateRes, candidateRaw, candidateOut } = await fetchCandidateCall(
           port,
           tokenCandidate.token,
           qs,
+          init,
         );
-        if (shouldRetryWithoutNativeSession(candidateOut.error, { client, query: qs })) {
-          console.error(
-            'mcp-call: operator rejected the inherited Codex native-session claim before dispatch; ' +
-              'retrying once with the same client identity and no native-session claim.',
-          );
-          const queryWithoutNativeSession = buildMcpSessionQuery({
-            ...queryArgs,
-            nativeSessionOverride: null,
-          });
-          ({ candidateRes, candidateRaw, candidateOut } = await fetchCandidate(
-            port,
-            tokenCandidate.token,
-            queryWithoutNativeSession,
-          ));
-        }
         if (hasEndpointFallback && isRecoverableAuthorityDenial(candidateRaw)) {
           authorityFallback = true;
           tryNextEndpoint = true;
@@ -1171,6 +1259,14 @@ async function main() {
         ) {
           tokenFallbackAttempted = true;
           continue;
+        }
+        if (repairQueueExpectedInstall && isRepairQueueRead(args) && !candidateOut.error) {
+          const mismatch = repairQueueTargetScopeMismatch(repairQueueExpectedInstall, candidateOut.result);
+          if (mismatch) {
+            repairQueueScopeMismatches.push({ port, ...mismatch });
+            tryNextEndpoint = true;
+            break;
+          }
         }
         res = candidateRes;
         raw = candidateRaw;
@@ -1210,32 +1306,84 @@ async function main() {
     out = parseSse(raw, REQUEST_ID);
   } else if (shouldTryUdsFallback({ transport, attempts })) {
     if (transport === 'auto') console.error(buildUdsFallbackNotice(attempts));
-    const uds = await callToolViaAgentMcpUds({
-      ports: candidatePorts,
+    let udsPorts = candidatePorts;
+    if (repairQueueNeedsPreflight) {
+      const probe = await callToolViaAgentMcpUds({
+        ports: candidatePorts,
+        tokens: tokenCandidates.map((candidate) => candidate.token),
+        query: qs,
+        params: buildMcpCallParams('release:repair-queue', { op: 'get' }, { outputGroupId: randomUUID() }),
+        connect: await loadAgentMcpConnect(),
+        home: resolveAgentMcpDiscoveryHome(),
+      });
+      if (probe.kind === 'outcome-unknown') {
+        console.error(`mcp-call: ${probe.message} (scope preflight over unix socket via port ${probe.port})`);
+        process.exit(MCP_CALL_OUTCOME_UNKNOWN_EXIT);
+      }
+      if (probe.kind === 'unavailable') {
+        if (repairQueueScopeMismatches.length > 0) {
+          reportRepairQueueScopeMismatch(repairQueueExpectedInstall, repairQueueScopeMismatches);
+        }
+        if (attempts.length > 0) console.error(buildUnreachableDiagnostic({ attempts, configuredPort, pinned }));
+        console.error(buildUdsUnavailableDiagnostic(probe.unavailable));
+        process.exit(4);
+      }
+      responsePort = probe.port;
+      if (probe.kind === 'error') {
+        out = { error: probe.error };
+      } else {
+        const failure = toolResultNotOkReason(probe.result);
+        if (failure !== null) {
+          out = { result: probe.result };
+        } else {
+          const mismatch = repairQueueTargetScopeMismatch(repairQueueExpectedInstall, probe.result);
+          if (mismatch) {
+            reportRepairQueueScopeMismatch(repairQueueExpectedInstall, [{ port: probe.port, ...mismatch }]);
+          }
+          // Use the exact endpoint whose read-only probe established the target.
+          udsPorts = [probe.port];
+        }
+      }
+    }
+    const uds = out ? null : await callToolViaAgentMcpUds({
+      ports: udsPorts,
       tokens: tokenCandidates.map((candidate) => candidate.token),
       query: qs,
       params: callParams,
       connect: await loadAgentMcpConnect(),
       home: resolveAgentMcpDiscoveryHome(),
     });
-    if (uds.kind === 'outcome-unknown') {
+    if (uds?.kind === 'outcome-unknown') {
       console.error(`mcp-call: ${uds.message} (unix socket via port ${uds.port})`);
       process.exit(MCP_CALL_OUTCOME_UNKNOWN_EXIT);
     }
-    if (uds.kind === 'unavailable') {
+    if (uds?.kind === 'unavailable') {
       if (attempts.length > 0) console.error(buildUnreachableDiagnostic({ attempts, configuredPort, pinned }));
       console.error(buildUdsUnavailableDiagnostic(uds.unavailable));
       process.exit(4);
     }
-    responsePort = uds.port;
-    out = uds.kind === 'result' ? { result: uds.result } : { error: uds.error };
-    if (flags.raw) {
+    if (uds) {
+      responsePort = uds.port;
+      out = uds.kind === 'result' ? { result: uds.result } : { error: uds.error };
+    }
+    if (flags.raw && out) {
+      if (repairQueueExpectedInstall && isRepairQueueRead(args) && !out.error) {
+        const mismatch = repairQueueTargetScopeMismatch(repairQueueExpectedInstall, out.result);
+        if (mismatch) reportRepairQueueScopeMismatch(repairQueueExpectedInstall, [{ port: responsePort, ...mismatch }]);
+      }
       process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: REQUEST_ID, ...out }) + '\n');
       return;
     }
   } else {
+    if (repairQueueScopeMismatches.length > 0) {
+      reportRepairQueueScopeMismatch(repairQueueExpectedInstall, repairQueueScopeMismatches);
+    }
     console.error(buildUnreachableDiagnostic({ attempts, configuredPort, pinned }));
     process.exit(4);
+  }
+  if (repairQueueExpectedInstall && isRepairQueueRead(args) && out.result && !flags.raw) {
+    const mismatch = repairQueueTargetScopeMismatch(repairQueueExpectedInstall, out.result);
+    if (mismatch) reportRepairQueueScopeMismatch(repairQueueExpectedInstall, [{ port: responsePort ?? configuredPort, ...mismatch }]);
   }
   const failedPayload = out.error ?? (
     out.result && typeof out.result === 'object' &&

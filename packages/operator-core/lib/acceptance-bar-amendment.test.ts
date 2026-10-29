@@ -148,6 +148,7 @@ describe('acceptance BAR amendment transaction contract', () => {
       kind: 'acceptance-bar-amendment-approval',
       rubricRef: 'acceptance-plan',
       subjectPlan: 'plan',
+      proposedPatchHash: 'c'.repeat(64),
       bars: [{ barKey: 'R-11', priorBarHash: null, nextBarHash: 'a'.repeat(64) }],
     });
     expect(added.success).toBe(true);
@@ -157,6 +158,7 @@ describe('acceptance BAR amendment transaction contract', () => {
       kind: 'acceptance-bar-amendment-approval',
       rubricRef: 'acceptance-plan',
       subjectPlan: 'plan',
+      proposedPatchHash: 'c'.repeat(64),
       bars: [{ barKey: 'R-2', priorBarHash: 'b'.repeat(64), nextBarHash: null }],
     });
     expect(removed.success).toBe(true);
@@ -167,11 +169,19 @@ describe('acceptance BAR amendment transaction contract', () => {
       subjectPlan: 'plan',
       certifies: 'R-1 was checked against the source and focused tests.',
       doesNotCertify: ['runtime deployment', 'unrelated rubric bars'],
+      proposedPatchHash: 'c'.repeat(64),
       bars: [{ barKey: 'R-2', priorBarHash: 'b'.repeat(64), nextBarHash: null }],
     });
     expect(scoped.success).toBe(true);
     expect(scoped.success && scoped.data.certifies).toContain('R-1');
     expect(scoped.success && scoped.data.doesNotCertify).toEqual(['runtime deployment', 'unrelated rubric bars']);
+    expect(acceptanceBarApprovalSchema.safeParse({
+      schemaVersion: 1,
+      kind: 'acceptance-bar-amendment-approval',
+      rubricRef: 'acceptance-plan',
+      subjectPlan: 'plan',
+      bars: [{ barKey: 'R-1', priorBarHash: 'a'.repeat(64), nextBarHash: 'b'.repeat(64) }],
+    }).success).toBe(false);
     expect(
       acceptanceBarApprovalSchema.safeParse({
         schemaVersion: 1,
@@ -564,6 +574,7 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     kind: 'acceptance-bar-amendment-approval',
     rubricRef: 'acceptance-plan',
     subjectPlan: 'plan',
+    proposedPatchHash: 'c'.repeat(64),
     bars: [{ barKey: 'R-1', priorBarHash: 'a'.repeat(64), nextBarHash: 'b'.repeat(64) }],
   } as const;
 
@@ -572,6 +583,7 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     kind: 'acceptance-bar-amendment-approval' as const,
     rubricRef: 'acceptance-plan',
     subjectPlan: 'plan',
+    proposedPatchHash: 'c'.repeat(64),
     bars: [{ barKey: 'R-1', priorBarHash: 'a'.repeat(64), nextBarHash: 'b'.repeat(64) }],
   };
 
@@ -698,7 +710,7 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     expect(queries[1]!.values).toEqual(['papercusp-workspace', '456']);
   });
 
-  it('accepts the recorded multiline approval for its immutable preview post', async () => {
+  it('rejects a legacy multiline approval whose immutable preview lacks full patch binding', async () => {
     const previewBody = JSON.stringify({
       kind: 'acceptance-bar-amendment-approval',
       rubricRef: 'acceptance-full-text-knowledge-retrieval-2026-10-08',
@@ -724,6 +736,7 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
       kind: 'acceptance-bar-amendment-approval' as const,
       rubricRef: 'acceptance-full-text-knowledge-retrieval-2026-10-08',
       subjectPlan: 'full-text-knowledge-retrieval-2026-10-08',
+      proposedPatchHash: 'c'.repeat(64),
       bars: [
         { barKey: 'R-1', priorBarHash: 'e0f798143b9d05157c03ea97aa41ea15e4bca69e8242a2674720e20ff05e3cd3', nextBarHash: 'cdbda161c8b15be11e0d00c001e497b7d46d9362ad26db61d217cac5b40a9934' },
         { barKey: 'R-2', priorBarHash: '3414db5465c8e876f272f6d8fbf0575e84df1529246c362b4db6c1add1b26929', nextBarHash: '5c82880f0d6d739a768312b5d36dd39067220b724d52de9287a6d703973bf33f' },
@@ -750,11 +763,7 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
       workspaceId: 'papercusp-workspace',
       approvalRef: 'thread-post:1167191',
       expected: expectedOriginal,
-    })).resolves.toMatchObject({
-      approvalRef: 'thread-post:1167191',
-      approvedBy: 'system:judge/su-4a0f1492-f767-4a4c-92b2-6b3c4795ce71',
-      approvedAt: '2026-10-09T04:06:19.140Z',
-    });
+    })).rejects.toThrow('acceptance_bar_approval_invalid_receipt');
     expect(queries).toHaveLength(2);
     expect(queries.map((query) => query.values)).toEqual([
       ['papercusp-workspace', '1167191'],
@@ -997,6 +1006,7 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
 describe('approval covers the full amendment delta (R-5)', () => {
   const PRIOR = 'a'.repeat(64);
   const NEXT = 'b'.repeat(64);
+  const PATCH = 'c'.repeat(64);
 
   function sqlReturning(body: string) {
     return (() =>
@@ -1014,6 +1024,8 @@ describe('approval covers the full amendment delta (R-5)', () => {
   const resolve = (
     receiptBars: Array<ReturnType<typeof bar>>,
     appliedBars: Array<ReturnType<typeof bar>>,
+    receiptPatchHash = PATCH,
+    appliedPatchHash = PATCH,
   ) =>
     resolveAcceptanceBarApproval(
       sqlReturning(
@@ -1022,6 +1034,7 @@ describe('approval covers the full amendment delta (R-5)', () => {
           kind: 'acceptance-bar-amendment-approval',
           rubricRef: 'acceptance-plan',
           subjectPlan: 'plan',
+          proposedPatchHash: receiptPatchHash,
           bars: receiptBars,
         }),
       ),
@@ -1033,6 +1046,7 @@ describe('approval covers the full amendment delta (R-5)', () => {
           kind: 'acceptance-bar-amendment-approval',
           rubricRef: 'acceptance-plan',
           subjectPlan: 'plan',
+          proposedPatchHash: appliedPatchHash,
           bars: appliedBars,
         },
       },
@@ -1065,6 +1079,12 @@ describe('approval covers the full amendment delta (R-5)', () => {
     expect(stale).toContain(`reviewed prior=${PRIOR}, next=${'c'.repeat(64)}`);
     expect(stale).toContain(`current prior=${PRIOR}, next=${NEXT}`);
     expect(stale).not.toMatch(/incomplete/);
+  });
+
+  it('rejects a changed verification patch even when its BAR hashes still match', async () => {
+    await expect(
+      resolve([bar('R-1', PRIOR, NEXT)], [bar('R-1', PRIOR, NEXT)], PATCH, 'd'.repeat(64)),
+    ).rejects.toThrow('acceptance_bar_approval_patch_mismatched');
   });
 
   it('accepts a receipt that covers every applied bar, and tolerates extra approved bars', async () => {

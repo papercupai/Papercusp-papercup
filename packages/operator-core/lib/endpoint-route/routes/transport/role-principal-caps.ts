@@ -60,6 +60,8 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'locks:read',
     'locks:write',
     'intel:read',
+    // `testing:run-status` is the detached recovery read paired with testing:run.
+    'operator:read',
     'operator:write',
     'testing:run',
     // Result-door recovery cursors point at capability:read scratch pages. The

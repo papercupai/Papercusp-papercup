@@ -2407,6 +2407,13 @@ describe('terminateActiveCheckpointUnit (EI-213512: protected unit, authorized S
     ]);
   });
 
+  it('signals a scheduled run scope by its full name, never as a .service (WI-6554700010042670)', () => {
+    const execFn = vi.fn(() => ({ status: 0, stdout: '', stderr: '' }));
+    const scope = 'papercusp-checkpoint-8bf9f42e-e478-425b-80d8-2dd14e915511.scope';
+    expect(terminateActiveCheckpointUnit(scope, execFn)).toEqual({ stopped: true });
+    expect(execFn).toHaveBeenCalledWith('systemctl', ['--user', 'kill', '--signal=SIGTERM', '--kill-whom=all', scope]);
+  });
+
   it('reports stopped:false with the stderr reason on a failed kill — never throws', () => {
     const execFn = vi.fn(() => ({ status: 1, stdout: '', stderr: 'Unit not loaded.' }));
     const r = terminateActiveCheckpointUnit('some-unit', execFn);

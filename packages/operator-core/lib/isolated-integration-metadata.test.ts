@@ -875,11 +875,15 @@ it('composes the nested router budgets without spending execution time on bootst
   expect(options.phaseTimeouts).toMatchObject({ bootstrapMs: 180_000, executeMs: 1_082_000 });
   // Widening the encompassing router must not inflate either inner ceiling.
   expect(options.phaseTimeouts.bootstrapMaxMs).toBe(600_000);
+  expect(options.phaseTimeouts.finalizeMaxMs).toBe(600_000);
   expect(options.phaseTimeouts.teardownMaxMs).toBe(600_000);
   const widened = isolatedTestFileWorkerOptions({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '1200000', PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS: '180000' }, 2);
   expect(widened.phaseTimeouts.bootstrapMaxMs).toBe(options.phaseTimeouts.bootstrapMaxMs);
+  expect(widened.phaseTimeouts.finalizeMaxMs).toBe(options.phaseTimeouts.finalizeMaxMs);
   expect(widened.phaseTimeouts.teardownMaxMs).toBe(options.phaseTimeouts.teardownMaxMs);
   expect(options.killGraceMs).toBeGreaterThanOrEqual(10_000 + 5_000);
+  expect(options.testTimeoutMs).toBe(options.phaseTimeouts.bootstrapMaxMs! + options.phaseTimeouts.executeMaxMs! +
+    options.phaseTimeouts.finalizeMaxMs! + options.phaseTimeouts.teardownMaxMs! + options.killGraceMs + 20_000);
   expect(options.testTimeoutMs).toBeGreaterThan(options.phaseTimeouts.bootstrapMs + options.phaseTimeouts.executeMaxMs! + options.phaseTimeouts.teardownMs);
 });
 

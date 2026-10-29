@@ -274,6 +274,9 @@ export const acceptanceBarApprovalSchema = z
       )
       .min(1)
       .max(1000),
+    /** Hash of the complete reviewer-visible amendment, including verification methods, reason,
+     * source and mapping. BAR hashes intentionally exclude method-only edits. */
+    proposedPatchHash: z.string().regex(/^[a-f0-9]{64}$/),
     /** EI-24358433996857425: the reviewed proposed-source fingerprint
      * (acceptanceBarSourceFingerprint) when the amendment rewrites the subject's Requirements
      * or Bar-to-work map, e.g. a retirement. Absent when the amendment leaves the source alone. */
@@ -490,6 +493,13 @@ export async function resolveAcceptanceBarApproval(
         `current prior=${showHash(expected.priorBarHash)}, next=${showHash(expected.nextBarHash)}). ` +
         'Re-run dryRun and obtain review of the current preview; do not repost the same stale receipt.' +
         (mismatched.length > 1 ? ` ${mismatched.length - 1} additional BAR hash mismatch(es).` : ''),
+    );
+  }
+  if (receipt.proposedPatchHash !== args.expected.proposedPatchHash) {
+    throw new Error(
+      'acceptance_bar_approval_patch_mismatched: the applied acceptance amendment differs from the ' +
+        'complete proposed criteria shown to the outside-lineage reviewer. Re-run dryRun and obtain review ' +
+        'of the current preview; do not repost the same stale receipt.',
     );
   }
   // The BAR hashes say which criteria changed; they do not say which plan source the change

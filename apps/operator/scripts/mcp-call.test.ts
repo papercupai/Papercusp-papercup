@@ -29,6 +29,9 @@ import {
   resolveMcpRole,
   resolveMcpWorkspace,
   resolveCandidatePorts,
+  resolveRepairQueueExpectedInstallSlug,
+  isRepairQueueRead,
+  repairQueueTargetScopeMismatch,
   resolveMcpProxyPort,
   superuserTokenPaths,
   superuserTokenPath,
@@ -222,6 +225,29 @@ describe('mcp-call argument parsing', () => {
       pinned: false,
     });
     expect(resolveMcpProxyPort({ PAPERCUSP_MCP_PROXY_PORT: '9171' })).toBe('9171');
+  });
+
+  it('resolves an explicit repair-queue install scope before the operator-home fallback', () => {
+    expect(resolveRepairQueueExpectedInstallSlug(
+      { harness: 'papercusp-pr-drill-20261014' },
+      { PAPERCUSP_POT_HOME_SLUG: 'papercusp' },
+    )).toBe('papercusp-pr-drill-20261014');
+    expect(resolveRepairQueueExpectedInstallSlug({}, { PAPERCUSP_POT_HOME_SLUG: ' papercusp ' }))
+      .toBe('papercusp');
+    expect(resolveRepairQueueExpectedInstallSlug({}, {})).toBeNull();
+  });
+
+  it('treats only repair-queue reads as safe target probes and rejects missing or different targets', () => {
+    expect(isRepairQueueRead({ op: 'get' })).toBe(true);
+    expect(isRepairQueueRead({ op: 'status' })).toBe(true);
+    expect(isRepairQueueRead({ op: 'admit', paths: ['src/fix.ts'] })).toBe(false);
+    expect(repairQueueTargetScopeMismatch('papercusp', { target: { installSlug: 'papercusp' } }))
+      .toBeNull();
+    expect(repairQueueTargetScopeMismatch('papercusp-pr-drill-20261014', {
+      target: { installSlug: 'papercusp' },
+    })).toEqual({ expected: 'papercusp-pr-drill-20261014', actual: 'papercusp' });
+    expect(repairQueueTargetScopeMismatch('papercusp-pr-drill-20261014', { ok: true }))
+      .toEqual({ expected: 'papercusp-pr-drill-20261014', actual: null });
   });
 
   it('uses the configured local operator URL instead of silently defaulting to :3070', () => {
@@ -751,6 +777,9 @@ async function withMcpCallFetchFixture<T>(run: (fixture: McpCallFetchFixture) =>
     '  };',
     "  appendFileSync(process.env.MCP_CALL_FETCH_LOG, JSON.stringify(request) + '\\n');",
     '  const mode = process.env.MCP_CALL_FETCH_MODE;',
+    "  if (mode === 'repair-queue-fallback' && new URL(request.url).port === '41001') {",
+    "    throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });",
+    '  }',
     "  if (mode === 'transport-reset') {",
     "    throw new TypeError('fetch failed', { cause: Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }) });",
     '  }',
@@ -763,6 +792,8 @@ async function withMcpCallFetchFixture<T>(run: (fixture: McpCallFetchFixture) =>
     "    result = { isError: true, content: [{ type: 'text', text: 'request_rejected: superuser_foreign_native_session' }] };",
     "  } else if (mode === 'admission-shed' && fetchCount < 3) {",
     "    return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.body.id, error: { code: -32000, message: 'operator MCP admission is saturated — request shed, retry shortly', data: { retryable: true, reason: 'loop_pressure_critical' } } }), { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '0' } });",
+    "  } else if (mode === 'repair-queue-fallback' && request.body.params?.name === 'release:repair-queue' && request.body.params?.arguments?.op === 'get') {",
+    "    result = { content: [{ type: 'text', text: JSON.stringify({ ok: true, target: { workspaceId: 'test-ws', installSlug: process.env.MCP_CALL_TARGET_INSTALL_SLUG } }) }] };",
     '  } else {',
     "    result = { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };",
     '  }',
@@ -787,6 +818,7 @@ function runMcpCallWithArgs(args: string[], envOverrides: NodeJS.ProcessEnv = {}
       'PAPERCUSP_HONO_PORT',
       'PAPERCUSP_OPERATOR_URL',
       'PAPERCUSP_MCP_PROXY_PORT',
+      'MCP_CALL_TARGET_INSTALL_SLUG',
     ]) delete env[key];
     for (const [key, value] of Object.entries(envOverrides)) {
       if (value === undefined) delete env[key];
@@ -809,10 +841,12 @@ function runMcpCallWithFetchFixture(
   fixture: McpCallFetchFixture,
   args: string[] = [],
   envOverrides: NodeJS.ProcessEnv = {},
+  tool = 'work_items:create',
+  jsonArgs = '{}',
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return runMcpCallWithArgs([
-    'work_items:create',
-    '{}',
+    tool,
+    jsonArgs,
     '--client',
     'mcp-call-fetch-fixture',
     '--workspace',
@@ -831,6 +865,65 @@ async function readMcpCallFetchLog(path: string): Promise<Array<{ url: string; a
   const raw = await readFile(path, 'utf8').catch(() => '');
   return raw.split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
+
+describe('mcp-call release repair-queue install scope', () => {
+  it('does not send a repair operation to a fallback endpoint with a different install target', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      const run = await runMcpCallWithFetchFixture(
+        fixture,
+        ['--harness', 'papercusp-pr-drill-20261014', '--transport', 'http'],
+        {
+          PAPERCUSP_HONO_PORT: '41001',
+          MCP_CALL_FETCH_MODE: 'repair-queue-fallback',
+          MCP_CALL_TARGET_INSTALL_SLUG: 'papercusp',
+        },
+        'release:repair-queue',
+        '{"op":"admit","paths":["src/fix.ts"]}',
+      );
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code).toBe(MCP_CALL_TOOL_NOT_OK_EXIT);
+      expect(run.stderr).toContain('expected install scope "papercusp-pr-drill-20261014"');
+      expect(run.stderr).toContain('port 3070=papercusp');
+      expect(requests).toHaveLength(2);
+      expect(requests.map((request) => new URL(request.url).port)).toEqual(['41001', '3070']);
+      expect(requests.every((request) =>
+        (request.body.params as { name: string }).name === 'release:repair-queue' &&
+        (request.body.params as { arguments: { op: string } }).arguments.op === 'get',
+      )).toBe(true);
+      expect(requests.every((request) => new URL(request.url).searchParams.get('harness') === 'papercusp-pr-drill-20261014'))
+        .toBe(true);
+    });
+  });
+
+  it('allows fallback only after the read-only target probe matches the requested install', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      const run = await runMcpCallWithFetchFixture(
+        fixture,
+        ['--harness', 'papercusp-pr-drill-20261014', '--transport', 'http'],
+        {
+          PAPERCUSP_HONO_PORT: '41001',
+          MCP_CALL_FETCH_MODE: 'repair-queue-fallback',
+          MCP_CALL_TARGET_INSTALL_SLUG: 'papercusp-pr-drill-20261014',
+        },
+        'release:repair-queue',
+        '{"op":"admit","paths":["src/fix.ts"]}',
+      );
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual({ ok: true });
+      expect(requests).toHaveLength(3);
+      expect(requests.map((request) => new URL(request.url).port)).toEqual(['41001', '3070', '3070']);
+      expect(requests.map((request) => (request.body.params as { arguments: { op: string } }).arguments.op))
+        .toEqual(['get', 'get', 'admit']);
+      expect(requests.every((request) => new URL(request.url).searchParams.get('harness') === 'papercusp-pr-drill-20261014'))
+        .toBe(true);
+    });
+  });
+});
 
 /** Run `run` against a local MCP endpoint that answers every tools/call with `toolResult`. */
 async function withFakeMcpEndpoint<T>(

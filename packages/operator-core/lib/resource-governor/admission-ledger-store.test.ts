@@ -20,6 +20,53 @@ import {
 } from './execution';
 
 describe('admission ledger acquisition attribution', () => {
+  it('labels mark-running timeout phases at the exact ledger statement', async () => {
+    const sql = vi.fn((strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('SELECT receipt_id, record')) {
+        return Promise.resolve([{
+          receipt_id: 'RG-phase-test',
+          record: {
+            schemaVersion: 1,
+            namespace: 'integration',
+            idempotencyKey: 'phase-test',
+            requestFingerprint: 'fingerprint',
+            admissionClass: 'process',
+            priority: 0,
+            deadlineAtMs: null,
+            demand: {},
+            payloadRef: null,
+            coalesceKey: null,
+            metadata: {},
+            context: {},
+            state: 'leased',
+            enqueuedAtMs: 1,
+            updatedAtMs: 1,
+            decision: { generation: 1, atMs: 1, reason: 'leased', evidence: {} },
+            lease: { leaseId: 'lease-1', owner: 'worker', generation: 1, expiresAtMs: 1000 },
+          },
+        }]);
+      }
+      if (statement.includes('UPDATE harness_shared.resource_governor_admissions')) {
+        return Promise.reject(new Error('simulated update timeout'));
+      }
+      return 'FOR UPDATE';
+    });
+    let phaseAtFailure: string | undefined;
+    mocks.transaction.mockReset().mockImplementation(async (fn, options) => {
+      try {
+        return await fn(sql as never);
+      } catch (error) {
+        phaseAtFailure = options?.phase?.();
+        throw error;
+      }
+    });
+    const store = new PgAdmissionLedgerQueueStore({ workspaceId: 'phase-test', sql: sql as never });
+
+    await expect(store.markRunning('RG-phase-test', 'lease-1', 2)).rejects.toThrow('simulated update timeout');
+    expect(phaseAtFailure).toBe('resource-governor.admission-ledger.mark-running.update');
+  });
+
   it.each([
     [PgAdmissionLedgerQueueStore, false],
     [PgAdmissionLedgerQueueStore, true],

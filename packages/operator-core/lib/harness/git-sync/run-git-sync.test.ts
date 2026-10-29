@@ -5212,6 +5212,52 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     expect(git(repo, 'status', '--porcelain', '--', 'root-unrelated.txt')).toBe('');
   });
 
+  it('attributes a refused migration through its exact live lock holder when the edit roster misses it', async () => {
+    const { migration, subRepo, checker } = makeMigrationFenceInputs();
+    const loadMigrationFenceRoster = vi.fn(async (): Promise<AttributionRosterEntry[]> => [
+      { agent: 'su-lock-holder', files: ['schema-consumer.ts'], workItems: [] },
+      { agent: 'su-unrelated', files: ['root-unrelated.txt'], workItems: ['WI-other'] },
+    ]);
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      migrationReservationChecker: checker,
+      loadMigrationFenceRoster,
+      liveLockHoldings: [{
+        path: `libs/sub/${migration}`,
+        owner: 'su-lock-holder',
+        intent: 'turn-scoped hold',
+      }],
+    });
+
+    expect(out.status).toBe('synced');
+    expect(loadMigrationFenceRoster).toHaveBeenCalledOnce();
+    const fence = out.skippedPaths?.find(
+      (entry) => entry.reason === 'migration-dependency-fence' && entry.path === 'schema-consumer.ts',
+    );
+    expect(fence).toMatchObject({
+      scope: 'superproject',
+      path: 'schema-consumer.ts',
+      reason: 'migration-dependency-fence',
+      blockingMigrations: [`libs/sub/${migration}`],
+      blockingAgents: ['su-lock-holder'],
+      blockingWorkItems: [],
+    });
+    expect(fence?.unattributedMigrations).toBeUndefined();
+    expect(fence?.detail).toContain('same agent');
+    expect(out.skippedPaths ?? []).not.toContainEqual(
+      expect.objectContaining({ scope: 'superproject', path: 'root-unrelated.txt', reason: 'migration-dependency-fence' }),
+    );
+    expect(out.skippedPaths ?? []).toContainEqual(
+      expect.objectContaining({ scope: 'libs/sub', path: migration, reason: 'migration-reservation' }),
+    );
+    expect(() => git(subOrigin, 'show', 'main:' + migration)).toThrow();
+    expect(git(superOrigin, 'show', 'main:root-unrelated.txt')).toBe('unrelated root work');
+    expect(git(repo, 'status', '--porcelain', '--', 'schema-consumer.ts')).toMatch(/schema-consumer\.ts/);
+    expect(git(repo, 'status', '--porcelain', '--', 'root-unrelated.txt')).toBe('');
+    expect(git(subRepo, 'status', '--porcelain', '--', migration)).toMatch(/999-unreserved-migration\.sql/);
+  });
+
   it('EI-24940157290396415: an unattributed refused migration holds all root sources fail-closed', async () => {
     const { migration, subRepo, checker } = makeMigrationFenceInputs();
     const loadMigrationFenceRoster = vi.fn(async (): Promise<AttributionRosterEntry[]> => [

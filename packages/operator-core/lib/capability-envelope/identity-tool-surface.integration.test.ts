@@ -11,6 +11,17 @@ import {
 } from '../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../..');
+// The outer Vitest case and file router must outlive every independently
+// bounded private-worker phase. recordIsolatedIntegrationProof checks the file
+// runner allowance before it allocates the disposable runtime.
+const workerOptions = isolatedWorkerOptions(120_000, process.env, 120_000, {
+  // The migration boot has measured at about four minutes. Keep enough room for
+  // that distinct bootstrap progress while ensuring the composed proof fits the
+  // maintained test-file router's 600s ceiling.
+  bootstrapMaxMs: 325_000,
+  finalizeMaxMs: 45_000,
+  teardownMaxMs: 45_000,
+});
 const parentBlueprintYaml = [
   'id: parent',
   'workItem:',
@@ -77,6 +88,7 @@ it('measures the production identity policy read in a private background runtime
   const runId = await recordIsolatedIntegrationProof({
     root,
     filePath: 'packages/operator-core/lib/capability-envelope/identity-tool-surface.integration.test.ts',
+    minimumFileRunTimeoutMs: workerOptions.testTimeoutMs,
     sourcePaths: [
       'packages/operator-core/lib/agent-tools/index.ts',
       'packages/operator-core/lib/capability-envelope/identity-grants-port.ts',
@@ -334,7 +346,7 @@ it('measures the production identity policy read in a private background runtime
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       });
       observe(child);
-      const result = await captureIsolatedWorker(child, evidenceDir, isolatedWorkerOptions(120_000));
+      const result = await captureIsolatedWorker(child, evidenceDir, workerOptions);
       const failureDetail = isolatedWorkerFailureDetail(result.output);
       expect(result, failureDetail).toMatchObject({
         code: 0,
@@ -370,4 +382,4 @@ it('measures the production identity policy read in a private background runtime
     },
   });
   expect(runId).toBeTruthy();
-}, 240_000);
+}, workerOptions.testTimeoutMs);

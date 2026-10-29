@@ -378,6 +378,8 @@ describe('stampStatePlane — the REAL built-in cells stamp a REAL-shaped payloa
         convergence: { code: null, shrinkTotal: null },
         freezeDisposition: { code: null, state: null },
         retriage: { code: null, inFlight: null },
+        // The `gate.run.code` cell joined the registry after the three above; same rule.
+        run: { code: null },
       },
       changeInCandidate: { judgingSha: null },
       // The pair is ONE reading in two polarities, so they must stay consistent

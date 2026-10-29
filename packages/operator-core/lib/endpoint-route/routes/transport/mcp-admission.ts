@@ -2527,13 +2527,15 @@ function isBoundedAcceptanceBarApprovalBody(value: unknown): value is string {
     return false;
   }
   if (!isRecord(parsed)) return false;
-  const allowed = new Set(['schemaVersion', 'kind', 'rubricRef', 'subjectPlan', 'bars']);
+  const allowed = new Set(['schemaVersion', 'kind', 'rubricRef', 'subjectPlan', 'proposedPatchHash', 'bars']);
   if (Object.keys(parsed).some((key) => !allowed.has(key))) return false;
   if (
     parsed.schemaVersion !== 1 ||
     parsed.kind !== 'acceptance-bar-amendment-approval' ||
     !isBoundedCriticalText(parsed.rubricRef, CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS, true) ||
-    !isBoundedCriticalText(parsed.subjectPlan, CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS, true)
+    !isBoundedCriticalText(parsed.subjectPlan, CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS, true) ||
+    typeof parsed.proposedPatchHash !== 'string' ||
+    !CRITICAL_WORK_ITEM_APPROVAL_HASH_RE.test(parsed.proposedPatchHash)
   ) {
     return false;
   }

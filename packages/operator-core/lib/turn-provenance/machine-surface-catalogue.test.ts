@@ -307,6 +307,8 @@ describe('machine-surface catalogue — ONE HOME (recurrence guard)', () => {
 
   /** Repo root — this file sits at <root>/packages/operator-core/lib/turn-provenance/. */
   const ROOT = join(__dirname, '..', '..', '..', '..');
+  const isSourceFile = (name: string): boolean =>
+    /\.tsx?$/.test(name) && !/\.(?:test|spec)\.tsx?$/.test(name);
 
   function sourceFilesUnder(rel: string): string[] {
     const out: string[] = [];
@@ -327,14 +329,21 @@ describe('machine-surface catalogue — ONE HOME (recurrence guard)', () => {
           continue;
         }
         if (st.isDirectory()) walk(full);
-        // Tests legitimately contain these literals as fixtures — the guard is
-        // about SOURCE re-declaring the list, not about fixtures naming a shape.
-        else if (/\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name)) out.push(full);
+        // Test fixtures legitimately contain these literals; the guard scans
+        // source files, not Vitest or Playwright test fixtures.
+        else if (isSourceFile(name)) out.push(full);
       }
     };
     walk(join(ROOT, rel));
     return out;
   }
+
+  it('excludes Vitest and Playwright specs from the source census', () => {
+    expect(isSourceFile('machine-surface-catalogue.test.ts')).toBe(false);
+    expect(isSourceFile('adv-conversations-sessions.spec.ts')).toBe(false);
+    expect(isSourceFile('machine-surface-catalogue.ts')).toBe(true);
+    expect(isSourceFile('route.tsx')).toBe(true);
+  });
 
   /**
    * The detection, as a PURE function over (paths → text).

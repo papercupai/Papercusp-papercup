@@ -11,17 +11,17 @@ export interface HostedLeadBindingAuthority {
   /** Revalidate issuer and exact canonical person in this workspace. A merge
    * invalidates the old challenge; do not silently transfer it to a survivor. */
   withCurrentIssuer<T>(scope: HostedLeadBindingScope, issuerRef: string,
-    operation: () => Promise<T>): Promise<T | null>;
+    operation: (store?: HostedLeadBindingStorage) => Promise<T>): Promise<T | null>;
   /** Receipt reads/revokes still require the current canonical subject. */
   withCurrentSubject<T>(scope: HostedLeadBindingScope,
-    operation: () => Promise<T>): Promise<T | null>;
+    operation: (store?: HostedLeadBindingStorage) => Promise<T>): Promise<T | null>;
 }
 
-type Store = Pick<PostgresHostedLeadBindingStore, 'issue' | 'redeem' | 'read' | 'revoke'>;
+export type HostedLeadBindingStorage = Pick<PostgresHostedLeadBindingStore, 'issue' | 'redeem' | 'read' | 'revoke'>;
 
 export class HostedLeadBindingService {
   constructor(private readonly codec: HostedLeadBindingChallengeCodec,
-    private readonly store: Store, private readonly authority: HostedLeadBindingAuthority,
+    private readonly store: HostedLeadBindingStorage, private readonly authority: HostedLeadBindingAuthority,
     private readonly environment: HostedLeadBindingScope['environment'],
     private readonly clock: () => number = Date.now,
     private readonly challengeId: () => string = randomUUID) {}
@@ -40,8 +40,8 @@ export class HostedLeadBindingService {
       expiresAt: issuedAt + MAX_LEAD_BINDING_CHALLENGE_MS };
     // Validate before persistence; never return a token for a failed insert.
     const token = this.codec.encode(claim);
-    return this.authority.withCurrentIssuer(scope, issuerRef, async () => {
-      await this.store.issue(claim);
+    return this.authority.withCurrentIssuer(scope, issuerRef, async store => {
+      await (store ?? this.store).issue(claim);
       return token;
     });
   }
@@ -52,18 +52,18 @@ export class HostedLeadBindingService {
     const claim = this.codec.decode(token, scope, this.clock());
     if (!claim) return null;
     return this.authority.withCurrentIssuer(scope, claim.issuerRef,
-      () => this.store.redeem(claim, principal));
+      store => (store ?? this.store).redeem(claim, principal));
   }
 
   async read(input: HostedLeadBindingScope, principal: HostedPrincipal) {
     const scope = this.scope(input);
     if (!isHostedPrincipal(principal)) return null;
-    return this.authority.withCurrentSubject(scope, () => this.store.read(scope, principal));
+    return this.authority.withCurrentSubject(scope, store => (store ?? this.store).read(scope, principal));
   }
 
   async revoke(input: HostedLeadBindingScope, principal: HostedPrincipal): Promise<boolean> {
     const scope = this.scope(input);
     if (!isHostedPrincipal(principal)) return false;
-    return (await this.authority.withCurrentSubject(scope, () => this.store.revoke(scope, principal))) === true;
+    return (await this.authority.withCurrentSubject(scope, store => (store ?? this.store).revoke(scope, principal))) === true;
   }
 }

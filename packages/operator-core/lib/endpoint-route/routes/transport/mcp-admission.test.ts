@@ -2099,6 +2099,7 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
       kind: 'acceptance-bar-amendment-approval',
       rubricRef: 'acceptance-plan',
       subjectPlan: 'subject-plan',
+      proposedPatchHash: 'c'.repeat(64),
       bars: Array.from({ length: 4 }, (_, index) => ({
         barKey: `R-${index + 1}`,
         priorBarHash: 'a'.repeat(64),
@@ -2118,6 +2119,7 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
       kind: 'acceptance-bar-amendment-approval',
       rubricRef: 'acceptance-plan',
       subjectPlan: 'subject-plan',
+      proposedPatchHash: 'c'.repeat(64),
       bars: [{ barKey: 'R-1', priorBarHash: 'a'.repeat(64), nextBarHash: 'b'.repeat(64) }],
     };
     for (const [index, body] of [

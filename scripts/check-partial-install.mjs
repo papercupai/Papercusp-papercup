@@ -54,7 +54,7 @@ import { readFileSync, readdirSync, readlinkSync, existsSync, statSync, lstatSyn
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry.ts';
 import { expandWorkspaces } from './assert-workspace-links.mjs';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');

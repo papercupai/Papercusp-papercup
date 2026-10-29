@@ -99,7 +99,7 @@ import {
 } from "./check-declared-deps-extracted.mjs";
 import { findBrokenBinLinks } from "./check-partial-install.mjs";
 import { expandWorkspaces } from "./assert-workspace-links.mjs";
-import { auditLockfile } from "../apps/operator/bin/release/dependency-lock-tree-audit.mjs";
+import { auditLockfile, enclosingWorkspaceOwner } from "../apps/operator/bin/release/dependency-lock-tree-audit.mjs";
 import { EMBEDDED_EXTENSIONS, installEmbeddedExtensions, missingWarning } from "./install-embedded-pgvector.mjs";
 
 const DEFAULT_REPO_ROOT = resolve(
@@ -778,7 +778,10 @@ export async function verifyDepsExtracted({
     deps,
   });
   const allWorkspaceDirs = resolveWorkspaceDirs(repoRoot, deps);
-  const auditNestedWorkspaceLockTrees = () => allWorkspaceDirs.flatMap((workspace) => {
+  const auditNestedWorkspaceLockTrees = (rootLock) => allWorkspaceDirs.flatMap((workspace) => {
+    // Reuse the publisher's ownership decision. npm reifies this member from
+    // the enclosing lock, not its potentially obsolete standalone lock graph.
+    if (enclosingWorkspaceOwner(workspace, [{ dir: "", lock: rootLock }]) !== null) return [];
     const workspacePath = resolve(repoRoot, workspace);
     let realWorkspacePath;
     try {
@@ -812,14 +815,15 @@ export async function verifyDepsExtracted({
     const lockPath = existsSync(join(repoRoot, "npm-shrinkwrap.json"))
       ? join(repoRoot, "npm-shrinkwrap.json")
       : join(repoRoot, "package-lock.json");
-    const lockTreeDefects = existsSync(lockPath)
+    const rootLock = existsSync(lockPath) ? JSON.parse(readFileSync(lockPath, "utf8")) : null;
+    const lockTreeDefects = rootLock
       ? auditLockfile({
-          lock: JSON.parse(readFileSync(lockPath, "utf8")),
+          lock: rootLock,
           lockDir: "",
           treeRoot: repoRoot,
         }).defects
       : [];
-    const nestedLockTrees = auditNestedWorkspaceLockTrees();
+    const nestedLockTrees = auditNestedWorkspaceLockTrees(rootLock);
     const declared = await findUnextractedDepsWithRetry({
       repoRoot,
       workspaceDirs,

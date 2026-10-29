@@ -133,6 +133,8 @@ export interface SpecEvidenceForAdequacy {
   /** Store-owned citation and author, never details supplied by a binder. */
   verifiesBindingId?: number;
   createdBy?: string;
+  /** Server-added result of re-measuring the binding's persisted measurement recipe. */
+  serverMeasurement?: { status: string };
   /** Certified by the shared reader from stored citations, pins and lineage. */
   fixtureAbsenceVerification?: { verifierBindingIds: number[] };
   /** Canonical ledger attributes, independent of author-written evidenceRef prose. */
@@ -872,8 +874,34 @@ function ephemeralEvidenceRefReason(evidenceRef: string): string | null {
  * every binding has one, and it does not identify a rerunnable proof.
  */
 export function classifySpecEvidenceLineage(
-  evidence: Pick<SpecEvidenceForAdequacy, 'evidenceRef' | 'coverageEvidenceRef' | 'testRunId'>,
+  evidence: Pick<SpecEvidenceForAdequacy, 'evidenceRef' | 'coverageEvidenceRef' | 'testRunId'> &
+    Partial<Pick<SpecEvidenceForAdequacy, 'details' | 'serverMeasurement'>>,
 ): SpecEvidenceLineageAssessment {
+  // The bind door strips caller-supplied measurement pins and writes this reserved pin from
+  // the server's repo-files measurement. During evaluation, listSpecEvidence remeasures the
+  // recipe and attaches serverMeasurement.status. Together they establish a rerunnable,
+  // hash-pinned basis even when the human-facing evidenceRef is descriptive prose.
+  const measurement = evidence.details
+    ? repoFilesEvidenceMeasurementSchema.safeParse(evidence.details.currentMeasurement)
+    : null;
+  const measurementPin = evidence.details ? readMeasurementPin(evidence.details) : null;
+  const pinFiles = measurementPin?.files ?? [];
+  const repoFilesMeasurement = measurement?.success ? measurement.data : null;
+  const pinnedPath = (path: string, dimension: 'source' | 'test' | 'fixture', rootHarnessSlug?: string) =>
+    pinFiles.some((file) => file.path === path && file.dimension === dimension &&
+      file.rootHarnessSlug === rootHarnessSlug && /^[a-f0-9]{64}$/i.test(file.sha256));
+  const hasDurableRepoFilesPin = repoFilesMeasurement !== null &&
+    repoFilesMeasurement.sourcePaths.every((path) => pinnedPath(path, 'source', repoFilesMeasurement.rootHarnessSlug)) &&
+    (repoFilesMeasurement.testPaths ?? []).every((path) => pinnedPath(path, 'test', repoFilesMeasurement.rootHarnessSlug)) &&
+    (repoFilesMeasurement.fixturePaths ?? []).every((path) =>
+      pinnedPath(path, 'fixture', repoFilesMeasurement.fixtureRootHarnessSlug ?? repoFilesMeasurement.rootHarnessSlug));
+  if (
+    evidence.serverMeasurement?.status === 'measured' &&
+    hasDurableRepoFilesPin
+  ) {
+    return { lineage: 'durable', reason: 'server-measured repo-files measurement pin' };
+  }
+
   const evidenceRef = evidence.evidenceRef.trim();
   const ephemeralReason = ephemeralEvidenceRefReason(evidenceRef);
   const hasCoverageId = Number.isSafeInteger(evidence.coverageEvidenceRef) && evidence.coverageEvidenceRef! > 0;

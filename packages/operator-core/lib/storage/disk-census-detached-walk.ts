@@ -81,7 +81,7 @@ export type WalkLauncher = (
 
 /** Thrown when `signal` stops the wait; the walk itself keeps running. */
 export class DetachedWalkAbandoned extends Error {
-  constructor() {
+  constructor(readonly state?: DetachedWalkState) {
     super('stopped waiting for the census walk; the walk keeps running');
     this.name = 'DetachedWalkAbandoned';
   }
@@ -109,6 +109,9 @@ export interface DetachedWalkOptions {
   now?: () => number;
   /** Stops WAITING (rejects with DetachedWalkAbandoned) without touching the walk. */
   signal?: AbortSignal;
+  /** Enroll or identify one attempt, then return its pending identity without
+   * waiting, consuming output, counting adoption, killing or retrying it. */
+  prepareOnly?: boolean;
 }
 
 export function walkAttemptFiles(dir: string, attempt: number): { out: string; err: string; exit: string } {
@@ -260,6 +263,7 @@ export async function runDetachedWalk<T>(
       if (state.root !== root || state.requestKey !== requestKey) {
         throw new Error('census walk request changed; retire its previous attempt before replacing it');
       }
+      if (opts.prepareOnly) throw new DetachedWalkAbandoned({ ...state });
       const files = walkAttemptFiles(dir, state.attempt);
       const exitCode = await readExitStatus(files.exit);
       if (exitCode !== null) return read(state, exitCode, false);
@@ -484,7 +488,7 @@ export async function waitForWalk(
   },
 ): Promise<'exited' | 'gone' | 'overdue'> {
   for (;;) {
-    if (o.signal?.aborted) throw new DetachedWalkAbandoned();
+    if (o.signal?.aborted) throw new DetachedWalkAbandoned({ ...state });
     if ((await readExitStatus(exitPath)) !== null) return 'exited';
     if (!o.isAlive(state)) return (await readExitStatus(exitPath)) !== null ? 'exited' : 'gone';
     if (o.now() > state.deadlineAt + o.graceMs) return 'overdue';

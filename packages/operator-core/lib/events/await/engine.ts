@@ -1139,9 +1139,12 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       if (allInboxWakeNoUrgent) {
         if (hasUnconfirmedPsuHostAcceptance) {
           // A host's early accepted ACK is not turn-start proof. Revalidate each
-          // exact component msg_id against the shown watermark, recipient reply
-          // linkage, or a settled resolver receipt for a thread reply before
-          // asking the host to cancel the still-pending delivery.
+          // exact component msg_id against P-024 actionability as well as the
+          // shown watermark, recipient reply linkage, or a settled resolver
+          // receipt for a thread reply before asking the host to cancel the
+          // still-pending delivery. A durable FYI/receipt/no-state-change needs
+          // no model turn even when unread; actionable and unknown envelopes
+          // still fail open through classifyInboxWakeGroup.
           const components = inboxWakeMessageComponents(group);
           if (components) {
             const msgIds = components.map((component) => component.msgId);
@@ -1151,13 +1154,15 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
               resolveInboxWakeEnvelopes(msgIds).catch(() => new Map<string, unknown>()),
             ]);
             const settledInboxRunMsgIds = await settledInboxWakeThreadReplyMsgIds(msgIds, envelopes, ws);
-            if (inboxWakeGroupHandled(
+            const nonActionable = classifyInboxWakeGroup(group, envelopes).nonActionable;
+            const handled = inboxWakeGroupHandled(
               group,
               envelopes,
               watermark?.messages_shown_ts,
               repliedMsgIds,
               settledInboxRunMsgIds,
-            )) {
+            );
+            if (nonActionable || handled) {
               hostCancellation = {
                 deliveryIds: group
                   .filter(isAcceptedPsuHostDelivery)

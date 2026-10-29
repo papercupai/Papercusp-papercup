@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "measurement",
+  "windowStart": "2026-10-28T00:00:00.000Z",
+  "windowEnd": "2026-10-29T00:00:00.000Z",
+  "measuredAt": "2026-10-29T00:33:31.430Z",
+  "workspace": "papercusp-workspace",
+  "installSlug": "papercusp",
+  "query": "WITH starts AS (SELECT o.workflow_uuid,o.output::jsonb->'json'->>'routineName' AS routine_name FROM dbos.operation_outputs o JOIN dbos.workflow_status w USING(workflow_uuid) WHERE o.function_name='routine-fire-start' AND w.name='routineFire' AND o.started_at_epoch_ms>=extract(epoch FROM timestamptz '2026-10-28 00:00:00+00')*1000 AND o.started_at_epoch_ms<extract(epoch FROM timestamptz '2026-10-29 00:00:00+00')*1000 AND o.output::jsonb->'json'->>'workspaceId'='papercusp-workspace' AND o.output::jsonb->'json'->>'installSlug'='papercusp' AND o.output::jsonb->'json'->>'routineName' IN ('fleet-headcount-governor','external-trigger-dispatch','personal-vault-import')) SELECT s.routine_name,count(*)::int AS actual_started_fires,count(a.workflow_uuid)::int AS action_records,count(a.completed_at_epoch_ms)::int AS completed_action_records,percentile_cont(0.5) WITHIN GROUP(ORDER BY (a.completed_at_epoch_ms-a.started_at_epoch_ms)) AS action_wall_p50_ms,percentile_cont(0.95) WITHIN GROUP(ORDER BY (a.completed_at_epoch_ms-a.started_at_epoch_ms)) AS action_wall_p95_ms,count(*) FILTER(WHERE a.error IS NOT NULL)::int AS action_error_records,count(*) FILTER(WHERE a.output::jsonb->'json' IS NULL OR a.output::jsonb->'json'='null'::jsonb)::int AS action_output_without_value,array_agg(DISTINCT w.application_version) AS application_versions FROM starts s JOIN dbos.workflow_status w USING(workflow_uuid) LEFT JOIN dbos.operation_outputs a ON a.workflow_uuid=s.workflow_uuid AND a.function_name='system:'||s.routine_name GROUP BY s.routine_name ORDER BY s.routine_name",
+  "querySha256": "fb0f8e4a3f15e2ce31531056a1579ce28ef641da289587b9d323ce260a832bbf",
+  "rows": [
+    {
+      "routine_name": "external-trigger-dispatch",
+      "actual_started_fires": 1114,
+      "action_records": 1114,
+      "completed_action_records": 1114,
+      "action_wall_p50_ms": 1362.5,
+      "action_wall_p95_ms": 12706.15,
+      "action_error_records": 0,
+      "action_output_without_value": 1114,
+      "application_versions": [
+        "bg-host-v1"
+      ]
+    },
+    {
+      "routine_name": "fleet-headcount-governor",
+      "actual_started_fires": 1040,
+      "action_records": 1040,
+      "completed_action_records": 1040,
+      "action_wall_p50_ms": 3214.5,
+      "action_wall_p95_ms": 46620.49999999996,
+      "action_error_records": 0,
+      "action_output_without_value": 1040,
+      "application_versions": [
+        "bg-host-v1"
+      ]
+    },
+    {
+      "routine_name": "personal-vault-import",
+      "actual_started_fires": 1080,
+      "action_records": 1080,
+      "completed_action_records": 1080,
+      "action_wall_p50_ms": 1567,
+      "action_wall_p95_ms": 15667.099999999999,
+      "action_error_records": 0,
+      "action_output_without_value": 1080,
+      "application_versions": [
+        "bg-host-v1"
+      ]
+    }
+  ],
+  "limitations": [
+    "DBOS operation elapsed milliseconds measure wall time, not CPU.",
+    "These actions discard their useful counters or return void; absent output is not proof of no-op.",
+    "No-op share, idle CPU and per-fire DB query cost are unknown from this retained ledger.",
+    "A scheduling go cannot be justified by unknown costs or cron arithmetic."
+  ]
+}

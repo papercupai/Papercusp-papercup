@@ -6,6 +6,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runLocalGit } from '../../scratch-git-clone';
+import {
+  configureRemoteRuntimeDescribe,
+  resetRemoteRuntimeDescribe,
+  measureRuntimeEnvironment,
+} from '../../remote-runtime-identity';
 import { findBoxIdentityPaths, redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 import {
   MAX_RECORDED_PASSED_CASES,
@@ -223,6 +228,69 @@ describe('native operational execution witnesses', () => {
     expect(f.deps.verifyDefinition).toHaveBeenCalledWith(sourceRoot, 'scripts/check.ts', 'b'.repeat(40));
     expect(f.deps.persist.mock.calls[0][0]).toMatchObject({ root: sourceRoot, worktreeDirty: false });
     expect(f.ctx.projectDir).toBe(process.cwd());
+  });
+
+  it.each(['stable', 'changed', 'unavailable'] as const)(
+    'captures independent remote observations through the binder reader: %s', async mode => {
+      const f = fixture();
+      const unit = 'gcp-cloudsql:papercusp-cloud-prod/pc-cloud-prod-pg';
+      const document = { name: 'pc-cloud-prod-pg', project: 'papercusp-cloud-prod',
+        selfLink: 'https://sqladmin.googleapis.com/sql/v1beta4/projects/papercusp-cloud-prod/instances/pc-cloud-prod-pg',
+        createTime: '2026-10-14T03:25:36.604Z', databaseVersion: 'POSTGRES_18',
+        maintenanceVersion: 'POSTGRES_18_6', state: 'RUNNABLE', settings: { settingsVersion: '8' } };
+      const expected = await measureRuntimeEnvironment([], [unit], { describe: async () => JSON.stringify(document) });
+      let observations = 0;
+      const reader = vi.fn(async () => {
+        observations += 1;
+        return mode === 'unavailable' ? null : JSON.stringify({ ...document,
+          settings: { settingsVersion: mode === 'changed' && observations > 1 ? '9' : '8' } });
+      });
+      configureRemoteRuntimeDescribe(reader);
+      try {
+        const result = await executeOperationalRun({ ...f.definition, runtimeUnits: [unit] }, f.ctx,
+          { ...f.deps, readRuntime: undefined });
+        expect(result).toMatchObject({ ok: true, status: 'pass', runtimeEnvironmentMeasured: mode === 'stable' });
+        expect(reader).toHaveBeenCalledTimes(2);
+        const row = f.deps.persist.mock.calls[0][0].rows[0];
+        const execution = row.execution as Record<string, any>;
+        if (mode === 'unavailable') {
+          expect(execution).not.toHaveProperty('runtimeEnvironmentBefore');
+          expect(execution).not.toHaveProperty('runtimeEnvironmentAfter');
+        } else {
+          expect(execution.runtimeEnvironmentBefore).toMatchObject({ units: [unit], fingerprint: expected });
+          if (mode === 'stable') expect(execution.runtimeEnvironmentAfter.fingerprint).toBe(expected);
+          else expect(execution.runtimeEnvironmentAfter.fingerprint).not.toBe(expected);
+          expect(Date.parse(execution.runtimeEnvironmentBefore.observedAt)).toBeLessThanOrEqual(row.startedAt.getTime());
+          expect(Date.parse(execution.runtimeEnvironmentAfter.observedAt)).toBeGreaterThanOrEqual(row.finishedAt.getTime());
+        }
+      } finally { resetRemoteRuntimeDescribe(); }
+    },
+  );
+
+  it('allows a bounded provider observation beyond the local one-second budget', async () => {
+    const f = fixture();
+    vi.useFakeTimers();
+    try {
+      f.deps.readRuntime.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(f.fingerprint), 1_500)));
+      const pending = executeOperationalRun({ ...f.definition,
+        runtimeUnits: ['gcp-cloudsql:papercusp-cloud-prod/pc-cloud-prod-pg'] }, f.ctx, f.deps);
+      await vi.runAllTimersAsync();
+      expect(await pending).toMatchObject({ runtimeEnvironmentMeasured: true });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('leaves a stalled remote provider unproven when its bounded observation expires', async () => {
+    const f = fixture();
+    vi.useFakeTimers();
+    try {
+      f.deps.readRuntime.mockImplementation(() => new Promise(() => {}));
+      const pending = executeOperationalRun({ ...f.definition,
+        runtimeUnits: ['gcp-cloudsql:papercusp-cloud-prod/pc-cloud-prod-pg'] }, f.ctx, f.deps);
+      await vi.runAllTimersAsync();
+      expect(await pending).toMatchObject({ ok: true, status: 'pass', runtimeEnvironmentMeasured: false });
+      expect(f.deps.persist.mock.calls[0][0].rows[0].execution).not.toHaveProperty('runtimeEnvironmentBefore');
+      expect(f.deps.persist.mock.calls[0][0].rows[0].execution).not.toHaveProperty('runtimeEnvironmentAfter');
+    } finally { vi.useRealTimers(); }
   });
 
   it.each([null, new Error('loaded source unavailable')])(
@@ -800,6 +868,23 @@ describe('archived mutation identity recovery (EI-25248905256718690)', () => {
 });
 
 describe('testing:record-run', () => {
+  it('does not turn caller-authored historical fingerprints into execution witnesses', async () => {
+    const witness = { schemaVersion: 1, units: ['cloudflare-worker:untrusted/example'],
+      fingerprint: 'c'.repeat(64), observedAt: ARTIFACT.startedAt };
+    const artifact = parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify({ ...ARTIFACT,
+      runtimeEnvironmentBefore: witness,
+      runtimeEnvironmentAfter: { ...witness, observedAt: ARTIFACT.finishedAt },
+      observedRuntimeBefore: witness.fingerprint, observedRuntimeAfter: witness.fingerprint,
+    })));
+    const d = deps({ inspectEvidence: vi.fn(async () => ({ ...EVIDENCE, artifact })) });
+    expect(await recordOperationalRun({ evidenceFile: EVIDENCE.filePath, expectedSha256: EVIDENCE.sha256,
+      harness: 'papercusp' }, { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' }, d))
+      .toMatchObject({ ok: true, testRunIds: [77] });
+    const execution = vi.mocked(d.persist).mock.calls[0][0].rows[0].execution;
+    expect(execution).not.toHaveProperty('runtimeEnvironmentBefore');
+    expect(execution).not.toHaveProperty('runtimeEnvironmentAfter');
+  });
+
   it('derives a pass, persists through the shared writer, and returns numeric IDs', async () => {
     const inspectEvidence = vi.fn(async () => EVIDENCE);
     const d = deps({ inspectEvidence });

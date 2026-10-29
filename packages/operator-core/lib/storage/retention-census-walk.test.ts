@@ -40,6 +40,52 @@ const walk = (launcher: WalkLauncher, waitMs = 1000) => ({ dir: slot, launch: la
   pollMs: 2, isAlive: () => !existsSync(walkAttemptFiles(slot, 1).exit) });
 
 describe('complete retention census adoption', () => {
+  it('prepares a completed measurement without consuming it, then validates it on the normal path', async () => {
+    const launcher = launch();
+    const prepared = await inspectDetachedRetentionTrees(root, options, { ...walk(launcher), prepareOnly: true });
+    expect(prepared.error).toContain('pending');
+    expect(prepared.pendingWalk).toEqual(expect.objectContaining({ root, dir: slot, attempt: 1 }));
+    expect(prepared.entries).toEqual([]);
+    expect(existsSync(join(slot, 'consumed'))).toBe(false);
+    const again = await inspectDetachedRetentionTrees(root, options, { ...walk(launcher), prepareOnly: true });
+    expect(again.pendingWalk).toEqual(prepared.pendingWalk);
+    expect(existsSync(join(slot, 'consumed'))).toBe(false);
+    expect((await inspectDetachedRetentionTrees(root, options, walk(launcher))).entries.map(e => e.path))
+      .toEqual([join(root, 'entry')]);
+    expect(existsSync(join(slot, 'consumed'))).toBe(true);
+    expect(launcher).toHaveBeenCalledOnce();
+  });
+
+  it('keeps freshness validation after preparation of a completed result', async () => {
+    const launcher = launch();
+    await inspectDetachedRetentionTrees(root, options, { ...walk(launcher), prepareOnly: true });
+    const state = (await readWalkState(slot))!;
+    await fs.writeFile(join(slot, 'state.json'), JSON.stringify({ ...state,
+      launchedAt: Date.now() - RETENTION_CENSUS_LIFETIME_MS - 3 }));
+    await finish({ startedAt: Date.now() - RETENTION_CENSUS_LIFETIME_MS - 2,
+      finishedAt: Date.now() - RETENTION_CENSUS_LIFETIME_MS - 1 });
+    const result = await inspectDetachedRetentionTrees(root, options, walk(launcher));
+    expect(result.error).toBe('stale or changed retention census result');
+    expect(result.entries).toEqual([]); expect(launcher).toHaveBeenCalledOnce();
+  });
+
+  it.each(['consumed', 'changed-request'])('does not retire a %s slot during preparation', async mode => {
+    const launcher = launch();
+    await inspectDetachedRetentionTrees(root, options, { ...walk(launcher), prepareOnly: true });
+    if (mode === 'consumed') await fs.writeFile(join(slot, 'consumed'), 'consumed\n');
+    const before = await fs.readFile(join(slot, 'state.json'), 'utf8');
+    const output = await fs.readFile(walkAttemptFiles(slot, 1).out, 'utf8');
+    const prepared = await inspectDetachedRetentionTrees(root, { ...options,
+      ...(mode === 'changed-request' ? { excludedPaths: [join(root, 'entry')] } : {}),
+    }, { ...walk(launcher), prepareOnly: true });
+    expect(prepared.error).toContain(mode === 'consumed' ? 'consumed' : 'input changed');
+    expect(prepared.entries).toEqual([]); expect(prepared.pendingWalk).toBeUndefined();
+    expect(await fs.readFile(join(slot, 'state.json'), 'utf8')).toBe(before);
+    expect(await fs.readFile(walkAttemptFiles(slot, 1).out, 'utf8')).toBe(output);
+    expect(existsSync(join(slot, 'consumed'))).toBe(mode === 'consumed');
+    expect(launcher).toHaveBeenCalledOnce();
+  });
+
   it('uses one retention admission for an already-admitted complete census', async () => {
     vi.mocked(withFsMutex).mockClear();
     const launcher = launch();

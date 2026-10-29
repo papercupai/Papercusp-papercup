@@ -30,7 +30,8 @@
 import { readFileSync, existsSync, globSync, lstatSync } from 'node:fs';
 import { join, resolve, dirname, matchesGlob } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+// Install-time imports must work before workspace links exist.
+import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry.ts';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 

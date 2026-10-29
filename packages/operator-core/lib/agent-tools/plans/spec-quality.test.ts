@@ -1304,6 +1304,67 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.verdict).toBe('pass');
     expect(result.details.uncoveredPlanItemIds).toEqual([]);
     expect(result.ratings['explicit-non-behavioral-exemptions'].rating).toBe('pass');
+    expect(result.details.exemptionCensus).toMatchObject({
+      specSetHash: result.specSetHash,
+      currentClauseCount: 1,
+      exemptClauseCount: 1,
+      validExemptionSpecIds: ['SPEC-001-01'],
+      invalidExemptionSpecIds: [],
+      rows: [{
+        specId: 'SPEC-001-01',
+        revision: 1,
+        planItemId: 'P-001',
+        lifecycleStatus: 'exempt',
+        behaviorClass: 'non-automated',
+        exemptionDeclared: true,
+        valid: true,
+        hasJustification: true,
+        hasProvenance: true,
+      }],
+    });
+    expect(result.ratings['explicit-non-behavioral-exemptions'].evidence)
+      .toContain('Exact clause scope ' + result.specSetHash);
+  });
+
+  it('records the complete clause population behind a not-applicable exemption rating', () => {
+    const clauses = [
+      clause(),
+      clause({
+        specId: 'SPEC-002-01',
+        sourceValId: 'VAL-002-01',
+        planItemId: 'P-002',
+        behavior: 'POST /events returns 400 for an invalid request',
+        behaviorClass: 'failure',
+        lifecycleStatus: 'accepted',
+      }),
+    ];
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001', 'P-002'],
+      clauses,
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['explicit-non-behavioral-exemptions'].rating).toBe('not-applicable');
+    expect(result.details.exemptionCensus).toMatchObject({
+      specSetHash: result.specSetHash,
+      currentClauseCount: 2,
+      exemptClauseCount: 0,
+      validExemptionSpecIds: [],
+      invalidExemptionSpecIds: [],
+      rows: [
+        { specId: 'SPEC-001-01', revision: 1, planItemId: 'P-001', lifecycleStatus: 'active', exemptionDeclared: false, valid: null },
+        { specId: 'SPEC-002-01', revision: 1, planItemId: 'P-002', lifecycleStatus: 'accepted', exemptionDeclared: false, valid: null },
+      ],
+    });
+    expect(result.details.exemptionCensus.censusSha256).toMatch(/^[0-9a-f]{64}$/);
+    const evidence = result.ratings['explicit-non-behavioral-exemptions'].evidence;
+    expect(evidence).toContain('2 current row(s)');
+    expect(evidence).toContain('0 exempt ([]), 0 valid and 0 invalid');
+    expect(evidence).toContain('invalid ids=[]');
+    expect(evidence).toContain(`row census SHA-256=${result.details.exemptionCensus.censusSha256}`);
+    expect(evidence).toContain('details.exemptionCensus.rows');
   });
 
   it('refuses a mislabeled exemption and implementation-coupled behavior', () => {

@@ -312,6 +312,10 @@ export async function fetchNativeOperations(opts: NativeCorpusOptions) {
           || transcript.authorizationScope !== opts.scope.sourceBoundary || transcript.provider !== provider
           || transcript.namespace !== record.session_id || transcript.actor !== record.owner_id
           || !record.tool_use_id || transcript.callId !== record.tool_use_id) continue;
+        // Activity pagination can select an original hook at receipt time.
+        // Only the canonical event time admits its transcript to this window.
+        const eventAt = Date.parse(transcript.at);
+        if (!Number.isFinite(eventAt) || eventAt < since || eventAt >= until) continue;
         const value = observeNativeOperation(transcript, opts.scope);
         if (value) { observations.push(value);
           completeCopy ||= hydrated.status === 'measured' && value.evidenceGaps.length === 0;

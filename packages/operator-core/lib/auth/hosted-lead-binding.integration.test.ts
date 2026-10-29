@@ -7,6 +7,9 @@ import { HostedSessionStore } from './hosted-session';
 import { PostgresHostedMembershipAuthority } from './hosted-membership-authority';
 import { createHostedPrincipal } from './hosted-principal';
 import { PostgresHostedLeadBindingStore } from './hosted-lead-binding-postgres';
+import { PostgresHostedLeadBindingAuthority, hostedLeadBindingIssuerRef } from './hosted-lead-binding-authority';
+import { HostedLeadBindingService } from './hosted-lead-binding-service';
+import { HostedLeadBindingChallengeCodec } from './hosted-lead-binding';
 
 let db: OrgTestDb;
 beforeAll(async () => {
@@ -48,6 +51,79 @@ function freshClaim(personRef = `PER-${randomUUID()}`) {
   return { challengeId: randomUUID(), graphWorkspaceId: 'graph-a', personRef, environment: 'production' as const,
     issuerRef: 'operator-a', issuedAt: Date.now() - 1000, expiresAt: Date.now() + 600_000 };
 }
+
+async function authorityFixture() {
+  const token = randomUUID().replaceAll('-', '').repeat(2);
+  const [operator] = await db.adminSql<{ id: string }[]>`INSERT INTO harness_shared.users (username, display_name)
+    VALUES (${randomUUID()}, 'Binding operator') RETURNING id`;
+  await db.adminSql`INSERT INTO harness_shared.user_sessions (token, user_id, workspace_id, capabilities, expires_at)
+    VALUES (${token}, ${operator!.id}::uuid, 'graph-a', ARRAY['*']::text[], clock_timestamp() + interval '1 hour')`;
+  const personRef = `PER-${randomUUID()}`;
+  const [sessionProof] = await db.adminSql`SELECT s.workspace_id, s.capabilities, u.is_active,
+    s.expires_at > clock_timestamp() AS unexpired, encode(sha256(convert_to(s.token, 'UTF8')), 'hex') AS digest
+    FROM harness_shared.user_sessions s JOIN harness_shared.users u ON u.id = s.user_id WHERE s.token = ${token}`;
+  expect(sessionProof).toMatchObject({ workspace_id: 'graph-a', capabilities: ['*'], is_active: true,
+    unexpired: true, digest: hostedLeadBindingIssuerRef(token).slice('operator-session:'.length) });
+  await db.adminSql`INSERT INTO harness_shared.harness_features_consolidated
+    (workspace_id, harness_slug, feature_id, title, item_kind, nature, payload)
+    VALUES ('graph-a', 'papercusp', ${personRef}, 'Binding person', 'person', 'record', '{"canonical":true}'::jsonb)`;
+  const rows = await db.adminSql`SELECT feature_id, payload, item_kind, nature FROM harness_shared.work_items
+    WHERE workspace_id = 'graph-a' AND feature_id = ${personRef}`;
+  expect(rows).toMatchObject([{ feature_id: personRef, item_kind: 'person', nature: 'record', payload: { canonical: true } }]);
+  const guarded = await db.adminSql`SELECT feature_id FROM harness_shared.work_items
+    WHERE workspace_id = 'graph-a' AND feature_id = ${personRef} AND item_kind = 'person' AND nature = 'record'
+      AND payload->>'canonical' = 'true' AND NOT (payload ? 'mergedInto') AND NOT (payload ? 'retiredAt')`;
+  expect(guarded, 'exact canonical subject guard').toHaveLength(1);
+  const issuers = await db.adminSql`SELECT s.user_id FROM harness_shared.user_sessions s
+    JOIN harness_shared.users u ON u.id = s.user_id WHERE s.workspace_id = 'graph-a'
+      AND s.expires_at > clock_timestamp() AND u.is_active = true AND s.capabilities @> ARRAY['*']::text[]
+      AND encode(sha256(convert_to(s.token, 'UTF8')), 'hex') = ${hostedLeadBindingIssuerRef(token).slice('operator-session:'.length)}`;
+  expect(issuers, 'exact operator issuer guard').toHaveLength(1);
+  const authority = new PostgresHostedLeadBindingAuthority('graph-a', async (_workspace, fn) =>
+    await db.adminSql.begin(tx => fn(tx as unknown as Sql)) as Awaited<ReturnType<typeof fn>>);
+  const binding = new HostedLeadBindingService(new HostedLeadBindingChallengeCodec('a'.repeat(32)),
+    store, authority, 'production');
+  const scope = { graphWorkspaceId: 'graph-a', personRef, environment: 'production' as const };
+  return { token, operatorId: operator!.id, authority, binding, scope, issuerRef: hostedLeadBindingIssuerRef(token) };
+}
+
+describe('hosted binding current production authority', () => {
+  it('issues and redeems against the canonical graph and current operator session in one transaction', async () => {
+    const f = await authorityFixture(); const principal = await actor();
+    const token = await f.binding.issue(f.scope, f.issuerRef);
+    expect(token).toBeTypeOf('string'); expect(f.issuerRef).not.toContain(f.token);
+    expect(await f.binding.redeem(f.scope, token, principal)).toMatchObject({ personRef: f.scope.personRef, userId: principal.userId });
+    expect(await f.binding.read(f.scope, principal)).not.toBeNull();
+    expect(await f.binding.revoke(f.scope, principal)).toBe(true);
+  });
+  it('refuses current session downgrade, expiration, inactive operator and merged canonical person', async () => {
+    const f = await authorityFixture(); const principal = await actor();
+    const token = await f.binding.issue(f.scope, f.issuerRef);
+    await db.adminSql`UPDATE harness_shared.user_sessions SET capabilities = ARRAY['workspace:view']::text[] WHERE token = ${f.token}`;
+    expect(await f.binding.redeem(f.scope, token, principal)).toBeNull();
+    await db.adminSql`UPDATE harness_shared.user_sessions SET capabilities = ARRAY['*']::text[], expires_at = clock_timestamp() - interval '1 second' WHERE token = ${f.token}`;
+    expect(await f.binding.redeem(f.scope, token, principal)).toBeNull();
+    await db.adminSql`UPDATE harness_shared.user_sessions SET expires_at = clock_timestamp() + interval '1 hour' WHERE token = ${f.token}`;
+    await db.adminSql`UPDATE harness_shared.users SET is_active = false WHERE id = ${f.operatorId}::uuid`;
+    expect(await f.binding.redeem(f.scope, token, principal)).toBeNull();
+    await db.adminSql`UPDATE harness_shared.users SET is_active = true WHERE id = ${f.operatorId}::uuid`;
+    await db.adminSql`UPDATE harness_shared.harness_features_consolidated SET payload = payload || '{"mergedInto":"PER-survivor"}'::jsonb
+      WHERE workspace_id = 'graph-a' AND feature_id = ${f.scope.personRef}`;
+    expect(await f.binding.redeem(f.scope, token, principal)).toBeNull();
+    expect(await f.binding.read(f.scope, principal)).toBeNull();
+    expect(await f.binding.issue({ ...f.scope, graphWorkspaceId: 'foreign' }, f.issuerRef)).toBeNull();
+  });
+  it('rolls receipt persistence back when the enclosing authority callback fails', async () => {
+    const f = await authorityFixture(); const claim = { ...freshClaim(f.scope.personRef), issuerRef: f.issuerRef };
+    await expect(f.authority.withCurrentIssuer(f.scope, f.issuerRef, async bound => {
+      if (!bound) throw new Error('missing transaction store');
+      await bound.issue(claim);
+      throw new Error('authority callback aborted');
+    })).rejects.toThrow('authority callback aborted');
+    const rows = await db.adminSql`SELECT challenge_id FROM papercusp_auth.hosted_lead_bindings WHERE challenge_id = ${claim.challengeId}::uuid`;
+    expect(rows).toHaveLength(0);
+  });
+});
 
 async function challenge() {
   const id = randomUUID();

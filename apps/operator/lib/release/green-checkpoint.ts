@@ -22801,6 +22801,11 @@ export function realCheckpointDeps(
     workspaceRerun,
     runId,
     gateFireId,
+    // EI-27265866190725513: runGreenCheckpoint reports every phase through
+    // deps.reportProgress("phase:<x>"). Without this key those calls were no-ops in
+    // production, so the qualification runner row read "materializing" for the whole
+    // run and the 'finalizing' post-verdict-hang sweep (isPostVerdictHang) never fired.
+    reportProgress: notifyProgress,
     ...routineFireIdentityFromEnv(),
     qualificationAttemptId:
       process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined,

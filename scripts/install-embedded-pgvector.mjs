@@ -35,7 +35,7 @@
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
-import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry.ts';
 
 /** Postgres major of an embedded-postgres package version such as "18.3.0-beta.17". */
 export function embeddedPgMajor(version) {

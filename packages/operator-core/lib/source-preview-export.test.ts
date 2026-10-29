@@ -19,6 +19,7 @@ import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, promis
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ROOT as SOURCE_ROOT,
@@ -2555,8 +2556,11 @@ describe('BG inherited manifest and original source boundaries', () => {
       configuration: [join(prepared.root, 'package.json')],
       environment: { NODE_OPTIONS: '', NODE_PATH: '', PATH: '/usr/bin' } };
     const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation });
-    const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
     const entry = join(prepared.root, 'apps/operator/dist-verify/hono-host.mjs');
+    // The output namespace is generated-only. Create it before custody snapshots
+    // the original input directories so writing artifacts does not look like input drift.
+    mkdirSync(dirname(entry), { recursive: true });
+    const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
     const { build } = await import('esbuild');
     const result = await build({ absWorkingDir: prepared.root, entryPoints: [inputs[0]!], outfile: entry,
       bundle: true, format: 'esm', platform: 'node', metafile: true, logLevel: 'silent', plugins: [custody.plugin] });
@@ -2600,6 +2604,10 @@ describe('BG inherited manifest and original source boundaries', () => {
       runPhase: bgRecipePhaseRunner('single-maintained-compiler') });
     expect(process.env).toBe(env);
     expect(compiled.argv).toEqual(fixture.argv);
+    expect(compiled.compilerApi).toEqual({ path: 'node_modules/@papercusp/host-esbuild/lib/main.js',
+      realpath: fixture.invocation.compiler, sha256: digest(readFileSync(fixture.invocation.compiler)) });
+    expect(compiled.compilerBinary).toMatchObject({ kind: 'kernel-sealed-fd-v1',
+      sha256: digest(readFileSync(fixture.invocation.environment.ESBUILD_BINARY_PATH)), launches: 1 });
     expect(compiled.consumed.map(row => row.path)).toContain('node_modules/fixture-dependency/index.js');
     const imported = await import('data:text/javascript;base64,' + readFileSync(fixture.entry).toString('base64'));
     expect({ y: imported.y, dep: imported.dep }).toEqual({ y: 2, dep: 41 });
@@ -2608,6 +2616,81 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(readFileSync(join(fixture.prepared.root, '.verifier-source.json'))).toEqual(receipt);
     expect(qualifyBgVerifierOutput(fixture).artifact.sourceBlobs).toEqual(fixture.prepared.acceptedManifest.members);
   });
+
+  it('BG compiler API refuses substituted JavaScript before evaluation even when restored after import', async () => {
+    const fixture = await maintainedCompilerCandidate();
+    const api = fixture.invocation.compiler, original = readFileSync(api);
+    const sentinel = join(tmp, 'compiler-api-substitution-effect');
+    let reachedImport = false, failure: unknown;
+    const env = process.env;
+    try {
+      await compileBgVerifierInvocation({ ...fixture, runPhase: async (phase, operation) => {
+        if (phase !== 'bg.compiler.import') return operation();
+        reachedImport = true;
+        writeFileSync(api, Buffer.concat([original, Buffer.from(
+          '\nrequire("fs").writeFileSync(' + JSON.stringify(sentinel) + ', "substituted-api");\n')]));
+        try { return await operation(); }
+        finally { writeFileSync(api, original); }
+      } });
+    } catch (error) { failure = error; }
+    expect(reachedImport).toBe(true);
+    expect(existsSync(sentinel), 'substituted compiler API must have no evaluation effect').toBe(false);
+    expect(String(failure)).toContain('BG compiler consumed bytes mismatch: node_modules/@papercusp/host-esbuild/lib/main.js');
+    expect(readFileSync(api)).toEqual(original);
+    expect(process.env).toBe(env);
+    expect(existsSync(fixture.entry)).toBe(false);
+  });
+
+  it('BG compiler API evaluates current accepted bytes independently of a stale Node module cache', async () => {
+    const fixture = await maintainedCompilerCandidate();
+    const api = fixture.invocation.compiler, original = readFileSync(api);
+    const stale = original.toString('utf8').replaceAll('0.25.0', '0.24.0');
+    expect(stale).not.toBe(original.toString('utf8'));
+    const env = process.env;
+    try {
+      process.env = { ...fixture.invocation.environment };
+      writeFileSync(api, stale);
+      expect((await import(pathToFileURL(api).href)).version).toBe('0.24.0');
+    } finally { writeFileSync(api, original); process.env = env; }
+    // Freeze the original A identity AFTER the deliberately stale cache entry.
+    fixture.record = prepareBgVerifierBuildRecord(fixture);
+    const compiled = await compileBgVerifierInvocation(fixture);
+    expect(compiled.compilerVersion).toBe('0.25.0');
+    expect(compiled.compilerApi.sha256).toBe(digest(original));
+    const output = await import('data:text/javascript;base64,' + readFileSync(fixture.entry).toString('base64'));
+    expect({ y: output.y, dep: output.dep }).toEqual({ y: 2, dep: 41 });
+    expect(process.env).toBe(env);
+  });
+
+  it.each(['bg.compiler.binary-seal', 'bg.compiler.build'] as const)(
+    'BG compiler binary substitution has no execution effect at %s even when restored', async boundary => {
+      const fixture = await maintainedCompilerCandidate();
+      const path = fixture.invocation.environment.ESBUILD_BINARY_PATH, original = readFileSync(path);
+      const sentinel = join(tmp, 'compiler-binary-substitution-' + boundary);
+      const env = process.env;
+      const runPhase = bgRecipePhaseRunner('binary-custody-' + boundary);
+      let reachedBoundary = false, failure: unknown;
+      try {
+        await compileBgVerifierInvocation({ ...fixture, runPhase: async (phase, operation) => {
+          if (phase !== boundary) return runPhase(phase, operation);
+          reachedBoundary = true;
+          writeFileSync(path, '#!/bin/sh\nprintf substituted-binary > ' + JSON.stringify(sentinel) + '\nexit 1\n');
+          try { return await runPhase(phase, operation); }
+          finally { writeFileSync(path, original); }
+        } });
+      } catch (error) { failure = error; }
+      expect(reachedBoundary).toBe(true);
+      expect(existsSync(sentinel), 'substituted native binary must have no execution effect').toBe(false);
+      expect(String(failure)).toContain(boundary === 'bg.compiler.binary-seal'
+        ? 'broker_source_seal_failed' : 'BG compiler original input identity changed');
+      // Native equality checks every byte without the assertion framework
+      // recursively visiting ten million indexed Buffer properties.
+      bgFixtureTrace('binary-fixture:restoration-check:started');
+      expect(readFileSync(path).equals(original)).toBe(true);
+      bgFixtureTrace('binary-fixture:restoration-check:completed');
+      expect(process.env).toBe(env);
+      expect(existsSync(fixture.entry)).toBe(false);
+    });
 
   it.each(['argv', 'unknown-switch', 'version', 'ambient-binary', 'actual-node', 'output-escape'] as const)(
     'refuses %s before guarded compiler output', async defect => {

@@ -822,7 +822,9 @@ export const ADV_SESSIONS_CLAIM_MIN_DDL = `
     ADD COLUMN IF NOT EXISTS resume_claimed_at timestamptz,
     ADD COLUMN IF NOT EXISTS retired_at timestamptz,
     ADD COLUMN IF NOT EXISTS retired_by text,
-    ADD COLUMN IF NOT EXISTS retired_reason text`;
+    ADD COLUMN IF NOT EXISTS retired_reason text,
+    -- Migration 1594: the session-identity reads in lib/adv-sessions.ts select it.
+    ADD COLUMN IF NOT EXISTS child_launch_session_id text`;
 
 /**
  * `fleet_membership_events` — the append-only fleet membership fact the claim path's

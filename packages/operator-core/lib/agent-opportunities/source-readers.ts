@@ -12,7 +12,7 @@ import { nativeTranscriptSources, type NativeCorpusOptions, type NativeProvider 
 import type { SearchCorpusOptions } from './search-reformulation';
 import { readSqlIntentRetention } from '../bash-substitution/sql-intent-corpus';
 import type { MonitoredFamily } from './pipeline';
-import { canonicalNativeRuntimeSources, reconcileNativeCapture } from './native-capture';
+import { canonicalNativeRuntimeSources, readAuthorizedNativeDispatch, reconcileNativeCapture } from './native-capture';
 
 type Client = ReturnType<typeof getOrgPg>['sql'];
 export interface OpportunityReaderOptions {
@@ -89,10 +89,23 @@ export function productionOpportunityReaders(opts: OpportunityReaderOptions, dep
       return { callId: `invocation:${input.id}`, provider: 'ledger', namespace: 'operator-dispatch', complete: true, body };
     } catch { return null; } // Missing, expired, corrupt or unauthorized evidence is UNKNOWN.
   };
-  // D030: the index row's harness is not independent authority. Do not hydrate
-  // native bodies until a genuine authenticated per-call scope receipt exists.
-  // Candidate hydration below remains a technical reader, never an ACL grant.
-  const readTranscript: NonNullable<NativeCorpusOptions['readTranscript']> = async () => null;
+  // A host-signed receipt authorizes only its exact historical attempt. Read
+  // only the issued runtime, pair the canonical source, and renew the whole
+  // population + current ACL after IO. Test path overrides remain candidate-only.
+  const readTranscript: NonNullable<NativeCorpusOptions['readTranscript']> = async input => {
+    try {
+      if (!input.callId) return null;
+      const context = { ...opts, authorize: scopeAllowed };
+      const before = await readAuthorizedNativeDispatch({ ...input, callId: input.callId }, context);
+      if (!before) return null;
+      const read = await canonicalNativeRuntimeSources(before.binding, opts, Date.now() + 1000, input.sessionId);
+      const sources = read.sources.filter(source => source.namespace === input.sessionId && source.callId === input.callId);
+      if (!read.complete || sources.length !== 1) return null;
+      const after = await readAuthorizedNativeDispatch({ ...input, callId: input.callId, source: sources[0]! }, context);
+      if (!after || before.fingerprint !== after.fingerprint || !await read.unchanged()) return null;
+      return { sources, status: 'measured' };
+    } catch { return null; }
+  };
   const readTranscriptCandidate: NonNullable<NativeCorpusOptions['readTranscript']> = async input => {
     try {
       if (!input.callId || !await activity(input.id)) return null;

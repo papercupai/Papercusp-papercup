@@ -350,6 +350,46 @@ describe('staging-first activation guard', () => {
     }
   });
 
+  it('does not treat release repair-queue operation refs or actions as deployed-plane waits', () => {
+    expect(
+      stagingFirstBlockerProblem({
+        itemId: 'EI-26682347780469063',
+        itemText: 'Implement the source repair after reviewing the release-fixer authorization.',
+        blockerText:
+          'release:repair-queue:8d9b64637315a01e19ce20481124f62bb0ac11f4\n' +
+          "release:repair-queue { op: 'get' }",
+        kind: 'gate',
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    'release:green:papercusp',
+    'release:deployed:abc123def',
+    'release:deploy-failed',
+    'deploy:green',
+  ])('still classifies the explicit release event ref %s as a deployed-plane wait', (ref) => {
+    expect(
+      stagingFirstBlockerProblem({
+        itemId: 'EI-release-event',
+        itemText: 'Implement the source repair on staging.',
+        blockerText: ref,
+        kind: 'gate',
+      }),
+    ).toEqual(expect.objectContaining({ code: 'non_final_deployed_main_blocker' }));
+  });
+
+  it('still classifies the deploy:await action as a deployed-plane wait', () => {
+    expect(
+      stagingFirstBlockerProblem({
+        itemId: 'EI-deploy-await',
+        itemText: 'Implement the source repair on staging.',
+        blockerText: "approval:pending\ndeploy:await { sha: 'abc123def' }",
+        kind: 'gate',
+      }),
+    ).toEqual(expect.objectContaining({ code: 'non_final_deployed_main_blocker' }));
+  });
+
   // EI-26408370779836831 and prior report EI-24184377732552227: these
   // identifiers name custody/rubric dependencies, not the deployment plane.
   it.each([

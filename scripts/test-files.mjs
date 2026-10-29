@@ -21,8 +21,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism, tmpdir, homedir } from 'node:os';
-import { retainNativeProofPacket } from './lib/budgeted-task-scheduler.mjs';
+import { createRequire } from 'node:module';
 import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV } from './lib/with-test-pg-cleanup.mjs';
+import { isVitestAssertionFailure } from '@papercusp/test-config/vitest-failure-classification';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 import { startupTraceEnv } from './lib/vitest-startup-trace.mjs';
 import { expandWorkspaces } from './assert-workspace-links.mjs';
@@ -635,6 +636,12 @@ export function perGroupVitestEnv(env, groupIndex, groupCount) {
  * start. Keep the unsealed declaration readable if the router is hard-killed. */
 export function createRouterProofCustody(groups, env, repoRoot) {
   if (!env.PC_EXECUTED_SOURCE_MAP_OUT?.trim() && !env.PAPERCUSP_TEST_ARTIFACT_DIR) return null;
+  // Keep ordinary router supervision independent of the native custody subject.
+  // In mutation probes its test child must exercise the intended overlay; an
+  // eager parent import would instead load committed scheduler bytes even when
+  // this run never requested custody. Active custody still uses the same helper
+  // and remains subject to the committed-source loader's normal checks.
+  const { retainNativeProofPacket } = createRequire(import.meta.url)('./lib/budgeted-task-scheduler.mjs');
   const base = env.PAPERCUSP_TEST_ARTIFACT_DIR || join(homedir(), '.papercusp', 'test-artifacts', 'testing-run');
   mkdirSync(base, { recursive: true, mode: 0o700 });
   const directory = mkdtempSync(join(base, 'native-router-'));
@@ -1394,7 +1401,7 @@ const MAX_FAILED_ASSERTION_OUTPUT_CHARS = 12_000;
  *
  * @param {string | null} reportPath value of --outputFile, if any
  * @param {string} [cwd] the group's cwd — vitest resolves a relative --outputFile against it
- * @returns {Array<{ file: string, name: string, messages: string[] }> | null}
+ * @returns {Array<{ file: string, name: string, messages: string[], assertionEvidence: boolean }> | null}
  */
 export function failedAssertionsFromReport(reportPath, cwd) {
   if (!reportPath) return null;
@@ -1424,6 +1431,7 @@ export function failedAssertionsFromReport(reportPath, cwd) {
         file,
         name,
         messages,
+        assertionEvidence: isVitestAssertionFailure(messages),
       });
     }
   }
@@ -1437,7 +1445,8 @@ function boundedDiagnosticText(value, maxChars) {
 }
 
 /**
- * Format failed assertion details for a live test:file caller.
+ * Format failed-test details for a live test:file caller. Only a confirmed
+ * AssertionError receives the marker consumed as mutation evidence.
  *
  * Every field, assertion count, and the complete output are bounded. JSON-encoding the fields
  * keeps each diagnostic on one line while preserving multiline assertion messages for a caller to
@@ -1445,7 +1454,7 @@ function boundedDiagnosticText(value, maxChars) {
  * treated the same way at this formatting boundary because report readability is handled by the
  * parser's null-vs-empty result.
  *
- * @param {Array<{ file: string, name: string, messages: string[] }> | null} failures
+ * @param {Array<{ file: string, name: string, messages: string[], assertionEvidence?: boolean }> | null} failures
  * @returns {string}
  */
 export function formatFailedAssertionDiagnostics(failures) {
@@ -1461,8 +1470,10 @@ export function formatFailedAssertionDiagnostics(failures) {
         : '',
       MAX_FAILED_ASSERTION_MESSAGE_CHARS,
     ) || '(failure message unavailable)';
-    const line =
-      `TEST_FILE_ASSERTION_FAILURE file=${JSON.stringify(file)} name=${JSON.stringify(name)} ` +
+    const marker = failure?.assertionEvidence === false
+      ? 'TEST_FILE_NON_ASSERTION_FAILURE'
+      : 'TEST_FILE_ASSERTION_FAILURE';
+    const line = marker + ` file=${JSON.stringify(file)} name=${JSON.stringify(name)} ` +
       `message=${JSON.stringify(message)}`;
     const nextChars = chars + (lines.length > 0 ? 1 : 0) + line.length;
     if (nextChars > MAX_FAILED_ASSERTION_OUTPUT_CHARS) break;
@@ -1986,12 +1997,12 @@ function gitLineDeltas(absolutePaths, root, repositories = new Map()) {
  * Snapshot the provenance of the NAMED paths. Deduped and order-stable so the pre-run and post-run
  * snapshots are directly comparable entry-for-entry.
  */
-export function snapshotProvenance(absolutePaths, root = REPO_ROOT) {
+export function snapshotProvenance(absolutePaths, root = REPO_ROOT, { onVerifierProgress } = {}) {
   const unique = [...new Set(absolutePaths)];
   if (existsSync(resolve(root, '.verifier-source.json'))) {
     let receipt;
     let provenanceError;
-    try { receipt = readVerifierSourceReceiptSync(root); }
+    try { receipt = readVerifierSourceReceiptSync(root, undefined, { progress: onVerifierProgress }); }
     catch (error) { provenanceError = String(error); }
     return { head: receipt?.sourceCommit ?? null, startedAt: new Date().toISOString(),
       ...(provenanceError ? { provenanceError } : {}),
@@ -4416,7 +4427,17 @@ export async function main(
   // EI-18681435059177620: re-measure AFTER the run. This is the half that would have caught the
   // reported incident automatically — a tested file edited while the suite was executing leaves a
   // verdict that describes neither state, and until now nothing said so.
-  const provenanceAfter = snapshotProvenance(routes.map((route) => route.absolute), repoRoot);
+  // All assertion groups have returned. The full verifier census and receipt
+  // finalization still have to finish before any passing result can be emitted,
+  // but they belong to the observer's bounded cleanup allowance, not execution.
+  console.error('TEST_FILE_FINALIZATION ' + JSON.stringify({ pid: process.pid, phase: 'provenance-start' }));
+  const provenanceAfter = snapshotProvenance(routes.map((route) => route.absolute), repoRoot, {
+    onVerifierProgress: record => console.error('TEST_FILE_FINALIZATION ' + JSON.stringify({
+      pid: process.pid, phase: 'provenance-progress', ...record,
+    })),
+  });
+  console.error('TEST_FILE_FINALIZATION ' + JSON.stringify({ pid: process.pid, phase: 'provenance-complete',
+    status: provenanceAfter.provenanceError ? 'unknown' : 'measured' }));
   const provenanceDiff = diffProvenanceSnapshots(provenanceBefore, provenanceAfter);
   const driftMarker = formatProvenanceDrift(provenanceDiff);
   if (driftMarker) console.error(driftMarker);

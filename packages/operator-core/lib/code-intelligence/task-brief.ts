@@ -752,6 +752,12 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
     ...deps.effects,
     graph: (request, root) => graphSource(request, root, Math.max(1, deadline - Date.now() - 250)),
   }));
+  // WI-6554700010042685: a report re-reads git provenance and the diff for every symbol (measured
+  // 0.9-2.3 s each) while the snapshot answers in milliseconds. An export the snapshot cannot
+  // answer (a constant, a type, a caller-less helper) then spent a whole report only to read
+  // `unmeasured`, so a file led by such exports used up the deadline before any report measured.
+  // On the snapshot path, ask the snapshot first and spend reports only on answered symbols.
+  const snapshotFirst = !deps.graph && !deps.report && ref.harness === operatorHomeHarnessSlug();
   const brief = { phase: 'pre-review' as const, status: 'unknown' as 'measured' | 'unknown',
     scope: { paths: [...new Set(ref.paths)].filter(path => safePath(path) && path.length <= 240).slice(0, 8), processed: [] as string[] },
     changes: [] as { file: string; symbol: string; sourceFingerprint: string; consumers: string[] }[],
@@ -820,8 +826,16 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
       });
       for (const symbol of names) {
         if (Date.now() >= deadline || brief.changes.length >= 2) break;
-        const { answer, report } = await reportSource({ rootPath: root, include: brief.scope.paths },
-          { file, symbol, phase: 'pre-review', paths: ['.'], limit: 20 });
+        const subject = { file, symbol, phase: 'pre-review' as const, paths: ['.'], limit: 20 };
+        if (snapshotFirst) {
+          const miss = (await graphSource(subject, root, Math.max(1, deadline - Date.now() - 250))).error;
+          if (Date.now() >= deadline) return brief;
+          if (miss) {
+            if (unmeasured.length < 2) unmeasured.push(`${file}#${symbol}: ${miss}`.slice(0, 240));
+            continue;
+          }
+        }
+        const { answer, report } = await reportSource({ rootPath: root, include: brief.scope.paths }, subject);
         if (Date.now() >= deadline) return brief;
         if (report.freshness === 'unmeasured') {
           // Keep the reason: an unmeasured report is otherwise indistinguishable from a file

@@ -149,6 +149,19 @@ export function resolveCandidatePorts(flags?: {}, env?: NodeJS.ProcessEnv): {
     candidatePorts: string[];
     pinned: boolean;
 };
+/**
+ * A scoped repair-queue operation must keep the install selected by the caller.
+ * `--harness` is the strongest local signal; the operator-home pointer covers
+ * calls that intentionally omit a per-call harness.
+ */
+export function resolveRepairQueueExpectedInstallSlug(flags?: {}, env?: NodeJS.ProcessEnv): any;
+/** The read-only repair-queue operations that can safely serve as a scope probe. */
+export function isRepairQueueRead(args: any): boolean;
+/** Compare the endpoint's reported repair-queue target with the caller's scope. */
+export function repairQueueTargetScopeMismatch(expectedInstallSlug: any, result: any): {
+    expected: string;
+    actual: any;
+} | null;
 export function buildSuperuserBearerDiagnostic({ tokenPath, port, tokenFallbackAttempted }: {
     tokenPath: any;
     port: any;

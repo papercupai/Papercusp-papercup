@@ -5,6 +5,7 @@ const ensureSupervision = vi.fn();
 const resolveIdentity = vi.fn();
 const loadKeypair = vi.fn();
 const activeWs = vi.fn();
+const orgSql = vi.fn().mockResolvedValue([]);
 
 vi.mock('../harness/operator-home-harness', () => ({
   operatorHomeHarnessSlug: () => 'papercusp',
@@ -22,6 +23,7 @@ vi.mock('../identity/device-keychain-id', () => ({
   resolveDeviceKeychainId: (githubUserId: number) => `${githubUserId}:fake-machine`,
 }));
 vi.mock('../harness/routines/sweep-orphaned-foreign-harnesses-action', () => ({
+  SWEEP_ORPHANED_FOREIGN_HARNESSES_ROUTINE_NAME: 'sweep-orphaned-foreign-harnesses',
   ensureSweepOrphanedForeignHarnessesRoutine: (...args: unknown[]) => ensureSweep(...args),
 }));
 vi.mock('../harness/routines/foreign-supervision-action', () => ({
@@ -29,7 +31,7 @@ vi.mock('../harness/routines/foreign-supervision-action', () => ({
 }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: {} }),
+  getOrgPg: () => ({ sql: orgSql }),
 }));
 
 import {
@@ -45,6 +47,7 @@ describe('ensureP2pHostRoutinesForWorkspace', () => {
   beforeEach(() => {
     ensureSweep.mockReset().mockResolvedValue({ id: 'rt_sweep' });
     ensureSupervision.mockReset().mockResolvedValue({ id: 'rt_supervision' });
+    orgSql.mockReset().mockResolvedValue([]);
     resolveIdentity.mockReset();
     loadKeypair.mockReset();
   });
@@ -67,6 +70,15 @@ describe('ensureP2pHostRoutinesForWorkspace', () => {
       { workspaceId: WORKSPACE_ID, installSlug: 'papercusp' },
       expect.anything(),
     );
+    const [queryParts, ...queryValues] = orgSql.mock.calls[0]!;
+    expect(queryParts.join('')).toContain('UPDATE harness_shared.routines AS legacy');
+    expect(queryParts.join('')).toContain('AND NOT EXISTS');
+    expect(queryValues).toEqual(expect.arrayContaining([
+      WORKSPACE_ID,
+      'default',
+      'papercusp',
+      'sweep-orphaned-foreign-harnesses',
+    ]));
     expect(ensureSupervision).toHaveBeenCalledWith(
       {
         workspaceId: WORKSPACE_ID,

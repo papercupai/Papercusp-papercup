@@ -182,8 +182,12 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
     this.admitNewRecord = options.admitNewRecord;
   }
 
-  private transaction<T>(fn: (tx: SqlClient) => Promise<T>): Promise<T> {
-    return boundedOrgTxn(fn, { client: this.sql, acquirePool: this.acquirePool });
+  private transaction<T>(fn: (tx: SqlClient) => Promise<T>, phase?: () => string): Promise<T> {
+    return boundedOrgTxn(fn, {
+      client: this.sql,
+      acquirePool: this.acquirePool,
+      ...(phase ? { phase } : {}),
+    });
   }
 
   /** Complete ledger + bounded-overlap population used by governor snapshots. */
@@ -721,8 +725,10 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
     receiptId: string,
     leaseId: string,
     nowMs: number,
+    operation: 'mark-running' | 'complete' | 'release-lease' | 'release-claim',
     mutate: (record: DurableAdmissionRecord) => DurableAdmissionRecord,
   ): Promise<QueueMutationResult | null> {
+    let statementPhase = 'select-for-update';
     return this.transaction(async (tx) => {
       const row = await this.findReceiptRow(tx, receiptId, true);
       if (!row) return null;
@@ -731,12 +737,13 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
         return { ...stored, changed: false };
       }
       const next = mutate(stored.record);
+      statementPhase = 'update';
       return { ...(await this.writeRecord(tx, receiptId, next)), changed: true };
-    });
+    }, () => `resource-governor.admission-ledger.${operation}.${statementPhase}`);
   }
 
   markRunning(receiptId: string, leaseId: string, nowMs: number): Promise<QueueMutationResult | null> {
-    return this.leaseTransition(receiptId, leaseId, nowMs, (record) =>
+    return this.leaseTransition(receiptId, leaseId, nowMs, 'mark-running', (record) =>
       record.state === 'leased'
         ? nextDecision(record, 'running', nowMs, 'execution-started', {
             owner: record.lease?.owner ?? null,
@@ -753,7 +760,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
     resultRef: string | undefined,
     nowMs: number,
   ): Promise<QueueMutationResult | null> {
-    return this.leaseTransition(receiptId, leaseId, nowMs, (record) => {
+    return this.leaseTransition(receiptId, leaseId, nowMs, 'complete', (record) => {
       if (record.state !== 'leased' && record.state !== 'running') return record;
       return {
         ...nextDecision(record, 'completed', nowMs, 'execution-completed', {
@@ -768,7 +775,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
   }
 
   releaseLease(receiptId: string, leaseId: string, nowMs: number): Promise<QueueMutationResult | null> {
-    return this.leaseTransition(receiptId, leaseId, nowMs, (record) => {
+    return this.leaseTransition(receiptId, leaseId, nowMs, 'release-lease', (record) => {
       if (record.state !== 'leased' && record.state !== 'running') return record;
       return { ...nextDecision(record, 'queued', nowMs, 'lease-released'), lease: undefined };
     }).then((result) =>
@@ -782,7 +789,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
     actualDemand: DurableAdmissionRecord['actualDemand'] | undefined,
     nowMs: number,
   ): Promise<QueueMutationResult | null> {
-    return this.leaseTransition(receiptId, leaseId, nowMs, (record) => {
+    return this.leaseTransition(receiptId, leaseId, nowMs, 'release-claim', (record) => {
       if (record.state !== 'leased' && record.state !== 'running') return record;
       return {
         ...nextDecision(record, 'completed', nowMs, 'resources-released', {

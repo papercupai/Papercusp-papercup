@@ -872,6 +872,77 @@ describe('routines:list', () => {
       });
     });
 
+    it('keeps an inactive marker unsafe while a newer exclusive resource lease remains', async () => {
+      const pid = 9_876_548;
+      const owner = 'system:git-sync:' + pid + ':older-fire';
+      resourceQueueMock.mockClear();
+      resourceQueueMock.mockResolvedValue({
+        holders: [{ owner: 'system:git-sync:' + (pid + 1) + ':newer-fire', mode: 'exclusive', status: 'held' }],
+        draining: false,
+        queue: [],
+      });
+
+      const freshness = await readFreshness({ active: false, owner, owner_pid: pid });
+
+      expect(resourceQueueMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ resource: 'git-sync:home-harness' }),
+      );
+      expect(freshness).toMatchObject({
+        execution: {
+          status: 'unknown',
+          owner_reconciliation: {
+            status: 'unverified',
+            owner_pid: pid,
+            lock_state: 'held',
+            matching_owner_lock: false,
+          },
+        },
+        safe_to_restart: false,
+      });
+    });
+
+    it('allows an inactive marker to be idle only after confirming no exclusive resource lease', async () => {
+      const pid = 9_876_549;
+      const owner = 'system:git-sync:' + pid + ':completed-fire';
+      resourceQueueMock.mockClear();
+      resourceQueueMock.mockResolvedValue({ holders: [], draining: false, queue: [] });
+
+      const freshness = await readFreshness({ active: false, owner, owner_pid: pid });
+
+      expect(resourceQueueMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ resource: 'git-sync:home-harness' }),
+      );
+      expect(freshness).toMatchObject({
+        execution: { status: 'idle', owner_reconciliation: null },
+        safe_to_restart: true,
+      });
+    });
+
+    it('keeps an inactive marker unsafe when the resource lease cannot be read', async () => {
+      const pid = 9_876_550;
+      const owner = 'system:git-sync:' + pid + ':older-fire';
+      resourceQueueMock.mockClear();
+      resourceQueueMock.mockRejectedValue(new Error('resource queue unavailable'));
+
+      const freshness = await readFreshness({ active: false, owner, owner_pid: pid });
+
+      expect(freshness).toMatchObject({
+        execution: {
+          status: 'unknown',
+          owner_reconciliation: {
+            status: 'unverified',
+            owner_pid: pid,
+            lock_state: 'unknown',
+            matching_owner_lock: null,
+          },
+        },
+        safe_to_restart: false,
+      });
+      expect(String(freshness.safe_to_restart_reason)).toContain('resource lock could not be read');
+    });
+
     it('keeps a definitively dead marker unsafe while either matching or other exclusive lease remains', async () => {
       const pid = 9_876_544;
       const owner = `system:git-sync:${pid}:fire-2`;

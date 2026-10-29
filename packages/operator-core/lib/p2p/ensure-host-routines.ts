@@ -22,13 +22,17 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { resolveLocalGithubIdentity } from '../identity/resolve-local-github-identity';
 import { loadOrGenerateDeviceKeypair } from '../identity/attest';
 import { resolveDeviceKeychainId } from '../identity/device-keychain-id';
 import { resolveP2pGrantWorkspace } from './grant-store';
-import { ensureSweepOrphanedForeignHarnessesRoutine } from '../harness/routines/sweep-orphaned-foreign-harnesses-action';
+import {
+  ensureSweepOrphanedForeignHarnessesRoutine,
+  SWEEP_ORPHANED_FOREIGN_HARNESSES_ROUTINE_NAME,
+} from '../harness/routines/sweep-orphaned-foreign-harnesses-action';
 import { ensureP2pForeignSupervisionRoutine } from '../harness/routines/foreign-supervision-action';
 
 export interface EnsureP2pHostRoutinesResult {
@@ -38,6 +42,35 @@ export interface EnsureP2pHostRoutinesResult {
   supervisionSeeded: boolean;
   /** Human-readable reasons for anything skipped or degraded. */
   skippedReasons: string[];
+}
+
+/**
+ * Phase 1 has a global (install_slug, name) uniqueness constraint, so the
+ * deterministic routine row can be stranded in the legacy `default`
+ * workspace even when this host now resolves a real workspace. upsertRoutine
+ * intentionally preserves an existing workspace_id; move only this exact
+ * host-maintenance row, and only when the destination has no row already.
+ */
+async function rehomeLegacySweepRoutine(
+  workspaceId: string,
+  installSlug: string,
+  sql: Sql,
+): Promise<void> {
+  if (resolveP2pGrantWorkspace(workspaceId) !== workspaceId) return;
+  await sql`
+    UPDATE harness_shared.routines AS legacy
+       SET workspace_id = ${workspaceId}, updated_at = now()
+     WHERE legacy.workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND legacy.install_slug = ${installSlug}
+       AND legacy.name = ${SWEEP_ORPHANED_FOREIGN_HARNESSES_ROUTINE_NAME}
+       AND NOT EXISTS (
+         SELECT 1
+           FROM harness_shared.routines AS scoped
+          WHERE scoped.workspace_id = ${workspaceId}
+            AND scoped.install_slug = legacy.install_slug
+            AND scoped.name = legacy.name
+       )
+  `;
 }
 
 /** Resolve + seed the two v1 p2p host-maintenance routines for one workspace. */
@@ -51,6 +84,7 @@ export async function ensureP2pHostRoutinesForWorkspace(
   let supervisionSeeded = false;
 
   try {
+    await rehomeLegacySweepRoutine(workspaceId, installSlug, sql);
     await ensureSweepOrphanedForeignHarnessesRoutine({ workspaceId, installSlug }, sql);
     sweepSeeded = true;
   } catch (err) {

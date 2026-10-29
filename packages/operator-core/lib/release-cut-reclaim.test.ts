@@ -724,7 +724,14 @@ describe('gather + execute against a real temporary repo', () => {
     expect(first.cap.beforeBytes).toBeNull();
     expect(first.cap.afterBytes).toBeNull();
     expect(slot.launches).toHaveLength(1);
-    expect(walkProcessAlive((await readWalkState(slot.dir))!)).toBe(true);
+    const original = (await readWalkState(slot.dir))!;
+    const pendingWalk = { root: original.root, dir: slot.dir, attempt: original.attempt,
+      requestKey: original.requestKey, launchedAt: original.launchedAt };
+    // The ordinary delegate detail must keep its own lineage after the slot is
+    // consumed and replaced, including through the receipt's JSON round trip.
+    const receipt = JSON.parse(JSON.stringify({ delegates: [{ classId: 'release-cut-worktrees', ok: first.ok, detail: first }] }));
+    expect(receipt.delegates[0].detail.pendingWalk).toEqual(pendingWalk);
+    expect(walkProcessAlive(original)).toBe(true);
     const other = path.join(tmp, 'adopt-new-root');
     g(repo, 'worktree', 'add', '-q', '--detach', other);
     const changed = await gather();
@@ -732,6 +739,7 @@ describe('gather + execute against a real temporary repo', () => {
     expect(refused.ok).toBe(false);
     expect(refused.cap.beforeBytes).toBeNull();
     expect(refused.errors[0]).toContain('request changed');
+    expect(refused.pendingWalk).toBeUndefined();
     expect(slot.launches).toHaveLength(1);
     await slot.finished();
     const adopted = await reclaimCutWorktrees(plan, {}, { usageWalk: slot.usageWalk });
@@ -744,6 +752,8 @@ describe('gather + execute against a real temporary repo', () => {
     expect(next.ok).toBe(true);
     expect(next.cap.retainedPaths).toEqual([tree, other]);
     expect(slot.launches).toHaveLength(2);
+    expect((await readWalkState(slot.dir))?.requestKey).not.toBe(original.requestKey);
+    expect(receipt.delegates[0].detail.pendingWalk).toEqual(pendingWalk);
     await slot.finished();
   });
 

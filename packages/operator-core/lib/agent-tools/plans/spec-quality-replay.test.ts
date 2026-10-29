@@ -52,6 +52,24 @@ describe('immutable spec-quality replay (WI-10007284)', () => {
     const replay = await call(replayArgs);
     expect(replay).toMatchObject({ ok: true, verdict: 'pass', specSetHash: oldEvaluation.specSetHash, planItemCount: 1 });
     expect(Object.keys(replay.ratings)).toHaveLength(8);
+    expect(replay.details.exemptionCensus).toMatchObject({
+      specSetHash: oldEvaluation.specSetHash,
+      currentClauseCount: 1,
+      exemptClauseCount: 0,
+      validExemptionSpecIds: [],
+      invalidExemptionSpecIds: [],
+      rows: [{
+        specId: oldClause.specId,
+        revision: oldClause.revision,
+        planItemId: oldClause.planItemId,
+        lifecycleStatus: oldClause.lifecycleStatus,
+        behaviorClass: oldClause.behaviorClass,
+        exemptionDeclared: false,
+        valid: null,
+      }],
+    });
+    expect(replay.ratings['explicit-non-behavioral-exemptions'].evidence)
+      .toContain(`row census SHA-256=${replay.details.exemptionCensus.censusSha256}`);
     for (const [key, value] of Object.entries(oldEvaluation.ratings)) {
       expect(replay.ratings[key].rating).toBe(value.rating);
       expect(replay.ratings[key].evidence).toContain(value.evidence);

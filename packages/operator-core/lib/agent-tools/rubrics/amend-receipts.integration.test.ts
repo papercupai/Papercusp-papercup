@@ -64,7 +64,7 @@ describe('rubric amend receipts in shared Postgres', () => {
     expect(rows).toEqual([{ workspace_id: activeWorkspaceId(), state: 'committed' }]);
   });
 
-  it('shares timestamped preview progress across fresh modules and preserves exact terminal replay', async () => {
+  it('shares timestamped phase progress across fresh modules and preserves exact terminal replay', async () => {
     const key = 'preview-shared-progress-integration';
     const rubric = 'acceptance-preview-progress-integration';
     let release!: (value: Record<string, unknown>) => void;
@@ -78,7 +78,7 @@ describe('rubric amend receipts in shared Postgres', () => {
       onPhase('review-route');
       started();
       return work;
-    }, { persistPreviewProgress: true });
+    }, { persistPhaseProgress: true });
     try {
       await startedWork;
       vi.resetModules();
@@ -93,14 +93,14 @@ describe('rubric amend receipts in shared Postgres', () => {
         progress: { phase: 'review-launch' },
       }));
       const duplicate = vi.fn(async () => ({ ok: false, duplicate: true }));
-      expect(await otherWorker.trackAmendRun(key, rubric, duplicate, { persistPreviewProgress: true }))
+      expect(await otherWorker.trackAmendRun(key, rubric, duplicate, { persistPhaseProgress: true }))
         .toMatchObject({ pending: true, receipt: { progress: { phase: 'review-launch' } } });
       expect(duplicate).not.toHaveBeenCalled();
       release(result);
       expect(await first).toEqual(result);
       expect(await otherWorker.getAmendReceipt(rubric, key)).toMatchObject({ state: 'previewed', result });
       expect((await otherWorker.getAmendReceipt(rubric, key))!.progress).toBeUndefined();
-      expect(await otherWorker.trackAmendRun(key, rubric, duplicate, { persistPreviewProgress: true })).toEqual(result);
+      expect(await otherWorker.trackAmendRun(key, rubric, duplicate, { persistPhaseProgress: true })).toEqual(result);
       expect(duplicate).not.toHaveBeenCalled();
     } finally {
       release(result);
@@ -120,7 +120,7 @@ describe('rubric amend receipts in shared Postgres', () => {
       onPhase('review-route');
       started();
       return work;
-    }, { persistPreviewProgress: true }).catch((error: unknown) => error);
+    }, { persistPhaseProgress: true }).catch((error: unknown) => error);
     try {
       await startedWork;
       await vi.waitFor(async () => expect(await getAmendReceipt(rubric, key))

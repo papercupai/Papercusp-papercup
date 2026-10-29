@@ -155,8 +155,10 @@ export async function trackAmendRun(
   options: {
     onRegistered?: () => void;
     omittedReviewRecovery?: OmittedReviewRecovery;
-    /** Only dry-run previews: apply must never acquire a second connection while holding plan locks. */
-    persistPreviewProgress?: boolean;
+    /** Persist phase changes in the receipt; only enable when a phase may use an independent SQL connection. */
+    persistPhaseProgress?: boolean;
+    /** Apply supplies an allowlist so no progress write acquires a connection under its plan locks. */
+    persistProgressForPhase?: (phase: string) => boolean;
   } = {},
 ): Promise<Record<string, unknown>> {
   const { sql } = getOrgPg();
@@ -165,7 +167,7 @@ export async function trackAmendRun(
   const correlationId = randomUUID();
   // A token fences delayed diagnostic writes from a previous attempt on this key.
   // Reuse the receipt JSON; no separate progress row or schema is needed.
-  const initialResult = options.persistPreviewProgress ? JSON.stringify({ _progressRun: correlationId }) : null;
+  const initialResult = options.persistPhaseProgress ? JSON.stringify({ _progressRun: correlationId }) : null;
   // Finished previews/failures have no Decision fallback. Retain them for one
   // hour, then bound the shared table opportunistically on the next amend.
   await sql`
@@ -256,8 +258,16 @@ export async function trackAmendRun(
   let progressClosed = false;
   let pendingProgress: AmendReceiptProgress | undefined;
   let publication: Promise<void> | undefined;
+  const phaseMayPersist = (current: string): boolean => {
+    if (!options.persistPhaseProgress) return false;
+    try {
+      return options.persistProgressForPhase?.(current) ?? true;
+    } catch {
+      return false;
+    }
+  };
   const publishProgress = () => {
-    if (!options.persistPreviewProgress || publication || progressClosed || !pendingProgress) return;
+    if (!options.persistPhaseProgress || publication || progressClosed || !pendingProgress) return;
     publication = (async () => {
       while (!progressClosed && pendingProgress) {
         const snapshot = pendingProgress;
@@ -271,12 +281,12 @@ export async function trackAmendRun(
           RETURNING idempotency_key
         `;
         if (updated.length > 0) observeFallback('bounded-operation', {
-          eligible: 1, applied: 1, reason: 'applied', scope: 'rubrics:amend:preview-progress',
+          eligible: 1, applied: 1, reason: 'applied', scope: 'rubrics:amend:phase-progress',
         }, { sql, workspaceId, correlationId, processTag: `rubrics-amend:p${executor.pid}` });
       }
     })().catch(() => {
       observeFallback('bounded-operation', {
-        eligible: 1, applied: 0, reason: 'error', scope: 'rubrics:amend:preview-progress',
+        eligible: 1, applied: 0, reason: 'error', scope: 'rubrics:amend:phase-progress',
       }, { sql, workspaceId, correlationId, processTag: `rubrics-amend:p${executor.pid}` });
     }).finally(() => {
       publication = undefined;
@@ -287,7 +297,7 @@ export async function trackAmendRun(
   const onPhase = (next: string) => {
     phase = next.slice(0, 200);
     phaseStartedAt = Date.now();
-    if (options.persistPreviewProgress && !progressClosed) {
+    if (phaseMayPersist(phase) && !progressClosed) {
       pendingProgress = { phase, phaseStartedAt, observedAt: phaseStartedAt };
       publishProgress();
     }
@@ -315,7 +325,7 @@ export async function trackAmendRun(
              result_json = ${JSON.stringify(failedResult)}::text::jsonb, finished_at = now()
        WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
          AND idempotency_key = ${idempotencyKey} AND state = 'running'
-         AND (NOT ${options.persistPreviewProgress === true}::boolean
+         AND (NOT ${options.persistPhaseProgress === true}::boolean
            OR result_json->>'_progressRun' = ${correlationId})
     `;
     throw error;
@@ -350,7 +360,7 @@ export async function trackAmendRun(
            error = ${error}, finished_at = now()
      WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
        AND idempotency_key = ${idempotencyKey}
-       AND (NOT ${options.persistPreviewProgress === true}::boolean
+       AND (NOT ${options.persistPhaseProgress === true}::boolean
          OR (state = 'running' AND result_json->>'_progressRun' = ${correlationId}))
   `;
   return result;

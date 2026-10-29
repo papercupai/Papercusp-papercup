@@ -46,6 +46,7 @@ import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { scanProcForOpenFile } from './proc-open-file-scan';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitViaSpawnerSidecar, type SidecarDiagnosticTags } from '../../fleet/git-via-sidecar';
+import { gitSubcommandOf } from '../../fleet/sidecar-read-only-git';
 import { gitReplayIsSafe, isSidecarPostDispatchFault, sidecarPostDispatchUnknownResult } from '../../fleet/sidecar-dispatch-fault';
 import {
   detectContentOffenders,
@@ -1672,6 +1673,8 @@ export function migrationDependencyFenceSkips(
   roster: readonly AttributionRosterEntry[],
   /** Superproject root, so absolute presence `current_files` normalize like every other caller's. */
   superRoot?: string,
+  /** Exact root-relative live holds fill gaps when the edit-attribution roster has no path row. */
+  liveLockHoldings: readonly GitSyncLockHolding[] = [],
 ): GitSyncSkippedPath[] {
   if (refusedMigrations.length === 0 || dirtySuperprojectPaths.length === 0) return [];
 
@@ -1693,7 +1696,21 @@ export function migrationDependencyFenceSkips(
   // accept the nested-relative shape the ledger actually writes.
   const migrationAttribution = (migration: { scope: string; path: string }): FileAttribution | undefined =>
     mapFor(migration.scope).get(migration.path) ??
-    (migration.scope && migration.scope !== 'superproject' ? mapFor('').get(migration.path) : undefined);
+    (migration.scope && migration.scope !== 'superproject' ? mapFor('').get(migration.path) : undefined) ??
+    (() => {
+      // A turn-scoped hold can name the exact editor even when that path is absent from
+      // the merged edit/presence roster. Do not match the nested-relative suffix here:
+      // only the root-relative, scope-qualified lock coordinate identifies this migration.
+      const rootRelativePath = migration.scope && migration.scope !== 'superproject'
+        ? `${migration.scope.replace(/\/+$/, '')}/${migration.path.replace(/^\/+/, '')}`
+        : migration.path;
+      const holding = liveLockHoldings.find((entry) => entry.path.replace(/^\.\//, '') === rootRelativePath);
+      if (!holding) return undefined;
+      const workItems = holding.goalRef && /^(?:WI-|EI-|F-)\d+$/.test(holding.goalRef)
+        ? [holding.goalRef]
+        : [];
+      return { agent: holding.owner, workItems };
+    })();
 
   const blockedWorkItems = new Set<string>();
   const blockedAgents = new Set<string>();
@@ -1725,18 +1742,25 @@ export function migrationDependencyFenceSkips(
     ),
   ];
   const migrationLocations = blockingMigrations.slice(0, 3).join(', ');
-  const details = (path: string): GitSyncSkippedPath => ({
-    scope: 'superproject',
-    path,
-    reason: 'migration-dependency-fence',
-    detail: unknownMigration
-      ? 'deferred because a reservation-blocked migration could not be attributed; holding this path until its dependency is known'
-      : 'deferred because this path shares work-item attribution with a reservation-blocked migration at ' + migrationLocations,
-    blockingMigrations,
-    blockingAgents: [...blockedAgents],
-    blockingWorkItems: [...blockedWorkItems],
-    ...(unattributedMigrations.length > 0 ? { unattributedMigrations: [...new Set(unattributedMigrations)] } : {}),
-  });
+  const details = (path: string): GitSyncSkippedPath => {
+    const rootAttribution = rootAttributions.get(path);
+    const rootWorkItems = (rootAttribution?.workItems ?? []).map((id) => id.trim()).filter(Boolean);
+    const sharesWorkItem = rootWorkItems.some((id) => blockedWorkItems.has(id));
+    return {
+      scope: 'superproject',
+      path,
+      reason: 'migration-dependency-fence',
+      detail: unknownMigration
+        ? 'deferred because a reservation-blocked migration could not be attributed; holding this path until its dependency is known'
+        : sharesWorkItem
+          ? 'deferred because this path shares work-item attribution with a reservation-blocked migration at ' + migrationLocations
+          : 'deferred because this path is attributed to the same agent as a reservation-blocked migration at ' + migrationLocations,
+      blockingMigrations,
+      blockingAgents: [...blockedAgents],
+      blockingWorkItems: [...blockedWorkItems],
+      ...(unattributedMigrations.length > 0 ? { unattributedMigrations: [...new Set(unattributedMigrations)] } : {}),
+    };
+  };
 
   return [...new Set(dirtySuperprojectPaths)]
     .filter((path) => {
@@ -6225,6 +6249,18 @@ interface CommitRepoResult {
   oversized: OversizedFile[];
   contentErrors: ContentOffender[];
   skippedPaths?: GitSyncSkippedPath[];
+  /** Persisted with the pointer-bump step so DBOS history retains the measured phase. */
+  pointerBumpTiming?: {
+    schemaVersion: 1;
+    runId: string;
+    repoRoot: string;
+    pid: number;
+    sourceUrl: string;
+    startedAt: string;
+    durationMs: number;
+    commitDurationMs?: number;
+    status: 'committed' | 'unchanged' | 'skipped' | 'blocked' | 'error';
+  };
   /** A REAL add/commit failure (index.lock race, corrupt index, embedded-repo fatal) —
    *  surfaced by the caller as a repo error. `nothing to commit` is NOT an error. */
   error?: string;
@@ -6626,7 +6662,13 @@ async function commitOneRepoWithScratch(
         }
       }
       migrationDependencyFenceSkippedPaths.push(
-        ...migrationDependencyFenceSkips(migrationFenceRefusals, dirtySuperprojectPaths, migrationFenceRoster, repoPath),
+        ...migrationDependencyFenceSkips(
+          migrationFenceRefusals,
+          dirtySuperprojectPaths,
+          migrationFenceRoster,
+          repoPath,
+          o.liveLockHoldings ?? [],
+        ),
       );
       skippedPaths.push(...migrationDependencyFenceSkippedPaths);
       if (migrationDependencyFenceSkippedPaths.length > 0) {
@@ -8409,6 +8451,26 @@ async function runGitSyncPass(
     };
     timingLog('phase-start', { sourceUrl: timing.sourceUrl, startedAt: timing.startedAt });
     let subPaths: string[] = [];
+    const recordSetupComplete = (): void => {
+      timing.setupMs = Math.round(performance.now() - phaseStartedAt);
+      timingLog('setup-complete', { setupMs: timing.setupMs, repositoryCount: subPaths.length });
+    };
+    // Keep one diagnostic identity across URL reconciliation, recursive discovery,
+    // early root-commit Git calls, and the later submodule walk.
+    const runGitForTiming: RunGit = (args, cwd, options) => {
+      const subcommand = gitSubcommandOf(args);
+      const gitSubcommand = subcommand && /^[a-z][a-z0-9-]{0,63}$/.test(subcommand)
+        ? subcommand
+        : undefined;
+      return runGit(args, cwd, {
+        ...(options ?? {}),
+        diagnosticTags: {
+          runId: timing.runId,
+          commandClass: 'git',
+          ...(gitSubcommand ? { gitSubcommand } : {}),
+        },
+      });
+    };
     if (doSub) {
       // EI-20329530284626235: `.gitmodules` is the canonical transport declaration,
       // but an initialized submodule keeps a copied URL in its own `remote.origin.url`.
@@ -8417,15 +8479,15 @@ async function runGitSyncPass(
       // Reconcile the copies before discovery or any submodule fetch/push. A failure is
       // correctness-relevant: continuing would knowingly use an unverified transport,
       // so report it and defer the superproject push like every other submodule error.
-      let urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
+      let urlSync = await runGitForTiming(['submodule', 'sync', '--recursive'], repo);
       // EI-20345390379109755: an interrupted config writer (or a fleet-sandbox
       // mask artifact) can strand a zero-byte `.git/config.lock`. The index
       // phase already self-heals its equivalent lock; apply the same age guard
       // here, then retry once. A fresh lock is never touched.
       if (urlSync.code !== 0 && isConfigLockFailure(`${urlSync.stdout}\n${urlSync.stderr}`)) {
         const configLockDeps = opts.isGitLockOpen ? { isOpen: opts.isGitLockOpen } : {};
-        const cleared = await clearStaleConfigLock(runGit, repo, log, configLockDeps);
-        if (cleared) urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
+        const cleared = await clearStaleConfigLock(runGitForTiming, repo, log, configLockDeps);
+        if (cleared) urlSync = await runGitForTiming(['submodule', 'sync', '--recursive'], repo);
 
         // EI-20347384139844425: a fresh config.lock is live contention, not an
         // orphan we may delete. It is nevertheless normally gone within a few
@@ -8445,16 +8507,16 @@ async function runGitSyncPass(
             `[git-sync] ${repo}: canonical submodule URL sync hit live config.lock contention — retrying after ${delayMs}ms (attempt ${attempt}/${CONFIG_LOCK_CONTENTION_MAX_RETRIES})`,
           );
           await new Promise((resolve) => setTimeout(resolve, delayMs));
-          urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
+          urlSync = await runGitForTiming(['submodule', 'sync', '--recursive'], repo);
         }
 
         if (urlSync.code !== 0 && isConfigLockFailure(`${urlSync.stdout}\n${urlSync.stderr}`)) {
-          const clearedAfterRetry = await clearStaleConfigLock(runGit, repo, log, configLockDeps);
-          if (clearedAfterRetry) urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
+          const clearedAfterRetry = await clearStaleConfigLock(runGitForTiming, repo, log, configLockDeps);
+          if (clearedAfterRetry) urlSync = await runGitForTiming(['submodule', 'sync', '--recursive'], repo);
         }
       }
       if (urlSync.code !== 0) {
-        timing.setupMs = Math.round(performance.now() - phaseStartedAt);
+        recordSetupComplete();
         const detail = (urlSync.stderr || urlSync.stdout || 'no output').trim().slice(0, 300);
         const message = `canonical submodule URL sync failed: ${detail}`;
         out.errors.push({ scope: 'submodule-config', message });
@@ -8463,7 +8525,7 @@ async function runGitSyncPass(
       }
       subPaths = opts.submodulePaths
         ? [...opts.submodulePaths].sort((a, b) => b.split('/').length - a.split('/').length)
-        : await discoverSubmodulesRecursive(runGit, repo, log, (census) => {
+        : await discoverSubmodulesRecursive(runGitForTiming, repo, log, (census) => {
             // EI-20402093158205519: record the strand census measured by THIS pass. An
             // explicit submodulePaths override (tests) skips discovery entirely and so
             // measures nothing — this stays null, and null never implies an all-clear.
@@ -8501,7 +8563,7 @@ async function runGitSyncPass(
         const yieldBeforeEarlyCommit = await checkYield();
         if (yieldBeforeEarlyCommit) {
           out.yielded = { reason: yieldBeforeEarlyCommit, synced: 0, total: subPaths.length };
-          timing.setupMs = Math.round(performance.now() - phaseStartedAt);
+          recordSetupComplete();
           return out;
         }
 
@@ -8514,40 +8576,41 @@ async function runGitSyncPass(
             !subPaths.some((subPath) => holding.path === subPath || holding.path.startsWith(`${subPath}/`)) &&
             !isUnderAnyPath(holding.path, nestedPotPaths),
         );
-        const earlyHeadBefore = await headSha(runGit, repo);
+        const earlyHeadBefore = await headSha(runGitForTiming, repo);
         const earlyLocalCommits: GitSyncRootCommit[] = [];
         const yieldEarlySuperproject = async (boundary: GitSyncSuperprojectYieldBoundary): Promise<void> => {
           const reason = await checkYield();
           if (!reason) return;
-          const headNow = await headSha(runGit, repo);
+          const headNow = await headSha(runGitForTiming, repo);
           const landed =
             headNow && headNow !== earlyHeadBefore
               ? {
                   localCommitSha: headNow,
                   localCommitAtMs: earlyLocalCommits.at(-1)?.committedAtMs ?? Date.now(),
-                  localCommitShas: await commitsSince(runGit, repo, earlyHeadBefore, headNow),
+                  localCommitShas: await commitsSince(runGitForTiming, repo, earlyHeadBefore, headNow),
                   localCommits: earlyLocalCommits,
                 }
               : undefined;
+          recordSetupComplete();
           throw new GitSyncYieldError(reason, boundary, 0, subPaths.length, landed);
         };
 
         // Preserve the normal root commit guards before taking the early local snapshot.
         try {
-          await toolRoutingChecker({ runGit, repoPath: repo, log });
+          await toolRoutingChecker({ runGit: runGitForTiming, repoPath: repo, log });
         } catch (e) {
           log(`[git-sync] ${repo}: tool-routing pre-commit check threw (${String(e)}) — continuing with the commit fail-soft`);
         }
         await yieldEarlySuperproject('before-superproject-stage');
         try {
-          await toolCatalogRegenerator({ runGit, repoPath: repo, log });
+          await toolCatalogRegenerator({ runGit: runGitForTiming, repoPath: repo, log });
         } catch (e) {
           log(`[git-sync] ${repo}: tool-catalog pre-commit repair threw (${String(e)}) — continuing with the commit fail-soft`);
         }
         await yieldEarlySuperproject('before-superproject-stage');
         let declarationRepair: GeneratedDeclarationsRepairResult;
         try {
-          declarationRepair = await generatedDeclarationsRegenerator({ runGit, repoPath: repo, log });
+          declarationRepair = await generatedDeclarationsRegenerator({ runGit: runGitForTiming, repoPath: repo, log });
         } catch (e) {
           declarationRepair = { status: 'blocked', atomicPaths: [], detail: String(e).slice(0, 300) };
         }
@@ -8556,7 +8619,7 @@ async function runGitSyncPass(
         if (declarationRepair.status === 'blocked') {
           log(`[git-sync] ${repo}: early superproject commit deferred because generated declaration repair is blocked — pointer-bump will retry`);
         } else {
-          const earlyMigrationPaths = migrationPaths(await dirtyFiles(runGit, repo));
+          const earlyMigrationPaths = migrationPaths(await dirtyFiles(runGitForTiming, repo));
           const earlyExcludedPaths = [...new Set([
             ...rootProtectedPaths,
             ...subPaths,
@@ -8570,7 +8633,7 @@ async function runGitSyncPass(
                 `${declarationRepair.atomicPaths.length} declaration-related path(s) from the local commit`,
             );
           }
-          const committed = await commitOneRepo(runGit, repo, {
+          const committed = await commitOneRepo(runGitForTiming, repo, {
             ...repoO,
             scope: 'superproject',
             migrationFenceRoster: roster,
@@ -8588,7 +8651,7 @@ async function runGitSyncPass(
             yieldIfRequested: yieldEarlySuperproject,
             onPublished: (sha) => earlyLocalCommits.push({ sha, committedAtMs: Date.now() }),
           });
-          const earlyHeadAfter = committed.committedLocal ? await headSha(runGit, repo) : undefined;
+          const earlyHeadAfter = committed.committedLocal ? await headSha(runGitForTiming, repo) : undefined;
           out.earlyRootCommit = {
             ...committed,
             localCommits: earlyLocalCommits,
@@ -8596,26 +8659,21 @@ async function runGitSyncPass(
               ? {
                   localCommitSha: earlyHeadAfter,
                   localCommitAtMs: earlyLocalCommits.at(-1)?.committedAtMs ?? Date.now(),
-                  localCommitShas: await commitsSince(runGit, repo, earlyHeadBefore, earlyHeadAfter),
+                  localCommitShas: await commitsSince(runGitForTiming, repo, earlyHeadBefore, earlyHeadAfter),
                 }
               : {}),
           };
         }
       }
     }
-    timing.setupMs = Math.round(performance.now() - phaseStartedAt);
-    const runGitForSubmodule: RunGit = (args, cwd, options) =>
-      runGit(args, cwd, {
-        ...(options ?? {}),
-        diagnosticTags: { runId: timing.runId, commandClass: 'git' },
-      });
+    recordSetupComplete();
     const syncSubmodule = (s: string): Promise<RepoSyncResult> =>
       // P-004: a submodule's last-resort default is its own 'main' (resolved via
       // origin/HEAD first), never the superproject's branch (cfg.branch = 'staging').
       // EI-18689553108460319: submodules push under `doSubPush`, NOT the superproject's
       // `doPush` — a bridged/p2p-only hive's push:false must not silently strand every
       // submodule's commits too (see GitSyncConfig.pushSubmoduleOrigins).
-      syncOneRepo(runGitForSubmodule, join(repo, s), {
+      syncOneRepo(runGitForTiming, join(repo, s), {
         ...repoO,
         scope: s,
         doPush: doSubPush,
@@ -8798,6 +8856,24 @@ async function runGitSyncPass(
   // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit (this
   // commit is what bakes the bumped submodule pointers in). ALWAYS runs.
   const commitRes = await step('git-sync:pointer-bump', async () => {
+    const pointerBumpStartedAt = performance.now();
+    const pointerBumpTimingBase = {
+      schemaVersion: 1 as const,
+      runId: randomUUID(),
+      repoRoot: repo,
+      pid: process.pid,
+      sourceUrl: import.meta.url,
+      startedAt: new Date().toISOString(),
+    };
+    const pointerBumpTiming = (
+      status: NonNullable<CommitRepoResult['pointerBumpTiming']>['status'],
+      commitDurationMs?: number,
+    ): NonNullable<CommitRepoResult['pointerBumpTiming']> => ({
+      ...pointerBumpTimingBase,
+      durationMs: Math.max(0, Math.round(performance.now() - pointerBumpStartedAt)),
+      ...(commitDurationMs === undefined ? {} : { commitDurationMs }),
+      status,
+    });
     superprojectHeadBefore = await headSha(runGit, repo);
     // EI-20428405431869483: detect generated routing drift while the dirty source
     // is still present, before the catch-all commit makes the source clean.
@@ -8846,6 +8922,7 @@ async function runGitSyncPass(
         oversized: [],
         contentErrors: [],
         skippedPaths: [],
+        pointerBumpTiming: pointerBumpTiming('blocked'),
       };
     }
     // A failed status census or a failed emit defers the enrolled declaration
@@ -8860,6 +8937,7 @@ async function runGitSyncPass(
           `${deferredDeclarationPaths.length} declaration-related path(s) while committing the unlocked remainder`,
       );
     }
+    const commitStartedAt = performance.now();
     const committed = await commitOneRepo(runGit, repo, {
       ...repoO,
       scope: 'superproject',
@@ -8884,10 +8962,18 @@ async function runGitSyncPass(
         localCommits.push(commit);
       },
     });
+    const commitDurationMs = Math.max(0, Math.round(performance.now() - commitStartedAt));
     // Persist the proof with the commit phase itself. On a durable replay the
     // current HEAD and wall clock may already belong to a different tick.
     const localCommitAtMs = localCommits.at(-1)?.committedAtMs ?? (committed.committedLocal ? Date.now() : undefined);
     const landedHead = committed.committedLocal ? await headSha(runGit, repo) : undefined;
+    const pointerBumpStatus = committed.error
+      ? 'error'
+      : committed.skippedPaths?.length && !committed.committedLocal
+        ? 'skipped'
+        : committed.committedLocal
+          ? 'committed'
+          : 'unchanged';
     return {
       ...committed,
       localCommits,
@@ -8895,6 +8981,7 @@ async function runGitSyncPass(
       localCommitAtMs,
       // Every root commit this phase created (one per attributed group), oldest first.
       localCommitShas: landedHead ? await commitsSince(runGit, repo, superprojectHeadBefore, landedHead) : undefined,
+      pointerBumpTiming: pointerBumpTiming(pointerBumpStatus, commitDurationMs),
     };
   });
   // Old phase checkpoints carry only committedLocal; never manufacture their

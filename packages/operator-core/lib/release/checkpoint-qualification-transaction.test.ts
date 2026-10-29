@@ -2328,3 +2328,58 @@ describe('logical checkpoint qualification transaction', () => {
     ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
   });
 });
+
+// WI-6554700010042670: the measured wedge. A scheduled runner judging candidate 7147ef76 was
+// cancelled after admissions had moved the queue to 5dfdd8f0; its attempt settled as a runner-less
+// `cancelled` wait carrying pendingRepairHead 5dfdd8f0, and every successor begin conflicted for 3h.
+describe('superseded cancelled wait', () => {
+  const cancelledWait = (overrides: Partial<ReturnType<typeof begin>> = {}) => ({
+    ...begin(),
+    phase: 'waiting' as const,
+    outcome: { kind: 'pre-suite-no-verdict' as const, reason: 'cancelled' as const },
+    currentPhysicalRunner: null,
+    repairHead: null,
+    pendingRepairHead: 'admitted-head',
+    updatedAtMs: 1_000,
+    ...overrides,
+  });
+  // Well inside QUALIFICATION_OWNER_ABANDONED_MS of updatedAtMs: only the new rule can release it.
+  const successor = { attemptId: 'attempt-2', candidate: 'admitted-head', nowMs: 2_000 };
+
+  it('lets a successor attempt replace a cancelled wait whose judged head an admission superseded', () => {
+    const result = beginQualificationTransaction(cancelledWait(), successor);
+    expect(result.status).toBe('updated');
+    expect(result.transaction).toMatchObject({
+      attemptId: 'attempt-2',
+      previousAttemptId: 'attempt-1',
+      phase: 'ready',
+      outcome: { kind: 'pending' },
+    });
+  });
+
+  it('judges supersession against repairHead when the attempt judged one', () => {
+    expect(beginQualificationTransaction(cancelledWait({ repairHead: 'old-head' }), successor).status).toBe('updated');
+    // The pending head IS the judged repair head: nothing superseded it, so the attempt stays owned.
+    expect(
+      beginQualificationTransaction(
+        cancelledWait({ repairHead: 'admitted-head', pendingRepairHead: 'admitted-head' }),
+        successor,
+      ).status,
+    ).toBe('conflict');
+  });
+
+  it('keeps a non-superseded cancelled wait owned so its own attempt can resume it', () => {
+    const current = cancelledWait({ pendingRepairHead: null });
+    expect(beginQualificationTransaction(current, successor).status).toBe('conflict');
+    expect(
+      beginQualificationTransaction(current, { attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: 2_000 }).status,
+    ).toBe('idempotent');
+  });
+
+  it('does not release a superseded wait for any reason other than a runner-recorded cancellation', () => {
+    for (const reason of ['repair-in-progress', 'eligibility-wait', 'deadline-exceeded'] as const) {
+      const current = cancelledWait({ outcome: { kind: 'pre-suite-no-verdict', reason } });
+      expect(beginQualificationTransaction(current, successor).status).toBe('conflict');
+    }
+  });
+});

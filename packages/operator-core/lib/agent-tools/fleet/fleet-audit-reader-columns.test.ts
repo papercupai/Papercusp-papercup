@@ -134,7 +134,10 @@ function extractColumnRefs(rawSql: string): Extraction {
 
   // Names the query introduces itself are not columns of any table.
   const declared = new Set<string>();
-  for (const cte of sql.matchAll(/\bWITH\s+([a-z0-9_]+)\s+AS\b/gi)) declared.add(cte[1]);
+  // Every CTE in a WITH list, not just the first: `WITH a AS (…), ranked AS (…)`.
+  for (const cte of sql.matchAll(
+    /(?:\bWITH(?:\s+RECURSIVE)?|,)\s*([a-z0-9_]+)\s+AS\s*(?:NOT\s+)?(?:MATERIALIZED\s*)?\(/gi,
+  )) declared.add(cte[1]);
   for (const alias of sql.matchAll(/\bAS\s+([a-z0-9_]+)/gi)) declared.add(alias[1]);
   // Lateral column aliases: `) h(value)`
   for (const lat of sql.matchAll(/\)\s*([a-z0-9_]+)\s*\(([^)]*)\)/gi)) {

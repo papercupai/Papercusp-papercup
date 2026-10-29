@@ -16,6 +16,7 @@ import { signPaymentTestBytes } from '../p2p/_payment-voucher-fixture';
 import invokeTool, { NestedToolRefusalError } from './tools/invoke';
 import type { ToolResult } from '@papercusp/tooldef';
 import { verifyNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning';
+import type { NativeDispatchAppend } from '../agent-opportunities/native-capture';
 
 type IdentityLifecycleAdmit = NonNullable<Parameters<NativeInstalledPerUseTurns['nativeLifecycle']>[0]['identityLifecycle']>['admit'];
 
@@ -73,6 +74,101 @@ describe('host-local native request principal', () => {
     expect(f.resolve).toHaveBeenCalledOnce();
     (principal!.capabilities as Set<string>).clear();
     expect(f.principal.capabilities.has('*')).toBe(true);
+    await f.hooks.withdraw();
+  });
+
+  async function captureFixture() {
+    const f = await fixture();
+    const principal = await f.registry.resolveRequestPrincipal(f.input);
+    const request: Parameters<NativeInstalledPerUseTurns['appendAuthorizedCapture']>[0] = {
+      tool: { ...tool(), pluginInstallation: undefined }, toolName: f.input.toolName,
+      input: f.input.arguments, callId: 'dispatcher-call', invoke: vi.fn(async () => ({ content: [] })),
+      ctx: { ...ctx(), principal: principal!, transport: 'mcp' as const, harnessSlug: 'selected',
+        uiClientId: 'host-owner', requestOrigin: { transport: 'mcp' as const, nativeSession: {
+          carrier: 'meta:threadId' as const, binding: 'bound' as const, candidateAdvSessionId: 7,
+          valueFingerprint: f.input.nativeSessionFingerprint, callIdFingerprint: f.input.callIdFingerprint } } } };
+    return { ...f, request };
+  }
+
+  it('appends one exact authorized attempt with renewed possession and genuine principal', async () => {
+    const f = await captureFixture();
+    const append = vi.fn(async (_input: NativeDispatchAppend, authorize: () => Promise<boolean>) => authorize());
+    expect(await f.registry.appendAuthorizedCapture(f.request, append)).toBe(true);
+    expect(append).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'workspace', harnessSlug: 'selected',
+      ownerId: 'host-owner', advSessionId: 7, nativeSessionId: 'native-session', callId: 'call', toolName: 'core:read',
+      argsFingerprint: fp(canonicalJson(f.input.arguments)), principal: { slug: 'system:superuser', kind: 'system',
+        authMethod: 'bearer-token', trust: 'trusted' } }, expect.any(Function));
+    expect(JSON.stringify(append.mock.calls)).not.toContain(f.input.runtimeBearer);
+    expect(await f.registry.appendAuthorizedCapture(f.request, append)).toBe(false);
+    expect(append).toHaveBeenCalledOnce();
+    await f.hooks.withdraw();
+  });
+
+  it.each(['json-principal', 'arguments', 'wrapper', 'installed', 'bypass', 'wildcard', 'transport', 'withdrawn', 'owner', 'harness'])(
+    'refuses protected append for %s without a host proof', async kind => {
+      const f = await captureFixture();
+      if (kind === 'json-principal') f.request.ctx.principal = structuredClone(f.request.ctx.principal);
+      if (kind === 'arguments') f.request.input = { harness: 'selected', resource: 'different' };
+      if (kind === 'wrapper') f.request.toolName = 'tools:invoke';
+      if (kind === 'installed') f.request.tool.pluginInstallation = tool().pluginInstallation;
+      if (kind === 'bypass') f.request.ctx.gateBypass = { policy: true };
+      if (kind === 'wildcard') f.request.ctx.harnessSlug = '*';
+      if (kind === 'transport') f.request.ctx.transport = 'http';
+      if (kind === 'owner') f.request.ctx.uiClientId = 'other-owner';
+      if (kind === 'harness') f.request.ctx.harnessSlug = 'other-harness';
+      if (kind === 'withdrawn') await f.hooks.withdraw();
+      const append = vi.fn();
+      expect(await f.registry.appendAuthorizedCapture(f.request, append)).toBe(false);
+      expect(append).not.toHaveBeenCalled();
+      await f.hooks.withdraw();
+    });
+
+  it.each(['runtime', 'principal', 'capabilities', 'close-during-check'])(
+    'renews %s inside the protected writer instead of trusting the earlier dispatch claim', async kind => {
+      const f = await captureFixture();
+      if (kind === 'runtime') vi.mocked(verifyNativeRuntimeBearer).mockResolvedValue(false);
+      if (kind === 'principal') f.resolve.mockResolvedValue({ ...f.principal, slug: 'replacement' });
+      if (kind === 'capabilities') f.resolve.mockResolvedValue({ ...f.principal, capabilities: new Set() });
+      if (kind === 'close-during-check') vi.mocked(verifyNativeRuntimeBearer).mockImplementation(async () => {
+        await f.hooks.withdraw(); return true;
+      });
+      expect(await f.registry.appendAuthorizedCapture(f.request, async (_input, authorize) => authorize())).toBe(false);
+      await f.hooks.withdraw();
+    });
+
+  it('the real dispatcher prevents protected append on resource ACL denial', async () => {
+    const f = await captureFixture();
+    const append = vi.fn(async (_input: NativeDispatchAppend, authorize: () => Promise<boolean>) => authorize());
+    const fn = vi.fn(async () => ({ content: [] }));
+    const result = await runDispatchStack({ ...f.request.tool, fn,
+      requirePrincipal: false, authorize: async () => ({ allow: false, reason: 'private resource' }) },
+    f.request.toolName, f.request.input, f.request.ctx, { aroundInvoke: async request => {
+      await f.registry.appendAuthorizedCapture(request, append); return request.invoke();
+    } });
+    expect(result).toMatchObject({ ok: false, error: { code: 'authorization_denied' } });
+    expect(append).not.toHaveBeenCalled(); expect(fn).not.toHaveBeenCalled();
+    await f.hooks.withdraw();
+  });
+
+  it('renews the existing resource ACL during append and refuses an intervening revocation', async () => {
+    const f = await captureFixture();
+    f.request.tool.authorize = vi.fn(async () => ({ allow: false, reason: 'revoked after outer authorization' }));
+    expect(await f.registry.appendAuthorizedCapture(f.request, async (_input, authorize) => authorize())).toBe(false);
+    expect(f.request.tool.authorize).toHaveBeenCalledWith({ principal: f.principal,
+      input: f.input.arguments, ctx: f.request.ctx });
+    await f.hooks.withdraw();
+  });
+
+  it('the maintained dispatcher preserves the host principal through its allowed resource ACL and append', async () => {
+    const f = await captureFixture();
+    const append = vi.fn(async (_input: NativeDispatchAppend, authorize: () => Promise<boolean>) => authorize());
+    const fn = vi.fn(async () => ({ content: [] })), authorize = vi.fn(async () => ({ allow: true }));
+    const result = await runDispatchStack({ ...f.request.tool, fn, requirePrincipal: false, authorize },
+      f.request.toolName, f.request.input, f.request.ctx, { aroundInvoke: async request => {
+        await f.registry.appendAuthorizedCapture(request, append); return request.invoke();
+      } });
+    expect(result.ok).toBe(true); expect(fn).toHaveBeenCalledOnce();
+    expect(append).toHaveBeenCalledOnce(); expect(authorize).toHaveBeenCalledTimes(2);
     await f.hooks.withdraw();
   });
 

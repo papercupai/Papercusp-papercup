@@ -72,12 +72,12 @@ function testRequirements(check: TestCheck): Pick<Extract<SourceBarTestRequireme
 }
 
 /**
- * P-001 (R-1): a path-only edit to a requirement block no longer amends the rubric, so the pinned
- * revision's copy of `check.files` can name a file that moved. When the pin is the rubric's
- * CURRENT revision, take the files from the live block, exactly as `rubrics:get` does for a current
- * read. A pin to an older revision stays an immutable snapshot (its meaning may have since changed).
- * Any read failure falls back to the pinned files: the live view can widen accuracy, never fail a
- * resolution that the pinned copy can answer.
+ * P-001 (R-1): a path-only edit to a requirement block no longer amends the rubric, so an unchanged
+ * clause can retain its older pin while its copied `check.files` names a file that moved. The live
+ * acceptance overlay compares the block's promise and check kind with that pinned clause, and
+ * changes verification fields only when the meaning is unchanged. Thus a later rubric revision
+ * for another BAR, or for verification-only edits, does not strand this clause's live file paths.
+ * Any read failure or meaning change falls back to the pinned files.
  */
 async function liveTestFiles(
   rubric: Rubric,
@@ -88,9 +88,12 @@ async function liveTestFiles(
   const subjectPlan = rubric.subjectPlan;
   if (rubric.kind !== 'acceptance' || !subjectPlan) return null;
   try {
-    if ((await live.currentRevision(pin.rubricSlug)) !== pin.rubricRevision) return null;
-    // One live read per rubric revision per evaluation, however many clauses pin it.
-    const cacheKey = `${pin.rubricSlug}@${pin.rubricRevision}#live`;
+    const currentRevision = await live.currentRevision(pin.rubricSlug);
+    if (currentRevision === null || currentRevision < pin.rubricRevision) return null;
+    // A current plan read is shared per live rubric revision. Its overlay policy compares each
+    // clause's promise against the pinned rubric, so unchanged older pins may safely use live
+    // verification fields while meaning changes retain their immutable pinned requirements.
+    const cacheKey = `${pin.rubricSlug}@${currentRevision}#live`;
     let overlaid = cache.get(cacheKey);
     if (!overlaid) {
       // Keep only the BARs the overlay actually took from the live plan: a BAR the policy KEPT

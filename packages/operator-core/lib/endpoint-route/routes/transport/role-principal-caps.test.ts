@@ -155,6 +155,7 @@ describe('loadRoleCapabilities', () => {
         'locks:read',
         'locks:write',
         'intel:read',
+        'operator:read',
         'operator:write',
         'testing:run',
         'capability:fs-read',
@@ -173,6 +174,7 @@ describe('loadRoleCapabilities', () => {
         { default: harnessEscalation },
         { default: repairQueue },
         { default: processesList },
+        { default: testingRunStatus },
       ] = await Promise.all([
         import('../../../agent-tools/coordination/roles.js'),
         import('../../../agent-tools/state/read.js'),
@@ -184,6 +186,7 @@ describe('loadRoleCapabilities', () => {
         import('../../../agent-tools/harness/escalation.js'),
         import('../../../agent-tools/release/repair-queue.js'),
         import('../../../agent-tools/processes/list.js'),
+        import('../../../agent-tools/testing/run-status.js'),
       ]);
       expect(COORD_ROLES).toContain('release-fixer');
       for (const tool of [
@@ -196,6 +199,7 @@ describe('loadRoleCapabilities', () => {
         harnessEscalation,
         repairQueue,
         processesList,
+        testingRunStatus,
       ]) {
         expect(tool.agentRoles).toContain('release-fixer');
       }

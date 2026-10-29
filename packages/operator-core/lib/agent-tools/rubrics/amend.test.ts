@@ -35,6 +35,7 @@ const receiptDb = vi.hoisted(() => {
     beforeWrite: undefined as (() => Promise<void>) | undefined,
     afterWrite: undefined as (() => void) | undefined,
   };
+  const progressWrites = { count: 0 };
   const sql = vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
     // postgres' bulk insert helper is called before its tagged statement.
     if (!Array.isArray(parts) || !('raw' in parts)) return [];
@@ -56,6 +57,7 @@ const receiptDb = vi.hoisted(() => {
     }
     if (query.includes('UPDATE harness_shared.rubric_amend_receipts')) {
       if (query.includes('SET result_json = jsonb_set(')) {
+        progressWrites.count++;
         await progressControl.beforeWrite?.();
         const [snapshot, workspace, rubric, key, token] = values as string[];
         const row = rows.get(`${workspace}:${rubric}:${key}`);
@@ -83,7 +85,7 @@ const receiptDb = vi.hoisted(() => {
     }
     throw new Error(`unexpected receipt SQL: ${query}`);
   });
-  return { rows, sql, progressControl };
+  return { rows, sql, progressControl, progressWrites };
 });
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -143,6 +145,7 @@ beforeEach(() => {
   receiptDb.rows.clear();
   receiptDb.progressControl.beforeWrite = undefined;
   receiptDb.progressControl.afterWrite = undefined;
+  receiptDb.progressWrites.count = 0;
   rubricsMocks.getRubric.mockResolvedValue(undefined);
   planMocks.getPlanRow.mockResolvedValue(null);
 });
@@ -1297,6 +1300,39 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
         result: { ok: true, rubric: { rubricId: 'acceptance-example' } },
       });
     });
+  });
+
+  it('persists safe apply phases and skips phases inside the plan-locked transaction', async () => {
+    const slow = deferred<Record<string, unknown>>();
+    let reportPhase!: (phase: string) => void;
+    rubricsMocks.amendRubric.mockImplementation((input) => {
+      reportPhase = input.onPhase;
+      reportPhase('acceptance-contract-snapshot');
+      reportPhase('acceptance-locked-plan-read');
+      return slow.promise;
+    });
+
+    const answered = await body({ ...amendArgs, idempotencyKey: 'apply-safe-phase-progress' });
+    expect(answered).toMatchObject({ ok: true, pending: true });
+    const poll = { rubricRef: 'acceptance-example', idempotencyKey: 'apply-safe-phase-progress' };
+    await vi.waitFor(async () => {
+      expect(await statusBody(poll)).toMatchObject({
+        state: 'running',
+        progress: { phase: 'acceptance-contract-snapshot', phaseStartedAt: expect.any(Number) },
+      });
+    });
+
+    const writesBeforeLockedPhase = receiptDb.progressWrites.count;
+    reportPhase('acceptance-write-subject');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(receiptDb.progressWrites.count).toBe(writesBeforeLockedPhase);
+    expect(await statusBody(poll)).toMatchObject({
+      state: 'running',
+      progress: { phase: 'acceptance-contract-snapshot' },
+    });
+
+    slow.resolve({ ok: true, rubricId: 'acceptance-example', kind: 'standard', criteria: [] });
+    await vi.waitFor(async () => expect(await statusBody(poll)).toMatchObject({ state: 'committed' }));
   });
 
   it('a different worker reads the running receipt and a same-key retry does not start another amend', async () => {

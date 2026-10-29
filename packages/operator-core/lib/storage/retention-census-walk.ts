@@ -140,6 +140,10 @@ export async function inspectDetachedRetentionTrees(root: string,
     const used = await fs.access(consumed).then(() => true, () => false);
     if (state && (used || state.requestKey !== requestKey)) {
       if (!terminal) return incomplete('retention census previous measurement still active');
+      // Preparation may enroll an empty slot, but retirement/consumption stays
+      // on the normal validating path, even for an obsolete terminal result.
+      if (walk.prepareOnly) return incomplete(used ? 'retention census previous measurement consumed'
+        : 'retention census input changed since previous measurement');
       if (!used) {
         // Report the obsolete terminal attempt before starting another walk.
         // Otherwise a busy root stays "pending" on every pass and pins the
@@ -207,7 +211,7 @@ export async function inspectDetachedRetentionTrees(root: string,
       }, requestKey);
     } catch (error) {
       if (error instanceof DetachedWalkAbandoned) {
-        const pending = await readWalkState(walk.dir);
+        const pending = error.state ?? await readWalkState(walk.dir);
         return { ...incomplete(RETENTION_CENSUS_PENDING_ERROR),
           ...(pending?.root === root && pending.requestKey === requestKey ? { pendingWalk: {
             root, dir: walk.dir, attempt: pending.attempt, requestKey, launchedAt: pending.launchedAt,

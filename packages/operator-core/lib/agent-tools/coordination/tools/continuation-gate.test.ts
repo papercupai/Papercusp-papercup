@@ -128,7 +128,12 @@ describe('continuationGateFromReads (raw presence + inbox reads)', () => {
 
 describe('re-wake guarantee escalation (kills the "the next wake re-opens the gate" false comfort)', () => {
   it('a CLOSED gate with NO guaranteed re-wake escalates to self-compact / arm-a-wake', () => {
-    const v = evaluateContinuationGate({ contextPct: 80, unreadInbox: 0, rewakeGuaranteed: false });
+    const v = evaluateContinuationGate({
+      contextPct: 80,
+      unreadInbox: 0,
+      rewakeGuaranteed: false,
+      activeQuestionResolutionAwait: false,
+    });
     expect(v.shouldContinue).toBe(false);
     expect(v.rewakeGuaranteed).toBe(false);
     expect(v.guidance).toMatch(/SILENTLY HALT/);
@@ -136,6 +141,24 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
     expect(v.guidance).toMatch(/loop:arm|events:await/);
     // and it must NOT hand back the false-comfort "the next wake re-opens the gate"
     expect(v.guidance).not.toMatch(/the next wake re-opens the gate/);
+  });
+
+  it('allows an intentional wait on an unresolved requester question without calling it guaranteed', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 80,
+      unreadInbox: 0,
+      rewakeGuaranteed: false,
+      activeInboxWakeAwait: true,
+      activeQuestionResolutionAwait: true,
+    });
+
+    expect(v.rewakeGuaranteed).toBe(false);
+    expect(v.activeQuestionResolutionAwait).toBe(true);
+    expect(v.guidance).toContain('exact requester await is active for an OPEN question conversation');
+    expect(v.guidance).toContain('has no timeout');
+    expect(v.guidance).toContain('do not arm a periodic loop just to poll');
+    expect(v.guidance).not.toContain('SILENTLY HALT');
+    expect(v.guidance).not.toContain('ARM A WAKE:');
   });
 
   it('reports an active standing inbox wake without calling it a qualifying await', () => {
@@ -439,6 +462,18 @@ describe('remedy selection by self-compaction availability', () => {
     });
     expect(v.activeInboxWakeAwait).toBe(true);
     expect(v.guidance).toContain('active standing coord:inbox-wake await present');
+  });
+
+  it('continuationGateFromReads preserves the requester-question wait signal', () => {
+    const v = continuationGateFromReads({
+      contextTokens: 80,
+      compactionLimit: 100,
+      unreadInbox: 0,
+      rewakeGuaranteed: false,
+      activeQuestionResolutionAwait: true,
+    });
+    expect(v.activeQuestionResolutionAwait).toBe(true);
+    expect(v.guidance).toContain('exact requester await is active for an OPEN question conversation');
   });
 });
 

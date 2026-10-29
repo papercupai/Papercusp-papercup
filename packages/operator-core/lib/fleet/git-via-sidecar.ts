@@ -528,6 +528,8 @@ export function resetSidecarFallbackStatsForTest(): void {
 export interface SidecarDiagnosticTags {
   runId: string;
   commandClass: 'git' | 'other';
+  /** Bounded git-only command label; argv and paths are never copied into diagnostics. */
+  gitSubcommand?: string;
 }
 
 export async function runGitViaSpawnerSidecar(

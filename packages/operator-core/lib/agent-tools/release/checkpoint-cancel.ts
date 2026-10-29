@@ -111,8 +111,8 @@ export default defineTool({
     attemptId: z.string().min(1).max(256).describe('the exact logical qualification attempt id currently owning the detached runner'),
     unit: z
       .string()
-      .regex(/^papercup-green-checkpoint-manual-[a-z0-9-]+\.service$/)
-      .describe('the exact systemd user unit recorded on that attempt, including the .service suffix'),
+      .regex(/^(?:papercup-green-checkpoint-manual-[a-z0-9-]+\.service|papercusp-checkpoint-[a-z0-9-]+\.scope)$/)
+      .describe('the exact systemd user unit recorded on that attempt: the manual .service, or a scheduled run\'s papercusp-checkpoint-<id>.scope'),
     reason: softText(LIMITS.SHORT_TITLE)
       .optional()
       .describe('why this known-unsafe runner is being cancelled; stored as the terminal code-inconclusive reason'),
@@ -144,7 +144,11 @@ export default defineTool({
     }
     const checkpointRoot = routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? routing.root;
     const expectedUnit = `${checkpointUnitForRoot(checkpointRoot)}.service`;
-    if (args.unit !== expectedUnit) {
+    // WI-6554700010042670: a SCHEDULED run lives in a per-run scope named for its runner, so it has
+    // no canonical per-root name to compare against. Exactness still holds: the store's CAS below
+    // only signals when the attempt's recorded runner unit equals this exact scope.
+    const scheduledScope = args.unit.endsWith('.scope');
+    if (!scheduledScope && args.unit !== expectedUnit) {
       return refused('unit_mismatch', {
         attempt_id: args.attemptId,
         unit: args.unit,
@@ -160,7 +164,7 @@ export default defineTool({
         reason: args.reason,
         evidenceRefs: ['tool:release:checkpoint-cancel'],
       },
-      () => terminateActiveCheckpointUnit(baseUnit(args.unit)),
+      () => terminateActiveCheckpointUnit(scheduledScope ? args.unit : baseUnit(args.unit)),
     );
     return renderCancellation(result, args);
   },

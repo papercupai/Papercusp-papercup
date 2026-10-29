@@ -1132,6 +1132,45 @@ export function showAtRef(repoRoot, ref, path) {
   return showAtRef(subRoot, pin, path.slice(owner.length + 1));
 }
 
+/** Validate the focused runner's actual test-config imports before Node loads it.
+ * Read both ends from the parent commit, never the newer checked-out submodule. */
+export async function assertCommittedFocusedRunnerImports(repoRoot, ref = 'HEAD') {
+  const runner = 'scripts/test-files.mjs';
+  const source = showAtRef(repoRoot, ref, runner);
+  if (source === null) throw new Error(`committed focused runner is absent: ${runner}@${ref}`);
+  const { default: ts } = await import('typescript');
+  const prefix = '@papercusp/test-config';
+  const imports = [...new Set(ts.preProcessFile(source, true, true).importedFiles
+    .map(entry => entry.fileName)
+    .filter(name => name === prefix || name.startsWith(`${prefix}/`)))];
+  if (imports.length === 0) return [];
+  const manifestBytes = showAtRef(repoRoot, ref, 'libs/test-config/package.json');
+  if (manifestBytes === null) throw new Error(`committed test-config manifest is absent at ${ref}`);
+  const manifest = JSON.parse(manifestBytes);
+  const targetsFor = value => typeof value === 'string' ? [value]
+    : value && typeof value === 'object' ? Object.values(value).flatMap(targetsFor) : [];
+  const failures = [];
+  for (const name of imports) {
+    const subpath = name === prefix ? '.' : `.${name.slice(prefix.length)}`;
+    const targets = targetsFor(manifest.exports?.[subpath]);
+    if (targets.length === 0) {
+      failures.push(`${name}: missing pinned export ${subpath}`);
+      continue;
+    }
+    for (const target of targets) {
+      if (!target.startsWith('./') || target.includes('\\') || target.includes('*') ||
+          target.split('/').includes('..') ||
+          showAtRef(repoRoot, ref, `libs/test-config/${target.slice(2)}`) === null) {
+        failures.push(`${name}: absent or invalid pinned target ${target}`);
+      }
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(`committed focused runner dependency preflight failed at ${ref}: ${failures.join('; ')}`);
+  }
+  return imports;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
@@ -1242,6 +1281,16 @@ async function main() {
   } catch {
     console.error(`lint-as-committed: cannot resolve ref '${args.ref}'.`);
     process.exit(2);
+  }
+
+  if (args.scripts.includes('test:file')) {
+    try {
+      await assertCommittedFocusedRunnerImports(repoRoot, sha);
+    } catch (error) {
+      console.error(`lint-as-committed: ${error.message}`);
+      process.exitCode = 2;
+      return;
+    }
   }
 
   const short = sha.slice(0, 10);

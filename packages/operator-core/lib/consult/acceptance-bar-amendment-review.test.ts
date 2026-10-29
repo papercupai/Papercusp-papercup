@@ -507,6 +507,7 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
         schemaVersion: 1,
         kind: 'acceptance-bar-amendment-approval',
         subjectPlan: 'acceptance-demo',
+        proposedPatchHash: 'c'.repeat(64),
         bars: [{ barKey: 'R-32', priorBarHash: null, nextBarHash: 'a'.repeat(64) }],
       },
       changes: [{ barKey: 'R-32', kinds: ['added'], fields: ['bar'] }],

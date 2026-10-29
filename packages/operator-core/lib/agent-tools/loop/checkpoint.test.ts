@@ -64,6 +64,7 @@ const defaultCompactionLimitForSpec = vi.fn(
   (..._a: Parameters<typeof import('../../agent-config-constants').defaultCompactionLimitForSpec>) => 100,
 );
 const listActiveAwaits = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
+const getConversationStatesByIds = vi.fn(async (..._a: unknown[]): Promise<Array<{ id: string; state: string }>> => []);
 const probeWakeReachability = vi.fn(async (..._a: unknown[]) => ({
   reachable: true,
   channel: 'inject',
@@ -173,6 +174,10 @@ vi.mock('../coordination/presence', async (importOriginal) => ({
 vi.mock('../coordination/messages', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   readInbox: (...a: unknown[]) => readInbox(...a),
+}));
+vi.mock('../coordination/conversations', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getConversationStatesByIds: (...a: unknown[]) => getConversationStatesByIds(...a),
 }));
 vi.mock('../coordination/watermarks', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -316,6 +321,7 @@ beforeEach(() => {
   currentContextTokensForOwner.mockResolvedValue(null);
   defaultCompactionLimitForSpec.mockReturnValue(100);
   listActiveAwaits.mockResolvedValue([]);
+  getConversationStatesByIds.mockResolvedValue([]);
   probeWakeReachability.mockResolvedValue({
     reachable: true,
     channel: 'inject',
@@ -2448,6 +2454,47 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(b.continuation.guidance).toContain('no qualifying deliberate await');
     expect(b.continuation.guidance).toContain('active standing coord:inbox-wake await present');
     expect(b.continuation.guidance).not.toContain('no registered await');
+  });
+
+  it('runtime wiring: recognizes an active requester auto-arm only while its question remains open', async () => {
+    withBoundedTimeout.mockImplementation(async (work: unknown) => ({
+      value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await (work as Promise<unknown>),
+      degraded: false,
+      elapsedMs: 0,
+    }));
+    getLoopStatus.mockResolvedValue(null);
+    getModes.mockResolvedValue([{ mode: 'auto' }]);
+    getPresence.mockResolvedValue({ contextTokens: 80, compactionLimit: 100 });
+    currentContextTokensForOwner.mockResolvedValue(80);
+    readWatermark.mockResolvedValue({ messages_since_ts: '2026-08-25T04:00:00.000Z' });
+    readInbox.mockResolvedValue([]);
+    listActiveAwaits.mockResolvedValue([{
+      eventKey: 'conversation:answered:conv-1',
+      boundTo: { kind: 'conversation-question', ref: 'conv-1' },
+      once: true,
+      expiresTs: null,
+      timeoutBehavior: 'wake',
+    }]);
+    getConversationStatesByIds.mockResolvedValue([{ id: 'conv-1', state: 'open' }]);
+
+    const open = body(await call({ next: 'wait on the question response' }));
+    expect(getConversationStatesByIds).toHaveBeenCalledWith(['conv-1'], 'ws-1');
+    expect(open.continuation).toMatchObject({
+      rewakeGuaranteed: false,
+      activeQuestionResolutionAwait: true,
+    });
+    expect(open.continuation.guidance).toContain('do not arm a periodic loop just to poll');
+
+    getConversationStatesByIds.mockResolvedValueOnce([{ id: 'conv-1', state: 'resolved' }]);
+    const resolved = body(await call({ next: 'resolved question is not a pending wait' }));
+    expect(resolved.continuation.activeQuestionResolutionAwait).toBe(false);
+    expect(resolved.continuation.guidance).toContain('SILENTLY HALT');
+
+    listActiveAwaits.mockResolvedValueOnce([{ eventKey: 'conversation:answered:conv-1', once: true, expiresTs: null }]);
+    getConversationStatesByIds.mockClear();
+    const unbound = body(await call({ next: 'unbound conversation event is not the requester auto-arm' }));
+    expect(unbound.continuation.activeQuestionResolutionAwait).toBe(false);
+    expect(getConversationStatesByIds).not.toHaveBeenCalled();
   });
 
   it.each([

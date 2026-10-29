@@ -51,6 +51,7 @@ import { lookupByMcpName } from '@papercusp/tooldef';
 import '../index';
 
 const UNIT = 'papercup-green-checkpoint-manual-expected.service';
+const SCHEDULED_SCOPE = 'papercusp-checkpoint-8bf9f42e-e478-425b-80d8-2dd14e915511.scope';
 const ATTEMPT = 'attempt-1';
 const CTX = {
   role: 'su',
@@ -128,6 +129,23 @@ describe('release:checkpoint-cancel handler', () => {
     expect(tool.args.safeParse({ attemptId: ATTEMPT }).success).toBe(false);
     expect(tool.args.safeParse({ attemptId: ATTEMPT, unit: 'other-unit.service' }).success).toBe(false);
     expect(tool.args.safeParse({ attemptId: ATTEMPT, unit: UNIT, reason: 'unsafe candidate' }).success).toBe(true);
+    // WI-6554700010042670: a scheduled run's recorded scope is accepted; other scopes are not.
+    expect(tool.args.safeParse({ attemptId: ATTEMPT, unit: SCHEDULED_SCOPE }).success).toBe(true);
+    expect(tool.args.safeParse({ attemptId: ATTEMPT, unit: 'pc-0mvsabc.scope' }).success).toBe(false);
+    expect(tool.args.safeParse({ attemptId: ATTEMPT, unit: 'papercusp-checkpoint-8bf9f42e.service' }).success).toBe(false);
+  });
+
+  it('cancels a scheduled run by its exact recorded scope, without the manual canonical-name check', async () => {
+    const tool = await loadTool();
+    const result = body(await tool.handler({ attemptId: ATTEMPT, unit: SCHEDULED_SCOPE } as never, CTX));
+
+    expect(result).toMatchObject({ ok: true, cancelled: true, attempt_id: ATTEMPT, unit: SCHEDULED_SCOPE });
+    expect(mocks.cancelStoredQualification).toHaveBeenCalledWith(
+      { workspaceId: 'ws-1', installSlug: 'papercusp' },
+      expect.objectContaining({ attemptId: ATTEMPT, unit: SCHEDULED_SCOPE }),
+      expect.any(Function),
+    );
+    expect(mocks.terminateActiveCheckpointUnit).toHaveBeenCalledWith(SCHEDULED_SCOPE);
   });
 
   it('fails closed when caller identity cannot be resolved', async () => {

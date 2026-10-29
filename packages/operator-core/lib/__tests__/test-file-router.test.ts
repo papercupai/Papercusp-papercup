@@ -117,6 +117,24 @@ import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 import { verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 describe('router native custody population (P002)', () => {
+  it('does not load the scheduler mutation subject when router custody was not requested', () => {
+    const router = new URL('../../../../scripts/test-files.mjs', import.meta.url).href;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { registerHooks } from 'node:module';
+      registerHooks({ load(url, context, nextLoad) {
+        if (url.endsWith('/scripts/lib/budgeted-task-scheduler.mjs'))
+          throw new Error('router loaded the scheduler mutation subject');
+        return nextLoad(url, context);
+      } });
+      const { createRouterProofCustody } = await import(${JSON.stringify(router)});
+      if (createRouterProofCustody([], {}, process.cwd()) !== null)
+        throw new Error('unrequested custody was activated');
+      console.log('unrequested-custody-remains-unloaded');
+    `], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, NODE_OPTIONS: '' } });
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toContain('unrequested-custody-remains-unloaded');
+  });
   let root: string;
   beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'router-native-custody-')); });
   afterEach(() => { rmSync(root, { recursive: true, force: true }); });
@@ -2800,7 +2818,7 @@ describe('failed assertion diagnostics — consume the report before private cle
         assertionResults: [{
           status: 'failed',
           fullName: 'suite > compares values',
-          failureMessages: ['Expected 1 to be 2'],
+          failureMessages: ['AssertionError: expected 1 to be 2'],
         }],
       }, {
         name: '/repo/lib/collect.test.ts',
@@ -2813,12 +2831,39 @@ describe('failed assertion diagnostics — consume the report before private cle
       expect(failures).toEqual([{
         file: '/repo/lib/bad.test.ts',
         name: 'suite > compares values',
-        messages: ['Expected 1 to be 2'],
+        messages: ['AssertionError: expected 1 to be 2'],
+        assertionEvidence: true,
       }]);
       expect(formatFailedAssertionDiagnostics(failures)).toContain(
-        'TEST_FILE_ASSERTION_FAILURE file="/repo/lib/bad.test.ts" name="suite > compares values" message="Expected 1 to be 2"',
+        'TEST_FILE_ASSERTION_FAILURE file="/repo/lib/bad.test.ts" name="suite > compares values" message="AssertionError: expected 1 to be 2"',
       );
       expect(formatFailedAssertionDiagnostics(failures)).not.toContain('SyntaxError: invalid source');
+    });
+  });
+
+  it('does not emit mutation assertion evidence for a runtime exception before the assertion', () => {
+    withReport({
+      testResults: [{
+        name: '/repo/lib/runtime.test.ts',
+        status: 'failed',
+        assertionResults: [{
+          status: 'failed',
+          fullName: 'guard > rejects the mutant',
+          failureMessages: ['TypeError: guard is not a function\n    at runtime.test.ts:4:3'],
+        }],
+      }],
+    }, (path) => {
+      const failures = failedAssertionsFromReport(path, '/repo');
+
+      expect(failures).toEqual([{
+        file: '/repo/lib/runtime.test.ts',
+        name: 'guard > rejects the mutant',
+        messages: ['TypeError: guard is not a function\n    at runtime.test.ts:4:3'],
+        assertionEvidence: false,
+      }]);
+      const diagnostics = formatFailedAssertionDiagnostics(failures);
+      expect(diagnostics).toContain('TEST_FILE_NON_ASSERTION_FAILURE');
+      expect(diagnostics).not.toContain('TEST_FILE_ASSERTION_FAILURE file=');
     });
   });
 
@@ -2873,7 +2918,7 @@ describe('main() — failed assertion details survive private report cleanup (EI
           assertionResults: [{
             status: 'failed',
             fullName: 'router > reports the real assertion',
-            failureMessages: ['Expected 1 to be 2'],
+            failureMessages: ['AssertionError: expected 1 to be 2'],
           }],
         }],
       }));
@@ -2910,7 +2955,7 @@ describe('main() — failed assertion details survive private report cleanup (EI
     expect(code, JSON.stringify(errSpy.mock.calls)).toBe(1);
     const output = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     expect(output).toContain(
-      'TEST_FILE_ASSERTION_FAILURE file="/repo/lib/bad.test.ts" name="router > reports the real assertion" message="Expected 1 to be 2"',
+      'TEST_FILE_ASSERTION_FAILURE file="/repo/lib/bad.test.ts" name="router > reports the real assertion" message="AssertionError: expected 1 to be 2"',
     );
     expect(output).not.toContain('file-level collection text must not be relabelled');
     expect(reportPath).toBeDefined();
@@ -3042,6 +3087,10 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
 
     try {
       const code = await main([selectedFile], {
+        // This child is a measured in-memory fixture. Its receipt policy is
+        // real, but its custody must not recapture the enclosing test run's
+        // source map and native-process inventory on every fixture call.
+        createRouterProofCustodyImpl: () => null,
         restrictedHoldPreflightImpl: () => admission === 'refuse'
           ? { verdict: 'refuse', error: 'restricted_write_held', hint: 'Fixture restricted write is held.' }
           : { verdict: admission },
@@ -3133,6 +3182,7 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
 
     try {
       const code = await main([file], {
+        createRouterProofCustodyImpl: () => null,
         restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
         runVitestListImpl: async () => ({ status: 0, signal: null,
           stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', timedOut: false, error: null }),
@@ -3448,6 +3498,10 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     let code: number;
     try {
       code = await main(['packages/operator-core/lib/__tests__/test-file-router.test.ts'], {
+        createRouterProofCustodyImpl: () => null,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        runVitestListImpl: async () => ({ status: 0, signal: null,
+          stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', error: null, timedOut: false }),
         runCapturedTestProcessImpl: async () => ({
           status,
           signal: null,

@@ -60,6 +60,7 @@ import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 import { CENSUS_DU_TIMEOUT_MS, inspectRetentionTrees, RetentionAllocationCounter } from './storage/disk-consumer-census';
 import { DetachedWalkAbandoned, readWalkState, runDetachedDuUsage, walkAttemptFiles, walkProcessAlive,
   type DetachedWalkOptions } from './storage/disk-census-detached-walk';
+import type { PendingRetentionCensus } from './storage/retention-census-walk';
 
 export { type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
 
@@ -1399,7 +1400,16 @@ async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: num
     }
     return result.bytes;
   } catch (e) {
-    if (e instanceof DetachedWalkAbandoned) throw new Error('release-cut usage pending; managed census continues for adoption');
+    if (e instanceof DetachedWalkAbandoned) {
+      // Capture the attempt we actually waited for, never a later slot read.
+      // This is provenance only; adoption still validates population and age.
+      const state = e.state;
+      const pendingWalk: PendingRetentionCensus | undefined = state?.requestKey ? {
+        root: state.root, dir: opts.dir, attempt: state.attempt,
+        requestKey: state.requestKey, launchedAt: state.launchedAt,
+      } : undefined;
+      throw Object.assign(new Error('release-cut usage pending; managed census continues for adoption'), { pendingWalk });
+    }
     throw e;
   } finally { clearTimeout(timer); }
 }
@@ -1457,6 +1467,7 @@ async function reclaimCutWorktreesUnlocked(
     pinnedOverageBytes: null, pinnedPaths, retainedPaths: [],
   };
   const errors = [...plan.failClosed];
+  let pendingWalk: PendingRetentionCensus | undefined;
   if (pinRead.errors.length) errors.push(`retention pins unreadable: ${pinRead.errors.join('; ')}`);
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) errors.push('invalid release-cut byte cap');
   if (plan.verdicts.some((v) => !v.realPath)) errors.push('release-cut population has unreadable paths');
@@ -1506,7 +1517,9 @@ async function reclaimCutWorktreesUnlocked(
   // Error.message starts with du's complete argument list. Retain the actual
   // failure before that list consumes the bounded receipt's diagnostic budget.
   const usageFailure = (error: unknown): string => {
-    const detail = error as { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown; usageProgress?: CutUsageProgress } | null;
+    const detail = error as { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown;
+      usageProgress?: CutUsageProgress; pendingWalk?: PendingRetentionCensus } | null;
+    pendingWalk = detail?.pendingWalk;
     return JSON.stringify({ code: detail?.code ?? null, signal: detail?.signal ?? null,
       killed: detail?.killed === true,
       stderr: String(detail?.stderr ?? '').slice(-1024), usageProgress: detail?.usageProgress,
@@ -1585,7 +1598,7 @@ async function reclaimCutWorktreesUnlocked(
     }
   } catch (e) {
     errors.push(`release-cut usage before reclaim: ${usageFailure(e)}`);
-    return { ok: false, dryRun: !!options.dryRun, targets, errors, cap };
+    return { ok: false, dryRun: !!options.dryRun, targets, errors, cap, ...(pendingWalk ? { pendingWalk } : {}) };
   }
   let execution: Awaited<ReturnType<typeof executeCutReclaim>> = { ok: true, results: [] };
   // notify-classification: {"classification":"durable","reason":"Reclaim execution reaches lifecycle and alarm consequences; preserve their terminal delivery obligation through the owner wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
@@ -1602,7 +1615,8 @@ async function reclaimCutWorktreesUnlocked(
     cap.retainedPaths = [...after.keys()];
     recordCapExcess();
   } catch (e) { errors.push(`release-cut usage after reclaim: ${usageFailure(e)}`); }
-  return { ok: errors.length === 0 && execution.ok && execution.results.every((r) => r.removed), dryRun: false, targets, errors, cap, execution };
+  return { ok: errors.length === 0 && execution.ok && execution.results.every((r) => r.removed), dryRun: false, targets, errors, cap, execution,
+    ...(pendingWalk ? { pendingWalk } : {}) };
 }
 
 /** Compact, tool-result-sized rendering (a full verdict list overruns the result cap). */

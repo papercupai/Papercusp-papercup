@@ -560,6 +560,33 @@ describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocati
     }
   });
 });
+describe("EI-27265866190725513: real deps forward runGreenCheckpoint's phase reports", () => {
+  // runGreenCheckpoint reports phases ONLY through deps.reportProgress("phase:<x>"); the CLI
+  // wires the qualification runner's note() through realCheckpointDeps' progress parameter.
+  // When the returned deps lacked reportProgress, every phase call was a silent no-op and
+  // the runner row read "materializing" for the whole run (measured on runs 2645e59a and
+  // 5c356d12, 2026-10-28), which also starved the 'finalizing' post-verdict-hang sweep.
+  it("exposes reportProgress and forwards each phase note to the CLI's progress callback", () => {
+    const seen: Array<string | undefined> = [];
+    const { exec } = makeExec([]);
+    const deps = realCheckpointDeps(cfg, exec, "phase-run", undefined, (detail) => {
+      seen.push(detail);
+    });
+    expect(typeof deps.reportProgress).toBe("function");
+    deps.reportProgress!("phase:suite");
+    deps.reportProgress!("phase:finalizing");
+    expect(seen).toEqual(["phase:suite", "phase:finalizing"]);
+  });
+
+  it("never lets a throwing progress callback escape into the gate", () => {
+    const { exec } = makeExec([]);
+    const deps = realCheckpointDeps(cfg, exec, "phase-run", undefined, () => {
+      throw new Error("progress sink down");
+    });
+    expect(() => deps.reportProgress!("phase:suite")).not.toThrow();
+  });
+});
+
 describe("WI-6554700010010213: real post-verdict deadline recorder", () => {
   const GH = "@papercusp/operator-core/lib/release/gate-health-merge";
   const PE = "@papercusp/operator-core/lib/harness/git-sync/pipeline-events";

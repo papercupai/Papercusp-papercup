@@ -227,7 +227,8 @@ describe('P039 completion pre-review briefs', () => {
     it('measures the section from the snapshot inside the deadline and never starts the cold worker', async () => {
       const { root, rootResolver } = setup();
       vi.mocked(firstPartyCallersOffthread).mockClear();
-      const snapshot = vi.fn<typeof queryPushSnapshot>(async () => snapshotOf(root));
+      const answer = snapshotOf(root);
+      const snapshot = vi.fn<typeof queryPushSnapshot>(async () => answer);
       const started = Date.now();
       const brief = await getCompletionTimeBrief(home(), { root: rootResolver, snapshot, runs: async () => [], effects });
       expect(Date.now() - started).toBeLessThan(TASK_BRIEF_BUDGET_MS);
@@ -254,6 +255,29 @@ describe('P039 completion pre-review briefs', () => {
       expect(brief).toMatchObject({ status: 'unknown', changes: [] });
       expect(brief.limitations).toContainEqual(expect.stringContaining(
         "snapshot-miss: the snapshot's target is declared in other.ts, not target.ts"));
+    });
+    it('asks the snapshot before spending a report, so uncalled exports cannot use up the deadline (WI-6554700010042685)', async () => {
+      const { root, rootResolver } = setup();
+      // Measured live on push-snapshot.ts: each report re-ran git provenance and the diff (~1 s), and
+      // its leading constants and types had no snapshot answer, so the deadline expired with processed [].
+      writeFileSync(join(root, 'target.ts'), 'export const LIMIT = 1;\nexport type Shape = { a: number };\n'
+        + 'export interface Box { b: number }\nexport function target() { return LIMIT; }');
+      const reports: string[] = [];
+      const exec = async (_bin: string, argv: readonly string[]) => {
+        if (argv[0] === 'diff' && argv.includes('--unified=3')) reports.push(argv.join(' '));
+        return { stdout: '', stderr: '' };
+      };
+      // Built once: the brief asks the snapshot twice per answered symbol, and a per-call compiler
+      // answer pushed this test past the brief budget under host load (mutation-probe overlay, 6104 ms).
+      const answer = snapshotOf(root);
+      const snapshot = vi.fn<typeof queryPushSnapshot>(async query => query.name === 'target' ? answer : null);
+      const brief = await getCompletionTimeBrief(home(), { root: rootResolver, snapshot, snapshotMissReason: () => null,
+        runs: async () => [], effects: { ...effects, exec } });
+      expect(brief).toMatchObject({ status: 'measured', scope: { processed: ['target.ts'] },
+        changes: [expect.objectContaining({ file: 'target.ts', symbol: 'target' })] });
+      // One report, for the one symbol the snapshot answered; the three misses cost only snapshot reads.
+      expect(reports).toHaveLength(1);
+      expect(snapshot).toHaveBeenCalledWith(expect.objectContaining({ name: 'LIMIT' }));
     });
     it('labels both limitation copies as direct callers, and never reads a miss as zero callers', async () => {
       const { root } = setup();

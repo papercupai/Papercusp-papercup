@@ -49,6 +49,7 @@ import {
   formatDriftUnknownLine,
   gitChangedBetween,
   gitInertGlobalChange,
+  loadReuseProofFiles,
   loadReuseProofs,
   readExecutedMapResults,
 } from "./executed-source-map.mjs";
@@ -206,6 +207,7 @@ const defaultDeps = {
   runnerIdentity: defaultRunnerIdentity,
   proofFormat: (root) => judgedTreeProofFormat(root),
   connect: (env) => connectExecutedMapPg({ env }),
+  loadProofFiles: loadReuseProofFiles,
   loadProofs: loadReuseProofs,
   changedBetween: (root, onUnknown) => gitChangedBetween({ repoRoot: root, relative: true, onUnknown }),
   // gate-test-reuse-yield-2026-10-01 P-002: the same inert-global seam affected-tests passes.
@@ -538,9 +540,44 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
     return off(`pg-unavailable(${token(err)})`);
   }
   let loaded;
+  const prefix = pkg.dirRel === "" ? "" : `${pkg.dirRel}/`;
+  const lane = laneOfTaskScript(script);
+  let laneNote = "";
   try {
     loaded = await withTimeout(
-      d.loadProofs({ client, workspaceName: workspace, runContext, runnerIdentity }),
+      (async () => {
+        let files;
+        if (lane !== null) {
+          try {
+            // Keep the wide executed-module/read-path arrays out of the first query. The normal
+            // affected-tests path first reads only proof file keys, applies the exact lane split,
+            // then fetches proof payloads for that lane; repair reuse must use the same bounded
+            // shape or a large workspace can time out before its lane filter runs.
+            const listed = await d.loadProofFiles({ client, workspaceName: workspace, runContext, runnerIdentity });
+            if (!Array.isArray(listed?.files)) throw new Error("proof-file-list-invalid");
+            const candidates = reuseCandidates({ wsRel: pkg.dirRel, relatedFiles: null, proofFiles: listed.files });
+            const laneSplit = await import(pathToFileURL(path.join(root, "libs/test-config/src/lane-split.ts")).href);
+            const laneOf = laneOfFromSplit(
+              laneSplit,
+              path.join(root, pkg.dirRel),
+              candidates.map((file) => file.slice(prefix.length)),
+            );
+            const scoped = laneScopedCandidates({ candidates, wsRel: pkg.dirRel, lane, laneOf });
+            files = scoped.candidates;
+            laneNote = ` lane=${lane} otherLane=${scoped.otherLane}`;
+          } catch (err) {
+            return { error: `lane-filter-unavailable(${token(err)})`, proofs: new Map(), rows: 0 };
+          }
+        }
+        const proofRows = await d.loadProofs({
+          client,
+          workspaceName: workspace,
+          runContext,
+          runnerIdentity,
+          ...(files == null ? {} : { files }),
+        });
+        return { ...proofRows, error: null };
+      })(),
       TARGETED_REUSE_PROOF_READ_TIMEOUT_MS,
       "reuse-proof read",
     );
@@ -554,28 +591,8 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
     }
   }
 
-  const prefix = pkg.dirRel === "" ? "" : `${pkg.dirRel}/`;
+  if (loaded.error) return off(loaded.error);
   let candidates = reuseCandidates({ wsRel: pkg.dirRel, relatedFiles: null, proofFiles: loaded.proofs.keys() });
-  const lane = laneOfTaskScript(script);
-  let laneNote = "";
-  if (lane !== null) {
-    try {
-      // Match the exact judged tree's selector, as affected-tests does. The lane task's package
-      // script names only one lane, while its proof table contains both lanes' files.
-      const laneSplit = await import(pathToFileURL(path.join(root, "libs/test-config/src/lane-split.ts")).href);
-      const laneOf = laneOfFromSplit(
-        laneSplit,
-        path.join(root, pkg.dirRel),
-        candidates.map((f) => f.slice(prefix.length)),
-      );
-      const scoped = laneScopedCandidates({ candidates, wsRel: pkg.dirRel, lane, laneOf });
-      candidates = scoped.candidates;
-      laneNote = ` lane=${lane} otherLane=${scoped.otherLane}`;
-    } catch (err) {
-      // A missing or unreadable lane selector cannot produce a truthful denominator or skip list.
-      return off(`lane-filter-unavailable(${token(err)})`);
-    }
-  }
   const { skip, summary, exclusions } = selectReusablePasses({
     candidates,
     proofs: loaded.proofs,

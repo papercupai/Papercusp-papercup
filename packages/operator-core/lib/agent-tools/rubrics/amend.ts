@@ -49,6 +49,19 @@ const NO_LIVE_DISCHARGE_MAPPING_CODE = 'acceptance_bar_amendment_no_live_dischar
 const NO_LIVE_DISCHARGE_MAPPING_NEXT =
   "Add the changed BAR to the subject plan's `## Requirements` section and add a matching row to `## Design` → `### Bar-to-work map for this plan`, mapping it to at least one non-dropped `P-NNN` item. Then retry. The amendment guard exempts a BAR being removed from the discharge-map check.";
 
+// Receipt progress writes take an independent SQL checkout. Apply phases inside the
+// acceptance transaction are intentionally excluded while plan locks are held.
+const APPLY_RECEIPT_PROGRESS_PHASES = new Set([
+  'instrument-bindings',
+  'rubric-write-scope',
+  'acceptance-routing',
+  'acceptance-composition-links',
+  'acceptance-contract-snapshot',
+  'acceptance-transaction-acquire',
+  'acceptance-now-readiness-refresh',
+  'response-validation',
+]);
+
 const ACCEPTANCE_BAR_APPROVAL_REQUIRED_CODE = 'acceptance_bar_approval_required';
 const ACCEPTANCE_BAR_APPROVAL_REQUIRED_NEXT =
   "Run rubrics:amend with dryRun:true and requestReview:{ workItemId } (or post preview.approval yourself and pass reviewPreviewPost:'thread-post:<preview-id>'), follow review.next, and apply only with approvalRef:'thread-post:<reviewer-answer-id>'. A one-agent implementation route does not prohibit platform-routed independent acceptance review.";
@@ -735,7 +748,7 @@ export default defineTool({
         return { ok: true, dryRun: true, preview, review };
       }, {
         onRegistered: () => { registered = true; },
-        persistPreviewProgress: true,
+        persistPhaseProgress: true,
         omittedReviewRecovery: { ownerId: identity.ownerId, retryArgs: { ...args } },
       });
       const settled = await settleWithin(run, remainingBudget(), ctx.signal);
@@ -773,7 +786,11 @@ export default defineTool({
       idempotencyKey,
       args.rubricRef,
       (onPhase) => executeAmend({ ...input, idempotencyKey, onPhase }, args.rubricRef),
-      { onRegistered: () => { registered = true; } },
+      {
+        onRegistered: () => { registered = true; },
+        persistPhaseProgress: true,
+        persistProgressForPhase: (phase) => APPLY_RECEIPT_PROGRESS_PHASES.has(phase),
+      },
     );
     const settled = await settleWithin(run, remainingBudget(), ctx.signal);
     if (settled.kind === 'rejected') throw settled.error;

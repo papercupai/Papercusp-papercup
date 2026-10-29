@@ -14,6 +14,7 @@ import {
   pruneCensusWalks,
   readWalkState,
   runDetachedDuWalk,
+  runDetachedWalk,
   TIMEOUT_EXIT_STATUS,
   walkAttemptFiles,
   type DetachedWalkState,
@@ -72,6 +73,22 @@ function fakeLauncher(onLaunch: (attempt: number) => void = () => {}) {
 }
 
 describe('runDetachedDuWalk', () => {
+  it.each(['new', 'active', 'exited', 'gone'])('prepares a %s attempt without waiting, reading or replacing it', async mode => {
+    if (mode !== 'new') writeState();
+    if (mode === 'exited') finishAttempt(1, 0);
+    const { launch, calls } = fakeLauncher();
+    const read = vi.fn(async () => 'consumed');
+    const kill = vi.fn();
+    const sleep = vi.fn(async () => { throw new Error('preparation must not wait'); });
+    await expect(runDetachedWalk(ROOT, { dir, launch, prepareOnly: true, now: () => 5000,
+      isAlive: () => mode !== 'gone', sleep, kill }, [], read)).rejects.toMatchObject({
+      name: 'DetachedWalkAbandoned', state: { root: ROOT, attempt: 1, adoptions: 0 },
+    });
+    expect(calls).toHaveLength(mode === 'new' ? 1 : 0);
+    expect(read).not.toHaveBeenCalled(); expect(sleep).not.toHaveBeenCalled(); expect(kill).not.toHaveBeenCalled();
+    expect((await readWalkState(dir))?.adoptions).toBe(0);
+  });
+
   it('launches one walk, waits for its exit status, and reads its output files', async () => {
     const { launch, calls } = fakeLauncher();
     let polls = 0;
@@ -216,6 +233,24 @@ describe('runDetachedDuWalk', () => {
         signal: ctl.signal,
       }),
     ).rejects.toBeInstanceOf(DetachedWalkAbandoned);
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('carries the waited attempt when its slot changes during an abandoned wait', async () => {
+    writeState({ requestKey: 'original-population' });
+    const original = await readWalkState(dir);
+    const ctl = new AbortController();
+    const launch = vi.fn(fakeLauncher().launch), kill = vi.fn();
+    await expect(runDetachedWalk(ROOT, {
+      dir, launch, kill, isAlive: () => true, now: () => 5_000, signal: ctl.signal,
+      sleep: async () => {
+        writeState({ attempt: 2, requestKey: 'replacement-population', launchedAt: 6_000 });
+        ctl.abort();
+      },
+    }, [], async () => { throw new Error('abandoned wait must not consume output'); }, 'original-population'))
+      .rejects.toMatchObject({ state: { ...original, adoptions: 1 } });
+    expect((await readWalkState(dir))?.attempt).toBe(2);
+    expect(launch).not.toHaveBeenCalled();
     expect(kill).not.toHaveBeenCalled();
   });
 

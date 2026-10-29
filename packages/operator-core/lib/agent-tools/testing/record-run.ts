@@ -28,7 +28,8 @@ import {
   type RecordedRuntimeEnvironment,
   stableRecordedRuntimeEnvironment,
 } from '@papercusp/test-config/execution-details';
-import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
+import { listRuntimeVintage } from '../../runtime-vintage';
+import { isRemoteRuntimeUnit, measureRuntimeEnvironment } from '../../remote-runtime-identity';
 import { captureWorktreeSnapshotAsync, computeWorktreeDirty, type WorktreeGitSnapshot } from '../../testing-worktree';
 import { runGit } from '../../harness/docs/git-runner';
 import {
@@ -519,14 +520,12 @@ export async function executeOperationalRun(
   ctx: RecordContext,
   deps: {
     snapshot: (root: string) => WorktreeGitSnapshot | Promise<WorktreeGitSnapshot>;
-    readRuntime: (units: string[], workspaceId: string) => Promise<string | null>;
+    readRuntime?: (units: string[], workspaceId: string) => Promise<string | null>;
     persist: RecordOperationalRunDeps['persist'];
     verifyDefinition?: typeof verifyOperationalCheckDefinitionAtCommit;
     sourceRoot?: () => Promise<string | null>;
   } = {
     snapshot: captureWorktreeSnapshotAsync,
-    readRuntime: async (units, workspaceId) =>
-      measureRuntimeVintageEnvironment(await listRuntimeVintage(workspaceId), units),
     persist: persistHarnessTestRunsWithIds,
   },
 ) {
@@ -549,13 +548,23 @@ export async function executeOperationalRun(
   if (!path || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)) {
     return { ok: false, error: 'invalid_check_path' as const };
   }
+  // Match the binder's identity contract. Remote resources have no local PID;
+  // querying runtime-vintage alone silently leaves every such run unproven.
+  // Read each bracket independently: a shared memo would hide a deployment
+  // change during execution. Remote-only checks need no local-ledger query.
+  const readRuntime = deps.readRuntime ?? (async (requested: string[], workspace: string) => {
+    const local = requested.filter(unit => !isRemoteRuntimeUnit(unit));
+    const rows = local.length ? await listRuntimeVintage(workspace, undefined, local) : [];
+    return measureRuntimeEnvironment(rows, requested);
+  });
+  const observationTimeoutMs = units.some(isRemoteRuntimeUnit) ? 30_000 : 1_000;
   const observe = async (): Promise<RecordedRuntimeEnvironment | undefined> => {
     if (units.length === 0) return undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const fingerprint = await Promise.race([
-        Promise.resolve().then(() => deps.readRuntime([...units], workspaceId)),
-        new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 1_000); }),
+        Promise.resolve().then(() => readRuntime([...units], workspaceId)),
+        new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), observationTimeoutMs); }),
       ]);
       return typeof fingerprint === 'string' && /^[a-f0-9]{64}$/.test(fingerprint)
         ? { schemaVersion: 1, units: [...units], fingerprint, observedAt: new Date().toISOString() }

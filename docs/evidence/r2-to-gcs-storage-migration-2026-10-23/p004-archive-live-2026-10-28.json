@@ -1,0 +1,175 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Publish archive restored from real private Google storage",
+  "framework": "node",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "apps/papercusp-publish/scripts/verify-archive.ts",
+    "pc-p317-host-bundle-20260917",
+    "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p004-archive-live-journal-2026-10-28.json",
+    "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p004-archive-live-2026-10-28.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-28T22:58:54.086Z",
+  "finishedAt": "2026-10-28T22:58:56.256Z",
+  "summary": "Existing publish archive port writes admitted bytes and manifest; independent Google JSON API restores exact generations and checksums; anonymous reads are denied; cleanup is generation-fenced.",
+  "assertions": [
+    {
+      "id": "unique-archive-absent",
+      "passed": true,
+      "evidence": "publish/verification-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/deployment-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/"
+    },
+    {
+      "id": "google-metadata-file",
+      "passed": true,
+      "evidence": "HTTP 200"
+    },
+    {
+      "id": "google-pinned-bytes-file",
+      "passed": true,
+      "evidence": "generation=1793228334702967; sha256=a055c18d241729f56030bf55267ccc3f5b10dd6c1fddd44faed373b4f7c013ce"
+    },
+    {
+      "id": "private-anonymous-denied-file",
+      "passed": true,
+      "evidence": "HTTP 401"
+    },
+    {
+      "id": "google-metadata-manifest",
+      "passed": true,
+      "evidence": "HTTP 200"
+    },
+    {
+      "id": "google-pinned-bytes-manifest",
+      "passed": true,
+      "evidence": "generation=1793228334947853; sha256=194731f6cd6105eaeefed1ae43a7b2435eba55722cc65fea4e3baa226e8d6d52"
+    },
+    {
+      "id": "manifest-content-type",
+      "passed": true,
+      "evidence": "application/json"
+    },
+    {
+      "id": "private-anonymous-denied-manifest",
+      "passed": true,
+      "evidence": "HTTP 401"
+    },
+    {
+      "id": "archive-port-restores-admitted-file",
+      "passed": true,
+      "evidence": "expected sha256=a055c18d241729f56030bf55267ccc3f5b10dd6c1fddd44faed373b4f7c013ce"
+    },
+    {
+      "id": "other-tenant-has-no-file",
+      "passed": true,
+      "evidence": "publish/other-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/deployment-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/files/a055c18d241729f56030bf55267ccc3f5b10dd6c1fddd44faed373b4f7c013ce.bin"
+    },
+    {
+      "id": "fenced-archive-cleanup",
+      "passed": true,
+      "evidence": "{\"complete\":true,\"deleted\":[{\"key\":\"publish/verification-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/deployment-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/files/a055c18d241729f56030bf55267ccc3f5b10dd6c1fddd44faed373b4f7c013ce.bin\",\"generation\":\"1793228334702967\",\"status\":204},{\"key\":\"publish/verification-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/deployment-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/manifest.json\",\"generation\":\"1793228334947853\",\"status\":204}],\"remaining\":[]}"
+    },
+    {
+      "id": "source-stable",
+      "passed": true,
+      "evidence": "{\"apps/papercusp-publish/scripts/verify-archive.ts\":\"d403a2adb22f9d07a459d9274067b7687814b2b94c9ff9a1f1da3c7912fdd25f\",\"apps/papercusp-publish/src/r2-archive.ts\":\"b0a70f399e06288b44494af8e95de063b90460ff293272af808d7910624c49d9\",\"libs/generic/artifact-registry/src/gcs-object-store.ts\":\"e10eb7ed1e13099b63f717796a5c0e6a12d0d68cda91e5fd8b21c24e7d805cd6\",\"apps/papercusp-publish/scripts/verify-archive.test.ts\":\"b2f84ca48fa75dac7f747d75e5f013634ca07bdc2a94c9ef59086e1aede7f46d\"}"
+    }
+  ],
+  "observation": {
+    "operationId": "0669575d-c3fe-4245-8f48-ff2d82a8d4fe",
+    "prefix": "publish/verification-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/deployment-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/",
+    "sha256": "a055c18d241729f56030bf55267ccc3f5b10dd6c1fddd44faed373b4f7c013ce",
+    "startedAt": "2026-10-28T22:58:54.086Z",
+    "finishedAt": "2026-10-28T22:58:56.256Z",
+    "result": "pass",
+    "checks": [
+      {
+        "name": "unique-archive-absent",
+        "ok": true,
+        "evidence": "publish/verification-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/deployment-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/"
+      },
+      {
+        "name": "google-metadata-file",
+        "ok": true,
+        "evidence": "HTTP 200"
+      },
+      {
+        "name": "google-pinned-bytes-file",
+        "ok": true,
+        "evidence": "generation=1793228334702967; sha256=a055c18d241729f56030bf55267ccc3f5b10dd6c1fddd44faed373b4f7c013ce"
+      },
+      {
+        "name": "private-anonymous-denied-file",
+        "ok": true,
+        "evidence": "HTTP 401"
+      },
+      {
+        "name": "google-metadata-manifest",
+        "ok": true,
+        "evidence": "HTTP 200"
+      },
+      {
+        "name": "google-pinned-bytes-manifest",
+        "ok": true,
+        "evidence": "generation=1793228334947853; sha256=194731f6cd6105eaeefed1ae43a7b2435eba55722cc65fea4e3baa226e8d6d52"
+      },
+      {
+        "name": "manifest-content-type",
+        "ok": true,
+        "evidence": "application/json"
+      },
+      {
+        "name": "private-anonymous-denied-manifest",
+        "ok": true,
+        "evidence": "HTTP 401"
+      },
+      {
+        "name": "archive-port-restores-admitted-file",
+        "ok": true,
+        "evidence": "expected sha256=a055c18d241729f56030bf55267ccc3f5b10dd6c1fddd44faed373b4f7c013ce"
+      },
+      {
+        "name": "other-tenant-has-no-file",
+        "ok": true,
+        "evidence": "publish/other-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/deployment-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/files/a055c18d241729f56030bf55267ccc3f5b10dd6c1fddd44faed373b4f7c013ce.bin"
+      }
+    ],
+    "generations": {
+      "publish/verification-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/deployment-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/files/a055c18d241729f56030bf55267ccc3f5b10dd6c1fddd44faed373b4f7c013ce.bin": "1793228334702967",
+      "publish/verification-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/deployment-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/manifest.json": "1793228334947853"
+    },
+    "cleanup": {
+      "complete": true,
+      "deleted": [
+        {
+          "key": "publish/verification-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/deployment-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/files/a055c18d241729f56030bf55267ccc3f5b10dd6c1fddd44faed373b4f7c013ce.bin",
+          "generation": "1793228334702967",
+          "status": 204
+        },
+        {
+          "key": "publish/verification-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/deployment-0669575d-c3fe-4245-8f48-ff2d82a8d4fe/manifest.json",
+          "generation": "1793228334947853",
+          "status": 204
+        }
+      ],
+      "remaining": []
+    }
+  },
+  "bucket": "pc-p317-host-bundle-20260917",
+  "sourceHashesBefore": {
+    "apps/papercusp-publish/scripts/verify-archive.ts": "d403a2adb22f9d07a459d9274067b7687814b2b94c9ff9a1f1da3c7912fdd25f",
+    "apps/papercusp-publish/src/r2-archive.ts": "b0a70f399e06288b44494af8e95de063b90460ff293272af808d7910624c49d9",
+    "libs/generic/artifact-registry/src/gcs-object-store.ts": "e10eb7ed1e13099b63f717796a5c0e6a12d0d68cda91e5fd8b21c24e7d805cd6",
+    "apps/papercusp-publish/scripts/verify-archive.test.ts": "b2f84ca48fa75dac7f747d75e5f013634ca07bdc2a94c9ef59086e1aede7f46d"
+  },
+  "sourceHashesAfter": {
+    "apps/papercusp-publish/scripts/verify-archive.ts": "d403a2adb22f9d07a459d9274067b7687814b2b94c9ff9a1f1da3c7912fdd25f",
+    "apps/papercusp-publish/src/r2-archive.ts": "b0a70f399e06288b44494af8e95de063b90460ff293272af808d7910624c49d9",
+    "libs/generic/artifact-registry/src/gcs-object-store.ts": "e10eb7ed1e13099b63f717796a5c0e6a12d0d68cda91e5fd8b21c24e7d805cd6",
+    "apps/papercusp-publish/scripts/verify-archive.test.ts": "b2f84ca48fa75dac7f747d75e5f013634ca07bdc2a94c9ef59086e1aede7f46d"
+  },
+  "scope": "Live Google storage and maintained archive port. Does not establish a deployed publish Worker, historical R2 census, or full migration acceptance."
+}

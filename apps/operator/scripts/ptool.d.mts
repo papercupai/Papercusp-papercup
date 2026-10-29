@@ -816,7 +816,7 @@ export function appendConnectAttemptHistory(error: any, attemptKinds: any, elaps
  * is read-only and safe to replay on the same session. In both cases the total
  * discovery deadline below remains the hard bound.
  */
-export function listToolsWithLocalRetry(client: any, params?: {}, { timeoutMs, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, rand, retryJitterMs, }?: {
+export function listToolsWithLocalRetry(client: any, params?: {}, { timeoutMs, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, rand, retryJitterMs, deadlineAtMs, onProgress, }?: {
     timeoutMs?: number | undefined;
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
@@ -931,7 +931,8 @@ export function preparePtoolConnectionModules({ transport: requestedTransport }?
  * maxTotalTimeout?: number}) => Promise<{tools?: ToolCatalogEntry[], nextCursor?: string}>}} client
  * @param {{timeoutMs?: number, retryLocalErrors?: boolean, maxAttempts?: number,
  * retryDelayMs?: number, totalTimeoutMs?: number, sleep?: (ms: number) => Promise<void>,
- * rand?: () => number, retryJitterMs?: number}} [options]
+ * rand?: () => number, retryJitterMs?: number, deadlineAtMs?: number,
+ * onProgress?: (detail: object) => void}} [options]
  */
 export function listAllTools(client: {
     listTools: (params?: {
@@ -943,7 +944,7 @@ export function listAllTools(client: {
         tools?: ToolCatalogEntry[];
         nextCursor?: string;
     }>;
-}, { timeoutMs, retryLocalErrors, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, rand, retryJitterMs, }?: {
+}, { timeoutMs, retryLocalErrors, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, rand, retryJitterMs, deadlineAtMs, onProgress, }?: {
     timeoutMs?: number;
     retryLocalErrors?: boolean;
     maxAttempts?: number;
@@ -952,6 +953,8 @@ export function listAllTools(client: {
     sleep?: (ms: number) => Promise<void>;
     rand?: () => number;
     retryJitterMs?: number;
+    deadlineAtMs?: number;
+    onProgress?: (detail: object) => void;
 }): Promise<any[]>;
 /**
  * Refresh a stale call's catalog entry and prepare one exact retry. A changed

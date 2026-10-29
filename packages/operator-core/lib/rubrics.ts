@@ -28,6 +28,7 @@
  * migration. Versioning falls out of the plan revision spine (no separate machinery).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { isDeepStrictEqual } from 'node:util';
 import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
@@ -4344,11 +4345,19 @@ export interface AcceptanceBarAmendmentPreview {
   plannedPaths: PlannedRubricPath[];
   nextRepair: { code: string; action: string };
   /**
-   * The independence population a prospective approver must stay OUTSIDE of, so a
-   * caller can screen several candidates from one preview instead of one failed
-   * apply per candidate. Present whenever approval is required (EI-23806582233421348).
+   * @deprecated Use `independencePopulation`; this legacy alias includes every
+   * exclusion identity, including the preview caller/applier, rubric author, and
+   * subject owner. Its name does not mean every identity is a plan implementer.
    */
   implementers?: string[];
+  /**
+   * The exact reviewer-exclusion population and each identity's primary reason
+   * for exclusion. `caller` means the identity that would apply this amendment.
+   */
+  independencePopulation?: Array<{
+    ownerId: string;
+    relation: AcceptanceBarApproverRelationVia;
+  }>;
   /**
    * Independence verdict for `input.approvedBy`, evaluated with the SAME predicate the
    * apply path uses (`areAcceptanceLineageRelated` against every implementer identity).
@@ -5269,11 +5278,39 @@ async function amendAcceptanceBarRubric(
 
       if (!actorId) throw new Error(`invalid_args: acceptance BAR amendment requires an authenticated actor`);
       if (!reason) throw new Error(`invalid_args: acceptance BAR amendment requires a non-empty reason`);
+      const patchBarKeys = [...new Set([
+        ...guard.changes.map((change) => change.barKey),
+        ...approvalBars,
+      ])].sort();
+      const gradeableCriterion = (criterion: Record<string, unknown> | undefined) => {
+        if (!criterion) return null;
+        // Provenance is server-owned lifecycle metadata, not part of the reviewed criterion patch.
+        const { barProvenance: _provenance, ...gradeable } = criterion;
+        return gradeable;
+      };
+      const proposedPatchHash = hashPlanContent(canonicalJson({
+        actorId,
+        reason,
+        bars: patchBarKeys.map((barKey) => ({
+          barKey,
+          prior: gradeableCriterion(stored.criteria.find((criterion) =>
+            (criterion.barKey ?? criterion.key) === barKey,
+          ) as unknown as Record<string, unknown> | undefined),
+          next: gradeableCriterion((guard.data.criteria as Array<Record<string, unknown>>).find((criterion) =>
+            (criterion.barKey ?? criterion.key) === barKey,
+          )),
+        })),
+        proposedSourceHash: proposedSource !== subjectRow.content
+          ? sourceDerivation.proposedSourceFingerprint
+          : null,
+        mappingDelta: mappingDelta.length ? mappingDelta : null,
+      }));
       const approvalRequest: AcceptanceBarApproval = {
         schemaVersion: 1,
         kind: 'acceptance-bar-amendment-approval',
         rubricRef: input.rubricId,
         subjectPlan: subjectPlanHint,
+        proposedPatchHash,
         // A moved BAR appears with prior == next hash: the review covers its map, not its meaning.
         bars: approvalBars.map((barKey) => ({
           barKey,
@@ -5655,6 +5692,7 @@ async function amendAcceptanceBarRubric(
         // A no-op preview still answers an explicit candidate-screen request; its reason
         // says no approval is needed because no BAR meaning changed.
         let previewImplementers: string[] | undefined;
+        let previewIndependencePopulation: AcceptanceBarAmendmentPreview['independencePopulation'];
         let approverEligibility: AcceptanceBarAmendmentPreview['approverEligibility'];
         const norm = (identity: string | null | undefined) => (identity ?? '').trim();
         const prospectiveApprover = norm(input.approvedBy);
@@ -5679,7 +5717,14 @@ async function amendAcceptanceBarRubric(
           attribute(stored.createdBy, 'rubric-author');
           attribute(subjectRow.owner, 'subject-owner');
           attribute(actorId, 'caller');
-          if (approvalBars.length > 0) previewImplementers = [...roles.keys()].sort();
+          if (approvalBars.length > 0) {
+            const population = [...roles.entries()].sort(([left], [right]) => left.localeCompare(right));
+            // Keep the old flat field for existing readers, but expose the role on
+            // each identity so a routed reviewer running the preview is not
+            // mistaken for a historical plan implementer.
+            previewImplementers = population.map(([ownerId]) => ownerId);
+            previewIndependencePopulation = population.map(([ownerId, relation]) => ({ ownerId, relation }));
+          }
           if (prospectiveApprover) {
             const evaluation = prospectiveApprover === norm(actorId)
               ? {
@@ -5775,6 +5820,7 @@ async function amendAcceptanceBarRubric(
               action: 'preserve' as const,
             },
             ...(previewImplementers ? { implementers: previewImplementers } : {}),
+            ...(previewIndependencePopulation ? { independencePopulation: previewIndependencePopulation } : {}),
             ...(approverEligibility ? { approverEligibility } : {}),
             readinessDelta,
             requirementsDrift: diffAmendedCriteriaAgainstRequirements({

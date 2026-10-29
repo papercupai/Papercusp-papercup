@@ -114,7 +114,6 @@ describe('turn-end rewake timer (WI-6554700010018567)', () => {
       { readHeldWorkItems: async () => [] },
       { getLoopActive: async () => true },
       { hasPendingDeliberateWakeDelivery: async () => true },
-      { hasFreshPendingCarryRespawn: async () => true },
       {
         listParkedAwaits: async () => [
           inboxKeepalive,
@@ -229,7 +228,7 @@ describe('turn-end held-work guard (WI-6554700010015550)', () => {
     expect(text).toBe('');
   });
 
-  it('lets the turn end when a recent accepted carry-respawn is pending for this owner', async () => {
+  it('allows a recent accepted carry only after retaining a bounded fallback wake', async () => {
     const owners: string[] = [];
     const spy = rewakeSpy();
     const text = await evaluateTurnEndHeldWorkStop({
@@ -245,8 +244,24 @@ describe('turn-end held-work guard (WI-6554700010015550)', () => {
     });
     expect(text).toBe('');
     expect(owners).toEqual([OWNER]);
-    expect(spy.calls.cancelled).toBe(1);
-    expect(spy.calls.armed).toHaveLength(0);
+    expect(spy.calls.cancelled).toBe(0);
+    expect(spy.calls.armed).toEqual([['WI-1', 'WI-2']]);
+  });
+
+  it('still refuses a pending carry when no bounded fallback can be armed', async () => {
+    const spy = rewakeSpy({ kind: 'exhausted', firedWithoutProgress: 2 });
+    const text = await evaluateTurnEndHeldWorkStop({
+      ownerId: OWNER,
+      workspaceId: WS,
+      deps: deps({
+        ...spy.deps,
+        hasFreshPendingCarryRespawn: async () => true,
+      }),
+    });
+    expect(text).toContain('TURN-END REFUSED');
+    expect(text).toContain('No rewake timer: 2 timed rewakes');
+    expect(spy.calls.cancelled).toBe(0);
+    expect(spy.calls.armed).toEqual([['WI-1', 'WI-2']]);
   });
 
   it('does not treat stale or undated pending carry-respawns as a wake source', () => {

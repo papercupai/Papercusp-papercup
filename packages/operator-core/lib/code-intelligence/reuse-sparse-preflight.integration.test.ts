@@ -15,7 +15,8 @@ import { enrichTaskBriefWithReuse, getClaimTimeTaskBrief, readTaskFailureSignals
 import { DEFAULT_PACKER_EFFECTS, packerFacade } from './packer-facade';
 import { firstPartyCallers } from './first-party-callers';
 import { readEngineeringEvidence } from './engineering-evidence';
-import { boundChangeHistoryProviders, fileSymbolNames } from './change-history';
+import { boundChangeHistoryProviders, fileSymbolNames, readWarmCoChange } from './change-history';
+import { stopWarmCoChange } from './warm-cochange-index';
 import { cloneBriefProvider } from './clone-brief-provider';
 import { buildCloneIndex } from './clone-index';
 import { prepareCloneAdvisories } from './clone-advisory';
@@ -136,8 +137,16 @@ it('records a truthful sparse baseline and five actual producer envelopes before
   const sql = registeredReuseBriefProviders().find(p => p.id === 'sql')!;
   const providers = [cloneBriefProvider({ snapshot: () => snapshot }),
     ...boundChangeHistoryProviders({ root: async () => root, harness }), sql, nativeCoverageBriefProvider];
+  // The cochange index is resident: its worker builds on the first query and
+  // answers 'unknown' while cold (WI-6554700010030353). Warm it first, as the
+  // host does, so the capture measures the real producer rather than a cold start.
+  for (const deadline = Date.now() + 30_000; (await readWarmCoChange(root, ['a.ts'])).status !== 'measured';) {
+    if (Date.now() > deadline) throw new Error('warm cochange index did not become measured within 30s');
+    await new Promise(settle => setTimeout(settle, 200));
+  }
   const captured = await Promise.all(providers.map(async provider => ({ provider: provider.id,
     result: await provider.read(context, new AbortController().signal) })));
+  stopWarmCoChange();
   setFlagOverridesForTest(Object.fromEntries(providers.map(p => [REUSE_PROVIDER_FLAGS[p.id], true])));
   let observations: ReuseProviderObservation[] = [], ledger: string | undefined;
   const response = await enrichTaskBriefWithReuse(base, { workspaceId: fx.workspaceId, workItem: item,

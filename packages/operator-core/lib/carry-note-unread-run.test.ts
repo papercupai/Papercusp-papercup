@@ -252,6 +252,17 @@ describe('describeUnreadRun', () => {
     expect(naiveUnreadRun(body, 0)).not.toBeNull();
   });
 
+  it('does not pair a quoted negative repair launch with an already-read ship-readiness JSON artifact (EI-26686643671455366)', () => {
+    const body = [
+      'Both Python reads parsed the full ship-readiness result from /tmp/su394-ship-after-review49.json.',
+      "The checkpoint wording included 'no parallel repair launched'.",
+      'The result was read before this checkpoint was written.',
+    ].join('\n');
+
+    expect(describeUnreadRun(body, 0)).toBeNull();
+    expect(naiveUnreadRun(body, 0)).not.toBeNull();
+  });
+
   it('keeps actual unread admissions in Next and after hypothetical or negated clauses', () => {
     for (const body of [
       '## Next\nRead /tmp/active.log: the current suite is still running.',

@@ -1852,6 +1852,7 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
         kind: 'acceptance-bar-amendment-approval',
         rubricRef: rubric.rubricId,
         subjectPlan: rubric.subjectPlan!,
+        proposedPatchHash: 'c'.repeat(64),
         bars: [],
       } as const;
       const brief = buildAmendmentReviewBrief({

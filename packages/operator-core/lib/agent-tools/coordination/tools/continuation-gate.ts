@@ -369,6 +369,10 @@ export interface ContinuationGateInputs {
    * deliberate re-wake for the current work.
    */
   activeInboxWakeAwait?: boolean | null;
+  /** A requester-bound auto-await for a still-open question conversation is active.
+   *  It can wake on resolution but has no timeout, so it is an intentional wait
+   *  signal, not a guaranteed re-wake. */
+  activeQuestionResolutionAwait?: boolean | null;
   /** Whether a standing, unbounded wake:true subscription is active. It may
    *  re-invoke the session when its event fires, but it cannot guarantee a
    *  wake when no matching event arrives. Keep this separate from the guarantee. */
@@ -428,6 +432,8 @@ export interface ContinuationVerdict {
   rewakeGuaranteed: boolean | null;
   /** Whether the standing inbox-wake keepalive was active (null ⇒ unknown). */
   activeInboxWakeAwait: boolean | null;
+  /** Whether an open requester question has its exact resolution await active. */
+  activeQuestionResolutionAwait: boolean | null;
   /** Whether an unbounded standing wake:true watch was active (null ⇒ unknown). */
   activeUnboundedWakeWatch: boolean | null;
   /** Whether the next wake sheds the current transcript (null ⇒ unknown). */
@@ -478,6 +484,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
   const shouldContinue = reasons.length === 0;
   const rewakeGuaranteed = inputs.rewakeGuaranteed ?? null;
   const activeInboxWakeAwait = inputs.activeInboxWakeAwait ?? null;
+  const activeQuestionResolutionAwait = inputs.activeQuestionResolutionAwait ?? null;
   const activeUnboundedWakeWatch = inputs.activeUnboundedWakeWatch ?? null;
   const nextWakeFresh = inputs.nextWakeFresh ?? null;
   const activeLoopRewakeBlockedReason = inputs.activeLoopRewakeBlockedReason ?? null;
@@ -587,7 +594,16 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
           : `ARM A WAKE: loop:arm { intervalSec, goal } / events:await — always available, and the direct remedy ` +
             `for the missing re-wake. Self-compaction (session:request-compaction) also continues the work, but it ` +
             `requires a live psu-pty host and refuses with no_live_pty_host on a session that has none.`;
-    guidance = opening + remedy;
+    if (activeQuestionResolutionAwait === true && activeLoopDiagnosis === null) {
+      guidance =
+        `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
+        `An exact requester await is active for an OPEN question conversation. ` +
+        `Its resolution can wake this session, but it has no timeout and does not guarantee another turn if nobody resolves it. ` +
+        `If that answer is the only blocker, checkpoint and end the turn; do not arm a periodic loop just to poll for it. ` +
+        `Finish any independent work first.`;
+    } else {
+      guidance = opening + remedy;
+    }
   } else if (
     !shouldContinue &&
     !(
@@ -670,6 +686,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
     unreadInbox,
     rewakeGuaranteed,
     activeInboxWakeAwait,
+    activeQuestionResolutionAwait,
     activeUnboundedWakeWatch,
     nextWakeFresh,
     activeLoopRewakeBlockedReason,
@@ -690,6 +707,7 @@ export function continuationGateFromReads(args: {
   ceilingPct?: number;
   rewakeGuaranteed?: boolean | null;
   activeInboxWakeAwait?: boolean | null;
+  activeQuestionResolutionAwait?: boolean | null;
   activeUnboundedWakeWatch?: boolean | null;
   nextWakeFresh?: boolean | null;
   selfCompactionAvailable?: boolean | null;
@@ -704,6 +722,7 @@ export function continuationGateFromReads(args: {
     ceilingPct: args.ceilingPct,
     rewakeGuaranteed: args.rewakeGuaranteed,
     activeInboxWakeAwait: args.activeInboxWakeAwait,
+    activeQuestionResolutionAwait: args.activeQuestionResolutionAwait,
     activeUnboundedWakeWatch: args.activeUnboundedWakeWatch,
     nextWakeFresh: args.nextWakeFresh,
     selfCompactionAvailable: args.selfCompactionAvailable,

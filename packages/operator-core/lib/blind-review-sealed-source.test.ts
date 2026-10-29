@@ -113,7 +113,7 @@ import os,errno,socket,fcntl,glob,ctypes
 assert open('/source/marker').read() == 'frozen marker'
 assert not os.path.exists(${JSON.stringify(f.path)})
 assert not os.path.exists('/tmp/source-stage')
-assert not any(os.path.exists(path) for path in glob.glob('/proc/[0-9]*/root/tmp/source-stage'))
+assert not any(os.path.exists(path) for path in glob.glob(os.path.join('/proc', '[0-9]*', 'root/tmp/source-stage')))
 libc=ctypes.CDLL(None, use_errno=True)
 assert libc.unshare(0x10000000) == -1 and ctypes.get_errno() in (errno.EPERM, errno.ENOSPC), ctypes.get_errno()
 try: open('/source/marker','w')

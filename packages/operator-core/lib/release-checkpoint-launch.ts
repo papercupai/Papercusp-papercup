@@ -2599,7 +2599,9 @@ export function terminateActiveCheckpointUnit(
   unit: string,
   execFn: ExecSyncLike = defaultExecSync,
 ): { stopped: boolean; reason?: string } {
-  const r = execFn('systemctl', ['--user', 'kill', '--signal=SIGTERM', '--kill-whom=all', `${unit}.service`]);
+  // A scheduled run's unit is a fully named `.scope` (WI-6554700010042670); a bare name is a manual service.
+  const target = unit.endsWith('.scope') ? unit : `${unit}.service`;
+  const r = execFn('systemctl', ['--user', 'kill', '--signal=SIGTERM', '--kill-whom=all', target]);
   if (r.status === 0) return { stopped: true };
   return { stopped: false, reason: r.stderr.trim().slice(0, 300) || `systemctl kill exited ${r.status}` };
 }

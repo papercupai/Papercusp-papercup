@@ -2189,6 +2189,7 @@ export default defineTool({
         // unknown ⇒ null → base guidance (non-breaking).
         let rewakeGuaranteed: boolean | null = null;
         let activeInboxWakeAwait: boolean | null = null;
+        let activeQuestionResolutionAwait: boolean | null = null;
         let activeUnboundedWakeWatch: boolean | null = null;
         let nextWakeFresh: boolean | null = null;
         let activeLoopIntervalSec: number | null = null;
@@ -2198,12 +2199,14 @@ export default defineTool({
           const [
             { isRewakeGuaranteed, awaitGuaranteesRewake },
             { listActiveAwaits, INBOX_WAKE_KEY_PREFIX },
+            { getConversationStatesByIds },
             { getModes },
             { probeWakeReachability },
           ] = await measureContinuationRead(continuationReadTrace, 'rewake.dependencies', () => Promise.all(
             [
               import('../../turn-end-tracking'),
               import('../../events/await/store'),
+              import('../coordination/conversations'),
               import('../../modes/store'),
               import('../../events/await/wake-reachability'),
             ],
@@ -2224,6 +2227,27 @@ export default defineTool({
           activeLoopRewakeBlockedReason =
             loop?.active && !loopWake.guaranteed && loopWake.reason !== 'no-active-loop' ? loopWake.reason : null;
           activeInboxWakeAwait = awaits.some((a) => a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX));
+          const questionConversationIds = [...new Set(awaits.flatMap((a) => {
+            const binding = a.boundTo;
+            return binding?.kind === 'conversation-question' &&
+              typeof binding.ref === 'string' &&
+              a.eventKey === `conversation:answered:${binding.ref}` &&
+              a.once !== false &&
+              a.expiresTs == null
+              ? [binding.ref]
+              : [];
+          }))];
+          activeQuestionResolutionAwait = false;
+          if (questionConversationIds.length > 0) {
+            const questionStates = await measureContinuationRead(
+              continuationReadTrace,
+              'rewake.open-question-awaits',
+              () => getConversationStatesByIds(questionConversationIds, workspaceId).catch(() => null),
+            );
+            activeQuestionResolutionAwait = questionStates === null
+              ? null
+              : questionStates.some((row) => questionConversationIds.includes(row.id) && row.state === 'open');
+          }
           activeUnboundedWakeWatch = awaits.some(
             (a) =>
               !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX) &&
@@ -2290,6 +2314,7 @@ export default defineTool({
           unreadInbox,
           rewakeGuaranteed,
           activeInboxWakeAwait,
+          activeQuestionResolutionAwait,
           activeUnboundedWakeWatch,
           nextWakeFresh,
           selfCompactionAvailable,

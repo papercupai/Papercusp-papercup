@@ -1541,12 +1541,15 @@ describe('dispatchPendingGradingAudits', () => {
     expect(brief).not.toContain("build:'staging'");
     expect(brief).toContain('If stale_tool_contract is returned, refresh from the same runtime and resume the exact cursor.');
     expect(brief).toContain('Preserve a transport failure as a retrieval failure; never treat it as absent evidence.');
-    expect(brief).toContain(`code:run uses a default script budget of ${DEFAULT_SCRIPT_TIMEOUT_MS.toLocaleString('en-US')} ms`);
+    expect(brief).toContain(`code:run scripts use a default budget of ${DEFAULT_SCRIPT_TIMEOUT_MS.toLocaleString('en-US')} ms`);
     expect(brief).toContain(`explicit timeoutSec can raise it to the ${FOREGROUND_TIMEOUT_CEILING_MS.toLocaleString('en-US')} ms`);
     expect(brief).not.toContain('code:run has a 45-second foreground timeout ceiling');
-    expect(brief).toContain('Do not fan out byte-page chains for multiple large blobs in one call');
-    expect(brief).toContain("If a single blob's full chain might approach the ceiling, read a bounded page segment");
-    expect(brief).toContain('continue its exact next_cursor in a separate call, or issue the page reads directly');
+    expect(brief).toContain('capability:git-evidence is not in the code:run facade');
+    expect(brief).toContain('For pinned files, issue capability:git-evidence pages directly with tools:invoke');
+    expect(brief).toContain('preserving servingGeneration and every exact next_cursor');
+    expect(brief).toContain("Read one oversized blob's chain at a time");
+    expect(brief).toContain("If its full chain might approach the foreground ceiling, read a bounded page segment");
+    expect(brief).toContain('continue the exact cursor in a later call');
     expect(brief).toContain('copy that exact registered slug');
     // WI-6554700010009935: the terminal-re-rate read is subject-scoped and provisional-only.
     expect(brief).toContain(`scorecards:list { rubricRef:'${source.rubricRef}', subjectRef:'source-plan', provisional:true }`);

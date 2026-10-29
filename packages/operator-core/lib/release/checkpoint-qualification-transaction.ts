@@ -918,12 +918,16 @@ function isRetryableUnownedWait(
  * that: an owner that died mid-attempt kept the transaction non-terminal AND non-retryable
  * forever, so `beginQualificationTransaction` returned `conflict` to every later attempt — the
  * scheduled routine included. The gate then renders no verdict at all while looking merely red,
- * and no amount of fixing tests moves it. Two provable ways an owner is gone:
+ * and no amount of fixing tests moves it. Three provable ways an owner is gone:
  *
- *  - a physical runner whose unit the caller probed and found absent; or
- *  - no runner at all, and no write for longer than a runner could legally live.
+ *  - a physical runner whose unit the caller probed and found absent;
+ *  - no runner at all, and no write for longer than a runner could legally live; or
+ *  - a superseded cancelled wait (`isSupersededCancelledWait`): the runner itself recorded its
+ *    cancellation and released the runner slot, and an admission has since moved the head the
+ *    attempt judged. Nothing will ever resume that attempt — resuming it would re-judge a head
+ *    the queue no longer holds — so waiting out the 3h silence clock only freezes the gate.
  *
- * Both require evidence. An owner we cannot prove dead keeps its claim.
+ * All require evidence. An owner we cannot prove dead keeps its claim.
  */
 function isAbandonedQualification(
   current: CheckpointQualificationTransaction | null,
@@ -933,7 +937,29 @@ function isAbandonedQualification(
   if (!current || isTerminalQualificationOutcome(current.outcome)) return false;
   if (current.currentPhysicalRunner)
     return incumbentLiveness === 'dead' && !launchReservationInGrace(current.currentPhysicalRunner, nowMs);
+  if (isSupersededCancelledWait(current)) return true;
   return nowMs - current.updatedAtMs > QUALIFICATION_OWNER_ABANDONED_MS;
+}
+
+/**
+ * WI-6554700010042670 (measured 2026-10-28): a scheduled runner judging 7147ef76 was cancelled
+ * after admissions had moved the queue to 5dfdd8f0. Its attempt settled `waiting` with
+ * `pre-suite-no-verdict: cancelled`, no runner, and `pendingRepairHead` 5dfdd8f0 — so every
+ * successor begin, manual and scheduled, returned `conflict` until the 3h silence clock expired.
+ *
+ * Narrow on purpose: a cancelled wait whose judged head is still current stays non-terminal and
+ * owned, because a same-lineage successor resumes that exact attempt (test resumption).
+ */
+function isSupersededCancelledWait(current: CheckpointQualificationTransaction): boolean {
+  if (
+    current.phase !== 'waiting' ||
+    current.outcome.kind !== 'pre-suite-no-verdict' ||
+    current.outcome.reason !== 'cancelled' ||
+    current.currentPhysicalRunner !== null
+  )
+    return false;
+  const judgedHead = current.repairHead ?? current.candidate;
+  return !!current.pendingRepairHead && current.pendingRepairHead !== judgedHead;
 }
 
 const uniqueStrings = (values: readonly string[], cap = 64): string[] =>

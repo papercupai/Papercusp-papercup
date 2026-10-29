@@ -1,7 +1,7 @@
 /** Source-defined native capture reconciliation. The activity ledger is an index,
  * never the population. Only host-issued runtime roots define the expected calls;
  * no request can supply a source path, a completeness flag, or a historical floor. */
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -12,6 +12,8 @@ import { canonicalJson } from '../external-bench/reproducibility/canonical-json'
 import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
 import { createNativeTranscriptReader, NATIVE_PROVIDERS, type NativeProvider } from './native-operation';
 import type { SearchSource } from './search-reformulation';
+import { decodeOperatorSecretKey } from '../operator-secret-key';
+import { z } from 'zod';
 
 type Client = ReturnType<typeof getOrgPg>['sql'];
 type Binding = { id: string; owner: string; provider: NativeProvider; harness: string | null };
@@ -34,6 +36,160 @@ const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(va
 const micros = (value: string) => BigInt(Date.parse(value)) * 1000n
   + BigInt(((/\.(\d+)/.exec(value)?.[1] ?? '').padEnd(6, '0').slice(3, 6)) || '0');
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const nativeDispatchReceipt = z.object({
+  version: z.literal(1), provider: z.literal('codex'),
+  activityId: z.string().regex(/^[1-9]\d*$/),
+  workspaceId: z.string().min(1).max(256), harnessSlug: z.string().min(1).max(256),
+  ownerId: z.string().min(1).max(256), advSessionId: z.number().int().positive(),
+  nativeSessionId: z.string().min(1).max(256), callId: z.string().min(1).max(256),
+  toolName: z.string().min(1).max(256), argsFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  principal: z.object({ slug: z.string().min(1).max(256), kind: z.string().min(1).max(64),
+    authMethod: z.string().min(1).max(64), trust: z.enum(['trusted', 'verified']) }).strict(),
+  issuedAt: z.string().datetime(), signature: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+type NativeDispatchReceipt = z.infer<typeof nativeDispatchReceipt>;
+export type NativeDispatchAppend = Omit<NativeDispatchReceipt, 'activityId' | 'version' | 'provider' | 'issuedAt' | 'signature'>;
+
+async function nativeDispatchSignature(sql: Client, receipt: Omit<NativeDispatchReceipt, 'signature'>) {
+  const [key] = await sql<{ value_b64: string }[]>`
+    SELECT value_b64 FROM harness_shared.operator_secrets WHERE name='spawn-signing-key'`;
+  if (!key) throw new Error('native_dispatch_signing_key_unavailable');
+  return createHmac('sha256', decodeOperatorSecretKey(key.value_b64, 'spawn-signing-key'))
+    .update(canonicalJson(['native-dispatch-receipt-v1', receipt])).digest('hex');
+}
+
+/** Host-only append after the existing dispatcher's resource ACL. Reuse the
+ * activity index and operator signing key, with a separate signing domain.
+ * Neither activity:report detail nor a serialized principal can mint a receipt.
+ * The host renews possession/principal/turn binding inside this transaction;
+ * failed renewal rolls back the append. A receipt attests an authorized attempt,
+ * not handler success, transcript completeness, or permission to execute again. */
+export async function appendAuthorizedNativeDispatch(input: NativeDispatchAppend,
+  authorize: () => Promise<boolean>, client: Client = getOrgPg().sql): Promise<boolean> {
+  try {
+    if (input.workspaceId === '*' || input.harnessSlug === '*'
+      || ['tools:invoke', 'code:run'].includes(input.toolName) || !await authorize()) return false;
+    const issuedAt = new Date().toISOString();
+    return await client.begin(async transaction => {
+      const sql = transaction as unknown as Client;
+      if (!await authorize()) throw new Error('native_dispatch_authority_withdrawn');
+      // The placeholder is invisible outside this transaction. Sign the actual
+      // allocated row ID so a copied receipt cannot authenticate a replacement.
+      const [row] = await sql<{ id: string }[]>`INSERT INTO harness_shared.agent_activity
+        (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,summary,detail,created_at)
+        VALUES (${input.workspaceId},${input.harnessSlug},${input.ownerId},'codex',${input.nativeSessionId},
+          'tool',${input.toolName},'pre',${input.callId},'Authorized native dispatch','{}',${issuedAt}::timestamptz)
+        RETURNING id::text`;
+      if (!row) throw new Error('native_dispatch_append_unavailable');
+      const unsigned = { ...input, activityId: row.id, version: 1 as const, provider: 'codex' as const, issuedAt };
+      const receipt = nativeDispatchReceipt.parse({ ...unsigned, signature: await nativeDispatchSignature(sql, unsigned) });
+      await sql`UPDATE harness_shared.agent_activity SET detail=${sql.json({ nativeDispatch: receipt })}::jsonb
+        WHERE id=${row.id}::bigint`;
+      if (!await authorize()) throw new Error('native_dispatch_authority_withdrawn');
+      return true;
+    }) as boolean;
+  } catch { return false; }
+}
+
+/** Verification of a historical attempt only. Exact row/source correlation and
+ * current read ACL are separate checks. Arbitrary JSON, changed scope/arguments,
+ * and receipts signed under a rotated key cannot pass this check. */
+export async function verifyNativeDispatchReceipt(value: unknown, client: Client = getOrgPg().sql): Promise<boolean> {
+  try {
+    const parsed = nativeDispatchReceipt.safeParse(value);
+    if (!parsed.success) return false;
+    const { signature, ...unsigned } = parsed.data;
+    const expected = await nativeDispatchSignature(client, unsigned);
+    return timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'));
+  } catch { return false; }
+}
+
+/** @internal Historical per-call authority, never a root or continuity grant.
+ * Read the entire exact-call population before filtering by owner/scope/tool.
+ * An unsigned event-time index can select the original receipt, but cannot
+ * replace it. The caller must independently read the issued runtime's canonical
+ * source and call again with that source before exposing a body. Nothing is cached. */
+export async function readAuthorizedNativeDispatch(input: {
+  id: string; actor: string; provider: NativeProvider; sessionId: string; callId: string;
+  source?: SearchSource;
+}, opts: Pick<NativeCaptureOptions, 'workspaceId' | 'harnessSlug' | 'sourceBoundary' | 'client' | 'authorize'>) {
+  try {
+    if (!/^[1-9]\d*$/.test(input.id) || input.provider !== 'codex' || !input.sessionId || !input.callId
+      || !opts.sourceBoundary || !opts.harnessSlug || opts.harnessSlug === '*' || !await opts.authorize()) return null;
+    const sql = opts.client ?? getOrgPg().sql;
+    const session = createHash('sha256').update(input.sessionId).digest('hex');
+    const call = createHash('sha256').update(input.callId).digest('hex');
+    const read = async () => ({
+      activity: [...await sql<{ row: Record<string, unknown>; population: string }[]>`
+        SELECT to_jsonb(a) AS row,count(*) OVER ()::text AS population FROM harness_shared.agent_activity a
+        WHERE a.id=${input.id}::bigint
+          OR (a.detail->'nativeDispatch'->>'nativeSessionId'=${input.sessionId}
+            AND a.detail->'nativeDispatch'->>'callId'=${input.callId}) ORDER BY a.id LIMIT 2`],
+      dispatch: [...await sql<{ row: Record<string, unknown>; population: string }[]>`
+        SELECT to_jsonb(i) AS row,count(*) OVER ()::text AS population FROM harness_shared.tool_invocations i
+        WHERE i.metadata_json->'requestOrigin'->'nativeSession'->>'valueFingerprint'=${session}
+          AND i.metadata_json->'requestOrigin'->'nativeSession'->>'callIdFingerprint'=${call}
+        ORDER BY i.id LIMIT 2`],
+    });
+    const before = await read(), d = before.dispatch[0];
+    const candidate = before.activity.find(a => String(a.row.id) === input.id)?.row;
+    const signed = before.activity.filter(a => Object.hasOwn(a.row.detail ?? {}, 'nativeDispatch'));
+    // At most the selected unsigned index and ONE original protected receipt.
+    // Count before filtering: a conflicting receipt in another scope is fatal.
+    if (!candidate || signed.length !== 1 || before.activity.some(a => a.population !== String(before.activity.length))
+      || before.dispatch.length !== 1 || d?.population !== '1') return null;
+    const a = signed[0]!;
+    const parsed = nativeDispatchReceipt.safeParse((a.row.detail as { nativeDispatch?: unknown } | null)?.nativeDispatch);
+    if (!parsed.success || !await verifyNativeDispatchReceipt(parsed.data, sql)) return null;
+    const receipt = parsed.data, row = a.row, invocation = d.row;
+    if (receipt.activityId !== String(row.id) || receipt.workspaceId !== opts.workspaceId
+      || receipt.harnessSlug !== opts.harnessSlug || receipt.ownerId !== input.actor
+      || receipt.nativeSessionId !== input.sessionId || receipt.callId !== input.callId
+      || row.workspace_id !== receipt.workspaceId || row.harness_slug !== receipt.harnessSlug
+      || row.owner_id !== receipt.ownerId || row.agent !== receipt.provider || row.session_id !== receipt.nativeSessionId
+      || row.tool_use_id !== receipt.callId || row.tool_name !== receipt.toolName || row.kind !== 'tool' || row.phase !== 'pre'
+      || micros(String(row.created_at)) !== micros(receipt.issuedAt)
+      || ['tools:invoke', 'code:run'].includes(receipt.toolName)) return null;
+    const eventCopy = String(candidate.id) !== receipt.activityId;
+    if (eventCopy && (canonicalJson(candidate.detail) !== '{}'
+      || candidate.workspace_id !== receipt.workspaceId || candidate.harness_slug !== receipt.harnessSlug
+      || candidate.owner_id !== receipt.ownerId || candidate.agent !== receipt.provider
+      || candidate.session_id !== receipt.nativeSessionId || candidate.tool_use_id !== receipt.callId
+      || candidate.tool_name !== receipt.toolName || candidate.kind !== 'tool' || candidate.phase !== 'pre')) return null;
+    const origin = (invocation.metadata_json as { requestOrigin?: { transport?: string; nativeSession?: {
+      carrier?: string; binding?: string; candidateAdvSessionId?: number;
+    } } } | null)?.requestOrigin;
+    const args = invocation.args_json;
+    if (invocation.workspace_id !== receipt.workspaceId || invocation.harness_slug !== receipt.harnessSlug
+      || invocation.coord_owner_id !== receipt.ownerId || invocation.tool_name !== receipt.toolName
+      || invocation.transport !== 'mcp' || invocation.principal_kind !== receipt.principal.kind
+      || invocation.principal_trust !== receipt.principal.trust || invocation.principal_auth_method !== receipt.principal.authMethod
+      || origin?.transport !== 'mcp' || origin.nativeSession?.binding !== 'bound'
+      || origin.nativeSession.carrier !== 'meta:threadId' || origin.nativeSession.candidateAdvSessionId !== receipt.advSessionId
+      || !args || typeof args !== 'object' || Array.isArray(args) || Object.hasOwn(args, '_truncated')
+      || createHash('sha256').update(canonicalJson(args)).digest('hex') !== receipt.argsFingerprint
+      || ['harness', 'harness_slug'].some(key => Object.hasOwn(args, key) && (args as Record<string, unknown>)[key] !== receipt.harnessSlug)
+      || ['workspace', 'workspace_id'].some(key => Object.hasOwn(args, key) && (args as Record<string, unknown>)[key] !== receipt.workspaceId)) return null;
+    const runtime = async () => [...await sql`SELECT id::text,workspace_id,coord_owner_id,agent
+      FROM harness_shared.adv_sessions WHERE id=${receipt.advSessionId}::bigint`];
+    const runtimes = await runtime(), binding = runtimes[0];
+    if (runtimes.length !== 1 || binding?.workspace_id !== receipt.workspaceId
+      || binding.coord_owner_id !== receipt.ownerId || binding.agent !== receipt.provider) return null;
+    const source = input.source;
+    if (source && (source.workspaceId !== receipt.workspaceId || source.harnessSlug !== receipt.harnessSlug
+      || source.authorizationScope !== opts.sourceBoundary || source.actor !== receipt.ownerId || source.provider !== receipt.provider
+      || source.identityAuthority !== 'provider' || !source.sourceComplete || source.namespace !== receipt.nativeSessionId
+      || source.callId !== receipt.callId || resolveMcpName(source.tool)?.expose.mcp?.name !== receipt.toolName
+      || canonicalJson(source.args) !== canonicalJson(args)
+      || eventCopy && micros(String(candidate.created_at)) !== micros(source.at))) return null;
+    if (!await opts.authorize() || canonicalJson(before) !== canonicalJson(await read())
+      || canonicalJson(runtimes) !== canonicalJson(await runtime()) || !await verifyNativeDispatchReceipt(receipt, sql)
+      || !await opts.authorize()) return null;
+    return { binding: { id: String(receipt.advSessionId), owner: receipt.ownerId,
+      provider: receipt.provider, harness: receipt.harnessSlug } satisfies Binding,
+      fingerprint: digest([before, runtimes]) };
+  } catch { return null; }
+}
 /** D030: exact dispatch correlation is a necessary check, NEVER an authority
  * grant. The existing host stores system-bearer authentication and caller/row
  * consistency, not independently authenticated owner/per-call scope. Keep that
@@ -241,15 +397,18 @@ export async function canonicalNativeRuntimeSources(binding: Binding, context: {
   if (JSON.stringify(current.files) !== JSON.stringify(files)) throw new Error('native_capture_changed');
   const complete = !chunked || identities.every(key => cursor.files[key]?.done);
   return { sources, fingerprint: digest(chunked ? identities.map(key => cursor.files[key]?.fingerprint) : stamps),
-    identities, snapshot, complete, continuation: chunked ? cursor : null };
+    identities, snapshot, complete, continuation: chunked ? cursor : null,
+    // Hydration renews DB authority after the body read. Close that await gap
+    // without rereading bodies or letting a serialized source assert stability.
+    unchanged: async () => (await canonicalNativeRuntimeManifest(binding, Date.now() + 1000)).snapshot === snapshot };
 }
 
-/** Production authority boundary (D030). No existing generic persisted receipt
- * independently authenticates owner + issued runtime + exact per-call scope.
- * Until one does, even a perfect candidate index is UNKNOWN. In particular,
- * never run the candidate indexer here: it writes opts.harnessSlug and cannot
- * supply its own authority. This is a fail-closed mitigation; the missing
- * positive binding remains tracked by EI-27075012317842664. */
+/** Production continuity boundary (D030). Protected dispatch receipts establish
+ * individual historical attempts, not the runtime/source population or its
+ * prospective retention floor. The candidate indexer attributes entire roots
+ * and writes opts.harnessSlug; it cannot turn per-call proof into continuity.
+ * Keep UNKNOWN until every source in an independently complete population has
+ * authority. The remaining continuity work is EI-27075012317842664. */
 export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promise<'unknown'> {
   try { await opts.authorize(); } catch { /* Revocation/unavailable ACL is also UNKNOWN. */ }
   return 'unknown';

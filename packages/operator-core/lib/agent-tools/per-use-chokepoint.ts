@@ -17,6 +17,7 @@ import type { InstalledPluginProvenance } from '../cupboard/types';
 import type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from '../su-session-usage';
 import { nativeToolArguments } from '../su-session-usage';
 import type { HostRequestPrincipalResolver } from '../auth/require-principal';
+import { appendAuthorizedNativeDispatch, type NativeDispatchAppend } from '../agent-opportunities/native-capture';
 import { declareMeter, LocalMeteredTurnRefusedError, type LocalMeteredTurn } from '../p2p/metered-invocation';
 
 type Request = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
@@ -393,7 +394,7 @@ export class NativeInstalledPerUseTurns {
           return;
         }
         if (entry.observations.size >= 1000) throw new Error('Native turn call population exceeds the admission bound');
-        entry.observations.set(callKey, { toolName, arguments: args, consumed: false, principalClaimed: false });
+        entry.observations.set(callKey, { toolName, callId, arguments: args, consumed: false, principalClaimed: false });
       },
       withdraw: () => this.withdrawEntry(key, entry),
     };
@@ -429,8 +430,61 @@ export class NativeInstalledPerUseTurns {
       const principal = await entry.resolveRequestPrincipal();
       if (!active() || !principal || principal.workspaceId !== entry.context.workspaceId
         || !['trusted', 'verified'].includes(principal.trust)) return null;
-      return structuredClone(principal);
+      const retained = structuredClone(principal);
+      observed.requestPrincipal = retained;
+      observed.runtimeBearer = input.runtimeBearer;
+      return retained;
     } catch { return null; }
+  }
+
+  /** Invoked only from aroundInvoke, after the maintained dispatcher's ACL.
+   * Identity is the actual host object returned above, never an equal JSON copy.
+   * Tombstone before IO so concurrent/wrapper calls cannot borrow this attempt. */
+  async appendAuthorizedCapture(request: Request,
+    append: typeof appendAuthorizedNativeDispatch = appendAuthorizedNativeDispatch): Promise<boolean> {
+    const native = request.ctx.requestOrigin?.nativeSession, principal = request.ctx.principal;
+    const workspaceId = request.ctx.workspaceId, harnessSlug = request.ctx.harnessSlug;
+    if (request.tool.pluginInstallation || request.ctx.transport !== 'mcp' || request.ctx.gateBypass?.policy
+      || !workspaceId || !harnessSlug || harnessSlug === '*' || !principal
+      || principal.workspaceId !== workspaceId || !principal.kind || !principal.authMethod
+      || !['trusted', 'verified'].includes(principal.trust ?? '') || native?.binding !== 'bound'
+      || native.carrier !== 'meta:threadId' || !native.valueFingerprint || !native.callIdFingerprint
+      || !Number.isSafeInteger(native.candidateAdvSessionId)
+      || ['tools:invoke', 'code:run'].includes(request.toolName)) return false;
+    const key = this.key(workspaceId, native.candidateAdvSessionId!, native.valueFingerprint);
+    const entry = this.turns.get(key), observed = entry?.observations.get(native.callIdFingerprint);
+    const args = nativeToolArguments(request.input);
+    if (!entry || entry.withdrawn || entry.nativeTurnId === null || !entry.resolveRequestPrincipal
+      || !observed || observed.captureClaimed || observed.requestPrincipal !== principal || !observed.runtimeBearer
+      || observed.arguments === null || args === null || observed.toolName !== request.toolName
+      || request.ctx.uiClientId !== entry.context.ownerId
+      || canonicalJson(observed.arguments) !== canonicalJson(args)
+      || ['harness', 'harness_slug'].some(field => Object.hasOwn(args, field) && args[field] !== harnessSlug)
+      || ['workspace', 'workspace_id'].some(field => Object.hasOwn(args, field) && args[field] !== workspaceId)) return false;
+    observed.captureClaimed = true;
+    const active = () => this.turns.get(key) === entry && !entry.withdrawn && entry.nativeTurnId !== null
+      && entry.observations.get(native.callIdFingerprint!) === observed && !request.ctx.signal.aborted;
+    const authorize = async () => {
+      if (!active() || !await verifyNativeRuntimeBearer(observed.runtimeBearer!, { workspaceId,
+        advSessionId: entry.context.advSessionId, ownerId: entry.context.ownerId, provider: 'codex' }) || !active()) return false;
+      const current = await entry.resolveRequestPrincipal!();
+      const snapshot = (value: NonNullable<Request['ctx']['principal']>) => canonicalJson({ ...value,
+        capabilities: [...value.capabilities].sort(), roles: value.roles && [...value.roles].sort(),
+        allowedTools: value.allowedTools && [...value.allowedTools].sort() });
+      if (!active() || !current || snapshot(current) !== snapshot(principal)) return false;
+      // The outer dispatcher ran this gate already. Renew that SAME gate after
+      // async possession/principal IO so an intervening resource revocation
+      // cannot receive a durable certificate from an earlier allow decision.
+      const decision = request.tool.authorize
+        ? await request.tool.authorize({ principal: current, input: request.input, ctx: request.ctx }) : { allow: true };
+      return active() && decision.allow;
+    };
+    const input: NativeDispatchAppend = { workspaceId, harnessSlug, ownerId: entry.context.ownerId,
+      advSessionId: entry.context.advSessionId, nativeSessionId: entry.context.nativeSessionId,
+      callId: observed.callId, toolName: request.toolName,
+      argsFingerprint: fingerprint(canonicalJson(args)), principal: { slug: principal.slug,
+        kind: principal.kind, authMethod: principal.authMethod, trust: principal.trust as 'trusted' | 'verified' } };
+    try { return await append(input, authorize); } catch { return false; }
   }
 
   /** Synchronous claim at the dispatch seat. No handler/input/output cohort can
@@ -519,8 +573,8 @@ interface NativeInstalledTurnEntry {
   withdrawn: boolean;
   admissions: readonly FundedInstalledAdmission[];
   freeAdmissions: readonly VerifiedFreeToolAdmission[];
-  observations: Map<string, { toolName: string; arguments: Readonly<Record<string, unknown>> | null;
-    consumed: boolean; principalClaimed: boolean }>;
+  observations: Map<string, { toolName: string; callId: string; arguments: Readonly<Record<string, unknown>> | null;
+    consumed: boolean; principalClaimed: boolean; requestPrincipal?: Principal; runtimeBearer?: string; captureClaimed?: boolean }>;
 }
 
 interface NativeInstalledTurnContext {
@@ -537,6 +591,11 @@ interface NativeInstalledTurnContext {
 const fingerprint = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
 export const nativeInstalledPerUseTurns = pinModuleState('@papercusp/operator-core.native-installed-per-use-turns',
   () => new NativeInstalledPerUseTurns());
+
+export async function nativeCaptureChokepoint(request: Request): Promise<Awaited<ReturnType<Request['invoke']>>> {
+  await nativeInstalledPerUseTurns.appendAuthorizedCapture(request);
+  return request.invoke();
+}
 
 type CatalogLifecycleDeps = Parameters<NativeInstalledPerUseTurns['nativeLifecycleFromCatalog']>[0];
 /** Attached-engine capability, never an owner command or invocation argument.

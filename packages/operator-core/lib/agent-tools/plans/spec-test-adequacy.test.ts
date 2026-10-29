@@ -24,7 +24,11 @@ import { isNonCodeWorkItemKind } from '../../plan-verification-profile';
 import { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
 import getSpecEvidenceTool from './get-spec-evidence';
 import { scorecardEmitArgs } from '../scorecards/emit';
-import { classifySpecEvidenceCurrentness, type EvidenceCurrentInput } from './spec-evidence-store';
+import {
+  classifySpecEvidenceCurrentness,
+  MEASUREMENT_PIN_DETAILS_KEY,
+  type EvidenceCurrentInput,
+} from './spec-evidence-store';
 import { asStructuredObservation } from '../../harness/improvements/observation-types';
 import { resolveLocalRubric } from '../../cupboard/rubric-store';
 
@@ -1790,6 +1794,95 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     ],
   ] as const)('classifies %s evidence lineage as %s', (_label, over, expected) => {
     expect(classifySpecEvidenceLineage(over).lineage).toBe(expected);
+  });
+
+  it('treats a server-measured repo-files pin as durable traceability', () => {
+    const row = evidence({
+      evidenceKind: 'manual',
+      evidenceRef: 'surface:binding-55298',
+      coverageEvidenceRef: null,
+      testRunId: null,
+      serverMeasurement: { status: 'measured' },
+      details: {
+        currentMeasurement: {
+          schemaVersion: 1,
+          kind: 'repo-files',
+          sourcePaths: ['src/feature.ts'],
+        },
+        [MEASUREMENT_PIN_DETAILS_KEY]: {
+          schemaVersion: 1,
+          files: [{
+            path: 'src/feature.ts',
+            dimension: 'source',
+            sha256: 'a'.repeat(64),
+            repo: '.',
+            headBlob: 'a'.repeat(40),
+            clean: true,
+          }],
+          repos: [{ repo: '.', head: 'a'.repeat(40), gitlink: null }],
+        },
+      },
+    });
+
+    expect(classifySpecEvidenceLineage(row)).toEqual({
+      lineage: 'durable',
+      reason: 'server-measured repo-files measurement pin',
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [row],
+      classRef: 'plan-class-bugfix',
+    });
+    expect(result.ratings.traceability.rating).toBe('pass');
+  });
+
+  it('does not treat an unmeasured or unhashed repo-files description as durable lineage', () => {
+    const details = {
+      currentMeasurement: { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/feature.ts'] },
+      [MEASUREMENT_PIN_DETAILS_KEY]: {
+        schemaVersion: 1,
+        files: [{ path: 'src/feature.ts', dimension: 'source', sha256: 'not-a-sha', repo: '.', headBlob: null, clean: null }],
+        repos: [{ repo: '.', head: null, gitlink: null }],
+      },
+    };
+
+    expect(classifySpecEvidenceLineage({
+      evidenceRef: 'surface:binding-55298',
+      coverageEvidenceRef: null,
+      testRunId: null,
+      details,
+      serverMeasurement: { status: 'measured' },
+    }).lineage).toBe('unknown');
+    expect(classifySpecEvidenceLineage({
+      evidenceRef: 'surface:binding-55298',
+      coverageEvidenceRef: null,
+      testRunId: null,
+      details: {
+        currentMeasurement: { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/feature.ts'] },
+        [MEASUREMENT_PIN_DETAILS_KEY]: {
+          schemaVersion: 1,
+          files: [{ path: 'src/other.ts', dimension: 'source', sha256: 'a'.repeat(64), repo: '.', headBlob: null, clean: null }],
+          repos: [{ repo: '.', head: null, gitlink: null }],
+        },
+      },
+      serverMeasurement: { status: 'measured' },
+    }).lineage).toBe('unknown');
+    expect(classifySpecEvidenceLineage({
+      evidenceRef: 'surface:binding-55298',
+      coverageEvidenceRef: null,
+      testRunId: null,
+      details: {
+        ...details,
+        [MEASUREMENT_PIN_DETAILS_KEY]: {
+          ...details[MEASUREMENT_PIN_DETAILS_KEY],
+          files: [{
+            path: 'src/feature.ts', dimension: 'source', sha256: 'a'.repeat(64),
+            repo: '.', headBlob: null, clean: null,
+          }],
+        },
+      },
+      serverMeasurement: { status: 'unavailable' },
+    }).lineage).toBe('unknown');
   });
 
   // WI-6554700010008517: repo-relative durability is DERIVED (any relative path not under an ephemeral root), not a

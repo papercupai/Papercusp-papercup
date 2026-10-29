@@ -189,8 +189,11 @@ export function assertIsolatedWorkerReaped(child: Pick<ChildProcess, 'exitCode' 
   assert.ok(ended?.runtimeRemoved && ended.pgDataRemoved, 'original private runtime and database cleanup required');
 }
 
-type WorkerPhase = 'bootstrap' | 'execute' | 'teardown';
-type WorkerDeadlines = { bootstrapMs: number; bootstrapMaxMs?: number; executeMs: number; teardownMs: number; teardownMaxMs?: number; executeMaxMs?: number };
+type WorkerPhase = 'bootstrap' | 'execute' | 'finalize' | 'teardown';
+type WorkerDeadlines = { bootstrapMs: number; bootstrapMaxMs?: number; executeMs: number; finalizeMs?: number;
+  finalizeMaxMs?: number; teardownMs: number; teardownMaxMs?: number; executeMaxMs?: number };
+type WorkerPhaseMaximumOverrides = Partial<Pick<WorkerDeadlines,
+  'bootstrapMaxMs' | 'finalizeMaxMs' | 'teardownMaxMs'>>;
 
 /** Compose the actual nested router contract; startup consumes none of its
  * collection/execution allowance. Teardown allows the router's cgroup stop,
@@ -198,26 +201,39 @@ type WorkerDeadlines = { bootstrapMs: number; bootstrapMaxMs?: number; executeMs
  * Actual PG write progress can extend cleanup within the single-file default ceiling;
  * repeated stages, logs and unchanged IO cannot renew it. No budget is proof of cleanup.
  */
-export function isolatedWorkerOptions(executeMs: number, env: NodeJS.ProcessEnv = process.env, executeMaxMs = executeMs) {
+export function isolatedWorkerOptions(
+  executeMs: number,
+  env: NodeJS.ProcessEnv = process.env,
+  executeMaxMs = executeMs,
+  phaseMaxOverrides: WorkerPhaseMaximumOverrides = {},
+) {
   const listMs = testFileListTimeoutMs(env);
   const teardownMs = TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000 + 5_000 + 30_000;
   // The caller may widen its encompassing file watchdog to fit these phases.
   // Reusing that override here would grow the inner budget twice on every
   // increase, so no parent budget could ever contain it.
   const phaseMaxMs = defaultTestFileRunTimeoutMs(1);
+  const bootstrapMaxMs = phaseMaxOverrides.bootstrapMaxMs ?? Math.max(listMs, phaseMaxMs);
+  const finalizeMaxMs = phaseMaxOverrides.finalizeMaxMs ?? Math.max(teardownMs, phaseMaxMs);
+  const teardownMaxMs = phaseMaxOverrides.teardownMaxMs ?? Math.max(teardownMs, phaseMaxMs);
   const phaseTimeouts: WorkerDeadlines = {
     // Collection time is a progress checkpoint, not a maximum PG boot time.
     // Use the shared single-file default allowance as the absolute
     // preparation ceiling; only distinct observed boot stages can extend it.
     bootstrapMs: listMs,
-    bootstrapMaxMs: Math.max(listMs, phaseMaxMs),
+    bootstrapMaxMs,
     executeMs,
     executeMaxMs,
+    // Router source/receipt verification precedes runtime shutdown. Its own
+    // bounded progress clock must not consume either assertions or PG cleanup.
+    finalizeMs: teardownMs,
+    finalizeMaxMs,
     teardownMs,
-    teardownMaxMs: Math.max(teardownMs, phaseMaxMs),
+    teardownMaxMs,
   };
   return { phaseTimeouts, killGraceMs: teardownMs, drainGraceMs: 5_000,
-    testTimeoutMs: phaseTimeouts.bootstrapMaxMs! + phaseTimeouts.executeMaxMs! + phaseTimeouts.teardownMaxMs! + teardownMs + 20_000 };
+    testTimeoutMs: phaseTimeouts.bootstrapMaxMs! + phaseTimeouts.executeMaxMs! + phaseTimeouts.finalizeMaxMs! +
+      phaseTimeouts.teardownMaxMs! + teardownMs + 20_000 };
 }
 
 export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount: number) {
@@ -248,6 +264,8 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
   }
   assert.ok(!deadlines || !deadlines.executeMaxMs || deadlines.executeMaxMs >= deadlines.executeMs);
   assert.ok(!deadlines || !deadlines.bootstrapMaxMs || deadlines.bootstrapMaxMs >= deadlines.bootstrapMs);
+  assert.ok(!deadlines || !deadlines.finalizeMaxMs ||
+    deadlines.finalizeMs !== undefined && deadlines.finalizeMaxMs >= deadlines.finalizeMs);
   assert.ok(!deadlines || !deadlines.teardownMaxMs || deadlines.teardownMaxMs >= deadlines.teardownMs);
   let ownsProcessGroup = false;
   if (process.platform === 'linux' && child.pid) {
@@ -286,6 +304,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     let lastProgressAt = -Infinity;
     let completedCases = 0;
     const caseProgress = new Set<string>();
+    const provenanceSteps = new Set<string>();
+    let provenanceFiles = 0;
+    let provenanceTotal: number | undefined;
     const relayProgress = (stage: string, force = false) => {
       const at = Date.now();
       if (!force && at - lastProgressAt < (options.progressIntervalMs ?? 30_000)) return;
@@ -302,6 +323,31 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       // private-runtime lifecycle or successful-test evidence.
       if (options.testFileExecutionFromStdout && deadlines && !timedOut && phase === 'bootstrap' &&
           /^TEST_FILE_PROGRESS state=started(?: |$)/.test(line)) armPhase('execute');
+      if (options.testFileExecutionFromStdout && deadlines && !timedOut &&
+          line.startsWith('TEST_FILE_FINALIZATION ')) {
+        try {
+          const value = JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length));
+          if (value.phase === 'provenance-start' && phase === 'execute' && deadlines.finalizeMs) armPhase('finalize');
+          else if (phase === 'finalize' && value.phase === 'provenance-progress' &&
+              ['git-checkout', 'source-census'].includes(value.step)) {
+            const key = `${value.step}:${value.event}`;
+            if (['start', 'end'].includes(value.event) && !provenanceSteps.has(key)) {
+              provenanceSteps.add(key);
+              progressWatchdog?.noteProgress();
+              relayProgress('provenance-' + key);
+            } else if (value.step === 'source-census' && value.event === 'progress' &&
+                Number.isSafeInteger(value.completedFiles) && Number.isSafeInteger(value.totalFiles) &&
+                value.totalFiles > 0 && value.completedFiles > provenanceFiles &&
+                value.completedFiles <= value.totalFiles &&
+                (provenanceTotal === undefined || value.totalFiles === provenanceTotal)) {
+              provenanceTotal = value.totalFiles;
+              provenanceFiles = value.completedFiles;
+              progressWatchdog?.noteProgress();
+              relayProgress('provenance-files');
+            }
+          }
+        } catch { /* malformed finalization output cannot alter a deadline */ }
+      }
       if (line.startsWith('TEST_FILE_PROGRESS ')) {
         const offset = line.indexOf(' lastOutputLine=');
         if (offset < 0) return;
@@ -359,13 +405,17 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       progressWatchdog?.stop();
       phase = next;
       relayProgress('phase-' + next, true);
-      const ms = deadlines![next === 'bootstrap' ? 'bootstrapMs' : next === 'execute' ? 'executeMs' : 'teardownMs'];
+      const ms = deadlines![next === 'bootstrap' ? 'bootstrapMs' : next === 'execute' ? 'executeMs'
+        : next === 'finalize' ? 'finalizeMs' : 'teardownMs']!;
       if (next === 'bootstrap' && deadlines!.bootstrapMaxMs) {
         progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.bootstrapMaxMs,
           stallWindowMs: ms, extensionMs: ms, onKill: terminate });
       } else if (next === 'execute' && deadlines!.executeMaxMs) {
         progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.executeMaxMs,
           stallWindowMs: 5 * 60_000, extensionMs: 5 * 60_000, onKill: terminate });
+      } else if (next === 'finalize' && deadlines!.finalizeMaxMs) {
+        progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.finalizeMaxMs,
+          stallWindowMs: ms, extensionMs: ms, onKill: terminate });
       } else if (next === 'teardown' && deadlines!.teardownMaxMs) {
         progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.teardownMaxMs,
           stallWindowMs: ms, extensionMs: ms, onKill: terminate });
@@ -385,7 +435,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       // Repeated or out-of-order IPC cannot renew a phase's deadline.
       if (kind === 'isolated-runtime-start' && phase === 'bootstrap' && !options.testFileExecutionFromStdout) armPhase('execute');
       else if ((kind === 'isolated-runtime-stopping' || kind === 'isolated-runtime-end') &&
-          (phase === 'execute' || options.testFileExecutionFromStdout && phase === 'bootstrap')) armPhase('teardown');
+          (phase === 'execute' || phase === 'finalize' || options.testFileExecutionFromStdout && phase === 'bootstrap')) armPhase('teardown');
       if (phase === 'teardown' && kind === 'isolated-runtime-cleanup') {
         if (typeof stage === 'string' && /^(start|profile-stop|pg-stop|pg-stopped|remove-private-state|complete)$/.test(stage) && !cleanupStages.has(stage)) {
           cleanupStages.add(stage);

@@ -712,10 +712,56 @@ async function reconcileGitSyncActivityOwner(
 ): Promise<GitSyncActivityOwnerReconciliation | null> {
   const markerRaw = metadata?.git_sync_activity;
   const marker = markerRaw && typeof markerRaw === 'object' ? (markerRaw as Record<string, unknown>) : null;
-  if (marker?.active !== true) return null;
+  if (marker === null) return null;
 
   const owner = typeof marker.owner === 'string' ? marker.owner : null;
   const ownerPid = typeof marker.owner_pid === 'number' ? marker.owner_pid : null;
+  const validOwnerIdentity =
+    owner !== null &&
+    ownerPid !== null &&
+    Number.isSafeInteger(ownerPid) &&
+    ownerPid > 0 &&
+    owner.startsWith(`system:git-sync:${ownerPid}:`);
+
+  if (marker.active !== true) {
+    // Activity metadata is last-writer-wins across overlapping fires. An older
+    // completion can publish active:false after a newer fire has acquired the
+    // resource lease, so an inactive marker alone cannot prove the lane is idle.
+    const queueReadStartedAtMs = Date.now();
+    try {
+      const queue = await readResourceQueueBounded({
+        coordinationDomain: coordinationDomain || '*',
+        resource: `git-sync:${installSlug}`,
+      });
+      onQueueRead?.({ durationMs: Date.now() - queueReadStartedAtMs, outcome: 'ok' });
+      const exclusiveHolders = queue.holders.filter((holder) => holder.mode === 'exclusive');
+      if (exclusiveHolders.length === 0) return null;
+
+      const matchingOwnerLock = validOwnerIdentity && exclusiveHolders.some((holder) => holder.owner === owner);
+      const ownerRelation = !validOwnerIdentity
+        ? 'whose owner cannot be matched to the marker'
+        : matchingOwnerLock
+          ? 'for the marker owner'
+          : 'whose owner differs from the inactive marker';
+      return {
+        status: 'unverified',
+        owner_pid: ownerPid,
+        lock_state: 'held',
+        matching_owner_lock: validOwnerIdentity ? matchingOwnerLock : null,
+        reason: `The activity marker is inactive, but an exclusive git-sync resource lease is held ${ownerRelation}; keep the restart verdict unsafe.`,
+      };
+    } catch {
+      onQueueRead?.({ durationMs: Date.now() - queueReadStartedAtMs, outcome: 'error' });
+      return {
+        status: 'unverified',
+        owner_pid: ownerPid,
+        lock_state: 'unknown',
+        matching_owner_lock: null,
+        reason: 'The activity marker is inactive, but the git-sync resource lock could not be read; keep the restart verdict unsafe.',
+      };
+    }
+  }
+
   if (
     owner === null ||
     ownerPid === null ||
@@ -856,8 +902,17 @@ export function deriveGitSyncFreshness(
   // the EXECUTION leg is busy, and the single scalar then indicates exactly the
   // action that causes the damage. Decompose the verdict and answer the
   // destructive question directly rather than leaving every reader to infer it.
+  const inactiveMarkerLeaseUnverified = activity?.active !== true && ownerReconciliation?.status === 'unverified';
   const executionStatus: 'idle' | 'in-flight' | 'stuck' | 'unknown' =
-    activity === null ? 'unknown' : !inFlightActive ? 'idle' : inFlightStuck ? 'stuck' : 'in-flight';
+    activity === null
+      ? 'unknown'
+      : inactiveMarkerLeaseUnverified
+        ? 'unknown'
+        : !inFlightActive
+          ? 'idle'
+          : inFlightStuck
+            ? 'stuck'
+            : 'in-flight';
 
   const schedulerStatus: 'firing' | 'not-firing' | 'inactive' | 'unknown' = !active
     ? 'inactive'
@@ -902,7 +957,9 @@ export function deriveGitSyncFreshness(
         ? `The active git-sync marker is stale: ${ownerReconciliation.reason}`
         : 'No git-sync fire is in flight (the activity marker reports active:false), so a restart cannot interrupt one.'
       : executionStatus === 'unknown'
-        ? 'This row carries no git_sync_activity marker, so whether a fire is in flight is UNMEASURED — reported unsafe by default, because a wrong "safe" destroys in-flight work irrecoverably while a wrong "unsafe" only declines a restart.'
+        ? ownerReconciliation?.status === 'unverified'
+          ? `${ownerReconciliation.reason} Treat the execution state as unknown and keep the restart verdict unsafe (safe_to_restart is false).`
+          : 'This row carries no git_sync_activity marker, so whether a fire is in flight is UNMEASURED — reported unsafe by default, because a wrong "safe" destroys in-flight work irrecoverably while a wrong "unsafe" only declines a restart.'
         : `${ownerReconciliation?.reason ?? 'An active git-sync marker has not been proven stale.'} Treat it as in-flight and do not restart (safe_to_restart is false).`;
 
   return {

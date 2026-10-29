@@ -124,6 +124,7 @@ describe('source BAR test requirements read live requirement check.files', () =>
     liveFiles?: string[];
     liveCases?: Array<{ file: string; testName: string }>;
     liveKind?: string;
+    liveTitle?: string;
     planReadable?: boolean;
     throws?: boolean;
   } = {}): SourceBarLiveRead & { liveCalls: () => number } {
@@ -139,7 +140,10 @@ describe('source BAR test requirements read live requirement check.files', () =>
         // Exercise the REAL overlay policy, not a hand-rolled copy of it.
         return readLiveAcceptanceCriteria(rubric, {
           readSubjectPlanContent: async () => (opts.planReadable === false ? null : { content: 'plan', version: 3 }),
-          parseRequirementBars: () => ({ ok: true, bars: [{ barKey: pin.barKey, criterion: { check } }] }),
+          parseRequirementBars: () => ({ ok: true, bars: [{
+            barKey: pin.barKey,
+            criterion: { ...(opts.liveTitle ? { title: opts.liveTitle } : {}), check },
+          }] }),
         });
       },
       liveCalls: () => calls,
@@ -161,18 +165,34 @@ describe('source BAR test requirements read live requirement check.files', () =>
     });
   });
 
-  it('keeps an older pinned revision an immutable snapshot and never reads the plan', async () => {
+  it('uses live test paths for an unchanged clause even when its rubric pin is older', async () => {
     rubricReads.getRubric.mockResolvedValue(planRubric());
-    const live = liveRead({ currentRevision: pin.rubricRevision + 1 });
+    const live = liveRead({ currentRevision: pin.rubricRevision + 1, liveFiles: [MOVED] });
+
+    await expect(resolveSourceBarTestRequirements(pin, new Map(), live)).resolves.toEqual({
+      status: 'required',
+      files: [MOVED],
+      liveRequirement: { subjectPlan: 'live-plan-fixture', pinnedFiles: ['a.test.ts', 'z.test.ts'] },
+    });
+    expect(live.liveCalls()).toBe(1);
+  });
+
+  it('keeps an older pinned snapshot when the live clause meaning changed', async () => {
+    rubricReads.getRubric.mockResolvedValue(planRubric());
+    const live = liveRead({
+      currentRevision: pin.rubricRevision + 1,
+      liveFiles: [MOVED],
+      liveTitle: 'A different acceptance promise',
+    });
 
     await expect(resolveSourceBarTestRequirements(pin, new Map(), live)).resolves.toEqual({
       status: 'required',
       files: ['a.test.ts', 'z.test.ts'],
     });
-    expect(live.liveCalls()).toBe(0);
+    expect(live.liveCalls()).toBe(1);
   });
 
-  it('uses live named selectors even when files are unchanged, while older pins keep their exact selectors', async () => {
+  it('uses live named selectors for older unchanged clauses even when files are unchanged', async () => {
     const files = ['a.test.ts', 'z.test.ts'];
     const pinnedCases = files.map(file => ({ file, testName: 'pinned case' }));
     rubricReads.getRubric.mockResolvedValue({ ...planRubric(), criteria: [{ ...sourceRubric().criteria[0], check: { kind: 'tests', files, cases: pinnedCases } }] });
@@ -181,7 +201,10 @@ describe('source BAR test requirements read live requirement check.files', () =>
       status: 'required', files, cases,
       liveRequirement: { subjectPlan: 'live-plan-fixture', pinnedFiles: files },
     });
-    await expect(resolveSourceBarTestRequirements(pin, new Map(), liveRead({ currentRevision: 5, liveFiles: files, liveCases: cases }))).resolves.toEqual({ status: 'required', files, cases: pinnedCases });
+    await expect(resolveSourceBarTestRequirements(pin, new Map(), liveRead({ currentRevision: 5, liveFiles: files, liveCases: cases }))).resolves.toEqual({
+      status: 'required', files, cases,
+      liveRequirement: { subjectPlan: 'live-plan-fixture', pinnedFiles: files },
+    });
   });
 
   it.each([

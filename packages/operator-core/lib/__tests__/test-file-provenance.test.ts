@@ -75,15 +75,20 @@ describe('focused router verifier archive provenance', () => {
     vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', path);
     vi.stubEnv('VERIFY_TAURI_SOURCE_REF', receipt.sourceCommit);
     try {
-      const before = snapshotProvenance([test], root);
+      const progress = vi.fn();
+      const before = snapshotProvenance([test], root, { onVerifierProgress: progress });
       expect(before.head).toBe(receipt.sourceCommit);
       expect(before.entries[0]).toMatchObject({ path: 'journey.test.ts', state: 'clean' });
+      expect(progress).toHaveBeenCalledWith(expect.objectContaining({ step: 'source-census', event: 'start' }));
+      expect(progress).toHaveBeenCalledWith(expect.objectContaining({ step: 'source-census', event: 'end', status: 0 }));
       expect(snapshotProvenance([test], root).head).toBe(receipt.sourceCommit);
       writeFileSync(test, 'export const test = false;\n');
-      const after = snapshotProvenance([test], root);
+      progress.mockClear();
+      const after = snapshotProvenance([test], root, { onVerifierProgress: progress });
       expect(after.head).toBeNull();
       expect(after.entries[0].state).toBe('unknown');
       expect(after.provenanceError).toContain('changed journey.test.ts');
+      expect(progress).toHaveBeenCalledWith(expect.objectContaining({ step: 'source-census', event: 'end', status: 3 }));
       const stamp = provenanceResultFields(after, diffProvenanceSnapshots(before, after));
       expect(stamp).toContain('head=unknown');
       expect(stamp).toContain('provenance=drifted');

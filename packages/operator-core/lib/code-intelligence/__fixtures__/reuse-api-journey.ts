@@ -245,7 +245,13 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   assert.equal(claimed.results?.[0]?.ok, true, JSON.stringify(claimed));
   console.log('NATIVE_INCIDENT_API_STAGE=reuse-fixture-owned');
   const before = await readFile(join(root, targetPath), 'utf8');
-  const edited = (claimOnly ? '// CLI\n' : '// touched clone sibling in this private task\n') + before + (claimOnly ? '' : aggregate('plantedCopy'));
+  // P-008: the provenance provider reports PRIOR work on the file's functions
+  // (change-history.ts readPriorWork). A captured edit counts only when its
+  // enclosing symbols overlap them, so the controlled CLI edit lands inside f.
+  const fnOpen = 'export function f(v:number[]){';
+  if (claimOnly) assert(before.includes(fnOpen), 'Sparse a.ts must declare f: ' + before);
+  const edited = claimOnly ? before.replace(fnOpen, fnOpen + '// CLI\n')
+    : '// touched clone sibling in this private task\n' + before + aggregate('plantedCopy');
   let controlledSession: { id: number; session: string; editedAt: string } | undefined;
   if (claimOnly) {
     const { recordAdvSession } = await import('../../adv-sessions.ts');
@@ -273,25 +279,34 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
     // (50ca13d720). A shell write produces no ledger row, so record the Write
     // through the production writer, the one locks:release runs for a
     // hook-mediated CLI Write. Await symbol capture so the labels are durable.
+    // The provider excludes the claimed item (its own edits are current work),
+    // so the controlled Write is attributed to a separate, visible prior item.
+    const priorCreated = await call('work_items:create', { harness, kind: 'change',
+      title: 'Controlled prior a.ts edit (P010 provenance witness)',
+      ...(managed ? { state: 'open' } : { assign_to: 'self', state: 'wip' }),
+      changeKinds: ['logic'], changeKindReason: 'Private source fixture: prior work the claimed item reads.',
+      payload: { paths: [targetPath] }, projection: { pick: ['results[].id', 'results[].item.id'] } });
+    const prior: string | undefined = priorCreated.results?.[0]?.id ?? priorCreated.results?.[0]?.item?.id;
+    assert(prior && prior !== id, JSON.stringify(priorCreated));
+    if (managed) await managed.trackClaim(prior);
     const { recordEditAttribution } = await import('../../edit-attribution.ts');
     await recordEditAttribution({ repoRoot: root, files: [targetPath], agentId: owner, sessionId: session,
-      workspaceId: workspace, goalRef: id, intent: 'Controlled P010 CLI fixture write',
+      workspaceId: workspace, goalRef: prior, intent: 'Controlled P010 CLI fixture write',
       dispatchCallId: randomUUID() }, { strict: true, awaitSymbols: true });
-    // Prove the native producer's session/scope/assignment join before the
-    // expensive nested test. The SQL-seeded size preflight cannot prove this.
-    const { readSymbolProvenance } = await import('../change-history.ts');
+    // Prove the producer's ledger join before the expensive nested test, through
+    // the exact reader and arguments the provenance provider uses.
+    const { readSymbolProvenance, readPriorWork, fileSymbolNames } = await import('../change-history.ts');
     const provenance = await readSymbolProvenance({ workspaceId: workspace, harness, root, path: targetPath,
       since: editedAt });
+    const priorWork = await readPriorWork({ workspaceId: workspace, root, path: targetPath,
+      names: fileSymbolNames(targetPath, edited), excludeWorkItem: id });
     console.log('NATIVE_REUSE_PROVENANCE_PRECONDITION=' + JSON.stringify({ workspace, harness,
-      workItem: id, controlledSession, provenance }));
-    assert.equal(provenance.status, 'measured', JSON.stringify(provenance));
-    // Per-symbol rows stay 'unknown' by contract (labels are historical evidence,
-    // not current-range continuity); attribution is carried by the recorded
-    // edit rows and the label history.
-    assert(provenance.fileEdits.some(edit => edit.workItem === id && edit.owner === owner && edit.session === session)
-      && provenance.history.length > 0 && provenance.history.every(record => record.status === 'measured'
-        && record.workItems.includes(id)),
-    'Actual controlled Write must qualify through the production provenance reader: ' + JSON.stringify(provenance));
+      workItem: id, prior, controlledSession, provenance, priorWork }));
+    assert(provenance.fileEdits.some(edit => edit.workItem === prior && edit.owner === owner && edit.session === session
+      && (edit.symbols ?? []).includes('f')),
+    'Actual controlled Write must be recorded with its enclosing symbol: ' + JSON.stringify(provenance));
+    assert(priorWork.status === 'measured' && priorWork.items.some(item => item.workItem === prior && item.symbols.includes('f')),
+      'Actual controlled Write must qualify as prior work for the claimed item: ' + JSON.stringify(priorWork));
   } else {
     await call('capability:edit', { file_path: join(root, targetPath), old_string: before, new_string: edited });
   }
@@ -358,7 +373,10 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
     assert(item && item.sourcePlanSlug === planSlug, JSON.stringify(itemRead));
     // Match the complete production claim reader, including engineering evidence
     // and compaction. Omitting reuse identity keeps only the mandatory baseline.
-    const baselineRead = await getClaimTimeTaskBrief({ workItem: item, workspaceId: workspace, harness });
+    // The claim's recipient is `owner`: gateTaskBriefRecover keeps each recover ref
+    // (decisions/incident/engineering/top-level) only when that recipient's listed
+    // toolset can call it, so the baseline must be read for the same recipient.
+    const baselineRead = await getClaimTimeTaskBrief({ workItem: item, workspaceId: workspace, harness, owner });
     assert(baselineRead, 'Controlled anchored claim must produce its mandatory baseline');
     const base = baselineRead.taskBrief;
     assert.equal(base.status, 'current', JSON.stringify(base));

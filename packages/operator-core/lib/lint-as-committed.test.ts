@@ -86,6 +86,58 @@ async function readPublicDocsModule(): Promise<{
 }
 
 const mod = await import(scriptPath);
+describe('committed focused runner dependency preflight', () => {
+  it.each(['missing-export', 'missing-target'])
+    ('rejects %s from the parent gitlink even when the working submodule has the dependency', async defect => {
+      const root = mkdtempSync(join(tmpdir(), 'committed-runner-import-'));
+      const child = join(root, 'libs/test-config');
+      const gitAt = (cwd: string, ...args: string[]) => execFileSync('git', args, {
+        cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+      const commit = (cwd: string, message: string) => {
+        gitAt(cwd, 'add', '.');
+        gitAt(cwd, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+          'commit', '--quiet', '-m', message);
+        return gitAt(cwd, 'rev-parse', 'HEAD');
+      };
+      try {
+        mkdirSync(join(child, 'src'), { recursive: true });
+        gitAt(child, 'init', '--quiet');
+        const subpath = './new-runner-helper';
+        const manifest = { name: '@papercusp/test-config', exports: {} as Record<string, unknown> };
+        if (defect === 'missing-target') manifest.exports[subpath] = './src/helper.mjs';
+        writeFileSync(join(child, 'package.json'), JSON.stringify(manifest));
+        const oldPin = commit(child, 'old dependency');
+        manifest.exports[subpath] = './src/helper.mjs';
+        writeFileSync(join(child, 'package.json'), JSON.stringify(manifest));
+        writeFileSync(join(child, 'src/helper.mjs'), 'export const helper = true;\n');
+        const newPin = commit(child, 'new dependency available only in working child');
+
+        gitAt(root, 'init', '--quiet');
+        mkdirSync(join(root, 'scripts'));
+        writeFileSync(join(root, '.gitmodules'),
+          '[submodule "test-config"]\n path = libs/test-config\n url = ./libs/test-config\n');
+        writeFileSync(join(root, 'scripts/test-files.mjs'),
+          "import { helper } from '@papercusp/test-config/new-runner-helper';\n" +
+          "// import '@papercusp/test-config/comment-only';\n" +
+          "throw new Error('runner must not be evaluated by preflight');\n");
+        gitAt(root, 'add', '.gitmodules', 'scripts/test-files.mjs');
+        gitAt(root, 'update-index', '--add', '--cacheinfo', `160000,${oldPin},libs/test-config`);
+        gitAt(root, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+          'commit', '--quiet', '-m', 'runner with old dependency pin');
+        expect(gitAt(child, 'rev-parse', 'HEAD')).toBe(newPin);
+        await expect(mod.assertCommittedFocusedRunnerImports(root)).rejects.toThrow(
+          /committed focused runner dependency preflight failed.*new-runner-helper/);
+
+        gitAt(root, 'update-index', '--cacheinfo', `160000,${newPin},libs/test-config`);
+        gitAt(root, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+          'commit', '--quiet', '-m', 'align dependency pin');
+        await expect(mod.assertCommittedFocusedRunnerImports(root)).resolves.toEqual([
+          '@papercusp/test-config/new-runner-helper',
+        ]);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+});
 describe('committed reporter database route', () => {
   it('carries the original operator route when the frozen tree omits ignored configuration', () => {
     const original = mkdtempSync(join(tmpdir(), 'committed-ledger-route-'));

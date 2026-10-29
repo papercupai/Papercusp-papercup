@@ -369,6 +369,30 @@ describe('distillVitestRun', () => {
     expect(rows[0]?.outputTail).toContain('[redacted]');
   });
 
+  it('keeps runtime exceptions in failed counts but excludes them from assertion evidence titles', () => {
+    const rows = parseVitestJsonForHarnessRows(report([{
+      name: `${ROOT}/pkg/mutant.test.ts`,
+      status: 'failed',
+      startTime: 1_000,
+      endTime: 1_100,
+      assertionResults: [{
+        status: 'failed',
+        fullName: 'guard > rejects the mutant',
+        failureMessages: ['TypeError: guard is not a function\n    at mutant.test.ts:4:3'],
+      }, {
+        status: 'failed',
+        fullName: 'control > the assertion executes',
+        failureMessages: ['AssertionError: expected false to be true'],
+      }],
+    }]), ROOT);
+
+    expect(rows[0]?.status).toBe('fail');
+    expect(rows[0]?.execution).toMatchObject({
+      failed: 2,
+      failedCaseTitles: ['control > the assertion executes'],
+    });
+  });
+
   it('parses malformed or unsupported sidecars fail-soft', () => {
     expect(parseFailureDetailsSidecar('not json', ROOT)).toEqual([]);
     expect(parseFailureDetailsSidecar(JSON.stringify({ failures: [{ file: '', test: 't' }, null] }), ROOT)).toEqual([]);

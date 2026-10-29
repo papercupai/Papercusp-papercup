@@ -97,6 +97,10 @@ function deps(over: Record<string, unknown> = {}): Deps {
     git: (_root: string, args: string[]) => (args[0] === 'rev-parse' ? `${HEAD}\n` : ''),
     runnerIdentity: () => RUNNER,
     connect: async () => ({ end: async () => void (ended += 1) }),
+    loadProofFiles: async () => ({
+      files: ['packages/lane-ws/a.test.ts', 'packages/lane-ws/b.test.ts'],
+      rows: 2,
+    }),
     loadProofs: async () => ({
       proofs: new Map([
         ['packages/lane-ws/a.test.ts', proof(HEAD, ['packages/lane-ws/a.test.ts', 'packages/lane-ws/src/a.ts'])],
@@ -406,18 +410,29 @@ describe('armTargetedTaskReuse', () => {
       'packages/lane-ws/stateful-b.test.ts',
     ];
     const proofs = new Map(files.map((file) => [file, proof(HEAD, [file])]));
+    const loadedScopes: string[][] = [];
     const armed = await armTargetedTaskReuse({
       root,
       workspace: WS,
       script,
       expectedSha: HEAD,
       env: baseEnv(),
-      deps: deps({ loadProofs: async () => ({ proofs, rows: proofs.size }) }),
+      deps: deps({
+        loadProofFiles: async () => ({ files, rows: files.length }),
+        loadProofs: async ({ files: requestedFiles }: { files?: string[] }) => {
+          loadedScopes.push(requestedFiles ?? []);
+          const selected = new Map([...proofs].filter(([file]) => requestedFiles?.includes(file)));
+          return { proofs: selected, rows: selected.size };
+        },
+      }),
     });
 
     expect(armed.reused).toBe(expected);
     expect(armed.lines.join('\n')).toContain(`candidates=${expected}`);
     expect(armed.lines.join('\n')).toContain(`lane=${lane} otherLane=${files.length - expected}`);
+    expect(loadedScopes).toEqual([lane === 'pure'
+      ? ['packages/lane-ws/pure.test.ts']
+      : ['packages/lane-ws/stateful-a.test.ts', 'packages/lane-ws/stateful-b.test.ts']]);
     armed.finish();
   });
 
@@ -524,13 +539,19 @@ describe('armTargetedTaskReuse', () => {
       script: 'test:lane-pure',
       expectedSha: HEAD,
       env: baseEnv(),
-      deps: deps({ loadProofs: async () => ({
-        proofs: new Map([
-          ['packages/lane-ws/pure-a.test.ts', proof(HEAD, ['packages/lane-ws/pure-a.test.ts'])],
-          ['packages/lane-ws/pure-b.test.ts', proof(OLD, ['packages/lane-ws/pure-b.test.ts', 'packages/lane-ws/src/b.ts'])],
-        ]),
-        rows: 2,
-      }) }),
+      deps: deps({
+        loadProofFiles: async () => ({
+          files: ['packages/lane-ws/pure-a.test.ts', 'packages/lane-ws/pure-b.test.ts'],
+          rows: 2,
+        }),
+        loadProofs: async () => ({
+          proofs: new Map([
+            ['packages/lane-ws/pure-a.test.ts', proof(HEAD, ['packages/lane-ws/pure-a.test.ts'])],
+            ['packages/lane-ws/pure-b.test.ts', proof(OLD, ['packages/lane-ws/pure-b.test.ts', 'packages/lane-ws/src/b.ts'])],
+          ]),
+          rows: 2,
+        }),
+      }),
     });
     expect(armed.reused).toBe(1);
     expect(armed.lines.join('\n')).not.toMatch(/script-cannot-run-zero-files/);
@@ -610,7 +631,11 @@ describe('armTargetedTaskReuse', () => {
     const env = { ...process.env, ...baseEnv(), PAPERCUSP_TEST_RUN_GROUP: runGroupId,
       PC_TEST_LANE: undefined, PC_TEST_REUSE_SKIP_LIST: undefined,
       PC_EXECUTED_SOURCE_MAP_WORKSPACE: undefined, PC_EXECUTED_SOURCE_MAP_RESULT: undefined,
-      PC_EXECUTED_SOURCE_MAP_OUT: undefined, PC_TEST_FILTER_LIST: undefined };
+      PC_EXECUTED_SOURCE_MAP_OUT: undefined, PC_TEST_FILTER_LIST: undefined,
+      // The fixture checkout intentionally has no Git metadata; don't propagate the outer
+      // committed-source loader into this nested Vitest process, where its config audit requires
+      // a real HEAD tree and is unrelated to the reuse consumer being exercised here.
+      NODE_OPTIONS: undefined };
     const first = run(env);
     expect(first.status).toBe(0);
     expect(first.report.testResults.map((r: { name: string }) => r.name.split('/').at(-1)).sort()).toEqual(['a.test.ts', 'b.test.ts']);
