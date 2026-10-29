@@ -3809,13 +3809,13 @@ async function injectPsuHostWake(
           return { kind: 'delivered', channel: 'psu-socket-recycle', turnProof: 'host-attested' };
         }
       }
-      // P-006/D-004: the host replies 'delivered' under requireNativeTurnStart only after it
-      // observed the native turn start (its native-turn-start-confirmed event). Any other ok
-      // reason here (a duplicate-delivery-id with no quota receipt, an older host) proves only
-      // that the bytes were accepted, so the turn is left for the pump to observe.
-      const hostAttested =
+      // P-006/D-004: 'delivered' under requireNativeTurnStart and the exact-ID
+      // delivery-already-started receipt both prove a native turn began. A generic
+      // duplicate-delivery-id from an older host proves only byte acceptance.
+      const hostAttested = result.reason === 'delivery-already-started' || (
         (injectMsg as { requireNativeTurnStart?: boolean }).requireNativeTurnStart === true &&
-        result.reason === 'delivered';
+        result.reason === 'delivered'
+      );
       return {
         kind: 'delivered',
         channel: quotaRecovery.eligible ? 'psu-socket-recycle' : 'psu-socket-inject',

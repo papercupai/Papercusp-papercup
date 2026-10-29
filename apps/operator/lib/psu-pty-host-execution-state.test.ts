@@ -373,6 +373,25 @@ describe('native execution observations', () => {
     expect(nativeExecutionFromRows(rows, { agent: 'claude', ...ctx }).phase).toBe('failed');
   });
 
+  it('keeps Claude gateway 429 status and retry-after metadata in the terminal failure', () => {
+    const row = {
+      type: 'assistant',
+      timestamp,
+      isApiErrorMessage: true,
+      apiErrorStatus: 429,
+      message: {
+        role: 'assistant',
+        stop_reason: 'stop_sequence',
+        content: [{ type: 'text', text: 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s' }],
+      },
+    };
+
+    expect(nativeExecutionFromRows([row], { agent: 'claude', ...ctx })).toMatchObject({
+      phase: 'failed',
+      failure: { code: 'api_error_429', retryable: false, retryAfterMs: 60_000 },
+    });
+  });
+
   it.each(['codex', 'claude', 'omp'])('does not inject into a silent native %s turn', async agent => {
     const start = agent === 'codex'
       ? { type: 'event_msg', timestamp, payload: { type: 'task_started' } }

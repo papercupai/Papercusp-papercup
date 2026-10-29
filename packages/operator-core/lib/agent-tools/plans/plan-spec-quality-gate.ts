@@ -5,6 +5,7 @@ import {
   settledGradingAuditIsCurrent,
   type ScorecardRow,
 } from '../../scorecards';
+import { scorecardGradingAuditKey } from '../../scorecard-emitted-events';
 import { listTasks } from '../../task-manager/store';
 import type { TaskRow } from '../../task-manager/types';
 import { getAcceptanceRubricsForPlan } from '../../rubrics';
@@ -238,7 +239,12 @@ async function reservedGradingAuditorGuidance(
       ? `The reservation currently matches multiple live auditor tasks: ${taskDescriptions.join(', ')}.`
       : 'No live auditor task row is currently visible for this reservation.';
 
-  return `${reservationDescription} ${auditorDescription} Do not emit another audit or file a duplicate request; no further action is needed while it settles. Retry plans:start after the audit completes. No grading-audit await key is available.`;
+  const settlementKey = scorecardGradingAuditKey(card.issueId);
+  return `${reservationDescription} ${auditorDescription} Do not emit another audit or file a duplicate request. ` +
+    `To wait for settlement, use events:await { event:'${settlementKey}' } and retry plans:start after it fires. ` +
+    `If the auditor's first turn failed or the card stays pending without progress, run ` +
+    `scorecards:repair { targetIds:['${card.issueId}'] } to reconcile this exact pending audit. ` +
+    `Repair preserves an auditor that is still viable or whose state is unknown.`;
 }
 
 /**

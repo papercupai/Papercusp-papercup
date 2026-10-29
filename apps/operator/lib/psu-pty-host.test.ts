@@ -1108,6 +1108,45 @@ describe('makeDeliveryDedup (EI-19311270129974785)', () => {
     d.isDuplicate('anything'); // triggers the sweep as a side effect
     expect(d.size()).toBe(0);
   });
+  it('rehydrates an expired ID from its exact durable native-turn-start receipt, while absent proof stays retryable', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pty-delivery-receipt-'));
+    const ownerId = 'su-delivery-receipt';
+    const confirmedId = '956954';
+    try {
+      expect(realHost.appendHostEvent(ownerId, 'native-turn-start-confirmed', {
+        deliveryId: confirmedId,
+        childGeneration: 7,
+      }, dir)).toBe(true);
+      expect(realHost.appendHostEvent(ownerId, 'native-turn-start-unverified', {
+        deliveryId: '956955',
+        childGeneration: 7,
+      }, dir)).toBe(true);
+      const receipts = realHost.readNativeTurnStartDeliveryIds(ownerId, dir);
+      expect([...receipts]).toEqual([confirmedId]);
+
+      let now = 0;
+      const d = makeDeliveryDedup({
+        ttlMs: 100,
+        now: () => now,
+        hasDurableNativeTurnStart: (id) => receipts.has(id),
+      });
+      d.markPending(confirmedId);
+      d.markNativeTurnStarted(confirmedId);
+      now = 101;
+      expect(d.state(confirmedId)).toBe('completed');
+      expect(d.hasDurableNativeTurnStart(confirmedId)).toBe(true);
+      expect(d.beginWrite([confirmedId])).toEqual({ status: 'already-started', deliveryIds: [confirmedId] });
+
+      const unprovenId = '956955';
+      d.markPending(unprovenId);
+      now = 202;
+      expect(d.state(unprovenId)).toBeNull();
+      d.markPending(unprovenId);
+      expect(d.beginWrite([unprovenId])).toEqual({ status: 'write' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it('DELIVERY_DEDUP_TTL_MS is comfortably longer than the client retry envelope it must outlive', () => {
     // markDeliveryFailed's backoff caps at 10min (store.ts backoffMs: min(5s*2^attempts, 10min));
     // this TTL must exceed any realistic total retry-storm duration so a legitimate late
@@ -1117,7 +1156,7 @@ describe('makeDeliveryDedup (EI-19311270129974785)', () => {
 });
 
 describe('deliveryDedupSettlement', () => {
-  it.each(['delivered', 'quota-recovery-delivered'])(
+  it.each(['delivered', 'quota-recovery-delivered', 'delivery-already-started'])(
     'marks a committed %s outcome completed',
     (reason) => {
       expect(realHost.deliveryDedupSettlement({ ok: true, reason })).toBe('completed');

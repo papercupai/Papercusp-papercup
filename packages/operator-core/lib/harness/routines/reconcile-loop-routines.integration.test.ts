@@ -90,13 +90,24 @@ beforeEach(async () => {
 });
 
 describe('indexed native producer integration', () => {
-  async function nativeCase(source = 'codex', wakeCount = 10) {
+  async function nativeCase(
+    source = 'codex',
+    wakeCount = 10,
+    origin: 'loop-fire' | 'self-compaction' = 'loop-fire',
+    includeLoopFire = true,
+  ) {
     const now = Date.now(), owner = `su-indexed-${++rtSeq}`;
     const loop = await seedLoop({ ownerId: owner, intervalSec: 60, lastFiredAtMs: now - 4000, parked: true });
     await sql`UPDATE harness_shared.routines SET metadata =
       ${JSON.stringify({ fire_count: 10, armed_at: new Date(now - 6000).toISOString() })}::jsonb WHERE id = ${loop.id}`;
-    const tagged = await tagTurnForInjection({ sid: owner, origin: 'loop-fire', text: 'A native loop turn.',
-      dir: provenanceDir, nowMs: now - 3000, loopFire: { routineId: loop.id, wakeCount } });
+    const tagged = await tagTurnForInjection({
+      sid: owner,
+      origin,
+      text: origin === 'self-compaction' ? 'A managed self-compaction continuation.' : 'A native loop turn.',
+      dir: provenanceDir,
+      nowMs: now - 3000,
+      ...(includeLoopFire ? { loopFire: { routineId: loop.id, wakeCount } } : {}),
+    });
     expect(tagged.ledgerWritten).toBe(true);
     const user = { workspace_id: 'default', source_kind: source, session_id: `native-${owner}`, turn_idx: 0,
       ts: new Date(now - 2000).toISOString(), owner, harness_slug: null, cwd: null, speaker: 'user', text: tagged.taggedText };
@@ -141,6 +152,28 @@ describe('indexed native producer integration', () => {
     await assertReaders(c, true);
   });
 
+  it('completes the matching fire from an authenticated self-compaction continuation', async () => {
+    const c = await nativeCase('codex', 10, 'self-compaction');
+    expect(await insertTurns(sql, [c.user, c.reply])).toBe(2);
+    const stamps = await sql<Array<{ detail: any }>>`
+      SELECT detail FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`;
+    expect(stamps).toHaveLength(1);
+    expect(stamps[0]!.detail).toMatchObject({
+      origin: 'self-compaction',
+      source: 'session-ingest',
+      loopFire: { routineId: c.loop.id, wakeCount: 10 },
+      indexedTurn: { workspaceId: 'default', sourceKind: 'codex', sessionId: c.user.session_id, turnIdx: 0 },
+    });
+    await assertReaders(c, true);
+  });
+
+  it('does not attribute unrelated self-compaction to a loop fire', async () => {
+    const c = await nativeCase('codex', 10, 'self-compaction', false);
+    expect(await insertTurns(sql, [c.user, c.reply])).toBe(2);
+    expect(await sql`SELECT id FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`).toHaveLength(0);
+    await assertReaders(c, false);
+  });
+
   it('uses the caller connection: native and activity rows roll back together', async () => {
     const c = await nativeCase();
     await expect(sql.begin(async tx => {
@@ -152,8 +185,9 @@ describe('indexed native producer integration', () => {
     expect(await sql`SELECT id FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`).toHaveLength(0);
   });
 
-  it('rolls back a failed activity write so the same native rows can retry successfully', async () => {
-    const c = await nativeCase();
+  it.each(['loop-fire', 'self-compaction'] as const)(
+    'rolls back a failed %s activity write so the same native rows can retry successfully', async origin => {
+    const c = await nativeCase('codex', 10, origin);
     await sql.unsafe(`CREATE FUNCTION harness_shared.reject_indexed_start() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN RAISE EXCEPTION 'private activity failure'; END $$`);
     await sql.unsafe(`CREATE TRIGGER reject_indexed_start BEFORE INSERT ON harness_shared.agent_activity

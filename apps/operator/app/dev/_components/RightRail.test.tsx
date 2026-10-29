@@ -132,6 +132,21 @@ describe('<RightRail /> polled blocks', () => {
     expect(screen.getByText('2')).toBeTruthy(); // plugin host errors
   });
 
+  it('marks the API proxy down when the dev SPA is still reachable', async () => {
+    stubFetch((url) => {
+      if (url.includes('/api/plugins/host/refresh')) return { ok: true, body: { status: { loaded: 0, errors: 0 } } };
+      if (url.includes('/activity')) return { ok: true, body: { entries: [] } };
+      if (url.includes('/pg_health')) return { ok: true, body: { totalConnections: 1, activeConnections: 0, idleConnections: 1 } };
+      if (url.includes('/build_status')) return { ok: true, body: { prodBuild: { exists: true, mtimeMs: NOW }, prodLogTail: null, dev3055Reachable: true, prod3070Reachable: true, dev3055ApiReachable: false } };
+      return { ok: true, body: {} };
+    });
+    render(<RightRail workspaceIds={null} />);
+    await waitFor(() => expect(screen.getByText('API via :3055')).toBeTruthy());
+    const apiStatus = screen.getByText('API via :3055').parentElement?.querySelector('strong');
+    expect(apiStatus?.textContent).toBe('down');
+    expect(apiStatus?.className).toContain('pc-dev-api-err');
+  });
+
   it('renders the activity list when entries are present', async () => {
     stubFetch((url) => {
       if (url.includes('/api/plugins/host/refresh')) return { ok: true, body: { status: { loaded: 1, errors: 0 } } };

@@ -9727,6 +9727,8 @@ describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
   it.each([
     { label: 'registered over stale launch budget', current: 225_000, legacy: 250_000, threshold: 180_000, passthrough: [] },
     { label: 'registered with absent launch budget', current: 225_000, legacy: null, threshold: 180_000, passthrough: [] },
+    { label: 'startup prompt floor above the registered threshold', current: 225_000, legacy: 250_000, threshold: 265_000,
+      startupBaselineTokens: 250_000, startupReserveTokens: 15_000, passthrough: [] },
     { label: 'legacy launch budget without registered metadata', current: null, legacy: 250_000, threshold: 200_000, passthrough: [] },
     { label: 'model default without either budget', current: null, legacy: null, threshold: 784_800, passthrough: [] },
     { label: 'registered over conflicting duplicate overrides', current: 225_000, legacy: 250_000, threshold: 180_000,
@@ -9735,13 +9737,22 @@ describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
         '-c=model_auto_compact_token_limit=700000', '-c', 'service_tier="fast"'] },
     { label: 'passthrough without a managed model override', current: null, legacy: null, threshold: 784_800,
       model: 'gpt-5.5', passthrough: ['-c', 'model_auto_compact_token_limit=784800', '-c', 'service_tier="fast"'] },
-  ])('fresh Codex launch boundary preserves $label', async ({ current, legacy, threshold, passthrough, model = 'gpt-6.1-sol:xhigh' }) => {
+  ])('fresh Codex launch boundary preserves $label', async ({ current, legacy, threshold, passthrough,
+    startupBaselineTokens, startupReserveTokens, model = 'gpt-6.1-sol:xhigh' }) => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const codexHome = mkdtempSync(join(tmpdir(), 'psu-launch-codex-home-'));
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, 'models_cache.json'), JSON.stringify({ models: [
+      { slug: 'gpt-6.1-sol', context_window: 272_000, max_context_window: 872_000 },
+    ] }));
     try {
       const apiImpl = vi.fn(async () => ({
         status: 'ok', agent: 'codex', sessionId: 'budget-test', cwd: '/unused',
-        promptFile: '/unused/prompt.md', compactionLimit: current,
-        envelopeEnv: { CODEX_HOME: '/unused/codex-home', PAPERCUSP_SID: 'su-budget-test',
+        promptFile: '/unused/prompt.md', codexHome, compactionLimit: current,
+        ...(startupBaselineTokens !== undefined ? { contextBudget: {
+          baselineTokens: startupBaselineTokens, reserveTokens: startupReserveTokens,
+        } } : {}),
+        envelopeEnv: { CODEX_HOME: codexHome, PAPERCUSP_SID: 'su-budget-test',
           PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto' },
       }));
       const runWrapperImpl = vi.fn<(options: { args: string[]; envelopeEnv: Record<string, string> }) => void>();
@@ -9757,7 +9768,7 @@ describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
       expect(apiImpl).toHaveBeenCalledWith('/api/agent-mcp/console/bootstrap-su', expect.any(Object));
       expect(runWrapperImpl).toHaveBeenCalledOnce();
       const launch = runWrapperImpl.mock.calls[0][0];
-      expect(launch.envelopeEnv.CODEX_HOME).toBe('/unused/codex-home');
+      expect(launch.envelopeEnv.CODEX_HOME).toBe(codexHome);
       const overrides: string[] = [];
       for (let i = 0; i < launch.args.length; i++) {
         const arg = launch.args[i];
@@ -9772,6 +9783,7 @@ describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
       expect(log).toHaveBeenCalledWith(expect.stringContaining('psu: codex (su)'));
     } finally {
       log.mockRestore();
+      rmSync(codexHome, { recursive: true, force: true });
     }
   });
 
@@ -20229,6 +20241,24 @@ describe("codexContextWindowConfigPatch (resume inherits the window)", () => {
         { model: "gpt-5.6-sol" },
       );
       expect(resumed.args).toContain("model_auto_compact_token_limit=200000");
+    }
+  });
+
+  it("preserves the persisted startup floor on Codex resume", () => {
+    const codexHome = mkdtempSync(join(tmpdir(), "psu-codex-resume-startup-floor-"));
+    try {
+      writeFileSync(join(codexHome, "AGENTS.md"), "x".repeat(800_000));
+      const resumed = resumeArgsFor({
+        agent: "codex",
+        sessionId: "rollout",
+        codexHome,
+        compactionLimit: 200_000,
+      }, { model: "gpt-5.6-sol" });
+      const threshold = resumed.args.find(arg => arg.startsWith("model_auto_compact_token_limit="));
+      expect(Number(threshold?.split("=")[1])).toBeGreaterThan(160_000);
+      expect(resumed.args.slice(-2)).toEqual(["resume", "rollout"]);
+    } finally {
+      rmSync(codexHome, { recursive: true, force: true });
     }
   });
 

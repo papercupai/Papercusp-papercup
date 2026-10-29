@@ -4057,6 +4057,16 @@ describe('executeWake — the liveness ladder', () => {
       );
     });
 
+    it('books host-attested when the host finds a durable exact-ID native-turn-start receipt', async () => {
+      const { injectPsuHostWithConfirmation, deps: d } = confirmingDeps(undefined, 'delivery-already-started');
+      const out = await executeWake(work({ wakeHandle: null }), d);
+      expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject', turnProof: 'host-attested' });
+      expect(injectPsuHostWithConfirmation).toHaveBeenCalledWith(
+        '/tmp/x.sock',
+        expect.not.objectContaining({ requireNativeTurnStart: true }),
+      );
+    });
+
     it('does not attest a turn on a host that was never asked to prove one', async () => {
       // An older host (no native-turn-start capability) replies 'delivered' once the bytes are
       // written; that is persistence, not a turn start, so the pump must still observe it.

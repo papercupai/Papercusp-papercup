@@ -315,7 +315,8 @@ export function indexedLoopLaunchBinding(
 
 export async function recordIndexedLoopTurnStarts(sql: Sql, turns: IndexedNativeLoopTurn[]): Promise<void> {
   const candidates = turns.filter(turn => turn.owner && turn.speaker === 'user' &&
-    turn.turn_origin === 'loop-fire' && ['claude', 'codex', 'omp'].includes(turn.source_kind));
+    ['loop-fire', 'self-compaction'].includes(turn.turn_origin ?? '') &&
+    ['claude', 'codex', 'omp'].includes(turn.source_kind));
   if (!candidates.length) return;
   const workspaceId = activeWorkspaceId();
   const owners = [...new Set(candidates.map(turn => turn.owner!))];

@@ -101,8 +101,11 @@ describe('PgAdmissionLedgerQueueStore', () => {
       void admission.then(() => { settled = true; }, () => { settled = true; });
       let observed: { wait_event_type: string | null; wait_event: string | null; blocking_pids: number[] } | undefined;
       await expect.poll(async () => {
-        if (mode === 'pool') return acquireTicketSnapshot(pool).tickets.some(ticket =>
-          ticket.requestId === requestId && ticket.state === 'waiting');
+        if (mode === 'pool') {
+          // The unique pool label isolates this ticket. This standalone client
+          // has no diagnostic-context resolver, so ticket requestId is null.
+          return acquireTicketSnapshot(pool).tickets.some(ticket => ticket.state === 'waiting');
+        }
         [observed] = await db.sql<Array<NonNullable<typeof observed>>>`
           SELECT wait_event_type, wait_event, pg_blocking_pids(pid) AS blocking_pids
             FROM pg_stat_activity
@@ -120,7 +123,7 @@ describe('PgAdmissionLedgerQueueStore', () => {
         expect(targetPid).not.toBe(holderPid);
         expect(blocked?.acquisitions).toEqual([{ pool, elapsedMs: expect.any(Number), outcome: 'acquired' }]);
         expect(acquireTicketSnapshot(pool).tickets).toEqual([
-          expect.objectContaining({ requestId, state: 'held' }),
+          expect.objectContaining({ state: 'held' }),
         ]);
       }
       await release();

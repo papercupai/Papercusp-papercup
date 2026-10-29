@@ -1882,7 +1882,8 @@ export async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
   // A failed activity write must not commit the native row and make its retry
   // look like an old/conflicted row. Reserve one connection for both writes;
   // callers already in a transaction keep their exact connection/savepoint.
-  const hasLoopCandidate = rows.some(row => row.speaker === 'user' && row.turn_origin === 'loop-fire');
+  const hasLoopCandidate = rows.some(row => row.speaker === 'user' &&
+    (row.turn_origin === 'loop-fire' || row.turn_origin === 'self-compaction'));
   return hasLoopCandidate && typeof sql.begin === 'function'
     ? sql.begin(tx => persist(tx as unknown as Sql))
     : persist(sql);

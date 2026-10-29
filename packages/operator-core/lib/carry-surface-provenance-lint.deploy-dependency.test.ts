@@ -67,6 +67,20 @@ describe('unprobed-deploy-dependency', () => {
     expect(kinds(line)).not.toContain('unprobed-deploy-dependency');
   });
 
+  it('does not treat downstream deployed acceptance as the current awaited blocker', () => {
+    const note =
+      '## Left\n' +
+      'P-026 execution is gated; P-027 depends on P-026; P-033 requires qualification and exact deployed 72h evidence. ' +
+      'The unresolved blocker is method authority.\n' +
+      '## Next action\n' +
+      'Waiting on Avi to answer the existing question; no deployment is currently requested.';
+
+    expect(kinds(note)).not.toContain('unprobed-deploy-dependency');
+    expect(kinds('P-033 requires a deployed main build before 72h acceptance.')).toContain(
+      'unprobed-deploy-dependency',
+    );
+  });
+
   it('does not join a held gate transition to a later deployment disclaimer across a semicolon', () => {
     const note =
       'EI-25421911577420059 remains open and held by this session; no direct trace ties the historical stall to a cause. ' +

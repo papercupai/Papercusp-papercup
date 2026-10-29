@@ -1232,6 +1232,8 @@ export function successorNativeCompactionEnv(agent: any): {
  *  FAIL-SOFT by contract: an event-log write must never break the session —
  *  any fs error is swallowed (the stderr diagnostic still fires next to it). */
 export function appendHostEvent(ownerId: any, kind: any, extra?: {}, dir?: string): boolean;
+/** Exact delivery IDs with a persisted native-turn-start receipt in this owner's host ledger. */
+export function readNativeTurnStartDeliveryIds(ownerId: any, dir?: string): Set<any>;
 /** EI-24353430528930250: process-scoped startup evidence for Codex's isolated
  * SQLite homes. Host-wide paging samples could not distinguish the failed
  * launch wave from a later successful one. */
@@ -5277,9 +5279,10 @@ export function makeTurnCoalescer(): {
  * at the gate, and has no notion of "this exact delivery already ran to completion."
  * `isDuplicate` opportunistically sweeps expired entries on every call (bounded cost —
  * only iterates while there is something to evict); pure factory, exported for tests. */
-export function makeDeliveryDedup({ ttlMs, now }?: {
+export function makeDeliveryDedup({ ttlMs, now, hasDurableNativeTurnStart, }?: {
     ttlMs?: number | undefined;
     now?: (() => number) | undefined;
+    hasDurableNativeTurnStart?: (() => boolean) | undefined;
 }): {
     /** Return the live state for `id`, or null when it is new/expired. */
     state(id: any): any;
@@ -5292,6 +5295,10 @@ export function makeDeliveryDedup({ ttlMs, now }?: {
     markPending(id: any, interruptible?: boolean): void;
     /** Record the point at which the gated pipeline committed its delivery. */
     markCompleted(id: any): void;
+    /** Record the host's exact, persisted native-turn-start attestation. */
+    markNativeTurnStarted(id: any): void;
+    /** Whether this ID has durable proof that its native turn already started. */
+    hasDurableNativeTurnStart(id: any): boolean;
     /** A written but unconfirmed turn belongs to a child that no longer exists.
      * Preserve its original TTL and suppress repasting without claiming success. */
     markSuperseded(id: any, reason?: string): void;
@@ -5316,6 +5323,10 @@ export function makeDeliveryDedup({ ttlMs, now }?: {
         status: string;
         deliveryIds: any[];
         handledMsgIds: any[];
+    } | {
+        status: string;
+        deliveryIds: any[];
+        handledMsgIds?: undefined;
     } | {
         status: string;
         deliveryIds?: undefined;

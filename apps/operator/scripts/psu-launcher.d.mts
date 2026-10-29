@@ -334,11 +334,13 @@ export function inheritFreshCodexConfiguredModel(agent: string, args: any, { hom
 export function claudeInheritedEffortArgs(model: string | null | undefined, claudeSettings: ClaudeLaunchSettings | undefined): string[];
 /** @param {string} agent
  * @param {string | null | undefined} model
- * @param {{ claudeSettings?: ClaudeLaunchSettings | null, compactionLimit?: number | null }} [options]
+ * @param {{ claudeSettings?: ClaudeLaunchSettings | null, compactionLimit?: number | null, startupFloorTokens?: number | null, codexHome?: string | null }} [options]
  */
-export function modelArgsFor(agent: string, model: string | null | undefined, { claudeSettings, compactionLimit }?: {
+export function modelArgsFor(agent: string, model: string | null | undefined, { claudeSettings, compactionLimit, startupFloorTokens, codexHome }?: {
     claudeSettings?: ClaudeLaunchSettings | null;
     compactionLimit?: number | null;
+    startupFloorTokens?: number | null;
+    codexHome?: string | null;
 }): any[];
 /**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
@@ -349,7 +351,7 @@ export function modelArgsFor(agent: string, model: string | null | undefined, { 
  * `buildEngineerOmpLaunchCommand` (P-032): omp `--model`/`-r`, claude
  * `--model`/`--resume`, codex `-m`/`resume`.
  */
-export function suWrapperExtraArgs(agent: any, { model, resumeSession, claudeSettings, compactionLimit }?: {}): any[];
+export function suWrapperExtraArgs(agent: any, { model, resumeSession, claudeSettings, compactionLimit, startupFloorTokens, codexHome }?: {}): any[];
 /**
  * Map psu's repeated `--add-dir <dir>` onto each backend's native flag. claude
  * AND codex both expose `--add-dir` (extra tool-accessible directories); omp has

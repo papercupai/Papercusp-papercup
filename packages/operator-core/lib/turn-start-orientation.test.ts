@@ -650,7 +650,9 @@ describe('turn-start-orientation — what it says', () => {
       epoch: EPOCH,
     });
     expect(out).toContain('not armed');
-    expect(out).toContain('halt silently');
+    expect(out).toContain('if authorized');
+    expect(out).toContain('finish or use permitted wake');
+    expect(out).not.toContain('halt silently');
   });
 
   it('labels an armed loop fire withheld for interaction instead of making it look unarmed', () => {
@@ -918,6 +920,9 @@ describe('turn-start-orientation — what it says', () => {
     const noWake = lines.findIndex((line) => line.includes('engine loop: not armed'));
     const stale = lines.findIndex((line) => line.includes('stale checkpoint'));
     const gates = lines.findIndex((line) => line.includes('announced gates'));
+    expect(lines[noWake]).toContain('if authorized');
+    expect(lines[noWake]).toContain('finish or use permitted wake');
+    expect(lines[noWake]).not.toContain('or you halt silently');
     expect(directed).toBeLessThan(noWake);
     expect(noWake).toBeLessThan(stale);
     expect(stale).toBeLessThan(gates);

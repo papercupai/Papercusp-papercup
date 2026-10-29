@@ -2094,7 +2094,21 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
       failure = undefined;
       if (failed) {
         const error = row.payload?.error;
-        const text = String(typeof error === 'string' ? error : error?.message ?? '').slice(0, 2048);
+        const content = message?.content;
+        const contentText = typeof content === 'string'
+          ? content
+          : Array.isArray(content)
+            ? content.map(block => typeof block === 'string' ? block
+              : typeof block?.text === 'string' ? block.text : '').filter(Boolean).join('\n')
+            : '';
+        const errorMessage = typeof error === 'string' ? error : error?.message;
+        const text = [errorMessage, contentText]
+          .map(value => String(value ?? ''))
+          .filter(Boolean)
+          .join('\n')
+          .slice(0, 2048);
+        const apiErrorStatus = agent === 'claude' && Number.isInteger(row?.apiErrorStatus)
+          ? row.apiErrorStatus : null;
         // Codex also serializes error-info variants as externally tagged
         // objects, e.g. { response_too_many_failed_attempts: { http_status_code: 429 } }.
         // Keep the variant name; coercing the object loses it as [object Object].
@@ -2104,10 +2118,15 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
           ? variants[0] : undefined;
         const explicitCode = typeof info === 'string' ? info : taggedCode
           ?? (typeof error?.code === 'string' || typeof error?.code === 'number' ? error.code : undefined);
-        const code = String(explicitCode ?? row.payload?.type
-          ?? row.subtype ?? message?.stopReason ?? 'native_error').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 120);
-        const retryable = code === 'server_overloaded' || modelCapacityLineMatch(text) != null;
-        failure = { code, retryable, retryAfterMs: retryable ? modelCapacityRetryAfterMs(text) : null, atMs: at };
+        const apiErrorCode = apiErrorStatus === null ? undefined : `api_error_${apiErrorStatus}`;
+        const code = String(explicitCode ?? apiErrorCode ?? row.payload?.type
+          ?? row.subtype ?? message?.stopReason ?? message?.stop_reason ?? 'native_error')
+          .replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 120);
+        const claudeHttp429 = agent === 'claude' && apiErrorStatus === 429;
+        const retryable = !claudeHttp429 &&
+          (code === 'server_overloaded' || modelCapacityLineMatch(text) != null);
+        const retryAfterMs = retryable || claudeHttp429 ? modelCapacityRetryAfterMs(text) : null;
+        failure = { code, retryable, retryAfterMs, atMs: at };
       }
       // An aborted model does not prove its external tool effects stopped.
       // Keep unmatched calls visible until their results arrive.
@@ -3342,6 +3361,31 @@ export function appendHostEvent(ownerId, kind, extra = {}, dir = PSU_PTY_DIR) {
   } catch {
     return false;
   }
+}
+
+/** Exact delivery IDs with a persisted native-turn-start receipt in this owner's host ledger. */
+export function readNativeTurnStartDeliveryIds(ownerId, dir = PSU_PTY_DIR) {
+  const deliveryIds = new Set();
+  try {
+    const text = readFileSync(eventLogPathForOwner(ownerId, dir), 'utf8');
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        if (event?.kind !== 'native-turn-start-confirmed' ||
+            typeof event.ts !== 'string' || !Number.isFinite(Date.parse(event.ts))) continue;
+        const id = typeof event.deliveryId === 'string'
+          ? event.deliveryId
+          : Number.isSafeInteger(event.deliveryId) ? String(event.deliveryId) : '';
+        if (id) deliveryIds.add(id);
+      } catch {
+        // A partial or malformed row is not proof; retries must remain eligible.
+      }
+    }
+  } catch {
+    // Missing or unreadable receipt ledger is unknown, never evidence of delivery.
+  }
+  return deliveryIds;
 }
 
 /** EI-24353430528930250: process-scoped startup evidence for Codex's isolated
@@ -10043,6 +10087,7 @@ export function makeTurnCoalescer() {
  *  legitimate late retry of an already-accepted delivery is always still deduped, while
  *  the map cannot grow unbounded on a long-lived host. Exported for tests. */
 export const DELIVERY_DEDUP_TTL_MS = 30 * 60_000;
+const MAX_NATIVE_TURN_START_RECEIPTS = 4096;
 
 /**
  * The per-host delivery-id dedup memory (EI-19311270129974785): once a delivery has
@@ -10058,18 +10103,41 @@ export const DELIVERY_DEDUP_TTL_MS = 30 * 60_000;
  * at the gate, and has no notion of "this exact delivery already ran to completion."
  * `isDuplicate` opportunistically sweeps expired entries on every call (bounded cost —
  * only iterates while there is something to evict); pure factory, exported for tests. */
-export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.now } = {}) {
+export function makeDeliveryDedup({
+  ttlMs = DELIVERY_DEDUP_TTL_MS,
+  now = Date.now,
+  hasDurableNativeTurnStart = () => false,
+} = {}) {
   const entries = new Map(); // deliveryId -> { state, at, cancelRequested?, writeStarted?, handledMsgIds? }
   const sweep = (t) => {
     for (const [k, entry] of entries) {
       if (t - entry.at > ttlMs) entries.delete(k);
     }
   };
+  const hasNativeTurnStartReceipt = (id) => {
+    try {
+      return hasDurableNativeTurnStart(id) === true;
+    } catch {
+      return false;
+    }
+  };
+  const markNativeTurnStarted = (id) => {
+    if (!id) return;
+    const current = entries.get(id);
+    if (current?.state === 'cancelled' || current?.state === 'superseded') return;
+    entries.set(id, { state: 'completed', at: now(), durableNativeTurnStart: true });
+  };
   const getState = (id) => {
     if (!id) return null;
     const t = now();
     sweep(t);
-    return entries.get(id)?.state ?? null;
+    const current = entries.get(id);
+    if (current?.durableNativeTurnStart) return current.state;
+    if (hasNativeTurnStartReceipt(id)) {
+      markNativeTurnStarted(id);
+      return 'completed';
+    }
+    return current?.state ?? null;
   };
   return {
     /** Return the live state for `id`, or null when it is new/expired. */
@@ -10095,8 +10163,26 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
     /** Record the point at which the gated pipeline committed its delivery. */
     markCompleted(id) {
       if (!id) return;
-      if (['cancelled', 'superseded'].includes(entries.get(id)?.state)) return;
-      entries.set(id, { state: 'completed', at: now() });
+      const current = entries.get(id);
+      if (['cancelled', 'superseded'].includes(current?.state)) return;
+      entries.set(id, {
+        state: 'completed',
+        at: now(),
+        ...(current?.durableNativeTurnStart ? { durableNativeTurnStart: true } : {}),
+      });
+    },
+    /** Record the host's exact, persisted native-turn-start attestation. */
+    markNativeTurnStarted(id) {
+      markNativeTurnStarted(id);
+    },
+    /** Whether this ID has durable proof that its native turn already started. */
+    hasDurableNativeTurnStart(id) {
+      if (!id) return false;
+      const current = entries.get(id);
+      if (current?.durableNativeTurnStart) return true;
+      if (!hasNativeTurnStartReceipt(id)) return false;
+      markNativeTurnStarted(id);
+      return true;
     },
     /** A written but unconfirmed turn belongs to a child that no longer exists.
      * Preserve its original TTL and suppress repasting without claiming success. */
@@ -10126,7 +10212,10 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
       }
       const t = now();
       sweep(t);
-      const current = deliveryIds.map((id) => entries.get(id));
+      const current = deliveryIds.map((id) => {
+        getState(id);
+        return entries.get(id);
+      });
       if (current.some((entry) => !entry)) {
         // An explicit subscriber ACK can race ahead of the original host
         // injection. Reserve its ID so a later arrival cannot become a fresh write.
@@ -10154,6 +10243,7 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
      *  is written. A partial request fails open and commits the whole turn. */
     beginWrite(ids) {
       const deliveryIds = Array.isArray(ids) ? [...new Set(ids)] : [];
+      for (const id of deliveryIds) this.hasDurableNativeTurnStart(id);
       const current = deliveryIds.map((id) => entries.get(id));
       if (current.length > 0 && current.every((entry) => entry?.state === 'cancelled')) {
         return {
@@ -10161,6 +10251,11 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
           deliveryIds,
           handledMsgIds: [...new Set(current.flatMap((entry) => entry.handledMsgIds ?? []))],
         };
+      }
+      if (current.length > 0 && current.every((entry) =>
+        entry?.state === 'completed' && entry.durableNativeTurnStart === true
+      )) {
+        return { status: 'already-started', deliveryIds };
       }
       if (
         current.length > 0 &&
@@ -10237,7 +10332,9 @@ export function deliveryDedupSettlement(deliveryOutcome, rearmOwnsDelivery = fal
   if (deliveryOutcome?.reason === 'cancelled-before-write') return 'cancelled';
   if (
     deliveryOutcome?.ok === true &&
-    (deliveryOutcome.reason === 'delivered' || deliveryOutcome.reason === 'quota-recovery-delivered')
+    (deliveryOutcome.reason === 'delivered' ||
+      deliveryOutcome.reason === 'quota-recovery-delivered' ||
+      deliveryOutcome.reason === 'delivery-already-started')
   ) {
     return 'completed';
   }
@@ -14244,7 +14341,29 @@ export function hostThroughPty(o) {
   // EI-19311270129974785: remember delivery ids while their detached gated
   // pipeline is pending and after it commits, so a retry cannot inject a second
   // real turn while an early ACK is still only acceptance.
-  const deliveryDedup = makeDeliveryDedup();
+  const nativeTurnStartReceipts = readNativeTurnStartDeliveryIds(ownerId);
+  const deliveryDedup = makeDeliveryDedup({
+    hasDurableNativeTurnStart: (id) => nativeTurnStartReceipts.has(String(id)),
+  });
+  const recordNativeTurnStart = (deliveryId, extra = {}) => {
+    const id = String(deliveryId ?? '');
+    if (!id) return false;
+    const persisted = appendHostEvent(ownerId, 'native-turn-start-confirmed', {
+      deliveryId: id,
+      childGeneration,
+      ...extra,
+    });
+    if (!persisted) return false;
+    nativeTurnStartReceipts.add(id);
+    deliveryDedup.markNativeTurnStarted(id);
+    if (nativeTurnStartReceipts.size > MAX_NATIVE_TURN_START_RECEIPTS) {
+      const retained = readNativeTurnStartDeliveryIds(ownerId);
+      nativeTurnStartReceipts.clear();
+      for (const receiptId of retained) nativeTurnStartReceipts.add(receiptId);
+      nativeTurnStartReceipts.add(id);
+    }
+    return true;
+  };
   const interruptScopedCoalesceKey = message => {
     const key = turnCoalesceKey(message.data, message.routineId, ownerId);
     return key == null ? null : `${key}:owner-stop:${ownerStopGeneration}`;
@@ -14290,7 +14409,7 @@ export function hostThroughPty(o) {
         if (proof.started) {
           deliveryDedup.markCompleted(id);
           nativeStartPending.delete(id);
-          appendHostEvent(ownerId, 'native-turn-start-confirmed', { deliveryId: id, childGeneration });
+          recordNativeTurnStart(id);
         } else if (proof.failure) {
           // EI-26773717003971934: a submitted turn can abort before a start
           // receipt. Bind its terminal row to this exact marker AND the current
@@ -14613,6 +14732,10 @@ export function hostThroughPty(o) {
             // at its final synchronous pre-byte boundary so a cancellation
             // accepted while the prompt was busy cannot be ignored.
             const writeCommit = deliveryDedup.beginWrite(getDeliveryIds());
+            if (writeCommit.status === 'already-started') {
+              cancellationCommit = writeCommit;
+              return 'delivery-already-started';
+            }
             if (writeCommit.status !== 'cancelled') return null;
             cancellationCommit = writeCommit;
             appendHostEvent(ownerId, 'delivery-cancelled-before-write', {
@@ -14644,6 +14767,9 @@ export function hostThroughPty(o) {
         // A submitted tagged wake can persist its native row after the bounded
         // verifier expires. Retain its exact write context for late proof;
         // neither this retry nor a later socket delivery may paste it again.
+        if (cancellationCommit?.status === 'already-started') {
+          return { delivered: true, reason: 'delivery-already-started' };
+        }
         if (cancellationCommit) {
           return {
             delivered: false,
@@ -15626,12 +15752,20 @@ export function hostThroughPty(o) {
         if (duplicateState === 'pending' && pendingStart && nativeStartProof(pendingStart).started) {
           deliveryDedup.markCompleted(msg.deliveryId);
           nativeStartPending.delete(msg.deliveryId);
-          appendHostEvent(ownerId, 'native-turn-start-confirmed', { deliveryId: msg.deliveryId, childGeneration });
+          recordNativeTurnStart(msg.deliveryId);
           return { ok: true, reason: 'duplicate-delivery-id' };
         }
         if (duplicateState === 'cancelled') {
           appendHostEvent(ownerId, 'duplicate-cancelled-delivery-id', { deliveryId: msg.deliveryId });
           return { ok: true, reason: 'cancelled-before-write' };
+        }
+        if (duplicateState === 'completed' && deliveryDedup.hasDurableNativeTurnStart(msg.deliveryId)) {
+          appendHostEvent(ownerId, 'duplicate-delivery-id', {
+            state: duplicateState,
+            mode: msg.mode,
+            durableReceipt: 'native-turn-start-confirmed',
+          });
+          return { ok: true, reason: 'delivery-already-started' };
         }
         // D-007 (d): a pending retry to a now-unbindable child is refused, not
         // re-ACKed as pending-delivery-id (which the sender re-polls forever).
@@ -16498,6 +16632,9 @@ export function hostThroughPty(o) {
             if (firstInputWrite && msg.mode === 'turn') {
               firstInputWrite = false;
               const writeCommit = deliveryDedup.beginWrite([...coalescedDeliveryIds]);
+              if (writeCommit.status === 'already-started') {
+                return { ok: true, reason: 'delivery-already-started', deliveryIds: writeCommit.deliveryIds };
+              }
               if (writeCommit.status === 'cancelled') {
                 appendHostEvent(ownerId, 'delivery-cancelled-before-write', {
                   deliveryIds: writeCommit.deliveryIds,
@@ -16563,9 +16700,13 @@ export function hostThroughPty(o) {
             const proof = await waitForNativeTurnStart({ probe: () => nativeStartProof(pending),
               isCurrent: () => child === target && ownerStopGeneration === ownerStopGenerationAtReceive,
               timeoutMs: positiveNumber(env.PAPERCUSP_PSU_PTY_NATIVE_START_TIMEOUT_MS, 10_000) });
-            appendHostEvent(ownerId, proof.started ? 'native-turn-start-confirmed' : 'native-turn-start-unverified', {
-              deliveryId: deliver.deliveryId, childGeneration, reason: proof.reason,
-            });
+            if (proof.started) {
+              recordNativeTurnStart(deliver.deliveryId, { reason: proof.reason });
+            } else {
+              appendHostEvent(ownerId, 'native-turn-start-unverified', {
+                deliveryId: deliver.deliveryId, childGeneration, reason: proof.reason,
+              });
+            }
             if (!proof.started) return { ok: false, reason: 'native-turn-start-unverified' };
             nativeStartPending.delete(deliver.deliveryId);
             if (msg.mode === 'reset') scheduleResetReanchor(marker, turnWriteStartedAt, target);

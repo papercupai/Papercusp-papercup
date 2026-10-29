@@ -417,7 +417,7 @@ describe('evaluatePlanSpecQualityGate', () => {
     expect(result.message).toContain('EI-quality-card-pending');
   });
 
-  it('names the auditor task and reservation time instead of asking the caller to dispatch a duplicate audit', async () => {
+  it('names the auditor task, settlement event, and targeted repair instead of asking for a duplicate audit', async () => {
     const clauses = [clause()];
     const reservation = {
       key: 'grading-audit:EI-quality-card-pending',
@@ -443,8 +443,11 @@ describe('evaluatePlanSpecQualityGate', () => {
     expect(result.message).toContain("task 'task-grading-auditor'");
     expect(result.message).toContain("owner 'su-reserved-auditor'");
     expect(result.message).toContain(reservation.reservedAt);
-    expect(result.message).toContain('no further action is needed while it settles');
-    expect(result.message).toContain('No grading-audit await key is available');
+    expect(result.message).toContain("events:await { event:'scorecard:grading-audit:EI-quality-card-pending' }");
+    expect(result.message).toContain("scorecards:repair { targetIds:['EI-quality-card-pending'] }");
+    expect(result.message).toContain('preserves an auditor that is still viable or whose state is unknown');
+    expect(result.message).not.toContain('no further action is needed while it settles');
+    expect(result.message).not.toContain('No grading-audit await key is available');
     expect(result.message).not.toContain('scorecards:emit');
     expect(listTasks).toHaveBeenCalledWith({
       states: ['pending', 'running'],

@@ -1886,7 +1886,7 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
       sourceRefs: ['D-021 §1-3', 'D-024 §1-5', 'D-027 §1-5'],
     };
     const before = projectAcceptanceBarContractSnapshot(input);
-    const changedCriterion = {
+    const changedCriterion: RubricCriterion = {
       ...rubric.criteria[0]!,
       intent: {
         ...rubric.criteria[0]!.intent!,

@@ -2673,7 +2673,11 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
         // high-priority. The reassuring ARMED line is cheap context and goes last.
         order: 90,
         render: ({ armed }) =>
-          armed ? [] : ['- ⚠ engine loop: not armed — loop:arm open-ended work or you halt silently after this turn.'],
+          armed
+            ? []
+            : [
+                '- ⚠ engine loop: not armed — loop:arm if authorized; else finish or use permitted wake.',
+              ],
       },
       {
         order: 190,

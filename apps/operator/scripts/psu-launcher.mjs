@@ -1838,9 +1838,9 @@ export function claudeInheritedEffortArgs(model, claudeSettings) {
 // turns into an excess-property error in the TS tests (WI-10005900).
 /** @param {string} agent
  * @param {string | null | undefined} model
- * @param {{ claudeSettings?: ClaudeLaunchSettings | null, compactionLimit?: number | null }} [options]
+ * @param {{ claudeSettings?: ClaudeLaunchSettings | null, compactionLimit?: number | null, startupFloorTokens?: number | null, codexHome?: string | null }} [options]
  */
-export function modelArgsFor(agent, model, { claudeSettings, compactionLimit } = {}) {
+export function modelArgsFor(agent, model, { claudeSettings, compactionLimit, startupFloorTokens, codexHome } = {}) {
   // Low-level argv construction is never itself authorization to choose a
   // model. Fresh visible launchers resolve configured-default explicitly;
   // unattended resume/fleet paths must supply an explicit or inherited model.
@@ -1868,6 +1868,8 @@ export function modelArgsFor(agent, model, { claudeSettings, compactionLimit } =
     // those launches stay byte-identical to before.
     const windowArgs = codexContextConfigArgs(m ? m[1] : effectiveModel, {
       compactionLimit,
+      startupFloorTokens,
+      codexHome,
     });
     if (m) {
       return [
@@ -1899,6 +1901,24 @@ function compactionLimitForResumeSession(session) {
   return parseLaunchCompactionLimitArgv(session?.launchArgv);
 }
 
+function startupFloorForResumeSession(session, model) {
+  const codexHome = typeof session?.codexHome === "string" ? session.codexHome.trim() : "";
+  if (!codexHome) return null;
+  try {
+    const promptText = readFileSync(join(codexHome, "AGENTS.md"), "utf8");
+    const budget = buildContextBudget({
+      agent: "codex",
+      model,
+      codexHome,
+      contextSize: "full",
+      promptText,
+    });
+    return budget.baselineTokens + budget.reserveTokens;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
  * wrappers all end with `"$@"`). Maps a model fuzzy-match + a resume-by-id
@@ -1910,13 +1930,13 @@ function compactionLimitForResumeSession(session) {
  */
 export function suWrapperExtraArgs(
   agent,
-  { model, resumeSession, claudeSettings, compactionLimit } = {},
+  { model, resumeSession, claudeSettings, compactionLimit, startupFloorTokens, codexHome } = {},
 ) {
   const args = [];
   // claude also gets here model-less: an inherited unsupported effortLevel still
   // needs its clamped --effort (WI-10005900). `[]` when there is nothing to clamp.
   if (model || agent === "claude")
-    args.push(...modelArgsFor(agent, model, { claudeSettings, compactionLimit }));
+    args.push(...modelArgsFor(agent, model, { claudeSettings, compactionLimit, startupFloorTokens, codexHome }));
   if (agent === "omp") args.push(...ompTitleMitigationArgs(model));
   if (resumeSession) {
     if (agent === "omp" || agent === "claude") args.push("-r", resumeSession);
@@ -2743,11 +2763,19 @@ export function prepareSuLaunch(boot, {
     allowSubagents, allowNativeLsp: boot.envelopeEnv?.PAPERCUSP_OMP_NATIVE_LSP === "1",
   });
   const settings = boot.agent === "claude" ? readClaudeLaunchSettings(env) : null;
-  const modelArgs = modelArgsFor(boot.agent, effectiveModel, { compactionLimit, claudeSettings: settings });
+  const budget = boot.contextBudget;
+  const startupFloorTokens = typeof budget?.baselineTokens === "number" && Number.isFinite(budget.baselineTokens)
+    && typeof budget?.reserveTokens === "number" && Number.isFinite(budget.reserveTokens)
+    ? Math.floor(budget.baselineTokens + budget.reserveTokens)
+    : null;
+  const modelArgs = modelArgsFor(boot.agent, effectiveModel, {
+    compactionLimit, startupFloorTokens, codexHome: boot.codexHome, claudeSettings: settings,
+  });
   return {
     ...launch, cwd: boot.cwd, env, model: effectiveModel, modelArgs,
     extraArgs: suWrapperExtraArgs(boot.agent, {
-      model: effectiveModel, resumeSession, compactionLimit, claudeSettings: settings,
+      model: effectiveModel, resumeSession, compactionLimit, startupFloorTokens,
+      codexHome: boot.codexHome, claudeSettings: settings,
     }),
   };
 }
@@ -3217,6 +3245,7 @@ export function resumeArgsFor(
   }
   if (session.agent === "codex") {
     const compactionLimit = compactionLimitForResumeSession(session);
+    const startupFloorTokens = startupFloorForResumeSession(session, model);
     // Bypass flags + model + any --add-dir BEFORE the `resume` subcommand (all
     // top-level codex options — `-m`/`-c` AFTER the subcommand would be parsed as
     // resume's own args and fail; WI-3758). CODEX_HOME (the session's home) is set
@@ -3242,7 +3271,9 @@ export function resumeArgsFor(
         // fixes native subagents at session creation and resume/fork inherit it
         // (D-008), so a `-c` here would be inert. launchResume prints
         // codexResumeSubagentNotice instead.
-        ...modelArgsFor("codex", model, { compactionLimit }),
+        ...modelArgsFor("codex", model, {
+          compactionLimit, startupFloorTokens, codexHome: session.codexHome,
+        }),
         ...addDirArgs("codex", addDir),
         ...target,
       ],
