@@ -6,6 +6,8 @@ const store = new Map<string, unknown>();
 // Failure injection for the SELECT branch: each queued error rejects ONE SELECT
 // (FIFO) before the store answers again — how the pool-starvation retry is exercised.
 const selectFailures: Error[] = [];
+const encryptedQueryFailures: Array<Error | null> = [];
+const DB_ENCRYPTION_KEY = 'sentinel-db-encryption-key-do-not-leak';
 
 // WI-6796 — capture the sync invalidations a write fans out. notifyOperatorStateSync
 // lazily `await import('./sync-sse')`s inside a try/catch, so without this mock the
@@ -20,8 +22,8 @@ vi.mock('./sync-sse', () => ({
 
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 vi.mock('./db-encryption', () => ({
-  ENCRYPTED_TABLES: new Set<string>(), // tests cover the unencrypted path only
-  getDbEncryptionKey: () => 'unused',
+  ENCRYPTED_TABLES: new Set<string>(['operator_credentials']),
+  getDbEncryptionKey: () => DB_ENCRYPTION_KEY,
 }));
 
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -33,6 +35,11 @@ vi.mock('@papercusp/db-org', async (orig) => {
   // Tagged template handler. Values: [fragment(table), workspaceId, ...rest].
   function tagged(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> {
     const sqlText = strings.join('?');
+    if (/pgp_sym_(?:decrypt|encrypt)/.test(sqlText)) {
+      const injected = encryptedQueryFailures.shift();
+      if (injected) return Promise.reject(injected);
+      return Promise.resolve([]);
+    }
     // values[0] is the table fragment (from sql(`harness_shared.X`)),
     // values[1] is the bound workspace_id parameter, values[2+] follow.
     const tableName = (values[0] as { _table?: string })?._table ?? null;
@@ -77,17 +84,33 @@ vi.mock('@papercusp/db-org', async (orig) => {
   };
 });
 
-import { isRetriablePgReadError, readOperatorState, writeOperatorState } from './operator-state-pg';
+import {
+  isRetriablePgReadError,
+  readOperatorState,
+  updateOperatorState,
+  writeOperatorState,
+} from './operator-state-pg';
+import { readCredentials } from './credentials';
+
+function encryptedPostgresFailure(): Error {
+  return Object.assign(new Error('Wrong key or corrupt data'), {
+    code: '39000',
+    severity_local: 'ERROR',
+    where: 'SQL statement used bound key ' + DB_ENCRYPTION_KEY,
+  });
+}
 
 beforeEach(() => {
   store.clear();
   notified.length = 0;
   selectFailures.length = 0;
+  encryptedQueryFailures.length = 0;
 });
 afterEach(() => {
   store.clear();
   notified.length = 0;
   selectFailures.length = 0;
+  encryptedQueryFailures.length = 0;
 });
 
 /**
@@ -166,6 +189,87 @@ describe('readOperatorState / writeOperatorState (unencrypted path)', () => {
     store.set('operator_first_run:other-ws', { override: true });
     const got = await readOperatorState<{ override?: boolean }>('operator_first_run', 'other-ws');
     expect(got?.override).toBe(true);
+  });
+});
+
+describe('encrypted operator-state database diagnostics', () => {
+  it.each(['read', 'write', 'update'] as const)(
+    'redacts pgcrypto parameters and retains managed context on %s',
+    async (operation) => {
+      const original = encryptedPostgresFailure();
+      encryptedQueryFailures.push(original);
+
+      let thrown: unknown;
+      try {
+        if (operation === 'read') await readCredentials();
+        else if (operation === 'write') {
+          await writeOperatorState('operator_credentials', { openai_api_key: 'test-only-value' });
+        } else {
+          await updateOperatorState('operator_credentials', {}, (current) => current);
+        }
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      const safeError = thrown as Error & {
+        code?: string;
+        operatorStateContext?: { operation: string; table: string; workspaceId: string };
+      };
+      const diagnosticSurface = Object.getOwnPropertyNames(safeError)
+        .map((name) => String((safeError as unknown as Record<string, unknown>)[name]))
+        .join('\n');
+
+      expect(safeError).not.toBe(original);
+      expect(diagnosticSurface).not.toContain(DB_ENCRYPTION_KEY);
+      expect(diagnosticSurface).not.toContain('Wrong key or corrupt data');
+      expect(safeError).not.toHaveProperty('where');
+      expect(safeError).not.toHaveProperty('cause');
+      expect(safeError.name).toBe('OperatorStateDatabaseError');
+      expect(safeError.message).toContain('operator_credentials');
+      expect(safeError.message).toContain('test-ws');
+      expect(safeError).toMatchObject({
+        code: '39000',
+        operatorStateContext: { operation, table: 'operator_credentials', workspaceId: 'test-ws' },
+      });
+    },
+  );
+
+  it('redacts pgcrypto encryption failures during updateOperatorState', async () => {
+    const original = encryptedPostgresFailure();
+    encryptedQueryFailures.push(null, original); // decrypt succeeds; the encrypt query fails
+
+    let thrown: unknown;
+    try {
+      await updateOperatorState('operator_credentials', {}, (current) => current);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const safeError = thrown as Error & {
+      code?: string;
+      operatorStateContext?: { operation: string; table: string; workspaceId: string };
+    };
+    const diagnosticSurface = Object.getOwnPropertyNames(safeError)
+      .map((name) => String((safeError as unknown as Record<string, unknown>)[name]))
+      .join('\n');
+    expect(safeError).not.toBe(original);
+    expect(diagnosticSurface).not.toContain(DB_ENCRYPTION_KEY);
+    expect(diagnosticSurface).not.toContain('Wrong key or corrupt data');
+    expect(safeError).not.toHaveProperty('where');
+    expect(safeError).not.toHaveProperty('cause');
+    expect(safeError).toMatchObject({
+      code: '39000',
+      operatorStateContext: { operation: 'update', table: 'operator_credentials', workspaceId: 'test-ws' },
+    });
+  });
+
+  it('preserves a non-PostgreSQL failure identity', async () => {
+    const original = new Error('credential read failed before PostgreSQL');
+    encryptedQueryFailures.push(original);
+
+    await expect(readCredentials()).rejects.toBe(original);
   });
 });
 

@@ -22,6 +22,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 import { z } from 'zod';
 import { addressContinuationToOwner, truncateHint } from './request-compaction';
+import { readLedgerRows } from '../../turn-provenance/turn-provenance';
 /**
  * WI-2140968: every successor first prompt is now prefixed with the ownerId it
  * was written FOR. Derive the prefix from the implementation rather than
@@ -99,6 +100,14 @@ const findLiveHost = vi.fn();
 const injectIntoHost = vi.fn();
 const resolveSelfSession = vi.hoisted(() => vi.fn());
 vi.mock('../../search/self-session', () => ({ resolveSelfSession }));
+const readLoopFireIdentityForCurrentTurn = vi.hoisted(() => vi.fn());
+vi.mock('../../harness/routines/loop-turn-start-stamp', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../harness/routines/loop-turn-start-stamp')>();
+  return {
+    ...actual,
+    readLoopFireIdentityForCurrentTurn: (...args: unknown[]) => readLoopFireIdentityForCurrentTurn(...args),
+  };
+});
 vi.mock('../../events/await/psu-pty-discovery', () => {
   // Keep the REAL caps predicate so the gating logic is exercised honestly.
   const hostSupports = (host: { caps?: string[] } | null | undefined, cap: string) =>
@@ -325,6 +334,7 @@ beforeEach(async () => {
   });
   clearPendingCarryRespawn.mockResolvedValue(true);
   resolveSelfSession.mockResolvedValue(null);
+  readLoopFireIdentityForCurrentTurn.mockReset().mockResolvedValue(null);
   readPriorRespawnOutcome.mockResolvedValue({ outcome: 'none' });
   detectRespawnStorm.mockResolvedValue(NO_STORM);
   escalateRespawnStorm.mockResolvedValue(undefined);
@@ -567,6 +577,48 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
       budgetChars: 24_000,
       firstPromptSource: 'continuation-note',
     });
+  });
+
+  it('carries a verified loop identity into the generated self-compaction prompt', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    resolveSelfSession.mockResolvedValue({
+      sourceKind: 'codex',
+      sessionId: 'current-session',
+      filePath: '/fixture/sessions/current.jsonl',
+    });
+    readLoopFireIdentityForCurrentTurn.mockResolvedValue({ routineId: 'routine-10', wakeCount: 10 });
+
+    const result = body(await call({ focus: 'finish the current loop work' }));
+    const rows = readLedgerRows('su-caller', { dir: provDir, includeExpired: true });
+    const continuation = rows.filter((row) => row.origin === 'self-compaction').pop();
+
+    expect(result.firstPromptSource).toBe('continuation-note');
+    expect(readLoopFireIdentityForCurrentTurn).toHaveBeenCalledWith(
+      { owner: 'su-caller', sessionId: 'current-session', sourceKind: 'codex' },
+      expect.anything(),
+    );
+    expect(continuation?.loopFire).toEqual({ routineId: 'routine-10', wakeCount: 10 });
+  });
+
+  it('does not attach loop identity to an open owner message carried as the successor prompt', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    resolveSelfSession.mockResolvedValue({
+      sourceKind: 'codex',
+      sessionId: 'current-session',
+      filePath: '/fixture/sessions/current.jsonl',
+    });
+    readLoopFireIdentityForCurrentTurn.mockResolvedValue({ routineId: 'routine-10', wakeCount: 10 });
+    buildOwnerRespawnLaunchSpec.mockResolvedValue({
+      ...closedSpec,
+      firstPrompt: 'owner-authored question',
+      openOwnerQuestion: { crossesOpenOwnerMessage: true },
+    });
+
+    const result = body(await call({ focus: 'preserve the current work' }));
+    const rows = readLedgerRows('su-caller', { dir: provDir, includeExpired: true });
+
+    expect(result.firstPromptSource).toBe('open-owner-message');
+    expect(rows.some((row) => row.origin === 'self-compaction')).toBe(false);
   });
 
   it('persists the exact first prompt and addendum before asking the host to respawn', async () => {

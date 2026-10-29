@@ -4,8 +4,8 @@
  * Persisted in `harness_shared.operator_credentials` (NOT in zero_harness
  * publication — credentials must not be broadcast over WS). Was previously
  * `<papercuspRoot>/credentials.json` with 0600 chmod. PG gives us atomic
- * upsert and central backup; encryption-at-rest can layer on later via
- * pgcrypto if desired.
+ * upsert and central backup; credential payloads are encrypted at rest
+ * through operator-state-pg.ts and pgcrypto.
  */
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 

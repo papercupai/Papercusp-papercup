@@ -302,7 +302,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
         onLateScratchWriteSettled: resolveLateSettlement,
       });
       await writeStarted;
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(20_000);
       const result = await resultPromise;
       const meta = (result._meta?.resultDoor as {
         spillFailed?: unknown;
@@ -314,7 +314,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
       } | undefined);
 
       expect(writer).toHaveBeenCalledTimes(1);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('result-door scratch spill write exceeded 30000ms'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('result-door scratch spill write exceeded 20000ms'));
       expect(meta).toMatchObject({ spillPending: true, spillFailed: false, spillErrorCode: 'ETIMEDOUT' });
       expect(meta?.spillPath).toEqual(expect.any(String));
       expect(meta?.spillUri).toEqual(expect.any(String));

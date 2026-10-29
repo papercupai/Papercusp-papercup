@@ -59,10 +59,10 @@ export function resolveLoopFireIdentity(
   owner: string, prompt: string, dir: string, nowMs = Date.now(),
 ): LoopFireIdentity | null {
   const envelope = parseEnvelope(prompt ?? '');
-  if (!envelope || envelope.origin !== 'loop-fire') return null;
+  if (!envelope || !['loop-fire', 'self-compaction'].includes(envelope.origin)) return null;
   const row = readLedgerRows(owner, { includeExpired: false, dir, nowMs })
     .find((candidate) => candidate.nonce === envelope.nonce);
-  if (!row || row.sid !== owner || row.origin !== 'loop-fire' || !Number.isFinite(row.ts) || row.ts > nowMs ||
+  if (!row || row.sid !== owner || row.origin !== envelope.origin || !Number.isFinite(row.ts) || row.ts > nowMs ||
       typeof row.loopFire?.routineId !== 'string' || !row.loopFire.routineId.trim() ||
       !Number.isInteger(row.loopFire.wakeCount) || row.loopFire.wakeCount <= 0) return null;
   return {
@@ -71,14 +71,88 @@ export function resolveLoopFireIdentity(
   };
 }
 
+function isValidLoopFireIdentity(value: unknown): value is LoopFireIdentity {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<LoopFireIdentity>;
+  return typeof candidate.routineId === 'string' && candidate.routineId.trim().length > 0 &&
+    typeof candidate.wakeCount === 'number' && Number.isInteger(candidate.wakeCount) && candidate.wakeCount > 0;
+}
+
+/** Read the authenticated loop identity for the exact latest prompt in a live
+ *  session. This is used only before managed self-compaction: carrying an
+ *  identity requires both the persisted prompt origin and its matching
+ *  UserPromptSubmit start marker. Presence, active-loop state, and prompt prose
+ *  alone never grant continuation lineage. */
+export async function readLoopFireIdentityForCurrentTurn(
+  input: { owner: string; sessionId: string; sourceKind: string },
+  opts: { sql: Sql },
+): Promise<LoopFireIdentity | null> {
+  const owner = input.owner?.trim();
+  if (!owner || !input.sessionId?.trim() || !input.sourceKind?.trim()) return null;
+  try {
+    const turns = await opts.sql<Array<{
+      turn_idx: number;
+      text: string;
+      turn_origin: string | null;
+      turn_origin_verdict: string | null;
+    }>>`
+      SELECT turn_idx, text, turn_origin, turn_origin_verdict
+        FROM harness_shared.session_turns
+       WHERE owner = ${owner}
+         AND source_kind = ${input.sourceKind}
+         AND session_id = ${input.sessionId}
+         AND speaker = 'user'
+       ORDER BY turn_idx DESC
+       LIMIT 1`;
+    const turn = turns[0];
+    if (!turn || turn.turn_origin_verdict !== 'agent-injected') return null;
+    const envelope = parseEnvelope(turn.text ?? '');
+    if (!envelope || !['loop-fire', 'self-compaction'].includes(envelope.origin) ||
+        turn.turn_origin !== envelope.origin) return null;
+
+    const markers = await opts.sql<Array<{ detail: unknown }>>`
+      SELECT detail
+        FROM harness_shared.agent_activity
+       WHERE owner_id = ${owner}
+         AND kind = 'lifecycle'
+         AND summary = ${LOOP_TURN_START_MARKER}
+         AND detail->>'nonce' = ${envelope.nonce}
+         AND detail->>'origin' = ${envelope.origin}
+         AND detail->>'source' IN ('turn-start', 'session-ingest')
+       ORDER BY created_at DESC
+       LIMIT 5`;
+    for (const marker of markers) {
+      const detail = marker.detail && typeof marker.detail === 'object'
+        ? marker.detail as Record<string, unknown>
+        : null;
+      if (!detail || detail.nonce !== envelope.nonce || detail.origin !== envelope.origin) continue;
+      if (detail.source === 'session-ingest') {
+        const indexedTurn = detail.indexedTurn && typeof detail.indexedTurn === 'object'
+          ? detail.indexedTurn as Record<string, unknown>
+          : null;
+        if (indexedTurn?.sourceKind !== input.sourceKind ||
+            indexedTurn.sessionId !== input.sessionId ||
+            indexedTurn.turnIdx !== turn.turn_idx) continue;
+      }
+      if (isValidLoopFireIdentity(detail.loopFire)) return detail.loopFire;
+    }
+  } catch {
+    // A missing or unreadable proof keeps the existing fail-closed behavior.
+  }
+  return null;
+}
+
 /** Build the activity row for a loop-fire turn start, or null when the prompt is
  *  not a loop-fire turn. Pure: the route test and the reconciler both rely on the
  *  summary being EXACTLY LOOP_TURN_START_MARKER. */
 export function loopTurnStartRecord(input: LoopTurnStartInput): ActivityRecord | null {
   const owner = (input.owner ?? '').trim();
-  if (!owner || !isLoopFirePrompt(input.prompt)) return null;
   const envelope = parseEnvelope(input.prompt);
   const loopFire = input.loopFire;
+  const directLoopFire = envelope?.origin === 'loop-fire';
+  const verifiedCompactionContinuation = envelope?.origin === 'self-compaction' &&
+    isValidLoopFireIdentity(loopFire);
+  if (!owner || (!directLoopFire && !verifiedCompactionContinuation)) return null;
   return {
     owner,
     agent: input.client || null,
@@ -113,11 +187,14 @@ export async function recordLoopTurnStart(
   store?: Pick<TelemetryStore, 'append'>,
 ): Promise<boolean> {
   const owner = input.owner?.trim();
-  if (!owner || !isLoopFirePrompt(input.prompt)) return false;
+  const envelope = parseEnvelope(input.prompt);
+  if (!owner || !envelope || !['loop-fire', 'self-compaction'].includes(envelope.origin)) return false;
   const submittedAt = Date.now();
   try {
     let loopFire = input.loopFire;
-    if (loopFire === undefined) {
+    // A continuation must always resolve from its own server-written ledger row;
+    // a caller-supplied identity cannot upgrade a self-compaction prompt.
+    if (loopFire === undefined || envelope.origin === 'self-compaction') {
       loopFire = null;
       try {
         const { readAdvSessionLaunchRecordByOwner } = await import('../../adv-sessions');
@@ -170,18 +247,19 @@ export function indexedLoopTurnStartRecord(
 ): ActivityRecord | null {
   const owner = turn.owner?.trim();
   const submittedAt = turn.ts === null ? NaN : new Date(turn.ts).getTime();
-  if (!owner || turn.speaker !== 'user' || turn.turn_origin !== 'loop-fire' ||
+  const envelope = parseEnvelope(turn.text);
+  const supportedOrigin = (turn.turn_origin === 'loop-fire' && envelope?.origin === 'loop-fire') ||
+    (turn.turn_origin === 'self-compaction' && envelope?.origin === 'self-compaction');
+  if (!owner || turn.speaker !== 'user' || !supportedOrigin ||
       !['claude', 'codex', 'omp'].includes(turn.source_kind) ||
       !turn.workspace_id || !turn.session_id || !Number.isInteger(turn.turn_idx) || turn.turn_idx < 0 ||
       !Number.isFinite(submittedAt)) return null;
-  const envelope = parseEnvelope(turn.text);
-  if (envelope?.origin !== 'loop-fire') return null;
   // Native transcript rows use the corpus namespace 'default'; it is not the
   // target workspace. Explicit non-corpus namespaces must match the launch.
   if (target && turn.workspace_id !== 'default' && turn.workspace_id !== target.workspaceId) return null;
   const rows = ledgerRows ?? readLedgerRows(owner, { nowMs: submittedAt, dir: target?.dir });
   const enrollment = rows.find(row => row.nonce === envelope.nonce);
-  if (!enrollment || enrollment.sid !== owner || enrollment.origin !== 'loop-fire' ||
+  if (!enrollment || enrollment.sid !== owner || enrollment.origin !== envelope.origin ||
       !Number.isFinite(enrollment.ts) || enrollment.ts > submittedAt ||
       typeof enrollment.loopFire?.routineId !== 'string' || !enrollment.loopFire.routineId.trim() ||
       !Number.isInteger(enrollment.loopFire.wakeCount) || enrollment.loopFire.wakeCount <= 0 ||

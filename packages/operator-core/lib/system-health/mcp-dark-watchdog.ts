@@ -44,6 +44,12 @@ import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { agentToolInvocationPredicate } from '../agent-tools/sessions/automatic-tool-names';
+import { COORD_INBOX_WAKE_PREFIX } from '../agent-tools/coordination/inbox-wake';
+import {
+  countWakeSourcesBySubscriber,
+  readOpenAwaitsForSubscribers,
+  readWorkItemAwaitTargets,
+} from '../events/await/wake-source-predicate';
 import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
 import type { RespawnLaunchSpec } from '../carry-respawn';
 
@@ -354,6 +360,8 @@ const DEFAULT_PTY_FRESH_MS = 10 * 60_000;
 const DEFAULT_NO_LOOP_STALE_MS = 30 * 60_000;
 /** Repeated assistant turns with no agent-origin MCP call indicate a missing client tool catalog. */
 const DEFAULT_TOOLLESS_ASSISTANT_TURN_THRESHOLD = 3;
+/** A host execution observation is current-turn evidence only while freshly sampled. */
+const DEFAULT_EXECUTION_FRESH_MS = 15_000;
 /** Armed-loop clause floor (beats 3× a short loop interval). */
 const DEFAULT_LOOP_STALE_FLOOR_MS = 20 * 60_000;
 /** Positive-evidence recovery: an agent-origin invocation this fresh means
@@ -380,6 +388,12 @@ export interface InteractiveDarkSnapshot {
   assistantTurnsSinceLastAgentCall?: number;
   /** Timestamp of the latest indexed assistant turn in that no-agent-call streak. */
   lastAssistantTurnMs?: number | null;
+  /** A live non-inbox wake source exists (for example work-item:claimable). */
+  hasWakeSource?: boolean;
+  /** The host has deliberately stopped its CLI child and will resume it on input/wake. */
+  hostParked?: boolean;
+  /** Fresh host-side native execution observation; stale/absent evidence is unknown. */
+  execution?: Pick<NonNullable<PsuPtyHost['execution']>, 'phase' | 'pendingTools' | 'observedAt'> | null;
 }
 
 export interface InteractiveDarkThresholds {
@@ -388,6 +402,7 @@ export interface InteractiveDarkThresholds {
   noLoopStaleMs?: number;
   loopStaleFloorMs?: number;
   assistantTurnsWithoutAgentMcp?: number;
+  executionFreshMs?: number;
 }
 
 /**
@@ -414,6 +429,29 @@ export function evaluateInteractiveMcpDark(
   // trigger an automatic /mcp heal. Only the live cadence evidence below is
   // actionable.
   if (s.presenceHeartbeatMs == null) return { dark: false, reason: null };
+  const execution = s.execution;
+  const executionAgeMs = execution?.observedAt == null ? null : nowMs - execution.observedAt;
+  const executionFresh =
+    executionAgeMs != null &&
+    executionAgeMs >= 0 &&
+    executionAgeMs <= (opts.executionFreshMs ?? DEFAULT_EXECUTION_FRESH_MS);
+  const activelyExecuting =
+    executionFresh && execution != null && (execution.phase === 'running' || execution.pendingTools > 0);
+  const executionSettled =
+    executionFresh && execution != null && execution.phase === 'settled' && execution.pendingTools === 0;
+  // A live event watch is the intentional park's wake path. Recent assistant turns
+  // alone cannot distinguish that idle state from an MCP-dark turn; require positive
+  // current-turn evidence before recovering a host whose loop is no longer armed.
+  // The host's explicit process-free park is also authoritative. A running execution
+  // always wins over either quiet-state signal.
+  if (
+    !s.loopActive &&
+    s.hasWakeSource &&
+    !activelyExecuting &&
+    (s.hostParked === true || executionSettled)
+  ) {
+    return { dark: false, reason: null };
+  }
   // A projected hook call can keep the shared presence beat fresh even while
   // this client's tools/list never arrived. Require multiple indexed assistant
   // turns after the last agent-origin MCP call, and a recent final turn, before
@@ -932,6 +970,7 @@ export async function checkInteractiveMcpDark(
     const now = Date.now();
     const assistantTurnThreshold = opts.assistantTurnsWithoutAgentMcp ?? DEFAULT_TOOLLESS_ASSISTANT_TURN_THRESHOLD;
     const toolFreeTurnRowsPromise = readInteractiveToolFreeTurns(sql, hosts, now, assistantTurnThreshold);
+    const openAwaitsPromise = readOpenAwaitsForSubscribers(owners, sql);
 
     // Only query per-host presence/loop state, agent-origin invocation and
     // assistant-turn evidence + run the verdict/heal ladder
@@ -941,7 +980,7 @@ export async function checkInteractiveMcpDark(
     // live hosts means zero owners can be dark THIS pass), which the recovery
     // sweep below then treats identically to "all clear".
     if (owners.length > 0) {
-      const [presenceRows, loopRows, agentInvocationRows] = await Promise.all([
+      const [presenceRows, loopRows, agentInvocationRows, openAwaits] = await Promise.all([
         sql<{ owner_id: string; presence_ms: string | number | null }[]>`
           SELECT owner_id, extract(epoch from heartbeat_at) * 1000 AS presence_ms
             FROM harness_shared.coord_presence
@@ -960,8 +999,15 @@ export async function checkInteractiveMcpDark(
              AND t.invoked_at >= ${new Date(now - RECOVERED_FRESH_MS)}
              AND ${agentToolInvocationPredicate(sql, 't')}
         `,
+        openAwaitsPromise,
       ]);
       const toolFreeTurnRows = await toolFreeTurnRowsPromise;
+      const workItemAwaitTargets = await readWorkItemAwaitTargets(openAwaits, sql);
+      const wakeSourcesByOwner = countWakeSourcesBySubscriber(
+        openAwaits,
+        workItemAwaitTargets,
+        COORD_INBOX_WAKE_PREFIX,
+      );
       const presenceBy = new Map(
         presenceRows.map((r) => [r.owner_id, r.presence_ms != null ? Number(r.presence_ms) : null]),
       );
@@ -1000,6 +1046,9 @@ export async function checkInteractiveMcpDark(
             loopIntervalSec: loopBy.get(h.ownerId) ?? null,
             assistantTurnsSinceLastAgentCall: toolFreeTurns?.count ?? 0,
             lastAssistantTurnMs: toolFreeTurns?.lastTurnMs ?? null,
+            hasWakeSource: (wakeSourcesByOwner.get(h.ownerId) ?? 0) > 0,
+            hostParked: h.parked === true,
+            execution: h.execution ?? null,
           },
           now,
           opts,

@@ -2,7 +2,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import postgres from 'postgres';
-import { acquireTicketSnapshot, pgAcquireTimingSnapshot, withPgAcquireDiagnostics } from '@papercusp/db-org';
+import { acquireTicketSnapshot } from '@papercusp/db-org';
+import { pgAcquireTimingSnapshot, withPgAcquireDiagnostics } from '@papercusp/db-org/acquire-registry';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   allSessionsLiveResolver,
@@ -87,16 +88,17 @@ describe('PgAdmissionLedgerQueueStore', () => {
       let requestId = '';
       let snapshot: typeof pgAcquireTimingSnapshot = () => null;
       const startedAt = performance.now();
-      pending = withPgAcquireDiagnostics('admission.wait-control', id => {
+      const admission = withPgAcquireDiagnostics('admission.wait-control', id => {
         requestId = id;
         snapshot = AsyncLocalStorage.bind(pgAcquireTimingSnapshot);
         return governor.admit({ idempotencyKey: key, admissionClass: 'process' });
       });
+      pending = admission;
       // Observe any early rejection while the blocker is still held. Finally
       // releases it and drains this same operation; no admission is replayed.
-      void pending.catch(() => undefined);
+      void admission.catch(() => undefined);
       let settled = false;
-      void pending.then(() => { settled = true; }, () => { settled = true; });
+      void admission.then(() => { settled = true; }, () => { settled = true; });
       let observed: { wait_event_type: string | null; wait_event: string | null; blocking_pids: number[] } | undefined;
       await expect.poll(async () => {
         if (mode === 'pool') return acquireTicketSnapshot(pool).tickets.some(ticket =>
@@ -122,7 +124,7 @@ describe('PgAdmissionLedgerQueueStore', () => {
         ]);
       }
       await release();
-      const outcome = await pending;
+      const outcome = await admission;
       const durationMs = performance.now() - startedAt;
       expect(outcome.kind).toBe('queued');
       const complete = snapshot();

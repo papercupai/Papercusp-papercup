@@ -291,10 +291,10 @@ export interface LedgerRow {
   origin: string;
   sha256: string;
   ts: number;
-  /** Typed identity of the loop fire that enrolled this prompt, when the
-   *  delivery came from a loop marker. Kept on the existing provenance row so
-   *  completion readers can reject a delayed earlier fire without parsing the
-   *  rendered wake prose. */
+  /** Typed identity of the loop fire that started this prompt or whose verified
+   *  work this managed self-compaction prompt continues. Kept on the existing
+   *  provenance row so completion readers can reject a delayed earlier fire
+   *  without parsing rendered wake prose. */
   loopFire?: { routineId: string; wakeCount: number };
   /** Optional PER-ROW liveness override (ms), used instead of the global
    *  `ledgerTtlMs()` when checking whether this row is still live. Needed

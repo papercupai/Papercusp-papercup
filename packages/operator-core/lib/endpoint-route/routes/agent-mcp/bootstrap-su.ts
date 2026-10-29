@@ -3090,6 +3090,21 @@ export const bootstrapSu = defineTool({
       return jsonRes({ status: 'error', error: `compile su launch artifact: ${e?.message ?? e}` }, 500);
     }
 
+    // Measure the exact final prompt before materializing Codex's home. The
+    // same floor is returned to psu so config.toml and native argv agree.
+    const { buildContextBudget } = await import('../../../model-context-budget.mjs');
+    const contextBudget = buildContextBudget({
+      agent,
+      model,
+      contextSize,
+      promptText,
+      additionalPromptText: agent === 'codex' ? '' : launchContextText,
+      home: homedir(),
+    });
+    const codexStartupFloorTokens = agent === 'codex'
+      ? contextBudget.baselineTokens + contextBudget.reserveTokens
+      : null;
+
     // Materialize the launch artifacts. codex (no --mcp-config/-prompt flags)
     // gets a per-session CODEX_HOME (P-030); claude/omp get a launch-context
     // prompt file and rely on their USER-LEVEL papercusp-su MCP (it survives
@@ -3131,6 +3146,7 @@ export const bootstrapSu = defineTool({
           model,
           // Current registered budget wins over stale or absent launch argv.
           compactionLimit: codexCompactionLimit,
+          startupFloorTokens: codexStartupFloorTokens,
           token: readSuperuserToken(),
           nativeRuntimeBearer,
           codexGatewayAccountId: accountPin.provider === 'codex' ? accountPin.accountId : null,
@@ -3264,17 +3280,8 @@ export const bootstrapSu = defineTool({
       /* flag miss ⇒ builtin stays stripped (pre-P-021 behaviour stands) */
     }
 
-    // Revalidate the fully assembled launch prompt before minting a pending
-    // target identity. The imported history remains a separate user turn.
-    const { buildContextBudget } = await import('../../../model-context-budget.mjs');
-    const contextBudget = buildContextBudget({
-      agent,
-      model,
-      contextSize,
-      promptText,
-      additionalPromptText: agent === 'codex' ? '' : launchContextText,
-      home: homedir(),
-    });
+    // Revalidate a session-port fit against the already-measured final prompt.
+    // The imported history remains a separate user turn.
     if (sessionPortContext) {
       const estimatedTokens = Number(sessionPortContext.row.metadata.estimatedTokens ?? NaN);
       if (!Number.isFinite(estimatedTokens) || estimatedTokens > contextBudget.availableInputTokens) {

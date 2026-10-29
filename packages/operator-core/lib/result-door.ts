@@ -82,15 +82,15 @@ import {
  *  it is exactly this value. */
 export const RESULT_DOOR_TOKENS = computeTurnDoors(0).resultEach;
 const RESULT_DOOR_SCRATCH_WRITE_WAIT_MS = 30_000;
-// Keep quota-lock admission inside the same bounded window as the async spill write.
-// The old 5s sub-budget caused a premature fallback while a legitimate quota recovery
-// or fair mutex queue was still inside the result-door's 30s request budget. The outer
-// wait remains the hard ceiling; this only lets the normal durable writer use that budget.
+// Keep quota-lock admission inside its original bounded primary-write window. The old
+// 5s sub-budget caused a premature fallback while legitimate quota recovery or a fair
+// mutex queue was still progressing.
 const RESULT_DOOR_SCRATCH_MUTEX_WAIT_MS = RESULT_DOOR_SCRATCH_WRITE_WAIT_MS;
-// Primary spill can consume its full 30s cap before durable recovery starts. Keep the
-// combined wait at 50s (below the ~55s MCP transport cap, with 5s of headroom) while
-// allowing the PG payload spool's contention retries to settle instead of cutting them
-// off after the former 5s sub-budget.
+// Start durable recovery before a stalled primary spill consumes its full 30s mutex
+// allowance. The primary writer may still finish in the background; its late settlement
+// is tracked. A 20s response window plus the 20s PG-spool fallback stays below the
+// ~55s MCP transport cap with 15s of headroom.
+const RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS = 20_000;
 const RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS = 20_000;
 
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -2812,7 +2812,7 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   const writeSettlements = Promise.allSettled(deferred);
   const boundedWrites = await withBoundedTimeout(writeSettlements, {
     fallback: null,
-    timeoutMs: RESULT_DOOR_SCRATCH_WRITE_WAIT_MS,
+    timeoutMs: RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS,
     label: 'result-door scratch spill write',
   });
   const recoverTimedOut = async (error: unknown): Promise<T | null> => {
@@ -2831,7 +2831,7 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   if (boundedWrites.degraded || boundedWrites.value === null) {
     const error = boundedWrites.reason === 'timeout'
       ? Object.assign(
-          new Error(`result-door scratch spill write exceeded ${RESULT_DOOR_SCRATCH_WRITE_WAIT_MS}ms`),
+          new Error(`result-door scratch spill write exceeded ${RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS}ms`),
           { code: 'ETIMEDOUT' },
         )
       : boundedWrites.error ?? new Error('result-door scratch spill write did not settle');
@@ -3106,12 +3106,12 @@ function markPendingScratchWrite<T extends DoorableResult>(
     ? opts.nestedTargetToolName
     : opts.toolName;
   const pendingNext = coordSendCall
-    ? `The spill write exceeded ${RESULT_DOOR_SCRATCH_WRITE_WAIT_MS}ms and is still running. ` +
+    ? `The spill write exceeded ${RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS}ms and is still running. ` +
       'The coord:send delivery outcome may be unknown; do NOT repeat the send until you check coordination ' +
       'state with coord:feed or the recipient\'s coord:inbox. The pending URI/path in _projection.cursor ' +
       'is not a durable recovery guarantee. Retry capability:read after it becomes readable; if late ' +
       'settlement reports failed, the overflow is unavailable from this result.'
-    : `The spill write exceeded ${RESULT_DOOR_SCRATCH_WRITE_WAIT_MS}ms and is still running. ` +
+    : `The spill write exceeded ${RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS}ms and is still running. ` +
       `Do NOT repeat ${operationName}; the pending URI/path in _projection.cursor is not a durable ` +
       `recovery guarantee. Retry capability:read after it becomes readable; if late settlement reports ` +
       `failed, the overflow is unavailable from this result.`;
@@ -3225,7 +3225,7 @@ async function recordPendingScratchWriteTimeout<T extends DoorableResult>(
   const aggregate = recordAt(meta.aggregate);
   try {
     await callback({
-      timeoutMs: RESULT_DOOR_SCRATCH_WRITE_WAIT_MS,
+      timeoutMs: RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS,
       timedOutAt: new Date().toISOString(),
       spillPath,
       spillUri,

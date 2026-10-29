@@ -81,6 +81,7 @@ import {
 import { readCodexLockRuntimeVerdict, type CodexLockRuntimeVerdict } from './codex-lock-runtime';
 import { lintInstructionText, type InstructionLintReport, type InstructionRuntimeContext } from './instruction-lint';
 import {
+  buildContextBudget,
   codexContextConfigToml,
   codexModelConfigToml,
   resolveCodexModel,
@@ -1749,6 +1750,8 @@ export interface SuCodexConfigInput {
   model?: string | null;
   /** Per-session soft compaction ceiling recovered from the recorded psu argv. */
   compactionLimit?: number | null;
+  /** Minimum native auto-compaction threshold needed to load the measured startup prompt. */
+  startupFloorTokens?: number | null;
   /** Direct per-session CODEX_HOME whose model registry should seed context roots. */
   codexHome?: string | null;
   /** Fast session companion for Codex's high-write SQLite state. */
@@ -1762,6 +1765,31 @@ export interface SuCodexConfigInput {
   trustDir?: string | null;
   /** Launch cwd for project-scoped external HTTP MCP servers. */
   projectDir?: string | null;
+}
+
+function startupFloorForCodexPrompt(model: string | null | undefined, codexHome: string, promptText: string | null | undefined): number | null {
+  const prompt = String(promptText ?? '').trim();
+  if (!prompt) return null;
+  const budget = buildContextBudget({
+    agent: 'codex',
+    model,
+    codexHome,
+    contextSize: 'full',
+    promptText: prompt,
+  });
+  return budget.baselineTokens + budget.reserveTokens;
+}
+
+function resolveStartupFloorTokens(
+  model: string | null | undefined,
+  codexHome: string,
+  promptText: string | null | undefined,
+  requestedFloor: number | null | undefined,
+): number | null {
+  if (typeof requestedFloor === 'number' && Number.isFinite(requestedFloor) && requestedFloor > 0) {
+    return Math.floor(requestedFloor);
+  }
+  return startupFloorForCodexPrompt(model, codexHome, promptText);
 }
 
 /** Claude stores project MCP choices in its user config. Carry HTTP entries
@@ -1837,6 +1865,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
   const contextConfig = codexContextConfigToml(resolvedModel, {
     codexHome: opts.codexHome ?? undefined,
     compactionLimit: opts.compactionLimit,
+    startupFloorTokens: opts.startupFloorTokens,
   }).trimEnd();
   // D-005 route 2: a non-gateway home points at its stripped catalog. The
   // writers (writeSuCodexHome / ensureSuCodexHomeConfig) materialize the file
@@ -1960,10 +1989,22 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
   const resolvedModel = resolveCodexModel(opts.model);
+  let startupPromptText = opts.promptText;
+  if (!startupPromptText) {
+    try { startupPromptText = readFileSync(join(codexHome, 'AGENTS.md'), 'utf8'); }
+    catch { startupPromptText = ''; }
+  }
+  const startupFloorTokens = resolveStartupFloorTokens(
+    resolvedModel,
+    codexHome,
+    startupPromptText,
+    opts.startupFloorTokens,
+  );
   const expectedModelConfig = codexModelConfigToml(resolvedModel).join('\n');
   const expectedContextConfig = codexContextConfigToml(resolvedModel, {
     codexHome,
     compactionLimit: opts.compactionLimit,
+    startupFloorTokens,
   });
   const expectedLogDir = `log_dir = "${tomlEscape(logDir)}"`;
   const expectedSqliteHome = `sqlite_home = "${tomlEscape(sqliteHome)}"`;
@@ -2033,12 +2074,16 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
       headlessPolicyReady &&
       capabilityPolicyReady &&
       subagentPolicyReady &&
-      (!opts.denyAmbientContext || current === suCodexConfigToml({ ...opts, logDir, codexHome, sqliteHome }));
+      (!opts.denyAmbientContext || current === suCodexConfigToml({
+        ...opts, logDir, codexHome, sqliteHome, startupFloorTokens,
+      }));
   } catch {
     /* absent or unreadable — that is precisely the repair case */
   }
   if (!configReady) {
-    publishCodexConfig(configPath, suCodexConfigToml({ ...opts, logDir, codexHome, sqliteHome }));
+    publishCodexConfig(configPath, suCodexConfigToml({
+      ...opts, logDir, codexHome, sqliteHome, startupFloorTokens,
+    }));
   }
   const identity = repairSuCodexHomeIdentityImpl(
     codexHome,
@@ -2129,6 +2174,8 @@ type WriteSuCodexHomeOptions = {
   model?: string | null;
   /** Per-session soft compaction ceiling recovered from the recorded psu argv. */
   compactionLimit?: number | null;
+  /** Minimum native auto-compaction threshold needed to load the measured startup prompt. */
+  startupFloorTokens?: number | null;
   /** Superuser bearer token, baked as an http_headers Authorization (D-006).
    *  Omit only when no token is installed → a degraded non-superuser home. */
   token?: string | null;
@@ -2207,7 +2254,15 @@ function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexH
     codexHome,
     codexGatewayConfigToml(opts.codexGatewayAccountId, { gatewayOn: opts.codexGatewayAuto }).root.length > 0,
   );
-  publishCodexConfig(configPath, suCodexConfigToml({ ...opts, logDir, codexHome: targetHome, sqliteHome }));
+  const startupFloorTokens = resolveStartupFloorTokens(
+    opts.model,
+    targetHome,
+    opts.promptText,
+    opts.startupFloorTokens,
+  );
+  publishCodexConfig(configPath, suCodexConfigToml({
+    ...opts, logDir, codexHome: targetHome, sqliteHome, startupFloorTokens,
+  }));
 
   // SU sessions pass coordSid so the merged activity hook's coord fold stays
   // ON (new coord:inbox messages folded into the SAME activity:report round

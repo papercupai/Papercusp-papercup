@@ -49,6 +49,7 @@ import { bumpSessionEpoch } from '../../memory/session-epoch-ledger';
 import { getOrgPg } from '@papercusp/db-org';
 import { clearPendingCarryRespawn, savePendingCarryRespawn } from '../../session-brief';
 import { getLoopStatus } from '../../harness/routines/loop';
+import { readLoopFireIdentityForCurrentTurn, type LoopFireIdentity } from '../../harness/routines/loop-turn-start-stamp';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import { renderFocusIntegrityWarning, unverifiedFocusRefs } from '../../carry-brief';
 import {
@@ -554,6 +555,19 @@ export default defineTool({
         await ingestFileNow(self.filePath);
       }
     } catch { /* best-effort */ }
+    // Preserve a loop fire only when the exact current prompt has authenticated
+    // start-marker lineage. An open owner message below remains owner-authored
+    // and is never upgraded to a loop continuation.
+    let currentLoopFire: LoopFireIdentity | null = null;
+    if (self?.sessionId) {
+      try {
+        currentLoopFire = await readLoopFireIdentityForCurrentTurn({
+          owner: identity.ownerId,
+          sessionId: self.sessionId,
+          sourceKind: self.sourceKind,
+        }, { sql: getOrgPg().sql });
+      } catch { /* missing proof keeps the existing fail-closed behavior */ }
+    }
     // P-018: assemble the successor launch spec from the deterministic carry
     // producers. Assembly failure leaves the CURRENT session intact (a loud
     // error, never a blind cut) — the agent retries after addressing it.
@@ -643,7 +657,12 @@ export default defineTool({
           identity.ownerId,
         );
         try {
-          return (await tagTurnForInjection({ sid: identity.ownerId, origin: 'self-compaction', text: note }))
+          return (await tagTurnForInjection({
+            sid: identity.ownerId,
+            origin: 'self-compaction',
+            text: note,
+            ...(currentLoopFire ? { loopFire: currentLoopFire } : {}),
+          }))
             .taggedText;
         } catch {
           return note; // provenance must never break a boundary

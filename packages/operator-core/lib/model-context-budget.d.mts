@@ -212,13 +212,14 @@ export function parseLaunchCompactionLimitArgv(argv: unknown): number | null;
  * byte-identical and this can never talk an unknown model down.
  *
  * @param {string | null | undefined} model  a psu model spec, alias, or native id
- * @param {{ home?: string, codexHome?: string, compactionLimit?: number | null }} [opts]
+ * @param {{ home?: string, codexHome?: string, compactionLimit?: number | null, startupFloorTokens?: number | null }} [opts]
  * @returns {{ model: string, window: number, autoCompactLimit: number, source: string } | null}
  */
-export function codexContextWindowConfig(model: string | null | undefined, { home, codexHome, compactionLimit }?: {
+export function codexContextWindowConfig(model: string | null | undefined, { home, codexHome, compactionLimit, startupFloorTokens }?: {
     home?: string;
     codexHome?: string;
     compactionLimit?: number | null;
+    startupFloorTokens?: number | null;
 }): {
     model: string;
     window: number;
@@ -235,13 +236,13 @@ export function codexContextWindowConfig(model: string | null | undefined, { hom
  * The per-session home ALSO bakes the same keys (P-004) because a bare
  * `psu --resume` names no model and therefore emits no `-c` at all.
  */
-export function codexContextConfigArgs(model: any, { home, codexHome, compactionLimit }?: {}): string[];
+export function codexContextConfigArgs(model: any, { home, codexHome, compactionLimit, startupFloorTokens }?: {}): string[];
 /**
  * The same policy as a config.toml fragment, for the per-session CODEX_HOME
  * (P-004). `''` when the model has no extended window, so a caller can
  * concatenate unconditionally.
  */
-export function codexContextConfigToml(model: any, { home, codexHome, compactionLimit }?: {}): string;
+export function codexContextConfigToml(model: any, { home, codexHome, compactionLimit, startupFloorTokens }?: {}): string;
 /** Read the exact target-only launch context that the backend CLI will append.
  * A shared bounded reader keeps preview and bootstrap on the same bytes. */
 export function readLaunchContextText(path: any): string;

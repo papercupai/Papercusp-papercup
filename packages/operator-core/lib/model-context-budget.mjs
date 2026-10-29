@@ -584,10 +584,10 @@ export function parseLaunchCompactionLimitArgv(argv) {
  * byte-identical and this can never talk an unknown model down.
  *
  * @param {string | null | undefined} model  a psu model spec, alias, or native id
- * @param {{ home?: string, codexHome?: string, compactionLimit?: number | null }} [opts]
+ * @param {{ home?: string, codexHome?: string, compactionLimit?: number | null, startupFloorTokens?: number | null }} [opts]
  * @returns {{ model: string, window: number, autoCompactLimit: number, source: string } | null}
  */
-export function codexContextWindowConfig(model, { home, codexHome, compactionLimit } = {}) {
+export function codexContextWindowConfig(model, { home, codexHome, compactionLimit, startupFloorTokens } = {}) {
   const spec = model || codexDefaultModel(home, codexHome);
   const id = bareModelId(normalizeCodexCliModel(String(spec ?? '')));
   if (!id) return null;
@@ -621,16 +621,19 @@ export function codexContextWindowConfig(model, { home, codexHome, compactionLim
   if (window <= (declaredDefault ?? DEFAULT_CONTEXT_WINDOWS.codex)) return null;
   const nativeAutoCompactLimit = Math.floor(window * CODEX_AUTO_COMPACT_FRACTION);
   const activeCompactionLimit = POSITIVE(compactionLimit);
+  const managedAutoCompactLimit = activeCompactionLimit == null
+    ? nativeAutoCompactLimit
+    : Math.min(nativeAutoCompactLimit, Math.floor(activeCompactionLimit * 0.8));
+  const startupFloor = POSITIVE(startupFloorTokens);
   return {
     model: id,
     window,
     // D-008 fixes the declared context window at its exact upstream value.
-    // Start native compaction at 80% of the managed soft budget, before the
-    // scheduler's 90% critical band can refuse work. Keep headroom for a tool
-    // result between turns; never raise the native default or alter window.
-    autoCompactLimit: activeCompactionLimit == null
-      ? nativeAutoCompactLimit
-      : Math.min(nativeAutoCompactLimit, Math.floor(activeCompactionLimit * 0.8)),
+    // Normally start native compaction at 80% of the managed soft budget,
+    // before the scheduler's 90% critical band. A measured startup floor may
+    // raise that threshold so Codex does not compact the prompt before its
+    // first user turn; it never changes the model's declared window.
+    autoCompactLimit: Math.min(window, Math.max(managedAutoCompactLimit, startupFloor ?? 0)),
     source,
   };
 }
@@ -645,8 +648,8 @@ export function codexContextWindowConfig(model, { home, codexHome, compactionLim
  * The per-session home ALSO bakes the same keys (P-004) because a bare
  * `psu --resume` names no model and therefore emits no `-c` at all.
  */
-export function codexContextConfigArgs(model, { home, codexHome, compactionLimit } = {}) {
-  const cfg = codexContextWindowConfig(model, { home, codexHome, compactionLimit });
+export function codexContextConfigArgs(model, { home, codexHome, compactionLimit, startupFloorTokens } = {}) {
+  const cfg = codexContextWindowConfig(model, { home, codexHome, compactionLimit, startupFloorTokens });
   if (!cfg) return [];
   return [
     '-c',
@@ -661,8 +664,8 @@ export function codexContextConfigArgs(model, { home, codexHome, compactionLimit
  * (P-004). `''` when the model has no extended window, so a caller can
  * concatenate unconditionally.
  */
-export function codexContextConfigToml(model, { home, codexHome, compactionLimit } = {}) {
-  const cfg = codexContextWindowConfig(model, { home, codexHome, compactionLimit });
+export function codexContextConfigToml(model, { home, codexHome, compactionLimit, startupFloorTokens } = {}) {
+  const cfg = codexContextWindowConfig(model, { home, codexHome, compactionLimit, startupFloorTokens });
   if (!cfg) return '';
   return (
     `model_context_window = ${cfg.window}\n` +

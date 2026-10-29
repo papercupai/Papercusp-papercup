@@ -31,6 +31,12 @@ type MockLiveHost = {
   ownerId: string;
   startedAt: number;
   lastActivityAt?: number | null;
+  parked?: boolean;
+  execution?: {
+    phase: 'unknown' | 'running' | 'settled' | 'failed';
+    pendingTools: number;
+    observedAt: number;
+  };
   bridgeTty?: boolean | null;
   caps?: string[] | null;
   sock?: string;
@@ -215,6 +221,55 @@ describe('evaluateInteractiveMcpDark (P-005 — NOT pinned to operator restart)'
       INOW,
     );
     expect(v.dark).toBe(false);
+  });
+
+  it('does not recover a settled, loop-ended session that still has a live wake source', () => {
+    const v = evaluateInteractiveMcpDark(
+      interactiveDark({
+        loopActive: false,
+        loopIntervalSec: null,
+        presenceHeartbeatMs: INOW - 1 * M,
+        assistantTurnsSinceLastAgentCall: 3,
+        lastAssistantTurnMs: INOW - 1 * M,
+        hasWakeSource: true,
+        execution: { phase: 'settled', pendingTools: 0, observedAt: INOW },
+      }),
+      INOW,
+    );
+    expect(v.dark).toBe(false);
+  });
+
+  it('still recovers an actively running turn with no MCP progress, even when a wake source remains', () => {
+    const v = evaluateInteractiveMcpDark(
+      interactiveDark({
+        loopActive: false,
+        loopIntervalSec: null,
+        presenceHeartbeatMs: INOW - 1 * M,
+        assistantTurnsSinceLastAgentCall: 3,
+        lastAssistantTurnMs: INOW - 1 * M,
+        hasWakeSource: true,
+        execution: { phase: 'running', pendingTools: 0, observedAt: INOW },
+      }),
+      INOW,
+    );
+    expect(v.dark).toBe(true);
+    expect(v.reason).toContain('3 assistant turns without an agent-origin Papercusp tool call');
+  });
+
+  it('does not trust a stale settled execution observation to suppress recovery', () => {
+    const v = evaluateInteractiveMcpDark(
+      interactiveDark({
+        loopActive: false,
+        loopIntervalSec: null,
+        presenceHeartbeatMs: INOW - 1 * M,
+        assistantTurnsSinceLastAgentCall: 3,
+        lastAssistantTurnMs: INOW - 1 * M,
+        hasWakeSource: true,
+        execution: { phase: 'settled', pendingTools: 0, observedAt: INOW - 16_000 },
+      }),
+      INOW,
+    );
+    expect(v.dark).toBe(true);
   });
 
   it('presence NEVER seen ⇒ NOT dark — no evidence it is a papercusp agent (false-positive fix 2026-07-20)', () => {
@@ -469,6 +524,15 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       string,
       { assistantTurnsSinceLastAgentCall: number; lastAssistantTurnMs: number | null }
     >;
+    openAwaitsByOwner?: Record<
+      string,
+      Array<{
+        eventKey: string;
+        expiresTs?: Date | string | null;
+        timeoutBehavior?: string | null;
+        once?: boolean | null;
+      }>
+    >;
   }) {
     const updatedPhases: string[] = [];
     type FakeSqlTag = ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>) & {
@@ -498,6 +562,20 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
               last_agent_call_ms: null,
             };
           }),
+        );
+      }
+      if (q.includes('FROM harness_shared.event_awaits')) {
+        const owners = values[0] as string[];
+        return Promise.resolve(
+          owners.flatMap((subscriber_id) =>
+            (opts.openAwaitsByOwner?.[subscriber_id] ?? []).map((awaitRow) => ({
+              subscriber_id,
+              event_key: awaitRow.eventKey,
+              expires_ts: awaitRow.expiresTs ?? null,
+              timeout_behavior: awaitRow.timeoutBehavior ?? 'wake',
+              once: awaitRow.once ?? true,
+            })),
+          ),
         );
       }
       if (q.includes('FROM harness_shared.tool_invocations t')) {
@@ -699,6 +777,48 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       expect(out.darkOwners).toEqual([]);
       expect(out.healSent).toEqual([]);
       expect(buildRecoverySpec).not.toHaveBeenCalled();
+      expect(injectIntoHostMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not heal a parked session after loop:end when its claimable watch is still live', async () => {
+    const owner = 'su-parked-with-claimable-watch';
+    const { tag } = fakeSql({
+      openPhases: [],
+      presenceByOwner: { [owner]: INOW - 1 * M },
+      toolFreeTurnsByOwner: {
+        [owner]: { assistantTurnsSinceLastAgentCall: 3, lastAssistantTurnMs: INOW - 1 * M },
+      },
+      openAwaitsByOwner: {
+        [owner]: [{ eventKey: 'work-item:claimable', once: false, expiresTs: null }],
+      },
+    });
+    listLiveHostsMock.mockReturnValue([
+      {
+        ownerId: owner,
+        startedAt: INOW - 60 * M,
+        lastActivityAt: INOW - 1 * M,
+        parked: false,
+        execution: { phase: 'settled', pendingTools: 0, observedAt: INOW },
+        bridgeTty: true,
+        caps: ['mcp-reconnect', 'mcp-reconnect-force', 'carry-respawn'],
+        sock: '/tmp/parked-with-claimable-watch.sock',
+      },
+    ]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+    try {
+      const out = await checkInteractiveMcpDark(tag, {
+        jitterMaxMs: 0,
+        sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
+      });
+
+      expect(out.darkOwners).not.toContain(owner);
+      expect(out.healSent).not.toContain(owner);
+      expect(out.notified).not.toContain(owner);
+      expect(mcpReconnectViaPtyMock).not.toHaveBeenCalled();
       expect(injectIntoHostMock).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();

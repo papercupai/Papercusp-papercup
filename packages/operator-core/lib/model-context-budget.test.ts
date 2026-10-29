@@ -401,6 +401,30 @@ describe('codex extended-window launch config', () => {
     expect(config!.autoCompactLimit).toBeLessThan(200_000 * 0.9);
   });
 
+  it('raises native compaction to the measured startup floor in both CLI args and TOML', () => {
+    const home = codexHome([SOL], 'startup-floor');
+    const options = { home, compactionLimit: 250_000, startupFloorTokens: 280_000 };
+    expect(codexContextWindowConfig('gpt-5.6-sol', options)).toEqual({
+      model: 'gpt-5.6-sol',
+      window: 1_000_000,
+      autoCompactLimit: 280_000,
+      source: 'codex-official-1m-policy',
+    });
+    expect(codexContextConfigArgs('gpt-5.6-sol', options)).toEqual([
+      '-c',
+      'model_context_window=1000000',
+      '-c',
+      'model_auto_compact_token_limit=280000',
+    ]);
+    expect(codexContextConfigToml('gpt-5.6-sol', options)).toBe(
+      'model_context_window = 1000000\nmodel_auto_compact_token_limit = 280000\n',
+    );
+    expect(codexContextWindowConfig('gpt-5.6-sol', {
+      ...options,
+      startupFloorTokens: 150_000,
+    })?.autoCompactLimit).toBe(200_000);
+  });
+
   it('does not let a session limit raise the model-derived native threshold', () => {
     expect(codexContextWindowConfig('gpt-5.6-sol', { compactionLimit: 1_200_000 })).toMatchObject({
       window: 1_000_000,

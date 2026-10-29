@@ -1,13 +1,14 @@
 import type { ActivityRecord } from '@papercusp/activity-bridge';
 import { describe, expect, it, vi } from 'vitest';
 import { LOOP_TURN_START_MARKER, SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
-import { indexedLoopTurnStartRecord, isLoopFirePrompt, loopTurnStartRecord, recordLoopTurnStart, type IndexedNativeLoopTurn } from './loop-turn-start-stamp';
+import { indexedLoopTurnStartRecord, isLoopFirePrompt, loopTurnStartRecord, readLoopFireIdentityForCurrentTurn, recordLoopTurnStart, type IndexedNativeLoopTurn } from './loop-turn-start-stamp';
 import type { LedgerRow } from '../../turn-provenance/turn-provenance';
 
 // EI-24791346664119438: the turn-start endpoint stamps a loop-fire turn start in real time so
 // reconcile-loop-routines can tell a long-running loop turn from a wake that never became one.
 
 const LOOP_PROMPT = '⟦turn-origin:loop-fire nonce:8ed10949adab325d⟧\n🔁 Loop wake (every 15m). continue';
+const SELF_COMPACTION_PROMPT = '⟦turn-origin:self-compaction nonce:0123456789abcdef⟧\nContinue the verified loop work.';
 
 describe('indexed native producer validation', () => {
   const submitted = Date.parse('2026-10-23T14:48:15Z');
@@ -47,6 +48,29 @@ describe('indexed native producer validation', () => {
 
   it('keeps missing enrollment unknown', () => {
     expect(indexedLoopTurnStartRecord(turn, [])).toBeNull();
+  });
+
+  it('indexes a self-compaction turn only when its provenance row carries typed loop lineage', () => {
+    const continuationTurn = { ...turn, text: SELF_COMPACTION_PROMPT, turn_origin: 'self-compaction' };
+    const continuationEnrollment = {
+      ...enrollment,
+      nonce: '0123456789abcdef',
+      origin: 'self-compaction',
+      loopFire: { routineId: 'routine-10', wakeCount: 10 },
+    };
+
+    expect(indexedLoopTurnStartRecord(continuationTurn, [continuationEnrollment])).toMatchObject({
+      detail: {
+        origin: 'self-compaction',
+        nonce: continuationEnrollment.nonce,
+        loopFire: { routineId: 'routine-10', wakeCount: 10 },
+        indexedTurn: { sourceKind: 'codex', sessionId: 'native-1', turnIdx: 27 },
+      },
+    });
+    expect(indexedLoopTurnStartRecord(continuationTurn, [{
+      ...continuationEnrollment,
+      loopFire: undefined,
+    } as LedgerRow])).toBeNull();
   });
 
   it.each([
@@ -107,6 +131,52 @@ describe('loop-turn-start-stamp', () => {
         loopFire: { routineId: 'routine-10', wakeCount: 10 },
       },
     });
+  });
+
+  it('builds a self-compaction start marker only when an authenticated loop identity is present', () => {
+    expect(loopTurnStartRecord({
+      owner: 'su-1',
+      prompt: SELF_COMPACTION_PROMPT,
+      workspaceId: 'ws-1',
+      loopFire: { routineId: 'routine-10', wakeCount: 10 },
+    })).toMatchObject({
+      detail: {
+        origin: 'self-compaction',
+        nonce: '0123456789abcdef',
+        loopFire: { routineId: 'routine-10', wakeCount: 10 },
+      },
+    });
+    expect(loopTurnStartRecord({ owner: 'su-1', prompt: SELF_COMPACTION_PROMPT, workspaceId: 'ws-1' })).toBeNull();
+  });
+
+  it('reads lineage only from the exact latest machine prompt and matching start marker', async () => {
+    const currentTurn = {
+      turn_idx: 27,
+      text: SELF_COMPACTION_PROMPT,
+      turn_origin: 'self-compaction',
+      turn_origin_verdict: 'agent-injected',
+    };
+    const activity = {
+      origin: 'self-compaction',
+      nonce: '0123456789abcdef',
+      source: 'session-ingest',
+      loopFire: { routineId: 'routine-10', wakeCount: 10 },
+      indexedTurn: { sourceKind: 'codex', sessionId: 'native-1', turnIdx: 27 },
+    };
+    const read = async (detail: Record<string, unknown> | null) => {
+      const sql = async (strings: TemplateStringsArray) =>
+        strings.join('').includes('FROM harness_shared.session_turns')
+          ? [currentTurn]
+          : detail ? [{ detail }] : [];
+      return readLoopFireIdentityForCurrentTurn(
+        { owner: 'su-native', sourceKind: 'codex', sessionId: 'native-1' },
+        { sql: sql as never },
+      );
+    };
+
+    await expect(read(activity)).resolves.toEqual({ routineId: 'routine-10', wakeCount: 10 });
+    await expect(read({ ...activity, indexedTurn: { ...activity.indexedTurn, turnIdx: 26 } })).resolves.toBeNull();
+    await expect(read(null)).resolves.toBeNull();
   });
 
   it('joins the marker to a per-request receipt without copying prompt content', () => {

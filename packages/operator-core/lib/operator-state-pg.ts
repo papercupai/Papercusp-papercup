@@ -63,6 +63,39 @@ const READ_RETRY: PgRetryOpts = {
   label: 'readOperatorState',
 };
 
+type OperatorStateDbOperation = 'read' | 'write' | 'update';
+
+/**
+ * PostgreSQL can include bound pgcrypto arguments in server diagnostics (for
+ * example, the PL/pgSQL `where` field on a decryption failure). Never let that
+ * driver error escape an encrypted state query. Keep only its SQLSTATE and the
+ * managed operator-state coordinates; deliberately omit the original as cause.
+ */
+async function withOperatorStateDatabaseContext<T>(
+  operation: OperatorStateDbOperation,
+  table: string,
+  workspaceId: string,
+  query: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await query();
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (typeof code !== 'string' || !/^[0-9A-Z]{5}$/.test(code)) throw error;
+
+    const safeError = new Error(
+      'Operator state ' + operation + ' failed for ' + table +
+      ' in workspace ' + workspaceId + ' (PostgreSQL ' + code + ')',
+    );
+    safeError.name = 'OperatorStateDatabaseError';
+    Object.assign(safeError, {
+      code,
+      operatorStateContext: { operation, table, workspaceId },
+    });
+    throw safeError;
+  }
+}
+
 // (operator_last_scan / operator_idle_snapshot / operator_scanner_session were
 // removed with the scanner teardown — unify-agent-launches D-005, migration 167.)
 type StateTable =
@@ -438,18 +471,20 @@ export async function readOperatorState<T>(
   if (ENCRYPTED_TABLES.has(table)) {
     const key = getDbEncryptionKey();
     // Read-only SELECT — re-issued on pool starvation (see READ_RETRY / isRetriablePgReadError).
-    const rows = await withPgRetry(
-      () => sql<{ plaintext: T | null }[]>`
-      SELECT
-        CASE
-          WHEN payload_ct IS NOT NULL
-            THEN pgp_sym_decrypt(payload_ct, ${key})::jsonb
-          ELSE payload
-        END AS plaintext
-      FROM ${sql(`harness_shared.${table}`)}
-       WHERE workspace_id = ${ws}
-    `,
-      READ_RETRY,
+    const rows = await withOperatorStateDatabaseContext('read', table, ws, () =>
+      withPgRetry(
+        () => sql<{ plaintext: T | null }[]>`
+        SELECT
+          CASE
+            WHEN payload_ct IS NOT NULL
+              THEN pgp_sym_decrypt(payload_ct, ${key})::jsonb
+            ELSE payload
+          END AS plaintext
+        FROM ${sql(`harness_shared.${table}`)}
+         WHERE workspace_id = ${ws}
+      `,
+        READ_RETRY,
+      ),
     );
     result = rows.length > 0 ? (rows[0].plaintext ?? null) : null;
   } else {
@@ -481,7 +516,7 @@ export async function writeOperatorState<T>(
     const key = getDbEncryptionKey();
     const text = JSON.stringify(payload);
     // payload column kept-null on writes; future migration drops it.
-    await sql`
+    await withOperatorStateDatabaseContext('write', table, ws, () => sql`
       INSERT INTO ${sql(`harness_shared.${table}`)}
         (workspace_id, payload, payload_ct, updated_at)
       VALUES (
@@ -494,7 +529,7 @@ export async function writeOperatorState<T>(
         SET payload = '{}'::jsonb,
             payload_ct = EXCLUDED.payload_ct,
             updated_at = EXCLUDED.updated_at
-    `;
+    `);
     invalidateOperatorStateCache(table, ws); // P-004: same-process read-after-write consistency
     await notifyOperatorStateSync(table);
     return;
@@ -559,7 +594,8 @@ export async function updateOperatorState<T>(
     `;
     let current: T;
     if (isEncrypted && key !== null) {
-      const rows = await tx<{ plaintext: T | null }[]>`
+      const rows = await withOperatorStateDatabaseContext('update', table, ws, () =>
+        tx<{ plaintext: T | null }[]>`
         SELECT
           CASE
             WHEN payload_ct IS NOT NULL
@@ -569,7 +605,7 @@ export async function updateOperatorState<T>(
         FROM ${tx(`harness_shared.${table}`)}
          WHERE workspace_id = ${ws}
          FOR UPDATE
-      `;
+        `);
       current = rows.length > 0 ? (rows[0].plaintext ?? defaultValue) : defaultValue;
     } else {
       const rows = await tx<{ payload: T }[]>`
@@ -584,7 +620,7 @@ export async function updateOperatorState<T>(
 
     if (isEncrypted && key !== null) {
       const text = JSON.stringify(next);
-      await tx`
+      await withOperatorStateDatabaseContext('update', table, ws, () => tx`
         INSERT INTO ${tx(`harness_shared.${table}`)}
           (workspace_id, payload, payload_ct, updated_at)
         VALUES (
@@ -597,7 +633,7 @@ export async function updateOperatorState<T>(
           SET payload = '{}'::jsonb,
               payload_ct = EXCLUDED.payload_ct,
               updated_at = EXCLUDED.updated_at
-      `;
+      `);
     } else {
       // Account writers may return an unchanged (but rebuilt/normalized) pool.
       // Compare JSONB under the existing row lock, so key order and in-place

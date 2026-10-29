@@ -1819,6 +1819,9 @@ describe('bootstrap-su', () => {
     expect(json.cwd).toBe('/workspace');
     expect(json.codexHome).toMatch(/su-codex-homes\/session-42$/);
     expect(json.envelopeEnv.CODEX_HOME).toBe(json.codexHome);
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(expect.objectContaining({
+      startupFloorTokens: json.contextBudget.baselineTokens + json.contextBudget.reserveTokens,
+    }));
     expect(json.promptFile).toMatch(/AGENTS\.md$/);
     // The async writer now owns the guard and receives the live-host probe.
     // Its real guard behavior is verified in role-codex-home's own suite.

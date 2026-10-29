@@ -1192,10 +1192,11 @@ export interface LoopStatus {
    *  `lastFiredAt` to see whether fires are outpacing genuine turn production. */
   lastTurnAt: string | null;
   /** ISO of the most recent assistant output whose immediately preceding user
-   *  prompt carried the authored `turn-origin:loop-fire` envelope. Unlike
-   *  lastTurnAt/lastRealTurnAt, owner-prompted work cannot advance this clock;
-   *  it is the completion signal used by turnsStalled. Optional for legacy
-   *  fixture compatibility; production status rows always populate it. */
+   *  prompt carried an authenticated loop-fire identity, directly or through a
+   *  managed self-compaction continuation. Unlike lastTurnAt/lastRealTurnAt,
+   *  unrelated owner-prompted work cannot advance this clock; it is the
+   *  completion signal used by turnsStalled. Optional for legacy fixture
+   *  compatibility; production status rows always populate it. */
   lastLoopTurnAt?: string | null;
   /** Latest completed loop-origin turn after the most recent wake settled through
    *  suppressed-redundant, coalesced, or inbox delivery
@@ -2399,9 +2400,10 @@ export async function getLoopStatuses(
             ) real_turn_sources)                                          AS last_real_turn_at,
            -- EI-21303383797798186 / WI-6554700010019416: a manual owner prompt can
            -- produce arbitrarily many assistant rows while an armed loop delivers zero
-           -- autonomous turns. Pair only the loop-fire prompt whose typed activity
-           -- detail matches this routine's latest wakeCount; timestamp-only selection
-           -- can let delayed fire9 repair current fire10.
+           -- autonomous turns. Pair only a direct loop-fire prompt or authenticated
+           -- self-compaction continuation whose typed activity detail matches this
+           -- routine's latest wakeCount; timestamp-only selection can let delayed
+           -- fire9 repair current fire10.
            -- The owner predicate uses session_turns_owner_ts_idx, while each bounded
            -- same-session range uses the table's (session/source/turn_idx/workspace)
            -- primary key. Restrict to the current arm to keep the correlated read lean.
@@ -2426,7 +2428,7 @@ export async function getLoopStatuses(
               FROM harness_shared.session_turns u
              WHERE u.owner = r.target_owner_id
                AND u.speaker = 'user'
-               AND u.turn_origin = 'loop-fire'
+               AND u.turn_origin IN ('loop-fire', 'self-compaction')
                AND u.ts >= COALESCE(
                      (r.metadata->>'armed_at')::timestamptz,
                      '-infinity'::timestamptz
@@ -2449,7 +2451,8 @@ export async function getLoopStatuses(
                         AND start_stamp.detail->'indexedTurn'->>'sourceKind' = u.source_kind
                         AND start_stamp.detail->'indexedTurn'->>'sessionId' = u.session_id
                         AND start_stamp.detail->'indexedTurn'->>'turnIdx' = u.turn_idx::text)
-                      OR (start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
+                      OR (u.turn_origin = 'loop-fire'
+                        AND start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
                         AND u.ts >= start_stamp.created_at)
                     )
                ))                                                    AS last_loop_turn_at,
@@ -2467,7 +2470,8 @@ export async function getLoopStatuses(
                    ))                                                    AS first_prompt_after_arm_at,
            -- EI-25552514553135466: turnsStalled needs the current arm's loop-turn clock
            -- above, but suppressed-wake recovery needs proof tied to the dispatched wake.
-           -- Re-arming after a genuine loop-origin turn otherwise hides that completion and
+           -- Re-arming after a genuine loop turn (or its authenticated compaction continuation)
+           -- otherwise hides that completion and
            -- leaves the old suppressed delivery looking unrecovered forever. Keep this
            -- second clock scoped to the latest non-turn delivery's dispatch time instead.
            -- Inbox fallback and cursor coalescing also need this recovery proof.
@@ -2493,7 +2497,7 @@ export async function getLoopStatuses(
                   FROM harness_shared.session_turns u
                  WHERE u.owner = r.target_owner_id
                    AND u.speaker = 'user'
-                   AND u.turn_origin = 'loop-fire'
+                   AND u.turn_origin IN ('loop-fire', 'self-compaction')
                    AND u.ts > lw.created_at
                    AND EXISTS (
                      SELECT 1
@@ -2506,7 +2510,17 @@ export async function getLoopStatuses(
                               WHEN start_stamp.detail->'loopFire'->>'wakeCount' ~ '^[0-9]+$'
                               THEN (start_stamp.detail->'loopFire'->>'wakeCount')::int
                             END = COALESCE((r.metadata->>'fire_count')::int, 0)
-                        AND u.ts >= start_stamp.created_at
+                        AND (
+                          (start_stamp.detail->>'source' = 'session-ingest'
+                            AND start_stamp.workspace_id = u.workspace_id
+                            AND start_stamp.detail->'indexedTurn'->>'workspaceId' = u.workspace_id
+                            AND start_stamp.detail->'indexedTurn'->>'sourceKind' = u.source_kind
+                            AND start_stamp.detail->'indexedTurn'->>'sessionId' = u.session_id
+                            AND start_stamp.detail->'indexedTurn'->>'turnIdx' = u.turn_idx::text)
+                          OR (u.turn_origin = 'loop-fire'
+                            AND start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
+                            AND u.ts >= start_stamp.created_at)
+                        )
                    ))
                 ELSE NULL
            END                                                               AS last_suppressed_wake_loop_turn_at,
@@ -2514,7 +2528,8 @@ export async function getLoopStatuses(
            -- re-arm after a delayed real loop turn hides the evidence needed to clear a
            -- sticky last_status='loop-delivered-wake-no-loop-turn'. Keep a separate,
            -- per-fire proof: only compute it while that is still the latest recorded outcome,
-           -- and only from loop-fire prompts strictly after this routine's latest fire.
+           -- and only from directly loop-fired prompts or authenticated managed
+           -- self-compaction continuations strictly after this routine's latest fire.
            -- This bounded owner+time lookup prevents a prior fire's assistant row from
            -- repairing a newer failure; the status classifier also compares the returned
            -- completion timestamp strictly against last_fired_at.
@@ -2542,7 +2557,7 @@ export async function getLoopStatuses(
                   FROM harness_shared.session_turns u
                  WHERE u.owner = r.target_owner_id
                    AND u.speaker = 'user'
-                   AND u.turn_origin = 'loop-fire'
+                   AND u.turn_origin IN ('loop-fire', 'self-compaction')
                    AND u.ts > r.last_fired_at
                    AND EXISTS (
                      SELECT 1
@@ -2555,7 +2570,17 @@ export async function getLoopStatuses(
                               WHEN start_stamp.detail->'loopFire'->>'wakeCount' ~ '^[0-9]+$'
                               THEN (start_stamp.detail->'loopFire'->>'wakeCount')::int
                             END = COALESCE((r.metadata->>'fire_count')::int, 0)
-                        AND u.ts >= start_stamp.created_at
+                        AND (
+                          (start_stamp.detail->>'source' = 'session-ingest'
+                            AND start_stamp.workspace_id = u.workspace_id
+                            AND start_stamp.detail->'indexedTurn'->>'workspaceId' = u.workspace_id
+                            AND start_stamp.detail->'indexedTurn'->>'sourceKind' = u.source_kind
+                            AND start_stamp.detail->'indexedTurn'->>'sessionId' = u.session_id
+                            AND start_stamp.detail->'indexedTurn'->>'turnIdx' = u.turn_idx::text)
+                          OR (u.turn_origin = 'loop-fire'
+                            AND start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
+                            AND u.ts >= start_stamp.created_at)
+                        )
                    ))
                 ELSE NULL
            END                                                               AS last_failed_fire_loop_turn_completed_at,
