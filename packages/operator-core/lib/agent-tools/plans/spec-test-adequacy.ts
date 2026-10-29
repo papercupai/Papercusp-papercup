@@ -4395,11 +4395,10 @@ export function evaluateSpecTestAdequacy(input: {
   const draggingRows: Partial<Record<AdequacyCriterion, SpecEvidenceForAdequacy[]>> = {
     traceability: ephemeralEvidence.length > 0 ? ephemeralEvidence : unknownLineageEvidence,
     'fixture-calibration': [
-      ...evidence.filter((row) => {
-        const details = detailsOf(row);
-        return details.fixtureCalibrated === false || details.fixtureFree === false;
-      }),
+      ...fixtureFreeConflicts,
       ...unresolvedFixtureProof,
+      ...fixtureOutsideCurrent,
+      ...fixtureCurrentNotCalibrated,
     ],
     falsifiability: [
       ...evidence.filter((row) => detailsOf(row).falsifiable === false),

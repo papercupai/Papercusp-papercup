@@ -1939,6 +1939,33 @@ export async function reconcileLoopRoutines(
         actionWithheldAtMs != null && actionWithheldAtMs >= lastFiredMs &&
         (actionFiredAtMs == null || actionFiredAtMs < lastFiredMs) &&
         (wakeDispatchAtMs == null || wakeDispatchAtMs < lastFiredMs);
+      // A delivered non-turn wake is not loop-turn proof, but an active inference/native
+      // operation for this owner can still be the serialized turn that must settle before
+      // the queued loop prompt can open one. Defer the retry verdict on that live evidence;
+      // keep the hold bounded so a stale or lost turn marker cannot strand the parked loop.
+      const nonTurnWakeAtMs = tsMs(row.last_wake_at);
+      const nonTurnDispatchGraceElapsed = nonTurnWakeAtMs != null &&
+        nowMs - nonTurnWakeAtMs >= claimDispatchGraceMs(intervalMs);
+      const withinNonTurnActiveDwell = nonTurnWakeStillNeedsLoopTurn &&
+        !droppedWakeForThisFire && !withheldFireHasNoTurn &&
+        nonTurnDispatchGraceElapsed &&
+        nonTurnWakeAtMs != null && nonTurnWakeAtMs <= nowMs &&
+        nowMs - nonTurnWakeAtMs < stuckParkMs(intervalMs);
+      if (withinNonTurnActiveDwell) {
+        const activeExecution = await (opts.recoverExpectedExecution ?? recoverExpectedLoopExecution)({
+          sql: db,
+          routineId: row.id,
+          ownerId: row.target_owner_id,
+          nowMs,
+          dryRun: true,
+        });
+        if (
+          activeExecution.state?.status === 'running' &&
+          (activeExecution.state.reason === 'active-inference' || activeExecution.state.reason === 'native-operation')
+        ) {
+          continue;
+        }
+      }
       const executionRecovery = nonTurnWakeStillNeedsLoopTurn || droppedWakeForThisFire || withheldFireHasNoTurn
         ? { handled: false as const }
         : await (opts.recoverExpectedExecution ?? recoverExpectedLoopExecution)({

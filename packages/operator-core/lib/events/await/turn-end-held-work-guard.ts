@@ -20,6 +20,7 @@
  * Positive-finding-only: any read failure answers '' (never refuses on a DB hiccup).
  */
 
+import { workspaceForCoordOwner } from '../../adv-sessions';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
@@ -102,7 +103,7 @@ export interface TurnEndHeldWorkDeps {
   getLoopActive: (ownerId: string) => Promise<boolean | null>;
   listParkedAwaits: (ownerId: string) => Promise<WakeSourceAwait[]>;
   readAwaitTargets: (awaits: WakeSourceAwait[]) => Promise<WorkItemAwaitTargets>;
-  hasPendingDeliberateWakeDelivery: (ownerId: string) => Promise<boolean>;
+  hasPendingDeliberateWakeDelivery: (ownerId: string, excludeDeliveryIds?: readonly number[]) => Promise<boolean>;
   /** A recent host-ledger receipt says this owner has an accepted carry-respawn in flight. */
   hasFreshPendingCarryRespawn: (ownerId: string) => Promise<boolean>;
   /** Arm this session's rewake timer for a refused stop (turn-end-rewake.ts). */
@@ -121,13 +122,86 @@ const defaultDeps: TurnEndHeldWorkDeps = {
   listParkedAwaits: async (ownerId) =>
     (await listParkedAwaitsForSubscribers([ownerId])).map((a) => ({ ...a, subscriberId: ownerId })),
   readAwaitTargets: (awaits) => readWorkItemAwaitTargets(awaits),
-  hasPendingDeliberateWakeDelivery: (ownerId) => hasPendingDeliberateWakeDelivery(ownerId),
+  hasPendingDeliberateWakeDelivery: (ownerId, excludeDeliveryIds) =>
+    hasPendingDeliberateWakeDelivery(ownerId, excludeDeliveryIds),
   hasFreshPendingCarryRespawn: async (ownerId) => {
     return isFreshPendingCarryRespawn(await readPriorRespawnOutcome(ownerId));
   },
   armRewake: (input) => armTurnEndRewake(input),
   cancelRewake: (ownerId) => cancelTurnEndRewake({ ownerId }),
 };
+
+export type TurnEndRewakeDeliveryVerdict =
+  | { kind: 'keep'; reason?: string }
+  | { kind: 'obsolete'; reason: string };
+
+type TurnEndRewakeDeliveryDeps = Pick<
+  TurnEndHeldWorkDeps,
+  | 'getModes'
+  | 'readHeldWorkItems'
+  | 'getLoopActive'
+  | 'listParkedAwaits'
+  | 'readAwaitTargets'
+  | 'hasPendingDeliberateWakeDelivery'
+> & {
+  resolveRecipientWorkspace: (ownerId: string) => Promise<string | null>;
+};
+
+const defaultTurnEndRewakeDeliveryDeps: TurnEndRewakeDeliveryDeps = {
+  resolveRecipientWorkspace: workspaceForCoordOwner,
+  getModes: defaultDeps.getModes,
+  readHeldWorkItems: defaultDeps.readHeldWorkItems,
+  getLoopActive: defaultDeps.getLoopActive,
+  listParkedAwaits: defaultDeps.listParkedAwaits,
+  readAwaitTargets: defaultDeps.readAwaitTargets,
+  hasPendingDeliberateWakeDelivery: defaultDeps.hasPendingDeliberateWakeDelivery,
+};
+
+/**
+ * Re-check whether a fired turn-end fallback is still needed immediately before delivery.
+ * Its await may already have fired into the delivery queue before a newer dependency await,
+ * loop, or released claim made that fallback obsolete. Unknown reads fail open: preserve the wake.
+ */
+export async function classifyTurnEndRewakeDelivery(input: {
+  ownerId: string;
+  excludeDeliveryIds?: readonly number[];
+  deps?: Partial<TurnEndRewakeDeliveryDeps>;
+}): Promise<TurnEndRewakeDeliveryVerdict> {
+  const deps: TurnEndRewakeDeliveryDeps = { ...defaultTurnEndRewakeDeliveryDeps, ...input.deps };
+  const { ownerId } = input;
+  try {
+    const workspaceId = await deps.resolveRecipientWorkspace(ownerId);
+    if (!workspaceId) return { kind: 'keep', reason: 'recipient workspace is unknown' };
+
+    const modes = await deps.getModes(workspaceId, ownerId);
+    const autonomyModes = modes.map((row) => row.mode).filter((mode) => modeImpliesAutonomy(mode));
+    if (autonomyModes.length === 0) return { kind: 'obsolete', reason: 'recipient has no active autonomy mode' };
+
+    const held = await deps.readHeldWorkItems(ownerId, workspaceId);
+    if (held.length === 0) return { kind: 'obsolete', reason: 'recipient holds no unfinished work' };
+
+    const loopActive = await deps.getLoopActive(ownerId);
+    if (loopActive === null) return { kind: 'keep', reason: 'loop status is unknown' };
+    if (loopActive) return { kind: 'obsolete', reason: 'an engine loop is active' };
+
+    const excludeDeliveryIds = input.excludeDeliveryIds ?? [];
+    if (await deps.hasPendingDeliberateWakeDelivery(ownerId, excludeDeliveryIds)) {
+      return { kind: 'obsolete', reason: 'another deliberate wake delivery is already pending' };
+    }
+
+    // The timer itself is not a chosen wake source. The standing inbox keepalive is
+    // excluded by guaranteesWake; a bounded deliberate inbox await still counts.
+    const chosen = (await deps.listParkedAwaits(ownerId)).filter((awaited) => !isTurnEndRewakeKey(awaited.eventKey));
+    const targets = await deps.readAwaitTargets(chosen);
+    if (chosen.some((awaited) => guaranteesWake(awaited, targets, INBOX_WAKE_KEY_PREFIX))) {
+      return { kind: 'obsolete', reason: 'a current bounded wake is already guaranteed' };
+    }
+
+    return { kind: 'keep' };
+  } catch {
+    return { kind: 'keep', reason: 'freshness read failed' };
+  }
+}
 
 /**
  * The turn-end verdict for one session: the refusal text, or '' to let the turn end.

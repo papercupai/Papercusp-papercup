@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { INBOX_WAKE_KEY_PREFIX } from './store';
 import {
+  classifyTurnEndRewakeDelivery,
   evaluateTurnEndHeldWorkStop,
   isFreshPendingCarryRespawn,
   turnEndHeldWorkStopText,
@@ -71,6 +72,56 @@ const rewakeAwait: WakeSourceAwait = {
   timeoutBehavior: 'wake',
   once: true,
 };
+
+function deliveryDeps(over: NonNullable<Parameters<typeof classifyTurnEndRewakeDelivery>[0]['deps']> = {}) {
+  return {
+    resolveRecipientWorkspace: async () => WS,
+    getModes: async () => [{ mode: 'auto' }],
+    readHeldWorkItems: async () => [held('WI-1')],
+    getLoopActive: async () => false,
+    listParkedAwaits: async () => [inboxKeepalive, rewakeAwait],
+    readAwaitTargets: async () => new Map<string, never[]>(),
+    hasPendingDeliberateWakeDelivery: async () => false,
+    ...over,
+  };
+}
+
+describe('turn-end rewake delivery freshness (EI-26908413306331308)', () => {
+  it('supersedes a fired fallback when a newer dependency await guarantees a wake', async () => {
+    const dependency: WakeSourceAwait = {
+      subscriberId: OWNER,
+      eventKey: 'work-item:done:WI-9',
+      expiresTs: FUTURE,
+      timeoutBehavior: 'wake',
+      once: true,
+    };
+    const checkPending = vi.fn(async () => false);
+    await expect(classifyTurnEndRewakeDelivery({
+      ownerId: OWNER,
+      excludeDeliveryIds: [91],
+      deps: deliveryDeps({
+        listParkedAwaits: async () => [inboxKeepalive, rewakeAwait, dependency],
+        hasPendingDeliberateWakeDelivery: checkPending,
+      }),
+    })).resolves.toEqual({ kind: 'obsolete', reason: 'a current bounded wake is already guaranteed' });
+    expect(checkPending).toHaveBeenCalledWith(OWNER, [91]);
+  });
+
+  it('keeps the fallback when held work still has no other guaranteed wake', async () => {
+    await expect(classifyTurnEndRewakeDelivery({
+      ownerId: OWNER,
+      excludeDeliveryIds: [92],
+      deps: deliveryDeps(),
+    })).resolves.toEqual({ kind: 'keep' });
+  });
+
+  it('fails open when freshness reads fail', async () => {
+    await expect(classifyTurnEndRewakeDelivery({
+      ownerId: OWNER,
+      deps: deliveryDeps({ listParkedAwaits: async () => { throw new Error('read failed'); } }),
+    })).resolves.toMatchObject({ kind: 'keep' });
+  });
+});
 
 describe('turn-end rewake timer (WI-6554700010018567)', () => {
   it('arms the timer when it refuses, and says so in the refusal', async () => {

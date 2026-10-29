@@ -43,6 +43,7 @@ import { wakeAccountRouteFromArgv } from '../../inference-gateway/spawn-env';
 // by engine.ts, so hosting it here would close a wake-executor↔engine import cycle.
 import { wakeSummaryHeadline } from './timeout-fallback';
 import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
+import { turnEndRewakeKey } from './turn-end-rewake';
 import { PtyError } from '../../pty-bridge';
 import type { CarryBrief } from '../../carry-brief';
 import { renderColdWakeInjection } from '../../su-cold-loop';
@@ -572,6 +573,73 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     ...over,
   };
 }
+
+describe('executeWake — obsolete turn-end fallback delivery (EI-26908413306331308)', () => {
+  it('suppresses a pure fallback when a newer guaranteed dependency await is active', async () => {
+    const ownerId = 'su-rewake-superseded';
+    const classify = vi.fn(async () => ({ kind: 'obsolete' as const, reason: 'a current bounded wake is already guaranteed' }));
+    const delivery = work({
+      id: 301,
+      subscriberId: ownerId,
+      eventKey: turnEndRewakeKey(ownerId),
+      payload: { timeout: true, guidance: 'stale fallback' },
+      note: 'nothing set to wake you',
+      wakeHandle: advHandle(),
+    });
+    const d = deps({ classifyTurnEndRewakeDelivery: classify });
+
+    await expect(executeWake(delivery, d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'suppressed-redundant',
+    });
+    expect(classify).toHaveBeenCalledWith({ ownerId, excludeDeliveryIds: [delivery.id] });
+    expect(d.findPsuHost).not.toHaveBeenCalled();
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('removes only fallback components and retains a coalesced dependency timeout', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const ownerId = 'su-rewake-mixed';
+    const fallback = work({
+      id: 302,
+      subscriberId: ownerId,
+      eventKey: turnEndRewakeKey(ownerId),
+      payload: { timeout: true, guidance: 'stale fallback' },
+      summary: 'old turn-end fallback',
+      note: 'nothing set to wake you',
+      createdAt: new Date(1_000).toISOString(),
+    });
+    const dependency = work({
+      id: 303,
+      subscriberId: ownerId,
+      eventKey: 'work-item:done:WI-9',
+      payload: { timeout: true, guidance: 'current dependency timeout' },
+      summary: 'dependency deadline expired',
+      note: null,
+      createdAt: new Date(2_000).toISOString(),
+    });
+    const delivery = {
+      ...coalesceDeliveries([fallback, dependency]),
+      wakeHandle: { kind: 'plan-run' as const, runId: 93 },
+    };
+    let wakeText = '';
+    const classify = vi.fn(async () => ({ kind: 'obsolete' as const, reason: 'unused for mixed delivery' }));
+    const d = deps({
+      classifyTurnEndRewakeDelivery: classify,
+      resumePlanRun: vi.fn(async ({ wakeText: text }) => {
+        wakeText = text;
+        return { ok: true as const };
+      }),
+    });
+
+    await expect(executeWake(delivery, d)).resolves.toEqual({ kind: 'delivered', channel: 'plan-run-resume' });
+    expect(classify).not.toHaveBeenCalled();
+    expect(wakeText).toContain('work-item:done:WI-9');
+    expect(wakeText).toContain('dependency deadline expired');
+    expect(wakeText).not.toContain('turn-end:rewake:');
+    expect(wakeText).not.toContain('nothing set to wake you');
+  });
+});
 
 describe('executeWake — delivery-time current wake-mode fence (EI-24940177665447430)', () => {
   const ownerId = 'su-paused-at-delivery';

@@ -520,6 +520,35 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
     expect(lintTscScopeFromArgv(['--update', '--mine'])).toBe('update:mine');
   });
 
+  it('rejects bare paths instead of silently starting a whole-project check', () => {
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+    // test:file's committed-source loader is inherited by child processes. This CLI assertion
+    // needs the working-tree script that the test is exercising, so remove that preload here.
+    const childEnv = { ...process.env };
+    delete childEnv.NODE_OPTIONS;
+    let status: number | null = 0;
+    let stdout = '';
+    let stderr = '';
+    try {
+      stdout = execFileSync(
+        process.execPath,
+        [join(repoRoot, 'scripts/lint-tsc.mjs'), 'packages/operator-core/lib/example.ts'],
+        { cwd: repoRoot, encoding: 'utf8', stdio: 'pipe', env: childEnv },
+      );
+    } catch (error) {
+      const failed = error as { status?: number | null; stdout?: string; stderr?: string };
+      status = failed.status ?? null;
+      stdout = String(failed.stdout ?? '');
+      stderr = String(failed.stderr ?? '');
+    }
+
+    expect(status).toBe(2);
+    expect(stderr).toContain('Unexpected lint:tsc argument(s)');
+    expect(stderr).toContain('--files=<path,...>');
+    expect(stdout + stderr).not.toContain('LINT_TSC_RUN');
+    expect(stdout + stderr).not.toContain('LINT_TSC_RESULT');
+  });
+
   it('is wired to process.on("exit") — not stamped per exit site, which a new one could skip', () => {
     // There are nine-plus `process.exit(...)` sites in the gate. Stamping each would let a
     // tenth silently opt out, and riding the exit hook is ALSO what makes the marker

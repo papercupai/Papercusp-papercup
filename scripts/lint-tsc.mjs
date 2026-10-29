@@ -211,10 +211,47 @@ const USAGE = `Usage:
                                # quote every diagnostic for a failing file, not just the first 10
 `;
 
+const SUPPORTED_FLAGS = new Set([
+  '--all-errors',
+  '--mine',
+  '--no-cross-leg',
+  '--seed',
+  '--update',
+]);
+
+function unexpectedArguments(argv) {
+  const unexpected = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--files' || arg === '--files-from') {
+      while (i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
+        i += 1;
+        if (arg === '--files-from') break;
+      }
+      continue;
+    }
+    if (arg.startsWith('--files=') || arg.startsWith('--files-from=')) continue;
+    if (arg === '--help' || arg === '-h' || SUPPORTED_FLAGS.has(arg)) continue;
+    unexpected.push(arg);
+  }
+  return unexpected;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.includes('--help') || argv.includes('-h')) {
     console.log(USAGE);
+    return;
+  }
+
+  const unexpected = unexpectedArguments(argv);
+  if (unexpected.length > 0) {
+    console.error(
+      `❌ Unexpected lint:tsc argument(s): ${unexpected.join(', ')}. ` +
+        'Use --files=<path,...> to scope the check; bare paths otherwise risk a full-project run.',
+    );
+    console.error(USAGE);
+    process.exitCode = 2;
     return;
   }
 

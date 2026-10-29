@@ -1445,10 +1445,14 @@ export async function listParkedAwaitsForSubscribers(
  * platform-armed interests, announcements, the inbox keepalive, and cancelled
  * source awaits do not authorize a loop stop.
  */
-export async function hasPendingDeliberateWakeDelivery(subscriberId: string): Promise<boolean> {
+export async function hasPendingDeliberateWakeDelivery(
+  subscriberId: string,
+  excludeDeliveryIds: readonly number[] = [],
+): Promise<boolean> {
   if (!subscriberId) return false;
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  const excludedIds = [...new Set(excludeDeliveryIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
   const rows = await sql<Array<{ has_wake: boolean }>>`
     SELECT EXISTS (
       SELECT 1
@@ -1459,6 +1463,7 @@ export async function hasPendingDeliberateWakeDelivery(subscriberId: string): Pr
          AND d.subscriber_id = ${subscriberId}
          AND a.subscriber_id = ${subscriberId}
          AND d.status IN ('pending', 'parked', 'delivering')
+         AND NOT (d.id = ANY(${excludedIds}::bigint[]))
          AND a.policy = 'wake'
          AND a.fired_at IS NOT NULL
          AND a.cancelled_at IS NULL

@@ -3758,14 +3758,81 @@ describe("reconcileLoopRoutines — a warm 'suppressed-redundant' wake settles o
       checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
       recoverExpectedExecution,
     });
-    // This active inference is the unrelated turn that caused suppression, not a loop-fire turn.
-    expect(recoverExpectedExecution).not.toHaveBeenCalled();
+    // The active inference is not loop-turn proof. A dry-run probe with no current active
+    // execution still allows the original bounded quiet/retry path to proceed.
+    const expectedProbes = channel === 'suppressed-redundant' ? 0 : 1;
+    expect(recoverExpectedExecution).toHaveBeenCalledTimes(expectedProbes);
+    if (expectedProbes > 0) {
+      expect(recoverExpectedExecution).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
+    }
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe(channel === 'suppressed-redundant' ? 'presence-quiescence' : 'delivered-wake-no-loop-turn');
     // A wake that was never spent must never feed the fire-circuit (EI-22127560919383327).
     if (channel === 'suppressed-redundant') expect(recordFire).not.toHaveBeenCalledWith(
       expect.anything(), expect.anything(), expect.anything(), 'error',
     );
+  });
+
+  it.each(['inbox', 'coalesced', 'suppressed-redundant'])(
+    'defers a %s non-turn wake while the owner has a live pre-existing inference, without treating it as loop proof',
+    async channel => {
+      const activeInference = {
+        handled: true as const,
+        state: {
+          status: 'running' as const,
+          reason: 'active-inference',
+          attempts: 0,
+          probes: 0,
+          nextProbeAt: T0 + 160_000,
+          observedAt: T0 + 120_000,
+          generation: 'host:2:worker',
+          lastAttemptAt: null,
+        },
+      };
+      const recoverExpectedExecution = vi.fn(async () => activeInference);
+      const recordFire = vi.fn(async () => {});
+      const result = await reconcile({
+        sql: fakeSql([warmSuppressedRow({ last_wake_channel: channel })], []),
+        nowMs: T0 + 130_000, // presence is quiet, but the owner inference is still active
+        recordFire,
+        readFireState: NO_PRIOR_ERRORS,
+        checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+        recoverExpectedExecution,
+      });
+
+      expect(recoverExpectedExecution).toHaveBeenCalledTimes(1);
+      expect(recoverExpectedExecution).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
+      expect(result.rearmed).toBe(0);
+      expect(result.loops).toEqual([]);
+      expect(recordFire).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'error');
+    },
+  );
+
+  it('bounds the live-inference deferral at the stuck-park dwell', async () => {
+    const recoverExpectedExecution = vi.fn(async () => ({
+      handled: true as const,
+      state: {
+        status: 'running' as const,
+        reason: 'active-inference',
+        attempts: 0,
+        probes: 0,
+        nextProbeAt: T0 + 31 * 60_000,
+        observedAt: T0 + 31 * 60_000,
+        generation: 'host:2:worker',
+        lastAttemptAt: null,
+      },
+    }));
+    const result = await reconcile({
+      sql: fakeSql([warmSuppressedRow({ last_wake_channel: 'inbox' })], []),
+      nowMs: T0 + 31 * 60_000,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      recoverExpectedExecution,
+    });
+
+    expect(recoverExpectedExecution).not.toHaveBeenCalled();
+    expect(result.rearmed).toBe(1);
+    expect(result.loops[0]?.via).toBe('presence-quiescence');
   });
 
   it('still lets expected-execution recovery protect a delivered wake that may have opened a loop turn', async () => {

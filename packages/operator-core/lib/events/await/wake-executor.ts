@@ -136,6 +136,11 @@ import { payloadIsTimeout, wakeSummaryHeadline } from './timeout-fallback';
 import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
 import { prepareCellWakeFold } from './cell-wake-fold';
 import { prepareInboxWakeHeldWorkReminder } from './inbox-wake-held-work-reminder';
+import {
+  classifyTurnEndRewakeDelivery,
+  type TurnEndRewakeDeliveryVerdict,
+} from './turn-end-held-work-guard';
+import { turnEndRewakeKey } from './turn-end-rewake';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
   findLiveHostAsync,
@@ -1481,6 +1486,15 @@ function deliveryEventPayloadIsTimeout(event: CoalescedDeliveryEvent): boolean {
   return isRecord(event.payload) && event.payload.timeout === true;
 }
 
+function isTurnEndRewakeComponent(event: CoalescedDeliveryEvent, ownerId: string): boolean {
+  return event.event === turnEndRewakeKey(ownerId) && deliveryEventPayloadIsTimeout(event);
+}
+
+function isTurnEndRewakeDelivery(delivery: DeliveryWork): boolean {
+  return delivery.eventKey === turnEndRewakeKey(delivery.subscriberId) &&
+    isRecord(delivery.payload) && delivery.payload.timeout === true;
+}
+
 /** Rebuild the coalesced headline after stale components are removed. */
 function rebuildCoalescedDelivery(
   d: DeliveryWork,
@@ -1525,6 +1539,53 @@ function rebuildCoalescedDelivery(
     },
     coalescedCount: events.length,
   };
+}
+
+async function refreshTurnEndRewakeDelivery(input: {
+  delivery: DeliveryWork;
+  classify: (input: {
+    ownerId: string;
+    excludeDeliveryIds: readonly number[];
+  }) => Promise<TurnEndRewakeDeliveryVerdict>;
+}): Promise<{ delivery: DeliveryWork; obsoleteReason: string | null }> {
+  const { delivery } = input;
+  if (isRecord(delivery.payload) && delivery.payload.coalesced === true) {
+    if (!Array.isArray(delivery.payload.events) || !delivery.payload.events.every(isRecord)) {
+      return { delivery, obsoleteReason: null };
+    }
+    const events = delivery.payload.events as CoalescedDeliveryEvent[];
+    const fallbackEvents = events.filter((event) => isTurnEndRewakeComponent(event, delivery.subscriberId));
+    if (fallbackEvents.length === 0) return { delivery, obsoleteReason: null };
+    const survivingEvents = events.filter((event) => !isTurnEndRewakeComponent(event, delivery.subscriberId));
+    if (survivingEvents.length > 0) {
+      const rebuilt = rebuildCoalescedDelivery(delivery, survivingEvents);
+      return {
+        delivery: {
+          ...rebuilt,
+          note: null,
+          summary:
+            `${fallbackEvents.length} turn-end fallback ${fallbackEvents.length === 1 ? 'component was' : 'components were'} ` +
+            `removed because another event already wakes this turn; ${rebuilt.summary ?? ''}`,
+        },
+        obsoleteReason: null,
+      };
+    }
+    const deliveryIds = events
+      .map((event) => event.delivery_id)
+      .filter((id): id is number => typeof id === 'number' && Number.isSafeInteger(id));
+    const verdict = await input.classify({
+      ownerId: delivery.subscriberId,
+      excludeDeliveryIds: deliveryIds.length > 0 ? deliveryIds : [delivery.id],
+    }).catch((): TurnEndRewakeDeliveryVerdict => ({ kind: 'keep', reason: 'freshness read failed' }));
+    return { delivery, obsoleteReason: verdict.kind === 'obsolete' ? verdict.reason : null };
+  }
+
+  if (!isTurnEndRewakeDelivery(delivery)) return { delivery, obsoleteReason: null };
+  const verdict = await input.classify({
+    ownerId: delivery.subscriberId,
+    excludeDeliveryIds: [delivery.id],
+  }).catch((): TurnEndRewakeDeliveryVerdict => ({ kind: 'keep', reason: 'freshness read failed' }));
+  return { delivery, obsoleteReason: verdict.kind === 'obsolete' ? verdict.reason : null };
 }
 
 /**
@@ -3437,6 +3498,11 @@ export interface ExecuteWakeDeps {
   prepareInboxWakeHeldWorkReminder?:
     | ((input: { ownerId: string; deliveryWorkspaceId: string }) => Promise<string>)
     | null;
+  /** Revalidate a fired turn-end fallback before it reaches the recipient. Injected for tests. */
+  classifyTurnEndRewakeDelivery?: (input: {
+    ownerId: string;
+    excludeDeliveryIds: readonly number[];
+  }) => Promise<TurnEndRewakeDeliveryVerdict>;
   /** P-023 / D-008: advance the subscriber's CONTEXT GENERATION when a cold wake
    *  discards its context (see the call site). Injected for tests for the SAME
    *  unmockable-real-PG reason as getLoopStatusFn above — the default reaches
@@ -4415,6 +4481,19 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   };
 
   try {
+    // The turn-end gate can cancel an await after it has already fired into this
+    // queue. Re-check at the delivery boundary; if a newer wait/loop or released
+    // claim now makes the fallback redundant, suppress it. A coalesced non-fallback
+    // event is preserved and the stale fallback component alone is stripped.
+    const rewakeFreshness = await refreshTurnEndRewakeDelivery({
+      delivery: d,
+      classify: deps.classifyTurnEndRewakeDelivery ?? classifyTurnEndRewakeDelivery,
+    });
+    if (rewakeFreshness.obsoleteReason) {
+      return { kind: 'delivered', channel: 'suppressed-redundant' };
+    }
+    d = rewakeFreshness.delivery;
+
     // EI-203843: this is deliberately the first delivery decision. A queued
     // wake can outlive the stand-down cue by minutes (especially on a cold
     // carry respawn), so every handle-less/plan-run/pty/resume path must share

@@ -2155,6 +2155,12 @@ describe('await-event store (PG)', () => {
     expect(await hasPendingDeliberateWakeDelivery(subscriberId)).toBe(true);
     expect(await hasPendingDeliberateWakeDelivery('loop-end-no-delivery')).toBe(false);
     expect(await hasPendingDeliberateWakeDelivery('')).toBe(false);
+    const [delivery] = await rootSql<Array<{ id: number }>>`
+      SELECT id::int AS id FROM harness_shared.event_wake_deliveries
+       WHERE subscriber_id = ${subscriberId} AND await_id = ${deliberate.id}
+    `;
+    expect(delivery).toBeDefined();
+    expect(await hasPendingDeliberateWakeDelivery(subscriberId, [delivery.id])).toBe(false);
 
     const platformSubscriber = 'loop-end-platform-wake-delivery';
     await registerAwait({
