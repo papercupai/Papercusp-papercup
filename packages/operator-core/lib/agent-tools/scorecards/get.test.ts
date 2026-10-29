@@ -163,8 +163,11 @@ describe('scorecards:get evidence-first projection', () => {
     expect(guidance).toContain('same exact serving route for both scorecards:get and plans:evaluate-spec-test-adequacy');
     expect(guidance).toContain('process serving scorecards:get');
     expect(guidance).toContain('cross-route calls may report different currentness');
-    expect(guidance).toContain('stored rerunRecipe.args through plans:evaluate-spec-test-adequacy');
-    expect(guidance).toContain('no scorecardId selector');
+    expect(guidance).toContain('scorecardId: issueId');
+    expect(guidance).toContain('replays its exact bindings as of scorecard.createdAt');
+    expect(guidance).toContain('Do not compare a direct replay of rerunRecipe.args with the historical card');
+    expect(guidance).toContain('Use rerunRecipe.args only when measuring the present state');
+    expect(guidance).not.toContain('no scorecardId selector');
   });
 
   it('declares optional result roots with concrete scorecard and paging fields', () => {

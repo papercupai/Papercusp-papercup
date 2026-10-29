@@ -150,7 +150,7 @@
   },
   "remainingAcceptance": [
     "P003 release data/configuration and explicit legacy-client recovery under its existing owner",
-    "Refresh the bounded copy binding after this record change, bind the retention/exception scope, and obtain independent acceptance",
-    "Reconcile a source high-water mark and cutover deltas, or explicitly accept the enumerated inaccessible-data boundary through the existing contract"
+    "Reuse the corrected COPY proof and independently reviewed exception scope recorded in p006-acceptance-preparation-2026-10-29.json; full P005 acceptance remains incomplete",
+    "Obtain authoritative continuous source-retention evidence for the exact buckets and cutover interval, and reconcile source high-water marks and cutover deltas. The owned inaccessible-data exception does not waive RETAIN or the retention conjunct of R5; existing source-access request WI-6554700010022667 remains open"
   ]
 }

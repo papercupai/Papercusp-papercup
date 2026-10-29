@@ -467,9 +467,18 @@ it('D032 earns a prospective floor and renews current authority while reusing un
   const [{ until }] = await f.db.adminSql`SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC',
     'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS until`;
   const current = { ...opts, since: baseline.receipt.sourceReconciliation.closed.from, until };
+  // PostgreSQL preserves microseconds, whereas the validator's host clock has
+  // millisecond precision. A same-tick microtask retry burst can otherwise
+  // reject this window as future-dated without ever entering reconciliation.
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(until) - 1);
+  try { expect(await reconcileNativeCapture(current)).toBe('unknown'); }
+  finally { clock.mockRestore(); }
+  await vi.waitFor(() => expect(Date.now()).toBeGreaterThan(Date.parse(until)), { interval: 1 });
   let verdict: 'complete' | 'gap' | 'unknown' = 'unknown';
   for (let attempt = 0; attempt < 20 && verdict === 'unknown'; attempt++) verdict = await reconcileNativeCapture(current);
-  expect(verdict).toBe('complete');
+  const finalPreparation = await receipt();
+  expect(verdict, JSON.stringify({ current, baselineFloor: baseline.floor, floor: finalPreparation.floor,
+    reconciliation: finalPreparation.receipt?.sourceReconciliation })).toBe('complete');
   const before = await receipt();
   expect(before.floor).toBe(baseline.floor);
   // No canonical body open on the next read: a source rewrite from an open

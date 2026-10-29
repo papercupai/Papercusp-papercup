@@ -1,6 +1,7 @@
 /** P-005 real-Postgres coverage for exact spec evidence edges, tools, and currentness. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { restoreRawJsonbSerializer } from '@papercusp/db-org';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
@@ -155,6 +156,8 @@ beforeAll(async () => {
     writeFile(path.join(h.siblingRoot, 'test', 'portal.test.ts'), 'expect(rendererTrust).toBe(true);\n'),
   ]);
   db = await createFreshPgDb('plan-spec-evidence');
+  // Match the canonical getOrgPg client: preserve pre-stringified ::jsonb parameters as raw JSON.
+  restoreRawJsonbSerializer(db.sql);
   h.sql = db.sql;
   await db.sql.unsafe(`DO $$ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'harness_app') THEN CREATE ROLE harness_app; END IF;

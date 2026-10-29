@@ -233,6 +233,15 @@ describe('flags public routes — mutate ship gates, auth:public (P-013)', () =>
 });
 
 describe('loopback gate — destructive routes reject non-loopback origin (D-009)', () => {
+  // The developer shell may deliberately opt into remote administration. This
+  // suite pins the default perimeter, so isolate that override and restore it.
+  beforeEach(() => {
+    vi.stubEnv('PAPERCUSP_ALLOW_REMOTE_ADMIN', '0');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   // The guard reads the host from req.url; app.request with a full non-loopback
   // URL exercises the 0.0.0.0-bind threat without fighting the forbidden `Host`
   // header. The existing tests above use path-only requests (→ http://localhost)

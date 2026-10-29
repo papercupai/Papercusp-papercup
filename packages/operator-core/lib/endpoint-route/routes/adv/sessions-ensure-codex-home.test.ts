@@ -420,14 +420,14 @@ describe('ensure-codex-home pinned-source recovery', () => {
     mocks.resumableSessions.mockResolvedValue([{ id: ADV_SESSION_ID, coordOwnerId: OWNER, agent: 'codex', launchArgv: ['psu', '--model=gpt-6.1-sol:xhigh'] }]);
     const response = await resumableSessions(new Request('http://localhost:3170/api/adv/sessions/resumable'));
     expect(response.status).toBe(200);
-    expect((await response.json()).sessions[0].compactionLimit).toBe(compactionLimit ?? 250_000);
+    expect((await response.json()).sessions[0].compactionLimit).toBe(compactionLimit ?? 400_000);
     expect(mocks.presenceRows).toHaveBeenCalledExactlyOnceWith({ ownerIds: [OWNER] });
     expect(mocks.presence).not.toHaveBeenCalled();
     expect(mocks.fleetMemberships).toHaveBeenCalledExactlyOnceWith([OWNER]);
   });
 
   it.each([
-    { fleetRole: 'member', launchArgv: ['psu', '--model=gpt-6.1-sol:xhigh', '--compaction-limit=900000'], expected: 250_000 },
+    { fleetRole: 'member', launchArgv: ['psu', '--model=gpt-6.1-sol:xhigh', '--compaction-limit=900000'], expected: 400_000 },
     { fleetRole: 'leader', launchArgv: ['psu', '--model=gpt-6.1-sol:xhigh', '--fleet=fixture'], expected: 450_000 },
     { fleetRole: null, launchArgv: ['psu', '--model=gpt-6.1-sol:xhigh', '--fleet=former-fleet'], expected: 450_000 },
   ])('resolves legacy defaults and limits against current membership ($fleetRole)', async ({ fleetRole, launchArgv, expected }) => {

@@ -1131,6 +1131,16 @@ describe('validateRecordChangelog — fail closed on accidental changelog omissi
   });
 });
 
+function snapshotOptionalMobileBuildScript(scriptPath: string | null): string | null {
+  if (scriptPath === null) return null;
+  try {
+    return fs.readFileSync(scriptPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 describe('Android release producer/consumer source contract (D-004)', () => {
   const desktopDir = path.resolve(__dirname, '../../../../papercusp-desktop');
   const mobileDir = process.env.PAPERCUSP_MOBILE_ROOT
@@ -1138,7 +1148,10 @@ describe('Android release producer/consumer source contract (D-004)', () => {
   const mobileBuildScript = mobileDir
     ? path.join(mobileDir, 'tools/build-scripts/build-android.sh')
     : null;
-  const hasMobileBuildScript = mobileBuildScript !== null && fs.existsSync(mobileBuildScript);
+  // The mobile checkout is a mutable sibling/candidate tree. Read its source once
+  // during collection so candidate cleanup cannot invalidate a later test read.
+  const mobileBuildScriptSource = snapshotOptionalMobileBuildScript(mobileBuildScript);
+  const hasMobileBuildScript = mobileBuildScriptSource !== null;
   const requireMobileSibling = process.env.PAPERCUSP_REQUIRE_MOBILE_SIBLING === '1';
 
   it('resolves the sibling mobile repo from a staging candidate checkout', () => {
@@ -1161,6 +1174,26 @@ describe('Android release producer/consumer source contract (D-004)', () => {
     }
   });
 
+  it('keeps a source snapshot when a mutable sibling checkout is removed', () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'mobile-source-snapshot-'));
+    const scriptPath = path.join(
+      workspace,
+      'papercup-rust-mobile/tools/build-scripts/build-android.sh',
+    );
+    const source = '#!/usr/bin/env bash\n# producer source snapshot\n';
+    try {
+      fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+      fs.writeFileSync(scriptPath, source);
+
+      const snapshot = snapshotOptionalMobileBuildScript(scriptPath);
+      fs.rmSync(workspace, { recursive: true, force: true });
+
+      expect(snapshot).toBe(source);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('mobile producer source is present or explicitly not asserted by this workspace', () => {
     if (!hasMobileBuildScript) {
       expect(
@@ -1175,7 +1208,7 @@ describe('Android release producer/consumer source contract (D-004)', () => {
   it.skipIf(!hasMobileBuildScript)(
     'build-android deletes the old pair/manifest and writes provenance only after verification',
     () => {
-      const script = fs.readFileSync(mobileBuildScript!, 'utf8');
+      const script = mobileBuildScriptSource!;
       expect(script).toContain('PAPERCUP_RELEASE_VERSION');
       expect(script).toContain('rm -f "$RELEASE_APK" "$RELEASE_AAB" "$RELEASE_PROVENANCE"');
       const provenanceWrite = '"$REPO_ROOT/tools/build-scripts/android-release-provenance.sh" write';
