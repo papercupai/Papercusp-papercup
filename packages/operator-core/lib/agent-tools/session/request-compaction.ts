@@ -581,13 +581,18 @@ export default defineTool({
         if (spec) effectiveWindowTokens = modelWindowForSpec(spec);
       }
     } catch { /* conservative fallback stands */ }
+    const callerContext = ctx as {
+      role?: string | null;
+      gateBypass?: { role?: boolean } | null;
+    };
     const spec = await buildOwnerRespawnLaunchSpec(identity.ownerId, {
       effectiveWindowTokens,
-      role: (ctx as { role?: string | null }).role,
+      role: callerContext.role,
       buildOpts: {
         workspaceId: identity.workspaceId ?? undefined,
         transcriptPath: self?.filePath,
         transcriptSourceKind: self?.sourceKind,
+        roleGateBypassed: callerContext.gateBypass?.role === true,
         boundaryDeliberate: true,
         // This tool runs INSIDE the turn being compacted, so the final tail turn
         // is ours and still executing — it cannot carry the `delivered` receipt

@@ -362,6 +362,8 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
   ownerLabel?: string | null;
   /** The effective role of the session building the carry document. */
   role?: string | null;
+  /** Server-derived dispatcher bypass for the role allowlist, never inferred from prose. */
+  roleGateBypassed?: boolean;
   /** The caller's native transcript file, for the verbatim-tail leg. The session
    *  id → transcript path resolution belongs to the CONSUMER (it knows its own
    *  session), so a path is passed in rather than derived from the coordination
@@ -829,6 +831,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
     opts.role,
     brief,
     opts.projectedToolsFn?.() ?? listAllProjectedTools(),
+    opts.roleGateBypassed === true,
   );
 
   return {
@@ -1471,19 +1474,25 @@ function carryRoleSafetyTexts(brief: CarryBrief): CarryRoleSafetyText[] {
 }
 
 /**
- * Find write-capable projected-tool references that the successor's role cannot
- * invoke. The role allowlist and capability envelope are the same authorities
- * used by dispatch; this deliberately does not maintain a second role/tool list.
+ * Find write-capable projected-tool references that the successor cannot invoke.
+ * Role-gate bypass mirrors dispatch; the capability envelope remains an independent guard.
  */
 export function inspectCarryRoleSafety(
   role: string | null | undefined,
   brief: CarryBrief,
   projectedTools: readonly ProjectedTool[] = listAllProjectedTools(),
+  roleGateBypassed = false,
 ): CarryRoleSafetyReport | null {
   const normalizedRole = role?.trim().toLowerCase();
   if (!normalizedRole) return null;
 
-  const allowedNames = roleScopedToolNames(projectedTools, normalizedRole);
+  const allowedNames = roleGateBypassed
+    ? new Set(
+        projectedTools
+          .map((tool) => tool.expose?.mcp?.name)
+          .filter((name): name is string => Boolean(name)),
+      )
+    : roleScopedToolNames(projectedTools, normalizedRole);
   const blockedNames = projectedTools
     .filter((tool) => projectedToolIsWrite(tool) && !roleCanUseProjectedTool(normalizedRole, tool, allowedNames))
     .map((tool) => tool.expose?.mcp?.name)

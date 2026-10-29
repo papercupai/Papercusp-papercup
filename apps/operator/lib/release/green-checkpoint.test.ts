@@ -4,7 +4,8 @@
  * logic; stub deps for the (heavy) suite run.
  */
 import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
 import {
   existsSync,
   mkdtempSync,
@@ -218,6 +219,15 @@ import {
 import type { TickFreezeObservation } from "@papercusp/operator-core/lib/release/freeze-disposition";
 
 const testRequire = createRequire(import.meta.url);
+
+it("EI-27302708766102651: the production checkpoint imports outside Vitest", async () => {
+  const checkpoint = new URL("./green-checkpoint.ts", import.meta.url).href;
+  const { stdout } = await promisify(execFile)(process.execPath, [
+    "--import", testRequire.resolve("tsx"), "--input-type=module", "-e",
+    `await import(${JSON.stringify(checkpoint)}); console.log("checkpoint-import-ok"); process.exit(0);`,
+  ], { cwd: REPO_ROOT, timeout: 30_000, maxBuffer: 1024 * 1024 });
+  expect(stdout).toContain("checkpoint-import-ok");
+}, 35_000);
 
 it("WI-10003241: a stalled optional freeze disposition cannot retain the checkpoint tree", async () => {
   vi.useFakeTimers();
@@ -2945,7 +2955,15 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(renewals).toBe(renewalsAfterSettlement);
   });
 
-  it("P-003/P-005/P-007: a post-suite-leg repair starts and runs the FULL gate at the repair head", async () => {
+  it.each(["post-suite-leg", "fork-inheritance"])("P-003/P-005/P-007/D-082: a %s repair runs the FULL gate at the exact repair head", async (route) => {
+    if (route === "fork-inheritance") {
+      const oldUpstream = process.env.PAPERCUSP_GATE_UPSTREAM_INSTALL;
+      process.env.PAPERCUSP_GATE_UPSTREAM_INSTALL = "papercusp";
+      onTestFinished(() => {
+        if (oldUpstream === undefined) delete process.env.PAPERCUSP_GATE_UPSTREAM_INSTALL;
+        else process.env.PAPERCUSP_GATE_UPSTREAM_INSTALL = oldUpstream;
+      });
+    }
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
@@ -2977,12 +2995,18 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       fixerSpawnId: "fixer-1",
       // P-003 reserves the full-gate route for a typed post-suite leg. A widened related
       // selector is handled by bounded affected workspace tasks instead (focused suite).
-      failingTests: ["@papercusp/operator-vite"],
-      signature: postSuiteSignature(repaired),
+      failingTests: route === "fork-inheritance" ? ["lib/broken.test.ts"] : ["@papercusp/operator-vite"],
+      signature: route === "fork-inheritance" ? [{
+        kind: "test-file", id: "lib/broken.test.ts", workspace: "operator",
+        recipe: "npm run test:file -- apps/operator/lib/broken.test.ts", admittedRound: 1, measuredHead: repaired,
+      }] : postSuiteSignature(repaired),
     };
     let verificationExecution: Parameters<CheckpointDeps["runGreen"]>[2];
     const { deps, calls } = stubDeps(true);
     deps.runId = "verifier-run";
+    deps.runTestsAtRef = async () => {
+      throw new Error("raw selective reds must not decide fork inheritance");
+    };
     deps.runGreen = async (_tree, _base, execution) => {
       calls.push("runGreen");
       expect(queue?.lastResumeRunStartedAtMs).toBeTypeOf("number");

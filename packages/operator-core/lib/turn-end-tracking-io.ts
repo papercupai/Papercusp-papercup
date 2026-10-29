@@ -15,6 +15,7 @@ import {
   isUnpublishedReportTurn,
   awaitGuaranteesRewake,
   composeMechanicalCheckpoint,
+  MECHANICAL_CHECKPOINT_MARKER,
   decideOpenTaskReminder,
   detectUnguardedHalt,
   isStaleHeldCheckpoint,
@@ -28,6 +29,7 @@ import {
   type OpenTaskReminderDecision,
   type OpenTaskReminderTripwire,
 } from './turn-end-tracking';
+import { CHECKPOINT_BODY_CAP_CHARS } from './carry-note';
 
 /** Total budget for each sweep — advisory work riding a fire-and-forget hook. */
 export const TURN_END_SWEEP_BUDGET_MS = 4_000;
@@ -73,6 +75,7 @@ const MAX_AUTO_CHECKPOINTS = 4;
 
 /** Tool-log tail folded into a mechanical checkpoint. */
 const AUTO_CHECKPOINT_LOG_LINES = 12;
+const MECHANICAL_CHECKPOINT_CAPACITY_REASON = 'mechanical-checkpoint-capacity';
 
 export interface AutoCheckpointResult {
   id: string;
@@ -206,12 +209,23 @@ export async function autoCheckpointStaleHeldItems(input: {
             // must win; test this against the locked row, not another pre-read.
             // Respawn merges into the latest LOCKED row: it carries no stale
             // per-item judgment, and must snapshot even a concurrent fresh note.
-            guard: input.mode === 'respawn' ? undefined : (prior) => (prior ?? '').trim() === (item.checkpoint ?? '').trim()
-              ? null : 'checkpoint-changed-before-auto-snapshot',
+            guard: (prior) => {
+              if (input.mode !== 'respawn' && (prior ?? '').trim() !== (item.checkpoint ?? '').trim()) {
+                return 'checkpoint-changed-before-auto-snapshot';
+              }
+              const merged = mergeMechanicalCheckpoint(prior, block);
+              return merged.length > CHECKPOINT_BODY_CAP_CHARS || !merged.includes(MECHANICAL_CHECKPOINT_MARKER)
+                ? MECHANICAL_CHECKPOINT_CAPACITY_REASON
+                : null;
+            },
             transform: (prior) => mergeMechanicalCheckpoint(prior, block),
           },
         );
-        if (result.blockedReason && input.mode === 'respawn') {
+        // A full authored checkpoint is already preserved in storage. There is no
+        // safe way to add a mechanical block without losing authored bytes, so a
+        // capacity refusal is an expected skip rather than a failed respawn.
+        if (result.blockedReason && input.mode === 'respawn' &&
+          result.blockedReason !== MECHANICAL_CHECKPOINT_CAPACITY_REASON) {
           throw new CheckpointWriteBlockedError(item.id, result.blockedReason);
         }
         return result.blockedReason ? null : { id: item.id, mechanical: true };

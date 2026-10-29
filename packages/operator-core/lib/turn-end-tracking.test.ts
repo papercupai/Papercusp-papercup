@@ -1,6 +1,7 @@
 /** P-015 (deterministic-context-carry) — turn-end sweeps: stale-held-WI
  *  auto-checkpoint composition/merge + unregistered-artifact detection. */
 import { describe, expect, it } from 'vitest';
+import { CHECKPOINT_BODY_CAP_CHARS } from './carry-note';
 import {
   isUnpublishedReportTurn,
   MECHANICAL_CHECKPOINT_MARKER,
@@ -84,6 +85,24 @@ describe('composeMechanicalCheckpoint / mergeMechanicalCheckpoint', () => {
     const merged = mergeMechanicalCheckpoint('agent wrote this design note', block);
     expect(merged.startsWith('agent wrote this design note')).toBe(true);
     expect(merged).toContain(MECHANICAL_CHECKPOINT_MARKER);
+  });
+
+  it('uses remaining capacity and marks a shortened mechanical snapshot', () => {
+    const authored = 'A'.repeat(CHECKPOINT_BODY_CAP_CHARS - 300);
+    const oversizedBlock = block + '\n' + 'tool-log line\n'.repeat(100);
+    const merged = mergeMechanicalCheckpoint(authored, oversizedBlock);
+
+    expect(merged.length).toBeLessThanOrEqual(CHECKPOINT_BODY_CAP_CHARS);
+    expect(merged.startsWith(authored)).toBe(true);
+    expect(merged).toContain('[mechanical snapshot details truncated to fit checkpoint budget]');
+  });
+
+  it('preserves a full 32000-character authored checkpoint byte-for-byte when no space remains', () => {
+    const authored = 'A'.repeat(CHECKPOINT_BODY_CAP_CHARS);
+    const merged = mergeMechanicalCheckpoint(authored, block);
+
+    expect(merged).toBe(authored);
+    expect(merged.length).toBe(CHECKPOINT_BODY_CAP_CHARS);
   });
 
   it('a repeated sweep REPLACES the previous mechanical block, never stacks', () => {

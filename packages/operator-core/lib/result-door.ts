@@ -407,11 +407,11 @@ function innerTruncationRecoveryInstruction(
     );
   }
   if (markers.includes('textTruncated') && toolName === 'work_items:get') {
-    return 'The clipped prior-attempt record has a field-specific recovery handle: read its rawRef and pass it in priorAttemptRefs to work_items:get. payloadTier:\'full\' does not expand source text already clipped by the tool.';
+    return 'The clipped prior-attempt record has an exact page route: use the same requested work-item id with work_items:get { checkpointOnly:true, sourceRef:<rawRef>, offset:0, limit:512 }; follow checkpointPage.nextOffset and restart at offset 0 if checkpointContentHash changes.';
   }
   if (markers.includes('textTruncated') && toolName === 'tools:invoke') {
     if (nestedTargetToolName === 'work_items:get') {
-      return 'The nested work_items:get target marked prior-attempt text as textTruncated. Read the affected record rawRef and pass it in priorAttemptRefs to work_items:get. payloadTier:\'full\' does not expand source text already clipped by the tool, and work_items:get has no wider per-field limit argument.';
+      return 'The nested work_items:get target marked prior-attempt text as textTruncated. Use the same requested work-item id with work_items:get { checkpointOnly:true, sourceRef:<rawRef>, offset:0, limit:512 }; follow checkpointPage.nextOffset and restart at offset 0 if checkpointContentHash changes.';
     }
     const target = nestedTargetToolName ? ' (' + nestedTargetToolName + ')' : '';
     return 'The nested target' + target + ' already marked a field as truncated. Re-read through that target\'s documented field-specific recovery handle or narrower arguments; tools:invoke has no generic per-field limit.';
@@ -453,7 +453,7 @@ function upstreamProjectionRecoveryInstruction(
 
   // Upstream payload shaping and tool-owned field bounds are independent loss
   // sources. Keep both recovery routes visible: e.g. work_items:get's clipped
-  // prior-attempt text needs priorAttemptRefs, while other tier-omitted fields
+  // prior-attempt text needs checkpointOnly + sourceRef, while other tier-omitted fields
   // need a full-tier or narrower re-read.
   return (
     `${innerTruncationRecoveryInstruction(toolName, innerTruncationMarkers, nestedTargetToolName)} ` +
@@ -2825,7 +2825,11 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
       deferredScratchWrites: undefined,
       scratchWriteFailure: { error },
     });
-    const recoveryFallback = await persistTimedOutScratchFallback(volatileFallback, opts);
+    const recoveryFallback = await persistFailedScratchFallback(
+      volatileFallback,
+      opts,
+      'result-door durable timeout recovery',
+    );
     return attachPendingScratchFallback(recoveryFallback, pendingResult, opts) ?? pendingResult;
   };
   if (boundedWrites.degraded || boundedWrites.value === null) {
@@ -2844,6 +2848,9 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
       deferredScratchWrites: undefined,
       scratchWriteFailure: { error },
     });
+    if ((error as NodeJS.ErrnoException | undefined)?.code === 'SCRATCH_QUOTA_EXCEEDED') {
+      return persistFailedScratchFallback(failedResult, opts, 'result-door durable quota recovery');
+    }
     return failedResult;
   }
   const settled = boundedWrites.value;
@@ -2855,12 +2862,16 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   }
   const failedResult = applyResultDoor(result, { ...opts, deferredScratchWrites: undefined,
     scratchWriteFailure: { error: failure.reason } });
+  if ((failure.reason as NodeJS.ErrnoException | undefined)?.code === 'SCRATCH_QUOTA_EXCEEDED') {
+    return persistFailedScratchFallback(failedResult, opts, 'result-door durable quota recovery');
+  }
   return failedResult;
 }
 
-async function persistTimedOutScratchFallback<T extends DoorableResult>(
+async function persistFailedScratchFallback<T extends DoorableResult>(
   fallback: T,
   opts: ResultDoorOpts,
+  label: string,
 ): Promise<T> {
   const resultDoor = recordAt(fallback._meta?.resultDoor);
   const volatileUri = typeof resultDoor?.volatileFallbackUri === 'string'
@@ -2877,7 +2888,7 @@ async function persistTimedOutScratchFallback<T extends DoorableResult>(
     {
       fallback: null,
       timeoutMs: RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS,
-      label: 'result-door durable timeout recovery',
+      label,
     },
   );
   if (persisted.degraded || !persisted.value) return fallback;
@@ -3785,7 +3796,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     }
     // A result can carry BOTH a payload-tier projection marker and tool-owned
     // field markers. They describe different losses and can have different
-    // recovery routes (for example work_items:get's priorAttemptRefs handle), so
+    // recovery routes (for example work_items:get's checkpointOnly + sourceRef handle), so
     // the broader projection must not suppress the field-level diagnosis.
     const innerTruncationMarkers = detectInnerTruncationMarkers(
       textItems.map((item) => item.text),

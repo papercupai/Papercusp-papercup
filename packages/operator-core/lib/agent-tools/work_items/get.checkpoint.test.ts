@@ -39,6 +39,12 @@ const getWorkItemCheckpointWithMeta = vi.fn();
 // checkpoint declared no dependencies, so these suites keep exercising the TIME
 // heuristics (the documented fallback). The override case gets its own suite below.
 const getWorkItemCheckpointFreshness = vi.fn();
+const resolvePriorAttemptRefs = vi.fn();
+const getClaimTimePriorAttemptBrief = vi.fn();
+vi.mock('../../prior-attempt-context', () => ({
+  resolvePriorAttemptRefs: (...a: unknown[]) => resolvePriorAttemptRefs(...a),
+  getClaimTimePriorAttemptBrief: (...a: unknown[]) => getClaimTimePriorAttemptBrief(...a),
+}));
 const resumeEvidence = vi.fn();
 vi.mock('../plans/spec-evidence-store', async (original) => ({
   ...(await original<typeof import('../plans/spec-evidence-store')>()),
@@ -190,6 +196,9 @@ it('checkpointOnly pages exact stored checkpoint text by Unicode code point and 
       text: expect.objectContaining({ type: 'string' }),
     }),
   });
+  expect(outputSchema.properties.results.items.properties.checkpointSource.enum).toEqual([
+    'live-checkpoint', 'terminal-completion-snapshot', 'prior-attempt-ref', 'none',
+  ]);
 
   const first = await one({ id: 'WI-checkpoint-page', harness: 'requested', checkpointOnly: true, offset: 1, limit: 2 });
   expect(first).toMatchObject({
@@ -218,6 +227,73 @@ it('checkpointOnly pages exact stored checkpoint text by Unicode code point and 
     nextOffset: null,
     text: '',
     limitClamped: { requested: 900, applied: 768 },
+  });
+});
+
+it('checkpointOnly pages the immutable terminal completion snapshot after live checkpoint cleanup', async () => {
+  const stored = '## Terminal design\n😀 preserve every section exactly';
+  getWorkItem.mockResolvedValue({
+    id: 'WI-terminal-snapshot',
+    harness: 'canonical',
+    state: 'done',
+    closedAt: '2026-10-20T12:00:00.000Z',
+    terminalCompletionEvidence: { checkpointProseSnapshot: stored },
+  });
+  const raw = await env({ id: 'WI-terminal-snapshot', checkpointOnly: true, offset: 16, limit: 8 });
+  const result = (shapeWorkItemsGet(raw, 'trimmed') as any).results[0];
+  expect(result).toMatchObject({
+    checkpointPage: {
+      offset: 16,
+      totalChars: Array.from(stored).length,
+      text: Array.from(stored).slice(16, 24).join(''),
+    },
+    checkpointSource: 'terminal-completion-snapshot',
+    checkpointUpdatedAtMs: Date.parse('2026-10-20T12:00:00.000Z'),
+    checkpointContentHash: shortCarryHash(stored),
+  });
+  expect(getWorkItemCheckpointWithMeta).not.toHaveBeenCalled();
+});
+
+it('checkpointOnly pages the exact prior-attempt rawRef and reports unresolved sources distinctly', async () => {
+  const rawRef = 'WI-parent#checkpoint-journal:1792952905841';
+  const sourceText = '## Full prior checkpoint\n' + 'evidence '.repeat(300);
+  expect(() => parse({ id: 'WI-current', sourceRef: rawRef })).toThrow(/sourceRef is only valid/);
+  expect(() => parse({ id: 'WI-current', checkpointOnly: true, sourceRef: rawRef })).not.toThrow();
+  getWorkItem.mockResolvedValue({ id: 'WI-current', harness: 'canonical' });
+  resolvePriorAttemptRefs.mockResolvedValue({
+    schemaVersion: 'prior-attempt-refs-v1',
+    records: [{ rawRef, text: sourceText, at: '2026-10-20T12:00:00.000Z' }],
+    unresolved: [],
+    fingerprint: 'fp-source',
+  });
+  const rawPage = await env({ id: 'WI-current', checkpointOnly: true, sourceRef: rawRef, offset: 10, limit: 12 });
+  const page = (shapeWorkItemsGet(rawPage, 'trimmed') as any).results[0];
+  expect(page).toMatchObject({
+    checkpointSource: 'prior-attempt-ref',
+    checkpointSourceRef: rawRef,
+    checkpointSourceStatus: 'resolved',
+    checkpointPage: {
+      offset: 10,
+      totalChars: sourceText.length,
+      text: sourceText.slice(10, 22),
+    },
+    checkpointContentHash: shortCarryHash(sourceText),
+  });
+  expect(resolvePriorAttemptRefs).toHaveBeenCalledWith(expect.objectContaining({
+    workItem: expect.objectContaining({ id: 'WI-current' }),
+    harness: 'canonical',
+    rawRefs: [rawRef],
+  }));
+  expect(getWorkItemCheckpointWithMeta).not.toHaveBeenCalled();
+
+  resolvePriorAttemptRefs.mockResolvedValue({ schemaVersion: 'prior-attempt-refs-v1', records: [], unresolved: [rawRef] });
+  const rawMissing = await env({ id: 'WI-current', checkpointOnly: true, sourceRef: rawRef });
+  const missing = (shapeWorkItemsGet(rawMissing, 'trimmed') as any).results[0];
+  expect(missing).toMatchObject({
+    checkpointPage: null,
+    checkpointSource: 'prior-attempt-ref',
+    checkpointSourceRef: rawRef,
+    checkpointSourceStatus: 'unresolved',
   });
 });
 
@@ -375,6 +451,8 @@ beforeEach(() => {
   // exercising the time-heuristic fallback; the override suite opts in explicitly.
   getWorkItemCheckpointFreshness.mockReset();
   getWorkItemCheckpointFreshness.mockResolvedValue(undefined);
+  resolvePriorAttemptRefs.mockReset().mockResolvedValue(null);
+  getClaimTimePriorAttemptBrief.mockReset().mockResolvedValue(null);
   getPresence.mockReset();
   getPresence.mockResolvedValue(null);
   getClaimTimePriorWorkHint.mockReset();

@@ -2059,9 +2059,11 @@ describe("shapeWorkItemsGet — priorAttempts survives, and says what it cut", (
     expect(out._shapeNote?.dropped).toEqual(
       expect.arrayContaining(["priorAttempts.attempts(text clipped)"]),
     );
-    expect(out._shapeNote?.next).toContain("priorAttemptRefs");
+    expect(out._shapeNote?.next).toContain("checkpointOnly:true");
+    expect(out._shapeNote?.next).toContain("sourceRef:<rawRef>");
+    expect(out._shapeNote?.next).toContain("checkpointPage.nextOffset");
+    expect(out._shapeNote?.next).not.toContain("retry alone does not retrieve");
     expect(out._shapeNote?.next).toContain("rawRef");
-    expect(out._shapeNote?.next).toContain("retry alone does not retrieve");
     expect(out._shapeNote?.next).not.toContain("Fields were dropped or clipped for the '");
   });
 
@@ -2073,7 +2075,7 @@ describe("shapeWorkItemsGet — priorAttempts survives, and says what it cut", (
     expect(out._shapeNote?.dropped).toEqual(
       expect.arrayContaining(["priorAttempts.attempts(text clipped)", "checkpoint(clipped)"]),
     );
-    expect(out._shapeNote?.next).toContain("priorAttemptRefs");
+    expect(out._shapeNote?.next).toContain("sourceRef:<rawRef>");
     expect(out._shapeNote?.next).toContain("payloadTier:'full'");
   });
 

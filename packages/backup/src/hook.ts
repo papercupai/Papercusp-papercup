@@ -84,10 +84,12 @@ export const HOT_SNAPSHOT_EXCLUDED_TABLE_DATA: readonly string[] = [
   'harness_shared.tool_invocations',
   'harness_shared.harness_run_output',
   'harness_shared.test_runs',
-  // Transcript stores are short-lived operational state. The hourly host-level
-  // dump remains the recovery path for them; keeping them out of this hot
-  // snapshot prevents a faithful-parts COPY from holding an AccessShareLock
-  // across the whole pre-snapshot dump.
+  // Transcript stores are excluded from the workspace hot snapshot. The host
+  // producer writes them to the papercusp-transcript tier only when the
+  // configured minimum artifact age is reached (9000 seconds by default).
+  // That tier is local-only and is never enrolled in Kopia, so it has no Kopia
+  // snapshot coverage. Keeping these rows out of the hot snapshot prevents a
+  // faithful-parts COPY from holding an AccessShareLock across the dump.
   'harness_shared.session_turns',
   'harness_shared.session_turn_chunks',
   'harness_shared.session_turn_parts',
@@ -133,11 +135,12 @@ export const HOT_SNAPSHOT_EXCLUDED_TABLE_DATA: readonly string[] = [
   // those request bodies, kept only while a manifest row above references them.
   'harness_shared.gateway_payload_chunks',
   // Session-transcript archive blobs (~3 GB TOAST) + their parent metadata rows
-  // (excluded together so a restore sees a clean absence, not dangling refs).
+  // are excluded together so a restore sees a clean absence, not dangling refs.
   // This pair dominated the dump — one 279s-mean COPY per snapshot, ~65% of the
-  // output bytes (P-013, db-performance-remediation-2026-07-26). Archives stay
-  // recoverable from the hourly host-level dump (db-backup.sh →
-  // /mnt/data/Backup/db-dumps/pg/papercusp/), which includes all table data.
+  // output bytes (P-013, db-performance-remediation-2026-07-26). The host
+  // producer puts their rows in papercusp-transcript, whose minimum rewrite age
+  // defaults to 9000 seconds; that local-only tier is never enrolled in Kopia.
+  // The hourly papercusp-state tier keeps the schema but excludes these rows.
   'harness_shared.session_archives',
   'harness_shared.session_archive_files',
   // EI-25164396022471391: measured on snapshot 78722 (2026-10-14), the included

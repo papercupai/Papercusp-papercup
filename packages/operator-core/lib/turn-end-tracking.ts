@@ -26,6 +26,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { CHECKPOINT_BODY_CAP_CHARS } from './carry-note';
 
 /** A held checkpoint older than this (or absent) is STALE at turn end. */
 export const STALE_CHECKPOINT_MS = 45 * 60 * 1000;
@@ -48,6 +49,46 @@ export const MECHANICAL_CHECKPOINT_MARKER = '⟦auto-checkpoint mechanical';
 /** Separator between agent-authored prose and the appended mechanical block. */
 const MECHANICAL_SEP = '\n\n---\n';
 const STRUCTURED_CARRY_SECTION_RE = /^##\s+(?:Checks|Walls)\s*$/im;
+const MECHANICAL_CHECKPOINT_MAX_CHARS = 4_096;
+const MECHANICAL_TRUNCATION_MARKER = '\n[mechanical snapshot details truncated to fit checkpoint budget]';
+
+/** Fit only system-generated text; never trim the authored checkpoint. */
+function fitMechanicalCheckpointBlock(block: string, budget: number): string | null {
+  const allowed = Math.min(CHECKPOINT_BODY_CAP_CHARS, Math.floor(budget));
+  if (allowed < 0) return null;
+  if (block.length <= allowed) return block;
+
+  const headerEnd = block.indexOf('\n');
+  const headerLength = headerEnd < 0 ? block.length : headerEnd;
+  const prefixBudget = allowed - MECHANICAL_TRUNCATION_MARKER.length;
+  if (prefixBudget < headerLength) return null;
+
+  let end = Math.min(prefixBudget, block.length);
+  // Keep a UTF-16 surrogate pair intact when enforcing the same .length cap as
+  // work_items:checkpoint's Zod string limit.
+  if (end > 0 && end < block.length) {
+    const last = block.charCodeAt(end - 1);
+    const next = block.charCodeAt(end);
+    if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end--;
+  }
+  const prefix = block.slice(0, end).trimEnd();
+  if (prefix.length < headerLength) return null;
+  return prefix + MECHANICAL_TRUNCATION_MARKER;
+}
+
+function mergeBoundedMechanicalBlock(
+  authoredBody: string,
+  block: string,
+  structuredSections: string,
+  fallback: string,
+): string {
+  const fixedLength = authoredBody.length + structuredSections.length;
+  const separatorCount = Number(Boolean(authoredBody)) + Number(Boolean(structuredSections));
+  const available = CHECKPOINT_BODY_CAP_CHARS - fixedLength - separatorCount * MECHANICAL_SEP.length;
+  const boundedBlock = fitMechanicalCheckpointBlock(block, Math.min(available, MECHANICAL_CHECKPOINT_MAX_CHARS));
+  if (!boundedBlock) return fallback;
+  return [authoredBody, boundedBlock, structuredSections].filter(Boolean).join(MECHANICAL_SEP);
+}
 
 export interface HeldCheckpointState {
   checkpoint: string | null;
@@ -111,7 +152,8 @@ export function composeMechanicalCheckpoint(input: MechanicalCheckpointInput): s
   if (note) lines.push(`latest journal: ${note.slice(0, JOURNAL_NOTE_CAP)}`);
   const log = (input.toolLog ?? '').trim();
   if (log) lines.push('tool-log tail:', log);
-  return lines.join('\n');
+  const block = lines.join('\n');
+  return fitMechanicalCheckpointBlock(block, MECHANICAL_CHECKPOINT_MAX_CHARS) ?? lines[0]!;
 }
 
 /**
@@ -122,7 +164,7 @@ export function composeMechanicalCheckpoint(input: MechanicalCheckpointInput): s
  */
 export function mergeMechanicalCheckpoint(existing: string | null | undefined, block: string): string {
   const prior = (existing ?? '').trimEnd();
-  if (!prior) return block;
+  if (!prior) return fitMechanicalCheckpointBlock(block, CHECKPOINT_BODY_CAP_CHARS) ?? '';
   const markerAt = prior.indexOf(MECHANICAL_CHECKPOINT_MARKER);
   let agentPart = prior;
   if (markerAt >= 0) {
@@ -150,11 +192,11 @@ export function mergeMechanicalCheckpoint(existing: string | null | undefined, b
   // twelve-row claim budget or evict real verified claims.
   const sectionMatch = STRUCTURED_CARRY_SECTION_RE.exec(agentPart);
   const structuredStart = sectionMatch?.index ?? -1;
-  if (structuredStart < 0) return `${agentPart}${MECHANICAL_SEP}${block}`;
+  if (structuredStart < 0) return mergeBoundedMechanicalBlock(agentPart, block, '', agentPart);
 
   const authoredBody = agentPart.slice(0, structuredStart).trimEnd();
   const structuredSections = agentPart.slice(structuredStart).trimStart();
-  return [authoredBody, block, structuredSections].filter(Boolean).join(MECHANICAL_SEP);
+  return mergeBoundedMechanicalBlock(authoredBody, block, structuredSections, agentPart);
 }
 
 /* ------------------------------------------------------------------ */

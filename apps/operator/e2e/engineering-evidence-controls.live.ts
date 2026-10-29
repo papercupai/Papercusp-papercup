@@ -18,9 +18,13 @@ test('ee.shared-controls: real-app checkbox and evidence-repair input states', a
   const sourceSha256 = process.env.PAPERCUSP_ENGINEERING_CONTROLS_SOURCE_SHA256 ?? '';
   const workspace = process.env.PAPERCUSP_WORKSPACE;
   const client = process.env.PAPERCUSP_SID;
-  if (origin.origin !== 'http://127.0.0.1:3170' || !/^[a-f0-9]{40}$/.test(buildSha)
+  // The isolated Tauri runner serves the frozen SPA through an ephemeral
+  // loopback Vite port and proxies API calls to the native host.
+  if (origin.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(origin.hostname)
+    || !origin.port || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash
+    || !/^[a-f0-9]{40}$/.test(buildSha)
     || !/^[a-f0-9]{64}$/.test(sourceSha256) || !workspace || !client)
-    throw new Error('Shared-control capture requires the maintained current build, source pin and session scope.');
+    throw new Error('Shared-control capture requires a loopback current-build origin, source pin and session scope.');
   const token = readFileSync(join(process.env.PAPERCUSP_HOME ?? join(homedir(), '.papercusp'), 'superuser-token'), 'utf8').trim();
   const headers = { Authorization: `Bearer ${token}`, 'x-papercusp-workspace': workspace, 'x-papercusp-client': client };
   await page.context().setExtraHTTPHeaders(headers);
@@ -89,9 +93,47 @@ test('ee.shared-controls: real-app checkbox and evidence-repair input states', a
   expect(geometry.content).toBeGreaterThan(geometry.height);
   expect(geometry.mounted).toBeLessThan(80);
   const lastIndex = Number(await page.getByTestId('plans-pane-count-value').innerText()) - 1;
+  const lastRow = list.locator(`[data-index="${lastIndex}"]`);
   await list.evaluate(element => { element.scrollTop = element.scrollHeight; });
-  await expect.poll(() => list.locator('[data-index]').first().getAttribute('data-index')).not.toBe('0');
-  await expect(list.locator(`[data-index="${lastIndex}"]`)).toBeVisible();
+  await expect.poll(() => list.locator('[data-index]').first().getAttribute('data-index'), {
+    timeout: 30_000, intervals: [100, 250, 500, 1_000],
+  }).not.toBe('0');
+  const measureLastRow = () => list.evaluate((element, index) => {
+    const row = element.querySelector<HTMLElement>(`[data-index="${index}"]`);
+    const listRect = element.getBoundingClientRect();
+    const rowRect = row?.getBoundingClientRect();
+    return {
+      scrollTop: element.scrollTop, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight,
+      listTop: listRect.top, listBottom: listRect.bottom,
+      rowMounted: Boolean(row), rowTop: rowRect?.top ?? null, rowBottom: rowRect?.bottom ?? null,
+      rowHeight: rowRect?.height ?? null,
+      intersectsList: Boolean(rowRect && rowRect.bottom > listRect.top && rowRect.top < listRect.bottom),
+    };
+  }, lastIndex);
+  const lastRowBefore = await measureLastRow();
+  const lastRowVisibilityTimeoutMs = 30_000;
+  let lastRowAfter = lastRowBefore;
+  let lastRowVisibilityFailure: unknown;
+  try {
+    await expect.poll(async () => (await measureLastRow()).intersectsList, {
+      timeout: lastRowVisibilityTimeoutMs, intervals: [100, 250, 500, 1_000],
+    }).toBe(true);
+  } catch (error) {
+    lastRowVisibilityFailure = error;
+  }
+  lastRowAfter = await measureLastRow();
+  const lastRowGeometry = {
+    timeoutMs: lastRowVisibilityTimeoutMs, passed: lastRowVisibilityFailure === undefined,
+    before: lastRowBefore, after: lastRowAfter,
+  };
+  const lastRowGeometryPath = info.outputPath('last-row-geometry.json');
+  writeFileSync(lastRowGeometryPath, JSON.stringify(lastRowGeometry, null, 2));
+  await info.attach('last-row-geometry', { path: lastRowGeometryPath, contentType: 'application/json' });
+  console.log('PLAN_LAST_ROW_GEOMETRY ' + JSON.stringify(lastRowGeometry));
+  if (lastRowVisibilityFailure !== undefined) throw lastRowVisibilityFailure;
+  await expect(lastRow).toBeVisible();
+  expect(lastRowAfter.rowMounted).toBe(true);
+  expect(lastRowAfter.intersectsList).toBe(true);
   await list.evaluate(element => { element.scrollTop = 0; });
   await expect(page.getByRole('button', { name: `Inspect engineering evidence for ${item}`, exact: true })).toBeVisible({ timeout: 90_000 });
   await page.getByRole('button', { name: `Inspect engineering evidence for ${item}`, exact: true }).click();
@@ -150,7 +192,8 @@ test('ee.shared-controls: real-app checkbox and evidence-repair input states', a
   const after = await health(); expect(after).toBe(before);
   const receiptPath = info.outputPath('shared-controls.json');
   writeFileSync(receiptPath, JSON.stringify({ plane: 'current-build', scope: 'real-app-controls-with-controlled-tool-responses',
-    canonicalGraphProof: false, buildSha, sourceSha256, before, after, source, graphCalls, bindings, states }, null, 2));
+    canonicalGraphProof: false, buildSha, sourceSha256, before, after, source, geometry, lastRowGeometry,
+    graphCalls, bindings, states }, null, 2));
   await info.attach('shared-controls-receipt', { path: receiptPath, contentType: 'application/json' });
 });
 

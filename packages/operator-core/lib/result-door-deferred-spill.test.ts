@@ -139,6 +139,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   if (prevScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
   else process.env.PAPERCUSP_SCRATCH_ROOT = prevScratchRoot;
   if (prevKillSwitch === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
@@ -411,7 +412,11 @@ describe('result-door deferred spill (WI-10004533)', () => {
     try {
       resultPromise = applyResultDoorAsync(original, { ...OPTS, ownerId: 'su-1' });
       await writeStarted;
-      await vi.advanceTimersByTimeAsync(29_999);
+      expect(writer).toHaveBeenCalledWith(
+        expect.objectContaining({ mutexTimeoutMs: 30_000 }),
+        expect.any(Function),
+      );
+      await vi.advanceTimersByTimeAsync(19_999);
       expect(durablePersist).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(1);
@@ -499,7 +504,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
         },
       );
       await writeStarted;
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(20_000);
       const result = await resultPromise;
       const cursor = volatileCursorFrom(result);
       const text = (result.content.find((item) => item.type === 'text') as { text: string }).text;
@@ -584,7 +589,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
         },
       );
       await writeStarted;
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(20_000);
       const result = await resultPromise;
       const cursor = volatileCursorFrom(result);
       const meta = result._meta?.resultDoor as {
@@ -644,7 +649,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
     try {
       resultPromise = applyResultDoorAsync(original, { ...OPTS, ownerId: 'su-1' });
       await writeStarted;
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(20_000);
       const result = await resultPromise;
       const meta = result._meta?.resultDoor as {
         durableFallbackUri?: string;
@@ -717,7 +722,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
         ownerId: 'su-1',
       });
       await writeStarted;
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(20_000);
       const result = await resultPromise;
       const body = JSON.parse((result.content.find((item) => item.type === 'text') as { text: string }).text) as {
         _partial: boolean;
@@ -787,9 +792,10 @@ describe('result-door deferred spill (WI-10004533)', () => {
         return result;
       });
       await writeStarted;
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(20_000);
       expect(durablePersist).toHaveBeenCalledTimes(1);
-      // The primary spill wait is 30s; durable timeout recovery gets its own 20s bound.
+      // Response recovery starts at 20s while the primary mutex allowance remains 30s.
+      // Durable timeout recovery then gets its own 20s bound.
       await vi.advanceTimersByTimeAsync(19_999);
       expect(settled).toBe(false);
 
@@ -860,7 +866,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
         onLateScratchWriteSettled: resolveLateSettlement,
       });
       await writeStarted;
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(20_000);
       const result = await resultPromise;
       const meta = result._meta?.resultDoor as {
         spillPending?: boolean;
@@ -1011,7 +1017,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
         onLateScratchWriteSettled: resolveLateSettlement,
       });
       await writeStarted;
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(20_000);
       const result = await resultPromise;
       const text = (result.content.find((item) => item.type === 'text') as { text: string }).text;
       const body = JSON.parse(text) as {
@@ -1203,6 +1209,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
   });
 
   it('reports the quota cause without a dangling cursor when no FIFO run can be reclaimed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const root = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1');
     mkdirSync(root, { recursive: true });
     writeFileSync(join(root, 'unmanaged'), '');
@@ -1276,9 +1283,47 @@ describe('result-door deferred spill (WI-10004533)', () => {
     expect(hardCursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
     expect(readVolatileText(hardCursor)).toContain('A'.repeat(BUDGET_CHARS * 3));
     expect(spillFiles()).toHaveLength(0);
+    expect(warn).toHaveBeenCalledTimes(3);
+  });
+
+  it('promotes a quota-failed result spill to the durable payload spool when available', async () => {
+    const root = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'unmanaged'), '');
+    truncateSync(join(root, 'unmanaged'), WORKSPACE_QUOTA_BYTES);
+    await refreshScratchUsage('ws-1');
+
+    const durableUri = scratchReference.DURABLE_SCRATCH_REFERENCE_SCHEME + '/' + 'd'.repeat(64);
+    const persist = vi.spyOn(scratchReference, 'persistVolatileScratchReference')
+      .mockImplementation(async (uri, caller) => ({
+        uri: durableUri,
+        manifest: readVolatileScratchReference(uri, caller).manifest,
+      }));
+    try {
+      const out = await applyResultDoorAsync(oversized(), OPTS);
+      expect(persist).toHaveBeenCalledTimes(1);
+      const [volatileUri, caller] = persist.mock.calls[0];
+      expect(readVolatileScratchReference(volatileUri, caller).payload.toString())
+        .toContain(oversized().content[0].text);
+      expect(volatileCursorFrom(out)).toMatchObject({
+        kind: 'durable-scratch-page',
+        tool: 'capability:read',
+        uri: durableUri,
+      });
+      expect(JSON.stringify(out.content)).toContain(durableUri);
+      expect(JSON.stringify(out.content)).not.toContain(volatileUri);
+      expect((out._meta?.resultDoor as Record<string, unknown>) ?? {}).toMatchObject({
+        spillFailed: true,
+        spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
+        durableFallbackUri: durableUri,
+      });
+    } finally {
+      persist.mockRestore();
+    }
   });
 
   it('preserves a committed peer-review claim receipt when scratch quota prevents paging', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const root = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1');
     mkdirSync(root, { recursive: true });
     writeFileSync(join(root, 'unmanaged'), '');
@@ -1332,6 +1377,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
     expect(receipt.workItem.payload?.largeSubmission).toContain('TRUNCATED');
     expect(receipt._projection.next).toContain('Do not retry improvements:agent-review');
     expect(receipt._projection.next).toContain('blender:grade-idea');
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it('writeScratchReference with deferredWrites reserves and writes through the asynchronous path', async () => {

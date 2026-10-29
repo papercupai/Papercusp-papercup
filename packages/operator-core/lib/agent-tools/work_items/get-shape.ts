@@ -1557,6 +1557,9 @@ function shapeCheckpointOnly(data: Row): unknown {
         ok: row.ok ?? true,
         id: row.id ?? null,
         checkpointPage: row.checkpointPage ?? null,
+        ...(row.checkpointSource !== undefined ? { checkpointSource: row.checkpointSource } : {}),
+        ...(row.checkpointSourceRef !== undefined ? { checkpointSourceRef: row.checkpointSourceRef } : {}),
+        ...(row.checkpointSourceStatus !== undefined ? { checkpointSourceStatus: row.checkpointSourceStatus } : {}),
         ...(row.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
         checkpointAgeMs: row.checkpointAgeMs ?? null,
         checkpointUpdatedAtMs: row.checkpointUpdatedAtMs ?? null,
@@ -1777,8 +1780,8 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier, sourceP
     const stubbedRows = Math.max(existingStubRows, availableCount - detailRows);
 
     // A clipped prior-attempt brief has a different recovery route from other
-    // tier-relative clips. Its work_items:get contract exposes the full source
-    // through priorAttemptRefs using the record's rawRef.
+    // tier-relative clips. Its rawRef pages through work_items:get's exact
+    // checkpointOnly source reader using the same requested item id.
     const clippedPriorAttemptText = [...dropped].some(
       (field) => field.startsWith("priorAttempts.") && field.endsWith("(text clipped)"),
     );
@@ -1849,7 +1852,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier, sourceP
                   : ""
               }${
                 clippedPriorAttemptText
-                  ? "Prior-attempt record text marked `textTruncated` has a field-specific drill-down. Re-read it with its `rawRef` in `priorAttemptRefs`; a `payloadTier:'full'` retry alone does not retrieve that record's full source text. "
+                  ? "Prior-attempt record text marked `textTruncated` has an exact page route. Re-read with the same requested `id`, `checkpointOnly:true`, and `sourceRef:<rawRef>`; follow `checkpointPage.nextOffset` and restart if `checkpointContentHash` changes. "
                   : ""
               }${tierRecoveryGuidance}`,
             },

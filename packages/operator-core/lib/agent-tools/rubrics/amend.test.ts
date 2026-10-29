@@ -180,6 +180,7 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     expect(chaining.indexOf('requestReview')).toBeGreaterThanOrEqual(0);
     expect(chaining.indexOf('reviewPreviewPost')).toBeGreaterThanOrEqual(0);
     expect(chaining.indexOf('requestReview')).toBeLessThan(chaining.indexOf('reviewPreviewPost'));
+    expect(amendStatusTool.description).toContain('does not prove a requestReview');
   });
 
   it('a slow amend returns a durable receipt before a shorter production dispatcher deadline', async () => {
@@ -1046,6 +1047,9 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
   it('D-034: the actual handler and local relevance-router preserve the actionable review ahead of a large preview', async () => {
     const largePreview = {
       ...approvalRequired,
+      rubricRevision: 4,
+      subjectPlanRevision: 9,
+      approval: { ...approvalRequired.approval, subjectPlan: 'acceptance-subject' },
       changes: Array.from({ length: 180 }, (_, index) => ({
         barKey: `R-${index}`,
         kinds: ['bar-meaning'],
@@ -1054,6 +1058,20 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
       })),
     };
     rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(largePreview);
+    rubricsMocks.getRubric.mockResolvedValue({
+      rubricId: 'acceptance-demo',
+      revision: 4,
+      subjectPlan: 'acceptance-subject',
+      subjectHarnessSlug: 'papercusp',
+      criteria: [criterion],
+    });
+    planMocks.getPlanRow.mockResolvedValue({
+      planSlug: 'acceptance-subject',
+      harnessSlug: 'papercusp',
+      version: 9,
+      content: '## Requirements\n\nR-1 — Acceptance review fixture.',
+      contentHash: 'acceptance-subject-fixture',
+    });
 
     const actualReview = await vi.importActual<typeof import('../../consult/acceptance-bar-amendment-review')>(
       '../../consult/acceptance-bar-amendment-review',
@@ -1602,10 +1620,11 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
     });
   });
 
-  it('with neither a receipt nor a Decision it answers not_found and says a same-key retry is safe', async () => {
+  it('with neither a receipt nor a Decision it does not claim a review dry-run is safe to repeat', async () => {
     rubricsMocks.findAmendmentDecisionByKey.mockResolvedValue(null);
-    const status = await statusBody({ rubricRef: 'acceptance-example', idempotencyKey: 'amend-unknown' });
+    const status = await statusBody({ rubricRef: 'acceptance-example', idempotencyKey: 'review-unknown' });
     expect(status).toMatchObject({ state: 'not_found', source: 'none' });
-    expect(status.note).toMatch(/same rubrics:amend with this idempotencyKey is safe/);
+    expect(status.note).toContain('does not establish that a dry-run had no external review side effects');
+    expect(status.note).not.toMatch(/same-key retry is safe|re-issuing .* is safe/i);
   });
 });

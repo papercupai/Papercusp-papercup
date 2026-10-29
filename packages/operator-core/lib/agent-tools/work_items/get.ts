@@ -701,6 +701,9 @@ const workItemsGetResultRowSchema = z.object({
     text: z.string(),
     limitClamped: z.object({ requested: z.number().int(), applied: z.number().int() }).optional(),
   }).passthrough().nullable().optional(),
+  checkpointSource: z.enum(['live-checkpoint', 'terminal-completion-snapshot', 'prior-attempt-ref', 'none']).optional(),
+  checkpointSourceRef: z.string().optional(),
+  checkpointSourceStatus: z.enum(['resolved', 'unresolved', 'unavailable']).optional(),
   checkpointTruncated: z.boolean().optional(),
   checkpointReadFailed: z.boolean().optional(),
   checkpointChecks: z.object({
@@ -844,17 +847,17 @@ export default defineTool({
   description:
     'Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Batch reads also include a per-requested-ID receipt. Read `returns` for conditional warnings.',
   guidance: {
-    when: 'For ordinary reads, fetch one or more work-item ids and pass every id at once via `ids` instead of calling per id. For `resume:true`, request exactly one item (prefer `id`; a one-element `ids` array is accepted) because multi-id continuation packets are not supported. For exact full checkpoint text, use the standalone `checkpointOnly:true` page mode. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.',
+    when: 'For ordinary reads, fetch one or more work-item ids and pass every id at once via `ids` instead of calling per id. For `resume:true`, request exactly one item (prefer `id`; a one-element `ids` array is accepted) because multi-id continuation packets are not supported. For exact checkpoint or prior-attempt source text, use the standalone `checkpointOnly:true` page mode; pass `sourceRef` to page a rawRef returned by priorAttempts. It reads the immutable terminal checkpoint snapshot when one was retained at close. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.',
     returns:
       "{ ok, results, counts, read, receipt? } — correlate rows by id, not position. " +
       "For a batch, `receipt` has one `{ id, delivered, reason? }` entry per requested ID before shaping. `delivered:false` means that ID's result row is absent from `results`; `read.receiptComplete` says whether the manifest itself still covers every requested ID. An absent or unavailable item can still have `delivered:true` when its status row is present.\\n\\n" +
-      "When `checkpointTruncated:true`, recover exact text with `work_items:get { id, checkpointOnly:true, offset:0, limit:512 }`; continue at `checkpointPage.nextOffset`, and restart at offset 0 if `checkpointContentHash` changes between pages. Offsets count Unicode code points. A null page means no checkpoint unless `checkpointReadFailed:true`. Each page is capped at 768 code points.\\n\\n" +
+      "When `checkpointTruncated:true`, recover exact text with `work_items:get { id, checkpointOnly:true, offset:0, limit:512 }`; this reads a live checkpoint or the immutable `completion.checkpointProseSnapshot` retained after terminal cleanup. To page an exact prior-attempt `rawRef`, pass the same requested `id` plus `sourceRef:<rawRef>`. Continue at `checkpointPage.nextOffset`, and restart at offset 0 if `checkpointContentHash` changes between pages. Offsets count Unicode code points. A null page means no source unless `checkpointSourceStatus` reports unresolved/unavailable or `checkpointReadFailed:true`. Each page is capped at 768 code points.\\n\\n" +
       "When present, read.baseReadDiagnostics reports per-ID base-read status and elapsed time for unavailable calls, pending/rejected reads, or reads taking at least 1000ms; baseReadDiagnosticsOmitted counts entries beyond the 32-row cap. These diagnostics carry no arguments or result bodies.\\n\\n" +
       "The result includes `completion`, a read-side alias for `workItem.terminalCompletionEvidence` (persisted under `payload._completionEvidence`), and `hasCompletionEvidence`, the scalar presence signal that remains authoritative when a payload tier drops the evidence body.\\n\\n" +
       "When selecting a projected work-item row, use `results[].workItem.summary` for its prose; `results[].workItem.body` and `results[].workItem.description` are not response fields.\\n\\n" +
       "`read.enrichmentMaxMs` includes timed-out and cancelled per-item enrichment up to the shared deadline. When present, `read.enrichmentDiagnostics` identifies pending/rejected enrichment legs and completed legs taking at least 1000ms; `enrichmentDiagnosticsOmitted` counts entries beyond the 32-row cap. These are diagnostics only and carry no arguments or result bodies.\\n\\n" +
       "\`checkpointUpdatedAtMs\` is the CANONICAL checkpoint-change marker; do not infer checkpoint authorship from \`workItem.updatedAt\`, which also moves for state, assignment, dependency, payload, and other item writes.\\n\\n" +
-      "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointChecks?, checkpointBody?, checkpointAgeMs?, checkpointUpdatedAtMs?, checkpointContentHash?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `planItemTextDrift` — the linked plan item has been REWRITTEN (or removed) since this work-item was minted from it ({ status, reason, planSlug, itemId, currentText?, itemMissing? }). This item's title/summary/brief are a mint-time snapshot that nothing refreshes, so read `currentText` before building. `status:'unknown'` means the record predates the text stamp and drift COULD NOT be checked — that is not a clean bill of health. Absent means no plan linkage, or checked-and-matching.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loud when NO checkpoint exists — that row is indistinguishable from never-started, so read the source before building. LOUDEST at >=3 distinct prior sessions: judge the acceptance criterion itself, not just the checkpoint.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less) and `checkpointContentHash` the digest of the STORED note (absent when none is stored). Compare that hash against the `contentHash` the write returned to verify a handoff; do NOT hash the returned `checkpoint` string yourself — it is clipped per shape tier, so it will not match.\n• `checkpointChecks` / `checkpointBody` — remaining capacity in the checkpoint: check ROWS ({ count, cap, remaining }) and the stored BODY ({ chars, cap, remaining }). `null` on either means the checkpoint read FAILED (count 0 / chars 0 means the read succeeded and nothing is stored). Read `checkpointBody.remaining` BEFORE an `append:true` write: at the cap the write keeps succeeding and silently evicts the OLDEST content, and its only notice is a marker written into the body AFTER the loss — so this is the only signal that arrives in time to act on. `chars` measures the STORED note, not the `checkpoint` string returned here, which is clipped per shape tier.\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `citedFacts` — this item's PROSE cites `facts:assert` key(s) as its authority and some no longer resolve ({ cited:[{ key, condition, ref, excerpt?, scope }], dangling, decayed, note }). Measured: 22 of 25 such citations workspace-wide were already dead, while the item still read as fully specified. `decayed` (retracted/expired/superseded) is RECOVERABLE — the body is quoted in `excerpt` right here, so do not go hunting for it; `dangling` has no row under any scope and is unrecoverable, so do NOT treat that citation as specification and do NOT escalate its absence as a contested directive (it far more likely decayed than was withdrawn). Absent when every citation still resolves live, AND when the ledger could not be read at all — this never reports a read failure as a dangling reference.\n• `assumptionFlags` — a fact this item's completion `assumptions` cited was retracted or superseded AFTER it closed ([{ condition, factRef, key, reason, at, line }]). The item was NOT reopened: judge whether the close still holds without that premise.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.\n• `priorAttempts` (with `detail:true`) — the bounded prior-attempt brief: what was ALREADY TRIED on this item's plan lane, previously obtainable only by CLAIMING the item. `omission.omittedRefs` names what the budget could only count, and a clipped record carries `textTruncated` — pass either ref back via `priorAttemptRefs` for the full text. Fail-soft: absent means no plan pointer OR the read failed, never \"nothing was tried\".\n• `priorAttemptRefResolution` (with `priorAttemptRefs`) — those refs' full untruncated records, plus `unresolved[]` (the source moved on) and the `fingerprint` to compare against the brief's." +
+      "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointChecks?, checkpointBody?, checkpointAgeMs?, checkpointUpdatedAtMs?, checkpointContentHash?, checkpointSource?, checkpointSourceRef?, checkpointSourceStatus?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `planItemTextDrift` — the linked plan item has been REWRITTEN (or removed) since this work-item was minted from it ({ status, reason, planSlug, itemId, currentText?, itemMissing? }). This item's title/summary/brief are a mint-time snapshot that nothing refreshes, so read `currentText` before building. `status:'unknown'` means the record predates the text stamp and drift COULD NOT be checked — that is not a clean bill of health. Absent means no plan linkage, or checked-and-matching.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loud when NO checkpoint exists — that row is indistinguishable from never-started, so read the source before building. LOUDEST at >=3 distinct prior sessions: judge the acceptance criterion itself, not just the checkpoint.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less) and `checkpointContentHash` the digest of the STORED note (absent when none is stored). Compare that hash against the `contentHash` the write returned to verify a handoff; do NOT hash the returned `checkpoint` string yourself — it is clipped per shape tier, so it will not match.\n• `checkpointChecks` / `checkpointBody` — remaining capacity in the checkpoint: check ROWS ({ count, cap, remaining }) and the stored BODY ({ chars, cap, remaining }). `null` on either means the checkpoint read FAILED (count 0 / chars 0 means the read succeeded and nothing is stored). Read `checkpointBody.remaining` BEFORE an `append:true` write: at the cap the write keeps succeeding and silently evicts the OLDEST content, and its only notice is a marker written into the body AFTER the loss — so this is the only signal that arrives in time to act on. `chars` measures the STORED note, not the `checkpoint` string returned here, which is clipped per shape tier.\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `citedFacts` — this item's PROSE cites `facts:assert` key(s) as its authority and some no longer resolve ({ cited:[{ key, condition, ref, excerpt?, scope }], dangling, decayed, note }). Measured: 22 of 25 such citations workspace-wide were already dead, while the item still read as fully specified. `decayed` (retracted/expired/superseded) is RECOVERABLE — the body is quoted in `excerpt` right here, so do not go hunting for it; `dangling` has no row under any scope and is unrecoverable, so do NOT treat that citation as specification and do NOT escalate its absence as a contested directive (it far more likely decayed than was withdrawn). Absent when every citation still resolves live, AND when the ledger could not be read at all — this never reports a read failure as a dangling reference.\n• `assumptionFlags` — a fact this item's completion `assumptions` cited was retracted or superseded AFTER it closed ([{ condition, factRef, key, reason, at, line }]). The item was NOT reopened: judge whether the close still holds without that premise.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.\n• `priorAttempts` (with `detail:true`) — the bounded prior-attempt brief: what was ALREADY TRIED on this item's plan lane, previously obtainable only by CLAIMING the item. `omission.omittedRefs` names what the budget could only count, and a clipped record carries `textTruncated` — when a record has `textTruncated:true`, page its `rawRef` with the same requested `id`, `checkpointOnly:true`, and `sourceRef:<rawRef>`. Fail-soft: absent means no plan pointer OR the read failed, never \"nothing was tried\".\n• `priorAttemptRefResolution` (with `priorAttemptRefs`) — bounded source previews for those refs, plus `unresolved[]` (the source moved on) and the `fingerprint` to compare against the brief's." +
       "When stored, `checkpointChecks` also carries bounded `rows:[{ id?, claim }]` and optional `rowsTruncated`; these are the caller-facing identities accepted by `work_items:checkpoint.retireIds`. `checksOnly:true` returns that ledger without loading the checkpoint narrative or other enrichments.\\n\\n",
     notWhen: 'Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).',
     chaining: 'work_items:list → work_items:get { ids:[…] } for ordinary batch detail; use work_items:get { id, resume:true } once per continuation packet.',
@@ -917,7 +920,10 @@ export default defineTool({
           'return only the stored checkpoint check-row ledger (`checkpointChecks.rows` with caller-facing id/claim identities) plus recency/failure metadata; omit the checkpoint narrative and other enrichments. Use this before building `retireIds` instead of fetching the full checkpoint body.',
         ),
       checkpointOnly: z.boolean().optional().describe(
-        'standalone exact checkpoint text page for exactly one item; skips item payload and other enrichments. Pair with root-level offset (Unicode code points, default 0) and limit (default 512, hard cap 768); follow checkpointPage.nextOffset and compare checkpointContentHash across pages. checkpointPage:null means no stored checkpoint unless checkpointReadFailed is true.',
+        'standalone exact text page for exactly one item; reads its live checkpoint or immutable terminal completion checkpoint snapshot. With sourceRef, pages the exact prior-attempt rawRef in the same work-item scope. Pair with root-level offset (Unicode code points, default 0) and limit (default 512, hard cap 768); follow checkpointPage.nextOffset and compare checkpointContentHash across pages. checkpointPage:null is qualified by checkpointSource/status and checkpointReadFailed.',
+      ),
+      sourceRef: z.string().min(1).max(2_000).optional().describe(
+        'exact prior-attempt rawRef to page with checkpointOnly:true; pass the same requested work-item id used to obtain the ref. The source is resolved through the normal work-item prior-attempt reader and its harness access boundary.',
       ),
       offset: z.number().int().nonnegative().max(10_000_000).optional().describe(
         'checkpointOnly page start measured in Unicode code points; omitted means 0. The returned checkpointPage.offset is clamped to totalChars.',
@@ -936,7 +942,7 @@ export default defineTool({
         .max(20)
         .optional()
         .describe(
-          "raw drill-down for the requested work-item(s): pass `id` (one) or `ids` (many) together with these refs. Resolve refs back to their FULL untruncated source records. When combined with `detail:true`, this replaces the bounded `priorAttempts` brief so the response does not mix clipped history with the raw records; make a separate read if you need both views. Take refs from a brief's `omission.omittedRefs` (records the budget could only COUNT) or from a clipped record's own `rawRef` — the brief names them precisely so a bounded read is never a dead end. Refs that no longer resolve come back in `unresolved[]`, which is an answer about the history, not an error.",
+          "raw drill-down for the requested work-item(s): pass `id` (one) or `ids` (many) together with these refs. Returns source records with bounded text previews; when a preview has `textTruncated:true`, page the complete source with the same requested `id`, `checkpointOnly:true`, and `sourceRef:<rawRef>`. When combined with `detail:true`, this replaces the bounded `priorAttempts` brief so the response does not duplicate history; make a separate read if you need both views. Take refs from a brief's `omission.omittedRefs` (records the budget could only COUNT) or from a clipped record's own `rawRef` — the exact page route keeps a bounded read from becoming a dead end. Refs that no longer resolve come back in `unresolved[]`, which is an answer about the history, not an error.",
         ),
       threadLimit: z
         .number()
@@ -970,6 +976,9 @@ export default defineTool({
     })
     .refine((a) => a.checkpointOnly === true || (a.offset === undefined && a.limit === undefined), {
       message: `offset and limit are only valid with checkpointOnly:true (an exact checkpoint text page; limit is capped at ${CHECKPOINT_PAGE_MAX_CHARS} Unicode code points). limit is not a count of work-items or comment posts: use ids or threadLimit for those windows`,
+    })
+    .refine((a) => a.sourceRef === undefined || a.checkpointOnly === true, {
+      message: 'sourceRef is only valid with checkpointOnly:true',
     })
     .refine((a) => !a.checkpointOnly || (
       mergeIds(a.id, a.ids).length === 1 && !a.attachments && !a.resume && !a.checksOnly &&
@@ -1063,7 +1072,7 @@ export default defineTool({
     );
     const readDetail = !args.resume && !checksOnly && !checkpointOnly && args.detail === true && !hasThreadLimit && needsWorkItemDetail;
     const sourceReadOptions = checksOnly || checkpointOnly
-      ? { includeBody: false, payloadProjection: 'none' as const }
+      ? { includeBody: false, payloadProjection: checksOnly ? 'none' as const : 'completionEvidence' as const }
       : args.resume || args.operationalBrief
         ? undefined
         : workItemsGetSourceReadOptions((ctx as SourceProjectionContext).sourceProjection, readDetail);
@@ -1289,6 +1298,69 @@ export default defineTool({
           : getWorkItemCheckpointWithMeta(checkpointRef);
         if (checkpointOnly) {
           stage.enrichmentStartedAtMs = Date.now();
+          if (args.sourceRef) {
+            const resolution = await trackWorkItemsGetEnrichment(stage, 'priorAttemptRefResolution', () =>
+              import('../../prior-attempt-context').then((m) =>
+                m.resolvePriorAttemptRefs({
+                  workItem,
+                  harness: (workItem as { harness?: string | null }).harness ?? args.harness ?? null,
+                  rawRefs: [args.sourceRef!],
+                }),
+              ),
+            ).catch(() => null);
+            stage.enrichmentMs = Math.max(0, Date.now() - stage.enrichmentStartedAtMs);
+            const record = resolution?.records.find((candidate) => candidate.rawRef === args.sourceRef);
+            if (!record || typeof record.text !== 'string') {
+              return {
+                ok: true as const,
+                id,
+                __checkpointOnly: true as const,
+                checkpointPage: null,
+                checkpointSource: 'prior-attempt-ref' as const,
+                checkpointSourceRef: args.sourceRef,
+                checkpointSourceStatus: resolution ? 'unresolved' as const : 'unavailable' as const,
+                checkpointAgeMs: null,
+                checkpointUpdatedAtMs: null,
+                checkpointContentHash: null,
+              };
+            }
+            const sourceAtMs = typeof record.at === 'string' ? Date.parse(record.at) : NaN;
+            const updatedAtMs = Number.isFinite(sourceAtMs) ? sourceAtMs : null;
+            return {
+              ok: true as const,
+              id,
+              __checkpointOnly: true as const,
+              checkpointPage: checkpointTextPage(record.text, args.offset ?? 0, args.limit),
+              checkpointSource: 'prior-attempt-ref' as const,
+              checkpointSourceRef: args.sourceRef,
+              checkpointSourceStatus: 'resolved' as const,
+              checkpointAgeMs: updatedAtMs != null ? Math.max(0, Date.now() - updatedAtMs) : null,
+              checkpointUpdatedAtMs: updatedAtMs,
+              checkpointContentHash: shortCarryHash(record.text),
+            };
+          }
+          const terminalEvidence = (workItem as { terminalCompletionEvidence?: unknown }).terminalCompletionEvidence;
+          const terminalSnapshot = terminalEvidence && typeof terminalEvidence === 'object' && !Array.isArray(terminalEvidence)
+            ? (terminalEvidence as Record<string, unknown>).checkpointProseSnapshot
+            : undefined;
+          if (typeof terminalSnapshot === 'string' && terminalSnapshot.length > 0) {
+            const closedAt = (workItem as { closedAt?: unknown }).closedAt;
+            const parsedClosedAt = closedAt instanceof Date
+              ? closedAt.getTime()
+              : typeof closedAt === 'string' ? Date.parse(closedAt) : NaN;
+            const updatedAtMs = Number.isFinite(parsedClosedAt) ? parsedClosedAt : null;
+            stage.enrichmentMs = Math.max(0, Date.now() - stage.enrichmentStartedAtMs);
+            return {
+              ok: true as const,
+              id,
+              __checkpointOnly: true as const,
+              checkpointPage: checkpointTextPage(terminalSnapshot, args.offset ?? 0, args.limit),
+              checkpointSource: 'terminal-completion-snapshot' as const,
+              checkpointAgeMs: updatedAtMs != null ? Math.max(0, Date.now() - updatedAtMs) : null,
+              checkpointUpdatedAtMs: updatedAtMs,
+              checkpointContentHash: shortCarryHash(terminalSnapshot),
+            };
+          }
           const checkpointRead = await trackWorkItemsGetEnrichment(stage, 'checkpoint', readCheckpoint)
             .catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true as const }));
           stage.enrichmentMs = Math.max(0, Date.now() - stage.enrichmentStartedAtMs);
@@ -1298,6 +1370,7 @@ export default defineTool({
               id,
               __checkpointOnly: true as const,
               checkpointPage: null,
+              checkpointSource: 'live-checkpoint' as const,
               checkpointReadFailed: true as const,
               checkpointAgeMs: null,
               checkpointUpdatedAtMs: null,
@@ -1310,6 +1383,7 @@ export default defineTool({
             id,
             __checkpointOnly: true as const,
             checkpointPage: checkpointTextPage(checkpoint, args.offset ?? 0, args.limit),
+            checkpointSource: checkpoint === null ? 'none' as const : 'live-checkpoint' as const,
             checkpointAgeMs: checkpointRead.updatedAtMs != null
               ? Math.max(0, Date.now() - checkpointRead.updatedAtMs)
               : null,

@@ -221,7 +221,7 @@ import { evaluatePartialTaskContinuation, partialCurrentExecutionFingerprint, pa
   preparePartialRemainingSelection, preparePartialTaskCommandDefinitions, readPartialTaskCommandCompletion,
   writePartialTaskCheckpointAtomic } from "../../../../scripts/lib/partial-task-resume.mjs";
 // eslint-disable-next-line import/no-relative-packages -- share the native reporter's maintained input classifier
-import { classifyReadPaths } from "../../../../libs/test-config/src/executed-source-map-reporter";
+import { classifyReadPaths } from "../../../../libs/test-config/src/executed-read-paths";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
 import type { CheckpointVerdict, RecordCheckpointVerdictOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import {

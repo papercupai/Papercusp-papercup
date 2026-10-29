@@ -15,6 +15,7 @@
  * dependent integration assertion.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CHECKPOINT_BODY_CAP_CHARS } from './carry-note';
 
 const getWorkItemCheckpointWithMeta = vi.fn();
 const setWorkItemCheckpointWithPrior = vi.fn();
@@ -236,6 +237,16 @@ describe('automatic stale-held checkpoint preservation (EI-25379632433059487)', 
     expect(state.note).toContain('Authored progress.');
     expect(state.note).toContain('Later activity.');
     expect(state.note).not.toContain('Holder-session activity.');
+  });
+
+  it('preserves a full authored checkpoint and skips a mechanical write that cannot fit', async () => {
+    const authored = 'A'.repeat(CHECKPOINT_BODY_CAP_CHARS);
+    const state = lockedStore(authored);
+    readHeldWorkItems.mockResolvedValue([{ ...ref, checkpoint: authored }]);
+
+    await expect(autoCheckpointStaleHeldItems(input)).resolves.toEqual([]);
+    await expect(autoCheckpointStaleHeldItems({ ...input, mode: 'respawn' })).resolves.toEqual([]);
+    expect(state.note).toBe(authored);
   });
 
   it.each([null, '## Did\nOld stale progress.'])('skips a snapshot when newer authored evidence replaces %s during tool-log IO', async (stale) => {

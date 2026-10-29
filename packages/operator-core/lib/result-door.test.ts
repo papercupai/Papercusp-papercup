@@ -4095,8 +4095,9 @@ describe('applyResultDoor', () => {
         reason: 'under-budget-partial-result',
         recoverable: false,
       });
-      expect(envelope.incomplete.note).toContain('priorAttemptRefs');
+      expect(envelope.incomplete.note).toContain('checkpointOnly:true');
       expect(envelope.incomplete.note).toContain('rawRef');
+      expect(envelope.incomplete.note).toContain('checkpointPage.nextOffset');
       expect(envelope.incomplete.note).toContain('For other fields omitted by the upstream payload projection');
       expect(envelope.incomplete.note).toContain("Re-call work_items:get with payloadTier:'full'");
       const resultDoorMeta = (doored as unknown as {
@@ -4348,7 +4349,7 @@ describe('applyResultDoor', () => {
       expect(readSpill('ws-1', 'work_items:get', RUN_ID)).toContain('checkpoint prefix');
     });
 
-    it('routes work_items:get prior-attempt truncation to its rawRef argument', () => {
+    it('routes work_items:get prior-attempt truncation to exact source pages', () => {
       const text = JSON.stringify({
         results: [{
           id: 'WI-1',
@@ -4371,7 +4372,9 @@ describe('applyResultDoor', () => {
         reason: 'explicit-full-request-overflow',
         recoverable: false,
       });
-      expect(envelope.incomplete.note).toContain('priorAttemptRefs');
+      expect(envelope.incomplete.note).toContain('checkpointOnly:true');
+      expect(envelope.incomplete.note).toContain('sourceRef:<rawRef>');
+      expect(envelope.incomplete.note).toContain('checkpointPage.nextOffset');
       expect(envelope.incomplete.note).toContain('rawRef');
       expect(envelope.incomplete.note).not.toContain('wider per-field limit');
     });
@@ -4400,7 +4403,7 @@ describe('applyResultDoor', () => {
       expect(envelope.incomplete.note).not.toContain('retry now with payloadTier');
     });
 
-    it('routes a nested tools:invoke work_items:get textTruncated marker to priorAttemptRefs', () => {
+    it('routes a nested tools:invoke work_items:get textTruncated marker to exact source pages', () => {
       const text = JSON.stringify({
         results: [{
           id: 'EI-1',
@@ -4424,8 +4427,9 @@ describe('applyResultDoor', () => {
         reason: 'explicit-full-request-overflow',
         recoverable: false,
       });
-      expect(envelope.incomplete.note).toContain('priorAttemptRefs');
-      expect(envelope.incomplete.note).toContain('work_items:get has no wider per-field limit argument');
+      expect(envelope.incomplete.note).toContain('checkpointOnly:true');
+      expect(envelope.incomplete.note).toContain('sourceRef:<rawRef>');
+      expect(envelope.incomplete.note).toContain('checkpointPage.nextOffset');
       expect(envelope.incomplete.note).not.toContain('Re-call tools:invoke with a wider per-field limit');
     });
 
