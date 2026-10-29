@@ -244,11 +244,29 @@ export interface AmendmentReviewBriefInput {
   /** `thread-post:<id>` — the requester's post carrying the exact preview approval JSON. */
   previewPostRef: string;
   preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes'>;
+  /** Revision-pinned live baseline supplied to the reviewer independently of transcript spans. */
+  reviewSources?: AmendmentReviewSourceContext;
   reason?: string;
   /** The amendment fields as requested, so the reviewer can reproduce the preview. */
   patch: Record<string, unknown>;
   /** Validated immutable evidence on the preview's thread; never an arbitrary retry salt. */
   reviewEvidence?: { postRef: string; body: string };
+}
+
+export interface AmendmentReviewSourceContext {
+  rubric: {
+    ref: string;
+    revision: number;
+    criteriaHash?: string;
+    changedCriteria: Array<{ barKey: string; criterion: unknown }>;
+  };
+  subjectPlan: {
+    slug: string;
+    harnessSlug: string;
+    revision: number;
+    contentHash: string;
+    requirements: string;
+  };
 }
 
 /** Where a fresh reviewer (who has no consult to answer) posts its verdict: the
@@ -279,6 +297,19 @@ export function buildAmendmentReviewBrief(
   const commentCall = answerOn
     ? `work_items:comment { id:'${answerOn.workItemId}'${answerOn.harness ? `, harness:'${answerOn.harness}'` : ''} }`
     : '';
+  const currentSources = input.reviewSources
+    ? [
+        'This review is the current instruction. The revision-pinned source blocks below were read from the live rubric and subject plan for this exact preview. Source spans inherited from an older reviewer transcript are historical background; they do not replace these sources or limit this review. Do not decline solely because inherited spans discuss different BARs. If the supplied sources are incomplete or their revisions differ from a live read, name that gap and request a fresh preview.',
+        `Current rubric baseline: ${input.reviewSources.rubric.ref}@revision ${input.reviewSources.rubric.revision}; criteria hash ${input.reviewSources.rubric.criteriaHash ?? '(unavailable)'}. Current criteria for the changed BARs:`,
+        '```json',
+        JSON.stringify(input.reviewSources.rubric.changedCriteria, null, 2),
+        '```',
+        `Current subject-plan Requirements: ${input.reviewSources.subjectPlan.slug} in harness ${input.reviewSources.subjectPlan.harnessSlug}@revision ${input.reviewSources.subjectPlan.revision}; content hash ${input.reviewSources.subjectPlan.contentHash}. The matching R-N entries below are copied from its current ## Requirements section:`,
+        input.reviewSources.subjectPlan.requirements,
+      ]
+    : [
+        'Revision-pinned live rubric and subject-plan sources were not supplied. This brief is incomplete; do not sign an approval until the current changed-BAR criteria and matching subject-plan Requirements have been read.',
+      ];
   return [
     'Before judging, read the complete brief. If conversations:get shows `_projection.truncated`, call `capability:read` with the returned cursor\'s `file_path` or `uri` plus its `byte_offset` and `byte_limit`; follow `next_cursor` and stop when the response has `eof:true` and `next_cursor:null`. Do not decide from the excerpt.',
     'If rubrics:get reports that the backing rubric row exists but this server could not project it, do not treat the rubric as absent. Read the raw structured record with plans:get-template-data { slug:\'<unprefixed rubric slug>\', harness:\'<current review harness>\' } and grade its complete templateData.criteria. This read preserves fields an older rubric projector may not understand; recover any truncated response before judging.',
@@ -286,7 +317,8 @@ export function buildAmendmentReviewBrief(
       ? `Outside-lineage review of a started acceptance-BAR amendment to ${input.rubricRef}. The relevance router found no eligible reviewer, so ${ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR} launched you fresh: you are outside the implementer's lineage, and the apply guard re-checks that from your post.`
       : `Outside-lineage review of a started acceptance-BAR amendment to ${input.rubricRef}. The relevance router picked you and screened you with rubrics:check-approver: you are outside the implementer's lineage.`,
     `Changed BARs: ${bars || '(none listed)'}.`,
-    'This is a PRE-APPLY review: rubrics:get shows the current/prior state, while the patch and approval JSON describe the proposed state. A new BAR is expected to be absent from the current criteria; its approval entry has priorBarHash:null and a nextBarHash for the candidate. Do not require the new BAR, nextBarHash, or target rubric revision to be present in rubrics:get before signing. Assess the proposed criterion against the Requirements of subjectPlan in the approval JSON (read that plan if needed) and the stated reason; compare existing changed BARs with their live prior criteria, and object only to a substantive mismatch, unsupported requirement, or weakening.',
+    'This is a PRE-APPLY review: the patch and approval JSON describe the proposed state; the revision-pinned source blocks describe the current state. A new BAR is expected to be absent from the current criteria; its approval entry has priorBarHash:null and a nextBarHash for the candidate. Do not require the new BAR, nextBarHash, or target rubric revision to be present in the current rubric before signing. Compare each changed BAR with the live baseline and matching subject-plan Requirements below; object only to a substantive mismatch, unsupported requirement, or weakening.',
+    ...currentSources,
     input.reason?.trim() ? `Reason given: ${clip(input.reason.trim(), BRIEF_REASON_MAX)}` : 'No reason was given.',
     ...(input.reviewEvidence ? [
       `Re-review of the SAME immutable preview after new verification evidence ${input.reviewEvidence.postRef}. The earlier verdict remains history; judge this evidence independently and do not assume it establishes criterion success.`,
@@ -846,7 +878,7 @@ async function verifyPreviewPostWithApplyResolver(args: {
 }
 
 export interface OpenAmendmentReviewInput extends AmendmentReviewBriefInput {
-  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes' | 'approvalRequired'>;
+  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes' | 'approvalRequired' | 'rubricRevision' | 'subjectPlanRevision'>;
   identity: AgentIdentity;
   workspaceId: string;
   harness?: string;
@@ -857,6 +889,121 @@ export interface OpenAmendmentReviewInput extends AmendmentReviewBriefInput {
   reviewEvidencePost?: string;
   /** In-memory phase callback shared with the amendment's existing receipt. */
   onPhase?: (phase: string) => void;
+}
+
+export interface AmendmentReviewSourceResolveInput {
+  rubricRef: string;
+  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes' | 'rubricRevision' | 'subjectPlanRevision'>;
+  workspaceId: string;
+  harness?: string;
+}
+
+function normalizeReviewBarKey(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  const numbered = /^R-?(\d+)$/i.exec(trimmed);
+  return numbered ? `R-${numbered[1]}` : trimmed;
+}
+
+function subjectRequirementsSection(content: string): string | null {
+  const lines = content.split(/\r?\n/);
+  const start = lines.findIndex((line) => /^##\s+Requirements\s*$/i.test(line.trim()));
+  if (start < 0) return null;
+  const end = lines.findIndex((line, index) => index > start && /^##\s+[^#]/.test(line.trim()));
+  return lines.slice(start, end < 0 ? undefined : end).join('\n').trim();
+}
+
+function matchingSubjectRequirements(section: string, barKeys: string[]): string {
+  const lines = section.split('\n');
+  const headings = lines.flatMap((line, index) => {
+    const match = /^\s*(?:#{3,6}\s+)?(?:[-*]\s+)?(?:\*\*)?(R-?\d+)\s*[—–-]/i.exec(line);
+    const barKey = match ? normalizeReviewBarKey(match[1]) : null;
+    return barKey ? [{ index, barKey }] : [];
+  });
+  const wanted = new Set(barKeys);
+  if (!headings.length || barKeys.some((key) => !headings.some((heading) => heading.barKey === key))) {
+    return section;
+  }
+  const preamble = lines.slice(0, headings[0]!.index);
+  const blocks = headings
+    .map((heading, index) => ({
+      ...heading,
+      lines: lines.slice(heading.index, headings[index + 1]?.index),
+    }))
+    .filter((block) => wanted.has(block.barKey))
+    .flatMap((block) => block.lines);
+  return [...preamble, ...blocks].join('\n').trim();
+}
+
+/** Read current BAR sources at the revisions bound into the preview. */
+export async function resolveAmendmentReviewSources(
+  input: AmendmentReviewSourceResolveInput,
+  deps: {
+    getRubric?: typeof import('../rubrics').getRubric;
+    getPlanRow?: typeof import('../agent-tools/plans/source').getPlanRow;
+  } = {},
+): Promise<AmendmentReviewSourceContext> {
+  const changedBarKeys = [...new Set(input.preview.changes
+    .map((change) => normalizeReviewBarKey(change.barKey))
+    .filter((barKey): barKey is string => Boolean(barKey)))];
+  if (!changedBarKeys.length) throw new Error('amendment_review_sources_unavailable: preview has no changed BAR keys');
+
+  const readRubric = deps.getRubric ?? (await import('../rubrics')).getRubric;
+  const rubric = await readRubric(input.rubricRef);
+  if (!rubric) throw new Error(`amendment_review_sources_unavailable: rubric '${input.rubricRef}' was not found`);
+  if (rubric.revision !== input.preview.rubricRevision) {
+    throw new Error(`amendment_review_sources_stale: rubric '${rubric.rubricId}' is at revision ${rubric.revision ?? 'unknown'}, preview is pinned to ${input.preview.rubricRevision}`);
+  }
+  if (rubric.readCompat?.strippedKeys.length) {
+    throw new Error(`amendment_review_sources_incomplete: rubric '${rubric.rubricId}' has unprojected fields: ${rubric.readCompat.strippedKeys.join(', ')}`);
+  }
+  const subjectPlanSlug = rubric.subjectPlan?.trim();
+  const approvalPlanSlug = input.preview.approval.subjectPlan.trim();
+  if (!subjectPlanSlug || subjectPlanSlug !== approvalPlanSlug) {
+    throw new Error(`amendment_review_sources_scope_mismatch: rubric subject plan '${subjectPlanSlug ?? '(missing)'}' differs from preview '${approvalPlanSlug}'`);
+  }
+  const subjectHarnessSlug = rubric.subjectHarnessSlug?.trim() || input.harness?.trim();
+  if (!subjectHarnessSlug) {
+    throw new Error(`amendment_review_sources_scope_missing: subject harness for plan '${subjectPlanSlug}' is unknown`);
+  }
+
+  const readPlanRow = deps.getPlanRow ?? (await import('../agent-tools/plans/source')).getPlanRow;
+  const subjectPlan = await readPlanRow(subjectPlanSlug, {
+    workspaceId: input.workspaceId,
+    harnessSlug: subjectHarnessSlug,
+  });
+  if (!subjectPlan) {
+    throw new Error(`amendment_review_sources_unavailable: subject plan '${subjectPlanSlug}' was not found in harness '${subjectHarnessSlug}'`);
+  }
+  if (subjectPlan.version !== input.preview.subjectPlanRevision) {
+    throw new Error(`amendment_review_sources_stale: subject plan '${subjectPlanSlug}' is at revision ${subjectPlan.version}, preview is pinned to ${input.preview.subjectPlanRevision}`);
+  }
+  const requirements = subjectRequirementsSection(subjectPlan.content);
+  if (!requirements) {
+    throw new Error(`amendment_review_sources_missing: subject plan '${subjectPlanSlug}' has no ## Requirements section`);
+  }
+
+  const changedKeys = new Set(changedBarKeys);
+  const changedCriteria = rubric.criteria.flatMap((criterion) => {
+    const record = criterion as unknown as Record<string, unknown>;
+    const barKey = normalizeReviewBarKey(record.barKey ?? record.key);
+    return barKey && changedKeys.has(barKey) ? [{ barKey, criterion }] : [];
+  });
+  return {
+    rubric: {
+      ref: rubric.rubricId,
+      revision: rubric.revision,
+      ...(rubric.criteriaHash ? { criteriaHash: rubric.criteriaHash } : {}),
+      changedCriteria,
+    },
+    subjectPlan: {
+      slug: subjectPlan.planSlug,
+      harnessSlug: subjectPlan.harnessSlug,
+      revision: subjectPlan.version,
+      contentHash: subjectPlan.contentHash,
+      requirements: matchingSubjectRequirements(requirements, changedBarKeys),
+    },
+  };
 }
 
 export type AmendmentReviewRequestResult =
@@ -881,6 +1028,7 @@ export async function openAcceptanceBarAmendmentReview(
     launchFresh?: typeof launchFreshAmendmentReviewer;
     resolveEvidence?: typeof resolveAmendmentReviewEvidence;
     hasLaterPost?: typeof previewThreadHasLaterPost;
+    resolveSources?: typeof resolveAmendmentReviewSources;
   } = {},
 ): Promise<AmendmentReviewRequestResult> {
   if (!input.preview.approvalRequired) {
@@ -910,10 +1058,17 @@ export async function openAcceptanceBarAmendmentReview(
       workspaceId: input.workspaceId, previewPostRef,
       evidencePostRef: input.reviewEvidencePost.trim(), applierId: input.identity.ownerId,
     }) : undefined;
+  input.onPhase?.('review-sources');
+  const reviewSources = input.reviewSources ?? await (deps.resolveSources ?? resolveAmendmentReviewSources)({
+    rubricRef: input.rubricRef,
+    preview: input.preview,
+    workspaceId: input.workspaceId,
+    ...(input.harness ? { harness: input.harness } : {}),
+  });
   input.onPhase?.('review-route');
   const routed = await (deps.route ?? routeAcceptanceBarAmendmentReview)({
     rubricRef: input.rubricRef,
-    brief: buildAmendmentReviewBrief({ ...input, previewPostRef, reviewEvidence }),
+    brief: buildAmendmentReviewBrief({ ...input, previewPostRef, reviewEvidence, reviewSources }),
     identity: input.identity,
     workspaceId: input.workspaceId,
     ...(input.harness ? { harness: input.harness } : {}),
@@ -953,6 +1108,7 @@ export async function openAcceptanceBarAmendmentReview(
       rubricRef: input.rubricRef,
       previewPostRef,
       preview: input.preview,
+      reviewSources,
       ...(input.reason ? { reason: input.reason } : {}),
       patch: input.patch,
       ...(reviewEvidence ? { reviewEvidence } : {}),

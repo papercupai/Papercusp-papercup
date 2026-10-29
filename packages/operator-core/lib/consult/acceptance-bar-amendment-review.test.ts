@@ -15,8 +15,10 @@ import {
   launchFreshAmendmentReviewer,
   MAX_DEAD_REVIEWER_CHAIN,
   openAcceptanceBarAmendmentReview,
+  resolveAmendmentReviewSources,
   routeAcceptanceBarAmendmentReview,
   selectFreshReviewerModelForAccountSteer,
+  type AmendmentReviewSourceContext,
   type AmendmentReviewerScreen,
 } from './acceptance-bar-amendment-review';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
@@ -228,6 +230,24 @@ describe('routeAcceptanceBarAmendmentReview', () => {
 
 describe('openAcceptanceBarAmendmentReview (P-006)', () => {
   const approval = { schemaVersion: 1, kind: 'acceptance-bar-approval', rubricRef: 'acceptance-demo', bars: [{ barKey: 'R-1' }] };
+  const reviewSources: AmendmentReviewSourceContext = {
+    rubric: {
+      ref: 'acceptance-demo',
+      revision: 12,
+      criteriaHash: 'criteria-hash-12',
+      changedCriteria: [
+        { barKey: 'R-1', criterion: { barKey: 'R-1', model: 'Current R-1 criterion.' } },
+        { barKey: 'R-37', criterion: { barKey: 'R-37', model: 'Current R-37 criterion.' } },
+      ],
+    },
+    subjectPlan: {
+      slug: 'acceptance-demo',
+      harnessSlug: 'papercusp',
+      revision: 7,
+      contentHash: 'plan-content-hash-7',
+      requirements: '## Requirements\n### R-1 — Current first requirement\nCurrent R-1 details.\n\n### R-37 — Current second requirement\nCurrent R-37 details.',
+    },
+  };
   const baseInput = {
     rubricRef: 'acceptance-demo',
     previewPostRef: 'thread-post:42',
@@ -240,8 +260,118 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     patch: { criterion: { key: 'r-1', field: 'driftMarkers', mode: 'append', text: 'Also fails when X.' } },
     identity: { ownerId: 'su-implementer', workspaceId: 'ws' },
     workspaceId: 'ws',
+    reviewSources,
   } as unknown as Parameters<typeof openAcceptanceBarAmendmentReview>[0];
   const noLaterPost = vi.fn(async () => false);
+
+  it('resolves criteria and matching Requirements from the exact preview revisions', async () => {
+    const sourceInput = {
+      rubricRef: 'plan:acceptance-demo',
+      preview: {
+        ...baseInput.preview,
+        approval: { ...approval, subjectPlan: 'acceptance-demo' },
+        rubricRevision: 12,
+        subjectPlanRevision: 7,
+        changes: [
+          { barKey: 'R-1', kinds: ['bar-meaning'], fields: ['model'] },
+          { barKey: 'R-37', kinds: ['bar-meaning'], fields: ['falsifier'] },
+        ],
+      },
+      workspaceId: 'ws',
+      harness: 'papercusp',
+    } as unknown as Parameters<typeof resolveAmendmentReviewSources>[0];
+    const getRubric = vi.fn(async () => ({
+      rubricId: 'acceptance-demo',
+      revision: 12,
+      criteriaHash: 'criteria-hash-12',
+      subjectPlan: 'acceptance-demo',
+      subjectHarnessSlug: 'papercusp',
+      criteria: [
+        { barKey: 'R-1', model: 'Current R-1 criterion.' },
+        { barKey: 'R-31', model: 'Unrelated historical criterion.' },
+        { barKey: 'R-37', model: 'Current R-37 criterion.' },
+      ],
+    }) as never);
+    const getPlanRow = vi.fn(async () => ({
+      planSlug: 'acceptance-demo',
+      harnessSlug: 'papercusp',
+      version: 7,
+      contentHash: 'plan-content-hash-7',
+      content: [
+        '# Acceptance plan',
+        '## Overview',
+        'Overview text.',
+        '## Requirements',
+        'Shared requirement preamble.',
+        '### R-1 — Current first requirement',
+        'Current R-1 details.',
+        '### R-31 — Unrelated historical requirement',
+        'Do not include this inherited BAR.',
+        '### R-37 — Current second requirement',
+        'Current R-37 details.',
+        '## Tasks',
+        'Do not include tasks in the review source.',
+      ].join('\r\n'),
+    }) as never);
+
+    const sources = await resolveAmendmentReviewSources(sourceInput, {
+      getRubric: getRubric as never,
+      getPlanRow: getPlanRow as never,
+    });
+
+    expect(getRubric).toHaveBeenCalledWith('plan:acceptance-demo');
+    expect(getPlanRow).toHaveBeenCalledWith('acceptance-demo', { workspaceId: 'ws', harnessSlug: 'papercusp' });
+    expect(sources.rubric).toMatchObject({
+      ref: 'acceptance-demo',
+      revision: 12,
+      criteriaHash: 'criteria-hash-12',
+    });
+    expect(sources.rubric.changedCriteria.map(({ barKey }) => barKey)).toEqual(['R-1', 'R-37']);
+    expect(sources.subjectPlan).toMatchObject({
+      slug: 'acceptance-demo',
+      harnessSlug: 'papercusp',
+      revision: 7,
+      contentHash: 'plan-content-hash-7',
+    });
+    expect(sources.subjectPlan.requirements).toContain('Shared requirement preamble.');
+    expect(sources.subjectPlan.requirements).toContain('Current R-1 details.');
+    expect(sources.subjectPlan.requirements).toContain('Current R-37 details.');
+    expect(sources.subjectPlan.requirements).not.toContain('R-31');
+    expect(sources.subjectPlan.requirements).not.toContain('## Tasks');
+  });
+
+  it('refuses a subject plan whose live revision no longer matches the preview', async () => {
+    const sourceInput = {
+      rubricRef: 'acceptance-demo',
+      preview: {
+        ...baseInput.preview,
+        approval: { ...approval, subjectPlan: 'acceptance-demo' },
+        rubricRevision: 12,
+        subjectPlanRevision: 7,
+      },
+      workspaceId: 'ws',
+      harness: 'papercusp',
+    } as unknown as Parameters<typeof resolveAmendmentReviewSources>[0];
+    const getRubric = vi.fn(async () => ({
+      rubricId: 'acceptance-demo',
+      revision: 12,
+      subjectPlan: 'acceptance-demo',
+      subjectHarnessSlug: 'papercusp',
+      criteria: [],
+    }) as never);
+    const getPlanRow = vi.fn(async () => ({
+      planSlug: 'acceptance-demo',
+      harnessSlug: 'papercusp',
+      version: 8,
+      contentHash: 'newer-plan-content',
+      content: '## Requirements\n### R-1 — Current',
+    }) as never);
+
+    await expect(resolveAmendmentReviewSources(sourceInput, {
+      getRubric: getRubric as never,
+      getPlanRow: getPlanRow as never,
+    })).rejects.toThrow("amendment_review_sources_stale: subject plan 'acceptance-demo' is at revision 8, preview is pinned to 7");
+  });
 
   it('routes nothing when the preview needs no approval', async () => {
     const verifyPreviewPost = vi.fn();
@@ -273,13 +403,24 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
 
   it('opens the routed review for the preview post and returns its reference', async () => {
     const route = vi.fn().mockResolvedValue({ state: 'routed', conversationId: 'conv-1', responderId: 'su-outsider', screenedOut: [] });
-    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route });
+    const resolveSources = vi.fn().mockResolvedValue(reviewSources);
+    const result = await openAcceptanceBarAmendmentReview(
+      { ...baseInput, reviewSources: undefined },
+      { verifyPreviewPost: vi.fn(), route, resolveSources },
+    );
 
     expect(result).toMatchObject({ state: 'routed', conversationId: 'conv-1', previewPostRef: 'thread-post:42' });
     expect(result.next).toContain("consult:reply:conv-1");
+    expect(resolveSources).toHaveBeenCalledWith({
+      rubricRef: 'acceptance-demo',
+      preview: baseInput.preview,
+      workspaceId: 'ws',
+    });
     const routed = route.mock.calls[0]![0];
     expect(routed).toMatchObject({ rubricRef: 'acceptance-demo', workspaceId: 'ws', identity: baseInput.identity });
     expect(routed.brief).toBe(buildAmendmentReviewBrief({ ...baseInput }));
+    expect(routed.brief).toContain('Current rubric baseline: acceptance-demo@revision 12; criteria hash criteria-hash-12.');
+    expect(routed.brief).toContain('Current R-37 details.');
   });
 
   it('identifies a pending fresh launch after preserving the screened routing result', async () => {
@@ -390,11 +531,13 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
       answerOn: { workItemId: 'WI-7', harness: 'papercusp' },
     });
     const launchCtx = { ownerId: 'su-implementer', workspaceId: 'ws' };
+    const resolveSources = vi.fn().mockResolvedValue(reviewSources);
     const result = await openAcceptanceBarAmendmentReview(
-      { ...baseInput, launchCtx },
-      { verifyPreviewPost: vi.fn(), route, launchFresh, hasLaterPost: noLaterPost },
+      { ...baseInput, launchCtx, reviewSources: undefined },
+      { verifyPreviewPost: vi.fn(), route, launchFresh, hasLaterPost: noLaterPost, resolveSources },
     );
     expect(launchFresh).toHaveBeenCalledTimes(1);
+    expect(resolveSources).toHaveBeenCalledTimes(1);
     expect(launchFresh.mock.calls[0]![0]).toMatchObject({
       rubricRef: 'acceptance-demo',
       previewPostRef: 'thread-post:42',
@@ -402,6 +545,7 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
       workspaceId: 'ws',
       patch: baseInput.patch,
       launchCtx,
+      reviewSources,
     });
     expect(result).toMatchObject({
       state: 'no-eligible-reviewer',
@@ -516,6 +660,14 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
       ...baseInput,
       preview,
       reason: 'Add R-32 from the source Requirements.',
+      reviewSources: {
+        ...reviewSources,
+        rubric: { ...reviewSources.rubric, changedCriteria: [] },
+        subjectPlan: {
+          ...reviewSources.subjectPlan,
+          requirements: '## Requirements\n### R-32 — New source requirement\nThe source requirement for R-32.',
+        },
+      },
       patch: { criteria: [...existingCriteria, newCriterion] },
     });
 
@@ -523,7 +675,8 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(brief).toContain('A new BAR is expected to be absent from the current criteria');
     expect(brief).toContain('priorBarHash:null');
     expect(brief).toContain('Do not require the new BAR, nextBarHash, or target rubric revision');
-    expect(brief).toContain('Requirements of subjectPlan in the approval JSON (read that plan if needed)');
+    expect(brief).toContain('Current subject-plan Requirements: acceptance-demo in harness papercusp@revision 7; content hash plan-content-hash-7.');
+    expect(brief).toContain('The source requirement for R-32.');
     expect(brief).toContain(JSON.stringify(preview.approval));
     expect(brief).toContain(JSON.stringify(newCriterion));
   });
@@ -576,8 +729,9 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     const unchanged = Array.from({ length: 12 }, (_, index) => ({ barKey: `R-${index + 2}`, model: 'unchanged '.repeat(35) }));
     const changed = { barKey: 'R-1', model: 'changed' };
     const brief = buildAmendmentReviewBrief({ ...baseInput, patch: { criteria: [...unchanged, changed] } });
-    const firstBlock = brief.split('```json\n')[1]?.split('\n```')[0] ?? '';
-    const excerpt = JSON.parse(firstBlock) as Record<string, unknown>;
+    const patchBrief = brief.slice(brief.indexOf('Requested patch excerpt:'));
+    const patchBlock = patchBrief.split('```json\n')[1]?.split('\n```')[0] ?? '';
+    const excerpt = JSON.parse(patchBlock) as Record<string, unknown>;
     expect('criteria' in excerpt).toBe(false);
     expect(excerpt.changedCriteria).toEqual([changed]);
     expect(excerpt.omittedUnchangedBarKeys).toEqual(unchanged.map((criterion) => criterion.barKey));

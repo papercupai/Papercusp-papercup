@@ -2484,6 +2484,7 @@ describe('setup-release-checkout.sh --prepare-existing (EI-20336479620858625)', 
     expect(identity).toBeDefined();
 
     const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
+    const realCp = spawnSync('which', ['cp'], { encoding: 'utf8' }).stdout.trim();
     const bin = join(integrationRoot, 'git-probe');
     const observed = join(integrationRoot, 'checkout-leases');
     mkdirSync(bin);
@@ -2495,6 +2496,17 @@ case " $* " in
 esac
 exec "$REGRESSION_REAL_GIT" "$@"
 `, { mode: 0o755 });
+    expect(realCp).not.toBe('');
+    // Same-filesystem reflinks intentionally bypass the physical-copy lock.
+    // Force that optimization to fail for setup so this regression exercises
+    // the locked independent-copy fallback while the competitor holds the lock.
+    writeFileSync(join(bin, 'cp'), [
+      '#!/usr/bin/env bash',
+      'case " $* " in',
+      '  *" --reflink=always "*) exit 1 ;;',
+      'esac',
+      'exec "$REGRESSION_REAL_CP" "$@"',
+    ].join(String.fromCharCode(10)), { mode: 0o755 });
     const realFlock = spawnSync('which', ['flock'], { encoding: 'utf8' }).stdout.trim();
     expect(realFlock).not.toBe('');
     const bashEnv = join(bin, 'setup-lock-probe.bash');
@@ -2630,6 +2642,7 @@ exec "$REGRESSION_REAL_GIT" "$@"
         PATH: [bin, process.env.PATH].filter(Boolean).join(':'),
         BASH_ENV: bashEnv,
         REGRESSION_REAL_GIT: realGit,
+        REGRESSION_REAL_CP: realCp,
         REGRESSION_REAL_FLOCK: realFlock,
         REGRESSION_COPY_LOCK_FILE: defaultCopyLock,
         REGRESSION_COPY_LOCK_HOLDER_PID: String(materializer.pid),
