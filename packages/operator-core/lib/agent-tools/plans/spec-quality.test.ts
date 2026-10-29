@@ -719,6 +719,45 @@ describe('evaluatePlanSpecQuality', () => {
     }
   });
 
+  it.each([
+    'A recorded review fires plan:blind-review-posted:<slug>:<bindingId> for its review session.',
+    'Successful review results include awaitKey equal to the notification key for that session.',
+    'The await catalog key template carries the slug and bindingId params and classifies fireProves as condition.',
+  ])('accepts observable public notification contracts: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      clauses: [clause({ behavior, falsifier: { observation: behavior } })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+  });
+
+  it('recognizes missing public response fields and catalog metadata in falsifiers', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      clauses: [clause({
+        behavior: 'Successful results include awaitKey for the review session.',
+        falsifier: { observation: 'A request succeeds without awaitKey.' },
+      }), clause({ specId: 'SPEC-001-02',
+        behavior: 'The await catalog classifies fireProves as condition.',
+        falsifier: { observation: 'Its fireProves classification is missing.' },
+      })], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+  });
+
+  it.each([
+    'Review results include awaitKey; runSyncBatchDeltaCheck evaluates the batch.',
+    'The await catalog lists bindingId params; bindingId evaluates the batch.',
+    'A review fires plan:posted:<bindingId>; the private field bindingId holds its state.',
+  ])('still rejects private machinery alongside public notification contracts: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      clauses: [clause({ behavior })], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+  });
+
   it('reports implementation-independence controls and explicit exclusions for the current clause population', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],

@@ -464,8 +464,6 @@ export function canDispatchPtoolOnFallback(
     isReadOnlyPtoolRecoveryRequest(toolName, callArgs, tools);
 }
 
-const OPERATOR_URL = resolvePtoolOperatorBase(process.env);
-
 // psu-launcher exports the resolved URL into every child so the MCP config can
 // reach the same operator. That export is a managed handoff, not an explicit
 // caller pin: a wake-respawn must be allowed to rediscover operator.json when
@@ -4802,14 +4800,16 @@ async function main() {
     }
   }
 
-  let operatorUrl = args.url || OPERATOR_URL;
+  // Discovery belongs to an invocation, after --help and an explicit --url
+  // have been read. A selected instance may not have advertised a port yet.
+  let operatorUrl = args.url || resolvePtoolOperatorBase(process.env);
   let operatorCandidates = resolvePtoolInvocationCandidates(args, process.env);
   const managedReadRecoveryCandidate = resolveLauncherManagedStagingProxyCandidate(
-    resolvePtoolOperatorBase(process.env),
+    operatorUrl,
     process.env,
   );
   const managedStagingDirectCandidate = resolveLauncherManagedStagingDirectCandidate(
-    resolvePtoolOperatorBase(process.env),
+    operatorUrl,
     process.env,
     args.url,
   );

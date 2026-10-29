@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ADMISSION_PREVIEW_SETTLED_EVENT_PREFIX,
   boundAdmissionPreviewVerdict,
@@ -30,28 +30,42 @@ function memoryStore(opts: { putDelayMs?: number; failPut?: boolean } = {}) {
 const later = <T>(ms: number, value: T): Promise<T> => new Promise((r) => setTimeout(() => r(value), ms));
 
 describe('runAdmissionPreviewOperation (R-1)', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   it('returns a handle within the inline budget when the preview is slow, then settles the verdict into the store and emits', async () => {
+    vi.useFakeTimers();
     const { store, puts } = memoryStore();
     const emitted: AdmissionPreviewOperation[] = [];
-    const startedAt = Date.now();
-    const outcome = await runAdmissionPreviewOperation({
-      run: () => later(250, { verdict: 'pass', judgedSha: 'abc123', admitted: false }),
+    const verdict = { verdict: 'pass', judgedSha: 'abc123', admitted: false };
+    let finishPreview!: () => void;
+    const preview = new Promise<typeof verdict>((resolve) => {
+      finishPreview = () => resolve(verdict);
+    });
+    const pendingOutcome = runAdmissionPreviewOperation({
+      run: () => preview,
       store,
       emitSettled: async (op) => { emitted.push(op); },
       paths: ['a.ts', 'b.ts'],
       inlineBudgetMs: 30,
     });
-    const elapsed = Date.now() - startedAt;
+    const returned = vi.fn();
+    void pendingOutcome.then(returned);
+    // Measure the budget's ordering, not scheduler-dependent elapsed wall time.
+    await vi.advanceTimersByTimeAsync(29);
+    expect(returned).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(returned).toHaveBeenCalledOnce();
+    const outcome = await pendingOutcome;
 
     expect(outcome.mode).toBe('deferred');
     if (outcome.mode !== 'deferred') return;
-    expect(elapsed).toBeLessThan(200); // the call did not wait for the 250 ms preview
     expect(outcome.operation.operationId).toMatch(/^arp-/);
     expect(outcome.operation.status).toBe('running');
     expect(outcome.persisted).toBe(true);
     expect((await store.get(outcome.operation.operationId))?.status).toBe('running');
     expect(emitted).toHaveLength(0);
 
+    finishPreview();
     const final = await outcome.settlement;
     expect(final.status).toBe('settled');
     const stored = await store.get(outcome.operation.operationId);

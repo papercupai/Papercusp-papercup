@@ -2630,6 +2630,26 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // the whole real tree FIRST (13 lockfiles, every one classified, 0 offenders), so
     // registering it cannot red-pin the fleet on debt that accrued while nothing looked.
     workspace: "@papercusp/operator-core",
+    script: "lint:client-fetch-in-timer",
+    appliesTo: (f) =>
+      f === "package.json" || f === "packages/operator-core/package.json" ||
+      f === "scripts/check-client-fetch-in-timer.mjs" ||
+      f === "scripts/client-fetch-in-timer-baseline.json" ||
+      f === "scripts/lib/shrink-only-guard.mjs" ||
+      ((f.startsWith("apps/operator-vite/src/") || f.startsWith("apps/operator/app/") ||
+        f.startsWith("packages/operator-ui/")) && /\.[cm]?[jt]sx?$/.test(f)),
+  },
+  {
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-bespoke-condition-op",
+    appliesTo: (f) =>
+      f === "package.json" || f === "packages/operator-core/package.json" ||
+      f === "scripts/check-no-bespoke-condition-op.mjs" ||
+      f === "scripts/no-bespoke-condition-op-baseline.json" ||
+      f === "scripts/lib/shrink-only-guard.mjs" || /\.[cm]?[jt]sx?$/.test(f),
+  },
+  {
+    workspace: "@papercusp/operator-core",
     script: "lint:lockfile-census",
     appliesTo: (f) =>
       !f.includes("node_modules/") &&
@@ -9592,11 +9612,12 @@ const resultLine = (status) =>
 // on failure the way the per-file break set is gated would miss the whole point.
 //
 // ⚠ DELIBERATELY ABSENT from the pre-execution exits, and that is load-bearing rather than
-// an oversight. This line asserts which files RAN. The `--dry` exit and the two
-// deadline-insufficient/admission-starved `refused` exits all terminate upstream of here
-// with tasks SELECTED BUT NEVER RUN, so emitting there would publish a file list that
-// never executed — reintroducing, one level down, precisely the "absence/presence reads as
-// an execution fact" confusion this line exists to remove. Those paths already say what
+// an oversight. This line asserts which files RAN. The `--dry` exit and the
+// deadline-insufficient/admission-starved/admission-deferred `refused` exits terminate
+// upstream of here. Dry-run executes nothing; a refusal can follow settled shards, but
+// never proves the WHOLE selected plan ran. Emitting that plan there would overstate
+// execution — reintroducing precisely the "absence/presence reads as an execution fact"
+// confusion this line exists to remove. Those paths already say what
 // happened in their own `status=` token (`dry-run`, `refused`). Selection and execution are
 // different questions; only this line's audience conflates them, so only it must not.
 //

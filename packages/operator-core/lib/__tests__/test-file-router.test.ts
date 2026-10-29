@@ -3358,6 +3358,98 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(lines.filter(line => line === failure)).toHaveLength(1);
   });
 
+  it.each(['stdout', 'stderr'] as const)('retains case and fork lifecycle transitions from chunked %s before final capture', async channel => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 424242, stdout: new PassThrough(), stderr: new PassThrough(),
+    });
+    const lines: string[] = [];
+    const promise = runCapturedTestProcess('vitest', ['run', 'a.test.ts'], {
+      files: ['a.test.ts'], spawnImpl: () => child, systemdRunPath: null, setsidPath: null,
+      governedProcessImpl: (_options: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+      readProcessDiagnosticImpl: null, onProgress: (line: string) => lines.push(line),
+    });
+    const traces = [
+      'TEST_FILE_CASE_TRACE ' + JSON.stringify({ event: 'started', file: 'a.test.ts', name: 'native handoff' }),
+      'TEST_FILE_CASE_TRACE ' + JSON.stringify({ event: 'finished', file: 'a.test.ts', name: 'native handoff', state: 'passed' }),
+      ...['stop-sent', 'stopped-received', 'worker-signal', 'worker-exit', 'worker-close'].map(event =>
+        'TEST_FILE_STARTUP_TRACE ' + JSON.stringify({ pid: 424242, event, childPid: 424243, elapsedMs: 90 })),
+    ];
+    try {
+      for (const trace of traces) {
+        child[channel].write(trace.slice(0, 17));
+        expect(lines).not.toContain(trace);
+        child[channel].write(trace.slice(17) + '\nTEST_FILE_HEARTBEAT completedCases=1\n');
+      }
+      // Every phase survives even when a heartbeat overwrites lastOutputLine
+      // and the parent later terminates before the child buffers are returned.
+      for (const trace of traces) expect(lines).toContain(trace);
+      child[channel].write('TEST_FILE_STARTUP_TRACE {"event":"worker-close","secret":"never-emit"}\n');
+      expect(lines.join('\n')).not.toContain('never-emit');
+    } finally { child.emit('close', null, 'SIGTERM'); await promise; }
+  });
+
+  it('captures the owned child before a parent signal reaps pending native execution', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 424242, stdout: new PassThrough(), stderr: new PassThrough(),
+    });
+    const events: string[] = [];
+    const forwarders = new Map<string, Function>();
+    const once = vi.spyOn(process, 'once').mockImplementation(((signal: string, handler: Function) => {
+      forwarders.set(signal, handler); return process;
+    }) as any);
+    const signalSelf = vi.spyOn(process, 'kill').mockReturnValue(true);
+    const reader = vi.fn(() => {
+      events.push('read-child');
+      return { status: 'measured', rootPid: child.pid, processes: [{ pid: child.pid }], truncated: false };
+    });
+    const promise = runCapturedTestProcess('vitest', ['run', 'a.test.ts'], {
+      files: ['a.test.ts'], env: { PATH: '/usr/bin' }, spawnImpl: () => child,
+      systemdRunPath: null, setsidPath: '/usr/bin/setsid',
+      governedProcessImpl: (_options: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+      killProcessImpl: () => { events.push('kill-child'); return 'group'; },
+      readProcessDiagnosticImpl: reader, onProgress: (line: string) => events.push(line),
+    });
+    try {
+      forwarders.get('SIGTERM')!();
+      expect(reader).toHaveBeenCalledExactlyOnceWith(child.pid);
+      expect(events.indexOf('read-child')).toBeLessThan(events.indexOf('kill-child'));
+      expect(events.find(line => line.startsWith('TEST_FILE_CHILD_DIAGNOSTIC ')))
+        .toContain('"trigger":"parent-sigterm"');
+      child.emit('close', null, 'SIGKILL');
+      expect(await promise).toMatchObject({ status: null, signal: 'SIGKILL', timedOut: false,
+        processDiagnostic: { status: 'measured', rootPid: child.pid } });
+    } finally {
+      child.emit('close', null, 'SIGKILL'); await promise;
+      once.mockRestore(); signalSelf.mockRestore();
+    }
+  });
+
+  it('bounds forwarded lifecycle output and strips fields outside the passive fork protocol', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 424242, stdout: new PassThrough(), stderr: new PassThrough(),
+    });
+    const lines: string[] = [];
+    const promise = runCapturedTestProcess('vitest', ['run', 'a.test.ts'], {
+      files: ['a.test.ts'], spawnImpl: () => child, systemdRunPath: null, setsidPath: null,
+      governedProcessImpl: (_options: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+      readProcessDiagnosticImpl: null, onProgress: (line: string) => lines.push(line),
+    });
+    try {
+      const trace = 'TEST_FILE_STARTUP_TRACE ' + JSON.stringify({ pid: 424242, childPid: 424243,
+        event: 'stop-sent', elapsedMs: 90, secret: 'never-emit' }) + '\n';
+      child.stderr.write(trace.repeat(4100));
+      const forwarded = lines.filter(line => line.startsWith('TEST_FILE_STARTUP_TRACE '));
+      expect(forwarded).toHaveLength(4096);
+      expect(forwarded.every(line => !line.includes('never-emit'))).toBe(true);
+      // A full lifecycle budget must still preserve the original failed-case
+      // channel rather than hiding the assertion behind diagnostic volume.
+      const failure = 'TEST_FILE_CASE_TRACE ' + JSON.stringify({ event: 'finished',
+        file: 'a.test.ts', name: 'native failure', state: 'failed' });
+      child.stderr.write(failure + '\n');
+      expect(lines).toContain(failure);
+    } finally { child.emit('close', 0, null); await promise; }
+  });
+
   it('preserves the originating exception when admission fails before spawn', async () => {
     const origin = new ReferenceError('pinModuleState is not defined');
     origin.stack = 'ReferenceError: pinModuleState is not defined\n    at originalAdmission (/provider/execution.ts:12:3)';
@@ -3465,7 +3557,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
       expect(reader).toHaveBeenCalledTimes(1);
       const phases = progress.filter(line => line.startsWith('TEST_FILE_FINALIZATION '))
         .map(line => JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length)).phase);
-      expect(phases).toEqual(['governed-start', 'child-start', 'child-exit', 'child-close',
+      expect(phases).toEqual(['governed-start', 'child-start', 'files-complete', 'child-exit', 'child-close',
         'demand-sample-start', 'demand-sample-returned', 'child-returned', 'governed-returned']);
     } finally {
       child.emit('close', 0, null);

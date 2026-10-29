@@ -1,0 +1,1896 @@
+{
+  "schemaVersion": 1,
+  "kind": "measurement",
+  "queryFile": "docs/evidence/rules-events-reuse-ui-measure.mjs",
+  "queryHash": "53a0220eec054a5a1f860057775bb690fa91577c63d12eb2d21e9019ee3f350c",
+  "baseUrl": "http://127.0.0.1:3170",
+  "sampleMs": 300000,
+  "warmupMs": 30000,
+  "startedAt": "2026-10-28T23:37:29.872Z",
+  "scenarios": [
+    {
+      "subscribersPerPanel": 1,
+      "pages": [
+        {
+          "panel": "FleetRateControl",
+          "pageIndex": 0,
+          "route": "/adv?tab=overview&ws=papercusp-workspace",
+          "endpoint": "/api/operator/rate-limit-config",
+          "startupTargetResponses": 24,
+          "requests": [
+            {
+              "at": "2026-10-28T23:38:49.727Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:38:57.099Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:03.913Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:11.690Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:19.682Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:28.732Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:36.878Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:43.993Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:55.106Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:40:04.128Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:40:24.249Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:41:04.759Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:41:31.363Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:41:53.963Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:12.081Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:16.543Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:25.267Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:34.105Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:39.682Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:49.444Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:56.270Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:43:06.361Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:43:13.021Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:43:23.552Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:43:35.902Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:43:45.887Z",
+              "method": "GET"
+            }
+          ],
+          "failures": [
+            {
+              "at": "2026-10-28T23:37:50.077Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:01.583Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:05.494Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:17.821Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:23.512Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:37.245Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:40.187Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:40:20.351Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:40:36.465Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:40:54.325Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:40:54.328Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:41:24.564Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:42:12.077Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:42:17.064Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:42:25.041Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:42:33.346Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            }
+          ],
+          "visibility": "visible",
+          "url": "http://127.0.0.1:3170/adv?tab=overview&ws=papercusp-workspace&scope=all"
+        },
+        {
+          "panel": "AdvFramesTab",
+          "pageIndex": 0,
+          "route": "/adv?tab=frames&ws=papercusp-workspace",
+          "endpoint": "/api/deploy/frames",
+          "startupTargetResponses": 10,
+          "requests": [
+            {
+              "at": "2026-10-28T23:39:03.600Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:30.717Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:59.729Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:40:39.311Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:41:05.055Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:41:45.508Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:08.823Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:30.948Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:43:03.104Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:43:35.900Z",
+              "method": "GET"
+            }
+          ],
+          "failures": [
+            {
+              "at": "2026-10-28T23:38:04.983Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:14.322Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:17.371Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:25.016Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:30.201Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:40:14.197Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:40:24.285Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:40:34.966Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:40:54.325Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:41:04.274Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:41:06.337Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:41:17.138Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:41:24.623Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:41:29.151Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:41:36.154Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:41:45.506Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:41:48.228Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:42:03.768Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:42:04.508Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:42:12.078Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            }
+          ],
+          "visibility": "visible",
+          "url": "http://127.0.0.1:3170/adv?tab=frames&ws=papercusp-workspace&scope=all"
+        },
+        {
+          "panel": "DogfoodSubstrate",
+          "pageIndex": 0,
+          "route": "/admin/dogfood-substrate?ws=papercusp-workspace",
+          "endpoint": "/api/admin/dogfood-substrate-health",
+          "startupTargetResponses": 23,
+          "requests": [
+            {
+              "at": "2026-10-28T23:38:49.775Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:38:57.109Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:05.750Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:15.742Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:28.733Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:36.874Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:46.885Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:39:56.968Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:40:12.199Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:40:36.978Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:41:07.517Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:41:21.073Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:41:44.120Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:08.367Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:16.380Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:27.042Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:35.742Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:49.506Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:42:56.270Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:43:06.526Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:43:19.117Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:43:27.473Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:43:35.974Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:43:45.940Z",
+              "method": "GET"
+            }
+          ],
+          "failures": [
+            {
+              "at": "2026-10-28T23:38:16.517Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:16.721Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:38:27.830Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:28.936Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:38:30.748Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:36.730Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:37.071Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:38:43.595Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:38:49.797Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:38:57.113Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:39:07.299Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:39:15.749Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:39:28.777Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:39:36.907Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:39:47.215Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:39:56.967Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:40:12.199Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:40:14.242Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:40:26.490Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:40:36.977Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            }
+          ],
+          "visibility": "visible",
+          "url": "http://127.0.0.1:3170/admin/dogfood-substrate?ws=papercusp-workspace"
+        }
+      ],
+      "status": "complete",
+      "sampleStartedAt": "2026-10-28T23:38:46.724Z",
+      "sampleEndedAt": "2026-10-28T23:43:46.744Z"
+    },
+    {
+      "subscribersPerPanel": 2,
+      "pages": [
+        {
+          "panel": "FleetRateControl",
+          "pageIndex": 0,
+          "route": "/adv?tab=overview&ws=papercusp-workspace",
+          "endpoint": "/api/operator/rate-limit-config",
+          "startupTargetResponses": 47,
+          "requests": [
+            {
+              "at": "2026-10-28T23:45:28.201Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:45:36.201Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:45:48.708Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:45:52.374Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:04.140Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:12.475Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:27.426Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:34.203Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:41.647Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:50.506Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:58.053Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:06.817Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:18.392Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:21.878Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:31.528Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:40.521Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:46.818Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:53.788Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:01.908Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:13.377Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:16.203Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:27.671Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:38.449Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:40.203Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:49.067Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:57.525Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:04.770Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:13.259Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:22.094Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:30.106Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:38.148Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:46.612Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:54.191Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:01.739Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:08.754Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:17.779Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:25.610Z",
+              "method": "GET"
+            }
+          ],
+          "failures": [
+            {
+              "at": "2026-10-28T23:43:52.055Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:02.517Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:08.390Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:26.259Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:35.685Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:44.956Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:45:02.182Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:33.792Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:36.485Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:42.605Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:50.631Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:15.763Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:20.557Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:27.595Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:33.655Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:08.871Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:14.526Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:15.844Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:22.109Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:25.703Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            }
+          ],
+          "visibility": "visible",
+          "url": "http://127.0.0.1:3170/adv?tab=overview&ws=papercusp-workspace&scope=all"
+        },
+        {
+          "panel": "FleetRateControl",
+          "pageIndex": 1,
+          "route": "/adv?tab=overview&ws=papercusp-workspace",
+          "endpoint": "/api/operator/rate-limit-config",
+          "startupTargetResponses": 43,
+          "requests": [
+            {
+              "at": "2026-10-28T23:45:30.208Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:45:38.139Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:45:48.955Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:45:54.800Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:04.142Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:14.509Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:18.138Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:27.474Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:35.826Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:45.699Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:54.799Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:00.757Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:06.819Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:18.892Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:26.770Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:32.460Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:42.820Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:56.379Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:03.904Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:13.119Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:18.139Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:29.019Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:38.461Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:45.020Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:54.403Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:06.139Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:17.539Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:26.350Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:33.417Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:43.353Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:50.660Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:56.675Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:08.408Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:13.051Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:24.552Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:26.138Z",
+              "method": "GET"
+            }
+          ],
+          "failures": [
+            {
+              "at": "2026-10-28T23:44:17.464Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:29.176Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:33.347Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:44.956Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:47.508Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:52.400Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:45:02.168Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:45:19.843Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:33.984Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:36.641Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:42.789Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:50.595Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:18.383Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:26.064Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:31.961Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:44.534Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:08.949Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:13.666Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:16.475Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:28.827Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            }
+          ],
+          "visibility": "visible",
+          "url": "http://127.0.0.1:3170/adv?tab=overview&ws=papercusp-workspace&scope=all"
+        },
+        {
+          "panel": "AdvFramesTab",
+          "pageIndex": 0,
+          "route": "/adv?tab=frames&ws=papercusp-workspace",
+          "endpoint": "/api/deploy/frames",
+          "startupTargetResponses": 12,
+          "requests": [
+            {
+              "at": "2026-10-28T23:45:30.536Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:04.146Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:31.497Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:00.729Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:32.476Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:03.039Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:32.901Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:02.039Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:31.413Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:00.543Z",
+              "method": "GET"
+            }
+          ],
+          "failures": [
+            {
+              "at": "2026-10-28T23:44:33.254Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:36.761Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:44.954Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:44.967Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:51.314Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:32.453Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:36.494Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:42.601Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:50.483Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:14.569Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:20.168Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:27.350Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:33.509Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:08.947Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:12.342Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:15.099Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:19.572Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:23.643Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:28.003Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:37.469Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            }
+          ],
+          "visibility": "visible",
+          "url": "http://127.0.0.1:3170/adv?tab=frames&ws=papercusp-workspace&scope=all"
+        },
+        {
+          "panel": "AdvFramesTab",
+          "pageIndex": 1,
+          "route": "/adv?tab=frames&ws=papercusp-workspace",
+          "endpoint": "/api/deploy/frames",
+          "startupTargetResponses": 12,
+          "requests": [
+            {
+              "at": "2026-10-28T23:45:39.776Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:11.355Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:41.993Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:09.777Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:40.564Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:15.101Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:39.789Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:12.371Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:39.780Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:10.547Z",
+              "method": "GET"
+            }
+          ],
+          "failures": [
+            {
+              "at": "2026-10-28T23:44:43.328Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:47.680Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:51.369Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:53.364Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:56.783Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:32.248Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:36.512Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:42.602Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:51.027Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:15.757Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:19.842Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:24.448Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:31.869Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:35.503Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:39.038Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:48.662Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:47:57.075Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:03.814Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:14.519Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:48:15.306Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            }
+          ],
+          "visibility": "visible",
+          "url": "http://127.0.0.1:3170/adv?tab=frames&ws=papercusp-workspace&scope=all"
+        },
+        {
+          "panel": "DogfoodSubstrate",
+          "pageIndex": 0,
+          "route": "/admin/dogfood-substrate?ws=papercusp-workspace",
+          "endpoint": "/api/admin/dogfood-substrate-health",
+          "startupTargetResponses": 34,
+          "requests": [
+            {
+              "at": "2026-10-28T23:45:29.668Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:45:39.667Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:45:49.682Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:45:59.667Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:11.348Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:19.678Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:31.455Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:42.162Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:52.849Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:00.534Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:09.668Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:21.263Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:32.462Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:41.967Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:52.837Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:02.197Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:11.347Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:26.972Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:29.672Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:39.728Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:54.827Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:01.913Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:12.421Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:20.890Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:31.436Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:39.668Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:50.776Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:59.694Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:09.796Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:24.072Z",
+              "method": "GET"
+            }
+          ],
+          "failures": [
+            {
+              "at": "2026-10-28T23:44:51.372Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:51.465Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:44:56.783Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:45:00.295Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:45:02.215Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:45:10.077Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:45:10.217Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:45:20.064Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:45:29.672Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:45:39.753Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:45:49.736Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:45:59.673Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:46:11.345Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:46:19.688Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:46:31.457Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:46:32.403Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:36.573Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:42.159Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:46:42.494Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:50.481Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            }
+          ],
+          "visibility": "visible",
+          "url": "http://127.0.0.1:3170/admin/dogfood-substrate?ws=papercusp-workspace"
+        },
+        {
+          "panel": "DogfoodSubstrate",
+          "pageIndex": 1,
+          "route": "/admin/dogfood-substrate?ws=papercusp-workspace",
+          "endpoint": "/api/admin/dogfood-substrate-health",
+          "startupTargetResponses": 34,
+          "requests": [
+            {
+              "at": "2026-10-28T23:45:33.104Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:45:48.726Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:45:53.104Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:04.209Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:13.103Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:27.372Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:35.790Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:45.771Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:46:54.979Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:06.798Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:14.068Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:26.844Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:35.405Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:46.902Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:47:55.233Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:04.075Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:13.148Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:27.379Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:38.357Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:45.014Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:48:54.915Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:03.106Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:13.147Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:24.746Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:33.411Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:43.123Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:49:54.402Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:08.408Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:15.930Z",
+              "method": "GET"
+            },
+            {
+              "at": "2026-10-28T23:50:24.023Z",
+              "method": "GET"
+            }
+          ],
+          "failures": [
+            {
+              "at": "2026-10-28T23:44:57.060Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:44:57.169Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:45:03.558Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:45:03.696Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:45:10.691Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:45:13.676Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:45:16.052Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:45:23.137Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:45:33.111Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:45:48.868Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:45:53.337Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:46:04.208Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:46:13.108Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:46:27.389Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:46:32.246Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:35.833Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:46:36.481Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:42.605Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            },
+            {
+              "at": "2026-10-28T23:46:45.770Z",
+              "path": "/api/admin/dogfood-substrate-boot-history",
+              "status": 403
+            },
+            {
+              "at": "2026-10-28T23:46:51.025Z",
+              "path": "/api/zero-harness/rest-query",
+              "status": 500
+            }
+          ],
+          "visibility": "visible",
+          "url": "http://127.0.0.1:3170/admin/dogfood-substrate?ws=papercusp-workspace"
+        }
+      ],
+      "status": "complete",
+      "sampleStartedAt": "2026-10-28T23:45:27.153Z",
+      "sampleEndedAt": "2026-10-28T23:50:27.187Z"
+    }
+  ],
+  "errors": [],
+  "status": "complete",
+  "finishedAt": "2026-10-28T23:50:27.319Z",
+  "retainedQueryFile": "docs/evidence/rules-events-reuse-ui-measure.mjs",
+  "runtimeEvidence": {
+    "runtime": "staging-operator",
+    "buildSha": "d8d921a006",
+    "source": "dev:pipeline_position operator-api route/servingRuntimes read during sampling",
+    "route": "http://127.0.0.1:3170",
+    "containsFleetRateControlChange": true,
+    "isolation": "Separate port/process/checkout, shared database and workspace"
+  },
+  "limitations": [
+    "Request counts measure reads actually observed in two 300-second windows; no improvement or implementation acceptance is claimed.",
+    "Two subscribers are separate browser contexts; this does not test same-document useSyncQuery deduplication.",
+    "API failures were retained only up to20 perpage; retained failure counts are bounded evidence, not total error counts.",
+    "Startup excluded by per-endpoint mount response witnesses plus30s warmup; target response status was not required to be successful.",
+    "This covers the three F1 route surfaces only, not all30 census files or routine cost/no-op/staleness measurements."
+  ]
+}

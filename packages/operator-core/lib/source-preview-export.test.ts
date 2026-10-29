@@ -15,8 +15,8 @@ import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { once } from 'node:events';
 import type { Sql } from 'postgres';
 import { createHash } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import nativeFs, { chmodSync, cpSync, existsSync, fstatSync, linkSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -107,7 +107,11 @@ describe('immutable generation verifier snapshots', () => {
       try {
         for (const path of ['package.json', 'package-lock.json']) {
           const body = path === 'package.json' ? '{"name":"fixture","private":true}'
-            : '{"name":"fixture","lockfileVersion":3,"packages":{}}';
+            : JSON.stringify({ name: 'fixture', lockfileVersion: 3, packages: {
+              'node_modules/pkg': { version: '1.0.0' },
+              ...(defect === 'verifier-binding'
+                ? { 'packages/cli/node_modules/nested': { version: '1.0.0' } } : {}),
+            } });
           write(donor, path, body); write(dest, path, body);
         }
         write(donor, 'node_modules/pkg/package.json', '{"name":"pkg","version":"1.0.0"}');
@@ -554,7 +558,8 @@ describe('verifier dependency staging preparation boundary', () => {
     await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
       runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
       .rejects.toThrow('unexpected dependency staging');
-    expect(phases).toEqual(['deps.source.before', 'deps.snapshot', 'deps.source.after-snapshot']);
+    expect(phases).toEqual(['deps.source.before', 'deps.source.after-runtime-assets',
+      'deps.snapshot', 'deps.source.after-snapshot']);
     expect(existsSync(join(dest, 'node_modules.pinned-deps-tmp'))).toBe(true);
   });
 });
@@ -2621,6 +2626,33 @@ describe('BG inherited manifest and original source boundaries', () => {
     custody.verifyBeforePublication();
     return { prepared, invocation, record, entry };
   }
+
+  it.each([0, 4 * 1024 * 1024 + 37])(
+    'BG toolchain identity hashes every byte of a %i-byte file and refuses later tail drift', async size => {
+      const fixture = await outputCandidate();
+      const bytes = Buffer.alloc(size, 0x61);
+      if (size) bytes.fill(0x62, size - 37);
+      writeFileSync(fixture.invocation.packageManager, bytes);
+      const dependencies = captureVerifierDependencies({ dest: fixture.prepared.root, receipt: fixture.prepared.source });
+      const identity = statSync(fixture.invocation.packageManager), originalRead = nativeFs.readFileSync;
+      const wholeFileRead = vi.spyOn(nativeFs, 'readFileSync').mockImplementation((...args) => {
+        if (typeof args[0] === 'number') {
+          const opened = fstatSync(args[0]);
+          if (opened.dev === identity.dev && opened.ino === identity.ino)
+            throw new Error('whole-file toolchain reads are forbidden');
+        }
+        return Reflect.apply(originalRead, nativeFs, args);
+      });
+      syncBuiltinESMExports();
+      try {
+        const record = prepareBgVerifierBuildRecord({ ...fixture, dependencies });
+        expect(record.invocation.packageManager.sha256).toBe(digest(bytes));
+        expect(verifyBgVerifierBuildRecord(record, fixture.invocation, 'before-publication')).toBe(record);
+        writeFileSync(fixture.invocation.packageManager, Buffer.concat([bytes, Buffer.from([0x63])]));
+        expect(() => verifyBgVerifierBuildRecord(record, fixture.invocation, 'before-publication'))
+          .toThrow('BG builder configuration or toolchain identity changed');
+      } finally { wholeFileRead.mockRestore(); syncBuiltinESMExports(); }
+    });
 
   async function maintainedCompilerCandidate() {
     const { prepared } = await compilerCandidate(true, true);

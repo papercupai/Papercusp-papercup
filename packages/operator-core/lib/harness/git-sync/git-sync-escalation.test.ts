@@ -544,20 +544,30 @@ describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
     expect(classifyGitSyncFailingLeg('failed to push some refs to origin', 'push')).toBe('push');
   });
 
-  it('does not classify a negated force-push statement as a push failure', () => {
+  it.each(['push', 'commit-only:bridged'])('classifies bridge divergence independently of %s mode', (pushMode) => {
     const actual =
       'github-bridge divergence: 1 origin branch rewrote history; Origin was never force-pushed and hive canonical refs are unchanged';
-    expect(classifyGitSyncFailingLeg(actual, 'push')).toBe('unknown');
+    expect(classifyGitSyncFailingLeg(actual, pushMode)).toBe('bridge');
 
     const decision = decideGitSyncEscalation({
       ...base,
+      pushMode,
       status: 'error',
       consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS,
       errors: [{ scope: 'github-bridge', message: actual }],
     });
     expect(decision.reasons).toEqual(['sync-failure']);
-    expect(decision.broadcast).toContain('cause unclassified — read that routine\'s last_error');
+    expect(decision.broadcast).toContain('GitHub bridge divergence — inspect github_bridge');
+    expect(decision.broadcast).not.toContain('cause unclassified');
+    expect(decision.broadcast).not.toContain('COMMIT failing');
     expect(decision.broadcast).not.toContain('commits NOT reaching origin');
+  });
+
+  it('keeps a measured push failure ahead of an accompanying bridge divergence', () => {
+    expect(classifyGitSyncFailingLeg(
+      'github-bridge divergence: origin changed; failed to push some refs to origin',
+      'push',
+    )).toBe('push');
   });
 
   it.each([

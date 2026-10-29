@@ -4802,21 +4802,37 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
   it('never waits past the hard cap, even behind a progressing holder', async () => {
     const { root } = copyFixture();
     const lock = join(root, 'cap.lock');
+    const tick = join(root, 'cap-tick');
+    writeFileSync(tick, '0\n');
     const held = await holdLock(
       lock,
       join(root, 'work'),
-      'for i in $(seq 1 300); do printf "%04096d" 0 >> "$WORK"; sleep 0.1; done',
+      'sleep 30',
     );
     try {
+      // Keep the actual flock held, but make each sample advance both time and
+      // measured I/O. Real integer-second boundaries could spend the entire
+      // one-second stall budget before the first pair of samples saw progress,
+      // testing the stall branch instead of the independent hard cap. The
+      // neighboring progress test exercises real holder writes and /proc reads.
       const result = runShell(
-        'dependency_generation_acquire_copy_lock waiter',
+        [
+          'date() { cat "$TICK"; }',
+          'dependency_generation_subtree_io() { cat "$TICK"; }',
+          'sleep() { local tick; tick=$(( $(cat "$TICK") + 1 )); printf "%s\\n" "$tick" > "$TICK"; }',
+          'dependency_generation_acquire_copy_lock waiter',
+        ].join('\n'),
         waitEnv(lock, {
+          TICK: tick,
           DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1',
           DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '2',
         }),
       );
       expect(result.status, result.stderr).toBe(76);
-      expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_LOCK_TIMEOUT .*reason=cap/);
+      expect(result.stderr).toMatch(/copy lock progress: .*advances=2/);
+      expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_LOCK_TIMEOUT waited=2s idle=0s .*reason=cap/);
+      expect(readFileSync(tick, 'utf8')).toBe('2\n');
+      expect(spawnSync('flock', ['-n', lock, 'true']).status).toBe(1);
     } finally {
       held.kill();
     }

@@ -9,7 +9,7 @@ import { runDispatchStack, type UnifiedToolContext } from '@papercusp/tooldef';
 import { NativeInstalledPerUseTurns } from '../agent-tools/per-use-chokepoint';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
 import { appendAuthorizedNativeDispatch, verifyNativeDispatchReceipt, inspectNativeDispatchCandidate, readAuthorizedNativeDispatch,
-  reconcileNativeCapture, type NativeDispatchAppend } from './native-capture';
+  canonicalNativeRuntimeSources, reconcileAuthorizedNativeCall, reconcileNativeCapture, type NativeDispatchAppend } from './native-capture';
 import type { SearchSource } from './search-reformulation';
 import { productionOpportunityReaders } from './source-readers';
 import { canonicalJson } from '../external-bench/reproducibility/canonical-json';
@@ -196,6 +196,184 @@ async function eventCopy(s: Awaited<ReturnType<typeof authorizedFixture>>, at = 
     FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint RETURNING id::text`;
   return { ...s.input, id: String(row!.id) };
 }
+
+it.each(['included', 'excluded'] as const)('D030 each canonical call earns its own %s receipt scope', async scope => {
+  const s = await authorizedFixture();
+  const requested = scope === 'included' ? harness : 'separate-harness';
+  const opts = { ...s.opts, harnessSlug: requested };
+  const read = await canonicalNativeRuntimeSources(s.binding, opts);
+  const call = read.sources[0]!;
+  expect(call.harnessSlug).toBe(requested); // Parser context is not authority.
+  const proof = await reconcileAuthorizedNativeCall(call, s.binding, opts);
+  expect(proof).toMatchObject({ scope, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  expect(JSON.stringify(proof)).not.toMatch(/private-query|separate-harness|su-exact-call/);
+  expect(await reconcileAuthorizedNativeCall({ ...call, callId: 'unsigned-sibling' }, s.binding, opts)).toBeNull();
+  expect(s.binding.harness).toBeNull();
+});
+
+it.each(['receipt-loss', 'invocation-loss', 'duplicate-other-scope', 'conflicting-row-identity', 'key-rotation', 'runtime', 'args', 'acl'] as const)(
+  'D030 per-call scope is renewed after %s rather than borrowed from a previous proof', async mutation => {
+    const s = await authorizedFixture();
+    const read = await canonicalNativeRuntimeSources(s.binding, s.opts), call = read.sources[0]!;
+    expect(await reconcileAuthorizedNativeCall(call, s.binding, s.opts)).toMatchObject({ scope: 'included' });
+    if (mutation === 'receipt-loss') await f.db.adminSql`DELETE FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint`;
+    if (mutation === 'invocation-loss') await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${s.id}::bigint`;
+    if (mutation === 'duplicate-other-scope') await f.db.adminSql`INSERT INTO harness_shared.agent_activity
+      (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,detail,created_at)
+      SELECT workspace_id,'other-harness',owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,detail,created_at
+      FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint`;
+    if (mutation === 'conflicting-row-identity') await f.db.adminSql`INSERT INTO harness_shared.agent_activity
+      (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,detail,created_at)
+      SELECT workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,
+        jsonb_set(detail,'{nativeDispatch,callId}','"tampered-other-call"'::jsonb),created_at
+      FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint`;
+    if (mutation === 'key-rotation') await f.db.adminSql`UPDATE harness_shared.operator_secrets
+      SET value_b64=${Buffer.alloc(32, 74).toString('base64')} WHERE name='spawn-signing-key'`;
+    if (mutation === 'runtime') s.binding.id = String(Number(s.binding.id) + 100000);
+    if (mutation === 'args') call.args = { harness, query: 'substituted' };
+    expect(await reconcileAuthorizedNativeCall(call, s.binding,
+      { ...s.opts, authorize: async () => mutation !== 'acl' })).toBeNull();
+  });
+
+it.each(['exec_command', 'functions.exec', 'browser', 'tools:invoke', 'code:run'])(
+  'D030 unreceipted native or wrapper %s cannot use its sibling scope', async tool => {
+    const s = await authorizedFixture();
+    const read = await canonicalNativeRuntimeSources(s.binding, s.opts);
+    expect(await reconcileAuthorizedNativeCall({ ...read.sources[0]!, tool }, s.binding, s.opts)).toBeNull();
+  });
+
+it.each(['authorized', 'unknown-sibling', 'outside-scope'] as const)(
+  'D030 production source phase reconciles %s calls without certifying continuity or moving the floor', async kind => {
+    const s = await authorizedFixture();
+    await f.db.adminSql.unsafe(await readFile(new URL(
+      '../../../../libs/papercusp/libs/db/sql/1585-native-capture-reconciliation-receipt.sql', import.meta.url), 'utf8'));
+    const opts = { ...s.opts, since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' };
+    await f.db.adminSql`UPDATE harness_shared.adv_sessions SET first_seen_at=${opts.since}::timestamptz
+      WHERE id=${s.binding.id}::bigint`;
+    if (kind !== 'authorized') {
+      s.records.push({ type: 'response_item', timestamp: s.source.at, payload: { type: 'function_call',
+        name: s.source.tool, call_id: 'sibling-call', arguments: JSON.stringify({ harness: 'other-harness', query: 'sibling' }) } });
+      await writeFile(s.path, s.records.map(r => JSON.stringify(r)).join('\n') + '\n');
+      if (kind === 'outside-scope') {
+        s.source.callId = 'sibling-call'; s.source.args = { harness: 'other-harness', query: 'sibling' };
+        s.metadata.requestOrigin.nativeSession.callIdFingerprint = sha(s.source.callId);
+        await s.insert('other-harness');
+        const signing = await signingFixture(); // This fixture clears activity; restore both originals below.
+        for (const [callId, scope, args] of [
+          ['native-call', harness, { harness, query: 'private-query' }],
+          ['sibling-call', 'other-harness', s.source.args],
+        ] as const) expect(await appendAuthorizedNativeDispatch({ ...signing.input,
+          advSessionId: Number(s.binding.id), nativeSessionId: s.source.namespace!, callId,
+          harnessSlug: scope, argsFingerprint: sha(canonicalJson(args)) }, async () => true, f.db.adminSql)).toBe(true);
+      }
+    }
+    const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt,
+      native_capture_from::text AS floor FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0];
+    // First turn only prepares identities; sourceEnrollment never scopes calls.
+    expect(await reconcileNativeCapture(opts)).toBe('unknown');
+    const enrolled = await receipt();
+    expect(enrolled?.receipt).toMatchObject({ sourceEnrollment: { prepared: true } });
+    let latest = enrolled;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      expect(await reconcileNativeCapture(opts)).toBe('unknown');
+      latest = await receipt();
+      if (kind === 'unknown-sibling' || Object.keys(latest?.receipt?.sourceReconciliation?.roots ?? {}).length) break;
+    }
+    const roots = Object.values(latest?.receipt?.sourceReconciliation?.roots ?? {}) as { calls: Record<string, { scope: string }> }[];
+    if (kind === 'unknown-sibling') expect(roots).toHaveLength(0);
+    else {
+      expect(roots).toHaveLength(1);
+      expect(Object.values(roots[0]!.calls).map(p => p.scope).sort()).toEqual(
+        kind === 'authorized' ? ['included'] : ['excluded', 'included']);
+    }
+    expect(latest?.floor).toBe(enrolled?.floor);
+    expect(JSON.stringify(latest?.receipt)).not.toMatch(/private-query|sibling-call|other-harness|su-exact-call/);
+    // Production preparation never manufactures an unsigned event-time index.
+    expect((await f.db.adminSql`SELECT id FROM harness_shared.agent_activity
+      WHERE NOT (detail ? 'nativeDispatch')`)).toHaveLength(0);
+  }, 120_000);
+
+it.each(['excluded-receipt-loss', 'excluded-receipt-rewrite', 'invocation-loss', 'key-rotation', 'source-rewrite'] as const)(
+  'D030 final ACL renewal revokes prepared exclusions after %s without relying on requested-scope CAS', async mutation => {
+    const s = await authorizedFixture();
+    await f.db.adminSql.unsafe(await readFile(new URL(
+      '../../../../libs/papercusp/libs/db/sql/1585-native-capture-reconciliation-receipt.sql', import.meta.url), 'utf8'));
+    const opts = { ...s.opts, harnessSlug: 'requested-scope', since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' };
+    await f.db.adminSql`UPDATE harness_shared.adv_sessions SET first_seen_at=${opts.since}::timestamptz
+      WHERE id=${s.binding.id}::bigint`;
+    expect(await reconcileNativeCapture(opts)).toBe('unknown');
+    const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt,
+      native_capture_revision::text AS revision,native_capture_from::text AS floor
+      FROM harness_shared.sql_intent_progress WHERE harness_slug=${opts.harnessSlug}`)[0]!;
+    const before = await receipt();
+    expect(before.receipt.sourceEnrollment.prepared).toBe(true);
+    let populations = 0, mutated = false;
+    const client = new Proxy(f.db.adminSql, { apply(target, thisArg, args) {
+      if (Array.isArray(args[0]) && args[0].join('').includes('SELECT s.id::text,s.coord_owner_id')) populations++;
+      return Reflect.apply(target, thisArg, args);
+    } });
+    // The third population read follows the source/root's own authority
+    // renewal. Mutate from the NEXT (final) ACL callback, after that renewal.
+    const authorize = async () => {
+      if (populations < 3 || mutated) return true;
+      mutated = true;
+      if (mutation === 'excluded-receipt-loss') await f.db.adminSql`DELETE FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint`;
+      if (mutation === 'excluded-receipt-rewrite') await f.db.adminSql`UPDATE harness_shared.agent_activity SET
+        detail=jsonb_set(detail,'{nativeDispatch,callId}','"changed-call"'::jsonb) WHERE id=${s.input.id}::bigint`;
+      if (mutation === 'invocation-loss') await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${s.id}::bigint`;
+      if (mutation === 'key-rotation') await f.db.adminSql`UPDATE harness_shared.operator_secrets
+        SET value_b64=${Buffer.alloc(32, 74).toString('base64')} WHERE name='spawn-signing-key'`;
+      if (mutation === 'source-rewrite') await writeFile(s.path, JSON.stringify(s.records[0]) + '\n');
+      return true;
+    };
+    expect(await reconcileNativeCapture({ ...opts, client, authorize })).toBe('unknown');
+    expect(mutated).toBe(true);
+    const after = await receipt();
+    expect(after.revision).toBe(before.revision); // This is the cross-harness detector gap.
+    expect(after.floor).toBe(before.floor);
+    expect(Object.keys(after.receipt.sourceReconciliation.roots)).toHaveLength(0);
+  }, 120_000);
+
+it('D030 production source preparation resumes bounded chunks without storing transcript content or advancing the floor', async () => {
+  const s = await authorizedFixture();
+  await f.db.adminSql.unsafe(await readFile(new URL(
+    '../../../../libs/papercusp/libs/db/sql/1585-native-capture-reconciliation-receipt.sql', import.meta.url), 'utf8'));
+  const opts = { ...s.opts, since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' };
+  await f.db.adminSql`UPDATE harness_shared.adv_sessions SET first_seen_at=${opts.since}::timestamptz
+    WHERE id=${s.binding.id}::bigint`;
+  const padding = JSON.stringify({ type: 'metadata', note: 'private-padding'.repeat(2400) });
+  await writeFile(s.path, [JSON.stringify(s.records[0]), JSON.stringify(s.records[1]),
+    ...Array<string>(280).fill(padding), JSON.stringify(s.records[2])].join('\n') + '\n');
+  const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt,
+    native_capture_from::text AS floor FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!;
+  expect(await reconcileNativeCapture(opts)).toBe('unknown');
+  const enrolled = await receipt();
+  let latest = enrolled, lastOffset = 0, partials = 0;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    expect(await reconcileNativeCapture(opts)).toBe('unknown'); latest = await receipt();
+    const pending = Object.values(latest.receipt.sourceReconciliation.pending ?? {}) as {
+      continuation: { files: Record<string, { offset: number; done: boolean }> }; calls: Record<string, unknown>;
+    }[];
+    if (Object.keys(latest.receipt.sourceReconciliation.roots).length) break;
+    expect(pending).toHaveLength(1);
+    const files = Object.values(pending[0]!.continuation.files);
+    expect(files).toHaveLength(1);
+    const offset = files[0]!.offset;
+    expect(offset).toBeGreaterThan(lastOffset);
+    expect(offset - lastOffset).toBeLessThanOrEqual(4 * 1024 * 1024 + 64 * 1024);
+    expect(files[0]!.done).toBe(false);
+    expect(Object.keys(pending[0]!.calls)).toHaveLength(1);
+    expect(latest.floor).toBe(enrolled.floor);
+    expect(JSON.stringify(latest.receipt)).not.toMatch(/private-query|private-padding|canonical-result|jsonl|su-exact-call/);
+    lastOffset = offset; partials++;
+  }
+  expect(partials).toBeGreaterThan(0);
+  expect(Object.values(latest.receipt.sourceReconciliation.roots)).toMatchObject([
+    { calls: { [sha(JSON.stringify([owner, 'codex', s.source.namespace, s.source.callId]))]: { scope: 'included' } } },
+  ]);
+  expect(latest.receipt.sourceReconciliation.pending).toEqual({});
+  expect(latest.floor).toBe(enrolled.floor);
+}, 120_000);
 
 it('pairs an unsigned event-time index only with the independent original receipt and canonical event', async () => {
   const s = await authorizedFixture(), input = await eventCopy(s);

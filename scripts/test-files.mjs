@@ -2994,6 +2994,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     let progressWatchdog = null;
     let allFilesCompleteObserved = false;
     let processDiagnostic = null;
+    let lifecycleReceipts = 0;
     const signalForwarders = new Map();
 
     const normalized = (file) => String(file).replaceAll('\\', '/');
@@ -3090,6 +3091,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
         const handler = () => {
           if (settled) return;
           emitProgress(`parent-${signal.toLowerCase()}`);
+          captureProcessDiagnostic(`parent-${signal.toLowerCase()}`);
           killOwned('SIGKILL');
           stopOwnedScope(`parent-${signal.toLowerCase()}`);
           removeSignalForwarders();
@@ -3108,14 +3110,36 @@ export function runCapturedTestProcess(command, args, options = {}) {
       }
       const completeLines = combined.slice(0, lastNewline + 1);
       progressRemainders[channel] = combined.slice(lastNewline + 1).slice(-16_384);
-      // The parent signal handler must reap synchronously and cannot await the
-      // final capture. Forward completed failure receipts now, before a later
-      // heartbeat replaces lastOutputLine or another case stalls the batch.
+      // The parent signal handler cannot await the final captured buffers.
+      // Preserve bounded case/fork transitions before a later heartbeat can
+      // replace them. A passing file followed by a stuck runner must retain
+      // the stop/ACK/exit sequence too, not only its last sampled line.
       for (const line of completeLines.split(/\r?\n/)) {
-        if (!line.startsWith('TEST_FILE_CASE_TRACE ')) continue;
         try {
-          const detail = JSON.parse(line.slice('TEST_FILE_CASE_TRACE '.length));
-          if (detail.event === 'finished' && detail.state === 'failed') onProgress(line);
+          if (line.startsWith('TEST_FILE_CASE_TRACE ')) {
+            const detail = JSON.parse(line.slice('TEST_FILE_CASE_TRACE '.length));
+            if (detail.event === 'finished' && detail.state === 'failed') onProgress(line);
+            else if (lifecycleReceipts < 4096 && line.length <= 8192 &&
+                ['started', 'finished'].includes(detail.event) && typeof detail.file === 'string' &&
+                typeof detail.name === 'string') {
+              lifecycleReceipts++;
+              onProgress(line);
+            }
+          } else if (line.startsWith('TEST_FILE_STARTUP_TRACE ') && lifecycleReceipts < 4096 && line.length <= 8192) {
+            const detail = JSON.parse(line.slice('TEST_FILE_STARTUP_TRACE '.length));
+            if (!['worker-forked', 'start-sent', 'started-received', 'stop-sent', 'stopped-received',
+              'worker-signal', 'worker-exit', 'worker-disconnect', 'worker-close'].includes(detail.event) ||
+                !Number.isSafeInteger(detail.pid) || detail.pid <= 0 ||
+                !Number.isSafeInteger(detail.childPid) || detail.childPid <= 0) continue;
+            const receipt = { pid: detail.pid, event: detail.event, childPid: detail.childPid };
+            for (const key of ['elapsedMs', 'startupMs', 'stopMs', 'error', 'code', 'signal', 'started', 'sent']) {
+              const value = detail[key];
+              if (value === null || typeof value === 'boolean' || Number.isSafeInteger(value) ||
+                  key === 'signal' && typeof value === 'string' && /^SIG[A-Z0-9]+$/.test(value)) receipt[key] = value;
+            }
+            lifecycleReceipts++;
+            onProgress('TEST_FILE_STARTUP_TRACE ' + JSON.stringify(receipt));
+          }
         } catch { /* A malformed diagnostic must never change the test verdict. */ }
       }
       // Captured stdout/stderr is returned only after close. Keep one bounded,
@@ -3147,6 +3171,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
         return;
       }
       allFilesCompleteObserved = true;
+      finalizationPhase('files-complete');
       watchFinalization();
       try {
         // The returned cleanup is intentionally discarded here — see the note on

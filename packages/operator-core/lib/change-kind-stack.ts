@@ -124,6 +124,15 @@ function overrideRoute(input: StackProofGuidanceInput): { route: string; source:
 export async function renderStackProofGuidance(input: StackProofGuidanceInput): Promise<string> {
   const detected = await detectRepositoryStack(input.repoRoot);
   const override = overrideRoute(input);
+  if (input.kind === 'background-job' && !override) {
+    const harness = input.harnessSlug?.trim() || 'unknown harness';
+    const testClass = input.testClass?.trim();
+    const missingRoute = testClass
+      ? `no registered isolated-runtime route for testClass "${testClass}" in ${harness}`
+      : `no testClass is registered for ${harness}`;
+    return `Isolated-runtime tool unavailable (${missingRoute}; ${detected.label} manifest defaults do not identify a background-job runtime). ` +
+      'Add a registered testClass or name the isolated runtime and command, then record its observable effect in completion.kindEvidence.';
+  }
   const tool = override?.route ?? detected.defaultTool;
   const source = override?.source ?? `${detected.label} manifest default`;
   if (input.kind === 'background-job') {

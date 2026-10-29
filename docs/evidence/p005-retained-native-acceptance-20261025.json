@@ -28,7 +28,8 @@
       "evidence": "Original clean test_run21965702; apps/operator/e2e/desktop-interface-coexistence.spec.ts @ b9f4040330a80b9cb1d6df0bc75a1d9649204693; complete per-stage result and ledger readback retained under artifactRoot."
     }
   ],
-  "artifactRoot": "/mnt/data/cargo-target/.papercusp-evidence/p005-retained-native-20261025",
+  "artifactRoot": "~/.papercusp/evidence/p005-retained-native-20261025",
+  "pathNotation": "Resolve the leading ~/ with the evidence recorder's home directory. This private locator resolves to the original retained artifact directory on that host; the directory is not copied or modified. Verify the listed hashes before treating artifacts as present. Missing host context is UNKNOWN.",
   "runtimeArtifacts": [
     {
       "path": "final-artifacts-retry1/deb/Papercusp GUI_0.0.26_amd64.deb",

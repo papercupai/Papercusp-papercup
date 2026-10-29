@@ -160,6 +160,11 @@ describe('scorecards:get evidence-first projection', () => {
     expect(guidance).toContain('historicalAuditOnly.asOf');
     expect(guidance).toContain('current-state');
     expect(guidance).toContain('freshness can change after evidence changes');
+    expect(guidance).toContain('same exact serving route for both scorecards:get and plans:evaluate-spec-test-adequacy');
+    expect(guidance).toContain('process serving scorecards:get');
+    expect(guidance).toContain('cross-route calls may report different currentness');
+    expect(guidance).toContain('stored rerunRecipe.args through plans:evaluate-spec-test-adequacy');
+    expect(guidance).toContain('no scorecardId selector');
   });
 
   it('declares optional result roots with concrete scorecard and paging fields', () => {

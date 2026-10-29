@@ -2,7 +2,11 @@
 import type { ReactNode } from 'react';
 import { enablePersistedSyncCache } from '@papercusp/sync';
 import { HarnessSyncProvider } from '../../providers/HarnessSyncProvider';
-import { installDesktopIpcPolyfills } from '@papercusp/operator-core/lib/transport-adapters/desktop-bootstrap';
+import {
+  installDesktopIpcPolyfills,
+  setConsentedTelemetryOrigin,
+} from '@papercusp/operator-core/lib/transport-adapters/desktop-bootstrap';
+import { configureOperatorUi } from '@papercusp/operator-ui/seam';
 import { installWorkspaceHeaderFetch } from '@papercusp/operator-core/lib/transport-adapters/workspace-header-fetch';
 import { installWorkspaceParamEventSource } from '@papercusp/operator-core/lib/transport-adapters/workspace-eventsource';
 import { installOriginSchedulerFetch } from '@papercusp/operator-core/lib/transport-adapters/origin-scheduler-fetch';
@@ -37,6 +41,7 @@ import { VoicePrefsSyncBridge } from './voice/VoicePrefsSyncBridge';
  * opens a stream — module-eval ordering guarantees that.
  */
 if (typeof window !== 'undefined') {
+  configureOperatorUi({ setConsentedTelemetryOrigin });
   // Dev-only IPC-traffic recorder. Installs FIRST so it captures every dispatch
   // from the very first one; no-op in production. Exposes window.__ipcInspector
   // (.churn()/.summary()/.events()) — Plan: calltool-endpoint-seam (Phase C).

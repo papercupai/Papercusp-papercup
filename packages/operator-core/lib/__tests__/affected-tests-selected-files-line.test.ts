@@ -33,6 +33,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Script } from 'node:vm';
+import { formatRefusalCounterFields } from '../../../../scripts/lib/terminal-counter-fields.mjs';
 
 import {
   formatSelectedFilesLine,
@@ -194,19 +196,20 @@ describe('the runner wires it in (a formatter nothing calls is not a fix)', () =
     expect(call).toBeLessThan(failureOnly);
   });
 
-  it('stays DOWNSTREAM of every exit that selects tasks without running them', () => {
+  it('stays DOWNSTREAM of dry-run and incomplete-plan refusal exits', () => {
     // Verified empirically: `--dry` reaches a summary and legitimately prints NO selected-
     // files line. That absence is the contract, not a gap — on these paths tasks are
-    // SELECTED BUT NEVER RUN, so publishing them as executed would reintroduce the exact
-    // confusion this line removes. A refactor that hoists the emission above any of them
-    // would start asserting files ran when they did not, silently and on a green log.
+    // SELECTED BUT NEVER RUN. Admission/deadline refusal can also follow settled shards;
+    // publishing the WHOLE selected plan then would claim the unstarted remainder ran.
+    // A refactor that hoists the emission above any of them would silently overstate
+    // execution coverage.
     const call = source.indexOf('errSync(selectedFilesLine())');
     expect(call, 'selected-files line is never emitted').toBeGreaterThan(-1);
 
     for (const preExecutionExit of [
       'status=dry-run',
       'reason=deadline-insufficient',
-      'reason=admission-starved',
+      'status=refused reason=${admissionReason}',
     ]) {
       const at = source.indexOf(preExecutionExit);
       // Positive control: an exit that vanished means the instrument is stale, not that
@@ -218,5 +221,55 @@ describe('the runner wires it in (a formatter nothing calls is not a fix)', () =
           `files ran when that path never ran them`,
       ).toBeLessThan(call);
     }
+  });
+
+  it.each([
+    { reason: 'admission-starved', completedTasks: 0 },
+    { reason: 'admission-starved', completedTasks: 2 },
+    { reason: 'admission-deferred', completedTasks: 0 },
+    { reason: 'admission-deferred', completedTasks: 2 },
+    { reason: 'deadline-insufficient', completedTasks: 0 },
+    { reason: 'deadline-insufficient', completedTasks: 2 },
+  ])('does not publish the full selection on $reason after $completedTasks tasks', (sample) => {
+    // Execute the real catch body, not a handwritten refusal. The admission reason is
+    // interpolated now; checking its old literal spelling rejected correct production
+    // code while leaving the newly introduced deferred branch untested.
+    const runAt = source.indexOf('initialPool = await runBudgetedTaskShards');
+    const catchAt = source.indexOf('} catch (error) {', runAt);
+    const bodyAt = catchAt + '} catch (error) {'.length;
+    const endAt = source.indexOf('\n}\n', bodyAt);
+    expect(runAt).toBeGreaterThan(-1);
+    expect(catchAt).toBeGreaterThan(runAt);
+    expect(endAt).toBeGreaterThan(bodyAt);
+
+    const output: string[] = [];
+    const exit = new Error('captured refusal exit');
+    const context = {
+      error: new Error(sample.reason),
+      isTaskDeadlineRefusal: () => sample.reason === 'deadline-insufficient',
+      isSharedAdmissionDeferral: () => sample.reason === 'admission-deferred',
+      isSharedAdmissionTimeout: () => sample.reason === 'admission-starved',
+      formatRefusalCounterFields,
+      readTerminalCounters: () => ({
+        tasks: 5, failed: 0, quarantinedFailed: 0, timedOutTasks: 0,
+        undeterminedTasks: 0, observedAdmissionErrors: 0,
+        completedTasks: sample.completedTasks, observedNonzeroExits: 0,
+      }),
+      coverage: {},
+      formatCoverageFields: () => `testsExecuted=${sample.completedTasks * 3} testsSkipped=0`,
+      selectedFilesLine: () => `${AFFECTED_TESTS_SELECTED_FILES_TOKEN} run=refusal-test`,
+      errSync: (line: string) => output.push(line),
+      RUN_LOG_PATH: '/tmp/selected-files-refusal-test.log',
+      terminalEmitted: false,
+      process: { exit: (code: number) => {
+        expect(code).toBe(78);
+        throw exit;
+      } },
+    };
+
+    expect(() => new Script(source.slice(bodyAt, endAt)).runInNewContext(context)).toThrow(exit);
+    expect(context.terminalEmitted).toBe(true);
+    expect(output.some((line) => line.includes(`status=refused reason=${sample.reason}`))).toBe(true);
+    expect(output.join('\n')).not.toContain(AFFECTED_TESTS_SELECTED_FILES_TOKEN);
   });
 });

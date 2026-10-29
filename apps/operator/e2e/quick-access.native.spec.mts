@@ -72,7 +72,7 @@ test('Quick Access opens as an independent native launcher with reports and exac
   }
   async function expectDefaultTabs() {
     expect(await evaluate('Array.from(document.querySelectorAll("[aria-label=\\"Quick Panel tabs\\"] [role=tab]")).map(e=>({name:e.textContent.trim(),selected:e.getAttribute("aria-selected")}))'))
-      .toEqual([{ name: 'Search', selected: 'true' }, { name: 'Prompts', selected: 'false' },
+      .toEqual([{ name: 'Quick Access', selected: 'true' }, { name: 'Prompts', selected: 'false' },
         { name: 'Brainstorm', selected: 'false' }, { name: 'Docs', selected: 'false' }]);
   }
   const visible = () => evaluate('window.__TAURI_INTERNALS__.invoke("plugin:window|is_visible", {label:"docs-search-palette"})');
@@ -138,13 +138,16 @@ test('Quick Access opens as an independent native launcher with reports and exac
       await exec('xdotool', ['windowunmap', '--sync', mainWindowId], { env: displayEnv, timeout: 15_000 });
       const { stdout: mainWindowState } = await exec('xwininfo', ['-id', mainWindowId], { env: displayEnv, timeout: 5_000 });
       expect(mainWindowState).toMatch(/Map State:\s+IsUnMapped/);
-      await info.attach('Hidden native main window', {
-        body: JSON.stringify({ mainWindowId, method: 'xdotool windowunmap --sync', mainWindowState }),
+      await info.attach('X11-unmapped main window (app visibility unchanged)', {
+        body: JSON.stringify({ mainWindowId, method: 'xdotool windowunmap --sync', mainWindowState,
+          limitation: 'OS-level unmapping does not update Tauri application visibility state.' }),
         contentType: 'application/json',
       });
-      async function shortcut() {
-        await exec('xdotool', ['windowactivate', '--sync', decoyWindowId], { env: displayEnv, timeout: 15_000 });
-        await expect.poll(async () => (await exec('xdotool', ['getwindowfocus'], { env: displayEnv })).stdout.trim(), { timeout: 15_000 }).toBe(decoyWindowId);
+      async function shortcut(fromOutside = true) {
+        if (fromOutside) {
+          await exec('xdotool', ['windowactivate', '--sync', decoyWindowId], { env: displayEnv, timeout: 15_000 });
+          await expect.poll(async () => (await exec('xdotool', ['getwindowfocus'], { env: displayEnv })).stdout.trim(), { timeout: 15_000 }).toBe(decoyWindowId);
+        }
         await exec('xdotool', ['key', '--clearmodifiers', 'ctrl+shift+k'], { env: displayEnv, timeout: 15_000 });
       }
       await shortcut();
@@ -153,7 +156,10 @@ test('Quick Access opens as an independent native launcher with reports and exac
       expect(await popupWindows(false)).toHaveLength(1);
       await expectDefaultTabs();
       // The established shortcut toggles the existing popup off, then on.
-      await shortcut();
+      // Keep focus on the visible popup: activating the decoy would blur-hide
+      // it before the keypress and accidentally test reopening instead.
+      await expect.poll(visible).toBe(true);
+      await shortcut(false);
       await expect.poll(visible).toBe(false);
       expect(await popupWindows(false)).toHaveLength(1);
       await shortcut();

@@ -205,6 +205,9 @@ export type ScorecardEvaluatorBuildCurrentness = z.infer<typeof scorecardEvaluat
  * pin is omitted (legacy cards remain auditable), while an invalid or
  * unresolvable identity is explicit unknown so a judge cannot mistake it for a
  * current replay (EI-26082605254422690).
+ * `liveBuild` identifies the process serving `scorecards:get`; it does not discover
+ * a separately routed evaluator. Compare the read and replay on the same serving
+ * route before treating this process-local result as evaluator-wide currentness.
  */
 export function classifyEvaluatorBuildCurrentness(
   recipe: unknown,
@@ -592,7 +595,7 @@ export default defineTool({
     notWhen:
       'Use scorecards:list for history or multiple rows, rubrics:get for rubric definitions, scorecards:emit to file a scorecard.',
     chaining:
-      'Spec-test-adequacy audit: call plans:evaluate-spec-test-adequacy { harness, slug, scorecardId: issueId } with no direct selectors, compare rows[].ratings to the card, and confirm historicalAuditOnly.asOf matches its creation time. The stored rerunRecipe.args are a separate current-state measurement, so freshness can change after evidence changes. Oversized cards: page evidenceRead.next through the index, fetch criteria in small Promise.all groups (one criterion’s pages sequentially), and resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Concatenate complete pages as exact JSON chunks and parse only when complete. Emit the grading-integrity audit last.',
+      'Spec-test-adequacy audit: call dev:pipeline_position { path: "packages/operator-core/lib/agent-tools/scorecards/get.ts", testClass: "operator-api" } and use its same exact serving route for both scorecards:get and plans:evaluate-spec-test-adequacy. evaluatorBuildCurrentness compares the recipe pin with the process serving scorecards:get; it cannot establish the build of a separately routed evaluator, so cross-route calls may report different currentness. Then replay the card’s stored rerunRecipe.args through plans:evaluate-spec-test-adequacy (the evaluator has no scorecardId selector), compare rows[].ratings to the card, and confirm historicalAuditOnly.asOf matches its creation time. The stored rerunRecipe.args are a separate current-state measurement, so freshness can change after evidence changes. Oversized cards: page evidenceRead.next through the index, fetch criteria in small Promise.all groups (one criterion’s pages sequentially), and resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Concatenate complete pages as exact JSON chunks and parse only when complete. Emit the grading-integrity audit last.',
     returns:
     'Returns `{ ok, scorecard, evidenceRead, rerunRecipeRead? }`. The scorecard includes `evidenceFingerprint` when recorded, `evaluatorBuildCurrentness` when the recipe pins an evaluator build, and an inline `rerunRecipe` or a recoverable rerunRecipeRead cursor. Recipe pages retain card identity and gradingAudit; chunks encode exact JSON with UTF-16 offset/totalChars/next. Full evidence reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index. Index pages preserve metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Recover recipe, index and evidence pages before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],

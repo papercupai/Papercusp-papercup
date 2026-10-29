@@ -105,6 +105,7 @@ it('measures the production identity policy read in a private background runtime
     execute: async (observe, evidenceDir) => {
       const probe = String.raw`
         import assert from 'node:assert/strict';
+        import { createHook } from 'node:async_hooks';
         import { execFileSync } from 'node:child_process';
         import { createHash } from 'node:crypto';
         import { appendFile, mkdir, writeFile } from 'node:fs/promises';
@@ -120,8 +121,22 @@ it('measures the production identity policy read in a private background runtime
           assert.ok(progressFile, 'isolated worker progress path must be configured');
           await appendFile(progressFile, JSON.stringify({ stage, observedAt: new Date().toISOString(), ...evidence }) + '\n');
         };
+        const asyncResources = new Map();
+        const asyncResourceHook = createHook({
+          init(asyncId, type, triggerAsyncId) {
+            if (!['TCPSocketWrap', 'Timeout'].includes(type) || asyncResources.size >= 256) return;
+            asyncResources.set(asyncId, {
+              asyncId,
+              type,
+              triggerAsyncId,
+              stack: new Error().stack?.split('\n').slice(2, 7),
+            });
+          },
+          destroy(asyncId) { asyncResources.delete(asyncId); },
+        });
         let resetForTests;
         try {
+        asyncResourceHook.enable();
         await progress('db-org-reset-import-start');
         const dbOrg = await import('@papercusp/db-org');
         resetForTests = dbOrg._resetForTests;
@@ -326,14 +341,33 @@ it('measures the production identity policy read in a private background runtime
         await progress('identity-policy-receipt-created', { policyReadMs, elapsedMs, eventLoopMaxMs });
         console.log('IDENTITY_POLICY_BACKGROUND_RECEIPT ' + JSON.stringify(receipt));
         } finally {
-          if (resetForTests) {
-            await progress('operator-pg-pool-reset-start');
-            await resetForTests();
-            await progress('operator-pg-pool-reset-complete', {
-              activeResources: process.getActiveResourcesInfo(),
-              activeHandleTypes: process._getActiveHandles().map(handle => handle.constructor?.name ?? typeof handle),
-              activeRequestTypes: process._getActiveRequests().map(request => request.constructor?.name ?? typeof request),
-            });
+          try {
+            if (resetForTests) {
+              await progress('operator-pg-pool-reset-start');
+              await resetForTests();
+              const activeHandleDetails = process._getActiveHandles().map(handle => ({
+                type: handle.constructor?.name ?? typeof handle,
+                hasRef: typeof handle.hasRef === 'function' ? handle.hasRef() : null,
+                fd: Number.isInteger(handle.fd) ? handle.fd : null,
+                localAddress: handle.localAddress ?? null,
+                localPort: handle.localPort ?? null,
+                remoteAddress: handle.remoteAddress ?? null,
+                remotePort: handle.remotePort ?? null,
+                destroyed: typeof handle.destroyed === 'boolean' ? handle.destroyed : null,
+                connecting: typeof handle.connecting === 'boolean' ? handle.connecting : null,
+                readyState: handle.readyState ?? null,
+                timeout: typeof handle.timeout === 'number' ? handle.timeout : null,
+              }));
+              await progress('operator-pg-pool-reset-complete', {
+                activeResources: process.getActiveResourcesInfo(),
+                activeHandleTypes: activeHandleDetails.map(handle => handle.type),
+                activeHandleDetails,
+                activeRequestTypes: process._getActiveRequests().map(request => request.constructor?.name ?? typeof request),
+                asyncResourceOrigins: [...asyncResources.values()],
+              });
+            }
+          } finally {
+            asyncResourceHook.disable();
           }
         }
       `;

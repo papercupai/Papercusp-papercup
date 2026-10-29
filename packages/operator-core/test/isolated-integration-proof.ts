@@ -83,15 +83,22 @@ export function currentSuNativeRetainedArtifacts(managedCarry: boolean): string[
   ];
 }
 
-/** Cleanup logs must not displace a worker's original structured assertion. */
-export function isolatedWorkerFailureDetail(output: string): string {
+/** Cleanup logs must not displace a worker's original structured assertion.
+ * When the harness itself ended the worker at a deadline, say so FIRST: the
+ * process-group kill also stops helper services (tsx's esbuild), so the worker's
+ * last uncaught error is a consequence of the deadline, never its cause. */
+export function isolatedWorkerFailureDetail(output: string,
+  capture?: { timedOut?: boolean; timeoutPhase?: string | null; signal?: string | null }): string {
   // Full streams remain in worker.log. Connection phase clocks are useful for
   // liveness, but must not displace the tool's actual refusal in this display.
   const lines = output.split('\n').filter(line => !line.startsWith('ptool: connection trace '));
+  const deadline = capture?.timedOut ? `ISOLATED_WORKER_DEADLINE phase=${capture.timeoutPhase ?? 'unknown'} ` +
+    `signal=${capture.signal ?? 'none'} lastStage=${[...lines].reverse().find(line =>
+      /^[A-Z][A-Z0-9_]*_STAGE=/.test(line))?.slice(0, 200) ?? 'none'} (any error below followed the harness kill)\n` : '';
   const failures = lines.filter(line => /^[A-Z][A-Z0-9_]*_FAILURE /.test(line));
-  if (failures.length) return failures.map(line => line.slice(0, 4_000)).join('\n');
+  if (failures.length) return deadline + failures.map(line => line.slice(0, 4_000)).join('\n');
   const fatal = lines.findIndex(line => /^\w*Error(?: \[[^\]]+\])?:/.test(line.trim()));
-  return fatal >= 0 ? lines.slice(fatal, fatal + 12).join('\n').slice(0, 4_000) : output.slice(-4_000);
+  return deadline + (fatal >= 0 ? lines.slice(fatal, fatal + 12).join('\n').slice(0, 4_000) : output.slice(-4_000));
 }
 
 /** Prefer semantic work over cleanup chatter when an execute deadline fires. */
@@ -251,9 +258,10 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
   /** Throttle observed progress relayed to the encompassing file watchdog. */
   progressIntervalMs?: number;
   cleanupFromStdout?: boolean;
-  /** Routers, direct or supervised, begin execution at their stdout start marker.
-   * Runtime IPC still proves the private lifetime before collection/admission. */
-  testFileExecutionFromStdout?: boolean;
+  /** Observe router execution on stdout. Native single-case wrappers can select
+   * 'case' to keep runner setup outside the assertion budget. Runtime IPC still
+   * proves the private lifetime before collection/admission. */
+  testFileExecutionFromStdout?: boolean | 'case';
 }) {
   assert.ok((options.timeoutMs === undefined) !== (options.phaseTimeouts === undefined), 'one deadline contract is required');
   assert.ok(options.progressIntervalMs === undefined ||
@@ -321,13 +329,14 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       // execution start can leave bootstrap. Never restart an active phase or
       // revive execution after timeout/cleanup. This is a deadline signal, not
       // private-runtime lifecycle or successful-test evidence.
-      if (options.testFileExecutionFromStdout && deadlines && !timedOut && phase === 'bootstrap' &&
+      if (options.testFileExecutionFromStdout === true && deadlines && !timedOut && phase === 'bootstrap' &&
           /^TEST_FILE_PROGRESS state=started(?: |$)/.test(line)) armPhase('execute');
       if (options.testFileExecutionFromStdout && deadlines && !timedOut &&
           line.startsWith('TEST_FILE_FINALIZATION ')) {
         try {
           const value = JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length));
-          if (value.phase === 'provenance-start' && phase === 'execute' && deadlines.finalizeMs) armPhase('finalize');
+          if (['files-complete', 'provenance-start'].includes(value.phase) &&
+              phase === 'execute' && deadlines.finalizeMs) armPhase('finalize');
           else if (phase === 'finalize' && value.phase === 'provenance-progress' &&
               ['git-checkout', 'source-census'].includes(value.step)) {
             const key = `${value.step}:${value.event}`;
@@ -367,6 +376,8 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
           const value = JSON.parse(line.slice('TEST_FILE_CASE_TRACE '.length));
           if (!['started', 'finished'].includes(value.event) || typeof value.file !== 'string' ||
               typeof value.name !== 'string') return;
+          if (options.testFileExecutionFromStdout === 'case' && deadlines && !timedOut &&
+              phase === 'bootstrap' && value.event === 'started') armPhase('execute');
           const key = JSON.stringify([value.event, value.file, value.name]);
           if (!caseProgress.has(key) && caseProgress.size < 4096) {
             caseProgress.add(key);

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { OperatorWorkspaceLocationProvider } from './seam';
+import { configureOperatorUi, OperatorWorkspaceLocationProvider } from './seam';
 import { createHash } from 'node:crypto';
 import { captureBrowserTelemetry, CloudMonitoringPreferences, CloudPortalVisit, PostHogProvider, reportCloudError, useCloudFeatureAdoption } from './browser-telemetry';
 import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from '@papercusp/operator-core/lib/telemetry-kinds';
@@ -22,6 +22,7 @@ vi.mock('@papercusp/module-singleton', async importOriginal => {
 
 afterEach(() => {
   cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks();
+  configureOperatorUi({ setConsentedTelemetryOrigin: () => {} });
   sdkFixture.state.client = null; sdkFixture.state.initializing = null;
 });
 
@@ -64,6 +65,32 @@ describe('browser telemetry host consent boundary', () => {
     vi.stubGlobal('fetch', consentFetch);
     await captureBrowserTelemetry('tutorial.event', { action: 'start' });
     expect(consentFetch).toHaveBeenCalledWith('/api/desktop/telemetry-config', { cache: 'no-store' });
+  });
+
+  it('allows only the validated HTTPS origin returned by enabled desktop consent and clears it otherwise', async () => {
+    const setOrigin = vi.fn();
+    configureOperatorUi({ setConsentedTelemetryOrigin: setOrigin });
+    const consentFetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        enabled: true, host: 'https://analytics.example.test/capture', project_key: 'test-project',
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        enabled: true, host: 'http://unknown.example.test', project_key: 'test-project',
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ enabled: false }), { status: 200 }));
+    vi.stubGlobal('fetch', consentFetch);
+
+    await captureBrowserTelemetry('tutorial.event', { action: 'start' });
+    expect(setOrigin).toHaveBeenNthCalledWith(1, 'https://analytics.example.test');
+    expect(sdkFixture.client.init).toHaveBeenCalledTimes(1);
+
+    await captureBrowserTelemetry('tutorial.event', { action: 'start' });
+    expect(setOrigin).toHaveBeenNthCalledWith(2, null);
+    expect(sdkFixture.client.capture).toHaveBeenCalledTimes(1);
+
+    await captureBrowserTelemetry('tutorial.event', { action: 'start' });
+    expect(setOrigin).toHaveBeenNthCalledWith(3, null);
+    expect(sdkFixture.client.capture).toHaveBeenCalledTimes(1);
   });
 
   it('uses only authenticated explicit hosted metadata, without desktop consent or a vendor SDK', async () => {

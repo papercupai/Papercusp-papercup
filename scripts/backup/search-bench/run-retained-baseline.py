@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.parse import urlsplit, urlunsplit
 
@@ -34,7 +35,16 @@ def run_in_test_pg(plan_path, preflight_only=False):
                sys.executable, '-B', str(Path(__file__).resolve()), '--plan', str(Path(plan_path).resolve())]
     if preflight_only:
         command.append('--preflight-only')
-    return subprocess.call(command)
+    # A retained restore/index can outlive the shared scratch collector's age
+    # threshold. Keep its private database beside this edition's retained
+    # evidence, with lifetime owned by this synchronous wrapper. This isolates
+    # it from legacy shared-TMPDIR collectors; it does not identify a historical
+    # remover (EI-27273631649430039 remains open).
+    parent = Path(plan['outputDirectory']).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='retained-baseline-private-', dir=parent) as scratch:
+        env = {**os.environ, 'TMPDIR': scratch, 'PAPERCUSP_TEST_RUNTIME_TMP_BASE': scratch}
+        return subprocess.call(command, env=env)
 
 
 def fingerprint(file):

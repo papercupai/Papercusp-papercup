@@ -2522,7 +2522,7 @@ exec "$REGRESSION_REAL_GIT" "$@"
     writeFileSync(join(integrationRoot, '.gitignore'),
       'node_modules/\n**/dist/\napps/operator/public/runtime/\n' + rootfs + '\n');
     writeFileSync(join(integrationRoot, 'package.json'), JSON.stringify({
-      name: 'preparation-fixture', private: true, workspaces: [workspace],
+      name: 'preparation-fixture', version: '1.0.0', private: true, workspaces: [workspace],
     }));
     mkdirSync(join(integrationRoot, workspace), { recursive: true });
     writeFileSync(join(integrationRoot, workspace, 'package.json'), JSON.stringify({
@@ -2540,11 +2540,23 @@ exec "$REGRESSION_REAL_GIT" "$@"
     mkdirSync(join(integrationRoot, 'node_modules/@papercusp'), { recursive: true });
     symlinkSync('../../' + workspace, join(integrationRoot, 'node_modules/@papercusp/sse'));
     addPkg(integrationRoot, 'better-sqlite3');
+    writeFileSync(join(integrationRoot, 'node_modules/better-sqlite3/package.json'), JSON.stringify({
+      name: 'better-sqlite3', version: '1.0.0',
+    }));
+    writeFileSync(join(integrationRoot, 'package-lock.json'), JSON.stringify({
+      name: 'preparation-fixture', version: '1.0.0', lockfileVersion: 3, requires: true,
+      packages: {
+        '': { name: 'preparation-fixture', version: '1.0.0', workspaces: [workspace] },
+        [workspace]: { name: '@papercusp/sse', version: '1.0.0' },
+        'node_modules/@papercusp/sse': { resolved: workspace, link: true },
+        'node_modules/better-sqlite3': { version: '1.0.0' },
+      },
+    }, null, 2));
     writeFileSync(join(integrationRoot, 'node_modules/better-sqlite3/index.js'),
-      fault === 'native-missing' ? "throw new Error('missing native binding');" :
-        "module.exports = class { constructor() { require('node:fs').writeFileSync(process.env.PREPARATION_NATIVE_PROBE, 'checked'); " +
-        (fault === 'native-probe-drift' ? "require('node:fs').writeFileSync(__dirname + '/probe-generated.node', 'changed'); " : '') +
-        "} prepare() { return { get() { return { result:1 }; } }; } close() {} };");
+      "if (process.env.PREPARATION_NATIVE_MISSING === '1') throw new Error('missing native binding'); " +
+      "module.exports = class { constructor() { require('node:fs').writeFileSync(process.env.PREPARATION_NATIVE_PROBE, 'checked'); " +
+      "if (process.env.PREPARATION_NATIVE_PROBE_DRIFT === '1') require('node:fs').writeFileSync(__dirname + '/probe-generated.node', process.hrtime.bigint().toString()); " +
+      "} prepare() { return { get() { return { ok:1 }; } }; } close() {} };");
     git(integrationRoot, 'add', '-A');
     git(integrationRoot, 'commit', '-q', '-m', 'preparation fixture');
     targetSha = git(integrationRoot, 'rev-parse', 'HEAD');
@@ -2579,12 +2591,17 @@ exec "$REGRESSION_REAL_GIT" "$@"
       git(releaseRoot, 'checkout', '-q', '--detach', targetSha);
     }
     const prepareStartedAt = Date.now();
+    const prepareEnv = {
+      ...env,
+      ...(fault === 'native-missing' ? { PREPARATION_NATIVE_MISSING: '1' } : {}),
+      ...(fault === 'native-probe-drift' ? { PREPARATION_NATIVE_PROBE_DRIFT: '1' } : {}),
+    };
     const result = spawnSync('bash', [SCRIPT_PATH, '--prepare-existing',
       ...(dependenciesOnly ? ['--dependencies-only'] : []),
       '--integration', integrationRoot, '--release', releaseRoot, '--ref', targetSha,
       '--node-modules', 'force', '--node-modules-copy', 'copy',
       '--node-modules-generation-id', identity!, '--dependency-generation-root', generationRoot,
-    ], { encoding: 'utf8', timeout: 30_000, env });
+    ], { encoding: 'utf8', timeout: 30_000, env: prepareEnv });
     const prepareDetails = spawnFailureDetails(
       `prepare existing checkout (dependenciesOnly=${dependenciesOnly}, fault=${fault})`,
       Date.now() - prepareStartedAt,

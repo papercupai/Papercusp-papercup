@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GitSyncYieldError, runGitSync, type GitSyncStepRunner, type RunGit } from './run-git-sync';
 import { gitSubcommandOf } from '../../fleet/sidecar-read-only-git';
+import * as gitSidecar from '../../fleet/git-via-sidecar';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -20,7 +21,10 @@ function fixture() {
   }> = [];
   const logs: string[] = [];
   const recorded = new Map<string, any>();
+  const allCalls: Array<Parameters<RunGit>> = [];
+  const phaseCalls = new Map<string, Array<Parameters<RunGit>>>();
   const runGit: RunGit = async (args, cwd, options) => {
+    allCalls.push([args, cwd, options]);
     calls.push(cwd);
     if (options?.diagnosticTags) taggedCalls.push({ cwd, args: [...args], diagnosticTags: options.diagnosticTags });
     if (cwd.startsWith('/fake/libs/')) {
@@ -33,11 +37,13 @@ function fixture() {
     return { code: 0, stdout: '', stderr: '' };
   };
   const step: GitSyncStepRunner = async (name, fn) => {
+    const before = allCalls.length;
     const value = await fn();
+    phaseCalls.set(name, allCalls.slice(before));
     recorded.set(name, JSON.parse(JSON.stringify(value)));
     return value;
   };
-  return { calls, taggedCalls, diagnosticCalls, logs, recorded, opts: {
+  return { calls, taggedCalls, diagnosticCalls, logs, recorded, phaseCalls, advance: (ms: number) => { clock += ms; }, opts: {
     repoPath: '/fake', runGit, step, log: (line: string) => logs.push(line),
     config: { push: false, pushSubmoduleOrigins: false },
   } };
@@ -102,6 +108,31 @@ describe('git-sync submodule timing evidence', () => {
     )).toBe(true);
   });
 
+  it('distinguishes setup guards from early commit work and preserves the breakdown on replay', async () => {
+    const f = fixture();
+    await runGitSync('timing-test', {
+      ...f.opts,
+      submodulePaths: ['libs/child'],
+      toolRoutingChecker: async () => { f.advance(500); },
+      toolCatalogRegenerator: async () => { f.advance(700); },
+      generatedDeclarationsRegenerator: async () => ({ status: 'not-needed', atomicPaths: [] }),
+    });
+    const timing = f.recorded.get('git-sync:submodules').submoduleTiming;
+    expect(timing.setupSteps.map((step: any) => step.name)).toEqual([
+      'url-sync', 'discovery', 'early-root-guards', 'early-root-migration-census',
+      'early-root-commit', 'early-root-proof', 'remainder',
+    ]);
+    expect(timing.setupSteps.find((step: any) => step.name === 'early-root-guards').durationMs).toBeGreaterThanOrEqual(1200);
+    expect(timing.setupSteps.find((step: any) => step.name === 'early-root-commit').durationMs).toBeLessThan(1200);
+    expect(timing.setupSteps.reduce((sum: number, step: any) => sum + step.durationMs, 0)).toBe(timing.setupMs);
+    expect(f.logs.some((line) => line.includes('"event":"setup-step"') && line.includes(timing.runId))).toBe(true);
+    const before = f.taggedCalls.length;
+    const replay: GitSyncStepRunner = async (name, fn) => f.recorded.has(name) ? f.recorded.get(name) : fn();
+    await runGitSync('timing-test', { ...f.opts, step: replay, submodulePaths: [] });
+    expect(f.taggedCalls).toHaveLength(before);
+    expect(f.recorded.get('git-sync:submodules').submoduleTiming).toEqual(timing);
+  });
+
   it('persists pointer-bump and commit duration evidence in the checkpointed phase output', async () => {
     const f = fixture();
     await runGitSync('timing-test', { ...f.opts, submodulePaths: ['libs/child'] });
@@ -118,10 +149,39 @@ describe('git-sync submodule timing evidence', () => {
     expect(Number.isFinite(Date.parse(timing.startedAt))).toBe(true);
     expect(timing.durationMs).toBeGreaterThan(0);
     expect(Number.isFinite(timing.commitDurationMs)).toBe(true);
+    const pointerCalls = f.phaseCalls.get('git-sync:pointer-bump')!;
+    expect(pointerCalls.length).toBeGreaterThan(0);
+    expect(pointerCalls.every(([args, , options]) =>
+      options?.diagnosticTags?.runId === timing.runId
+      && options?.diagnosticTags?.commandClass === 'git'
+      && options?.diagnosticTags?.gitSubcommand === gitSubcommandOf(args))).toBe(true);
 
     const replay: GitSyncStepRunner = async (name, fn) => f.recorded.has(name) ? f.recorded.get(name) : fn();
     await runGitSync('timing-test', { ...f.opts, step: replay, submodulePaths: [] });
     expect(f.recorded.get('git-sync:pointer-bump').pointerBumpTiming).toEqual(timing);
+  });
+
+  it('forwards phase identities through the default bounded runner to the sidecar', async () => {
+    const f = fixture();
+    vi.spyOn(gitSidecar, 'gitSidecarEnabled').mockReturnValue(true);
+    const sidecar = vi.spyOn(gitSidecar, 'runGitViaSpawnerSidecar').mockImplementation(
+      (args, cwd, _timeout, _env, options) => f.opts.runGit(args, cwd, options),
+    );
+    const { runGit: _injectedRunner, ...opts } = f.opts;
+    await runGitSync('timing-test', { ...opts, submodulePaths: ['libs/child'] });
+    for (const phase of ['git-sync:submodules', 'git-sync:pointer-bump']) {
+      const output = f.recorded.get(phase);
+      const timing = output.submoduleTiming ?? output.pointerBumpTiming;
+      const phaseCommands = sidecar.mock.calls.filter(([, , , , options]) => options?.diagnosticTags?.runId === timing.runId);
+      expect(phaseCommands.length).toBeGreaterThan(0);
+      for (const [args, , , , options] of phaseCommands) {
+        const subcommand = gitSubcommandOf(args);
+        const safeSubcommand = subcommand && /^[a-z][a-z0-9-]{0,63}$/.test(subcommand) ? subcommand : undefined;
+        expect(options?.diagnosticTags).toEqual({
+          runId: timing.runId, commandClass: 'git', ...(safeSubcommand ? { gitSubcommand: safeSubcommand } : {}),
+        });
+      }
+    }
   });
 
   it('bounds retained batches and keeps completed evidence when the next batch yields', async () => {

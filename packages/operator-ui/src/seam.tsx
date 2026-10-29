@@ -3,15 +3,17 @@
  *
  * These components were written INSIDE the operator SPA and reached for three
  * things that belong to the app, not to the panel: a router `Link`, a `toast`
- * surface, and same-origin `/api/...` reachability. The cloud portal is a
+ * surface, same-origin `/api/...` reachability, and the local telemetry
+ * egress-monitor bridge. The cloud portal is a
  * Next app on a different origin with a different router and no sonner, so
  * those three are the entire reason the panel could not simply be imported.
  *
  * They are injected here instead of imported, so the component keeps ONE
- * implementation and each host supplies its own three answers:
+ * implementation and each host supplies its own answers:
  *
- *   operator-vite → TanStack `Link`, sonner `toast`, identity `apiFetch`
- *   portal        → an <a> into the operator origin, the portal's toast,
+ *   operator-vite → TanStack `Link`, sonner `toast`, identity `apiFetch`, and
+ *                   the local egress monitor callback
+ *   portal        → an <a> into the operator origin, the portal's toast, and
  *                   an `apiFetch` that routes through the portal's proxy
  *
  * WHY DEFAULTS EXIST AND WHAT THEY COST: an unconfigured host still renders a
@@ -41,6 +43,8 @@ export interface OperatorUiToast {
 export interface OperatorUiSeam {
   Link: ComponentType<OperatorUiLinkProps>;
   toast: OperatorUiToast;
+  /** The local host's egress monitor allowance for the currently consented telemetry origin. */
+  setConsentedTelemetryOrigin(origin: string | null): void;
   /** The host's surface selector and the existing ADV-to-surface mapping.
    * Desktop hosts omit this and keep the native `tab` vocabulary. */
   advNavigation?: { param: string; targets: Readonly<Record<string, string>> };
@@ -64,6 +68,7 @@ const DEFAULT_SEAM: OperatorUiSeam = {
     success: (m) => console.info('[operator-ui]', m),
     error: (m) => console.error('[operator-ui]', m),
   },
+  setConsentedTelemetryOrigin: () => {},
   apiFetch: (path, init) => fetch(path, init),
 };
 

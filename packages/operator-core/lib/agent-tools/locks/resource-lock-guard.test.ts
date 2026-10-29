@@ -19,7 +19,7 @@ vi.mock('./in-workspace-txn', () => ({ inWorkspaceTxn: vi.fn() }));
 vi.mock('./resource-acquire-wait', () => ({ acquireResourceExclusiveWithWait: vi.fn() }));
 vi.mock('./resource-broadcast', () => ({
   broadcastResourceDrainStart: vi.fn(),
-  broadcastResourceBackUp: vi.fn(),
+  broadcastResourceBackUp: vi.fn(async () => {}),
 }));
 vi.mock('./identity', () => ({ readIdentity: vi.fn() }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
@@ -170,5 +170,38 @@ describe('guardResource host-global exclusion handling', () => {
       coordinationDomain: 'papercusp-host-global', resource: 'dev-server', owner: 'su-caller', lockId: 'new-lock',
     });
     expect(txnM).not.toHaveBeenCalled();
+  });
+
+  it('releases an exclusive reservation when drain wait times out', async () => {
+    exclusiveAcquireM.mockResolvedValueOnce({
+      ok: false,
+      reason: 'drain_timeout',
+      lock_id: 'declined-reservation',
+      holders: [],
+      waited_sec: 45,
+    } as never);
+    releaseM.mockResolvedValueOnce({ waiters: { 'staging-server': [] } } as never);
+    const run = vi.fn(async () => 'must not run');
+
+    const result = await guardResource(
+      {
+        coordinationDomain: 'papercusp-host-global',
+        ownerId: 'su-caller',
+        ownerLabel: 'caller',
+        coordIdentity: { ownerId: 'su-caller' } as never,
+        resource: 'staging-server',
+        mode: 'exclusive',
+        maxDrainSec: 45,
+      },
+      run,
+    );
+
+    expect(result).toEqual({ acquired: false, reason: 'drain_timeout', holders: [] });
+    expect(run).not.toHaveBeenCalled();
+    expect(releaseM).toHaveBeenCalledWith(expect.anything(), {
+      coordinationDomain: 'papercusp-host-global',
+      owner: 'su-caller',
+      lockId: 'declined-reservation',
+    });
   });
 });

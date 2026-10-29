@@ -1838,7 +1838,7 @@ fi
 # cooldown prevents a redundant outage.
 restart_failure_detail="$restart_result $restart_diagnostics"
 if [ "${#restart_failure_detail}" -gt 3000 ]; then
-  restart_failure_detail="${restart_failure_detail: -3000}"
+  restart_failure_detail="${restart_failure_detail:0:1800} ...[middle truncated]... ${restart_failure_detail: -1100}"
 fi
 if [ "$restart_verified" -eq 1 ]; then
   log "coordinated dev:restart independently verified: MainPID $observed_main_pid serves exact source $observed_health_sha"

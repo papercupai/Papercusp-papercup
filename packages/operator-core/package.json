@@ -22,6 +22,8 @@
     "./package.json": "./package.json"
   },
   "scripts": {
+    "lint:client-fetch-in-timer": "node ../../scripts/check-client-fetch-in-timer.mjs",
+    "lint:no-bespoke-condition-op": "node ../../scripts/check-no-bespoke-condition-op.mjs",
     "lint:new-clones": "tsx ../../scripts/check-new-clones.mts",
     "test": "node ../../scripts/workspace-test.mjs --passWithNoTests",
     "test:lane-pure": "PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- node ../../scripts/run-vitest-pure-lane.mjs",

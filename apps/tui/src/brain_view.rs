@@ -29,9 +29,17 @@ use ratatui::{
 };
 use std::io::stdout;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::time::{self, Instant};
 
 const MAX_MESSAGES: usize = 240;
+const TAIL_INTERVAL: Duration = Duration::from_millis(1500);
+const REPAIR_INTERVAL: Duration = Duration::from_secs(60);
+const RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+type LocateTranscript = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 
 /// Which autonomous agent this pane follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +124,7 @@ struct BrainViewState {
     path: Option<PathBuf>,
     messages: Vec<ChatMessage>,
     tick: u64,
+    workspace: Option<String>,
 }
 
 impl BrainViewState {
@@ -130,6 +139,7 @@ impl BrainViewState {
             path: None,
             messages: Vec::new(),
             tick: 0,
+            workspace: None,
         }
     }
 
@@ -209,17 +219,21 @@ fn short_session(uuid: &str) -> String {
 /// never blanks between wakes (it keeps showing the last wake's transcript,
 /// which persists on disk after the process exits). Taking the FIRST match
 /// instead pinned the pane to the OLDEST stale wake — the wrong-session symptom.
-async fn resolve_session(client: &OperatorClient, scope: &Scope) -> Option<(String, PathBuf)> {
+async fn resolve_session(
+    client: &OperatorClient,
+    scope: &Scope,
+    locate: &LocateTranscript,
+) -> anyhow::Result<(Option<String>, Option<(String, PathBuf)>)> {
     // Scope the roster to THIS desktop's ACTIVE workspace so the pane shows that
     // workspace's queen/overwatch — NOT the fleet-wide newest across every
-    // workspace. Re-read each resolve (the run loop calls this ~every 1.5s) so a
+    // workspace. Re-read on invalidation and the slow repair so a
     // workspace SWITCH (which rewrites registry.current) rolls the pane to the
     // new workspace's agent within a tick. A switch reloads the desktop webview
     // but does NOT re-spawn this pane, so the scope MUST be resolved live here,
     // not baked in at launch. Unknown workspace (dev / webapp with no registry)
-    // → unscoped, preserving the prior fleet-wide behavior. A failed workspace
-    // read also degrades to unscoped (never blanks the pane).
-    let workspace = client.current_workspace().await.ok().flatten();
+    // → unscoped, preserving the prior fleet-wide behavior. A failed read
+    // retains the current attachment rather than reading another workspace.
+    let workspace = client.current_workspace().await?;
     // Read the `active` AND `ended` roster tiers (roster_brain_scoped): a
     // short-lived autonomous wake (every Overwatch invoke; a Queen wake between
     // cycles) is markAdvSessionEnded the instant its run returns, so it sits in
@@ -229,11 +243,11 @@ async fn resolve_session(client: &OperatorClient, scope: &Scope) -> Option<(Stri
     // waiting…" forever even though its transcript was on disk. Tailing the last
     // ended wake IS this pane's contract ("keeps showing the last wake's
     // transcript, which persists on disk after the process exits", below).
-    let entries: Vec<RosterEntry> = client
-        .roster_brain_scoped(workspace.as_deref())
-        .await
-        .ok()?;
-    select_newest_with_transcript(entries, scope, locate_session_transcript)
+    let entries: Vec<RosterEntry> = client.roster_brain_scoped(workspace.as_deref()).await?;
+    Ok((
+        workspace,
+        select_newest_with_transcript(entries, scope, |id| locate(id)),
+    ))
 }
 
 /// Pure core of [`resolve_session`] (network + fs injected): among `entries`,
@@ -277,7 +291,7 @@ fn select_newest_with_transcript(
 
 /// Run the read-only transcript pane: connect, resolve the autonomous session
 /// uuid, locate its transcript file, and render new turns into a compact TUI.
-/// Re-resolves periodically so it follows a recycled brain, and shows a clear
+/// Re-resolves on shared invalidation with a slow repair, and shows a clear
 /// placeholder when the agent isn't running — it NEVER blanks or crashes.
 /// Loops until the pane is closed.
 pub async fn run(scope: Scope) -> anyhow::Result<()> {
@@ -313,23 +327,142 @@ async fn run_tui(
         state.label = crate::lexicon::Lexicon::from_payload(&pack).lex(scope.lexicon_term());
     }
 
-    loop {
-        // (Re)resolve the newest session + its transcript path; a new wake → new uuid.
-        let resolved = resolve_session(&client, &scope).await;
-        state.set_resolved(resolved);
+    follow_brain(
+        client,
+        state,
+        Arc::new(locate_session_transcript),
+        |state| {
+            terminal.draw(|f| draw_brain_view(f, state))?;
+            Ok(())
+        },
+    )
+    .await
+}
 
-        // Tail the transcript file read-only and print any new turns.
-        if let Some(p) = &state.path {
-            if let Ok((new_offset, msgs)) = tail_transcript(p, state.offset) {
-                state.offset = new_offset;
-                state.push_messages(msgs);
+enum BrainSignal {
+    Frame(crate::sse::SseFrame),
+    Reconnected,
+}
+
+// The existing transport/parser owns the wire; this pane only selects its views.
+fn relevant_frame(frame: &crate::sse::SseFrame, workspace: Option<&str>) -> bool {
+    if frame.event != "invalidate" && frame.event != "update" {
+        return false;
+    }
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&frame.data) else {
+        return false;
+    };
+    match payload.get("name").and_then(|v| v.as_str()) {
+        Some("workspace" | "workspaces" | "workspaces.current") => true,
+        Some("roster") => {
+            let target = payload
+                .get("args")
+                .and_then(|a| a.get("workspaceId").or_else(|| a.get("workspace")))
+                .and_then(|v| v.as_str());
+            target.is_none() || workspace.is_none() || target == workspace
+        }
+        _ => false,
+    }
+}
+
+async fn brain_invalidation(client: OperatorClient, tx: mpsc::UnboundedSender<BrainSignal>) {
+    let mut reconnect = false;
+    loop {
+        if tx.is_closed() {
+            return;
+        }
+        match time::timeout(READ_TIMEOUT, client.subscribe_sse("/api/zero-harness/sse")).await {
+            Ok(Ok(mut frames)) => {
+                if reconnect && tx.send(BrainSignal::Reconnected).is_err() {
+                    return;
+                }
+                while let Some(frame) = frames.recv().await {
+                    if tx.send(BrainSignal::Frame(frame)).is_err() {
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
+        reconnect = true;
+        time::sleep(RETRY_INTERVAL).await;
+    }
+}
+
+struct StopOnDrop(tokio::task::JoinHandle<()>);
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Local tail/render never await a remote read. A newer invalidation cancels the
+/// old generation, including a workspace read or roster response still in flight.
+async fn follow_brain(
+    client: OperatorClient,
+    mut state: BrainViewState,
+    locate: LocateTranscript,
+    mut render: impl FnMut(&BrainViewState) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let (tx, mut signals) = mpsc::unbounded_channel();
+    let _subscription = StopOnDrop(tokio::spawn(brain_invalidation(client.clone(), tx)));
+    let mut reads = tokio::task::JoinSet::new();
+    let mut generation = 0u64;
+    let mut due = Instant::now();
+    let mut tail = time::interval_at(Instant::now() + TAIL_INTERVAL, TAIL_INTERVAL);
+    tail.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            Some(signal) = signals.recv() => {
+                if matches!(&signal, BrainSignal::Reconnected) || matches!(&signal, BrainSignal::Frame(f) if relevant_frame(f, state.workspace.as_deref())) {
+                    generation = generation.wrapping_add(1);
+                    reads.abort_all();
+                    due = Instant::now();
+                }
+            }
+            _ = async { if due > Instant::now() { time::sleep_until(due).await; } } => {
+                let client = client.clone();
+                let locate = locate.clone();
+                let scope = state.scope;
+                let current = generation;
+                reads.spawn(async move { (current, time::timeout(READ_TIMEOUT, resolve_session(&client, &scope, &locate)).await) });
+                due = Instant::now() + REPAIR_INTERVAL;
+            }
+            Some(result) = reads.join_next(), if !reads.is_empty() => {
+                if let Ok((current, result)) = result {
+                    if current != generation { continue; }
+                    match result {
+                        Ok(Ok((workspace, resolved))) => {
+                            if workspace != state.workspace {
+                                state.messages.clear();
+                                state.current_uuid = Some(String::new());
+                                state.workspace = workspace;
+                            }
+                            state.set_resolved(resolved);
+                        }
+                        _ => { due = Instant::now() + RETRY_INTERVAL; }
+                    }
+                    tail_local(&mut state);
+                    render(&state)?;
+                }
+            }
+            _ = tail.tick() => {
+                tail_local(&mut state);
+                render(&state)?;
             }
         }
-
-        state.advance_tick();
-        terminal.draw(|f| draw_brain_view(f, &state))?;
-        tokio::time::sleep(Duration::from_millis(1500)).await;
     }
+}
+
+fn tail_local(state: &mut BrainViewState) {
+    if let Some(p) = &state.path {
+        if let Ok((new_offset, msgs)) = tail_transcript(p, state.offset) {
+            state.offset = new_offset;
+            state.push_messages(msgs);
+        }
+    }
+    state.advance_tick();
 }
 
 fn draw_brain_view(f: &mut Frame, state: &BrainViewState) {
@@ -576,6 +709,440 @@ fn token_style(token: &str) -> Style {
 mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+    use std::cell::Cell;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::{broadcast, Notify};
+
+    #[derive(Default)]
+    struct ApiState {
+        workspace: String,
+        rosters: HashMap<String, serde_json::Value>,
+        requests: Vec<String>,
+        fail_workspace: usize,
+        fail_sse: usize,
+        blocked_roster: Option<String>,
+    }
+
+    // Real OperatorClient HTTP + existing sse.rs parser; only the API is a fixture.
+    // Paused time drives the production timers, never a second model of the loop.
+    struct BrainFixture {
+        api: Arc<Mutex<ApiState>>,
+        wire: broadcast::Sender<String>,
+        release: Arc<Notify>,
+        snapshots: Arc<Mutex<Vec<BrainViewState>>>,
+        _server: StopOnDrop,
+        _pane: StopOnDrop,
+        transcripts: tempfile::TempDir,
+        paused: Cell<bool>,
+    }
+
+    impl BrainFixture {
+        async fn start(scope: Scope, roster: serde_json::Value) -> Self {
+            Self::start_with_faults(scope, roster, 0, 0).await
+        }
+
+        async fn start_with_faults(
+            scope: Scope,
+            roster: serde_json::Value,
+            fail_workspace: usize,
+            fail_sse: usize,
+        ) -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let api = Arc::new(Mutex::new(ApiState {
+                workspace: "a".into(),
+                rosters: HashMap::from([("a".into(), roster)]),
+                fail_workspace,
+                fail_sse,
+                ..Default::default()
+            }));
+            let (wire, _) = broadcast::channel::<String>(64);
+            let release = Arc::new(Notify::new());
+            let server_api = api.clone();
+            let server_wire = wire.clone();
+            let server_release = release.clone();
+            let server = tokio::spawn(async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    socket.set_nodelay(true).unwrap();
+                    let api = server_api.clone();
+                    let mut events = server_wire.subscribe();
+                    let release = server_release.clone();
+                    tokio::spawn(async move {
+                        let mut request = Vec::new();
+                        loop {
+                            let mut buf = [0; 2048];
+                            let n = socket.read(&mut buf).await.unwrap_or(0);
+                            if n == 0 {
+                                return;
+                            }
+                            request.extend_from_slice(&buf[..n]);
+                            if request.windows(4).any(|b| b == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        let request = String::from_utf8_lossy(&request);
+                        let path = request.split_whitespace().nth(1).unwrap().to_string();
+                        let (status, body, block) = {
+                            let mut api = api.lock().unwrap();
+                            api.requests.push(path.clone());
+                            if path == "/api/zero-harness/sse" && api.fail_sse > 0 {
+                                api.fail_sse -= 1;
+                                (503, serde_json::json!({}), false)
+                            } else if path == "/api/workspaces" {
+                                if api.fail_workspace > 0 {
+                                    api.fail_workspace -= 1;
+                                    (503, serde_json::json!({}), false)
+                                } else {
+                                    (200, serde_json::json!({"current": api.workspace}), false)
+                                }
+                            } else {
+                                let ws = path.split("workspace=").nth(1).unwrap_or("");
+                                (
+                                    200,
+                                    api.rosters
+                                        .get(ws)
+                                        .cloned()
+                                        .unwrap_or(serde_json::json!({"active":[],"ended":[]})),
+                                    api.blocked_roster.as_deref() == Some(ws),
+                                )
+                            }
+                        };
+                        if path == "/api/zero-harness/sse" && status == 200 {
+                            if socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n: connected\n\n").await.is_err() { return; }
+                            while let Ok(chunk) = events.recv().await {
+                                if chunk == "CLOSE"
+                                    || socket.write_all(chunk.as_bytes()).await.is_err()
+                                {
+                                    return;
+                                }
+                            }
+                        } else {
+                            if block {
+                                release.notified().await;
+                            }
+                            let body = body.to_string();
+                            let reply = format!("HTTP/1.1 {status} fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                            let _ = socket.write_all(reply.as_bytes()).await;
+                        }
+                    });
+                }
+            });
+            let transcripts = tempfile::tempdir().unwrap();
+            let root = transcripts.path().to_path_buf();
+            let locate: LocateTranscript = Arc::new(move |id| {
+                let path = root.join(format!("{id}.jsonl"));
+                path.is_file().then_some(path)
+            });
+            let snapshots = Arc::new(Mutex::new(Vec::new()));
+            let recorded = snapshots.clone();
+            let pane = tokio::spawn(async move {
+                follow_brain(
+                    OperatorClient::from_selection(&endpoint).unwrap(),
+                    BrainViewState::new(scope),
+                    locate,
+                    move |s| {
+                        recorded.lock().unwrap().push(s.clone());
+                        Ok(())
+                    },
+                )
+                .await
+                .unwrap();
+            });
+            let fixture = Self {
+                api,
+                wire,
+                release,
+                snapshots,
+                _server: StopOnDrop(server),
+                _pane: StopOnDrop(pane),
+                transcripts,
+                paused: Cell::new(false),
+            };
+            fixture
+                .wait_for(|| {
+                    fixture.count("/api/zero-harness/sse") == 1
+                        && !fixture.snapshots.lock().unwrap().is_empty()
+                })
+                .await;
+            fixture
+        }
+
+        fn count(&self, path: &str) -> usize {
+            self.api
+                .lock()
+                .unwrap()
+                .requests
+                .iter()
+                .filter(|p| p.as_str() == path)
+                .count()
+        }
+
+        fn frame(&self, name: &str, args: serde_json::Value) {
+            self.wire
+                .send(format!(
+                    "event: invalidate\ndata: {}\n\n",
+                    serde_json::json!({"name":name,"args":args})
+                ))
+                .unwrap();
+        }
+
+        async fn settle(&self) {
+            for _ in 0..1000 {
+                tokio::task::yield_now().await;
+            }
+        }
+
+        async fn wait_for(&self, condition: impl Fn() -> bool) {
+            for step in 0..100_000 {
+                if condition() {
+                    return;
+                }
+                // Tokio rounds timer deadlines to milliseconds. Let immediate
+                // HTTP/connect/retry timers cross that boundary while settling
+                // real sockets under the paused clock (at most 100ms total).
+                if self.paused.get() && step % 1000 == 999 {
+                    time::advance(Duration::from_millis(1)).await;
+                }
+                tokio::task::yield_now().await;
+            }
+            panic!(
+                "fixture did not converge; requests={:?}",
+                self.api.lock().unwrap().requests
+            );
+        }
+
+        fn write_turn(&self, id: &str, text: &str) {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.transcripts.path().join(format!("{id}.jsonl")))
+                .unwrap();
+            writeln!(file, "{}", serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":text}]}})).unwrap();
+        }
+
+        fn latest(&self) -> BrainViewState {
+            self.snapshots.lock().unwrap().last().unwrap().clone()
+        }
+
+        fn pause(&self) {
+            time::pause();
+            self.paused.set(true);
+        }
+    }
+
+    fn roster(active: &[RosterEntry], ended: &[RosterEntry]) -> serde_json::Value {
+        let encode =
+            |entries: &[RosterEntry]| {
+                entries.iter().map(|e| serde_json::json!({
+            "role": e.role, "advSessionId": e.adv_session_id, "sessionId": e.session_id,
+        })).collect::<Vec<_>>()
+            };
+        let active = encode(active);
+        let ended = encode(ended);
+        serde_json::json!({"active":active,"ended":ended,"pending":[]})
+    }
+
+    #[tokio::test]
+    async fn rules_events_r8_sse_invalidates_once() {
+        let f = BrainFixture::start(Scope::Queen, roster(&[], &[])).await;
+        for name in ["roster", "workspace", "workspaces", "workspaces.current"] {
+            let before = f.count("/api/workspaces");
+            // Split wire frames exercise the shared parser rather than fabricated signals.
+            f.wire.send("event: invalidate\ndata: ".into()).unwrap();
+            f.wire
+                .send(format!("{}\n\n", serde_json::json!({"name":name})))
+                .unwrap();
+            f.wait_for(|| f.count("/api/adv/roster?workspace=a") == before + 1)
+                .await;
+            f.settle().await;
+            assert_eq!(f.count("/api/workspaces"), before + 1);
+            assert_eq!(f.count("/api/adv/roster?workspace=a"), before + 1);
+        }
+        let before = f.count("/api/workspaces");
+        for data in [
+            "event: heartbeat\ndata: {}\n\n",
+            "event: invalidate\ndata: broken\n\n",
+            "event: update\ndata: {\"name\":\"plans\"}\n\n",
+        ] {
+            f.wire.send(data.into()).unwrap();
+        }
+        f.frame("roster", serde_json::json!({"workspaceId":"other"}));
+        f.settle().await;
+        assert_eq!(
+            f.count("/api/workspaces"),
+            before,
+            "irrelevant/malformed frames must not resolve"
+        );
+    }
+
+    #[tokio::test]
+    async fn rules_events_r58_reconnect_and_repair() {
+        let f = BrainFixture::start(Scope::Queen, roster(&[], &[])).await;
+        f.pause();
+        // Failed startup/read retries within five seconds, rather than at repair.
+        f.api.lock().unwrap().fail_workspace = 1;
+        f.frame("roster", serde_json::json!({}));
+        f.wait_for(|| f.count("/api/workspaces") == 2).await;
+        f.settle().await;
+        time::advance(RETRY_INTERVAL).await;
+        f.wait_for(|| f.count("/api/adv/roster?workspace=a") == 2)
+            .await;
+        f.settle().await;
+        let before = f.count("/api/workspaces");
+        f.wire.send("CLOSE".into()).unwrap();
+        f.settle().await;
+        time::advance(RETRY_INTERVAL).await;
+        f.wait_for(|| {
+            f.count("/api/zero-harness/sse") == 2 && f.count("/api/adv/roster?workspace=a") == 3
+        })
+        .await;
+        f.settle().await;
+        assert_eq!(
+            f.count("/api/workspaces"),
+            before + 1,
+            "reconnect repairs missed frames immediately"
+        );
+        let before = f.count("/api/workspaces");
+        time::advance(Duration::from_secs(59)).await;
+        f.settle().await;
+        assert_eq!(f.count("/api/workspaces"), before);
+        time::advance(Duration::from_secs(1)).await;
+        f.wait_for(|| f.count("/api/workspaces") == before + 1)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn rules_events_r58_reconnect_and_repair_failed_startup_and_sse() {
+        let f = BrainFixture::start_with_faults(Scope::Queen, roster(&[], &[]), 1, 1).await;
+        f.pause();
+        f.settle().await;
+        assert_eq!(f.count("/api/adv/roster?workspace=a"), 0);
+        time::advance(RETRY_INTERVAL).await;
+        f.wait_for(|| {
+            f.count("/api/adv/roster?workspace=a") >= 1 && f.count("/api/zero-harness/sse") == 2
+        })
+        .await;
+        f.settle().await;
+        assert_eq!(f.latest().status, AttachState::Waiting);
+        assert!(RETRY_INTERVAL <= Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn rules_events_r59_local_tail() {
+        let f = BrainFixture::start(
+            Scope::Queen,
+            roster(&[entry("queen", 1, Some("wake"))], &[]),
+        )
+        .await;
+        f.write_turn("wake", "before offline");
+        f.frame("roster", serde_json::json!({}));
+        f.wait_for(|| f.latest().messages.len() == 1).await;
+        f.pause();
+        f.api.lock().unwrap().blocked_roster = Some("a".into());
+        f.frame("roster", serde_json::json!({}));
+        f.wait_for(|| f.count("/api/adv/roster?workspace=a") == 3)
+            .await;
+        f.write_turn("wake", "appended while HTTP blocked");
+        time::advance(TAIL_INTERVAL).await;
+        f.wait_for(|| f.latest().messages.len() == 2).await;
+        let rendered: String = transcript_lines(&f.latest())
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect();
+        assert!(
+            rendered.contains("appended while HTTP blocked"),
+            "{rendered}"
+        );
+        assert_eq!(f.count("/api/adv/roster?workspace=a"), 3);
+    }
+
+    #[tokio::test]
+    async fn rules_events_r60_newest_ended_wake() {
+        let f = BrainFixture::start(
+            Scope::Overwatch,
+            roster(
+                &[entry("overwatch", 1, Some("old"))],
+                &[
+                    entry("overwatch", 4, Some("new")),
+                    entry("queen", 9, Some("wrong-role")),
+                ],
+            ),
+        )
+        .await;
+        f.write_turn("old", "old wake");
+        f.write_turn("new", "ended newest wake");
+        f.frame("roster", serde_json::json!({}));
+        f.wait_for(|| f.latest().current_uuid.as_deref() == Some("new"))
+            .await;
+        assert_eq!(f.latest().messages[0].content, "ended newest wake");
+        f.api
+            .lock()
+            .unwrap()
+            .rosters
+            .insert("a".into(), roster(&[], &[]));
+        let before = f.count("/api/workspaces");
+        f.frame("roster", serde_json::json!({}));
+        f.wait_for(|| {
+            f.latest().status == AttachState::Waiting && f.count("/api/workspaces") > before
+        })
+        .await;
+        assert_eq!(
+            f.latest().messages[0].content,
+            "ended newest wake",
+            "retain ended wake between runs"
+        );
+    }
+
+    #[tokio::test]
+    async fn rules_events_r61_workspace_generation() {
+        let f =
+            BrainFixture::start(Scope::Queen, roster(&[entry("queen", 1, Some("old"))], &[])).await;
+        f.write_turn("old", "workspace A");
+        f.write_turn("new", "workspace B");
+        f.frame("roster", serde_json::json!({}));
+        f.wait_for(|| f.latest().current_uuid.as_deref() == Some("old"))
+            .await;
+        f.api.lock().unwrap().blocked_roster = Some("a".into());
+        let before = f.count("/api/adv/roster?workspace=a");
+        f.frame("roster", serde_json::json!({}));
+        f.wait_for(|| f.count("/api/adv/roster?workspace=a") == before + 1)
+            .await;
+        {
+            let mut api = f.api.lock().unwrap();
+            api.workspace = "b".into();
+            api.rosters
+                .insert("b".into(), roster(&[], &[entry("queen", 2, Some("new"))]));
+        }
+        f.frame("workspaces", serde_json::json!({}));
+        f.wait_for(|| f.latest().current_uuid.as_deref() == Some("new"))
+            .await;
+        f.frame("roster", serde_json::json!({"workspaceId":"a"}));
+        f.release.notify_waiters();
+        f.settle().await;
+        assert_eq!(f.latest().workspace.as_deref(), Some("b"));
+        assert_eq!(f.latest().current_uuid.as_deref(), Some("new"));
+        assert_eq!(f.latest().messages[0].content, "workspace B");
+        assert_eq!(f.count("/api/adv/roster?workspace=b"), 1);
+    }
+
+    #[tokio::test]
+    async fn rules_events_r62_no_fast_remote_poll() {
+        let f = BrainFixture::start(Scope::Queen, roster(&[], &[])).await;
+        f.pause();
+        for _ in 0..20 {
+            time::advance(TAIL_INTERVAL).await;
+            f.settle().await;
+        }
+        assert_eq!(f.count("/api/workspaces"), 1);
+        assert_eq!(f.count("/api/adv/roster?workspace=a"), 1);
+        assert!(
+            f.snapshots.lock().unwrap().len() >= 21,
+            "local tail/render continues"
+        );
+    }
 
     fn entry(role: &str, adv: i64, sid: Option<&str>) -> RosterEntry {
         RosterEntry {

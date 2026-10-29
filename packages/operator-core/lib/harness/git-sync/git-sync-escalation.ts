@@ -134,7 +134,7 @@ export function nextAttributionShareDropTicks(
 
 /** Which LEG of a git-sync tick failed (EI-19275994927087666). `disk-headroom` (WI-10004397)
  *  is not a git leg at all: the local disk is full, so no leg can run. */
-export type GitSyncFailingLeg = 'commit' | 'push' | 'serving' | 'conflict' | 'config-lock' | 'disk-headroom' | 'unknown';
+export type GitSyncFailingLeg = 'commit' | 'push' | 'serving' | 'bridge' | 'conflict' | 'config-lock' | 'disk-headroom' | 'unknown';
 
 /**
  * PURE: classify which leg actually failed, from the error text git-sync recorded.
@@ -172,6 +172,10 @@ export function classifyGitSyncFailingLeg(
   if (/\bpush (?:failed|fails|was rejected|is rejected)\b|\b(?:failed|unable|could not|cannot) to push\b/.test(e)) {
     return 'push';
   }
+  // EI-27252830186130949: the bridge may require an owner to reconcile an
+  // ingress history rewrite while local commits and origin egress still work.
+  // Its explicit verdict is stronger evidence than the commit-only fallback.
+  if (e.includes('github-bridge divergence:')) return 'bridge';
   // No usable error text: a commit-only member still cannot have push-failed.
   if (pushMode?.startsWith('commit-only')) return 'commit';
   return 'unknown';
@@ -185,6 +189,8 @@ export function gitSyncLegPhrase(leg: GitSyncFailingLeg | null): string {
       return 'push failing — commits NOT reaching origin';
     case 'serving':
       return 'serving owner unavailable — authenticated publication refused before push; repair substrate startup';
+    case 'bridge':
+      return 'GitHub bridge divergence — inspect github_bridge; verify local commits and origin egress separately';
     case 'commit':
       return 'COMMIT failing — nothing has reached the push stage; origin is unaffected';
     case 'conflict':

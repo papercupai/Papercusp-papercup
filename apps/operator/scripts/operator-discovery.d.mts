@@ -3,11 +3,14 @@
 // apps/operator/scripts/operator-discovery.mjs and regenerate.
 /** @typedef {Record<string, string | undefined>} EnvironmentMap */
 /**
- * The desktop operator's recorded address from ~/.papercusp/operator.json,
- * or null when the file is missing/unreadable (the dev box).
+ * Read this instance's operator.json using the same state-root rule as the
+ * Server and native desktop. An explicit PAPERCUSP_HOME never falls through
+ * to another instance's default-home record.
+ * @param {{home?: string, env?: EnvironmentMap}} [options]
  */
-export function discoverOperatorUrl({ home }?: {
-    home?: string | undefined;
+export function discoverOperatorUrl({ home, env }?: {
+    home?: string;
+    env?: EnvironmentMap;
 }): any;
 /**
  * Standard CLI precedence: explicit --operator-url arg → PAPERCUSP_OPERATOR_URL

@@ -149,6 +149,16 @@ describe('R3 bundled stack defaults through actual completion refusals', () => {
     expect(message).toContain('--isolated-runtime');
   });
 
+  it('does not recommend a web-manifest browser for a background job without a registered test class', async () => {
+    const root = await repo({ 'package.json': { dependencies: { astro: '5.0.0' } } });
+    const message = await refusal(close({ declaredAtClose: ['background-job'] }), deps(root, {
+      harnessSlug: 'papercusp',
+    }));
+    expect(message).toMatch(/no testClass is registered/i);
+    expect(message).toMatch(/name the isolated runtime and command/i);
+    expect(message).not.toMatch(BROWSER_RUNNER);
+  });
+
   it('does not apply a Papercusp-only route override to an unrelated web harness', async () => {
     const root = await repo({ 'package.json': { dependencies: { next: '15.0.0' } } });
     const message = await refusal(close(), deps(root, { testClass: 'background-federation' }));

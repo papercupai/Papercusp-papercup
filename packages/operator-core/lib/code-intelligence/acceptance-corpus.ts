@@ -177,7 +177,7 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     expectedSites: [
       {
         path: 'libs/generic/scheduled-registry/src/index.ts',
-        line1: 459,
+        line1: 522,
         symbolOnLine: 'export function managedSetInterval',
       },
     ],
@@ -239,7 +239,7 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
       },
       {
         path: 'packages/operator-core/lib/fleet/spawner-sidecar-spawn.ts',
-        line1: 432,
+        line1: 435,
         symbolOnLine: 'await managedSpawn',
       },
     ],

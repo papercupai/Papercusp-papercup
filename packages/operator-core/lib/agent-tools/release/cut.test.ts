@@ -7,7 +7,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/release/cut.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import type { ExecFileOptions } from 'node:child_process';
@@ -598,6 +598,73 @@ describe('release:cut — constrained root selector', () => {
     }, { seedless: true });
     expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/root_seedless_shape_invalid/) });
   });
+
+  const devSeedPlaceholder = 'Placeholder created by build.rs so the bundle.resources glob matches on a\n'
+    + 'fresh/cleaned checkout (EI-9412, mirrors EI-160\'s sidecar placeholder). Dev\n'
+    + 'and test builds never read the seed unless the offline-restore path is\n'
+    + 'exercised; for a real bundle run bin/ensure-release-seed.sh (every release\n'
+    + 'script already does), which replaces this directory wholesale.\n';
+
+  it('admits the exact build.rs placeholder beside a seedless marker without mutating a dry-run', async () => {
+    const readFile = vi.fn((file: string) => path.basename(file) === 'PLACEHOLDER-README.txt'
+      ? devSeedPlaceholder : RELEASE_SEEDLESS_PLACEHOLDER_CONTENT);
+    const result = await resolveCutRoot('isolated', {
+      loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),
+      listWorktrees: () => [{ path: worktreeRoot, prunable: false }],
+      status: () => '',
+      canonicalPath: (candidate) => candidate,
+      exists: () => true,
+      readDir: () => [RELEASE_SEEDLESS_PLACEHOLDER_NAME, 'PLACEHOLDER-README.txt'],
+      isRegularFile: () => true,
+      readFile,
+    }, { seedless: true });
+    expect(result).toMatchObject({ ok: true, desktopRoot });
+    expect(readFile).toHaveBeenCalledWith(path.join(desktopRoot, 'src-tauri/seed/PLACEHOLDER-README.txt'));
+  });
+
+  it('normalizes only the exact build.rs residue before a seedless retry', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cut-seedless-retry-'));
+    const seed = path.join(root, 'src-tauri/seed');
+    try {
+      mkdirSync(seed, { recursive: true });
+      writeFileSync(path.join(seed, RELEASE_SEEDLESS_PLACEHOLDER_NAME), RELEASE_SEEDLESS_PLACEHOLDER_CONTENT);
+      writeFileSync(path.join(seed, 'PLACEHOLDER-README.txt'), devSeedPlaceholder);
+      expect(prepareSeedlessCutRoot(root)).toBeNull();
+      expect(readdirSync(seed)).toEqual([RELEASE_SEEDLESS_PLACEHOLDER_NAME]);
+      expect(readFileSync(path.join(seed, RELEASE_SEEDLESS_PLACEHOLDER_NAME), 'utf8'))
+        .toBe(RELEASE_SEEDLESS_PLACEHOLDER_CONTENT);
+      expect(prepareSeedlessCutRoot(root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['modified note', 'symlink', 'extra payload', 'modified marker'])(
+    'refuses seedless normalization with %s and leaves the residue intact',
+    (variant) => {
+      const root = mkdtempSync(path.join(tmpdir(), 'cut-seedless-refusal-'));
+      const seed = path.join(root, 'src-tauri/seed');
+      const devNote = path.join(seed, 'PLACEHOLDER-README.txt');
+      try {
+        mkdirSync(seed, { recursive: true });
+        writeFileSync(path.join(seed, RELEASE_SEEDLESS_PLACEHOLDER_NAME),
+          variant === 'modified marker' ? 'not the canonical seedless marker\n' : RELEASE_SEEDLESS_PLACEHOLDER_CONTENT);
+        if (variant === 'symlink') {
+          const target = path.join(root, 'outside-note.txt');
+          writeFileSync(target, devSeedPlaceholder);
+          symlinkSync(target, devNote);
+        } else {
+          writeFileSync(devNote, variant === 'modified note' ? devSeedPlaceholder + 'payload' : devSeedPlaceholder);
+        }
+        if (variant === 'extra payload') writeFileSync(path.join(seed, 'payload.bin'), 'private payload');
+        expect(prepareSeedlessCutRoot(root)).toMatch(/root_seedless_shape_invalid/);
+        expect(existsSync(devNote)).toBe(true);
+        if (variant === 'extra payload') expect(existsSync(path.join(seed, 'payload.bin'))).toBe(true);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('materializes the canonical placeholder only from an absent or empty seed root', () => {
     let seedRootExists = false;

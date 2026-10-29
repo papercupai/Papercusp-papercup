@@ -886,8 +886,9 @@ describe('mcp-call release repair-queue install scope', () => {
       expect(run.code).toBe(MCP_CALL_TOOL_NOT_OK_EXIT);
       expect(run.stderr).toContain('expected install scope "papercusp-pr-drill-20261014"');
       expect(run.stderr).toContain('port 3070=papercusp');
-      expect(requests).toHaveLength(2);
-      expect(requests.map((request) => new URL(request.url).port)).toEqual(['41001', '3070']);
+      // A mismatched candidate gets only a read-only probe; search continues through the proxy.
+      expect(requests).toHaveLength(3);
+      expect(requests.map((request) => new URL(request.url).port)).toEqual(['41001', '3070', '9071']);
       expect(requests.every((request) =>
         (request.body.params as { name: string }).name === 'release:repair-queue' &&
         (request.body.params as { arguments: { op: string } }).arguments.op === 'get',

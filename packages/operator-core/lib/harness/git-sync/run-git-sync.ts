@@ -472,6 +472,15 @@ const runGitBoundedUnchecked = async (
   // hook only acts on `push`, so setting it on all git-sync git calls is harmless.
   const network = GIT_NETWORK_SUBCOMMANDS.has(gitSubcommand(args));
   const effectiveArgs = network ? withGitProgress(args) : args;
+  // The fetch headroom guard also runs rev-parse through this seam. Keep the
+  // phase identity, but label the actual child rather than its parent fetch.
+  const diagnosticSubcommand = gitSubcommandOf(effectiveArgs);
+  const diagnosticTags = options.diagnosticTags ? {
+    ...options.diagnosticTags,
+    gitSubcommand: diagnosticSubcommand && /^[a-z][a-z0-9-]{0,63}$/.test(diagnosticSubcommand)
+      ? diagnosticSubcommand
+      : undefined,
+  } : undefined;
   const hardTimeoutMs = gitHardTimeoutMsFor(args, timeoutMs);
   // git-sync is unattended. A credential helper may answer, but an interactive
   // prompt can never make progress and would otherwise survive until the network
@@ -497,7 +506,7 @@ const runGitBoundedUnchecked = async (
         idleTimeoutMs: network ? timeoutMs : undefined,
         signal: options.signal,
         onProgress: options.onProgress,
-        diagnosticTags: options.diagnosticTags,
+        diagnosticTags,
       });
       options.onProgress?.();
       return result;
@@ -8152,6 +8161,7 @@ async function runGitSyncPass(
         onProgress: reportProgress,
         signal: opts.signal,
         env: gitOptions?.env,
+        diagnosticTags: gitOptions?.diagnosticTags,
       }));
   const runGit: RunGit = async (args, cwd, gitOptions) => {
     throwIfAborted();
@@ -8364,6 +8374,7 @@ async function runGitSyncPass(
       sourceUrl: string;
       startedAt: string;
       setupMs: number;
+      setupSteps?: Array<{ name: string; durationMs: number }>;
       batches: Array<{
         index: number;
         depth: number;
@@ -8448,6 +8459,17 @@ async function runGitSyncPass(
     }
   };
 
+  const runGitWithTiming = (runId: string): RunGit => (args, cwd, options) => {
+    const subcommand = gitSubcommandOf(args);
+    const gitSubcommand = subcommand && /^[a-z][a-z0-9-]{0,63}$/.test(subcommand)
+      ? subcommand
+      : undefined;
+    return runGit(args, cwd, {
+      ...(options ?? {}),
+      diagnosticTags: { runId, commandClass: 'git', ...(gitSubcommand ? { gitSubcommand } : {}) },
+    });
+  };
+
   // PHASE `git-sync:submodules` — every submodule, deepest-first (dynamic recursive
   // discovery). Each is independent: a conflict/error in one is collected; the rest
   // still sync. Runs as ONE checkpointed step: the expensive multi-repo half of the
@@ -8463,6 +8485,7 @@ async function runGitSyncPass(
       sourceUrl: import.meta.url,
       startedAt: new Date().toISOString(),
       setupMs: 0,
+      setupSteps: [] as Array<{ name: string; durationMs: number }>,
       batches: [] as NonNullable<PhaseCollect['submoduleTiming']>['batches'],
       omittedBatches: 0,
     };
@@ -8474,26 +8497,22 @@ async function runGitSyncPass(
     };
     timingLog('phase-start', { sourceUrl: timing.sourceUrl, startedAt: timing.startedAt });
     let subPaths: string[] = [];
+    let setupStepStartedAt = phaseStartedAt;
+    const recordSetupStep = (name: string): void => {
+      const now = performance.now();
+      const durationMs = Math.max(0, Math.round(now - setupStepStartedAt));
+      setupStepStartedAt = now;
+      timing.setupSteps.push({ name, durationMs });
+      timingLog('setup-step', { name, durationMs });
+    };
     const recordSetupComplete = (): void => {
+      recordSetupStep('remainder');
       timing.setupMs = Math.round(performance.now() - phaseStartedAt);
       timingLog('setup-complete', { setupMs: timing.setupMs, repositoryCount: subPaths.length });
     };
     // Keep one diagnostic identity across URL reconciliation, recursive discovery,
     // early root-commit Git calls, and the later submodule walk.
-    const runGitForTiming: RunGit = (args, cwd, options) => {
-      const subcommand = gitSubcommandOf(args);
-      const gitSubcommand = subcommand && /^[a-z][a-z0-9-]{0,63}$/.test(subcommand)
-        ? subcommand
-        : undefined;
-      return runGit(args, cwd, {
-        ...(options ?? {}),
-        diagnosticTags: {
-          runId: timing.runId,
-          commandClass: 'git',
-          ...(gitSubcommand ? { gitSubcommand } : {}),
-        },
-      });
-    };
+    const runGitForTiming = runGitWithTiming(timing.runId);
     if (doSub) {
       // EI-20329530284626235: `.gitmodules` is the canonical transport declaration,
       // but an initialized submodule keeps a copied URL in its own `remote.origin.url`.
@@ -8538,6 +8557,7 @@ async function runGitSyncPass(
           if (clearedAfterRetry) urlSync = await runGitForTiming(['submodule', 'sync', '--recursive'], repo);
         }
       }
+      recordSetupStep('url-sync');
       if (urlSync.code !== 0) {
         recordSetupComplete();
         const detail = (urlSync.stderr || urlSync.stdout || 'no output').trim().slice(0, 300);
@@ -8554,6 +8574,7 @@ async function runGitSyncPass(
             // measures nothing — this stays null, and null never implies an all-clear.
             out.strandedSubmodules = census;
           });
+      recordSetupStep('discovery');
       const unforked = cfg.unforkedSubmodules ?? [];
       if (unforked.length) {
         const kept = subPaths.filter((p) => !unforked.some((u) => p === u || p.startsWith(`${u}/`)));
@@ -8639,6 +8660,7 @@ async function runGitSyncPass(
         }
         await yieldEarlySuperproject('before-superproject-stage');
 
+        recordSetupStep('early-root-guards');
         if (declarationRepair.status === 'blocked') {
           log(`[git-sync] ${repo}: early superproject commit deferred because generated declaration repair is blocked — pointer-bump will retry`);
         } else {
@@ -8715,6 +8737,7 @@ async function runGitSyncPass(
                 `${declarationRepair.atomicPaths.length} declaration-related path(s) from the local commit`,
             );
           }
+          recordSetupStep('early-root-migration-census');
           const committed = await commitOneRepo(runGitForTiming, repo, {
             ...repoO,
             scope: 'superproject',
@@ -8733,6 +8756,7 @@ async function runGitSyncPass(
             yieldIfRequested: yieldEarlySuperproject,
             onPublished: (sha) => earlyLocalCommits.push({ sha, committedAtMs: Date.now() }),
           });
+          recordSetupStep('early-root-commit');
           const earlyHeadAfter = committed.committedLocal ? await headSha(runGitForTiming, repo) : undefined;
           out.earlyRootCommit = {
             ...committed,
@@ -8745,6 +8769,7 @@ async function runGitSyncPass(
                 }
               : {}),
           };
+          recordSetupStep('early-root-proof');
         }
       }
     }
@@ -8919,16 +8944,19 @@ async function runGitSyncPass(
     }
   };
   for (const commit of earlyRootCommits) notifyRootCommit(commit);
-  const yieldSuperproject = async (boundary: GitSyncSuperprojectYieldBoundary): Promise<void> => {
+  const yieldSuperproject = async (
+    boundary: GitSyncSuperprojectYieldBoundary,
+    phaseRunGit: RunGit,
+  ): Promise<void> => {
     const reason = await checkYield();
     if (!reason) return;
-    const headNow = superprojectHeadBefore ? await headSha(runGit, repo) : '';
+    const headNow = superprojectHeadBefore ? await headSha(phaseRunGit, repo) : '';
     const landed =
       headNow && headNow !== superprojectHeadBefore
         ? {
             localCommitSha: headNow,
             localCommitAtMs: localCommits.at(-1)?.committedAtMs ?? Date.now(),
-            localCommitShas: await commitsSince(runGit, repo, superprojectHeadBefore, headNow),
+            localCommitShas: await commitsSince(phaseRunGit, repo, superprojectHeadBefore, headNow),
             localCommits,
           }
         : undefined;
@@ -8956,29 +8984,32 @@ async function runGitSyncPass(
       ...(commitDurationMs === undefined ? {} : { commitDurationMs }),
       status,
     });
-    superprojectHeadBefore = await headSha(runGit, repo);
+    const runGitForPointerTiming = runGitWithTiming(pointerBumpTimingBase.runId);
+    const yieldPointerBump = (boundary: GitSyncSuperprojectYieldBoundary): Promise<void> =>
+      yieldSuperproject(boundary, runGitForPointerTiming);
+    superprojectHeadBefore = await headSha(runGitForPointerTiming, repo);
     // EI-20428405431869483: detect generated routing drift while the dirty source
     // is still present, before the catch-all commit makes the source clean.
     try {
-      await toolRoutingChecker({ runGit, repoPath: repo, log });
+      await toolRoutingChecker({ runGit: runGitForPointerTiming, repoPath: repo, log });
     } catch (e) {
       log(
         `[git-sync] ${repo}: tool-routing pre-commit check threw (${String(e)}) — continuing with the commit fail-soft`,
       );
     }
-    await yieldSuperproject('before-superproject-stage');
+    await yieldPointerBump('before-superproject-stage');
     // WI-39922: close the edit→auto-commit window that let a stale tracked catalog
     // reach the green gate hours later. Keep the catch HERE even though the default
     // implementation is defensive: an injected/future regenerator must never turn
     // this repair into a fleet-wide commit wedge.
     try {
-      await toolCatalogRegenerator({ runGit, repoPath: repo, log });
+      await toolCatalogRegenerator({ runGit: runGitForPointerTiming, repoPath: repo, log });
     } catch (e) {
       log(
         `[git-sync] ${repo}: tool-catalog pre-commit repair threw (${String(e)}) — continuing with the commit fail-soft`,
       );
     }
-    await yieldSuperproject('before-superproject-stage');
+    await yieldPointerBump('before-superproject-stage');
     // EI-21444216858331991: a scheduled candidate was cut two seconds after an
     // `.mjs` source commit and eleven minutes before its generated `.d.mts` repair.
     // Regenerate here, then force every affected pair past per-agent peeling so
@@ -8989,13 +9020,13 @@ async function runGitSyncPass(
     // agent's commits on one peer's TS error (WI-6554700010010659).
     let declarationRepair: GeneratedDeclarationsRepairResult;
     try {
-      declarationRepair = await generatedDeclarationsRegenerator({ runGit, repoPath: repo, log });
+      declarationRepair = await generatedDeclarationsRegenerator({ runGit: runGitForPointerTiming, repoPath: repo, log });
     } catch (e) {
       declarationRepair = { status: 'blocked', atomicPaths: [], detail: String(e).slice(0, 300) };
     }
-    await yieldSuperproject('before-superproject-stage');
+    await yieldPointerBump('before-superproject-stage');
     if (declarationRepair.status === 'blocked') {
-      const dirtyPathCount = (await dirtyFiles(runGit, repo)).length;
+      const dirtyPathCount = (await dirtyFiles(runGitForPointerTiming, repo)).length;
       return {
         committedLocal: false,
         dirtyPathCount,
@@ -9040,7 +9071,7 @@ async function runGitSyncPass(
         );
       }
     }
-    const committed = await commitOneRepo(runGit, repo, {
+    const committed = await commitOneRepo(runGitForPointerTiming, repo, {
       ...repoO,
       scope: 'superproject',
       migrationFenceRoster,
@@ -9056,7 +9087,7 @@ async function runGitSyncPass(
       onAttribution,
       priorityPaths: superprojectGitlinkPaths,
       forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
-      yieldIfRequested: yieldSuperproject,
+      yieldIfRequested: yieldPointerBump,
       onPublished: (sha) => {
         const commit = { sha, committedAtMs: Date.now() };
         localCommits.push(commit);
@@ -9066,7 +9097,7 @@ async function runGitSyncPass(
     // Persist the proof with the commit phase itself. On a durable replay the
     // current HEAD and wall clock may already belong to a different tick.
     const localCommitAtMs = localCommits.at(-1)?.committedAtMs ?? (committed.committedLocal ? Date.now() : undefined);
-    const landedHead = committed.committedLocal ? await headSha(runGit, repo) : undefined;
+    const landedHead = committed.committedLocal ? await headSha(runGitForPointerTiming, repo) : undefined;
     const pointerBumpStatus = committed.error
       ? 'error'
       : committed.skippedPaths?.length && !committed.committedLocal
@@ -9080,7 +9111,7 @@ async function runGitSyncPass(
       localCommitSha: landedHead,
       localCommitAtMs,
       // Every root commit this phase created (one per attributed group), oldest first.
-      localCommitShas: landedHead ? await commitsSince(runGit, repo, superprojectHeadBefore, landedHead) : undefined,
+      localCommitShas: landedHead ? await commitsSince(runGitForPointerTiming, repo, superprojectHeadBefore, landedHead) : undefined,
       pointerBumpTiming: pointerBumpTiming(pointerBumpStatus, commitDurationMs),
     };
   });

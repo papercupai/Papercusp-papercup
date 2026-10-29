@@ -100,13 +100,19 @@ These inversions are deliberately cheap: enumerate possible violators, prove the
 
 These rules apply when the non-implementer grades the acceptance rubric; they govern acceptance-scorecard emission, not the current direct-critique vetting step. A `tests` check's files are RUN via the testing router at emit time — one batched run over the union of unique files across rated `tests`-check criteria, with per-file attribution, under one shared clamped budget; never judged from stale ledger rows. A pass-vocabulary rating (`pass`/`healthy`/`green`/`good`/`yes`/`exemplary`/`exceptional`) over a failing run REFUSES the emit naming the failing tests; an unresolvable path (`check_path_unresolved`), a route error, or an over-budget run refuses with a teaching error — never a silent pass. An honest fail-rating over a failing run is STAMPED (`observation.checkRuns`) and files normally. A bespoke scale word outside the pass map degrades to stamp-only — conservative, never wrongly refused. The unchanged-evidence dedupe fires BEFORE any run, so a declined re-emit never burns a suite.
 
-## Current vetting and grader independence are separate
+## The vetting/grading separation is NOT a deadlock — the escape is a second INDEPENDENT critic
 
-The current direct-critique path requires an independent critic distinct from the rubric's creator and proposer; it does not require a second critic or a self-issued card. The later acceptance grader remains a separate non-implementer.
+Current direct-critique vetting and later acceptance grading are separate checks. A current independent critique from a critic distinct from the rubric creator and proposer satisfies direct vetting; it does not routinely require two critics or a meta-scorecard. The acceptance grader still must be a non-implementer.
 
-A compatibility guard, grader_is_sole_vetting_critic, still aggregates critics recorded on current meta-scorecard attestations. If that specific refusal fires, follow its remedy: obtain another genuinely independent critique through consult:get_feedback and record it on the legacy scorecard path. This card-based remedy addresses the existing attestations the guard reads; do not emit a meta-scorecard merely to satisfy current direct vetting.
+The compatibility guard `grader_is_sole_vetting_critic` reads current meta-scorecard attestations. It refuses when every recorded critic resolves to the proposed grader’s own party. Trying to grade before vetting can instead surface `bar_snapshot_vetting_missing` or `bar_snapshot_vetting_stale`. This is **not a deadlock**: ordering is not the axis; a second INDEPENDENT critic is. The second-critic remedy below applies when that legacy guard actually fires, not as an extra prerequisite for ordinary direct critique.
 
-The legacy guard is about independence, not order. When it applies, a second independent party lets the same grader become eligible; choosing a longer list of reviewers from one spawn/rebind lineage still represents one party. The refusal carries a structured remedy pointing back to this section.
+1. Request another critique through `consult:get_feedback { policy:'rubric-vetting', question:<name the acceptance rubric and its current revision or criteriaHash> }`. The router selects and screens the critic. Do not hand-pick a related session or spawn your own grader.
+2. For this legacy refusal, record the new critique with `scorecards:emit` against `meta-acceptance-rubric`, subject `{ kind:'rubric', ref:<acceptance-rubric> }`, and `vettingConsult:<conversation_id>`. Keep the attestation current with the live rubric identity. A card cites exactly one of `vettingConsult` or `vettingWorkItem`; the guard unions critics across current attestations from BOTH channels, so a consult-backed second critic counts alongside an earlier work-item-backed critic.
+3. Retry acceptance grading at the current revision. Once the recorded critics include a party independent of this grader, that same grader can become eligible.
+
+A longer list of critics in the **same lineage** does not escape the guard: the independence comparison collapses related identities to one party (the helper is `collapseCriticsToSoleParty`). Re-vetting yourself at a **newer revision** only records the same party again; a genuinely changed rubric also needs current vetting. Neither swapping the order nor changing revision numbers supplies independence.
+
+Do not create a legacy meta-scorecard merely to satisfy the normal direct-critique path. Use the card-based route only for the legacy guard or fallback that actually reads those attestations.
 
 ## Legacy meta-scorecard traps — rating, identity, check binding, and audit
 

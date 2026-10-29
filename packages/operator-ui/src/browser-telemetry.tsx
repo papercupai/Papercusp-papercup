@@ -4,7 +4,7 @@
 // An unavailable host endpoint drops events; it never implies consent.
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { useOperatorWorkspaceLocation, type OperatorWorkspaceLocation } from './seam';
+import { operatorUi, useOperatorWorkspaceLocation, type OperatorWorkspaceLocation } from './seam';
 import { cloudErrorFingerprintInput, cloudTelemetryEventSchema, cloudTelemetryConsentSchema, CLOUD_MONITORING_DISCLOSURE_VERSION, type CloudErrorCode, type CloudTelemetryConsent, type CloudTelemetryEvent } from '@papercusp/operator-core/lib/telemetry-kinds';
 
 export type CloudFeature = Extract<CloudTelemetryEvent, { event: 'cloud_feature_adoption' }>['properties']['feature'];
@@ -16,6 +16,18 @@ interface TelemetryConfig {
   distinct_id?: string;
   workspace_id?: string;
 }
+
+function validatedTelemetryOrigin(config: TelemetryConfig): string | null {
+  if (config.enabled !== true || !config.host || !config.project_key) return null;
+  try {
+    const host = new URL(config.host);
+    if (host.protocol !== 'https:' || !host.hostname || host.username || host.password) return null;
+    return host.origin;
+  } catch {
+    return null;
+  }
+}
+
 type Client = typeof import('posthog-js').default;
 const state = pinModuleState('@papercusp/operator-ui.browser-telemetry', () => ({
   client: null as Client | null,
@@ -23,10 +35,27 @@ const state = pinModuleState('@papercusp/operator-ui.browser-telemetry', () => (
 }));
 
 async function consentedClient(cancelled: () => boolean = () => false) {
-  const response = await fetch('/api/desktop/telemetry-config', { cache: 'no-store' });
-  if (!response.ok) return null;
-  const config = await response.json() as TelemetryConfig;
-  if (cancelled() || config.enabled !== true || !config.host || !config.project_key) return null;
+  let response: Response;
+  try {
+    response = await fetch('/api/desktop/telemetry-config', { cache: 'no-store' });
+  } catch (error) {
+    operatorUi().setConsentedTelemetryOrigin(null);
+    throw error;
+  }
+  if (!response.ok) {
+    operatorUi().setConsentedTelemetryOrigin(null);
+    return null;
+  }
+  let config: TelemetryConfig;
+  try {
+    config = await response.json() as TelemetryConfig;
+  } catch (error) {
+    operatorUi().setConsentedTelemetryOrigin(null);
+    throw error;
+  }
+  const origin = cancelled() ? null : validatedTelemetryOrigin(config);
+  operatorUi().setConsentedTelemetryOrigin(origin);
+  if (cancelled() || !origin) return null;
   if (state.client) return state.client;
   state.initializing ??= import('posthog-js').then(module => {
     const client = module.default;

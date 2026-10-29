@@ -16,16 +16,19 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { papercuspHome } from '@papercusp/host-platform/home';
 
 /** @typedef {Record<string, string | undefined>} EnvironmentMap */
 
 /**
- * The desktop operator's recorded address from ~/.papercusp/operator.json,
- * or null when the file is missing/unreadable (the dev box).
+ * Read this instance's operator.json using the same state-root rule as the
+ * Server and native desktop. An explicit PAPERCUSP_HOME never falls through
+ * to another instance's default-home record.
+ * @param {{home?: string, env?: EnvironmentMap}} [options]
  */
-export function discoverOperatorUrl({ home = homedir() } = {}) {
+export function discoverOperatorUrl({ home = homedir(), env = process.env } = {}) {
   try {
-    const d = JSON.parse(readFileSync(join(home, '.papercusp', 'operator.json'), 'utf8'));
+    const d = JSON.parse(readFileSync(join(papercuspHome(env, home), 'operator.json'), 'utf8'));
     if (d && typeof d.httpUrl === 'string' && d.httpUrl) return d.httpUrl;
     if (d && d.port) return `http://127.0.0.1:${d.port}`;
   } catch {
@@ -63,13 +66,14 @@ export function resolveOperatorBase(args = {}, env = process.env, opts = {}) {
   const selfBase = selfPort
     ? operatorBaseForSelfPort(selfPort, env)
     : null;
-  return (
-    args.operatorUrl ??
-    selfBase ??
-    env.PAPERCUSP_OPERATOR_URL ??
-    discoverOperatorUrl(opts) ??
-    'http://127.0.0.1:3070'
-  )
+  const base = args.operatorUrl ?? selfBase ?? env.PAPERCUSP_OPERATOR_URL
+    ?? discoverOperatorUrl({ ...opts, env });
+  // A selected instance that has not advertised an endpoint is unavailable;
+  // the dev fallback may name a different operator with different authority.
+  if (!base && env.PAPERCUSP_HOME?.trim()) {
+    throw new Error('No operator endpoint is advertised in the configured Papercusp home');
+  }
+  return (base ?? 'http://127.0.0.1:3070')
     .replace(/\/api\/mcp\/?$/, '')
     .replace(/\/$/, '');
 }

@@ -92,6 +92,56 @@ async function withCapturedRouter(options: Parameters<typeof captureIsolatedWork
 const routerPhaseOptions = { phaseTimeouts: { bootstrapMs: 100, executeMs: 80, finalizeMs: 30, teardownMs: 30 },
   killGraceMs: 10, drainGraceMs: 10, testFileExecutionFromStdout: true };
 
+it('starts an opted-in native execution clock at the first observed case, not router spawn', async () => {
+  await withCapturedRouter({ ...routerPhaseOptions, testFileExecutionFromStdout: 'case' }, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    await vi.advanceTimersByTimeAsync(90);
+    expect(child.kill).not.toHaveBeenCalled();
+    child.stderr!.emit('data', 'TEST_FILE_CASE_TRACE {"event":"started","file":"native.test.ts","name":"native handoff"}\n');
+    await vi.advanceTimersByTimeAsync(79);
+    expect(child.kill).not.toHaveBeenCalled();
+    // A second case-start receipt cannot restart the execution allowance.
+    child.stderr!.emit('data', 'TEST_FILE_CASE_TRACE {"event":"started","file":"native.test.ts","name":"another case"}\n');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'execute' });
+  });
+});
+
+it('bounds opted-in native startup without a case despite repeated router start markers', async () => {
+  await withCapturedRouter({ ...routerPhaseOptions, testFileExecutionFromStdout: 'case' }, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    await vi.advanceTimersByTimeAsync(70);
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    child.stderr!.emit('data', 'TEST_FILE_CASE_TRACE {"event":"started"}\n');
+    await vi.advanceTimersByTimeAsync(29);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'bootstrap' });
+  });
+});
+
+it('separates completed-file runner shutdown from execution before source provenance starts', async () => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    await vi.advanceTimersByTimeAsync(75);
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"files-complete"}\n');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(child.kill).not.toHaveBeenCalled();
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"files-complete"}\n');
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    await vi.advanceTimersByTimeAsync(19);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
+  });
+});
+
 it('keeps supervised router startup outside the test execution budget', async () => {
   await withCapturedRouter(routerPhaseOptions, async (child, result) => {
     // The private runtime is observed before the router lists files or admits

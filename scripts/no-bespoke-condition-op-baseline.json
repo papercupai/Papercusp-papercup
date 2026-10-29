@@ -1,0 +1,17 @@
+{
+  "initial": [
+    "packages/operator-core/lib/check-results-ledger.ts",
+    "packages/operator-core/lib/continuity-probes.ts",
+    "packages/operator-core/lib/endpoint-route/routes/dev/table-rows.ts",
+    "packages/operator-core/lib/events/await/predicate-watch.ts",
+    "packages/operator-core/lib/work-admission/admission-rules.ts"
+  ],
+  "baseline": [
+    "packages/operator-core/lib/check-results-ledger.ts",
+    "packages/operator-core/lib/continuity-probes.ts",
+    "packages/operator-core/lib/endpoint-route/routes/dev/table-rows.ts",
+    "packages/operator-core/lib/events/await/predicate-watch.ts",
+    "packages/operator-core/lib/work-admission/admission-rules.ts"
+  ],
+  "allowlist": {}
+}

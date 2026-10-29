@@ -570,12 +570,13 @@ describe('session:assume production receipt adapter (real PG)', () => {
     const deps = { readCaller: async () => ({ ...plan.caller }) };
     const recovery = await checkpointAssumeCaller(plan, deps);
     expect(recovery.returnRef).toMatchObject({ ownerId: plan.caller.ownerId, nativeSessionId: plan.caller.nativeSessionId });
-    const saved = await readAssumeCallerCheckpoint(plan, recovery);
+    const savedRead = readAssumeCallerCheckpoint(plan, recovery);
+    await expect(savedRead).resolves.toMatchObject({ inbox: 'retained', directives: 'retained' });
+    const saved = await savedRead;
     expect(await readAssumeCallerCheckpoint(assumePreparationSchema.parse(plan), recovery)).toEqual(saved);
     expect(saved.carryNotes.map(note => note.scope)).toEqual([callerScope]);
     expect(saved.carryNotes[0].note).toBe('caller-only recovery context');
     expect(JSON.stringify(saved)).not.toContain(plan.target.ownerId);
-    expect(saved).toMatchObject({ inbox: 'retained', directives: 'retained' });
     await setCarryNote({ workspaceId, scope: callerScope }, 'newer caller note');
     expect(await checkpointAssumeCaller(plan, deps)).toEqual(recovery);
     expect((await readAssumeCallerCheckpoint(plan, recovery)).carryNotes[0].note).toBe('caller-only recovery context');

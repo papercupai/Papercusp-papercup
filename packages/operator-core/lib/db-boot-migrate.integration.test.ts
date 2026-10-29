@@ -41,6 +41,7 @@ import { withBoundedTimeout } from './bounded-timeout';
 const h = vi.hoisted(() => ({
   bootUrl: '' as string,
   bootSqlDir: '' as string,
+  observeFallback: vi.fn(() => true),
   // TS6/vitest4: `ReturnType<typeof vi.fn>` resolves to `Mock<Procedure |
   // Constructable>`, whose call signature is not directly invocable (TS2348,
   // WI-2017). This holder is BOTH called directly (line ~59) AND read via
@@ -48,6 +49,17 @@ const h = vi.hoisted(() => ({
   // `Mock<...>` supports both.
   sendMessage: undefined as unknown as Mock<(...args: unknown[]) => Promise<void>>,
 }));
+
+// WI-6554700010042636: withBoundedTimeout emits telemetry even when warn:false.
+// Its default writer flushes later through the live org-admin pool, so the
+// cancellation case used to fail the NEXT backup case. Capture this unrelated
+// persistence boundary and assert the decisions in the cases that emit them.
+vi.mock('./degradation/fallback-observations', async () => {
+  const actual = await vi.importActual<typeof import('./degradation/fallback-observations')>(
+    './degradation/fallback-observations',
+  );
+  return { ...actual, observeFallback: h.observeFallback };
+});
 
 // db-boot-migrate builds its OWN max:1 client from getHarnessAdminUrl() and
 // resolves the sql dir from resolveSqlDir(); point both at the test fixtures.
@@ -62,10 +74,8 @@ vi.mock('./migration-drift', async () => {
     resolveSqlDir: () => h.bootSqlDir,
     // The real drift diagnostic reads through getOrgPg(), i.e. the LIVE
     // org-admin pool, not this file's throwaway database. The integration guard
-    // refuses that open and defers a console.warn that a later timer flushes
-    // into whichever test is running, which failed the backup-rendezvous case
-    // under vitest-fail-on-console (WI-6554700010042536). The boot path treats
-    // this diagnostic as best-effort, so a throwing stub keeps every case
+    // refuses that open. The boot path treats this diagnostic as best-effort,
+    // so a throwing stub keeps every case
     // hermetic without faking a MigrationDrift result.
     checkMigrationDrift: async () => {
       throw new Error('db-boot-migrate.integration.test: drift diagnostic is not hermetic here');
@@ -149,6 +159,7 @@ beforeEach(async () => {
   hermeticCooldownFiles.push(p);
   process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE = p;
   h.sendMessage?.mockClear();
+  h.observeFallback.mockClear();
 });
 afterEach(() => {
   delete process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE;
@@ -709,6 +720,11 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
 
       const timeout = await attempt;
       expect(timeout).toMatchObject({ value: null, degraded: true, reason: 'timeout' });
+      expect(h.observeFallback).toHaveBeenCalledExactlyOnceWith(
+        'bounded-operation',
+        { eligible: 1, applied: 0, reason: 'timeout', scope: 'boot migration cancellation regression' },
+        expect.any(Object),
+      );
       expect(warnLog.mock.calls.some(([line]) =>
         String(line).includes('preflight cancelled during backup rendezvous'),
       )).toBe(true);
@@ -926,6 +942,11 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
       );
       expect(result.degraded).toBe(false);
       expect(result.value).toMatchObject({ applied: 1, failed: [] });
+      expect(h.observeFallback).toHaveBeenCalledExactlyOnceWith(
+        'bounded-operation',
+        { eligible: 1, applied: 1, reason: 'applied', scope: 'static trigger backup rendezvous regression' },
+        expect.any(Object),
+      );
       const observed = await rootSql<{ created: boolean; backupStillHeld: boolean }[]>`
         SELECT EXISTS (
           SELECT 1 FROM pg_trigger WHERE tgname = ${trigger}

@@ -270,6 +270,8 @@
     "lint:no-unenrolled-mjs-imports": "node scripts/check-unenrolled-mjs-imports.mjs",
     "lint:no-unenrolled-detached-import": "node scripts/check-no-unenrolled-detached-import.mjs",
     "lint:no-raw-setinterval": "node scripts/check-no-raw-setinterval.mjs",
+    "lint:client-fetch-in-timer": "node scripts/check-client-fetch-in-timer.mjs",
+    "lint:no-bespoke-condition-op": "node scripts/check-no-bespoke-condition-op.mjs",
     "lint:harness-arg-coverage": "tsx scripts/check-harness-arg-coverage.ts",
     "lint:integration-teardown-nullsafe": "node scripts/check-integration-teardown-nullsafe.mjs",
     "lint:no-fake-timers-in-integration": "node scripts/check-fake-timers-in-integration-tests.mjs",

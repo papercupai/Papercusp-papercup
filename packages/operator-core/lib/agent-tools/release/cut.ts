@@ -45,7 +45,7 @@
 
 import { z } from 'zod';
 import { execFile, type ExecFileOptions } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import * as path from 'node:path';
@@ -170,6 +170,16 @@ export const RELEASE_SEEDLESS_PLACEHOLDER_NAME = 'SEEDLESS_RELEASE.txt';
 export const RELEASE_SEEDLESS_PLACEHOLDER_CONTENT =
   'Papercusp release seed intentionally omitted; first boot uses the cold-join path.\n';
 
+// Older frozen source builds emit this dev-only note even when a seedless marker
+// is present. Recognize its exact bytes, never arbitrary files under that name.
+const DEV_SEED_PLACEHOLDER_NAME = 'PLACEHOLDER-README.txt';
+const DEV_SEED_PLACEHOLDER_CONTENT =
+  'Placeholder created by build.rs so the bundle.resources glob matches on a\n'
+  + 'fresh/cleaned checkout (EI-9412, mirrors EI-160\'s sidecar placeholder). Dev\n'
+  + 'and test builds never read the seed unless the offline-restore path is\n'
+  + 'exercised; for a real bundle run bin/ensure-release-seed.sh (every release\n'
+  + 'script already does), which replaces this directory wholesale.\n';
+
 interface CutWorktree {
   path: string;
   prunable: boolean;
@@ -199,6 +209,7 @@ export interface CutRootResolutionDeps {
   readDir?: (absolutePath: string) => string[];
   isRegularFile?: (absolutePath: string) => boolean;
   makeDir?: (absolutePath: string) => void;
+  removeFile?: (absolutePath: string) => void;
   writeFile?: (absolutePath: string, content: string) => void;
 }
 
@@ -208,8 +219,9 @@ export interface CutRootResolutionOptions {
   /** A completed seed may be reused only when the remaining tracked edits are the
    * exact idempotent version bump written by release-local.sh for this version. */
   reuseSeedVersion?: string;
-  /** A new seedless cut keeps normal clean-root enforcement and accepts only the
-   * canonical placeholder under src-tauri/seed. It never admits retry residue. */
+  /** A seedless cut keeps normal clean-root enforcement. Only the canonical
+   * marker and exact generated dev-note residue are admitted; preparation removes
+   * that note. It never admits tracked retry residue or seed payload. */
   seedless?: boolean;
   /**
    * WI-10003598: a read-only op (handoff) inspects a finished cut, and a
@@ -632,7 +644,10 @@ function validateCutRootSeedMode(
     try {
       const entries = [...readDir(seedRoot)].sort();
       if (entries.length === 0) return null;
-      if (entries.length !== 1 || entries[0] !== RELEASE_SEEDLESS_PLACEHOLDER_NAME) {
+      const hasDevPlaceholder = entries.length === 2
+        && entries[0] === DEV_SEED_PLACEHOLDER_NAME
+        && entries[1] === RELEASE_SEEDLESS_PLACEHOLDER_NAME;
+      if (!hasDevPlaceholder && (entries.length !== 1 || entries[0] !== RELEASE_SEEDLESS_PLACEHOLDER_NAME)) {
         return (
           `root_seedless_shape_invalid — '${seedRoot}' must contain exactly ` +
           `${RELEASE_SEEDLESS_PLACEHOLDER_NAME}; found ${entries.length === 0 ? '<empty>' : entries.join(', ')}`
@@ -643,6 +658,12 @@ function validateCutRootSeedMode(
       }
       if (readFile(placeholder) !== RELEASE_SEEDLESS_PLACEHOLDER_CONTENT) {
         return `root_seedless_shape_invalid — '${placeholder}' does not contain the canonical seedless marker`;
+      }
+      if (hasDevPlaceholder) {
+        const devPlaceholder = path.join(seedRoot, DEV_SEED_PLACEHOLDER_NAME);
+        if (!isRegularFile(devPlaceholder) || readFile(devPlaceholder) !== DEV_SEED_PLACEHOLDER_CONTENT) {
+          return `root_seedless_shape_invalid — '${devPlaceholder}' is not the exact regular-file build.rs placeholder`;
+        }
       }
     } catch (err) {
       return (
@@ -666,10 +687,20 @@ export function prepareSeedlessCutRoot(
   const writeFile = deps.writeFile ?? ((absolutePath: string, content: string) => {
     writeFileSync(absolutePath, content, { encoding: 'utf8', flag: 'wx' });
   });
+  const removeFile = deps.removeFile ?? unlinkSync;
   try {
     if (!exists(seedRoot)) makeDir(seedRoot);
     const entries = [...readDir(seedRoot)].sort();
     if (entries.length === 0) writeFile(placeholder, RELEASE_SEEDLESS_PLACEHOLDER_CONTENT);
+    else {
+      // Do not repair unknown payload, a modified marker, or a symlink. Dry-runs
+      // validate the same exact-byte exception but never perform this removal.
+      const error = validateCutRootSeedMode(desktop, deps, { seedless: true });
+      if (error) return error;
+      if (entries.includes(DEV_SEED_PLACEHOLDER_NAME)) {
+        removeFile(path.join(seedRoot, DEV_SEED_PLACEHOLDER_NAME));
+      }
+    }
   } catch (err) {
     return (
       `root_seedless_prepare_failed — could not materialize '${placeholder}': ` +

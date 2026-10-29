@@ -1,0 +1,242 @@
+{
+  "schemaVersion": "r2gcs-p002-completion-candidate-v1",
+  "workItemId": "WI-6554700010025561",
+  "plan": "r2-to-gcs-storage-migration-2026-10-23",
+  "status": "completed",
+  "completed": true,
+  "completionReadback": {
+    "workItemState": "done",
+    "completionAuthority": "committed",
+    "terminalOwner": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea",
+    "validationPassed": true,
+    "actualCloseSucceeded": true,
+    "scope": "P002 bounded publication and retained artifact delivery acceptance only; migration and P544 shipment remain open."
+  },
+  "migrationAccepted": false,
+  "shipped": false,
+  "certificate": "EI-27276006054140655",
+  "evaluator": {
+    "port": 43145,
+    "sha": "b30d5f83fa"
+  },
+  "bindings": [
+    73848,
+    73849,
+    73850,
+    73851,
+    73852,
+    73854,
+    73886
+  ],
+  "canonicalProductionRun": 22258800,
+  "cleanControl": {
+    "baseline": 22590677,
+    "copyBaseline": 22590678,
+    "caughtMutant": 22590682
+  },
+  "fingerprintReadback": {
+    "runtime": "staging3170",
+    "source": ".papercusp/scratch/papercusp-workspace/plans:get-spec-evidence/94137be1-eacb-4bcb-9102-cd6e0f0f956a/result-door-1793241065371.md",
+    "allSevenBindingsCurrent": true,
+    "measurements": [
+      {
+        "bindingId": 73886,
+        "measuredAtCommit": "7882e2d571eccbae8b62915de0d1e00769acc01c"
+      },
+      {
+        "bindingId": 73854,
+        "measuredAtCommit": "7882e2d571eccbae8b62915de0d1e00769acc01c"
+      },
+      {
+        "bindingId": 73852,
+        "measuredAtCommit": "7882e2d571eccbae8b62915de0d1e00769acc01c"
+      },
+      {
+        "bindingId": 73851,
+        "measuredAtCommit": "7882e2d571eccbae8b62915de0d1e00769acc01c"
+      },
+      {
+        "bindingId": 73850,
+        "measuredAtCommit": "7882e2d571eccbae8b62915de0d1e00769acc01c"
+      },
+      {
+        "bindingId": 73849,
+        "measuredAtCommit": "7882e2d571eccbae8b62915de0d1e00769acc01c"
+      },
+      {
+        "bindingId": 73848,
+        "measuredAtCommit": "7882e2d571eccbae8b62915de0d1e00769acc01c"
+      }
+    ],
+    "completionInstruction": "Exact freshly server-measured tuples embedded as preparedCompletion.specAdequacy.current. No historical runtime witness added.",
+    "sourcePathBase": "Operating account home directory"
+  },
+  "auditRecovery": {
+    "expiredAwait": 386348,
+    "timeoutDeliveryAcknowledged": 1026119,
+    "failedTask": "0mvsvml2u4cmnhi6oib",
+    "nativeFailure": "inference_gateway_error",
+    "targetedRepairRetiredTask": true,
+    "repairReceipt": "another dispatcher already reserved this scorecard",
+    "limitation": "Repair retirement is not an independent audit verdict or proof that a successor auditor took a turn."
+  },
+  "invariants": [
+    "Original production execution and P544 artifacts are unchanged.",
+    "No historical execution-time runtime witness is asserted.",
+    "Old bindings and targeted withdrawals remain immutable audit history.",
+    "No new production download, publication, build, broad control run or P003/gate operation was performed.",
+    "P004 committed completion is retained without re-closing or recertification."
+  ],
+  "preparedCompletion": {
+    "id": "WI-6554700010025561",
+    "harness": "papercusp",
+    "state": "done",
+    "validateOnly": true,
+    "assumptions": "none",
+    "specAdequacy": {
+      "classRef": "plan-class-migration",
+      "current": [
+        {
+          "planSlug": "r2-to-gcs-storage-migration-2026-10-23",
+          "specId": "R2GCS-DELIVERY-P-002",
+          "specRevision": 1,
+          "specFingerprint": "762122b1b105b727309f701ec2072a52e41b889f42ec8b49e7a1fd4f13c02d46",
+          "evidenceKind": "operational",
+          "evidenceRef": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-production-execution.json",
+          "sourceFingerprint": "sha256-file-set-v1:81eb98158c2888ea85dd000643172ab659d8233e914a766e22ba1a834be7000b",
+          "testFingerprint": "sha256-file-set-v1:97188c9d2adfe859cc96653dcdacb961ca75e2d5adc34654ccce47dbc048762a"
+        },
+        {
+          "planSlug": "r2-to-gcs-storage-migration-2026-10-23",
+          "specId": "R2GCS-DELIVERY-P-002",
+          "specRevision": 1,
+          "specFingerprint": "762122b1b105b727309f701ec2072a52e41b889f42ec8b49e7a1fd4f13c02d46",
+          "evidenceKind": "manual",
+          "evidenceRef": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-production-worker-identity-observation.json",
+          "sourceFingerprint": "sha256-file-set-v1:b97b6a3373f83803c648e3b957b2550cc5c271f8bd8d92c7aaeeedd166b3a1dd",
+          "testFingerprint": "sha256-file-set-v1:3b5556c40b18d060190e050950a4fd5a18f16096d213c1ec1eb0e7c9f84348b9",
+          "environmentFingerprint": "89a820f9bf69e5ed77f1e68b6ac2b59c680fdd165c40648690ec9f38d0baf2e6"
+        },
+        {
+          "planSlug": "r2-to-gcs-storage-migration-2026-10-23",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "specRevision": 4,
+          "specFingerprint": "628c12ad2f7965e0a874b4035701d8dc469db9a78c489011a104aadeffaccf1f",
+          "evidenceKind": "manual",
+          "evidenceRef": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-production-worker-identity-observation.json",
+          "sourceFingerprint": "sha256-file-set-v1:b97b6a3373f83803c648e3b957b2550cc5c271f8bd8d92c7aaeeedd166b3a1dd",
+          "testFingerprint": "sha256-file-set-v1:3b5556c40b18d060190e050950a4fd5a18f16096d213c1ec1eb0e7c9f84348b9",
+          "environmentFingerprint": "89a820f9bf69e5ed77f1e68b6ac2b59c680fdd165c40648690ec9f38d0baf2e6"
+        },
+        {
+          "planSlug": "r2-to-gcs-storage-migration-2026-10-23",
+          "specId": "R2GCS-DELIVERY-P-002",
+          "specRevision": 1,
+          "specFingerprint": "762122b1b105b727309f701ec2072a52e41b889f42ec8b49e7a1fd4f13c02d46",
+          "evidenceKind": "mutation",
+          "evidenceRef": "test-run 22590682 mutation-probe mutant fail scripts/publish-workspace-host-artifacts.test.ts @1f4f8bdd88f3",
+          "sourceFingerprint": "sha256-file-set-v1:2cb98c7807c7f37c4b7293bea6290ba05c4931cc82c1ecd0a583f380b6245626",
+          "testFingerprint": "sha256-file-set-v1:97188c9d2adfe859cc96653dcdacb961ca75e2d5adc34654ccce47dbc048762a",
+          "fixtureFingerprint": "sha256-file-set-v1:97188c9d2adfe859cc96653dcdacb961ca75e2d5adc34654ccce47dbc048762a"
+        },
+        {
+          "planSlug": "r2-to-gcs-storage-migration-2026-10-23",
+          "specId": "R2GCS-DELIVERY-P-002",
+          "specRevision": 1,
+          "specFingerprint": "762122b1b105b727309f701ec2072a52e41b889f42ec8b49e7a1fd4f13c02d46",
+          "evidenceKind": "test",
+          "evidenceRef": "scripts/publish-workspace-host-artifacts.test.ts",
+          "sourceFingerprint": "sha256-file-set-v1:2cb98c7807c7f37c4b7293bea6290ba05c4931cc82c1ecd0a583f380b6245626",
+          "testFingerprint": "sha256-file-set-v1:97188c9d2adfe859cc96653dcdacb961ca75e2d5adc34654ccce47dbc048762a",
+          "fixtureFingerprint": "sha256-file-set-v1:97188c9d2adfe859cc96653dcdacb961ca75e2d5adc34654ccce47dbc048762a"
+        },
+        {
+          "planSlug": "r2-to-gcs-storage-migration-2026-10-23",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "specRevision": 4,
+          "specFingerprint": "628c12ad2f7965e0a874b4035701d8dc469db9a78c489011a104aadeffaccf1f",
+          "evidenceKind": "mutation",
+          "evidenceRef": "test-run 22590682 mutation-probe mutant fail scripts/publish-workspace-host-artifacts.test.ts @1f4f8bdd88f3",
+          "sourceFingerprint": "sha256-file-set-v1:2cb98c7807c7f37c4b7293bea6290ba05c4931cc82c1ecd0a583f380b6245626",
+          "testFingerprint": "sha256-file-set-v1:97188c9d2adfe859cc96653dcdacb961ca75e2d5adc34654ccce47dbc048762a",
+          "fixtureFingerprint": "sha256-file-set-v1:97188c9d2adfe859cc96653dcdacb961ca75e2d5adc34654ccce47dbc048762a"
+        },
+        {
+          "planSlug": "r2-to-gcs-storage-migration-2026-10-23",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "specRevision": 4,
+          "specFingerprint": "628c12ad2f7965e0a874b4035701d8dc469db9a78c489011a104aadeffaccf1f",
+          "evidenceKind": "test",
+          "evidenceRef": "scripts/publish-workspace-host-artifacts.test.ts",
+          "sourceFingerprint": "sha256-file-set-v1:2cb98c7807c7f37c4b7293bea6290ba05c4931cc82c1ecd0a583f380b6245626",
+          "testFingerprint": "sha256-file-set-v1:97188c9d2adfe859cc96653dcdacb961ca75e2d5adc34654ccce47dbc048762a",
+          "fixtureFingerprint": "sha256-file-set-v1:97188c9d2adfe859cc96653dcdacb961ca75e2d5adc34654ccce47dbc048762a"
+        }
+      ]
+    },
+    "completion": {
+      "summary": "P002 maintained GCS publication and retained signed P544 delivery proof. Clean focused byte-integrity controls pass and catch the same-size digest bypass; current Worker observation and original canonical full-byte execution remain separate proof. Independent grading audit passed on the exact retained evaluator; current audit and evidence bindings were read back. Full migration and P544 trial shipment remain open.",
+      "testsRun": "Saved canonical production22258800 and clean focused scripts/publish-workspace-host-artifacts.test.ts baseline22590677/copy22590678/mutant22590682; no production download or control replay this continuation.",
+      "testResult": "Original production five assertions passed; focused baseline/copy passed and digest bypass was caught. Independent gradingAudit passed; audit EI-27278978902764416, stamped 2026-10-29T02:27:42.110Z.",
+      "verifiedHow": "Both exact P002 clauses passed before certification. Independent audit EI-27278978902764416 passed for certificate EI-27276006054140655 on exact b30d5f83fa; subject card audit and evidence-binding currentness are current. Fresh staging3170 independently measured bindings73848-51,73852/73854,73886 CURRENT; exact measured tuples are supplied in specAdequacy.current. Original canonical22258800 and missing historical execution-time runtime witness preserved.",
+      "filesChanged": [
+        "scripts/publish-workspace-host-artifacts.mjs",
+        "scripts/lib/workspace-host-gcs-publication.mjs",
+        "scripts/lib/workspace-host-gcs-publication.d.mts",
+        "scripts/publish-workspace-host-artifacts.test.ts",
+        "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+        "apps/operator-public/wrangler.toml",
+        "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-production-execution.json",
+        "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-production-worker-identity-observation.json"
+      ],
+      "kindEvidence": [
+        {
+          "kind": "service",
+          "testsRun": "Saved canonical22258800 against service named papercusp-cupboard; original full-stream GET and HEAD for server.tgz, detached signature, manifest and SBOM returned HTTP 200; anonymous raw bucket HTTP 403.",
+          "testResult": "PASS: four exact file identities and raw-private denial. No new execution-time runtime witness or production replay.",
+          "build": "Current manual Worker observation version968092d7-beeb-4bdb-a1b3-3953d4b9fefc; environment89a820f9bf69e5ed77f1e68b6ac2b59c680fdd165c40648690ec9f38d0baf2e6. This identifies current deployment separately from the original execution."
+        },
+        {
+          "kind": "logic",
+          "testsRun": "scripts/publish-workspace-host-artifacts.test.ts clean focused baseline22590677, copy22590678 and violating digest control22590682.",
+          "testResult": "Baseline and copy pass with no selected-case skips; the deliberately accepted wrong digest fails the exact byte-integrity assertion. Other cases excluded by test name are not claimed as executed."
+        },
+        {
+          "kind": "config",
+          "readBack": "Independent current manual bindings73852/73854 observe papercusp-cupboard GCS_BUCKET=pc-p317-host-bundle-20260917, installed GCS secret and no r2_bucket binding; original canonical production receipt is retained separately."
+        }
+      ],
+      "verification": {
+        "coverage": {
+          "population": [
+            "maintained exact-byte publication verifier",
+            "retained signed P544 four-file production delivery",
+            "private raw-bucket denial",
+            "current GCS Worker configuration"
+          ],
+          "checked": [
+            "maintained exact-byte publication verifier",
+            "retained signed P544 four-file production delivery",
+            "private raw-bucket denial",
+            "current GCS Worker configuration"
+          ],
+          "notChecked": [],
+          "notApplicable": [],
+          "residue": []
+        }
+      },
+      "contributesTo": [
+        "R-2"
+      ]
+    }
+  },
+  "next": "P002 is complete with committed authority. Do not re-close, recertify or repeat production downloads/controls. Continue P005/P006, preserve peer P003 custody, then D090 before D086/P544. Retained-spawner defect EI-27276185092110010 is separately owned and remains unresolved.",
+  "auditSnapshot": {
+    "state": "passed",
+    "auditIssueId": "EI-27278978902764416",
+    "auditor": "su-9306fb1e-fdcd-4fbb-8589-344055def74a",
+    "auditedAt": "2026-10-29T02:27:42.110Z",
+    "auditCurrentness": "current",
+    "evidenceBindingCurrentness": "current"
+  }
+}

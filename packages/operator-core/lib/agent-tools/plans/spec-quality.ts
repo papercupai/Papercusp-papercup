@@ -391,11 +391,35 @@ function clauseImplementationCouplingReason(clause: SpecClauseRevision): string 
   if (behaviorReason) return behaviorReason;
   const observation = clause.falsifier?.observation;
   if (!observation) return null;
-  const observationReason = implementationCouplingReason(observation);
+  const observationReason = implementationCouplingReason(observation, clause.behavior);
   return observationReason ? 'falsifier observation ' + observationReason : null;
 }
 
-function implementationCouplingReason(behavior: string): string | null {
+/** Public data names describe an observable contract. Mask only their declared
+ * occurrences; the same name used later as private machinery still fails. */
+function withoutPublicContractIdentifiers(behavior: string): string {
+  let text = behavior.replace(
+    /\b[a-z][a-z0-9-]*(?::(?:[a-z][a-z0-9-]*|<[A-Za-z_][A-Za-z0-9_]*>)){1,}/g,
+    (template) => template.replace(/<[A-Za-z_][A-Za-z0-9_]*>/g, (param) => ' '.repeat(param.length)),
+  );
+  text = text.replace(
+    /(\b(?:response|results?|payload)\s+(?:includes?|contains?|returns?)\s+)([A-Za-z_$][A-Za-z0-9_$]*)/gi,
+    (_match, prefix: string, field: string) => prefix + ' '.repeat(field.length),
+  );
+  // Catalog/schema parameter lists and classifications expose data to callers.
+  // Bound each match to its sentence so it cannot hide a later helper call.
+  text = text.replace(/[^.;\n]+/g, (sentence) => {
+    if (!/\b(?:catalog|schema)\b/i.test(sentence)) return sentence;
+    return sentence
+      .replace(/\b[A-Za-z_$][A-Za-z0-9_$]*(?:\s*(?:,|and)\s*[A-Za-z_$][A-Za-z0-9_$]*)*\s+(?:params|parameters)\b/g,
+        (params) => params.replace(/\b[a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/g, (param) => ' '.repeat(param.length)))
+      .replace(/(\bclassifies\s+)([A-Za-z_$][A-Za-z0-9_$]*)/g,
+        (_match, prefix: string, field: string) => prefix + ' '.repeat(field.length));
+  });
+  return text;
+}
+
+function implementationCouplingReason(behavior: string, publicContract?: string): string | null {
   const sourcePresence = specBehaviorImplementationPresenceReason(behavior);
   if (sourcePresence) return sourcePresence;
   if (CODE_FILE_TOKEN_RE.test(behavior)) return 'names an implementation file';
@@ -486,7 +510,17 @@ function implementationCouplingReason(behavior: string): string | null {
     'iPod',
     'iMac',
   ]);
-  for (const match of behavior.matchAll(/\b[a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/g)) {
+  let identifierText = withoutPublicContractIdentifiers(behavior);
+  if (publicContract) {
+    const contractText = withoutPublicContractIdentifiers(publicContract);
+    const publicNames = new Set([...publicContract.matchAll(/\b[a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/g)]
+      .map((match) => match[0]).filter((name) => !contractText.includes(name)));
+    identifierText = identifierText.replace(
+      /(\bwithout\s+|\bits\s+)([A-Za-z_$][A-Za-z0-9_$]*)(?=\b)/gi,
+      (match, prefix: string, name: string) => publicNames.has(name) ? prefix + ' '.repeat(name.length) : match,
+    );
+  }
+  for (const match of identifierText.matchAll(/\b[a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/g)) {
     if (!publicPlatformNames.has(match[0])) {
       return 'names implementation construct ' + JSON.stringify(match[0]) + ' instead of an observable contract';
     }

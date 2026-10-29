@@ -13,6 +13,78 @@ import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp
 const root = resolve(import.meta.dirname, '../../..');
 const workerOptions = isolatedWorkerOptions(30_000);
 
+it.runIf(process.platform === 'linux')('retains an aged live private PostgreSQL cluster during generic scratch collection', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'live-pg-scratch-evidence-'));
+  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: evidenceDir };
+  delete env.PC_HEAVY_PREEMPT_READY_FILE;
+  delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+  const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--', process.execPath,
+    '--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { existsSync, mkdirSync, readFileSync, realpathSync, utimesSync } from 'node:fs';
+      import { stripTypeScriptTypes } from 'node:module';
+      import { dirname, join, resolve } from 'node:path';
+      import { pathToFileURL } from 'node:url';
+      import postgres from 'postgres';
+      import { GENERIC_SCRATCH_SWEEP_MAX_AGE_MS, sweepStaleTestScratch }
+        from './libs/test-config/src/hermetic-tmpdir.ts';
+      assert.ok(process.env.PAPERCUSP_TEST_PG_ADMIN_URL, 'explicit private database URL required');
+      const sql = postgres(process.env.PAPERCUSP_TEST_PG_ADMIN_URL, { max: 1 });
+      try {
+        const [{ data_directory: directory }] = await sql\x60SHOW data_directory\x60;
+        assert.match(directory, /papercusp-test-pg-[^/]+$/);
+        const scratch = dirname(directory);
+        assert.equal(realpathSync(scratch), realpathSync(process.env.TMPDIR));
+        const stale = join(scratch, 'abandoned-control');
+        mkdirSync(stale);
+        const old = (Date.now() - GENERIC_SCRATCH_SWEEP_MAX_AGE_MS * 2) / 1000;
+        for (const path of [directory, stale]) utimesSync(path, old, old);
+        // The old age-only rule selects both entries. The production collector
+        // must distinguish the actual native postmaster from unused scratch.
+        const result = sweepStaleTestScratch(scratch, { startAt: 0 });
+        assert.equal(existsSync(stale), false, 'unused aged control must be collected');
+        assert.equal(existsSync(join(directory, 'postmaster.pid')), true, 'live cluster must survive');
+        assert.ok(result.keptAlive >= 1);
+        const [{ alive }] = await sql\x60SELECT 1 AS alive\x60;
+        assert.equal(alive, 1, 'cluster must still accept SQL after collection');
+        // Exercise the same collector with only its native-owner guard removed.
+        // Both copies record deletion selections instead of deleting: a causal
+        // control must never damage even this fixture's running PostgreSQL.
+        const source = readFileSync('./libs/test-config/src/hermetic-tmpdir.ts', 'utf8');
+        const guard = 'isDirectory && hasLivePostmaster(path)';
+        const deletion = 'rmSync(path, { recursive: true, force: true });';
+        assert.equal(source.split(guard).length, 2, 'exactly one native-owner guard required');
+        assert.ok(source.includes(deletion), 'collector deletion site required');
+        const recording = source.replaceAll(deletion, 'deletionSelections.push(path);')
+          .replace("'./tmpdir-guard.ts'", JSON.stringify(pathToFileURL(resolve('./libs/test-config/src/tmpdir-guard.ts')).href))
+          + '\\nexport const deletionSelections = [];';
+        for (const disabled of [false, true]) {
+          const variant = disabled ? recording.replace(guard, 'false') : recording;
+          const javascript = stripTypeScriptTypes(variant);
+          const collector = await import('data:text/javascript;base64,' + Buffer.from(javascript).toString('base64'));
+          collector.sweepStaleTestScratch(scratch, { startAt: 0 });
+          assert.deepEqual(collector.deletionSelections, disabled ? [directory] : [],
+            'only removing native ownership protection may select the live cluster');
+        }
+        assert.equal(existsSync(join(directory, 'postmaster.pid')), true);
+        const [{ still_alive }] = await sql\x60SELECT 1 AS still_alive\x60;
+        assert.equal(still_alive, 1, 'nondeleting falsification controls must preserve the fixture');
+        console.log('age-only-control-selects-live-private-pg');
+        console.log('live-private-pg-survived-aged-scratch-collection');
+      } finally { await sql.end(); }
+    `], { cwd: root, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  try {
+    const result = await captureIsolatedWorker(child, evidenceDir, isolatedWorkerOptions(120_000));
+    expect(result, result.output.slice(-6000)).toMatchObject({ code: 0, signal: null, timedOut: false,
+      exitWaitTimedOut: false, stdioDrainTimedOut: false });
+    expect(result.output).toContain('live-private-pg-survived-aged-scratch-collection');
+    expect(result.output).toContain('age-only-control-selects-live-private-pg');
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await rm(evidenceDir, { recursive: true, force: true });
+  }
+}, 180_000);
+
 it.runIf(process.platform === 'linux')('keeps native HOME and TMPDIR visible through the real sandbox device namespace', async () => {
   const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-native-namespace-evidence-'));
   const deviceTmp = await mkdtemp('/dev/shm/isolated-native-namespace-');

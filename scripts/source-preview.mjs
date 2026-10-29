@@ -52,7 +52,7 @@ import { processGroupLifetime } from '@papercusp/operator-core/lib/fleet/process
 import { sealRuntimeSourceHandle } from '@papercusp/operator-core/lib/blind-review-source-seal';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs, appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { promises as fs, appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { papercuspHome } from '@papercusp/host-platform/home';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { constants, homedir, tmpdir } from 'node:os';
@@ -1988,6 +1988,22 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
   }
 }
 
+/** Hash every byte without allocating a second copy of a toolchain executable.
+ * Both identity readers retain their descriptor and metadata fences.
+ * @param {number} fd
+ * @param {bigint} size
+ */
+function hashBgFileDescriptor(fd, size) {
+  const hash = createHash('sha256');
+  const buffer = Buffer.allocUnsafe(Math.min(4 * 1024 * 1024, Number(size)) || 1);
+  for (;;) {
+    const count = readSync(fd, buffer, 0, buffer.length, null);
+    if (count === 0) break;
+    hash.update(buffer.subarray(0, count));
+  }
+  return hash.digest('hex');
+}
+
 /** Outputs must retain the actual compiler-created file, even if replacement
  * bytes happen to hash identically. Keep link and inode custody on the same FD
  * used for hashing; the final path must still name that independent file.
@@ -1999,7 +2015,7 @@ function readBgIndependentOutputIdentity(path) {
   try {
     const before = fstatSync(fd, { bigint: true });
     assert.ok(before.isFile() && before.nlink === 1n, 'BG output must be an independent regular file');
-    const sha256 = createHash('sha256').update(readFileSync(fd)).digest('hex');
+    const sha256 = hashBgFileDescriptor(fd, before.size);
     const after = fstatSync(fd, { bigint: true }), named = lstatSync(path, { bigint: true });
     const fields = ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs', 'nlink'];
     assert.ok(named.isFile() && fields.every(key => before[key] === after[key] && after[key] === named[key])
@@ -2019,7 +2035,7 @@ function readBgFileIdentity(path) {
   try {
     const before = fstatSync(fd, { bigint: true });
     assert.ok(before.isFile(), 'BG build identity must be a regular file');
-    const sha256 = createHash('sha256').update(readFileSync(fd)).digest('hex');
+    const sha256 = hashBgFileDescriptor(fd, before.size);
     const after = fstatSync(fd, { bigint: true });
     assert.ok(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => before[key] === after[key])
       && realpathSync(path) === physical, 'BG build identity changed while reading');

@@ -8,6 +8,7 @@ import { HostedSessionStore } from './hosted-session';
 import { PostgresHostedMembershipAuthority } from './hosted-membership-authority';
 import { isHostedPrincipal, type HostedPrincipal } from './hosted-principal';
 import type { HostedServiceContextRunner } from './hosted/workos-lifecycle-postgres';
+import { cloudTelemetryConsentSchema, DEFAULT_CLOUD_TELEMETRY_CONSENT, type CloudTelemetryConsent } from '../telemetry-kinds';
 import { parseHostedLeadBindingChallenge, parseHostedLeadBindingScope,
   type HostedLeadBindingChallenge, type HostedLeadBindingScope } from './hosted-lead-binding';
 
@@ -48,6 +49,48 @@ async function currentPrincipal(sql: Sql, principal: HostedPrincipal): Promise<b
 
 export class PostgresHostedLeadBindingStore {
   constructor(private readonly run: HostedServiceContextRunner = fn => withHostedServiceContext(fn)) {}
+
+  /** Internal D-053 storage port, NOT service authorization. The enclosing
+   * adapter must check the exact app grant and canonical graph before EACH
+   * read, including the post-vendor recheck. No browser session is fabricated:
+   * the redeemed receipt selects the subject and current membership/consent.
+   * Never return this identity-bearing result directly through a tool. */
+  async readServiceSubject(input: HostedLeadBindingScope): Promise<{
+    receipt: HostedLeadBindingReceipt; consent: CloudTelemetryConsent;
+  } | null> {
+    const scope = parseHostedLeadBindingScope(input);
+    return this.run(async sql => {
+      const rows = await sql<BindingRow[]>`SELECT * FROM papercusp_auth.hosted_lead_bindings
+        WHERE graph_workspace_id = ${scope.graphWorkspaceId} AND person_ref = ${scope.personRef}
+          AND environment = ${scope.environment} AND redeemed_at IS NOT NULL AND revoked_at IS NULL
+        FOR UPDATE`;
+      if (rows.length !== 1) return null;
+      const bound = receipt(rows[0]!);
+      if (!bound) return null;
+      const member = await new PostgresHostedMembershipAuthority(sql).resolveActiveForUpdate({
+        userId: bound.userId, organizationId: bound.organizationId });
+      if (!member || !member.permissions.has('workspace:view')) return null;
+      const active = await sql`SELECT u.id FROM papercusp_auth.hosted_users u
+        JOIN papercusp_auth.organizations o ON o.id = ${bound.organizationId}::uuid
+        WHERE u.id = ${bound.userId}::uuid AND u.status = 'active' AND o.status = 'active'
+        FOR UPDATE OF u, o`;
+      if (active.length !== 1) return null;
+      // Preferences deliberately deny hosted_service. Narrow to the existing
+      // tenant RLS role using ONLY the locked receipt's identity. This is a
+      // database scope, not an invented cookie/session HostedPrincipal.
+      await sql`SELECT set_config('app.organization_id', ${bound.organizationId}, true),
+        set_config('app.user_id', ${bound.userId}, true)`;
+      await sql.unsafe('SET LOCAL ROLE hosted_app');
+      const [preference] = await sql<{ consent: unknown }[]>`
+        SELECT profile->'cloudMonitoring' AS consent FROM papercusp_auth.hosted_user_preferences
+        WHERE organization_id = ${bound.organizationId}::uuid AND user_id = ${bound.userId}::uuid
+        FOR SHARE`;
+      await sql.unsafe('SET LOCAL ROLE hosted_service');
+      const parsed = cloudTelemetryConsentSchema.safeParse(preference?.consent ?? DEFAULT_CLOUD_TELEMETRY_CONSENT);
+      if (!parsed.success) return null;
+      return { receipt: bound, consent: parsed.data };
+    });
+  }
 
   /** Called only after operator issuance/graph authorization. Same-id retries
    * preserve the original signed scope; conflicting retries are refused. */

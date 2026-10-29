@@ -38,22 +38,57 @@ afterEach(() => {
 describe('discoverOperatorUrl', () => {
   it('returns httpUrl from operator.json (the packaged-desktop path)', () => {
     const home = homeWithOperatorJson(JSON.stringify({ httpUrl: 'http://127.0.0.1:20114', port: 20114 }));
-    expect(discoverOperatorUrl({ home })).toBe('http://127.0.0.1:20114');
+    expect(discoverOperatorUrl({ home, env: {} })).toBe('http://127.0.0.1:20114');
   });
 
   it('falls back to port when httpUrl is absent', () => {
     const home = homeWithOperatorJson(JSON.stringify({ port: 20114 }));
-    expect(discoverOperatorUrl({ home })).toBe('http://127.0.0.1:20114');
+    expect(discoverOperatorUrl({ home, env: {} })).toBe('http://127.0.0.1:20114');
   });
 
   it('returns null when operator.json is missing (the dev box)', () => {
     const home = homeWithOperatorJson(null);
-    expect(discoverOperatorUrl({ home })).toBeNull();
+    expect(discoverOperatorUrl({ home, env: {} })).toBeNull();
   });
 
   it('returns null on unparseable operator.json', () => {
     const home = homeWithOperatorJson('not json');
-    expect(discoverOperatorUrl({ home })).toBeNull();
+    expect(discoverOperatorUrl({ home, env: {} })).toBeNull();
+  });
+
+  it('uses the same explicit state root as the Server and follows its advertised port', () => {
+    const home = homeWithOperatorJson(JSON.stringify({ port: 20114 }));
+    const stateRoot = join(home, 'isolated-server');
+    mkdirSync(stateRoot);
+    const env = { PAPERCUSP_HOME: stateRoot };
+    writeFileSync(join(stateRoot, 'operator.json'), JSON.stringify({ port: 29141 }));
+    expect(discoverOperatorUrl({ home, env })).toBe('http://127.0.0.1:29141');
+    expect(resolveOperatorBase({}, env, { home })).toBe('http://127.0.0.1:29141');
+
+    writeFileSync(join(stateRoot, 'operator.json'), JSON.stringify({ httpUrl: 'http://127.0.0.1:29142', port: 29142 }));
+    expect(discoverOperatorUrl({ home, env })).toBe('http://127.0.0.1:29142');
+    expect(resolveOperatorBase({}, env, { home })).toBe('http://127.0.0.1:29142');
+  });
+
+  it.each([null, 'not json'])('never adopts another instance when explicit-root discovery is %s', (content) => {
+    const home = homeWithOperatorJson(JSON.stringify({ port: 20114 }));
+    const stateRoot = join(home, 'isolated-server');
+    mkdirSync(stateRoot);
+    if (content !== null) writeFileSync(join(stateRoot, 'operator.json'), content);
+    const env = { PAPERCUSP_HOME: stateRoot };
+    expect(discoverOperatorUrl({ home, env })).toBeNull();
+    expect(() => resolveOperatorBase({}, env, { home })).toThrow(/configured Papercusp home/i);
+    expect(resolveOperatorBase({ operatorUrl: 'https://chosen.example.com' }, env, { home }))
+      .toBe('https://chosen.example.com');
+    expect(resolveOperatorBase({}, { ...env, PAPERCUSP_OPERATOR_URL: 'https://pinned.example.com' }, { home }))
+      .toBe('https://pinned.example.com');
+    expect(resolveOperatorBase({}, { ...env, PAPERCUSP_HONO_PORT: '29143' }, { home, preferSelfPort: true }))
+      .toBe('http://127.0.0.1:29143');
+  });
+
+  it('uses the existing default-home rule for an empty isolation pin', () => {
+    const home = homeWithOperatorJson(JSON.stringify({ port: 20114 }));
+    expect(discoverOperatorUrl({ home, env: { PAPERCUSP_HOME: '  ' } })).toBe('http://127.0.0.1:20114');
   });
 });
 

@@ -7,6 +7,7 @@ import { HostedSessionStore } from './hosted-session';
 import { PostgresHostedMembershipAuthority } from './hosted-membership-authority';
 import { createHostedPrincipal } from './hosted-principal';
 import { PostgresHostedLeadBindingStore } from './hosted-lead-binding-postgres';
+import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from '../telemetry-kinds';
 import { PostgresHostedLeadBindingAuthority, hostedLeadBindingIssuerRef, createPostgresHostedLeadBindingService,
   type LeadBindingAuthorityRunner } from './hosted-lead-binding-authority';
 
@@ -139,6 +140,42 @@ async function challenge() {
   return id;
 }
 describe('hosted lead binding durable proof', () => {
+  it('resolves service subjects only from current exact receipts, active authority and fresh scoped consent', async () => {
+    const principal = await actor(); const other = await actor();
+    const claim = freshClaim();
+    const scope = { graphWorkspaceId: claim.graphWorkspaceId, personRef: claim.personRef, environment: claim.environment };
+    await store.issue(claim);
+    expect(await store.readServiceSubject(scope)).toBeNull();
+    const bound = await store.redeem(claim, principal);
+    expect(await store.readServiceSubject(scope)).toEqual({ receipt: bound, consent: DEFAULT_CLOUD_TELEMETRY_CONSENT });
+    const consent = { ...DEFAULT_CLOUD_TELEMETRY_CONSENT, analytics: { enabled: true, since: '2026-10-29T00:00:00Z' } };
+    // A different customer's preference must never authorize the bound user.
+    await db.adminSql`INSERT INTO papercusp_auth.hosted_user_preferences (organization_id, user_id, profile)
+      VALUES (${other.activeOrganizationId}::uuid, ${other.userId}::uuid, ${JSON.stringify({ cloudMonitoring: consent })}::jsonb)
+      ON CONFLICT (organization_id, user_id) DO UPDATE SET profile = EXCLUDED.profile`;
+    expect((await store.readServiceSubject(scope))?.consent.analytics.enabled).toBe(false);
+    await db.adminSql`INSERT INTO papercusp_auth.hosted_user_preferences (organization_id, user_id, profile)
+      VALUES (${principal.activeOrganizationId}::uuid, ${principal.userId}::uuid, ${JSON.stringify({ cloudMonitoring: consent })}::jsonb)
+      ON CONFLICT (organization_id, user_id) DO UPDATE SET profile = EXCLUDED.profile`;
+    expect((await store.readServiceSubject(scope))?.consent).toEqual(consent);
+    expect(await store.readServiceSubject({ ...scope, graphWorkspaceId: 'foreign' })).toBeNull();
+    expect(await store.readServiceSubject({ ...scope, environment: 'staging' })).toBeNull();
+    await db.adminSql`UPDATE papercusp_auth.hosted_user_preferences SET profile = '{"cloudMonitoring":{}}'::jsonb
+      WHERE user_id = ${principal.userId}::uuid AND organization_id = ${principal.activeOrganizationId}::uuid`;
+    expect(await store.readServiceSubject(scope)).toBeNull();
+    await db.adminSql`UPDATE papercusp_auth.hosted_user_preferences SET profile = '{}'::jsonb
+      WHERE user_id = ${principal.userId}::uuid AND organization_id = ${principal.activeOrganizationId}::uuid`;
+    await db.adminSql`UPDATE papercusp_auth.organization_memberships SET status = 'suspended', suspended_at = now()
+      WHERE user_id = ${principal.userId}::uuid AND organization_id = ${principal.activeOrganizationId}::uuid`;
+    expect(await store.readServiceSubject(scope)).toBeNull();
+    await db.adminSql`UPDATE papercusp_auth.organization_memberships SET status = 'active', suspended_at = NULL
+      WHERE user_id = ${principal.userId}::uuid AND organization_id = ${principal.activeOrganizationId}::uuid`;
+    await db.adminSql`UPDATE papercusp_auth.hosted_users SET status = 'deactivated', deactivated_at = now() WHERE id = ${principal.userId}::uuid`;
+    expect(await store.readServiceSubject(scope)).toBeNull();
+    await db.adminSql`UPDATE papercusp_auth.hosted_users SET status = 'active', deactivated_at = NULL WHERE id = ${principal.userId}::uuid`;
+    expect(await store.revoke(scope, principal)).toBe(true);
+    expect(await store.readServiceSubject(scope)).toBeNull();
+  });
   it('persists exact issued claims and supports owner-only idempotent redemption/read/revocation', async () => {
     const principal = await actor();
     const other = await actor();

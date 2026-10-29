@@ -21,8 +21,12 @@ type CallEvidence = Record<string, { fingerprint: string; at: string }>;
 type SourceContinuation = { snapshot: string; files: Record<string, {
   offset: number; lines: number; identity: boolean; retainedBytes: number; calls: number; fingerprint: string; done: boolean;
 }> };
+type PreparedNativeCalls = Record<string, { fingerprint: string; scope: 'included' | 'excluded' }>;
 type CaptureReceipt = { manifest?: Record<string, string[]>; enrolling?: boolean;
   sourceEnrollment?: { version: 1; prepared: boolean; snapshots: Record<string, string>; cursor: string | null };
+  sourceReconciliation?: { version: 1; window: string; cursor: string | null;
+    roots: Record<string, { snapshot: string; calls: PreparedNativeCalls }>;
+    pending?: Record<string, { continuation: SourceContinuation; calls: PreparedNativeCalls }> };
   population?: string; cursor?: string; scanWindow?: string;
   pendingSources?: Record<string, { continuation: SourceContinuation; calls: CallEvidence; indexFingerprint?: string }>;
   scans?: Record<string, { snapshot: string; fingerprint: string;
@@ -122,6 +126,7 @@ export async function readAuthorizedNativeDispatch(input: {
       activity: [...await sql<{ row: Record<string, unknown>; population: string }[]>`
         SELECT to_jsonb(a) AS row,count(*) OVER ()::text AS population FROM harness_shared.agent_activity a
         WHERE a.id=${input.id}::bigint
+          OR (a.session_id=${input.sessionId} AND a.tool_use_id=${input.callId} AND a.kind='tool')
           OR (a.detail->'nativeDispatch'->>'nativeSessionId'=${input.sessionId}
             AND a.detail->'nativeDispatch'->>'callId'=${input.callId}) ORDER BY a.id LIMIT 2`],
       dispatch: [...await sql<{ row: Record<string, unknown>; population: string }[]>`
@@ -135,6 +140,8 @@ export async function readAuthorizedNativeDispatch(input: {
     const signed = before.activity.filter(a => Object.hasOwn(a.row.detail ?? {}, 'nativeDispatch'));
     // At most the selected unsigned index and ONE original protected receipt.
     // Count before filtering: a conflicting receipt in another scope is fatal.
+    // Row identity and embedded receipt identity are independent selectors:
+    // tampering either cannot hide a conflicting copy from this census.
     if (!candidate || signed.length !== 1 || before.activity.some(a => a.population !== String(before.activity.length))
       || before.dispatch.length !== 1 || d?.population !== '1') return null;
     const a = signed[0]!;
@@ -187,6 +194,38 @@ export async function readAuthorizedNativeDispatch(input: {
     return { binding: { id: String(receipt.advSessionId), owner: receipt.ownerId,
       provider: receipt.provider, harness: receipt.harnessSlug } satisfies Binding,
       fingerprint: digest([before, runtimes]) };
+  } catch { return null; }
+}
+
+/** @internal Reconcile ONE independently read canonical call. The original
+ * protected receipt supplies that call's scope, including an explicit exclusion
+ * from the requested harness. Neither a current brief nor an unsigned index can
+ * exclude a call. No body, root authority or continuity certificate is returned.
+ * The caller must renew the canonical source after these database/ACL awaits. */
+export async function reconcileAuthorizedNativeCall(source: SearchSource, binding: Binding,
+  opts: Pick<NativeCaptureOptions, 'workspaceId' | 'harnessSlug' | 'sourceBoundary' | 'client' | 'authorize'>) {
+  try {
+    if (source.provider !== 'codex' || source.provider !== binding.provider || source.actor !== binding.owner
+      || !source.namespace || !source.callId || !await opts.authorize()) return null;
+    const sql = opts.client ?? getOrgPg().sql;
+    // Discover the ORIGINAL by exact native identity, before any scope/owner
+    // filter. readAuthorizedNativeDispatch independently renews the full receipt
+    // and invocation populations, signature, runtime, arguments and current ACL.
+    const rows = await sql<{ id: string; receipt: unknown }[]>`
+      SELECT id::text,detail->'nativeDispatch' AS receipt FROM harness_shared.agent_activity
+      WHERE detail->'nativeDispatch'->>'nativeSessionId'=${source.namespace}
+        AND detail->'nativeDispatch'->>'callId'=${source.callId} ORDER BY id LIMIT 2`;
+    if (rows.length !== 1) return null;
+    const parsed = nativeDispatchReceipt.safeParse(rows[0]!.receipt);
+    if (!parsed.success || parsed.data.harnessSlug === '*') return null;
+    const receipt = parsed.data;
+    const read = await readAuthorizedNativeDispatch({ id: rows[0]!.id, actor: binding.owner,
+      provider: binding.provider, sessionId: source.namespace, callId: source.callId,
+      source: { ...source, harnessSlug: receipt.harnessSlug } }, { ...opts, harnessSlug: receipt.harnessSlug });
+    if (!read || read.binding.id !== binding.id || read.binding.owner !== binding.owner
+      || read.binding.provider !== binding.provider) return null;
+    return { scope: receipt.harnessSlug === opts.harnessSlug ? 'included' as const : 'excluded' as const,
+      fingerprint: read.fingerprint };
   } catch { return null; }
 }
 /** D030: exact dispatch correlation is a necessary check, NEVER an authority
@@ -487,8 +526,84 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
       if ((await canonicalNativeRuntimeManifest(binding, deadline)).snapshot !== snapshot) return 'unknown';
     if (Date.now() >= deadline) return 'unknown';
     const prepared = roster.every(b => manifest[key(b)] && snapshots[key(b)]);
+    // Source enrollment is only the first phase. On later turns independently
+    // enumerate canonical calls from a bounded wave, and reconcile EACH call's
+    // own protected receipt. Keep opaque preparation evidence only: saved roots
+    // do not certify coverage, and must all be renewed before a future verdict.
+    const window = digest([opts.since, opts.until]);
+    const oldReconciliation = prior?.sourceReconciliation?.window === window ? prior.sourceReconciliation : null;
+    const roots = { ...oldReconciliation?.roots };
+    const pending = { ...oldReconciliation?.pending };
+    for (const id of Object.keys(roots))
+      if (!keys.has(id) || roots[id]?.snapshot !== snapshots[id]) delete roots[id];
+    for (const id of Object.keys(pending))
+      if (!keys.has(id) || pending[id]?.continuation.snapshot !== snapshots[id]) delete pending[id];
+    let sourceCursor = oldReconciliation?.cursor ?? null;
+    const currentRoots = new Map<string, { binding: Binding; unchanged: () => Promise<boolean>;
+      renewals: { source: SearchSource; fingerprint: string }[] }>();
+    if (prepared && prior?.sourceEnrollment?.prepared) {
+      const next = roster.findIndex(b => key(b) === sourceCursor);
+      const ordered = next < 0 ? roster : [...roster.slice(next + 1), ...roster.slice(0, next + 1)];
+      for (const binding of ordered.slice(0, ENROLLMENT_BATCH)) {
+        if (Date.now() >= deadline - 100) break;
+        sourceCursor = key(binding);
+        delete roots[sourceCursor];
+        const previousSource = pending[sourceCursor];
+        delete pending[sourceCursor];
+        try {
+          const source = await canonicalNativeRuntimeSources(binding, opts, deadline - 100, undefined,
+            previousSource?.continuation ?? null);
+          if (source.snapshot !== snapshots[sourceCursor]) continue;
+          // Resume source parsing, not authority. Earlier chunks retain only
+          // opaque preparation; a future verdict must renew their original
+          // sources/receipts too, including every excluded call.
+          const calls: PreparedNativeCalls = source.snapshot === previousSource?.continuation.snapshot
+            ? { ...previousSource.calls } : {};
+          const renewals: { source: SearchSource; fingerprint: string }[] = [];
+          for (const call of source.sources) {
+            if (micros(call.at) < micros(opts.since) || micros(call.at) >= micros(opts.until)) continue;
+            const proof = await reconcileAuthorizedNativeCall(call, binding, opts);
+            if (!proof || Date.now() >= deadline - 100) throw new Error('native_capture_call_authority');
+            const id = digest([call.actor, call.provider, call.namespace, call.callId]);
+            if (calls[id]) throw new Error('native_capture_duplicate_call');
+            calls[id] = proof; renewals.push({ source: call, fingerprint: proof.fingerprint });
+          }
+          // Renew earlier calls too: a later call's ACL callback can remove or
+          // rewrite the first receipt/invocation or rotate the signing key.
+          for (const call of renewals) {
+            const proof = await reconcileAuthorizedNativeCall(call.source, binding, opts);
+            if (!proof || proof.fingerprint !== call.fingerprint) throw new Error('native_capture_call_changed');
+          }
+          if (!await opts.authorize() || canonicalJson(roster) !== canonicalJson(await population())
+            || !await source.unchanged()) continue;
+          if (source.complete) roots[sourceCursor] = { snapshot: source.snapshot, calls };
+          else pending[sourceCursor] = { continuation: source.continuation!, calls };
+          currentRoots.set(sourceCursor, { binding, unchanged: source.unchanged, renewals });
+        } catch { /* An unknown sibling keeps this root unreconciled. */ }
+      }
+    }
+    if (!await opts.authorize() || canonicalJson(roster) !== canonicalJson(await population())) return 'unknown';
+    // A later root or the final ACL callback may change an earlier call. In
+    // particular an EXCLUDED receipt belongs to another harness, so its loss
+    // need not change this scope's revision. Re-open every call in this wave;
+    // neither the saved fingerprint nor the requested-scope CAS is authority.
+    for (const [id, root] of currentRoots) {
+      try {
+        for (const call of root.renewals) {
+          const proof = await reconcileAuthorizedNativeCall(call.source, root.binding, opts);
+          if (!proof || proof.fingerprint !== call.fingerprint) throw new Error('native_capture_call_changed');
+        }
+        if (!await root.unchanged()) throw new Error('native_capture_changed');
+      } catch { delete roots[id]; delete pending[id]; }
+    }
+    // Final authority awaits must precede the last filesystem renewal, just as
+    // in enrollment. This metadata pass neither reopens bodies nor grants scope.
+    for (const { binding, snapshot } of observed.values())
+      if ((await canonicalNativeRuntimeManifest(binding, deadline)).snapshot !== snapshot) return 'unknown';
+    if (Date.now() >= deadline) return 'unknown';
     const receipt = { version: 1, manifest, population: digest(roster), revision: progress.revision,
-      sourceEnrollment: { version: 1, prepared, snapshots, cursor: last } };
+      sourceEnrollment: { version: 1, prepared, snapshots, cursor: last },
+      sourceReconciliation: { version: 1, window, cursor: sourceCursor, roots, pending } };
     const previous = progress.receipt == null ? null : sql.json(progress.receipt);
     await sql`UPDATE harness_shared.sql_intent_progress SET
       native_capture_from=CASE WHEN ${prepared && !prior?.sourceEnrollment?.prepared}

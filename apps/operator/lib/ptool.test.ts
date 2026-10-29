@@ -64,6 +64,20 @@ import {
 } from '../scripts/ptool.mjs';
 
 describe('ptool parseArgs', () => {
+  it('can print help before an isolated instance advertises an endpoint', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'ptool-unadvertised-help-'));
+    try {
+      const { stdout } = await promisify(execFile)(process.execPath,
+        [fileURLToPath(new URL('../scripts/ptool.mjs', import.meta.url)), '--help'], {
+          env: { ...process.env, PAPERCUSP_HOME: temp, PAPERCUSP_OPERATOR_BASE: '',
+            PAPERCUSP_OPERATOR_URL: '', PAPERCUSP_HONO_PORT: '', PAPERCUSP_MCP_PROXY_TARGET_PORT: '' },
+          timeout: 20_000,
+        });
+      expect(stdout).toContain('ptool');
+      expect(stdout).toContain('--url');
+    } finally { await rm(temp, { recursive: true, force: true }); }
+  });
+
   it('defaults omitted argv to the interactive picker', () => {
     expect(parseArgs()).toEqual(parseArgs([]));
   });
@@ -652,7 +666,9 @@ describe('ptool local operator connect retry (EI-20207246136942518)', () => {
           `--token-file=${tokenFile}`,
         ],
         {
-          env: { ...process.env, PAPERCUSP_PSU_TIMEOUT_MS: '1000' },
+          env: { ...process.env, PAPERCUSP_PSU_TIMEOUT_MS: '1000', PAPERCUSP_HOME: temp,
+            PAPERCUSP_OPERATOR_BASE: '', PAPERCUSP_OPERATOR_URL: '', PAPERCUSP_HONO_PORT: '',
+            PAPERCUSP_MCP_PROXY_TARGET_PORT: '' },
           // Generous outer kill: this budget covers cold-booting node and
           // parsing ptool.mjs, which under gate-suite load alone exceeded the
           // former 2s cap and SIGKILLed the child before it could print
