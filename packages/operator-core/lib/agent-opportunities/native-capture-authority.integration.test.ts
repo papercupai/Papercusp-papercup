@@ -347,7 +347,7 @@ it.each(['excluded-receipt-loss', 'excluded-receipt-rewrite', 'invocation-loss',
     expect(Object.keys(after.receipt.sourceReconciliation.roots)).toHaveLength(0);
   }, 120_000);
 
-it('D030 production source preparation resumes bounded chunks without storing transcript content or advancing the floor', async () => {
+it.each(['fixed', 'moving'] as const)('D030 production source preparation resumes bounded chunks with a %s window without storing transcript content or advancing the floor', async window => {
   const s = await authorizedFixture();
   await f.db.adminSql.unsafe(await readFile(new URL(
     '../../../../libs/papercusp/libs/db/sql/1585-native-capture-reconciliation-receipt.sql', import.meta.url), 'utf8'));
@@ -363,7 +363,10 @@ it('D030 production source preparation resumes bounded chunks without storing tr
   const enrolled = await receipt();
   let latest = enrolled, lastOffset = 0, partials = 0;
   for (let attempt = 0; attempt < 20; attempt++) {
-    expect(await reconcileNativeCapture(opts)).toBe('unknown'); latest = await receipt();
+    const current = window === 'fixed' ? opts : { ...opts,
+      since: new Date(Date.parse(opts.since) + attempt * 1000).toISOString(),
+      until: new Date(Date.parse(opts.until) + attempt * 1000).toISOString() };
+    expect(await reconcileNativeCapture(current)).toBe('unknown'); latest = await receipt();
     const pending = Object.values(latest.receipt.sourceReconciliation.pending ?? {}) as {
       continuation: { files: Record<string, { offset: number; done: boolean }> }; calls: Record<string, unknown>;
     }[];
@@ -388,6 +391,43 @@ it('D030 production source preparation resumes bounded chunks without storing tr
   expect(latest.receipt.sourceReconciliation.closed).toMatchObject({ from: expect.any(String) });
   expect(new Date(latest.floor).getTime()).toBeGreaterThanOrEqual(new Date(enrolled.floor).getTime());
 }, 120_000);
+
+it.each(['before', 'after'] as const)(
+  'D032 moving windows reopen a parsed prefix when an omitted %s call enters', async side => {
+    const s = await authorizedFixture();
+    await f.db.adminSql.unsafe(await readFile(new URL(
+      '../../../../libs/papercusp/libs/db/sql/1585-native-capture-reconciliation-receipt.sql', import.meta.url), 'utf8'));
+    const opts = { ...s.opts, since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' };
+    await f.db.adminSql`UPDATE harness_shared.adv_sessions SET first_seen_at='2026-10-24T00:00:00Z'::timestamptz
+      WHERE id=${s.binding.id}::bigint`;
+    const omittedAt = side === 'before' ? '2026-10-24T23:59:59Z' : opts.until;
+    const omitted = { type: 'response_item', timestamp: omittedAt, payload: {
+      type: 'function_call', name: s.source.tool, call_id: 'unproved-entering-call', arguments: '{}' } };
+    const padding = JSON.stringify({ type: 'metadata', note: 'private-padding'.repeat(2400) });
+    await writeFile(s.path, [JSON.stringify(s.records[0]), JSON.stringify(omitted), JSON.stringify(s.records[1]),
+      ...Array<string>(280).fill(padding), JSON.stringify(s.records[2])].join('\n') + '\n');
+    const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt,
+      native_capture_from::text AS floor FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!;
+    expect(await reconcileNativeCapture(opts)).toBe('unknown');
+    expect(await reconcileNativeCapture(opts)).toBe('unknown');
+    const before = await receipt();
+    const pending = Object.values(before.receipt.sourceReconciliation.pending) as {
+      coverage: { before: string | null; after: string | null }; calls: Record<string, unknown>;
+    }[];
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.coverage[side]).toBe(omittedAt);
+    expect(Object.keys(pending[0]!.calls)).toHaveLength(1);
+    // A tick strictly before the omitted event can keep parsing. Entering the
+    // event (inclusive since / exclusive until) must revisit its own authority.
+    const entering = side === 'before' ? { ...opts, since: omittedAt }
+      : { ...opts, until: '2026-10-26T00:00:00.001Z' };
+    expect(await reconcileNativeCapture(entering)).toBe('unknown');
+    const after = await receipt();
+    expect(after.floor).toBe(before.floor);
+    expect(after.receipt.sourceReconciliation.pending).toEqual({});
+    expect(after.receipt.sourceReconciliation.roots).toEqual({});
+    expect(after.receipt.sourceReconciliation.closed).toBeUndefined();
+  }, 120_000);
 
 it('pairs an unsigned event-time index only with the independent original receipt and canonical event', async () => {
   const s = await authorizedFixture(), input = await eventCopy(s);

@@ -31,6 +31,7 @@ import {
   resolveCandidatePorts,
   resolveRepairQueueExpectedInstallSlug,
   isRepairQueueRead,
+  isReadOnlyRequestTimeout,
   repairQueueTargetScopeMismatch,
   resolveMcpProxyPort,
   superuserTokenPaths,
@@ -792,8 +793,12 @@ async function withMcpCallFetchFixture<T>(run: (fixture: McpCallFetchFixture) =>
     "    result = { isError: true, content: [{ type: 'text', text: 'request_rejected: superuser_foreign_native_session' }] };",
     "  } else if (mode === 'admission-shed' && fetchCount < 3) {",
     "    return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.body.id, error: { code: -32000, message: 'operator MCP admission is saturated — request shed, retry shortly', data: { retryable: true, reason: 'loop_pressure_critical' } } }), { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '0' } });",
-    "  } else if (mode === 'repair-queue-fallback' && request.body.params?.name === 'release:repair-queue' && request.body.params?.arguments?.op === 'get') {",
-    "    result = { content: [{ type: 'text', text: JSON.stringify({ ok: true, target: { workspaceId: 'test-ws', installSlug: process.env.MCP_CALL_TARGET_INSTALL_SLUG } }) }] };",
+    "  } else if (mode === 'repair-queue-read-timeout-fallback' && request.body.params?.name === 'release:repair-queue' && request.body.params?.arguments?.op === 'get' && new URL(request.url).port === '41001') {",
+    "    result = { isError: true, content: [{ type: 'text', text: 'request_timeout: read-only tool \"release:repair-queue\" exceeded 55000ms (the operation may still be running server-side; this request was not canceled).' }] };",
+    "  } else if ((mode === 'repair-queue-fallback' || mode === 'repair-queue-read-timeout-fallback') && request.body.params?.name === 'release:repair-queue' && request.body.params?.arguments?.op === 'get') {",
+    "    const port = new URL(request.url).port;",
+    "    const targetInstall = mode === 'repair-queue-read-timeout-fallback' && port === '3070' ? 'papercusp' : process.env.MCP_CALL_TARGET_INSTALL_SLUG;",
+    "    result = { content: [{ type: 'text', text: JSON.stringify({ ok: true, target: { workspaceId: 'test-ws', installSlug: targetInstall } }) }] };",
     '  } else {',
     "    result = { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };",
     '  }',
@@ -867,6 +872,37 @@ async function readMcpCallFetchLog(path: string): Promise<Array<{ url: string; a
 }
 
 describe('mcp-call release repair-queue install scope', () => {
+  it('falls back after a read-only timeout and verifies the requested install at every endpoint', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      const run = await runMcpCallWithFetchFixture(
+        fixture,
+        ['--harness', 'papercusp-pr-drill-20261014', '--transport', 'http'],
+        {
+          PAPERCUSP_HONO_PORT: '41001',
+          MCP_CALL_FETCH_MODE: 'repair-queue-read-timeout-fallback',
+          MCP_CALL_TARGET_INSTALL_SLUG: 'papercusp-pr-drill-20261014',
+        },
+        'release:repair-queue',
+        '{"op":"get"}',
+      );
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(0);
+      expect(JSON.parse(run.stdout)).toMatchObject({
+        ok: true,
+        target: { installSlug: 'papercusp-pr-drill-20261014' },
+      });
+      expect(requests.map((request) => new URL(request.url).port)).toEqual(['41001', '3070', '9071']);
+      expect(requests.every((request) =>
+        (request.body.params as { arguments: { op: string } }).arguments.op === 'get',
+      )).toBe(true);
+      expect(requests.every((request) =>
+        new URL(request.url).searchParams.get('harness') === 'papercusp-pr-drill-20261014',
+      )).toBe(true);
+    });
+  });
+
   it('does not send a repair operation to a fallback endpoint with a different install target', async () => {
     await withMcpCallFetchFixture(async (fixture) => {
       await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
@@ -906,7 +942,7 @@ describe('mcp-call release repair-queue install scope', () => {
         ['--harness', 'papercusp-pr-drill-20261014', '--transport', 'http'],
         {
           PAPERCUSP_HONO_PORT: '41001',
-          MCP_CALL_FETCH_MODE: 'repair-queue-fallback',
+          MCP_CALL_FETCH_MODE: 'repair-queue-read-timeout-fallback',
           MCP_CALL_TARGET_INSTALL_SLUG: 'papercusp-pr-drill-20261014',
         },
         'release:repair-queue',
@@ -916,10 +952,10 @@ describe('mcp-call release repair-queue install scope', () => {
 
       expect(run.code, run.stderr).toBe(0);
       expect(JSON.parse(run.stdout)).toEqual({ ok: true });
-      expect(requests).toHaveLength(3);
-      expect(requests.map((request) => new URL(request.url).port)).toEqual(['41001', '3070', '3070']);
+      expect(requests).toHaveLength(4);
+      expect(requests.map((request) => new URL(request.url).port)).toEqual(['41001', '3070', '9071', '9071']);
       expect(requests.map((request) => (request.body.params as { arguments: { op: string } }).arguments.op))
-        .toEqual(['get', 'get', 'admit']);
+        .toEqual(['get', 'get', 'get', 'admit']);
       expect(requests.every((request) => new URL(request.url).searchParams.get('harness') === 'papercusp-pr-drill-20261014'))
         .toBe(true);
     });
@@ -1195,6 +1231,25 @@ describe('mcp-call admission-shed retry classification', () => {
     expect(admissionRetryDelayMs(response, { data: { retryAfterSec: 9 } })).toBe(2_000);
     expect(admissionRetryDelayMs(new Response(''), {})).toBe(1_000);
     expect(admissionRetryDelayMs(new Response('', { headers: { 'retry-after': '999' } }), {})).toBe(10_000);
+  });
+
+  it('recognizes only explicit read-only and pre-dispatch request timeouts', () => {
+    expect(isReadOnlyRequestTimeout({
+      isError: true,
+      content: [{ type: 'text', text: 'request_timeout: read-only tool "release:repair-queue" exceeded 55000ms' }],
+    })).toBe(true);
+    expect(isReadOnlyRequestTimeout({
+      isError: true,
+      content: [{ type: 'text', text: 'request_timeout: tool "release:repair-queue" exceeded 55000ms during MCP request setup (target dispatch had not started; no mutation was started; request trace id: test).' }],
+    })).toBe(true);
+    expect(isReadOnlyRequestTimeout({
+      isError: true,
+      content: [{ type: 'text', text: 'request_timeout: tool "release:repair-queue" exceeded 55000ms (commit status is UNKNOWN: still running server-side).' }],
+    })).toBe(false);
+    expect(isReadOnlyRequestTimeout({
+      isError: true,
+      content: [{ type: 'text', text: 'permission_denied: no access' }],
+    })).toBe(false);
   });
 });
 

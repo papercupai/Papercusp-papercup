@@ -21,28 +21,53 @@ type Snapshot = {
   observations: Record<string, { status: string }> | null;
   r2Assertions: { healthy: boolean; clauses: Clause[] };
 };
+type SuccessfulRequestTiming = {
+  origin: string; endpoint: string; requestTotalMs: number; headersElapsedMs: number;
+  bodyElapsedMs: number; serverResolverMs: number | null;
+};
+type QueryResponse = {
+  rows: Snapshot[];
+  timing?: { unit?: string; resolverMs?: number };
+};
+const MAX_RETAINED_SUCCESS_TIMINGS = 16;
 const clauseIds = ['r2:dream-action-decisions', 'r2:gym-admission-decisions',
   'r2:full-admission-and-spend', 'r2:scout-zero-route-lens-cap-provenance',
   'r2:actual-attempts-or-explicit-policy-skips'];
 
-async function observe(origin: string, args: Record<string, unknown>, request: typeof fetch = fetch): Promise<Snapshot> {
+async function observe(
+  origin: string,
+  args: Record<string, unknown>,
+  request: typeof fetch = fetch,
+  onSuccessTiming?: (timing: SuccessfulRequestTiming) => void,
+): Promise<Snapshot> {
   const url = new URL('/api/zero-harness/rest-query', origin);
   url.searchParams.set('name', 'learning.dream');
   url.searchParams.set('args', JSON.stringify(args));
-  const startedAt = Date.now();
+  const startedAt = performance.now();
   let phase = 'fetch';
   try {
     const response = await request(url, { signal: AbortSignal.timeout(25_000) });
+    const headersReceivedAt = performance.now();
     phase = 'http-status';
     expect(response.status, `Dream observation HTTP status from ${origin}`).toBe(200);
     phase = 'response-json';
-    const body = await response.json() as { rows: Snapshot[] };
+    const body = await response.json() as QueryResponse;
+    const bodyConsumedAt = performance.now();
     phase = 'row-count';
     expect(body.rows).toHaveLength(1);
+    onSuccessTiming?.({
+      origin,
+      endpoint: url.pathname,
+      requestTotalMs: Math.round(bodyConsumedAt - startedAt),
+      headersElapsedMs: Math.round(headersReceivedAt - startedAt),
+      bodyElapsedMs: Math.round(bodyConsumedAt - headersReceivedAt),
+      serverResolverMs: body.timing?.unit === 'ms' && Number.isFinite(body.timing.resolverMs)
+        ? Math.round(body.timing.resolverMs!) : null,
+    });
     return body.rows[0];
   } catch (error) {
     const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-    throw new Error(`Dream observation failed phase=${phase} origin=${origin} endpoint=${url.pathname} elapsedMs=${Date.now() - startedAt}: ${detail}`, { cause: error });
+    throw new Error(`Dream observation failed phase=${phase} origin=${origin} endpoint=${url.pathname} elapsedMs=${Math.round(performance.now() - startedAt)}: ${detail}`, { cause: error });
   }
 }
 
@@ -58,10 +83,14 @@ function journalWindowNotYetCovered(row: Snapshot): boolean {
   return ['actionDecisions', 'gymDecisions'].some(key =>
     sources[key]?.value?.journal?.journalError?.startsWith(NOT_YET_COVERED) === true);
 }
-async function observeCoveredWindow(origin: string, args: Record<string, unknown>): Promise<Snapshot> {
+async function observeCoveredWindow(
+  origin: string,
+  args: Record<string, unknown>,
+  onSuccessTiming?: (timing: SuccessfulRequestTiming) => void,
+): Promise<Snapshot> {
   const deadline = Date.now() + 180_000;
   for (;;) {
-    const row = await observe(origin, args);
+    const row = await observe(origin, args, fetch, onSuccessTiming);
     if (!journalWindowNotYetCovered(row) || Date.now() > deadline) return row;
     await new Promise(resolveDelay => setTimeout(resolveDelay, 15_000));
   }
@@ -87,10 +116,31 @@ describe('Dream observation request diagnostics', () => {
       /Dream observation failed phase=response-json origin=http:\/\/127\.0\.0\.1:3170 endpoint=\/api\/zero-harness\/rest-query elapsedMs=\d+: TimeoutError:/,
     );
   });
+
+  it('records bounded successful request, body, and server resolver timings', async () => {
+    const row = { status: 'observed' } as Snapshot;
+    const measurements: SuccessfulRequestTiming[] = [];
+    const response = new Response(JSON.stringify({ rows: [row], timing: { unit: 'ms', resolverMs: 7 } }), { status: 200 });
+    await expect(observe('http://127.0.0.1:3170', {}, async () => response,
+      timing => measurements.push(timing))).resolves.toEqual(row);
+    expect(measurements).toEqual([expect.objectContaining({
+      origin: 'http://127.0.0.1:3170', endpoint: '/api/zero-harness/rest-query', serverResolverMs: 7,
+    })]);
+    expect(measurements[0].requestTotalMs).toBeGreaterThanOrEqual(measurements[0].headersElapsedMs);
+    expect(measurements[0].bodyElapsedMs).toBeGreaterThanOrEqual(0);
+  });
 });
 
 describe.skipIf(!enabled)('Dream control observation live METHOD', () => {
   it('retains coherent source/runtime/TTL and fail-closed clauses with native runtime witnesses', async () => {
+    const successRequestTimings: SuccessfulRequestTiming[] = [];
+    let omittedSuccessRequestTimings = 0;
+    const retainSuccessTiming = (timing: SuccessfulRequestTiming) => {
+      if (successRequestTimings.length < MAX_RETAINED_SUCCESS_TIMINGS) {
+        successRequestTimings.push(timing);
+        console.info('DREAM_CONTROL_SUCCESS_REQUEST_TIMING', JSON.stringify(timing));
+      } else omittedSuccessRequestTimings++;
+    };
     const profilePath = process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE;
     expect(profilePath, 'select a native reporter runtime profile').toBeTruthy();
     const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8')) as {
@@ -115,8 +165,8 @@ describe.skipIf(!enabled)('Dream control observation live METHOD', () => {
         const since = new Date(Date.parse(until) - 15 * 60_000).toISOString();
         const base = { potSlug: profile.potSlug, view: 'observations', since, until };
         const unverified = { host: 'unverified', processId: 'unverified', buildSha: 'unverified' };
-        const discovery = await observe(profile.origin, { ...base, expectedRuntime: unverified });
-        const background = await observe(profile.backgroundOrigin, { ...base, expectedRuntime: unverified });
+        const discovery = await observe(profile.origin, { ...base, expectedRuntime: unverified }, fetch, retainSuccessTiming);
+        const background = await observe(profile.backgroundOrigin, { ...base, expectedRuntime: unverified }, fetch, retainSuccessTiming);
         for (const [snapshot, host] of [[discovery, 'port-3170'], [background, 'port-3271']] as const) {
           expect(snapshot.status).toBe('unknown');
           expect(snapshot.reason).toBe('wrong-or-unproven-serving-runtime');
@@ -143,7 +193,7 @@ describe.skipIf(!enabled)('Dream control observation live METHOD', () => {
         }
         const observation = await observeCoveredWindow(profile.origin, { ...base, expectedRuntime: discovery.runtime,
           actionJournalUnit: 'papercusp-bg-host.service', expectedActionRuntime: background.runtime,
-          gymJournalUnit: 'papercusp-bg-host.service', expectedGymRuntime: background.runtime });
+          gymJournalUnit: 'papercusp-bg-host.service', expectedGymRuntime: background.runtime }, retainSuccessTiming);
         const consumedAt = new Date().toISOString();
         expect(observation.schemaVersion).toBe('dream-control-observations-v1');
         expect(observation.status).toBe('observed');
@@ -173,13 +223,26 @@ describe.skipIf(!enabled)('Dream control observation live METHOD', () => {
           }
         }
         expect(observation.r2Assertions.healthy).toBe(observation.r2Assertions.clauses.every(c => c.healthy));
+        const requestTimingEvidence = {
+          limit: MAX_RETAINED_SUCCESS_TIMINGS,
+          omitted: omittedSuccessRequestTimings,
+          requests: successRequestTimings,
+        };
+        const requestTimingJson = JSON.stringify(requestTimingEvidence);
+        console.info('DREAM_CONTROL_SUCCESS_REQUEST_TIMINGS', requestTimingJson);
         // Preserve the one raw edition in the test log for durable artifact capture.
         // A METHOD pass is not a product-health assertion or independent acceptance.
         console.info('DREAM_CONTROL_OBSERVATION_EDITION', JSON.stringify({ consumedAt, observation,
           productR2Healthy: observation.r2Assertions.healthy, sourcePaths, methodOnly: true }));
         return { exitCode: 0,
-          summary: 'Fresh read-only Dream observation METHOD passed; product health and acceptance remain separate.',
+          summary: `Fresh read-only Dream observation METHOD passed; product health and acceptance remain separate. Request timings: ${requestTimingJson}`,
           assertions: [
+            { id: 'method:success-request-timings-bounded',
+              passed: successRequestTimings.length > 0 && omittedSuccessRequestTimings === 0,
+              evidence: requestTimingJson },
+            { id: 'method:server-resolver-timing-present',
+              passed: successRequestTimings.length > 0 && successRequestTimings.every(timing => timing.serverResolverMs !== null),
+              evidence: requestTimingJson },
             { id: `method:edition-sha256:${dreamControlEditionDigest({ consumedAt, observation })}`, passed: true,
               evidence: 'Native digest of the exact original consumer timestamp and raw observation edition.' },
             { id: 'method:wrong-runtime-refuses', passed: true,

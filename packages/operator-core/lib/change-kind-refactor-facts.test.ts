@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   createRefactorFactsResolver,
   filedFindingFromPayload,
+  filedGuardFindingFromPayload,
   findingReportedIn,
+  guardFindingReportedInCensus,
   isCloneScannable,
   isCoverableSource,
   parseDiffHunks,
@@ -80,6 +82,15 @@ describe('path filters', () => {
 });
 
 describe('parseRefactorFinding', () => {
+  it('accepts only the registered sync-batch guard namespace and safe subject paths', () => {
+    const path = 'packages/operator-core/lib/release/orphan.ts';
+    const conditionKey = `sync-delta-guard:lint:guard-reachability:${path}`;
+    expect(parseRefactorFinding(conditionKey)).toEqual({ kind: 'guard-reachability', conditionKey, path });
+    for (const key of ['sync-delta-guard:lint:other:src/x.ts', 'sync-delta-guard:lint:guard-reachability:*',
+      'sync-delta-guard:lint:guard-reachability:packages/../secret.ts', 'sync-delta-guard:lint:guard-reachability:/tmp/x.ts']) {
+      expect(parseRefactorFinding(key)).toBeNull();
+    }
+  });
   it('reads area keys, family keys and bare family ids', () => {
     expect(parseRefactorFinding('clone-area:packages/operator-core/lib')).toEqual({ kind: 'area', area: 'packages/operator-core/lib' });
     expect(parseRefactorFinding('clone-family:ts-5:v1:floor-80:renamed:abc123')).toEqual({
@@ -100,6 +111,41 @@ describe('parseRefactorFinding', () => {
     expect(parseRefactorFinding('EI-123')).toBeNull();
     expect(parseRefactorFinding('clone-area:')).toBeNull();
     expect(parseRefactorFinding('v1:renamed:')).toBeNull();
+  });
+});
+
+describe('registered guard finding and census', () => {
+  const path = 'packages/operator-core/lib/release/orphan.ts';
+  const conditionKey = `sync-delta-guard:lint:guard-reachability:${path}`;
+  const finding = { kind: 'guard-reachability' as const, conditionKey, path };
+  const payload = { filedBy: 'system:sync-batch-lint-guards', paths: [path], _conditionUpsert: { conditionKey } };
+  const census = (dead: boolean) => ({ modules: { measurable: true, population: 1, inventory: [{ module: path, dead }] } });
+
+  it('requires the actual system filed identity, reporter and subject', () => {
+    expect(filedGuardFindingFromPayload(payload, finding)?.guard).toEqual({ conditionKey, path });
+    for (const malformed of [null, {}, { ...payload, filedBy: 'agent' }, { ...payload, paths: [] },
+      { ...payload, _conditionUpsert: { conditionKey: 'other' } }]) {
+      expect(filedGuardFindingFromPayload(malformed, finding)).toBeNull();
+    }
+  });
+
+  it('distinguishes an orphan from a wired subject and a verified deletion', () => {
+    expect(guardFindingReportedInCensus(census(true), path, 'export const orphan = 1;')).toBe(true);
+    expect(guardFindingReportedInCensus(census(false), path, 'export const wired = 1;')).toBe(false);
+    const deleted = { modules: { measurable: true, population: 1, inventory: [{ module: 'packages/a/lib/release/other.ts', dead: false }] } };
+    expect(guardFindingReportedInCensus(deleted, path, null)).toBe(false);
+    expect(() => guardFindingReportedInCensus(deleted, path, 'present')).toThrow('missing from the detector population');
+    expect(() => guardFindingReportedInCensus(census(true), path, null)).toThrow('source changed');
+  });
+
+  it('refuses degraded, partial, malformed and duplicate populations', () => {
+    for (const bad of [null, {}, { modules: { measurable: false, inventory: [] } },
+      { modules: { measurable: true, population: 0, inventory: [] } },
+      { modules: { measurable: true, population: 2, inventory: [{ module: path, dead: false }] } },
+      { modules: { measurable: true, population: 1, inventory: [{ module: path }] } },
+      { modules: { measurable: true, population: 2, inventory: [{ module: path, dead: false }, { module: path, dead: false }] } }]) {
+      expect(() => guardFindingReportedInCensus(bad, path, 'present')).toThrow();
+    }
   });
 });
 
@@ -290,7 +336,7 @@ describe('createRefactorFactsResolver', () => {
     const { io } = fakeIo();
     const facts = await createRefactorFactsResolver(io)({ ...query, finding: 'EI-1' });
     expect(facts.findingStillReported).toBeNull();
-    expect(facts.errors).toEqual(["the finding 'EI-1' is not a clone-area or clone-family key"]);
+    expect(facts.errors).toEqual(["the finding 'EI-1' is not a registered clone or guard-reachability key"]);
   });
 
   it('still reports a finding whose copies remain in the current tree', async () => {
@@ -303,5 +349,33 @@ describe('createRefactorFactsResolver', () => {
     expect(refactorFactGaps({ ...evidence, finding: 'clone-area:src/a' }, facts)).toContain(
       "the targeted finding 'clone-area:src/a' is still reported after the change",
     );
+  });
+
+  it('dispatches the registered guard adapter while keeping the same coverage and run facts', async () => {
+    const path = 'packages/operator-core/lib/release/orphan.ts';
+    const conditionKey = `sync-delta-guard:lint:guard-reachability:${path}`;
+    const { io } = fakeIo({
+      readFiled: async (f) => filedGuardFindingFromPayload({ filedBy: 'system:sync-batch-lint-guards', paths: [path], _conditionUpsert: { conditionKey } }, f),
+      readSource: async () => null,
+      guardReachabilityCensus: async () => ({ modules: { measurable: true, population: 1, inventory: [{ module: 'packages/a/lib/release/kept.ts', dead: false }] } }),
+    });
+    const facts = await createRefactorFactsResolver(io)({ ...query, finding: conditionKey });
+    expect(facts.findingStillReported).toBe(false);
+    expect(refactorFactGaps({ ...evidence, finding: conditionKey }, facts)).toEqual([]);
+
+    for (const overrides of [
+      { guardReachabilityCensus: undefined },
+      { guardReachabilityCensus: async () => { throw new Error('detector failed'); } },
+      { readSource: async () => { throw new Error('EACCES'); } },
+      { readFiled: async () => ({ memberPaths: [path], fingerprints: [], semanticFamilyIds: [] }) },
+    ]) {
+      const refused = await createRefactorFactsResolver({ ...io, ...overrides })({ ...query, finding: conditionKey });
+      expect(refused.findingStillReported).toBeNull();
+      expect(refused.errors?.length).toBeGreaterThan(0);
+    }
+    let reads = 0;
+    const drifted = await createRefactorFactsResolver({ ...io, readSource: async () => ++reads === 1 ? null : 'changed' })({ ...query, finding: conditionKey });
+    expect(drifted.findingStillReported).toBeNull();
+    expect(drifted.errors?.join(' ')).toContain('changed during');
   });
 });

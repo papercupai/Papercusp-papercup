@@ -594,6 +594,26 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
     expect((await verifyRepairHead({}, queue)).kind).toBe("unavailable");
   });
 
+  it("requires the exact full gate for fork inheritance instead of returning raw selective reds", async () => {
+    const queue = queueWith([
+      entry({ kind: "test-file", id: "lib/a.test.ts", workspace: CORE }),
+      entry({ kind: "lint-leg", id: "lint:tsc" }),
+    ]);
+    const { deps, refs } = recordingDeps({ filesPass: false, gatesPass: false });
+
+    const fork = await verifyRepairHead({ ...deps, forkInheritanceRequired: true }, queue);
+    expect(fork).toMatchObject({ kind: "full-run-required" });
+    expect(fork.summary).toContain(HEAD.slice(0, 8));
+    expect(fork.summary).toContain("measured upstream/base inheritance");
+    expect(refs).toEqual([]);
+
+    // The same red evidence must still block a direct-mode repair.
+    const direct = await verifyRepairHead({ ...deps, forkInheritanceRequired: false }, queue);
+    expect(direct.kind).toBe("red");
+    expect(refs.length).toBeGreaterThan(0);
+    expect(refs.every((ref) => ref === HEAD)).toBe(true);
+  });
+
   it("a post-suite-leg entry is full-run-required — named in the summary, with no runner spent", async () => {
     const queue = queueWith([
       entry({ kind: "test-file", id: "lib/a.test.ts", workspace: CORE }),

@@ -7173,6 +7173,9 @@ export type RepairHeadVerificationDeps = Pick<
   /** A target without the platform selector verifies its configured full suite.
    *  Missing/malformed selective evidence within the platform still holds. */
   selectiveRepairSupported?: boolean;
+  /** Fork inheritance needs the full suite's measured upstream/base proof before a red
+   *  can decide the repair head. Selective runners do not apply that policy. */
+  forkInheritanceRequired?: boolean;
 };
 
 /** The paths every admission put on the frozen lineage (the ledger's PROVED diff-tree name
@@ -7976,6 +7979,12 @@ export async function verifyRepairHead(
 ): Promise<RepairHeadVerification> {
   const head = queue.repairHead;
   const at = head.slice(0, 8);
+  if (deps.forkInheritanceRequired) {
+    return {
+      kind: "full-run-required",
+      summary: `fork repair head ${at} requires the full gate's measured upstream/base inheritance and post-suite checks`,
+    };
+  }
   if (deps.selectiveRepairSupported === false) {
     return {
       kind: "full-run-required",
@@ -14550,6 +14559,7 @@ async function runGreenCheckpointInner(
       const verifyDeps = {
         ...deps,
         resolveTestWorkspace: makeTestWorkspaceResolver(cfg.integrationRoot),
+        forkInheritanceRequired: upstreamInstallFromEnv() !== null,
         selectiveRepairSupported: !existsSync(path.join(cfg.integrationRoot, "package.json")) ||
           existsSync(path.join(cfg.integrationRoot, "scripts/affected-tests.mjs")),
       };

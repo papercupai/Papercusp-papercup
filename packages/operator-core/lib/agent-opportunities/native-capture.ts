@@ -22,8 +22,9 @@ type SourceContinuation = { snapshot: string; files: Record<string, {
   offset: number; lines: number; identity: boolean; retainedBytes: number; calls: number; fingerprint: string; done: boolean;
 }> };
 type PreparedNativeCalls = Record<string, { fingerprint: string; scope: 'included' | 'excluded'; activityId: string; at: string }>;
-type PreparedNativeRoot = { snapshot: string; calls: PreparedNativeCalls; signature?: string };
-type PendingNativeRoot = { continuation: SourceContinuation; calls: PreparedNativeCalls; signature?: string };
+type NativeParsingCoverage = { before: string | null; after: string | null };
+type PreparedNativeRoot = { snapshot: string; calls: PreparedNativeCalls; coverage?: NativeParsingCoverage; signature?: string };
+type PendingNativeRoot = { continuation: SourceContinuation; calls: PreparedNativeCalls; coverage?: NativeParsingCoverage; signature?: string };
 type CaptureReceipt = { manifest?: Record<string, string[]>; enrolling?: boolean;
   sourceEnrollment?: { version: 1; prepared: boolean; snapshots: Record<string, string>; cursor: string | null };
   sourceReconciliation?: { version: 1; window: string; cursor: string | null;
@@ -81,6 +82,32 @@ function verifiedNativePreparation(key: Buffer, opts: NativeCaptureOptions, wind
   return typeof evidence.signature === 'string' && /^[a-f0-9]{64}$/.test(evidence.signature)
     && timingSafeEqual(Buffer.from(evidence.signature, 'hex'),
       Buffer.from(nativePreparationSignature(key, opts, window, binding, evidence), 'hex'));
+}
+/** Closest omitted calls bound where this parsed prefix can be reused. These
+ * timestamps contain no call content or authority and are signed with the
+ * entire preparation. Entering an omitted call requires parsing again. */
+function omitNativeCall(coverage: NativeParsingCoverage, at: string, since: string) {
+  if (micros(at) < micros(since)) {
+    if (coverage.before === null || micros(at) > micros(coverage.before)) coverage.before = at;
+  } else if (coverage.after === null || micros(at) < micros(coverage.after)) coverage.after = at;
+}
+function nativePreparationForWindow<T extends PreparedNativeRoot | PendingNativeRoot>(key: Buffer,
+  opts: NativeCaptureOptions, previousWindow: string, window: string, binding: Binding, evidence: T): T | null {
+  if (!verifiedNativePreparation(key, opts, previousWindow, binding, evidence)) return null;
+  if (previousWindow === window) return evidence;
+  const coverage = evidence.coverage && { ...evidence.coverage };
+  // Legacy preparation has no proof about calls omitted during parsing. Never
+  // upgrade it into broader parsing coverage without reopening its sources.
+  if (!coverage || coverage.before !== null && micros(opts.since) <= micros(coverage.before)
+    || coverage.after !== null && micros(opts.until) > micros(coverage.after)) return null;
+  const calls = { ...evidence.calls };
+  for (const [id, call] of Object.entries(calls)) {
+    if (micros(call.at) >= micros(opts.since) && micros(call.at) < micros(opts.until)) continue;
+    omitNativeCall(coverage, call.at, opts.since); delete calls[id];
+  }
+  const current = { ...evidence, calls, coverage };
+  current.signature = nativePreparationSignature(key, opts, window, binding, current);
+  return current;
 }
 function nativeCaptureFloorSignature(key: Buffer, opts: NativeCaptureOptions, revision: string, from: string) {
   return createHmac('sha256', key).update(canonicalJson(['native-source-floor-v1',
@@ -674,22 +701,25 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     // Missing/corrupt key blocks protected parsing and closure, not the durable
     // progress of the independently enumerated source population.
     try { preparationKey = await nativeSigningKey(sql); } catch { /* no authority */ }
-    const oldReconciliation = prior?.sourceReconciliation?.window === window ? prior.sourceReconciliation : null;
+    const oldReconciliation = prior?.sourceReconciliation;
     const roots = { ...oldReconciliation?.roots };
     const pending = { ...oldReconciliation?.pending };
     const bindings = new Map(roster.map(b => [key(b), b]));
     const expectedCalls = new Map<string, string[]>();
     for (const id of Object.keys(roots)) {
-      const binding = bindings.get(id), root = roots[id]!;
-      if (binding && preparationKey && verifiedNativePreparation(preparationKey, opts, window, binding, root))
-        expectedCalls.set(id, Object.keys(root.calls));
-      if (!binding || !preparationKey || root.snapshot !== snapshots[id]
-        || !verifiedNativePreparation(preparationKey, opts, window, binding, root)) delete roots[id];
+      const binding = bindings.get(id), previous = roots[id]!;
+      const root = binding && preparationKey && oldReconciliation
+        ? nativePreparationForWindow(preparationKey, opts, oldReconciliation.window, window, binding, previous) : null;
+      if (root) expectedCalls.set(id, Object.keys(root.calls));
+      if (!root || root.snapshot !== snapshots[id]) delete roots[id];
+      else roots[id] = root;
     }
     for (const id of Object.keys(pending)) {
-      const binding = bindings.get(id), root = pending[id]!;
-      if (!binding || !preparationKey || root.continuation.snapshot !== snapshots[id]
-        || !verifiedNativePreparation(preparationKey, opts, window, binding, root)) delete pending[id];
+      const binding = bindings.get(id);
+      const root = binding && preparationKey && oldReconciliation
+        ? nativePreparationForWindow(preparationKey, opts, oldReconciliation.window, window, binding, pending[id]!) : null;
+      if (!root || root.continuation.snapshot !== snapshots[id]) delete pending[id];
+      else pending[id] = root;
     }
     let sourceCursor = oldReconciliation?.cursor ?? null;
     const currentRoots = new Map<string, { binding: Binding; unchanged: () => Promise<boolean>;
@@ -712,9 +742,14 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
           // sources/receipts too, including every excluded call.
           const calls: PreparedNativeCalls = source.snapshot === previousSource?.continuation.snapshot
             ? { ...previousSource.calls } : {};
+          const coverage = previousSource ? previousSource.coverage && { ...previousSource.coverage }
+            : { before: null, after: null } satisfies NativeParsingCoverage;
           const renewals: { source: SearchSource; fingerprint: string }[] = [];
           for (const call of source.sources) {
-            if (micros(call.at) < micros(opts.since) || micros(call.at) >= micros(opts.until)) continue;
+            if (micros(call.at) < micros(opts.since) || micros(call.at) >= micros(opts.until)) {
+              if (coverage) omitNativeCall(coverage, call.at, opts.since);
+              continue;
+            }
             let proof = await reconcileAuthorizedNativeCall(call, binding, opts);
             if (!proof || Date.now() >= deadline - 100) throw new Error('native_capture_call_authority');
             if (proof.scope === 'included') {
@@ -751,11 +786,11 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
             // Rewriting the same predecessor cannot silently shrink a trusted
             // earlier canonical call population in this same window.
             if (expectedCalls.get(sourceCursor)?.some(id => !calls[id])) throw new Error('native_capture_source_call_loss');
-            const root: PreparedNativeRoot = { snapshot: source.snapshot, calls };
+            const root: PreparedNativeRoot = { snapshot: source.snapshot, calls, ...(coverage ? { coverage } : {}) };
             root.signature = nativePreparationSignature(preparationKey, opts, window, binding, root);
             roots[sourceCursor] = root;
           } else {
-            const root: PendingNativeRoot = { continuation: source.continuation!, calls };
+            const root: PendingNativeRoot = { continuation: source.continuation!, calls, ...(coverage ? { coverage } : {}) };
             root.signature = nativePreparationSignature(preparationKey, opts, window, binding, root);
             pending[sourceCursor] = root;
           }

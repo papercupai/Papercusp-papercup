@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { teardownTestPg } from '@papercusp/test-config/pg';
+import * as refactorFacts from '../../change-kind-refactor-facts';
+import type { RefactorFactsIo } from '../../change-kind-refactor-facts';
 
 const OWNER = 'su-0d0d0d0d-1111-4222-8333-555555555555';
 const WS = 'default';
@@ -141,6 +143,68 @@ const VITEST_ONLY = {
 };
 
 describe('work_items:complete — change-kind gate through real persistence (change-kind-declared-proof P-002)', () => {
+  it('accepts registered guard detector proof and refuses missing detector proof or dirty parent runs through persistence', async () => {
+    const path = 'packages/operator-core/lib/release/orphan.ts';
+    const conditionKey = `sync-delta-guard:lint:guard-reachability:${path}`;
+    const landing = 'a'.repeat(40);
+    const parent = 'b'.repeat(40);
+    let measurable = true;
+    let parentDirty = false;
+    const io: RefactorFactsIo = {
+      async git(args) {
+        if (args[0] === 'rev-parse') return args.at(-1)?.includes('^1') ? parent : landing;
+        if (args.includes('-U0')) return 'diff --git a/src/x.ts b/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@';
+        return args.includes('--no-renames') ? 'src/x.ts\n' : '';
+      },
+      async readRuns(ids) {
+        return ids.map((id) => ({ id, filePath: 'src/x.test.ts', commitSha: id === 1 ? parent : landing,
+          status: 'pass', worktreeDirty: id === 1 && parentDirty }));
+      },
+      async coverage() { return { members: [{ member: 'src/x.ts:1-1', coveringFiles: ['src/x.test.ts'] }], errors: [] }; },
+      async readFiled(finding) {
+        return refactorFacts.filedGuardFindingFromPayload({ filedBy: 'system:sync-batch-lint-guards', paths: [path],
+          _conditionUpsert: { conditionKey } }, finding);
+      },
+      async readSource() { return null; },
+      async guardReachabilityCensus() {
+        return { modules: { measurable, population: 1, inventory: [{ module: 'packages/a/lib/release/kept.ts', dead: false }] } };
+      },
+    };
+    // Replace native I/O only: real adapter, facts resolver, close gate and persistence all run.
+    const native = vi.spyOn(refactorFacts, 'nativeRefactorFactsResolver').mockImplementation(() => refactorFacts.createRefactorFactsResolver(io));
+    try {
+      const completion = {
+        summary: 'removed the unused detector module', testsRun: 'npm run test:file -- src/x.test.ts', testResult: '1 passed',
+        kindEvidence: [{ kind: 'refactor', landingCommit: landing, beforeRuns: [1], afterRuns: [101], finding: conditionKey,
+          typecheck: 'status=clean', behaviouralStrands: 'exit 0, no strands' }],
+      };
+      const item = await claimedIssue('guard-detector-proof', AFTER_CUTOVER);
+      await declareChangeKinds({ workspaceId: WS, featureId: item.id, kinds: ['refactor'], step: 'claim', declaredBy: OWNER });
+
+      measurable = false;
+      const unknown = await close(item, {}, completion);
+      expect(unknown.ok, JSON.stringify(unknown)).toBe(false);
+      expect(unknown.error).toContain('unmeasured or incomplete');
+      expect(await storedStatus(item.id)).not.toBe('done');
+
+      measurable = true;
+      parentDirty = true;
+      const dirty = await close(item, {}, completion);
+      expect(dirty.ok, JSON.stringify(dirty)).toBe(false);
+      expect(dirty.error).toContain('dirty tree');
+      expect(await storedStatus(item.id)).not.toBe('done');
+
+      parentDirty = false;
+      const accepted = await close(item, {}, completion);
+      expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
+      expect(accepted.stateError).toBeUndefined();
+      expect(await storedStatus(item.id)).toBe('done');
+      expect(native).toHaveBeenCalled();
+    } finally {
+      native.mockRestore();
+    }
+  }, 90_000);
+
   it('refuses a ui-declared close that carries only a Vitest run: the row stays open and the reply names the missing proof (R-2, D-002)', async () => {
     const item = await claimedIssue('ui-refused', AFTER_CUTOVER);
     const declared = await declareChangeKinds({ workspaceId: WS, featureId: item.id, kinds: ['ui'], step: 'claim', declaredBy: OWNER });

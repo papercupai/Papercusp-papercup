@@ -8,8 +8,7 @@
  *   - the files the landing change touched, and its new-side hunks (git diff parent..landing);
  *   - the test files that cover each touched hunk (the source-bound coverage map — computed here,
  *     never taken from the agent's filesChanged);
- *   - whether the clone detector still reports the targeted finding (a re-scan of the filed
- *     members plus the landing change's own files, over the current tree).
+ *   - whether the registered detector still reports the filed finding over the current tree.
  *
  * Every fact the resolver cannot establish stays `null` (or lands in `errors`), and the rules
  * refuse on `null`, so a resolver fault can only fail closed.
@@ -37,7 +36,8 @@ export interface LineRange {
 export type ParsedRefactorFinding =
   | { kind: 'area'; area: string }
   /** `fingerprint` is null for a semantic family, which a structural re-scan cannot see. */
-  | { kind: 'family'; familyId: string; fingerprint: string | null };
+  | { kind: 'family'; familyId: string; fingerprint: string | null }
+  | { kind: 'guard-reachability'; conditionKey: string; path: string };
 
 /** What the filed cleanup item says the finding covers. */
 export interface FiledRefactorFinding {
@@ -47,6 +47,8 @@ export interface FiledRefactorFinding {
   fingerprints: readonly string[];
   /** Filed family ids that are not structural (semantic) and so cannot be re-scanned. */
   semanticFamilyIds: readonly string[];
+  /** Present only after validating the system-filed sync-batch guard record. */
+  guard?: { conditionKey: string; path: string };
 }
 
 export interface TouchedCoverage {
@@ -67,6 +69,8 @@ export interface RefactorFactsIo {
   readFiled(finding: ParsedRefactorFinding): Promise<FiledRefactorFinding | null>;
   /** Current-tree source for a repo-relative path; null when the file does not exist. */
   readSource(path: string): Promise<string | null>;
+  /** Fixed production detector census; callers cannot select commands or supply a verdict. */
+  guardReachabilityCensus?(): Promise<unknown>;
 }
 
 const COVERABLE_SOURCE_RE = /\.(?:[cm]?[jt]sx?)$/;
@@ -114,9 +118,17 @@ export function parseDiffHunks(diff: string): Map<string, LineRange[]> {
   return out;
 }
 
-/** Accepts `clone-area:<area>`, `clone-family:<id>`, or a bare family id. */
+const GUARD_FINDING_PREFIX = 'sync-delta-guard:lint:guard-reachability:';
+
+/** Accepts existing clone keys and the system sync-batch guard's exact path identity. */
 export function parseRefactorFinding(finding: string): ParsedRefactorFinding | null {
   const f = finding.trim();
+  if (f.startsWith('sync-delta-guard:')) {
+    if (!f.startsWith(GUARD_FINDING_PREFIX)) return null;
+    const path = f.slice(GUARD_FINDING_PREFIX.length);
+    if (!/^(?:apps|packages|libs)\/[A-Za-z0-9_./-]+\.tsx?$/.test(path) || path.split('/').some((p) => !p || p === '.' || p === '..')) return null;
+    return { kind: 'guard-reachability', conditionKey: f, path };
+  }
   if (f.startsWith('clone-area:')) {
     const area = f.slice('clone-area:'.length).trim();
     return area ? { kind: 'area', area } : null;
@@ -136,6 +148,7 @@ export function parseRefactorFinding(finding: string): ParsedRefactorFinding | n
  * members and fingerprints a re-scan needs. For a family finding only that family counts.
  */
 export function filedFindingFromPayload(cloneArea: unknown, finding: ParsedRefactorFinding): FiledRefactorFinding | null {
+  if (finding.kind === 'guard-reachability') return null;
   const families = (cloneArea as { families?: unknown } | null)?.families;
   if (!Array.isArray(families)) return null;
   const memberPaths = new Set<string>();
@@ -156,6 +169,64 @@ export function filedFindingFromPayload(cloneArea: unknown, finding: ParsedRefac
   }
   if (!matched) return null;
   return { memberPaths: [...memberPaths].sort(), fingerprints: [...fingerprints].sort(), semanticFamilyIds };
+}
+
+/** Reuse the real sync-batch writer's payload, never a caller-authored detector result. */
+export function filedGuardFindingFromPayload(payload: unknown, finding: ParsedRefactorFinding): FiledRefactorFinding | null {
+  if (finding.kind !== 'guard-reachability' || !payload || typeof payload !== 'object') return null;
+  const p = payload as { filedBy?: unknown; paths?: unknown; _conditionUpsert?: { conditionKey?: unknown } };
+  if (p.filedBy !== 'system:sync-batch-lint-guards' || p._conditionUpsert?.conditionKey !== finding.conditionKey ||
+      !Array.isArray(p.paths) || !p.paths.includes(finding.path)) return null;
+  return { memberPaths: [finding.path], fingerprints: [], semanticFamilyIds: [], guard: { conditionKey: finding.conditionKey, path: finding.path } };
+}
+
+/** A missing/incomplete population is an instrument fault, never proof of absence. */
+export function guardFindingReportedInCensus(census: unknown, path: string, source: string | null): boolean {
+  const modules = (census as { modules?: { measurable?: unknown; population?: unknown; inventory?: unknown } } | null)?.modules;
+  if (modules?.measurable !== true || !Array.isArray(modules.inventory) ||
+      !Number.isInteger(modules.population) || modules.population !== modules.inventory.length || modules.inventory.length === 0) {
+    throw new Error('guard-reachability module census is unmeasured or incomplete');
+  }
+  const inventory = modules.inventory as Array<{ module?: unknown; dead?: unknown }>;
+  if (inventory.some((r) => !r || typeof r.module !== 'string' || typeof r.dead !== 'boolean') ||
+      new Set(inventory.map((r) => r.module)).size !== inventory.length) {
+    throw new Error('guard-reachability module inventory is malformed');
+  }
+  const row = inventory.find((r) => r.module === path);
+  if (source === null) {
+    if (row) throw new Error('deleted guard subject remains in the census; source changed during the scan');
+    return false;
+  }
+  if (!row) throw new Error('readable guard subject is missing from the detector population');
+  return row.dead as boolean;
+}
+
+/** Closed adapter dispatch: only registered detectors can produce the shared finding fact. */
+async function rescanFiledFinding(io: RefactorFactsIo, finding: ParsedRefactorFinding, filed: FiledRefactorFinding, changedFiles: readonly string[]): Promise<boolean> {
+  const adapters = {
+    'guard-reachability': async () => {
+      if (finding.kind !== 'guard-reachability' || filed.guard?.conditionKey !== finding.conditionKey ||
+          filed.guard.path !== finding.path || !io.guardReachabilityCensus) throw new Error('registered guard finding or detector is unavailable');
+      const source = await io.readSource(finding.path);
+      const census = await io.guardReachabilityCensus();
+      if (await io.readSource(finding.path) !== source) throw new Error('guard subject changed during the detector scan');
+      return guardFindingReportedInCensus(census, finding.path, source);
+    },
+    clone: async () => {
+      const paths = [...new Set([...filed.memberPaths, ...changedFiles])].filter(isCloneScannable).sort();
+      const index = new CloneIndex();
+      const unreadable: string[] = [];
+      for (const path of paths) {
+        const source = await io.readSource(path);
+        if (source === null) continue;
+        const status = index.update({ path, source }).file.status;
+        if (status === 'syntax-error' || status === 'unavailable') unreadable.push(path);
+      }
+      if (unreadable.length) throw new Error(`could not parse ${unreadable.join(', ')}`);
+      return findingReportedIn(index, finding, filed.fingerprints);
+    },
+  };
+  return adapters[finding.kind === 'guard-reachability' ? 'guard-reachability' : 'clone']();
 }
 
 /**
@@ -246,7 +317,7 @@ export function createRefactorFactsResolver(io: RefactorFactsIo): RefactorFactsR
 
       const parsed = parseRefactorFinding(query.finding);
       if (!parsed) {
-        errors.push(`the finding '${query.finding}' is not a clone-area or clone-family key`);
+        errors.push(`the finding '${query.finding}' is not a registered clone or guard-reachability key`);
       } else {
         const filed = await attempt('reading the filed finding', () => io.readFiled(parsed), null);
         if (!filed) {
@@ -259,19 +330,7 @@ export function createRefactorFactsResolver(io: RefactorFactsIo): RefactorFactsR
         } else {
           findingStillReported = await attempt(
             're-scanning for the finding',
-            async () => {
-              const paths = [...new Set([...filed.memberPaths, ...(changedFiles ?? [])])].filter(isCloneScannable).sort();
-              const index = new CloneIndex();
-              const unreadable: string[] = [];
-              for (const path of paths) {
-                const source = await io.readSource(path);
-                if (source === null) continue; // deleted: its copies are gone
-                const status = index.update({ path, source }).file.status;
-                if (status === 'syntax-error' || status === 'unavailable') unreadable.push(path);
-              }
-              if (unreadable.length) throw new Error(`could not parse ${unreadable.join(', ')}`);
-              return findingReportedIn(index, parsed, filed.fingerprints);
-            },
+            () => rescanFiledFinding(io, parsed, filed, changedFiles ?? []),
             null,
           );
         }
@@ -316,6 +375,14 @@ export function nativeRefactorFactsResolver(scope: { root: string; workspaceId: 
     },
     async readFiled(finding) {
       const db = await sql();
+      if (finding.kind === 'guard-reachability') {
+        const rows = await db<{ payload: unknown }[]>`
+          SELECT payload FROM harness_shared.work_items
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harness}
+             AND condition_key = ${finding.conditionKey}
+           ORDER BY updated_at DESC LIMIT 1`;
+        return rows[0] ? filedGuardFindingFromPayload(rows[0].payload, finding) : null;
+      }
       const rows =
         finding.kind === 'area'
           ? await db<{ clone_area: unknown }[]>`
@@ -329,6 +396,15 @@ export function nativeRefactorFactsResolver(scope: { root: string; workspaceId: 
                  AND payload->'cloneArea'->'families' @> ${JSON.stringify([{ id: finding.familyId }])}::jsonb
                ORDER BY updated_at DESC LIMIT 1`;
       return rows[0] ? filedFindingFromPayload(rows[0].clone_area, finding) : null;
+    },
+    async guardReachabilityCensus() {
+      const env = { ...process.env };
+      delete env.LINT_GUARD_REACHABILITY_PACKAGE_JSON;
+      delete env.LINT_GUARD_REACHABILITY_AFFECTED_TESTS;
+      const { stdout } = await execFileAsync(process.execPath, [join(root, 'scripts/check-lint-guard-reachability.mjs'), '--json', '--census'], {
+        cwd: root, env, timeout: 120_000, maxBuffer: 64 * 1024 * 1024,
+      });
+      return JSON.parse(stdout);
     },
     async readSource(path) {
       try {

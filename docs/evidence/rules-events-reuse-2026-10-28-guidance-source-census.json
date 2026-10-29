@@ -1,0 +1,72 @@
+{
+  "plan": "rules-events-reuse-2026-10-28",
+  "item": "P-015",
+  "measuredAt": "2026-10-29T08:47:00Z",
+  "sourceCommit": "b6cf118161",
+  "scope": "Non-test TypeScript variable declarations under packages/operator-core/lib that instantiate Map and whose locally resolvable value type explicitly declares an expiry field.",
+  "method": "Parse TypeScript syntax trees; resolve inline and same-file interface/type declarations; select expiresAt, expiresMs, expires, expiry, expireAt, expiryMs or validUntil properties; read each candidate's producer and consumer to distinguish cached reads from temporary expiry-bearing collections.",
+  "candidateDeclarations": 9,
+  "confirmedHandBuiltReadCaches": 5,
+  "confirmed": [
+    {
+      "path": "packages/operator-core/lib/authority/remote-peers-cache.ts",
+      "binding": "_cache",
+      "evidence": "cachedHasRemotePeer returns cached.value while cached.expiresAt > now, otherwise resolves authority and writes value plus now + ttlMs."
+    },
+    {
+      "path": "packages/operator-core/lib/omp-config.ts",
+      "binding": "cache",
+      "evidence": "createOmpModelCatalogReader returns cached.value while expiresAt > now(), shares pending reads, and writes parsed catalog plus now() + ttlMs."
+    },
+    {
+      "path": "packages/operator-core/lib/identity/keychain.ts",
+      "binding": "loadCache",
+      "evidence": "keychainLoad returns a cloned cached result while hit.expiresAt > Date.now(); successful and not-found reads write different explicit TTLs."
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/hive-member-identity-set.ts",
+      "binding": "cache",
+      "evidence": "getMemberDeviceSet returns hit.set while expiresAt > now(), otherwise loads members and writes now() + MEMBER_SET_TTL_MS."
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/harness/git.ts",
+      "binding": "__gitLogCache",
+      "evidence": "readGitLog returns cached.commits when headSig matches and cached.expires > now, otherwise runs git and stores now + ttlMs."
+    }
+  ],
+  "excluded": [
+    {
+      "path": "packages/operator-core/lib/search/session-ingest.ts",
+      "binding": "stampsByCluster",
+      "reason": "Per-call grouping of persisted provenance stamps; expiry belongs to stamp validity, not cached reads."
+    },
+    {
+      "path": "packages/operator-core/lib/coord/condition-object.ts",
+      "binding": "out",
+      "reason": "Per-call result map of condition objects."
+    },
+    {
+      "path": "packages/operator-core/lib/coord/couplings.ts",
+      "binding": "declared",
+      "reason": "Per-call coupling-edge lookup used while resolving peers."
+    },
+    {
+      "path": "packages/operator-core/lib/code-cleanup/admission.ts",
+      "binding": "peerLocked",
+      "reason": "Per-round index of peer locks; expiry is a lock lease."
+    }
+  ],
+  "limitations": [
+    "The count is limited to this explicit-type declaration population. It is not the total number of TTL caches across the repository.",
+    "Numeric deadlines, inferred types, imported value types, class fields and nested cache abstractions are outside this syntax query.",
+    "The earlier text scan's candidate count is not a confirmed cache count."
+  ],
+  "otherRealExamplesRead": {
+    "rules": "packages/operator-core/lib/endpoint-route/routes/dev/table-rows.ts: local operator switch",
+    "events": "packages/operator-core/lib/sync/hyperbee/schema-version.ts: EventEmitter",
+    "sync": "docs/evidence/rules-events-reuse-2026-10-28-ui-candidates-before.json: frozen setInterval source candidates; individual callbacks require classification",
+    "rankFusion": "libs/generic/memory/src/hybrid-fusion.ts and backend.ts: local reciprocal-rank implementation and rrf backend choice",
+    "dependencyOrdering": "packages/operator-core/lib/cupboard/trigger-pack-materialize.ts: topologicalBindings DFS",
+    "liveness": "packages/operator-core/lib/agent-tools/coordination/recipient-liveness.ts: shared sessionState consumer"
+  }
+}

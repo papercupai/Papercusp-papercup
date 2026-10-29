@@ -57,7 +57,12 @@ if (routine === 'external-trigger-dispatch') {
   sources = ['packages/operator-core/lib/harness/routines/external-trigger-dispatch-action.ts',
     'packages/operator-core/lib/external-triggers/binding-engine.ts'];
 } else if (routine === 'fleet-headcount-governor') {
-  process.env.PAPERCUSP_FLAG_FLEET_HEADCOUNT_GOVERNOR = '1';
+  const { FLAGS, flagEnvVarName } = await import('@papercusp/flags');
+  const { getFlagAttestation } = await import('@papercusp/flags/server');
+  process.env[flagEnvVarName(FLAGS.FLEET_HEADCOUNT_GOVERNOR)] = '1';
+  const flag = await getFlagAttestation(FLAGS.FLEET_HEADCOUNT_GOVERNOR, 'system');
+  assert.equal(flag.source, 'env-override', 'the private control must explicitly enable the real governor flag');
+  assert.equal(flag.resolvedValue, true, 'a disabled action cannot provide measurement evidence');
   const { runFleetHeadcountGovernor } = await import('../lib/harness/routines/fleet-headcount-action');
   const { createFleetIfAbsent, setFleetHeadcountTarget } = await import('../lib/agent-fleets-store');
   const plan = 'measurement-terminal-plan';

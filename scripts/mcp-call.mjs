@@ -291,6 +291,16 @@ export function isRetryableAdmissionShed(error, status = 0) {
     MCP_CALL_ADMISSION_REASONS.has(data.reason);
 }
 
+/** The MCP server marks read-only deadline results explicitly in its error text. */
+export function isReadOnlyRequestTimeout(error) {
+  return error?.isError === true &&
+    Array.isArray(error.content) &&
+    error.content.some((item) =>
+      item?.type === 'text' && typeof item.text === 'string' &&
+      /^request_timeout: (?:read-only tool \"[^\"]+\"|tool \"[^\"]+\" exceeded .* during MCP request setup \(target dispatch had not started; no mutation was started;)/i.test(item.text),
+    );
+}
+
 /** Read the server's Retry-After hint, with a bounded fallback for direct calls. */
 export function admissionRetryDelayMs(
   response,
@@ -1225,6 +1235,17 @@ async function main() {
             tokenFallbackAttempted = true;
             continue;
           }
+          if (
+            hasEndpointFallback &&
+            (isRetryableAdmissionShed(probe.candidateOut.error, probe.candidateRes.status) ||
+              isReadOnlyRequestTimeout(probe.candidateOut.error))
+          ) {
+            // This probe is always release:repair-queue get, even when the
+            // caller's eventual operation mutates the queue. It is safe to
+            // advance endpoints because no mutation has been sent yet.
+            tryNextEndpoint = true;
+            break;
+          }
           if (probe.candidateOut.error || toolResultNotOkReason(probe.candidateOut.result) !== null) {
             res = probe.candidateRes;
             raw = probe.candidateRaw;
@@ -1259,6 +1280,19 @@ async function main() {
         ) {
           tokenFallbackAttempted = true;
           continue;
+        }
+        // A repair-queue get/status is read-only. If an endpoint returns its
+        // explicit pre-dispatch shed or read-only deadline, try the next
+        // endpoint; the scope check below still rejects a different install.
+        // Mutations never use this fallback and remain guarded by the
+        // read-only scope preflight above.
+        if (
+          hasEndpointFallback && repairQueueExpectedInstall && isRepairQueueRead(args) &&
+          (isRetryableAdmissionShed(candidateOut.error, candidateRes.status) ||
+            isReadOnlyRequestTimeout(candidateOut.error))
+        ) {
+          tryNextEndpoint = true;
+          break;
         }
         if (repairQueueExpectedInstall && isRepairQueueRead(args) && !candidateOut.error) {
           const mismatch = repairQueueTargetScopeMismatch(repairQueueExpectedInstall, candidateOut.result);

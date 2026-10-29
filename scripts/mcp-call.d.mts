@@ -68,6 +68,8 @@ export function fetchWithConnectionRecovery(url: string | URL | Request, init: R
  * tool-level errors are never replayed by this mutation-capable helper.
  */
 export function isRetryableAdmissionShed(error: any, status?: number): boolean;
+/** The MCP server marks read-only deadline results explicitly in its error text. */
+export function isReadOnlyRequestTimeout(error: any): any;
 /** Read the server's Retry-After hint, with a bounded fallback for direct calls. */
 export function admissionRetryDelayMs(response: any, error: any, { fallbackMs, maxMs, }?: {
     fallbackMs?: number | undefined;
