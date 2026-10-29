@@ -171,7 +171,7 @@ describe('diff + render (read side)', () => {
     { dep: 'fact:k', token: 'live:9@5', at: 1 },
   ];
 
-  it('reports changed and gone references and nothing for unchanged ones', () => {
+  it('reports changed and unresolved references without claiming deletion, and nothing for unchanged ones', () => {
     const current = new Map<string, string | null>([
       ['work-item:WI-1111', 'done@200'],
       ['file:packages/x/y.ts', 'sha256:aa'],
@@ -181,13 +181,14 @@ describe('diff + render (read side)', () => {
     const changes = diffCarryRefStamps(stamps, current, 'loop note');
     expect(changes.map((c) => [c.dep, c.kind])).toEqual([
       ['work-item:WI-1111', 'changed'],
-      ['decision:p#D-001', 'gone'],
+      ['decision:p#D-001', 'unverified'],
       ['fact:k', 'changed'],
     ]);
     const text = renderCarryRefChanges(changes, { where: 'wake delivery', readAtIso: '2026-10-14T00:00:00Z' })!;
-    expect(text).toContain('3 references have moved');
+    expect(text).toContain('3 references need review');
     expect(text).toContain('↻ CHANGED — work-item:WI-1111 [loop note]: wip → done');
-    expect(text).toContain('✗ GONE — decision:p#D-001 [loop note]');
+    expect(text).toContain('⚠ UNVERIFIED — decision:p#D-001 [loop note]');
+    expect(text).toContain('this is not evidence of deletion');
     expect(text).toContain('↻ CHANGED — fact:k [loop note]: now retracted');
     expect(text).not.toContain('packages/x/y.ts');
   });

@@ -230,11 +230,13 @@ const LEADER_BRIEF_RESERVATION_DETAIL_BUDGET = 3_500;
 export const LEADER_BRIEF_READ_CONCURRENCY = 4;
 export const LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS = 3_000;
 /**
- * The canonical fleet-metrics census is independent from headcount. Its
- * measured complete cohort took 3,272.388ms, so it needs its own bounded leg
- * budget instead of inheriting the shorter headcount cutoff.
+ * The canonical fleet-metrics census is independent from headcount. A staging
+ * reproduction completed its source read in 9.63s and the full brief in
+ * 12.413s (EI-25503081061868211); the former 5s leg cap discarded the required
+ * result while the 25s whole-call deadline still had room. Give this leg 20s,
+ * five seconds below the whole-call backstop.
  */
-export const LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS = 5_000;
+export const LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS = 20_000;
 /**
  * The cross-epoch campaign read is a sequence of writer-backed aggregates and
  * bounded evidence queries. It cannot fit the 750ms optional-decoration

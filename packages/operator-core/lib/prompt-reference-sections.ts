@@ -8,6 +8,16 @@ export function deferSuPromptReferences(text: string, sources: {
   base: string; overlay: string; repoRoot: string;
 }): { text: string; references: SuPromptReference[] } {
   const references: SuPromptReference[] = [];
+  const renderRoot = path.resolve(sources.repoRoot);
+  // Managed carries can outlive a candidate checkout. Repo-owned absolute
+  // pointers must resolve against the stable edit tree after that checkout is pruned.
+  const referenceRoot = path.resolve(process.env.PAPERCUSP_CANONICAL_TREE?.trim() || renderRoot);
+  const stableReference = (source: string): string => {
+    const relative = path.relative(renderRoot, path.resolve(source));
+    const insideRenderRoot = relative === '' || (relative !== '..' &&
+      !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+    return insideRenderRoot ? path.join(referenceRoot, relative) : source;
+  };
   const kernelStart = text.indexOf('<!-- PAPERCUSP-KERNEL:SEAL -->');
   const kernelEnd = text.indexOf(SU_KERNEL_END);
   const policy = path.join(sources.repoRoot, 'libs/papercusp/packages/orchestrator/src/prompt-build.ts');
@@ -78,7 +88,7 @@ export function deferSuPromptReferences(text: string, sources: {
       summary = 'Always quote the opening delimiter (`<<\'JSON\'`); the closing delimiter must be at column 0, alone. Never interpolate arbitrary JSON or shell ${...} through a JavaScript template literal. Fetch the quoting examples as needed.';
     }
     if (summary == null || !source) continue;
-    references.push({ heading, source });
+    references.push({ heading, source: stableReference(source) });
     out += text.slice(cursor, start);
     out += heading === 'Engineering discipline' ? summary + '\n\n' : `## ${heading}\n\n${summary}\n\n`;
     cursor = end;

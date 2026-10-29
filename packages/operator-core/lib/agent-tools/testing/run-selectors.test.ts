@@ -110,6 +110,17 @@ describe('testing:run selector arbitration', () => {
     expect(runTool.effect).toBe('write');
   });
 
+  it('accepts private-PG routing only as an explicit boolean execution option', () => {
+    expect(runTool.args.safeParse({ files: ['feature.integration.test.ts'], privatePg: true }).success).toBe(true);
+    expect(runTool.args.safeParse({ files: ['feature.integration.test.ts'], privatePg: 'true' }).success).toBe(false);
+  });
+
+  it('refuses private-PG routing without an executed file selection', async () => {
+    expect(await callHandler({ privatePg: true })).toMatchObject({
+      ok: false, error: 'private_pg_requires_executed_files',
+    });
+  });
+
   const emptyRun = {
     passed: 0,
     failed: 0,
@@ -225,6 +236,34 @@ describe('testing:run selector arbitration', () => {
       `--outputFile=${reportPath}`,
       '--testNamePattern=focused proof',
     ]);
+  });
+
+  it('keeps throwaway PG and the durable test-ledger sink in detached recovery', () => {
+    const previousSink = process.env.PAPERCUSP_TEST_RUNS_DB_URL;
+    const ledgerSink = 'postgresql://127.0.0.1/detached-private-ledger';
+    try {
+      process.env.PAPERCUSP_TEST_RUNS_DB_URL = ledgerSink;
+      const request = buildDetachedTestRunRequest({
+        root: REPO_ROOT,
+        files: ['packages/operator-core/lib/omp-managed-tools.native.integration.test.ts'],
+        timeoutMs: 900_000,
+        privatePg: true,
+      });
+      expect(request.command).toBe(process.execPath);
+      expect(request.args.slice(0, 4)).toEqual([
+        join(REPO_ROOT, 'scripts', 'with-test-pg.mjs'),
+        '--',
+        process.execPath,
+        join(REPO_ROOT, 'scripts', 'test-files.mjs'),
+      ]);
+      expect(request.env).toMatchObject({
+        PAPERCUSP_TEST_RUNS_DB_URL: ledgerSink,
+        PAPERCUSP_TEST_FILE_TIMEOUT_MS: expect.any(String),
+      });
+    } finally {
+      if (previousSink === undefined) delete process.env.PAPERCUSP_TEST_RUNS_DB_URL;
+      else process.env.PAPERCUSP_TEST_RUNS_DB_URL = previousSink;
+    }
   });
 
   it('boots detached test workers in test mode without changing a production host', async () => {

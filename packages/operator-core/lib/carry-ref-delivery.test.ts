@@ -2,8 +2,8 @@
  * P-002 (carry-recheck-and-governed-memory-2026-10-14) read side: carried-reference re-check at
  * wake delivery and compaction recovery. Readers and the resolver are injected — no database.
  *
- * BARs: R-2 (wake: changed → one line), R-12 (wake: gone), R-21 (wake: unchanged → silent),
- * R-11 (recovery: changed), R-20 (recovery: gone), R-22 (recovery: unchanged → silent).
+ * BARs: R-2 (wake: changed → one line), R-12 (wake: unresolved → unverified), R-21 (wake: unchanged → silent),
+ * R-11 (recovery: changed), R-20 (recovery: unresolved → unverified), R-22 (recovery: unchanged → silent).
  */
 import { describe, it, expect, vi } from 'vitest';
 import { carryRefChangesForRecovery, carryRefChangesForWake, stampsCitedBy } from './carry-ref-delivery';
@@ -39,7 +39,7 @@ describe('carryRefChangesForWake', () => {
   ];
   const readLoopRefStamps = vi.fn(async () => ({ note, stamps }));
 
-  it('renders one line per changed reference (R-2) and a gone line for one that no longer resolves (R-12)', async () => {
+  it('renders changed references and marks an unresolved file unverified rather than gone (R-12)', async () => {
     const out = await carryRefChangesForWake({
       ownerId: 'su-1',
       harness: 'papercusp',
@@ -56,9 +56,10 @@ describe('carryRefChangesForWake', () => {
     expect(out).not.toBeNull();
     const lines = out!.split('\n');
     expect(lines[0]).toContain('re-checked at wake delivery (readAt=2026-10-14T13:00:00.000Z)');
-    expect(lines[0]).toContain('2 references have moved');
+    expect(lines[0]).toContain('2 references need review');
     expect(lines).toContain('  ↻ CHANGED — work-item:WI-1234 [loop note]: open → done');
-    expect(lines.some((l) => l.startsWith('  ✗ GONE — file:packages/operator-core/lib/a.ts [loop note]'))).toBe(true);
+    expect(lines.some((l) => l.startsWith('  ⚠ UNVERIFIED — file:packages/operator-core/lib/a.ts [loop note]'))).toBe(true);
+    expect(out).toContain('this is not evidence of deletion');
     // the unchanged decision gets no line
     expect(out).not.toContain('decision:plan-x#D-002');
     expect(lines).toHaveLength(3);
@@ -157,7 +158,7 @@ describe('carryRefChangesForRecovery', () => {
     ),
   };
 
-  it('renders changed (R-11) and gone (R-20) references across the loop note and held checkpoints', async () => {
+  it('renders changed and unverified references across the loop note and held checkpoints (R-20)', async () => {
     const out = await carryRefChangesForRecovery({
       ...base,
       resolve: resolverFrom({
@@ -171,7 +172,7 @@ describe('carryRefChangesForRecovery', () => {
     expect(lines[0]).toContain('re-checked at compaction recovery');
     expect(lines).toContain('  ↻ CHANGED — work-item:WI-1111 [loop note]: wip → done');
     expect(lines).toContain('  ↻ CHANGED — fact:guard-rail:x [WI-5000 checkpoint]: now retracted');
-    expect(lines.some((l) => l.startsWith('  ✗ GONE — work-item:WI-2222 [WI-5000 checkpoint]'))).toBe(true);
+    expect(lines.some((l) => l.startsWith('  ⚠ UNVERIFIED — work-item:WI-2222 [WI-5000 checkpoint]'))).toBe(true);
     expect(lines).toHaveLength(4);
     // only the held item whose checkpoint cites something is read
     expect(base.readWorkItemRefStamps).toHaveBeenCalledWith([

@@ -1483,9 +1483,10 @@ export async function reconcileLoopRoutines(
            lw.status AS last_wake_status,
            lw.channel AS last_wake_channel,
            -- EI-21743034835075378 / WI-6554700010019416: pair only the
-           -- loop-fire USER prompt whose real-time start stamp carries THIS
-           -- routine's current wakeCount. A timestamp-only max can select a
-           -- delayed earlier fire after a newer dispatch (stale9/current10).
+           -- direct loop-fire or authenticated self-compaction USER prompt whose
+           -- real-time start stamp carries THIS routine's current wakeCount. A
+           -- timestamp-only max can select a delayed earlier fire after a newer
+           -- dispatch (stale9/current10).
            (SELECT max((
               SELECT max(a2.ts)
                 FROM harness_shared.session_turns a2
@@ -1507,7 +1508,7 @@ export async function reconcileLoopRoutines(
             FROM harness_shared.session_turns u
              WHERE u.owner = r.target_owner_id
                AND u.speaker = 'user'
-               AND u.turn_origin = 'loop-fire'
+               AND u.turn_origin IN ('loop-fire', 'self-compaction')
                AND u.ts > r.last_fired_at
                AND EXISTS (
                  SELECT 1

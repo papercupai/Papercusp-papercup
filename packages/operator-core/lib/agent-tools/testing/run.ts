@@ -483,6 +483,8 @@ export function buildDetachedTestRunRequest(opts: {
   workspaceId?: string;
   harnessSlug?: string;
   timeoutMs?: number;
+  /** Run the detached router inside the maintained throwaway-Postgres wrapper. */
+  privatePg?: boolean;
   /** Caller-bound recovery retains the original absolute budget and owns a new artifact packet. */
   deadline?: TestRunDeadline;
   /** Mixed-checkout recovery retains a separate reporter sink for each owning root. */
@@ -518,6 +520,7 @@ export function buildDetachedTestRunRequest(opts: {
       ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
       ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
       ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
+      ...(opts.privatePg ? { privatePg: true } : {}),
     };
     return {
       kind: 'vitest', testRunSource: 'local',
@@ -542,6 +545,7 @@ export function buildDetachedTestRunRequest(opts: {
         PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: String(opts.deadline.taskDeadlineAtMs),
         PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(opts.deadline.childCutoffAtMs),
         PAPERCUSP_TEST_CLEANUP_RESERVE_MS: String(opts.deadline.cleanupReserveMs),
+        ...(opts.privatePg ? { PAPERCUSP_TEST_RUNS_DB_URL: resolveTestRunsPgUrl(process.env) } : {}),
         ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
         ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
       },
@@ -571,6 +575,11 @@ export function buildDetachedTestRunRequest(opts: {
     ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
     ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
   };
+  if (opts.privatePg) env.PAPERCUSP_TEST_RUNS_DB_URL = resolveTestRunsPgUrl(process.env);
+  const routerArgs = [join(opts.root, 'scripts', 'test-files.mjs'), ...opts.files, '--', ...vitestArgs];
+  const commandArgs = opts.privatePg
+    ? [join(opts.root, 'scripts', 'with-test-pg.mjs'), '--', process.execPath, ...routerArgs]
+    : routerArgs;
   return {
     kind: 'vitest',
     testRunSource: 'local',
@@ -578,7 +587,7 @@ export function buildDetachedTestRunRequest(opts: {
     filePath: opts.files.length === 1 ? opts.files[0] : undefined,
     requestedFiles: requestedLedgerFilePaths(opts.root, opts.files),
     command: process.execPath,
-    args: [join(opts.root, 'scripts', 'test-files.mjs'), ...opts.files, '--', ...vitestArgs],
+    args: commandArgs,
     cwd: opts.root,
     detachedReportArtifacts: [{
       reportPath,
@@ -3495,7 +3504,7 @@ export interface RunTestFilesCoreOptions {
   runId?: string;
   /** Recursive mixed-root groups defer detached recovery to their outer operation. */
   allowDetachedRecovery?: boolean;
-  /** Internal scorecard route: own test PG while retaining the original reporter sink. */
+  /** Run the maintained Papercusp router with throwaway product PG and a durable reporter sink. */
   privatePg?: boolean;
   /** Explicit registered roots keep relative paths inside that checkout. */
   allowSiblingCheckoutFallback?: boolean;
@@ -3600,6 +3609,16 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     const groups = groupTestFilesByCheckout(requestedPaths.files, opts.root);
     if (groups.length > 1) {
       const roots = groups.map((group) => group.root);
+      if (opts.privatePg) {
+        return {
+          ok: false,
+          runId,
+          root: resolve(opts.root),
+          roots,
+          error: 'private_pg_requires_single_checkout',
+          hint: 'privatePg currently runs one Papercusp checkout per invocation; split the files by checkout.',
+        };
+      }
       const completed: CompletedTestGroup[] = [];
       const errors: Array<Extract<TestFilesCoreResult, { error: string }>> = [];
       for (const group of groups) {
@@ -3672,6 +3691,16 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
   }
 
   const root = checkoutRootForTestFiles(requestedPaths.ok ? requestedPaths.files : opts.files, opts.root);
+  const hasRouter = existsSync(join(root, 'scripts', 'test-files.mjs'));
+  if (opts.privatePg && (!hasRouter || !existsSync(join(root, 'scripts', 'with-test-pg.mjs')))) {
+    return {
+      ok: false,
+      runId,
+      root,
+      error: 'private_pg_route_unavailable',
+      hint: 'privatePg requires the maintained Papercusp test router and scripts/with-test-pg.mjs in the selected checkout.',
+    };
+  }
 
   // An in-tree mutation probe holds its subject's file lock for the dirty
   // window. Path-level lock overlap is not enough, because a test can import
@@ -3692,7 +3721,6 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
   // pre-flight refusal catches what the router's own check can't: a root that
   // isn't a papercusp checkout AT ALL (missing the router script itself) or a
   // known npm-workspace Vitest checkout.
-  const hasRouter = existsSync(join(root, 'scripts', 'test-files.mjs'));
   if (!hasRouter && !isVitestCheckoutRoot(root)) {
     return {
       ok: false,
@@ -3962,7 +3990,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       // checkouts have no scripts/test-files.mjs route, so they retain the
       // existing explicit recovery hint until that route can be represented as
       // one store run.
-      const detachedEnabled = hasRouter && !opts.privatePg && opts.allowDetachedRecovery !== false
+      const detachedEnabled = hasRouter && opts.allowDetachedRecovery !== false
         && (!opts.deadline || Date.now() < deadline.childCutoffAtMs);
       const detachedHarnessSlug = await resolveDetachedHarnessSlug({
         root,
@@ -3980,6 +4008,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
                 ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
                 ...(detachedHarnessSlug !== undefined ? { harnessSlug: detachedHarnessSlug } : {}),
                 ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
+                ...(opts.privatePg ? { privatePg: true } : {}),
                 timeoutMs: recoveryTimeoutMs,
                 ...(opts.deadline ? { deadline: opts.deadline } : {}),
               }),
@@ -4187,7 +4216,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
 export default defineTool({
   name: 'testing:run',
   description:
-    'Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `work_item_id` explicitly attributes a run and its slow-attempt gate to a held work-item, overriding a stale session goal stamp. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery after the foreground process closes; if termination remains unconfirmed, `taskId` is returned and no concurrent recovery starts. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
+    'Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `privatePg:true` runs one Papercusp checkout with throwaway product Postgres while preserving the separate durable test-ledger sink, including detached recovery. `work_item_id` explicitly attributes a run and its slow-attempt gate to a held work-item, overriding a stale session goal stamp. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery after the foreground process closes; if termination remains unconfirmed, `taskId` is returned and no concurrent recovery starts. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
   guidance: {
     when: 'You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.',
     notWhen:
@@ -4288,6 +4317,9 @@ export default defineTool({
       .describe(
         `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, A FOREGROUND run is capped at ${FOREGROUND_TIMEOUT_CEILING_MS - TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for the child process, reserving ${TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for provenance/evidence preparation, ledger readback, and finalization before the ~55s MCP transport cap. For a longer suite, follow the timeout response's detached recovery; integration files use the npm run test:file router.`,
       ),
+    privatePg: z.boolean().optional().describe(
+      'Run tests from one Papercusp router checkout inside scripts/with-test-pg.mjs. Product PG is disposable; testing:run preserves its separate durable ledger sink. Detached recovery keeps the same private-PG route.',
+    ),
     taskDeadlineAtMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional().describe(
       'Absolute Unix time in milliseconds for this test task, including preparation, admission and owned cleanup. Never extended or replaced by the foreground transport cap. Recovery beyond that cap retains this deadline and cleanup reserve unchanged.',
     ),
@@ -4312,7 +4344,7 @@ export default defineTool({
     const handlerStartedAtMs = Date.now();
     const phaseTimingsMs = createTestingRunPhaseTimings();
     if (args.nativeConsult) {
-      if (['files', 'changedPaths', 'evidence', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'testNamePattern', 'timeoutMs', 'taskDeadlineAtMs', 'cleanupReserveMs', 'maxFailures', 'recheckReason']
+      if (['files', 'changedPaths', 'evidence', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'testNamePattern', 'timeoutMs', 'privatePg', 'taskDeadlineAtMs', 'cleanupReserveMs', 'maxFailures', 'recheckReason']
         .some(key => (args as Record<string, unknown>)[key] !== undefined)) {
         return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
       }
@@ -4332,6 +4364,12 @@ export default defineTool({
       } catch (error) {
         return { data: { ok: false, error: 'native_consult_acceptance_failed', message: String(error) } };
       }
+    }
+    if (args.privatePg && args.changedPaths) {
+      return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
+    }
+    if (args.privatePg && !args.files && !args.remeasureEvidence) {
+      return { data: { ok: false, error: 'private_pg_requires_executed_files' } };
     }
     let deadline: TestRunDeadline | undefined;
     if (args.taskDeadlineAtMs !== undefined || args.cleanupReserveMs !== undefined) {
@@ -4658,6 +4696,7 @@ export default defineTool({
       ...(attemptWorkItemId ? { workItemId: attemptWorkItemId } : {}),
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
+      ...(args.privatePg ? { privatePg: true } : {}),
       allowSiblingCheckoutFallback,
       phaseTimings: phaseTimingsMs,
     });

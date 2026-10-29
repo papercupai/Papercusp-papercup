@@ -108,11 +108,16 @@ function completeGenerationFixture(dir: string) {
   mkdirSync(join(operator, "bin"), { recursive: true });
   mkdirSync(join(operator, "dist-host"));
   mkdirSync(join(repo, "scripts"), { recursive: true });
+  mkdirSync(join(repo, "node_modules"));
   mkdirSync(binDir);
   writeFileSync(join(generation, ".ready"), sha + "\n");
   writeFileSync(proofValid, "valid\n");
   writeFileSync(join(operator, "bin/hono-host.ts"), "export const ready = true;\n");
   writeFileSync(join(operator, "dist-host/hono-host.mjs"), "export const ready = true;\n");
+  writeFileSync(join(repo, "node_modules/.package-lock.json"), '{"lockfileVersion":3,"packages":{}}\n');
+  writeFileSync(join(operator, "dist-host/hono-host.mjs.meta.json"), JSON.stringify({
+    inputs: { "apps/operator/bin/hono-host.ts": {} },
+  }) + "\n");
   writeFileSync(join(operator, "dist-host/.bundle-fresh.json"), "{}\n");
   writeFileSync(join(binDir, "git"), `#!/usr/bin/env bash\nprintf '%s\\n' '${sha}'\n`, { mode: 0o700 });
   mockSystemctl(binDir, "ActiveState=activating\nSubState=start-pre\nMainPID=0\nType=notify\nResult=success");
@@ -149,7 +154,7 @@ describe("staging lock attribution", () => {
       symlinkSync(join(REPO_ROOT, "scripts/lib"), join(fixture.repo, "scripts/lib"), "dir");
       linkRelativeImports(join(REPO_ROOT, "scripts/npm-install-safe.mjs"), join(fixture.repo, "scripts/npm-install-safe.mjs"));
       symlinkSync(join(REPO_ROOT, "apps/operator/bin/bundle-host-freshness.mjs"), join(fixture.operator, "bin/bundle-host-freshness.mjs"));
-      writeFileSync(join(fixture.repo, ".gitignore"), "apps/operator/dist-host/\n");
+      writeFileSync(join(fixture.repo, ".gitignore"), "apps/operator/dist-host/\nnode_modules/\n");
       // These commits belong only to the temporary fixture, as in the existing
       // staging-isolated-bundle proof suite; the shared tree is never committed.
       const git = (...args: string[]) => {
@@ -578,17 +583,19 @@ describe("staging lock attribution", () => {
     const attempt = sync.indexOf(
       "state=wait_start lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=exclusive",
     );
-    // The open + non-blocking flock live in the coprocess keeper; the wait_start
+    // The open and both non-blocking flocks live in the coprocess keeper; the wait_start
     // record must be written before admission CALLS that keeper.
     const call = sync.indexOf("if staging_sync_lock_start; then", attempt);
     const keeperAt = sync.indexOf("staging_sync_lock_start() {");
     const open = sync.indexOf('exec 9>"$STAGING_SYNC_LOCK_PATH"', keeperAt);
-    const acquire = sync.indexOf("if ! flock -n 9", open);
+    const writerAcquire = sync.indexOf("flock -n 8", open);
+    const checkoutAcquire = sync.indexOf("flock -n 9", open);
     expect(attempt).toBeGreaterThan(-1);
     expect(call).toBeGreaterThan(attempt);
     expect(keeperAt).toBeGreaterThan(-1);
     expect(open).toBeGreaterThan(keeperAt);
-    expect(acquire).toBeGreaterThan(open);
+    expect(writerAcquire).toBeGreaterThan(open);
+    expect(checkoutAcquire).toBeGreaterThan(writerAcquire);
     expect(sync).toContain("state=shared_acquired phase=preflight-restart");
     expect(sync).toContain("state=shared_acquired phase=final-restart");
   });

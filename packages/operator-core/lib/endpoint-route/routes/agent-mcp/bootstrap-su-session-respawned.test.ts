@@ -175,7 +175,7 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     const res = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, reanchored: true });
-    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID);
+    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, { childLaunchSessionId: null });
   });
 
   it('clears the PG estimate plus BOTH process-local caches for the respawned owner', async () => {
@@ -255,7 +255,7 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
   it('trims surrounding whitespace on the sessionId before anchoring', async () => {
     const res = await postRespawned({ advSessionId: 7, sessionId: `  ${FRESH_ID}  ` });
     expect(res.status).toBe(200);
-    expect(reanchorMock).toHaveBeenCalledWith(7, FRESH_ID);
+    expect(reanchorMock).toHaveBeenCalledWith(7, FRESH_ID, { childLaunchSessionId: null });
   });
 });
 
@@ -280,7 +280,7 @@ describe('owner-keyed fallback — the interactive/`psu --resume` cohort (no adv
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, reanchored: false });
-    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID);
+    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, { childLaunchSessionId: null });
     expect(reanchorByOwnerMock).not.toHaveBeenCalled();
   });
 

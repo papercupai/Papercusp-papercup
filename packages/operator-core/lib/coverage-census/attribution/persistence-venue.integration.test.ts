@@ -28,6 +28,7 @@ import { registerRoute } from '../../endpoint-route/define-route';
 import healthRoute from '../../endpoint-route/routes/misc/health';
 import restQueryRoute from '../../endpoint-route/routes/zero-harness/rest-query';
 import { PROJECTED_DEPS, flushPendingTelemetry } from '../../projected-tool-deps';
+import { setSessionConfinementResolver } from '../../capability-envelope/session-confinement-port';
 import { toWorkspaceRel } from '@papercusp/test-config/admin-test-runs-reporter';
 import {
   ATTRIBUTION_ENV,
@@ -118,6 +119,9 @@ async function dispatchTool(toolName: string, args: Record<string, unknown>): Pr
 }
 
 beforeAll(() => {
+  // This suite uses a synthetic superuser identity and measures coverage
+  // attribution, not the host's authoritative per-session policy store.
+  setSessionConfinementResolver(() => null);
   const configuredRunGroup = process.env.PAPERCUSP_TEST_RUN_GROUP;
   if (!configuredRunGroup) throw new Error('Persistent attribution requires PAPERCUSP_TEST_RUN_GROUP');
   runGroup = configuredRunGroup;
@@ -150,6 +154,7 @@ afterEach(() => setAmbientTestContext(null));
 afterAll(async () => {
   resetAttributionSinkForTests();
   resetAttributionArmingForTests();
+  setSessionConfinementResolver(undefined);
   await sql?.end({ timeout: 2 });
   for (const key of PINNED_ENV) {
     const value = savedEnv.get(key);

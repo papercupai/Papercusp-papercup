@@ -589,17 +589,45 @@ export function detectIntentActionDivergence(
   // Keyed by owner AND intent id: an intent id is globally unique, but keying on
   // both makes the invariant explicit rather than incidental.
   const buckets = new Map<string, DivergenceCall[]>();
+  const intentSegments = new Map<
+    string,
+    { intentEventId: NonNullable<DivergenceCall['intentEventId']>; segment: number; lastGoalRef: string | null }
+  >();
   let stampedCalls = 0;
   let goalStampedCalls = 0;
   for (const c of rows) {
+    if (c.goalRef != null && c.goalRef !== '') goalStampedCalls += 1;
     if (c.intentEventId != null) {
       stampedCalls += 1;
-      const key = `${c.ownerId}\x00${c.intentEventId}`;
+
+      const currentGoalRef = c.goalRef != null && c.goalRef !== '' ? c.goalRef : null;
+      let state = intentSegments.get(c.ownerId);
+      if (!state || state.intentEventId !== c.intentEventId) {
+        state = { intentEventId: c.intentEventId, segment: 0, lastGoalRef: currentGoalRef };
+        intentSegments.set(c.ownerId, state);
+      } else if (
+        c.toolName === 'scheduler:get_next' &&
+        c.status === 'ok' &&
+        currentGoalRef !== null &&
+        currentGoalRef !== state.lastGoalRef
+      ) {
+        // A successful scheduler claim implicitly declares the newly claimed item
+        // in presence, but its invocation is stamped before that claim updates the
+        // durable intent-event pointer. Split the bucket at this observed goal
+        // transition and treat the scheduler call as the boundary marker, not as
+        // action under the previous declaration.
+        state.segment += 1;
+        state.lastGoalRef = currentGoalRef;
+        continue;
+      } else {
+        state.lastGoalRef = currentGoalRef;
+      }
+
+      const key = `${c.ownerId}\x00${c.intentEventId}\x00${state.segment}`;
       const b = buckets.get(key);
       if (b) b.push(c);
       else buckets.set(key, [c]);
     }
-    if (c.goalRef != null && c.goalRef !== '') goalStampedCalls += 1;
   }
 
   const terminalGoals = opts.terminalGoalRefs;

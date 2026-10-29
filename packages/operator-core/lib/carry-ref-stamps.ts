@@ -14,8 +14,8 @@
  *      (`computeFreshness`) keeps its exact meaning.
  *   2. READ — at wake delivery and compaction recovery, {@link carryRefChangesBlock}
  *      re-resolves every stamped reference and renders ONE line per reference whose
- *      token moved or that no longer resolves. When nothing moved it returns null, so
- *      the delivery prints nothing.
+ *      token moved or could not be resolved. Unresolved is not treated as deletion:
+ *      the underlying resolvers also use null for temporarily unreadable sources.
  *
  * Token sources (each a version the source already keeps):
  *   - `work-item:<id>`            → `status@updated_ts` (the existing freshness resolver)
@@ -332,7 +332,7 @@ export function mergeCarryRefStampsIntoDeps(
 
 export interface CarryRefChange {
   dep: string;
-  kind: 'changed' | 'gone';
+  kind: 'changed' | 'unverified';
   was: string;
   now: string | null;
   /** Which checkpoint carried the reference (e.g. "loop note", "WI-1 checkpoint"). */
@@ -349,7 +349,7 @@ export function diffCarryRefStamps(
   for (const stamp of stamps) {
     if (!current.has(stamp.dep)) continue; // not re-resolved this pass (over the cap)
     const now = current.get(stamp.dep) ?? null;
-    if (now === null) out.push({ dep: stamp.dep, kind: 'gone', was: stamp.token, now: null, source });
+    if (now === null) out.push({ dep: stamp.dep, kind: 'unverified', was: stamp.token, now: null, source });
     else if (now !== stamp.token) out.push({ dep: stamp.dep, kind: 'changed', was: stamp.token, now, source });
   }
   return out;
@@ -361,8 +361,8 @@ function clipToken(token: string): string {
 
 function describeChange(change: CarryRefChange): string {
   const parts = splitDep(change.dep);
-  if (change.kind === 'gone') {
-    return `  ✗ GONE — ${change.dep} [${change.source}]: stamped ${clipToken(change.was)}; it no longer resolves (deleted, moved, or unreadable right now)`;
+  if (change.kind === 'unverified') {
+    return `  ⚠ UNVERIFIED — ${change.dep} [${change.source}]: stamped ${clipToken(change.was)}; the current source could not be resolved. It may be missing, moved, or temporarily unreadable; this is not evidence of deletion.`;
   }
   if (parts?.kind === 'work-item') {
     const was = change.was.split('@')[0] ?? change.was;
@@ -385,7 +385,7 @@ export function renderCarryRefChanges(
   const n = changes.length;
   const head =
     `🔗 CARRIED REFERENCES re-checked at ${opts.where}${opts.readAtIso ? ` (readAt=${opts.readAtIso})` : ''} — ` +
-    `${n} ${n === 1 ? 'reference has' : 'references have'} moved since the checkpoint was written ` +
+    `${n} ${n === 1 ? 'reference needs' : 'references need'} review ` +
     `(unchanged ones are not listed). Re-read these before acting on what the checkpoint says about them:`;
   return [head, ...changes.map(describeChange)].join('\n');
 }

@@ -1,5 +1,6 @@
 /**
- * get_next.shadowed-fleet-spec.test.ts — regression guard for EI-22143638502920491.
+ * get_next.shadowed-fleet-spec.test.ts — regression guards for EI-22143638502920491 and
+ * EI-26979401860651629.
  *
  * The bug: `getClaimSpecRecord` returns the moment it finds a per-bee row
  * (`source:'cup'`) — it never looks at whether the caller ALSO belongs to a
@@ -11,11 +12,11 @@
  * Measured live: a DRAIN fleet leader idled beside 2,493 claimable items its
  * own fleet spec matched (EI-22143638502920491).
  *
- * `shadowedFleetSpecNote` is the pure text-assembly half of the fix — unit
- * tested here without a DB. The DB-side half (buildMissDiagnosis: look up the
- * caller's fleet membership when source==='cup', fetch that fleet's sentinel
- * spec, and — only when its filter actually matches unclaimed rows — call this
- * function and thread the result into the returned `error` string ahead of
+ * `shadowedFleetSpecNote` and the fleet-only filter difference are pure halves
+ * of the fix — unit-tested here without a DB. The DB-side half (buildMissDiagnosis:
+ * look up the caller's fleet membership when source==='cup', fetch that fleet's sentinel
+ * spec, and count only ready rows admitted by the fleet filter but excluded by the
+ * effective per-bee filter) calls this function and threads the result into the returned `error` string ahead of
  * `namedSummary`, plus `diagnosis.shadowedFleetSpec`) is asserted here as a
  * source-text wiring guard, the established pattern for this file's sibling
  * *.test.ts files (see get_next.family-scope-diagnosis.test.ts) where a live
@@ -24,19 +25,21 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { shadowedFleetSpecNote } from './get_next';
+import type { FilterNode } from '../../scheduler/claim-spec';
+import { shadowedFleetOnlyFilter, shadowedFleetSpecNote } from './get_next';
 
 describe('EI-22143638502920491 — shadowedFleetSpecNote', () => {
-  it('names the fleet, its revision, the match count, and both remedy tool calls', () => {
+  it('names the fleet, its revision, newly admitted ready rows, and both remedy tool calls', () => {
     const note = shadowedFleetSpecNote({
       ownerId: 'su-abc123',
       fleetSlug: 'my-drain-fleet',
       revision: 3,
-      matchedByFilter: 2493,
+      newlyAdmittedReady: 2493,
     });
     expect(note).toContain("your effective spec is a PER-BEE OVERRIDE (source:'cup')");
     expect(note).toContain("fleet 'my-drain-fleet' (rev 3)");
-    expect(note).toContain('matches 2493 issue-family row(s)');
+    expect(note).toContain('admit 2493 additional ready issue-family row(s)');
+    expect(note).toContain('under the same claimability floors');
     expect(note).toContain("scheduler:set_claim_spec { cupId: 'su-abc123', clear:true }");
     expect(note).toContain("scheduler:get_claim_spec { fleet: 'my-drain-fleet' }");
   });
@@ -46,10 +49,58 @@ describe('EI-22143638502920491 — shadowedFleetSpecNote', () => {
       ownerId: 'su-abc123',
       fleetSlug: 'my-drain-fleet',
       revision: null,
-      matchedByFilter: 5,
+      newlyAdmittedReady: 5,
     });
     expect(note).toContain("fleet 'my-drain-fleet' has its own sentinel spec");
     expect(note).not.toMatch(/fleet 'my-drain-fleet' \(rev/);
+  });
+
+  it('suppresses the note when the fleet-only difference has no ready rows', () => {
+    expect(
+      shadowedFleetSpecNote({
+        ownerId: 'su-abc123',
+        fleetSlug: 'my-drain-fleet',
+        revision: 3,
+        newlyAdmittedReady: 0,
+      }),
+    ).toBe('');
+  });
+});
+
+describe('EI-26979401860651629 — shadowedFleetOnlyFilter', () => {
+  it('short-circuits structurally identical effective and fleet filters', () => {
+    const filter: FilterNode = {
+      all: [
+        { field: 'kind', op: 'in', value: ['bug', 'change'] },
+        { field: 'severity', op: '>=', value: 'major' },
+      ],
+    };
+    expect(shadowedFleetOnlyFilter({ fleetFilter: filter, effectiveFilter: filter })).toBeUndefined();
+  });
+
+  it('ignores different maxConcurrentClaims values when both specs have the same filter', () => {
+    const filter: FilterNode = { field: 'kind', op: 'in', value: ['bug', 'change'] };
+    const fleetSpec = { view: { filter }, limits: { maxConcurrentClaims: 2 } };
+    const perBeeSpec = { view: { filter }, limits: { maxConcurrentClaims: 3 } };
+    expect(
+      shadowedFleetOnlyFilter({
+        fleetFilter: fleetSpec.view.filter,
+        effectiveFilter: perBeeSpec.view.filter,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('builds the fleet-only difference when the fleet filter is broader', () => {
+    const fleetFilter: FilterNode = { field: 'kind', op: 'in', value: ['bug', 'change'] };
+    const effectiveFilter: FilterNode = { field: 'kind', op: '=', value: 'bug' };
+    expect(shadowedFleetOnlyFilter({ fleetFilter, effectiveFilter })).toEqual({
+      all: [fleetFilter, { not: effectiveFilter }],
+    });
+  });
+
+  it('does not claim a fleet advantage when the effective per-bee filter is unrestricted', () => {
+    const fleetFilter: FilterNode = { field: 'kind', op: 'in', value: ['bug', 'change'] };
+    expect(shadowedFleetOnlyFilter({ fleetFilter, effectiveFilter: undefined })).toBeUndefined();
   });
 });
 
@@ -70,8 +121,10 @@ describe('EI-22143638502920491 — buildMissDiagnosis threads the shadowed-fleet
     expect(SRC).toContain("fleetRec && fleetRec.source === 'fleet'");
   });
 
-  it('gates the note on a real positive match count, never fires on 0', () => {
-    expect(SRC).toContain('agg.value && agg.value.matchedByFilter > 0');
+  it('uses the fleet-only filter difference and gates on rows that pass claimability floors', () => {
+    expect(SRC).toContain('shadowedFleetOnlyFilter({ fleetFilter, effectiveFilter })');
+    expect(SRC).toContain('agg.value && agg.value.claimable > 0');
+    expect(SRC).toContain('newlyAdmittedReady: agg.value.claimable');
   });
 
   it('is appended to the returned error ahead of namedSummary, and surfaced structurally in diagnosis', () => {

@@ -22,6 +22,7 @@
  * `bash-jobs.ts` for why inheriting the foreground pair was a trap.
  */
 
+import { randomUUID } from 'node:crypto';
 import { readdirSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
@@ -785,33 +786,6 @@ export default defineTool({
     // caller has no personal disclosure; an unknown root/census is fail-closed.
     const sourceHold = await readRestrictedSourceHoldState(frozenLineageRoot);
     const runOffline = sessionRestricted || sourceHold !== 'clear';
-    const childEnv = {
-      ...(desktopEnv ?? {}),
-      // RTK prints a bare `rtk`; its directory joins PATH only when absent.
-      ...(rtk.env ?? {}),
-      ...integrationEnv,
-      // WI-22952438885573520: local test runs launched through capability:bash
-      // already execute in a caller-scoped harness/workspace, but the reporter
-      // learns that identity only from these two child environment variables.
-      // Stamp concrete scope here so the resulting local test_runs row remains
-      // bindable as spec evidence. Keep wildcard/unscoped calls unattributed;
-      // inventing a tenant would be worse than an explicit NULL attribution.
-      ...(hive && hive !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: hive } : {}),
-      ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: ctx.workspaceId } : {}),
-      PAPERCUSP_SID: callerSid,
-      // The marker is owned by this handler, not by caller-provided env. An
-      // ordinary call survives a response yield, but its execution deadline or
-      // caller abort still kills the entire process tree, so mutation probes
-      // must refuse --in-tree before they touch a tracked file. Explicit
-      // background jobs clear both names as before.
-      [CAPABILITY_BASH_FOREGROUND_ENV]: args.run_in_background ? '' : '1',
-      [CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV]: args.run_in_background ? '' : String(executionTimeoutMs),
-    };
-    const redactValues = resolvedIntegrationEntries.map((entry) => entry.value!);
-    const integrationHeader =
-      integrationEntries.length > 0 ? ` · integration_env ${JSON.stringify(integrationEnvView)}` : '';
-    const processNotice = processTableNotice(command);
-
     let provenance: Awaited<ReturnType<typeof resolveCapabilityBashTaskProvenance>>;
     try {
       provenance = await resolveCapabilityBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null, undefined, {
@@ -827,6 +801,37 @@ export default defineTool({
         isError: true,
       };
     }
+    const childEnv = {
+      ...(desktopEnv ?? {}),
+      // RTK prints a bare `rtk`; its directory joins PATH only when absent.
+      ...(rtk.env ?? {}),
+      ...integrationEnv,
+      // WI-22952438885573520: local test runs launched through capability:bash
+      // already execute in a caller-scoped harness/workspace, but the reporter
+      // learns that identity only from these two child environment variables.
+      // Stamp concrete scope here so the resulting local test_runs row remains
+      // bindable as spec evidence. Keep wildcard/unscoped calls unattributed;
+      // inventing a tenant would be worse than an explicit NULL attribution.
+      ...(hive && hive !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: hive } : {}),
+      ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: ctx.workspaceId } : {}),
+      PAPERCUSP_SID: callerSid,
+      // Bind local test-run rows to the caller's resolved work item. Empty
+      // values deliberately clear any stale operator environment when no item
+      // is held; a fresh group keeps separate launches from merging together.
+      PAPERCUSP_TEST_RUN_WORK_ITEM: provenance.workItemId ?? '',
+      PAPERCUSP_TEST_RUN_GROUP: provenance.workItemId ? randomUUID() : '',
+      // The marker is owned by this handler, not by caller-provided env. An
+      // ordinary call survives a response yield, but its execution deadline or
+      // caller abort still kills the entire process tree, so mutation probes
+      // must refuse --in-tree before they touch a tracked file. Explicit
+      // background jobs clear both names as before.
+      [CAPABILITY_BASH_FOREGROUND_ENV]: args.run_in_background ? '' : '1',
+      [CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV]: args.run_in_background ? '' : String(executionTimeoutMs),
+    };
+    const redactValues = resolvedIntegrationEntries.map((entry) => entry.value!);
+    const integrationHeader =
+      integrationEntries.length > 0 ? ` · integration_env ${JSON.stringify(integrationEnvView)}` : '';
+    const processNotice = processTableNotice(command);
     const frozenRefusal = await frozenLineageRefusal();
     if (frozenRefusal) {
       return {

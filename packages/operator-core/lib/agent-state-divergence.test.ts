@@ -56,6 +56,33 @@ describe('the stamped leg — goal drift inside one intent declaration', () => {
     expect(out.structuralZero).toBeNull();
   });
 
+  it('treats a changed successful scheduler claim as an implicit intent boundary', () => {
+    const out = detectIntentActionDivergence([
+      call({ id: 1, toolName: 'facts:list', intentEventId: 100, goalRef: 'WI-old' }),
+      call({ id: 2, toolName: 'work_items:release', intentEventId: 100, goalRef: null }),
+      call({ id: 3, toolName: 'scheduler:get_next', intentEventId: 100, goalRef: 'WI-new' }),
+      call({ id: 4, toolName: 'facts:list', intentEventId: 100, goalRef: 'WI-new' }),
+      call({ id: 5, toolName: 'facts:list', intentEventId: 101, goalRef: 'WI-new' }),
+    ]);
+
+    expect(out.divergences).toHaveLength(0);
+  });
+
+  it('keeps drift when a scheduler pull leaves the goal unchanged', () => {
+    const out = detectIntentActionDivergence([
+      call({ id: 1, toolName: 'facts:list', intentEventId: 100, goalRef: 'WI-1' }),
+      call({ id: 2, toolName: 'scheduler:get_next', intentEventId: 100, goalRef: 'WI-1' }),
+      call({ id: 3, toolName: 'work_items:claim', intentEventId: 100, goalRef: 'WI-2' }),
+    ]);
+
+    expect(out.divergences).toHaveLength(1);
+    expect(out.divergences[0]).toMatchObject({
+      kind: 'goal-drift-within-intent',
+      a: { goalRef: 'WI-1' },
+      b: { goalRef: 'WI-2' },
+    });
+  });
+
   it('suppresses an intentional multi-goal declaration when every goal is explicitly covered', () => {
     const declaredGoalRefs = ['WI-1', 'WI-2'];
     const out = detectIntentActionDivergence([

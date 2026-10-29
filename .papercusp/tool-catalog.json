@@ -30539,7 +30539,7 @@
           "POST"
         ]
       },
-      "description": "Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. A missing dry-run receipt is safe to regenerate because dryRun does not write.",
+      "description": "Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. Review-bearing previews keep their key and thread/conversation references after the full preview is compacted. not_found does not prove a requestReview or reviewPreviewPost dry-run had no external side effects.",
       "capabilities": [
         "coord:read"
       ],
@@ -33964,7 +33964,7 @@
           "POST"
         ]
       },
-      "description": "Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `work_item_id` explicitly attributes a run and its slow-attempt gate to a held work-item, overriding a stale session goal stamp. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery after the foreground process closes; if termination remains unconfirmed, `taskId` is returned and no concurrent recovery starts. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.",
+      "description": "Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `privatePg:true` runs one Papercusp checkout with throwaway product Postgres while preserving the separate durable test-ledger sink, including detached recovery. `work_item_id` explicitly attributes a run and its slow-attempt gate to a held work-item, overriding a stale session goal stamp. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery after the foreground process closes; if termination remains unconfirmed, `taskId` is returned and no concurrent recovery starts. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.",
       "capabilities": [
         "testing:run"
       ],
@@ -36483,7 +36483,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "For ordinary reads, fetch one or more work-item ids and pass every id at once via `ids` instead of calling per id. For `resume:true`, request exactly one item (prefer `id`; a one-element `ids` array is accepted) because multi-id continuation packets are not supported. For exact checkpoint or prior-attempt source text, use the standalone `checkpointOnly:true` page mode; pass `sourceRef` to page a rawRef returned by priorAttempts. It reads the immutable terminal checkpoint snapshot after close. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.",
+        "when": "For ordinary reads, fetch one or more work-item ids and pass every id at once via `ids` instead of calling per id. For `resume:true`, request exactly one item (prefer `id`; a one-element `ids` array is accepted) because multi-id continuation packets are not supported. For exact checkpoint or prior-attempt source text, use the standalone `checkpointOnly:true` page mode; pass `sourceRef` to page a rawRef returned by priorAttempts. It reads the immutable terminal checkpoint snapshot when one was retained at close. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.",
         "notWhen": "Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).",
         "chaining": "work_items:list → work_items:get { ids:[…] } for ordinary batch detail; use work_items:get { id, resume:true } once per continuation packet."
       }

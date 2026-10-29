@@ -278,9 +278,16 @@ async function main() {
     assert.equal(result.code, 0, result.output.slice(-12000));
     assert.equal(result.signal, null);
     assert.equal(result.timedOut, false);
-    assert.match(result.output, /TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed/);
-    assert.match(result.output, isOmpManagedTools ? /Tests\s+1 passed \(1\)/ : /Tests\s+5 passed \(5\)/);
-    assert.match(result.output, /skippedTests=0/);
+    const resultLine = result.output.split(/\r?\n/).find(row => row.startsWith('TEST_FILE_RESULT '));
+    assert.ok(resultLine, 'machine-readable TEST_FILE_RESULT is required');
+    const resultFields = Object.fromEntries(resultLine.split(/\s+/).slice(1).map(field => {
+      const equals = field.indexOf('=');
+      assert.notEqual(equals, -1, `malformed TEST_FILE_RESULT field: ${field}`);
+      return [field.slice(0, equals), field.slice(equals + 1)];
+    }));
+    assert.deepEqual({ requested: resultFields.requested, executed: resultFields.executed,
+      matched: resultFields.matched, status: resultFields.status, skippedTests: resultFields.skippedTests },
+    { requested: '1', executed: '1', matched: '1', status: 'passed', skippedTests: '0' });
     const line = result.output.split('\n').find(row => row.startsWith(prefix + '_ADMITTED_LIFECYCLE '));
     assert.ok(line, 'production MCP lifecycle receipt is required');
     const measured = JSON.parse(line.slice((prefix + '_ADMITTED_LIFECYCLE ').length));

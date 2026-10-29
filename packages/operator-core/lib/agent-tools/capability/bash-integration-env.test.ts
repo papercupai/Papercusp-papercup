@@ -73,13 +73,15 @@ function makeCtx(over: Record<string, unknown> = {}) {
 beforeEach(() => {
   h.value = 'saved-integration-secret-0123456789';
   h.read.mockClear();
-  h.readHeldWorkItems.mockClear();
+  h.readHeldWorkItems.mockReset();
+  h.readHeldWorkItems.mockResolvedValue([]);
   delete process.env[DESTINATION];
 });
 
 afterEach(() => {
   __resetBashJobs();
   delete process.env[DESTINATION];
+  vi.unstubAllEnvs();
 });
 
 describe('capability:bash integration_env', () => {
@@ -126,6 +128,72 @@ describe('capability:bash integration_env', () => {
     );
 
     expect(result.content[0]!.text).toContain('papercusp|papercusp-workspace');
+  });
+
+  it('binds held-item test runs to the caller and gives each launch a fresh group', async () => {
+    const callerSid = 'su-bash-env-owner';
+    const workItemId = 'EI-26978191961005514';
+    vi.stubEnv('PAPERCUSP_SID', 'stale-parent-sid');
+    vi.stubEnv('PAPERCUSP_TEST_RUN_WORK_ITEM', 'EI-stale');
+    vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'stale-group');
+    h.readHeldWorkItems.mockResolvedValue([{ id: workItemId }] as never);
+    const { ctx } = makeCtx({
+      uiClientId: callerSid,
+      isSuperuser: true,
+      harnessSlug: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+    });
+    const readAttribution = async () => {
+      const result = await bash.handler(
+        {
+          command:
+            `printf 'PAPERCUSP_ATTR_BEGIN%s|%s|%sPAPERCUSP_ATTR_END' ` +
+            '"$PAPERCUSP_SID" "$PAPERCUSP_TEST_RUN_WORK_ITEM" "$PAPERCUSP_TEST_RUN_GROUP"',
+        },
+        ctx,
+      );
+      return result.content[0]!.text.match(/PAPERCUSP_ATTR_BEGIN([^|]*)\|([^|]*)\|([^|]*)PAPERCUSP_ATTR_END/);
+    };
+
+    const first = await readAttribution();
+    const second = await readAttribution();
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(first?.[1]).toBe(callerSid);
+    expect(first?.[2]).toBe(workItemId);
+    expect(first?.[3]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(first?.[3]).not.toBe('stale-group');
+    expect(second?.[3]).toBeTruthy();
+    expect(second?.[3]).not.toBe(first?.[3]);
+    expect(h.readHeldWorkItems).toHaveBeenCalled();
+  });
+
+  it('clears inherited test-run attribution when the caller holds no work item', async () => {
+    const callerSid = 'su-bash-env-owner';
+    vi.stubEnv('PAPERCUSP_SID', 'stale-parent-sid');
+    vi.stubEnv('PAPERCUSP_TEST_RUN_WORK_ITEM', 'EI-stale');
+    vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'stale-group');
+    h.readHeldWorkItems.mockResolvedValue([]);
+    const { ctx } = makeCtx({
+      uiClientId: callerSid,
+      isSuperuser: true,
+      harnessSlug: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+    });
+    const result = await bash.handler(
+      {
+        command:
+          `printf 'PAPERCUSP_ATTR_BEGIN%s|%s|%sPAPERCUSP_ATTR_END' ` +
+          '"$PAPERCUSP_SID" "$PAPERCUSP_TEST_RUN_WORK_ITEM" "$PAPERCUSP_TEST_RUN_GROUP"',
+      },
+      ctx,
+    );
+
+    expect(result.content[0]!.text).toContain(`PAPERCUSP_ATTR_BEGIN${callerSid}||PAPERCUSP_ATTR_END`);
+    expect(result.content[0]!.text).not.toContain('stale-parent-sid');
+    expect(result.content[0]!.text).not.toContain('EI-stale');
+    expect(result.content[0]!.text).not.toContain('stale-group');
+    expect(h.readHeldWorkItems).toHaveBeenCalled();
   });
 
   it('injects by saved name into only the child and returns names/masks while redacting output', async () => {

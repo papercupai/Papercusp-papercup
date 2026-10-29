@@ -1080,10 +1080,10 @@ describe('Codex native id discovered after carry binding deadline (EI-2534455650
       }
       expect(reportedIds).toEqual([nativeId]);
       if (mappingConfirmed) {
-        expect(await waitForOutput(captured, 'INPUT:later wake')).toBe(true);
-        expect(confirmation).toContainEqual(expect.objectContaining({
+        expect(confirmation, hostTestDiagnostics(ownerId, captured)).toContainEqual(expect.objectContaining({
           kind: 'respawn-binding-confirmed', nativeId,
         }));
+        expect(await waitForOutput(captured, 'later wake'), hostTestDiagnostics(ownerId, captured)).toBe(true);
       } else {
         expect(confirmation).toContainEqual(expect.objectContaining({
           kind: 'respawn-binding-unconfirmed', nativeId, reason: 'successor-reanchor-unconfirmed',

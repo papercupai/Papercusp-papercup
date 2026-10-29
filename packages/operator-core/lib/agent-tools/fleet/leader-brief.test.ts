@@ -675,7 +675,7 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
     }
   });
 
-  it('lets the measured 3,272.388ms metrics cohort finish and returns a typed fallback after 5s', async () => {
+  it('lets the measured 9,630ms metrics read finish and returns a typed fallback after 20s', async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const fallback = leaderBriefFleetMetricsUnavailable({
@@ -685,9 +685,10 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
       recoverVia: "work_items:burn_down { harness: 'papercusp', fleet: 'fleet-a', window: 'fleet-lifetime' }",
     });
     try {
-      const measuredDurationMs = 3_272.388;
+      const measuredDurationMs = 9_630;
       const measuredTimerMs = Math.ceil(measuredDurationMs);
-      expect(LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS).toBe(5_000);
+      expect(LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS).toBe(20_000);
+      expect(LEADER_BRIEF_TOTAL_TIMEOUT_MS - LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS).toBe(5_000);
       expect(LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS).toBeGreaterThan(measuredDurationMs);
 
       const measuredRead = boundedLeaderBriefFleetMetricsRead(
@@ -704,7 +705,7 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
       await vi.advanceTimersByTimeAsync(LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS);
       await expect(slowRead).resolves.toEqual(fallback);
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('leader-brief:fleet-metrics exceeded 5000ms'),
+        expect.stringContaining('leader-brief:fleet-metrics exceeded 20000ms'),
       );
     } finally {
       vi.clearAllTimers();
@@ -799,9 +800,10 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
   it('keeps the cumulative server budget below the 30s MCP client deadline', async () => {
     expect(LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS).toBe(3_000);
     expect(LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS).toBe(750);
-    expect(LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS).toBe(5_000);
+    expect(LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS).toBe(20_000);
     expect(LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS).toBe(5_000);
     expect(LEADER_BRIEF_TOTAL_TIMEOUT_MS).toBe(25_000);
+    expect(LEADER_BRIEF_TOTAL_TIMEOUT_MS - LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS).toBe(5_000);
     expect(LEADER_BRIEF_TOTAL_TIMEOUT_MS).toBeLessThan(30_000);
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

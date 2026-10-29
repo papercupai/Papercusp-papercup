@@ -8,8 +8,8 @@
  *  2. the durable Decision a BAR-changing acceptance amendment commits
  *     atomically (`Amendment-Id: <key>`): committed, even if a worker died
  *     before it could finish its running receipt;
- *  3. neither: not_found. A same-key retry is safe after checking durable
- *     state because receipt registration precedes amendment execution.
+ *  3. neither: not_found. This means no receipt or committed Decision is
+ *     retained; it cannot prove that a dry-run review had no thread side effects.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -29,7 +29,7 @@ export default defineTool({
   // @not-a-cell This keyed receipt and Decision lookup has one read door; no other resolver derives its per-key status.
   profile: 'engineer',
   description:
-    'Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. A missing dry-run receipt is safe to regenerate because dryRun does not write.',
+    'Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. Review-bearing previews keep their key and thread/conversation references after the full preview is compacted. not_found does not prove a requestReview or reviewPreviewPost dry-run had no external side effects.',
   guidance: {
     when: 'A rubrics:amend returned { pending:true, receipt } and you need its outcome.',
     notWhen: 'You have no receipt — read the rubric with rubrics:get instead.',
@@ -90,6 +90,9 @@ export default defineTool({
         source: 'receipt',
         ageSec: Math.round(((receipt.finishedAt ?? Date.now()) - receipt.startedAt) / 1000),
         ...(receipt.result ? { result: receipt.result } : {}),
+        ...(receipt.result?.receiptCompacted === true ? {
+          note: 'The full preview payload was compacted; use result.preview.approvalRef and result.review for the retained thread and conversation references.',
+        } : {}),
         ...(receipt.error ? { error: receipt.error } : {}),
         ...(receipt.progress ? { progress: receipt.progress } : {}),
       });
@@ -107,11 +110,7 @@ export default defineTool({
     return reply({
       state: 'not_found',
       source: 'none',
-      note:
-        args.idempotencyKey.startsWith('preview-')
-          ? 'No dry-run preview with this receipt is running or retained in the shared store. dryRun is read-only; issue rubrics:amend with dryRun:true again for a fresh preview.'
-          : 'No amendment with this key is retained in the shared store and no committed Decision carries it. ' +
-            'The amendment is atomic and keyed, so re-issuing the same rubrics:amend with this idempotencyKey is safe.',
+      note: 'No receipt or committed Decision is retained for this key. This does not establish that a dry-run had no external review side effects; inspect the target work-item thread and review conversation before repeating requestReview or reviewPreviewPost.',
     });
   },
 });

@@ -377,6 +377,48 @@ describe('rubric amend receipts in shared Postgres', () => {
     expect(executions).toBe(2);
   });
 
+  it('compacts but retains an aged review receipt and its idempotency link', async () => {
+    const ws = activeWorkspaceId();
+    const rubric = 'acceptance-receipt-review-retention';
+    const key = 'review-receipt-retained-after-compaction';
+    const previewPostRef = 'thread-post:990103';
+    const original = {
+      ok: true,
+      dryRun: true,
+      preview: { approvalRequired: true, approval: { criteria: [{ key: 'r1', value: 'large preview payload' }] } },
+      review: { state: 'routed', conversationId: 'conv-retained-review', previewPostRef, next: 'await reviewer' },
+    };
+    await db.adminSql`
+      INSERT INTO harness_shared.rubric_amend_receipts
+        (workspace_id, rubric_ref, idempotency_key, state, result_json, finished_at)
+      VALUES (${ws}, ${rubric}, ${key}, 'previewed', ${JSON.stringify(original)}::text::jsonb,
+              now() - interval '2 hours')
+    `;
+
+    await trackAmendRun('cleanup-trigger', rubric, async () => ({ ok: true, dryRun: true }));
+
+    const status = await amendStatusTool.handler(
+      { rubricRef: rubric, idempotencyKey: key }, {} as never,
+    ) as { data: Record<string, any> };
+    expect(status.data).toMatchObject({ state: 'previewed', source: 'receipt' });
+    expect(status.data.result).toMatchObject({
+      ok: true,
+      dryRun: true,
+      receiptCompacted: true,
+      preview: { approvalRef: previewPostRef },
+      review: { state: 'routed', conversationId: 'conv-retained-review', previewPostRef },
+    });
+    expect(status.data.result.preview).not.toHaveProperty('approval');
+    expect(status.data.note).toContain('full preview payload was compacted');
+
+    let duplicateRuns = 0;
+    expect(await trackAmendRun(key, rubric, async () => {
+      duplicateRuns++;
+      return { ok: false, duplicate: true };
+    })).toEqual(status.data.result);
+    expect(duplicateRuns).toBe(0);
+  });
+
   // WI-10006937: an operator restart killed the worker mid-run, so its receipt stayed
   // 'running' with no finished_at. The key is deterministic, so every retry answered
   // `pending` forever and the review request could never be re-sent.

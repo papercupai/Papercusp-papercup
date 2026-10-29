@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { composeSuStackSource, suSessionBinding } from '@papercusp/orchestrator/blueprint';
@@ -58,6 +59,56 @@ describe('on-demand su reference sections', () => {
       overlay: path.join(overlayDir, 'papercusp-su.codex.md'), repoRoot });
     expect(result.references.length).toBeGreaterThan(5);
     for (const ref of result.references) expect(await fs.readFile(ref.source, 'utf8')).toContain(ref.heading);
+  });
+
+  it('keeps emitted source pointers readable after the generation checkout is pruned', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'su-reference-lifetime-'));
+    const generationRoot = path.join(tempRoot, '.candidate-generation', 'checkout');
+    const canonicalRoot = path.join(tempRoot, 'canonical');
+    const previousCanonicalTree = process.env.PAPERCUSP_CANONICAL_TREE;
+    const sourceFiles = [
+      { path: 'libs/papercusp/packages/harness/blueprints/base/prompts/su.md', contents: 'canonical base source' },
+      { path: 'apps/operator/prompts/papercusp-su.codex.md', contents: 'canonical overlay source' },
+      { path: 'libs/papercusp/packages/orchestrator/src/prompt-build.ts', contents: 'canonical policy source' },
+    ];
+
+    try {
+      for (const root of [generationRoot, canonicalRoot]) {
+        for (const source of sourceFiles) {
+          const filePath = path.join(root, source.path);
+          await fs.mkdir(path.dirname(filePath), { recursive: true });
+          await fs.writeFile(filePath, `${root === canonicalRoot ? source.contents : 'generation source'}\n`);
+        }
+      }
+
+      process.env.PAPERCUSP_CANONICAL_TREE = canonicalRoot;
+      const result = deferSuPromptReferences([
+        '## Delivery discipline — source',
+        'Long delivery section.',
+        '## An empty `exec_command`',
+        'Long shell section.',
+        '## The deploy pipeline is ASYNC — source',
+        'Long deployment section.',
+      ].join('\n'), {
+        base: path.join(generationRoot, sourceFiles[0]!.path),
+        overlay: path.join(generationRoot, sourceFiles[1]!.path),
+        repoRoot: generationRoot,
+      });
+
+      const expectedPaths = sourceFiles.map(source => path.join(canonicalRoot, source.path));
+      expect(result.references.map(reference => reference.source)).toEqual(expectedPaths);
+      expect(result.text).toContain(canonicalRoot);
+      expect(result.text).not.toContain(generationRoot);
+
+      await fs.rm(generationRoot, { recursive: true, force: true });
+      for (let i = 0; i < expectedPaths.length; i++) {
+        await expect(fs.readFile(result.references[i]!.source, 'utf8')).resolves.toContain(sourceFiles[i]!.contents);
+      }
+    } finally {
+      if (previousCanonicalTree === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+      else process.env.PAPERCUSP_CANONICAL_TREE = previousCanonicalTree;
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('preserves the entire sealed kernel verbatim and strips only the renderer sentinel', () => {

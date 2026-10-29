@@ -1,11 +1,17 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { getConfig } from '@tanstack/router-generator';
 import { candidateDirectory, candidatePublicAssets, prepareCandidate, writeCandidateFiles } from '../../desktop-portal-candidate';
+import { operatorRouterOptions } from '../../vite.config';
 
 const directories: string[] = [];
-afterEach(() => { for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true }); });
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
+});
 function root() {
   const path = mkdtempSync(resolve(tmpdir(), 'desktop-candidate-'));
   directories.push(path);
@@ -13,6 +19,15 @@ function root() {
 }
 
 describe('private desktop candidate publication boundary', () => {
+  it('keeps router temporary files on the output filesystem despite a foreign caller or temp override', () => {
+    const appRoot = fileURLToPath(new URL('../../', import.meta.url));
+    vi.stubEnv('TSR_TMP_DIR', resolve(root(), 'foreign-router-temp'));
+    const config = getConfig(operatorRouterOptions, appRoot);
+    expect(config.generatedRouteTree).toBe(resolve(appRoot, 'src/routeTree.gen.ts'));
+    expect(config.tmpDir.startsWith(appRoot)).toBe(true);
+    expect(config.tmpDir).not.toBe(process.env.TSR_TMP_DIR);
+  });
+
   it('accepts a new private output without creating it and refuses ordinary or previously written outputs', () => {
     const repo = root();
     const boundary = resolve(root(), 'private');

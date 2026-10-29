@@ -62,6 +62,14 @@ const finalOutDir = process.env.PAPERCUSP_VITE_FINAL_OUT_DIR;
 // target the staging operator (:3170) — see the proxy block below.
 const apiTarget = process.env.PAPERCUSP_API_TARGET ?? 'http://127.0.0.1:3070';
 
+export const operatorRouterOptions = {
+  target: 'react' as const,
+  routesDirectory: './src/routes',
+  generatedRouteTree: './src/routeTree.gen.ts',
+  routeFileIgnorePattern: '\\.test\\.tsx?$',
+  autoCodeSplitting: true,
+};
+
 // WI-5502 item 2: Vite/rolldown's default `build.modulePreload` behavior walks
 // each entry's full STATIC-import dependency graph to decide what to preload
 // for the initial `index.html`, and it can hoist a chunk into that eager list
@@ -395,14 +403,11 @@ export default defineConfig(async (): Promise<UserConfig> => ({
     initialLazyStylesheetFilterPlugin,
     // Route generation must run before the React plugin.
     tanstackRouter({
-      target: 'react',
-      routesDirectory: './src/routes',
-      generatedRouteTree: './src/routeTree.gen.ts',
+      ...operatorRouterOptions,
       // EI-13211: co-located *.test.ts(x) files live inside src/routes/** (e.g.
       // index.test.ts, login.test.tsx, harness/$.test.tsx) and don't export a
       // Route — every production build re-scanned and warned on each one. Skip
       // them at the generator level instead of the ignore-prefix-rename dance.
-      routeFileIgnorePattern: '\\.test\\.tsx?$',
       // Automatic route code-splitting (perf: FCP). Without this, every route's
       // `component` (all 81 — admin, pi, gym, editors, dockview panes, …) is
       // statically imported into routeTree.gen.ts → the eager boot bundle
@@ -412,7 +417,6 @@ export default defineConfig(async (): Promise<UserConfig> => ({
       // boot loads only the entry + the matched route; loaders stay critical so
       // data prefetch isn't delayed. See /internal/docs/performance + the E2E
       // perf sweep (2026-06-23). Measured: drops the eager src-* mega-chunks.
-      autoCodeSplitting: true,
     }),
     // WI-2902: give the autoCodeSplitting route-component chunk loads the same
     // retry the React shell already has. Runs `post` (after the splitter's

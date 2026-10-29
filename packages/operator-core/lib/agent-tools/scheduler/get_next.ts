@@ -30,7 +30,7 @@ import {
   fleetSpecBeeKey,
 } from '../../scheduler/claim-spec-store';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { CURRENT_SPEC_VERSION } from '../../scheduler/claim-spec';
+import { CURRENT_SPEC_VERSION, type FilterNode } from '../../scheduler/claim-spec';
 // The allowlist comes from its leaf: the args schema below reads it at module-eval time,
 // which the `../../work-items` re-export cannot serve inside that module's import cycle.
 import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
@@ -508,25 +508,41 @@ export function specIsIssueFamilyOnly(spec: unknown): boolean {
  * (the fleet spec is never even consulted once a per-bee row exists — getClaimSpecRecord
  * returns the moment it finds one). Kept pure + exported so the message text is
  * unit-testable without a live DB fetch; the DB-side lookup (fleet membership, the fleet's
- * own spec record, its match count) lives in buildMissDiagnosis, which calls this only once
- * it already has the three concrete numbers below.
+ * own spec record, and the fleet-only claimable-row count) lives in buildMissDiagnosis, which
+ * calls this only after a same-snapshot filter-difference query finds newly admitted rows.
  */
 export function shadowedFleetSpecNote(args: {
   ownerId: string;
   fleetSlug: string;
   revision: number | null;
-  matchedByFilter: number;
+  newlyAdmittedReady: number;
 }): string {
-  const { ownerId, fleetSlug, revision, matchedByFilter } = args;
+  const { ownerId, fleetSlug, revision, newlyAdmittedReady } = args;
+  if (newlyAdmittedReady <= 0) return '';
   return (
     ` ⚠ SHADOWED FLEET SPEC: your effective spec is a PER-BEE OVERRIDE (source:'cup'), which ` +
     `always wins over an inherited fleet spec and was NEVER consulted. Your fleet '${fleetSlug}'` +
     (revision !== null ? ` (rev ${revision})` : '') +
-    ` has its own sentinel spec whose filter matches ${matchedByFilter} issue-family row(s) your ` +
-    `current spec's filter does not — this is very likely why you are idling. Remedy: ` +
+    ` has its own sentinel spec whose filter would admit ${newlyAdmittedReady} additional ready ` +
+    `issue-family row(s) that your effective spec excludes under the same claimability floors — ` +
+    `this may explain why you are idling. Remedy: ` +
     `scheduler:set_claim_spec { cupId: '${ownerId}', clear:true } to drop the override and inherit ` +
     `the fleet spec (scheduler:get_claim_spec { fleet: '${fleetSlug}' } for detail).`
   );
+}
+
+/** Return the fleet-filter rows the effective per-bee filter does not admit. Evaluating this
+ *  difference as one FilterNode lets the caller count newly claimable rows in one database
+ *  statement/snapshot; identical filters short-circuit without an aggregate query. */
+export function shadowedFleetOnlyFilter(args: {
+  fleetFilter?: FilterNode;
+  effectiveFilter?: FilterNode;
+}): FilterNode | undefined {
+  const { fleetFilter, effectiveFilter } = args;
+  if (JSON.stringify(fleetFilter) === JSON.stringify(effectiveFilter)) return undefined;
+  if (!fleetFilter) return effectiveFilter ? { not: effectiveFilter } : undefined;
+  if (!effectiveFilter) return undefined;
+  return { all: [fleetFilter, { not: effectiveFilter }] };
 }
 
 /**
@@ -876,16 +892,14 @@ async function buildMissDiagnosis(args: {
       }
     }
 
-    // EI-22143638502920491: a per-bee override (source:'cup') ALWAYS wins over an inherited
-    // fleet spec, and getClaimSpecRecord stops looking the instant it finds one — so nothing
-    // in this diagnosis, until now, ever told a shadowed caller that a DIFFERENT spec (their
-    // own fleet's) would have matched. Confirmed live: a plans:start-installed per-bee spec
-    // whose plan later drained left a DRAIN fleet leader idling beside 2,493 claimable items
-    // its OWN fleet spec matched — while `diag` above (floor-only, filter-agnostic) correctly
-    // reported a healthy readyUnclaimed pool, giving no hint that the caller's FILTER, not the
-    // floors, was the actual cause. Skip when the pool is genuinely drained: no spec would help.
+    // EI-22143638502920491 / EI-26979401860651629: a per-bee override (source:'cup') ALWAYS
+    // wins over an inherited fleet spec, but only a fleet-only FILTER DIFFERENCE that passes
+    // the claimability floors indicates newly reachable work. Count `fleetFilter AND NOT
+    // effectiveFilter` in one aggregate statement: identical/equivalent filters produce no
+    // ready rows, while raw fleet matches can no longer blame an identical per-bee filter.
+    // Skip when the pool is genuinely drained: no spec would help.
     let shadowedFleetNote = '';
-    let shadowedFleetSpec: { fleetSlug: string; revision: number | null; matchedByFilter: number } | undefined;
+    let shadowedFleetSpec: { fleetSlug: string; revision: number | null; newlyAdmittedReady: number } | undefined;
     if (rec?.source === 'cup' && !diag.drained) {
       try {
         const { latestFleetMembership } = await import('../../fleet-membership-store');
@@ -897,29 +911,33 @@ async function buildMissDiagnosis(args: {
           }).catch(() => null);
           if (fleetRec && fleetRec.source === 'fleet') {
             const { aggregateIssueClaimExclusions } = await import('../../scheduler/get-next');
-            const fleetFilter = (fleetRec.spec as { view?: { filter?: unknown } } | undefined)?.view?.filter;
-            const agg = await withBoundedTimeout(
-              aggregateIssueClaimExclusions(fleetFilter as never, {
-                harness: args.harness,
-                states: effectiveStates,
-                assignee: args.ownerId,
-                rigAvailable: args.rigAvailable,
-                statementTimeoutMs: MISS_BREAKDOWN_BUDGET_MS,
-              }),
-              { fallback: null, timeoutMs: MISS_BREAKDOWN_BUDGET_MS, label: 'get_next:shadowedFleetSpec' },
-            );
-            if (agg.value && agg.value.matchedByFilter > 0) {
-              shadowedFleetSpec = {
-                fleetSlug: membership.fleetSlug,
-                revision: fleetRec.revision,
-                matchedByFilter: agg.value.matchedByFilter,
-              };
-              shadowedFleetNote = shadowedFleetSpecNote({
-                ownerId: args.ownerId,
-                fleetSlug: membership.fleetSlug,
-                revision: fleetRec.revision,
-                matchedByFilter: agg.value.matchedByFilter,
-              });
+            const effectiveFilter = (rec?.spec as { view?: { filter?: FilterNode } } | undefined)?.view?.filter;
+            const fleetFilter = (fleetRec.spec as { view?: { filter?: FilterNode } } | undefined)?.view?.filter;
+            const fleetOnlyFilter = shadowedFleetOnlyFilter({ fleetFilter, effectiveFilter });
+            if (fleetOnlyFilter) {
+              const agg = await withBoundedTimeout(
+                aggregateIssueClaimExclusions(fleetOnlyFilter, {
+                  harness: args.harness,
+                  states: effectiveStates,
+                  assignee: args.ownerId,
+                  rigAvailable: args.rigAvailable,
+                  statementTimeoutMs: MISS_BREAKDOWN_BUDGET_MS,
+                }),
+                { fallback: null, timeoutMs: MISS_BREAKDOWN_BUDGET_MS, label: 'get_next:shadowedFleetSpec' },
+              );
+              if (agg.value && agg.value.claimable > 0) {
+                shadowedFleetSpec = {
+                  fleetSlug: membership.fleetSlug,
+                  revision: fleetRec.revision,
+                  newlyAdmittedReady: agg.value.claimable,
+                };
+                shadowedFleetNote = shadowedFleetSpecNote({
+                  ownerId: args.ownerId,
+                  fleetSlug: membership.fleetSlug,
+                  revision: fleetRec.revision,
+                  newlyAdmittedReady: agg.value.claimable,
+                });
+              }
             }
           }
         }

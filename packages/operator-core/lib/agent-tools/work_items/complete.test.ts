@@ -1008,6 +1008,97 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
+  it('keeps validateOnly isolated across projected dispatch and an interleaved close', async () => {
+    const rows = new Map<string, Record<string, unknown>>([
+      ['WI-preview-target', { ...item, id: 'WI-preview-target', kind: 'bug', family: 'issue', state: 'open' }],
+      ['WI-preview-other', { ...item, id: 'WI-preview-other', kind: 'bug', family: 'issue', state: 'open' }],
+    ]);
+    const stateWrites: string[] = [];
+    getWorkItem.mockImplementation(async (id: string) => rows.get(id) ?? null);
+    setWorkItemStateWithAliasInfo.mockImplementation(async (id: string, requestedState: string) => {
+      const previous = rows.get(id);
+      if (!previous) throw new Error(`missing projected-dispatch fixture ${id}`);
+      const appliedState = requestedState === 'resolved' ? 'done' : requestedState;
+      const workItem = { ...previous, state: appliedState };
+      rows.set(id, workItem);
+      stateWrites.push(id);
+      return {
+        workItem,
+        aliased: appliedState !== requestedState,
+        requestedState,
+        appliedState,
+      };
+    });
+
+    const completion = {
+      summary: 'Verify that a completion preview remains read-only across projected dispatch.',
+      verifiedHow: 'unit',
+      testsRun: 'complete.test.ts projected-dispatch regression',
+      testResult: 'The preview preserved both open rows until their explicit close calls.',
+      filesChanged: [],
+      rootCauseVerification: ROOT_CAUSE_VERIFICATION_FIXTURE,
+    };
+    const args = (id: string, validateOnly?: boolean) => ({
+      id,
+      harness: 'papercusp',
+      state: 'resolved',
+      assumptions: 'none',
+      changeKinds: ['no-code-change'],
+      changeKindReason: 'The projected-dispatch fixture changes no source files.',
+      ...(validateOnly === undefined ? {} : { validateOnly }),
+      completion,
+    });
+    const projected = lookupByMcpName('work_items:complete');
+    expect(projected).toBeTruthy();
+    const dispatch = async (input: unknown, runId: string) => {
+      const result = await dispatchProjectedTool(
+        projected!,
+        'work_items:complete',
+        input,
+        {
+          ...ctx,
+          log: vi.fn(),
+          signal: new AbortController().signal,
+          progress: vi.fn(),
+          emit: vi.fn(),
+          metadata: vi.fn(),
+          workspaceId: 'default',
+          harnessSlug: 'papercusp',
+          runId,
+          role: 'su',
+          gateBypass: { role: true, capability: true, quota: true },
+          transport: 'mcp',
+          requestedFormat: 'json',
+          requestedStructured: true,
+        } as never,
+        {},
+      );
+      expect(result.ok).toBe(true);
+      const data = result.result?.structuredContent as { results?: Array<Record<string, unknown>> } | undefined;
+      expect(data?.results).toHaveLength(1);
+      return data!.results![0]!;
+    };
+
+    const otherPreview = await dispatch(args('WI-preview-other', true), 'complete-preview-other');
+    const targetPreview = await dispatch(args('WI-preview-target', true), 'complete-preview-target');
+    expect(otherPreview).toMatchObject({ ok: true, validationOnly: true, completionAuthority: 'committed' });
+    expect(targetPreview).toMatchObject({ ok: true, validationOnly: true, completionAuthority: 'committed' });
+    expect(rows.get('WI-preview-other')?.state).toBe('open');
+    expect(rows.get('WI-preview-target')?.state).toBe('open');
+    expect(stateWrites).toEqual([]);
+
+    const otherClose = await dispatch(args('WI-preview-other'), 'complete-close-other');
+    expect(otherClose.ok).toBe(true);
+    expect(rows.get('WI-preview-other')?.state).toBe('done');
+    expect(rows.get('WI-preview-target')?.state).toBe('open');
+    expect(stateWrites).toEqual(['WI-preview-other']);
+
+    const targetClose = await dispatch(args('WI-preview-target', false), 'complete-close-target');
+    expect(targetClose).toMatchObject({ ok: true, finish: { complete: true, workItemState: 'done' } });
+    expect(rows.get('WI-preview-target')?.state).toBe('done');
+    expect(stateWrites).toEqual(['WI-preview-other', 'WI-preview-target']);
+  });
+
   it('validates the full versioned contract without mutating or emitting a completion', async () => {
     const r = await oneRaw({
       id: 'WI-root',

@@ -22,7 +22,7 @@ export interface AmendReceiptEntry {
   state: AmendReceiptState;
   startedAt: number;
   finishedAt?: number;
-  /** The exact JSON payload the synchronous call would have returned. */
+  /** The synchronous result, or a compact review reference after the retention window. */
   result?: Record<string, unknown>;
   progress?: AmendReceiptProgress;
   error?: string;
@@ -32,6 +32,7 @@ export interface AmendReceiptEntry {
   executorProcessId?: string;
 }
 
+/** Full result retention before thread-backed review receipts are compacted. */
 export const AMEND_RECEIPT_RETENTION_MS = 60 * 60 * 1000;
 export interface OmittedReviewRecovery {
   ownerId: string;
@@ -168,12 +169,30 @@ export async function trackAmendRun(
   // A token fences delayed diagnostic writes from a previous attempt on this key.
   // Reuse the receipt JSON; no separate progress row or schema is needed.
   const initialResult = options.persistPhaseProgress ? JSON.stringify({ _progressRun: correlationId }) : null;
-  // Finished previews/failures have no Decision fallback. Retain them for one
-  // hour, then bound the shared table opportunistically on the next amend.
+  // A completed review preview has an external thread side effect and no Decision
+  // fallback. After the normal window, retain its key and review links while
+  // dropping the potentially large preview body (which remains on the thread).
+  await sql`
+    UPDATE harness_shared.rubric_amend_receipts
+       SET result_json = (result_json - 'preview') || jsonb_build_object(
+         'receiptCompacted', true,
+         'preview', jsonb_build_object('approvalRef', result_json #> '{review,previewPostRef}')
+       )
+     WHERE workspace_id = ${workspaceId}
+       AND finished_at < now() - (${AMEND_RECEIPT_RETENTION_MS} * interval '1 millisecond')
+       AND state <> 'running'
+       AND result_json->>'dryRun' = 'true'
+       AND result_json #>> '{review,previewPostRef}' ~ '^thread-post:[1-9][0-9]*$'
+       AND result_json->>'receiptCompacted' IS DISTINCT FROM 'true'
+  `;
+  // Other finished receipts can expire after one hour. Keep compacted review
+  // receipts as the durable idempotency link to their posted approval/review.
   await sql`
     DELETE FROM harness_shared.rubric_amend_receipts
      WHERE workspace_id = ${workspaceId}
-       AND finished_at < now() - interval '1 hour' AND state <> 'running'
+       AND finished_at < now() - (${AMEND_RECEIPT_RETENTION_MS} * interval '1 millisecond')
+       AND state <> 'running'
+       AND result_json->>'receiptCompacted' IS DISTINCT FROM 'true'
        AND NOT COALESCE((state = 'previewed'
          AND result_json #>> '{review,state}' = 'not-requested'
          AND result_json->'_reviewRecovery' IS NOT NULL
