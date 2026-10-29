@@ -13,6 +13,7 @@ import {
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { staticImportClosure } from "./related-tests.mjs";
 import { captureRuntimeProofIdentity, validRuntimeProofIdentity } from "./runtime-compatibility.mjs";
+import { workspaceTestInvocation } from "./workspace-test-invocation.mjs";
 
 export const PASSING_TASK_VERDICT_CACHE_VERSION = 2;
 export const PASSING_TASK_VERDICT_IMPLEMENTATION_VERSION =
@@ -1136,6 +1137,20 @@ function unwrapNpmTestScript({ root, workspaceRoot, scriptText }) {
   const pure = PURE_LANE_SCRIPT.exec(rest);
   if (pure && repoFile(pure[1], "scripts/run-vitest-pure-lane.mjs")) {
     digest("scripts/run-vitest-pure-lane.mjs");
+    return { launcherDigests };
+  }
+  // `node <repo>/scripts/workspace-test.mjs <fixed args>` (the @papercusp/web scripts). Ask the
+  // launcher's own routing function what it spawns: with no test-file argument it runs
+  // `npx vitest run …`, the same PATH-resolved Vitest and interpreter as a bare `vitest run`.
+  // A routed (explicit-file) invocation runs test-files.mjs under the committed-source loader,
+  // a topology not measured here, so it stays opaque. The gate passes its selection through an
+  // env-named file, never argv, so its runs take the unrouted branch.
+  if (pure && repoFile(pure[1], "scripts/workspace-test.mjs")) {
+    const invocation = workspaceTestInvocation(rest.split(/\s+/).slice(2), resolve(root));
+    if (invocation.routed || invocation.command !== "npx" ||
+        invocation.args[0] !== "vitest" || invocation.args[1] !== "run") return null;
+    digest("scripts/workspace-test.mjs");
+    digest("scripts/lib/workspace-test-invocation.mjs");
     return { launcherDigests };
   }
   return null;

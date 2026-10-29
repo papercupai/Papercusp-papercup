@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '@papercusp/tooldef';
-import { createOperatorLeadBindingRoute } from './operator-lead-binding';
+import configuredRoute, { createOperatorLeadBindingRoute } from './operator-lead-binding';
 import { hostedLeadBindingIssuerRef } from '../../auth/hosted-lead-binding-authority';
 
 const origin = 'https://operator.example';
@@ -18,6 +18,20 @@ function fixture() {
   return { route, issue, resolveOperatorSession, request };
 }
 describe('operator lead binding issuance', () => {
+  it('registers a concrete operator-only capability and refuses absent host configuration', async () => {
+    const previous = process.env.PAPERCUSP_HOSTED_PUBLIC_ORIGIN;
+    delete process.env.PAPERCUSP_HOSTED_PUBLIC_ORIGIN;
+    try {
+      expect(configuredRoute).toMatchObject({ path: '/operator/lead-binding/challenge', method: 'POST',
+        auth: { capabilities: ['*'], kind: ['user'], trust: ['verified'] } });
+      const f = fixture();
+      const response = await configuredRoute.handler(f.request(), context);
+      expect(response.status).toBe(503); expect(await response.text()).toContain('lead_binding_host_not_configured');
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_HOSTED_PUBLIC_ORIGIN;
+      else process.env.PAPERCUSP_HOSTED_PUBLIC_ORIGIN = previous;
+    }
+  });
   it('derives issuer from the cookie and fixes workspace/environment on the server', async () => {
     const f = fixture(); const response = await f.route.handler(f.request(), context);
     expect(response.status).toBe(200); expect(response.headers.get('cache-control')).toBe('no-store');

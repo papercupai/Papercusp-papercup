@@ -470,6 +470,8 @@ describe('decideOpenTaskReminder (P-005 bounded task continuation)', () => {
     expect(decision?.prompt).toContain('⟦open-task-reminder 1/3⟧');
     expect(decision?.prompt).toContain('[in_progress] Finishing the focused regression tests');
     expect(decision?.prompt).toContain('[pending] Run typecheck');
+    expect(decision?.prompt).toContain('re-read the canonical session task list with tasks:ops { op: "view" }');
+    expect(decision?.prompt).toContain('Keep tasks that are now blocked/completed unchanged');
   });
 
   it('suppresses completed/blocked-only lists and any concrete wake guarantee', () => {

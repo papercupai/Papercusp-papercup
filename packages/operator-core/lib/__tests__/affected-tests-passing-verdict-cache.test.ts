@@ -177,6 +177,63 @@ describe('P005 runtime-specific passing proofs', () => {
     }
   });
 
+  // WI-6554700010030941: @papercusp/web's test script is the shared workspace-test.mjs launcher,
+  // so the gate logged `reason=no-runner-identity` and reused nothing for the largest workspace.
+  // The identity must come from the launcher's OWN routing function: the unrouted branch spawns
+  // `npx vitest run` (measured); a routed explicit-file branch stays opaque.
+  it('gives the workspace-test.mjs launcher an identity bound to the launcher bytes', () => {
+    if (process.platform === 'win32') return;
+    const root = mkdtempSync(join(tmpdir(), 'runtime-npm-workspace-test-'));
+    try {
+      const workspaceRoot = join(root, 'apps/operator');
+      const bin = join(workspaceRoot, 'node_modules/.bin');
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(join(root, 'node_modules'));
+      mkdirSync(join(root, 'scripts/lib'), { recursive: true });
+      writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}');
+      writeFileSync(join(root, 'node_modules/.papercusp-dependency-generation'),
+        `identity=v1-${'a'.repeat(64)}\nsource=${'a'.repeat(64)}\n`);
+      writeFileSync(join(bin, 'vitest'), '#!/usr/bin/env node\n', { mode: 0o755 });
+      symlinkSync(process.env.PAPERCUSP_RUNTIME_TEST_BUN || process.execPath, join(bin, 'node'));
+      writeFileSync(join(root, 'scripts/workspace-test.mjs'), 'launcher v1\n');
+      writeFileSync(join(root, 'scripts/lib/workspace-test-invocation.mjs'), 'routing v1\n');
+      const capture = (scriptText: string) =>
+        captureNpmTaskRuntimeIdentity({ root, workspaceRoot, scriptText, environment: process.env });
+      const sha = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+      const fileSha = (rel: string) => sha(readFileSync(join(root, rel)));
+
+      const web = 'node ../../scripts/workspace-test.mjs --passWithNoTests';
+      const integration = 'node ../../scripts/workspace-test.mjs --workspace-integration';
+      for (const script of [web, integration]) {
+        expect(capture(script)?.launcherDigests, script).toEqual({
+          script: sha(script),
+          'scripts/workspace-test.mjs': fileSha('scripts/workspace-test.mjs'),
+          'scripts/lib/workspace-test-invocation.mjs': fileSha('scripts/lib/workspace-test-invocation.mjs'),
+        });
+      }
+      // Same runtime measurement as a bare `vitest run`; only the launcher digests differ.
+      const { launcherDigests: _launcher, ...webRuntime } = capture(web)!;
+      expect(webRuntime).toEqual(capture('vitest run --passWithNoTests'));
+
+      for (const opaque of [
+        'node ../../scripts/workspace-test.mjs lib/foo.test.ts', // routed through test-files.mjs
+        `node ${join(tmpdir(), 'workspace-test.mjs')} --passWithNoTests`, // same name, outside root
+        'node ../../scripts/workspace-test.mjs --passWithNoTests; rm -rf x',
+        'NODE_OPTIONS=--require=./x.cjs node ../../scripts/workspace-test.mjs',
+      ]) expect(capture(opaque), opaque).toBeNull();
+
+      // Editing either launcher file changes the proof identity.
+      for (const rel of ['scripts/workspace-test.mjs', 'scripts/lib/workspace-test-invocation.mjs']) {
+        const before = identity({ runtimeIdentity: capture(web) });
+        writeFileSync(join(root, rel), `${readFileSync(join(root, rel), 'utf8')}edited\n`);
+        const after = identity({ runtimeIdentity: capture(web) });
+        expect(before.fingerprint, rel).not.toBe(after.fingerprint);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(['dependencyHash', 'command', 'environment', 'gateConfig'])
   ('refuses a missing %s input even with a measured runtime', (field) => {
     expect(identity({ [field]: undefined })).toBeNull();

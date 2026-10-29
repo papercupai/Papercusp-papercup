@@ -166,6 +166,20 @@ it('R13-NATIVE prospective production reader never backdates a new installation 
   expect(row).toMatchObject({ native_capture_receipt: { baseline: true }, prospective: true });
 });
 
+it('R13-NATIVE candidate preparation preserves positive microsecond windows within one millisecond', async () => {
+  await seed();
+  await installed();
+  expect(await finishRuntimeBatches()).toBe('complete');
+  const millisecond = new Date(f.now - 50).toISOString().slice(0, -1);
+  const window = { ...options(), since: `${millisecond}001Z`, until: `${millisecond}003Z` };
+  expect(await finishRuntimeBatches(window)).toBe('complete');
+  const [row] = await f.db.adminSql`SELECT native_capture_receipt AS receipt
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`;
+  expect(row!.receipt).toMatchObject({ since: window.since, until: window.until, calls: 0 });
+  expect(await indexNativeCaptureCandidates({ ...window, until: window.since })).toBe('unknown');
+  expect(await indexNativeCaptureCandidates({ ...window, since: window.until, until: window.since })).toBe('unknown');
+}, 120_000);
+
 it('R13-NATIVE reconciles real canonical carry sources for all providers without a hook or injected completeness callback', async () => {
   const seeds = [];
   for (const provider of ['codex', 'claude', 'omp'] as const) seeds.push(await seed(provider));

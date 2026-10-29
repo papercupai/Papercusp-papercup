@@ -42,6 +42,7 @@ import flagsTestingFeatures from './flags/testing-features';
 import flagsPreset from './flags/preset';
 import flagsDashboardUrl from './flags/dashboard-url';
 import operatorStateSnapshot from './operator/state-snapshot';
+import operatorLeadBinding from './operator-lead-binding';
 import operatorSettingsByKey from './operator/settings-by-key';
 import operatorRateLimitConfig from './operator/rate-limit-config';
 import operatorConversations from './operator/conversations';
@@ -665,6 +666,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(flagsPreset as AnyRoute),
   ...flatten(flagsDashboardUrl as AnyRoute),
   ...flatten(operatorStateSnapshot as AnyRoute),
+  ...flatten(operatorLeadBinding as AnyRoute),
   ...flatten(operatorSettingsByKey as AnyRoute),
   ...flatten(operatorRateLimitConfig as AnyRoute[]),
   ...flatten(operatorConversations as AnyRoute[]),

@@ -574,6 +574,9 @@ describe('dependency source checkout boundaries', () => {
     expect(readFileSync(counter, 'utf8')).toBe('launch\n');
     expect(population(enumerate(true))).toEqual(expected);
     expect(readFileSync(counter, 'utf8')).toBe('launch\nlaunch\n');
+    const relativeRoot = spawnSync('bash', ['-c', 'source "$SCRIPT"; dependency_generation_enumerate_node_modules .'],
+      { cwd: integration, encoding: 'utf8', env: { ...process.env, SCRIPT } });
+    expect(population(relativeRoot)).toEqual(expected.map(path => './' + path.slice(integration.length + 1)));
 
     // No cache crosses census calls, even when a lock changes to equal-length bytes.
     const before = readFileSync(lockPath, 'utf8');

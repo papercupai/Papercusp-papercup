@@ -420,7 +420,7 @@ export async function indexNativeCaptureCandidates(opts: NativeCaptureOptions): 
   const sql = opts.client ?? getOrgPg().sql, deadline = Date.now() + 1000;
   try {
     if (!opts.harnessSlug || !opts.sourceBoundary || !Number.isFinite(Date.parse(opts.since))
-      || !Number.isFinite(Date.parse(opts.until)) || Date.parse(opts.since) >= Date.parse(opts.until)
+      || !Number.isFinite(Date.parse(opts.until)) || micros(opts.since) >= micros(opts.until)
       || !await opts.authorize()) return 'unknown';
     const [ready] = await sql<{ ready: boolean }[]>`SELECT
       EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=to_regclass('harness_shared.sql_intent_progress')

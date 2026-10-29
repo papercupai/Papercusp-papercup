@@ -978,6 +978,29 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   });
 
+  it.each(['shadow-path', 'inherited-override'] as const)(
+    'pins the dependency census interpreter under %s', mode => {
+      const root = join(tmp, 'dependency-census-interpreter-' + mode);
+      const shadow = join(root, 'shadow-bin'), marker = join(root, 'shadow-executed');
+      write(root, 'shadow-bin/node', '#!/bin/bash\ntouch "$SHADOW_NODE_MARKER"\nexit 39\n');
+      chmodSync(join(shadow, 'node'), 0o755);
+      write(root, 'papercusp-desktop/bin/lib/pinned-deps.sh', [
+        '#!/bin/bash', 'set -eu', 'test "$1" = trees',
+        '"${DEPENDENCY_GENERATION_NODE:-node}" -e \'console.log("node_modules")\'',
+      ].join('\n'));
+      write(root, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+      write(root, 'node_modules/example/index.mjs', 'export default 1;\n');
+      const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40),
+        testedInputs: [{ path: 'input.mjs', sha256: 'b'.repeat(64) }], files: [], submodules: [] };
+      const env = { ...process.env, PATH: `${shadow}:/usr/bin:/bin`, SHADOW_NODE_MARKER: marker,
+        NODE_OPTIONS: '--import=/ambient/loader', NODE_PATH: '/ambient/dependencies',
+        ...(mode === 'inherited-override' ? { DEPENDENCY_GENERATION_NODE: join(shadow, 'node') } : {}) };
+      expect(captureVerifierDependencies({ dest: root, receipt, env }).trees.map(tree => tree.path))
+        .toEqual(['node_modules']);
+      expect(existsSync(marker)).toBe(false);
+      expect(env.NODE_OPTIONS).toBe('--import=/ambient/loader');
+    });
+
   it.each(['fresh', 'node_modules.pinned-deps-tmp', 'node_modules.pinned-deps-tmp.12345'])(
     'loads TypeScript directory imports with the invoked tree loader before native allocation and survives donor dependency removal (%s)', async staging => {
     const fixture = makeSuperproject(join(tmp, 'verifier-native-dependencies-' + staging));
@@ -1035,7 +1058,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(missingLoader.stderr).toContain('ERR_MODULE_NOT_FOUND');
   });
 
-  it.each(['explicit-cap', 'cleanup-cutoff', 'explicit-pass', 'default', 'command-cap', 'command-pass'] as const)(
+  it.each(['explicit-cap', 'cleanup-cutoff', 'explicit-pass', 'default', 'command-cap', 'command-pass', 'census-cap', 'census-cancel'] as const)(
     'bounds dependency preparation and preserves the caller environment (%s)', async mode => {
     const fixture = makeSuperproject(join(tmp, 'verifier-preparation-budget-' + mode));
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
@@ -1050,14 +1073,14 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       "const fs = require('node:fs');",
       "fs.writeFileSync(process.env.VERIFIER_PREP_PID, String(process.pid));",
       "let completed = 0; const timer = setInterval(() => console.log('snapshot progress: completed=' + (++completed)), 100);",
-      "setTimeout(() => { clearInterval(timer); console.log('copy-complete'); }, 1800);",
+      "setTimeout(() => { clearInterval(timer); console.log('copy-complete'); }, process.env.VERIFIER_SLOW_CENSUS ? 10000 : 1800);",
     ].join('\n'));
     write(fixture.repo, helper, [
       '#!/bin/bash', 'set -eu',
       'test "$VERIFIER_PREP_SENTINEL" = caller-only',
       'test -z "$NODE_OPTIONS"', 'test -z "$NODE_PATH"',
-      'if [ "$1" = trees ]; then echo node_modules; exit; fi',
-      '"$VERIFIER_PREP_NODE" "$3/scripts/dependency-progress.cjs"',
+      'if [ "$1" = trees ]; then if [ -n "${VERIFIER_SLOW_CENSUS:-}" ]; then "$VERIFIER_PREP_NODE" "$2/scripts/dependency-progress.cjs" >&2; fi; echo node_modules; exit; fi',
+      'if [ -z "${VERIFIER_SLOW_CENSUS:-}" ]; then "$VERIFIER_PREP_NODE" "$3/scripts/dependency-progress.cjs"; fi',
       'cp -al -- "$2/node_modules" "$3/node_modules"',
     ].join('\n'));
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
@@ -1067,23 +1090,37 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const dest = join(tmp, 'verifier-preparation-dest-' + mode);
     const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs: [script], gitCheckout: true });
     const env = childEnv({ VERIFIER_PREP_SENTINEL: 'caller-only', VERIFIER_PREP_PID: pidPath,
-      VERIFIER_PREP_NODE: process.execPath, NODE_OPTIONS: '--import=/ambient/loader', NODE_PATH: '/ambient/dependencies' });
+      VERIFIER_PREP_NODE: process.execPath, NODE_OPTIONS: '--import=/ambient/loader', NODE_PATH: '/ambient/dependencies',
+      ...(['census-cap', 'census-cancel'].includes(mode) ? { VERIFIER_SLOW_CENSUS: '1' } : {}) });
     delete env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
     if (mode !== 'default') env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = String(Date.now() + (mode === 'cleanup-cutoff' ? 121_000 : 300_000));
-    const maxMs = mode === 'explicit-cap' || mode === 'command-cap' ? 1000 : 15_000;
+    const maxMs = mode === 'explicit-cap' || mode === 'command-cap' ? 1000 : mode === 'census-cap' ? 5000 : 15_000;
+    const controller = new AbortController(), preparationPhases: string[] = [];
+    let cancelTimer: ReturnType<typeof setTimeout> | undefined;
     const receiptPath = join(tmp, mode + '-preparation.json');
     const commandRun = mode === 'command-cap' || mode === 'command-pass';
     const result = commandRun
       ? runVerifierCommand({ repo: fixture.repo, ref: receipt.sourceCommit, inputs: [script], receiptPath,
         command: [process.execPath, '-e', "console.log('provider-ran')"], env, preparationMaxMs: maxMs })
       : prepareVerifierDependencies({ donor: fixture.repo, dest, receipt, env,
+        signal: controller.signal,
+        runPhase: async (phase, operation) => {
+          preparationPhases.push(phase);
+          if (mode === 'census-cancel' && phase === 'deps.census')
+            cancelTimer = setTimeout(() => controller.abort(), 1000);
+          return operation();
+        },
         ...(mode === 'default' ? {} : { maxMs }) });
-    if (mode === 'explicit-cap' || mode === 'cleanup-cutoff' || mode === 'command-cap') {
-      await expect(result).rejects.toThrow('absolute-ceiling');
+    if (['explicit-cap', 'cleanup-cutoff', 'command-cap', 'census-cap', 'census-cancel'].includes(mode)) {
+      await expect(result).rejects.toThrow(mode === 'census-cancel' ? 'canceled' : 'absolute-ceiling');
+      if (cancelTimer) clearTimeout(cancelTimer);
       const pid = readFileSync(pidPath, 'utf8');
       if (existsSync(`/proc/${pid}/stat`))
         expect(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
-      if (!commandRun) expect(existsSync(join(dest, 'node_modules'))).toBe(false);
+      if (mode === 'census-cap' || mode === 'census-cancel') {
+        expect(preparationPhases.at(-1)).toBe('deps.census');
+        expect(existsSync(join(dest, 'node_modules'))).toBe(true);
+      } else if (!commandRun) expect(existsSync(join(dest, 'node_modules'))).toBe(false);
     } else if (commandRun) {
       await expect(result).resolves.toBe(0);
     } else {
@@ -1309,7 +1346,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(existsSync(join(candidate, '.papercusp/scratch'))).toBe(false);
   });
 
-  it.each(['donor-change', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'dependency-preflight-failure', 'phase-io-failure', 'deadline-refusal', 'history-refusal', 'private-pg-release', 'evidence-retention'] as const)
+  it.each(['donor-change', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'dependency-preflight-failure', 'census-failure', 'phase-io-failure', 'deadline-refusal', 'history-refusal', 'private-pg-release', 'evidence-retention'] as const)
     ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
       const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
@@ -1318,7 +1355,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
       write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
       write(fixture.repo, preflight, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
-      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\nif [ "${VERIFIER_PREPARE_FAIL:-}" = 1 ]; then echo missing dependency generation >&2; exit 42; fi\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+      const snapshotCustody = 'donor=fixture\nmode=generation-copy\ntrees=1\ngeneration=original-generation\ninput=original-input\ntoken=original-token\n';
+      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then if [ "${VERIFIER_CENSUS_FAIL:-}" = 1 ]; then echo census failure >&2; exit 43; fi; echo node_modules; exit; fi\nif [ "${VERIFIER_PREPARE_FAIL:-}" = 1 ]; then echo missing dependency generation >&2; exit 42; fi\ncp -al -- "$2/node_modules" "$3/node_modules"\nprintf "' + snapshotCustody.replaceAll('\n', '\\n') + '" > "$3/.papercusp-pinned-deps"\n');
       write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
       write(fixture.repo, provider, [
         "import { readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';",
@@ -1364,7 +1402,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         expect(existsSync(proofPath)).toBe(false);
         return { VERIFIER_CHILD_ENV_PREPARED: 'dependency-generation-ready' };
       });
-      const taskId = mode === 'evidence-retention' ? 'delayed-consumer-fixture' : null;
+      const taskId = mode === 'evidence-retention' || mode === 'census-failure' ? 'delayed-consumer-fixture' : null;
       const checkpointLogDir = join(tmp, 'verifier-task-evidence-checkpoint-logs');
       const env = { ...process.env, NODE_OPTIONS: '--import=/nonexistent/ambient-loader', NODE_PATH: '/ambient/dependencies',
         PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 900_000),
@@ -1372,6 +1410,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
           PAPERCUSP_CHECKPOINT_LOG_DIR: checkpointLogDir } : {}),
         ...(releasesPrivatePg ? { PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN: 'parent-release-token' } : {}),
         ...(mode === 'dependency-preflight-failure' ? { VERIFIER_PREPARE_FAIL: '1' } : {}),
+        ...(mode === 'census-failure' ? { VERIFIER_CENSUS_FAIL: '1' } : {}),
         ...(['history-refusal', 'deadline-refusal'].includes(mode) ? {
           PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + (mode === 'deadline-refusal' ? 180_000 : 60_000)),
         } : {}) };
@@ -1393,15 +1432,28 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
           prepareChildEnv,
           ...(releasesPrivatePg ? { releaseParentPrivatePg: true,
             requestParentPgReleaseImpl: requestParentPgRelease } : {}) });
-      if (mode === 'dependency-preflight-failure') {
-        await expect(invocation).rejects.toThrow('missing dependency generation');
+      if (mode === 'dependency-preflight-failure' || mode === 'census-failure') {
+        await expect(invocation).rejects.toThrow(mode === 'census-failure' ? 'census failure' : 'missing dependency generation');
         expect(prepareChildEnv).not.toHaveBeenCalled();
         expect(existsSync(proofPath)).toBe(false);
         expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
         const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
-        expect(phases.find(row => row.event === 'failed')).toMatchObject({ phase: 'deps.snapshot' });
+        expect(phases.find(row => row.event === 'failed')).toMatchObject({ phase: mode === 'census-failure' ? 'deps.census' : 'deps.snapshot' });
         expect(phases.some(row => row.phase === 'child.environment' || row.phase === 'child.run')).toBe(false);
         expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+        if (mode === 'census-failure') {
+          const task = JSON.parse(readFileSync(`${receiptPath}.task.json`, 'utf8'));
+          const manifest = JSON.parse(readFileSync(task.evidenceManifestPath, 'utf8'));
+          const original = readFileSync(`${receiptPath}.snapshot.txt`);
+          expect(original.toString()).toBe(snapshotCustody);
+          rmSync(`${receiptPath}.snapshot.txt`);
+          expect(manifest).toMatchObject({ wrapperStatus: 'failed', cleanup: 'completed', childExitCode: null });
+          expect(manifest.artifacts['dependencies.json']).toBeUndefined();
+          const retained = manifest.artifacts['snapshot.txt'];
+          expect(readFileSync(retained.path)).toEqual(original);
+          expect(retained.sha256).toBe(createHash('sha256').update(original).digest('hex'));
+          expect(statSync(retained.path).mode & 0o777).toBe(0o600);
+        }
         return;
       }
       if (mode === 'deadline-refusal' || mode === 'history-refusal') {
@@ -1516,6 +1568,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         expect(taskReceipt).toMatchObject({ taskId, cleanup: 'completed', evidenceManifestPath: expectedManifestPath });
         const temporarySources = {
           'source.json': receiptPath,
+          'snapshot.txt': `${receiptPath}.snapshot.txt`,
           'dependencies.json': `${receiptPath}.dependencies.json`,
           'dependencies-after.json': `${receiptPath}.dependencies.after.json`,
           'task.json': taskReceiptPath,

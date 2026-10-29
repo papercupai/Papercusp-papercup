@@ -56,6 +56,7 @@ import { awsProviderDelegationAdapter } from '../workspace-host/hosted-aws-auth'
 import { hostedDelegationOrganization } from '../workspace-host/hosted-delegation-organization';
 import { papercuspHostingGrantEffective } from '../workspace-host/hosted-gcp-hosting';
 import { HostedSessionCookieCodec } from '../auth/hosted-session';
+import { createPostgresHostedLeadBindingService } from '../auth/hosted-lead-binding-authority';
 import { createHostedCustomerDeletionRequester, exportHostedOrganizationData, exportHostedUserData } from '../data-governance/hosted-customer-data';
 import { resolveApprovedHostedCustomerDeletionPolicy, type HostedCustomerDeletionPolicy } from '../data-governance/hosted-customer-deletion';
 import { createWorkspaceHostProvisioningClient } from '../dbos/workspace-host-provision-client';
@@ -118,6 +119,9 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'PUT /hosted/organizations/:organizationId/directory-group-mappings',
   'DELETE /hosted/organizations/:organizationId/directory-group-mappings',
   'POST /hosted/organizations/:organizationId/members/directory-provision',
+  'POST /hosted/browser/lead-binding/redeem',
+  'GET /hosted/browser/lead-binding',
+  'DELETE /hosted/browser/lead-binding',
   'POST /hosted/cli/device/code',
   'GET /hosted/cli/device',
   'POST /hosted/cli/device/decision',
@@ -519,6 +523,16 @@ export async function createHostedRuntime(
     publicOrigin: configuration.publicOrigin,
     sessionCookieSecret,
     controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,
+    leadBinding: {
+      // Same environment selection as the hosted browser's telemetry writer.
+      environment: process.env.PORT === '3170' ? 'staging' : process.env.NODE_ENV === 'production' ? 'production' : 'development',
+      service: createPostgresHostedLeadBindingService({
+        graphWorkspaceId: configuration.controlPlaneWorkspaceId,
+        environment: process.env.PORT === '3170' ? 'staging' : process.env.NODE_ENV === 'production' ? 'production' : 'development',
+        // The codec purpose-separates its HMAC from hosted session cookies.
+        secret: sessionCookieSecret,
+      }),
+    },
     sessionStore,
     membershipAuthority,
     identityDirectory,

@@ -419,6 +419,7 @@ it('D030 native index candidates and supplied transcript paths cannot authorize 
   const deps = { locateTranscript: async () => { bodyReads++; return path; }, readContinuity: async () => continuity };
   const result = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }),
     deps);
+  expect(bodyReads).toBe(0);
   const [row] = await f.db.adminSql`SELECT diagnostics FROM harness_shared.sql_intent_family_runs
     WHERE run_id=${result.runId}::uuid AND family='native-operation'`;
   expect(row!.diagnostics.candidates).toEqual([expect.objectContaining({
@@ -430,7 +431,9 @@ it('D030 native index candidates and supplied transcript paths cannot authorize 
   expect(JSON.stringify(row)).not.toMatch(/private-path|private-call|su-native-private|native.jsonl/);
   const read = () => readProductionMonitoredCandidate({ ...opts,
     family: 'native-operation', runId: result.runId, candidateId: row!.diagnostics.candidates[0].id }, deps);
-  expect(await read()).toBeNull();
+  const allowed = await read();
+  expect(allowed).toMatchObject({ reviewEligible: false, metrics: { logicalDemand: 2, successful: 0, unknown: 2 } });
+  expect(JSON.stringify(allowed)).not.toMatch(/private-path|private-call|su-native-private|native.jsonl/);
   // A complete-looking retention reply cannot replace exact-call authority.
   // Candidate-only path overrides must never trigger production body IO.
   const native = result.families.find(r => r.family === 'native-operation')!;
@@ -440,21 +443,21 @@ it('D030 native index candidates and supplied transcript paths cannot authorize 
   const transcripts = (native.diagnostics.sourceCoverage as { matrix: { source: string; status: string }[] }).matrix
     .filter(c => c.source === 'transcript');
   expect(transcripts).toHaveLength(6); expect(transcripts.every(c => c.status === 'missing')).toBe(true);
-  continuity = 'gap'; expect(await read()).toBeNull();
-  continuity = 'unknown'; expect(await read()).toBeNull();
-  continuity = 'complete'; expect(await read()).toBeNull();
-  // Mutating or deleting an untrusted path cannot create a readable packet.
+  continuity = 'gap'; expect(await read()).toEqual(allowed);
+  continuity = 'unknown'; expect(await read()).toEqual(allowed);
+  continuity = 'complete'; expect(await read()).toEqual(allowed);
+  // Untrusted paths cannot change a minimized activity-only UNKNOWN summary.
   const original = readFileSync(path);
   await writeFile(path, original.toString().replaceAll('private-path', 'changed-path'));
-  expect(await read()).toBeNull();
-  await writeFile(path, original); expect(await read()).toBeNull();
+  expect(await read()).toEqual(allowed);
+  await writeFile(path, original); expect(await read()).toEqual(allowed);
   await f.db.adminSql`UPDATE harness_shared.agent_activity SET harness_slug='other-harness'
     WHERE owner_id=${actor}`;
   expect(await read()).toBeNull();
   await f.db.adminSql`UPDATE harness_shared.agent_activity SET harness_slug='mining-test' WHERE owner_id=${actor}`;
-  expect(await read()).toBeNull();
+  expect(await read()).toEqual(allowed);
   await rm(path);
-  expect(await read()).toBeNull();
+  expect(await read()).toEqual(allowed);
   const lost = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }), deps);
   expect(lost.families.find(r => r.family === 'native-operation')).toMatchObject({ coverage: 'UNKNOWN',
     diagnostics: { reviewEligible: false, sourceCoverage: { incomplete: 2 } } });
@@ -563,6 +566,7 @@ it('D030 all six native provider/kind indexes stay UNKNOWN without independently
   expect(population!.count).toBe(12);
   const run = () => runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }), deps);
   const complete = await run(), native = complete.families.find(r => r.family === 'native-operation')!;
+  expect(bodyReads).toBe(0);
   expect(native).toMatchObject({ coverage: 'UNKNOWN', diagnostics: { reviewEligible: false, sourceCoverage: { incomplete: 12, pages: 6 } } });
   const candidates = native.diagnostics.candidates as { id: string; reviewEligible: boolean }[];
   expect(candidates).toHaveLength(2); expect(candidates.every(c => !c.reviewEligible)).toBe(true);
@@ -571,12 +575,14 @@ it('D030 all six native provider/kind indexes stay UNKNOWN without independently
   expect(transcripts).toHaveLength(6); expect(transcripts.every(c => c.status === 'missing')).toBe(true);
   const read = () => readProductionMonitoredCandidate({ ...opts, family: 'native-operation',
     runId: complete.runId, candidateId: candidates[0]!.id }, deps);
-  expect(await read()).toBeNull();
-  continuity = 'gap'; expect(await read()).toBeNull(); continuity = 'complete';
+  const allowed = await read();
+  expect(allowed).toMatchObject({ reviewEligible: false, metrics: { successful: 0 } });
+  expect(allowed!.metrics.unknown).toBeGreaterThan(0);
+  continuity = 'gap'; expect(await read()).toEqual(allowed); continuity = 'complete';
   const path = paths.get('omp')!, original = readFileSync(path);
-  await rm(path); expect(await read()).toBeNull();
+  await rm(path); expect(await read()).toEqual(allowed);
   expect((await run()).families.find(r => r.family === 'native-operation')).toMatchObject({ coverage: 'UNKNOWN',
     diagnostics: { reviewEligible: false, sourceCoverage: { incomplete: 12 } } });
-  await writeFile(path, original); expect(await read()).toBeNull();
+  await writeFile(path, original); expect(await read()).toEqual(allowed);
   expect(bodyReads).toBe(0);
 });

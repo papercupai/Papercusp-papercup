@@ -2,7 +2,16 @@
   "schemaVersion": "r2gcs-p004-completion-candidate-v1",
   "workItemId": "WI-6554700010025563",
   "plan": "r2-to-gcs-storage-migration-2026-10-23",
-  "status": "candidate-only-independent-audits-pending",
+  "status": "completed",
+  "completionReadback": {
+    "workItemState": "done",
+    "completionAuthority": "committed",
+    "terminalOwner": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea",
+    "validationPassed": true,
+    "actualCloseSucceeded": true,
+    "fingerprintSource": "Independent staging3170 get-spec-evidence readback. Source/test/fixture/rubric/environment dimensions current or not-applicable for every supplied tuple; two old dirty mechanical rows retain unknown testRun state and are not qualification proof. Clean baseline70487 and caught70488 remain qualification proof.",
+    "limitation": "P004 bounded implementation acceptance only. Full migration, P003 release and P544 trial shipment remain open."
+  },
   "fullMigrationAccepted": false,
   "shipped": false,
   "sourceBackedCompositionReview": "thread-post:1209843",
@@ -56,10 +65,10 @@
       "state": "passed",
       "auditIssueId": "EI-27272190708622851"
     },
-    "collision": "pending",
-    "finalization": "pending",
-    "multipart": "pending",
-    "private": "pending"
+    "collision": {"state": "passed", "auditIssueId": "EI-27274320332035845"},
+    "finalization": {"state": "passed", "auditIssueId": "EI-27274676843849871"},
+    "multipart": {"state": "passed", "auditIssueId": "EI-27272660747538070"},
+    "private": {"state": "passed", "auditIssueId": "EI-27274396313212325"}
   },
   "awaits": {
     "386154": "scorecard:grading-audit:EI-27271808483094865",
@@ -75,7 +84,7 @@
     "Manual live bindings only measure current Worker identity and source at binding time; no historical timestamp is invented.",
     "No full migration, historical R2 census, deployed publish Worker, P003 release, gate operation or P544 cost qualification claimed."
   ],
-  "next": "Read settled audit events and canonical card state. Once every current audit passes, use the prepared payload with validateOnly:true; fix remaining contract failures together. Only after verification succeeds remove validateOnly for actual close. Continue migration P002/P005/P006 and D090 before P544 under D086. Do not duplicate active P003 peer work.",
+  "next": "P004 is complete with committed authority; do not repeat its close, tests, certificates or journeys. Continue migration P002/P005/P006 and D090 before P544 under D086. Retained evaluator43145 measurement path failed; independently current staging3170 fingerprints supplied the successful validated close. Preserve original receipts and missing historical runtime witness. Do not duplicate active P003 peer work.",
   "preparedCompletion": {
     "id": "WI-6554700010025563",
     "harness": "papercusp",
@@ -83,9 +92,9 @@
     "validateOnly": true,
     "assumptions": "none",
     "completion": {
-      "summary": "P004 GCS storage-port implementation and bounded live verification: Cupboard preserves private visibility, create-only writes, multipart reconnect/replay and unfinalized denial; maintained archive restores exact private-GCS bytes/metadata with tenant isolation and fenced cleanup. Six exact spec evaluators pass; independent grading audits remain pending, so no full migration or shipment claim.",
+      "summary": "P004 GCS storage-port implementation and bounded live verification: Cupboard preserves private visibility, create-only writes, multipart reconnect/replay and unfinalized denial; maintained archive restores exact private-GCS bytes/metadata with tenant isolation and fenced cleanup. Six exact spec evaluators pass and all five independent grading audits pass. Full migration and original P544 shipment remain open.",
       "testsRun": "Reuse canonical tests and saved operational runs: clean archive22578350/61/70; private22578351/63/71; finalization22578352/64/72; multipart controls bindings70597/70598; collision binding69021/run21892728 and unit68711/68715; mechanical70487/70488; operational22576579 and22577190. No65/14/archive rerun this continuation.",
-      "testResult": "Baselines pass with no skips; each deliberate violation is caught; saved canonical Worker17assertions and archive12assertions pass with completed generation-fenced cleanup. Current exact-source and environment observations are independently server-measured. Audit verdicts not yet settled.",
+      "testResult": "Baselines pass with no skips; each deliberate violation is caught; saved canonical Worker17assertions and archive12assertions pass with completed generation-fenced cleanup. All five independent gradingAudit states pass; audit IDs are retained in auditSnapshot. No P004 test or journey rerun during this continuation.",
       "verifiedHow": "plans:get-spec-evidence independent readback of73797-73803,73804/73805,73808/73817,73820/73822; plans:evaluate-spec-test-adequacy full unfiltered Worker clauses pass; all6 clauses pass before grading-audit completion. Source-backed independent composition review thread-post:1209843. Historical73701/02/04 retained as immutable withdrawn audit rows, replaced by current manual runtime observations and separate canonical execution proof without inventing runtime timestamps.",
       "filesChanged": [
         "libs/generic/artifact-registry/src/gcs-object-store.ts",
@@ -105,13 +114,13 @@
       "kindEvidence": [
         {
           "kind": "service",
-          "testsRun": "Canonical deployed Cupboard22576579 and real-GCS archive22577190; source-level clean clause baselines and caught violations73797-73802.",
-          "testResult": "Saved operations pass with exact generation-pinned bytes, expected visibility/auth denials, same multipart identity on reconnect and same generation on completion replay; owned fixtures removed with generation fences.",
+          "testsRun": "Saved canonical calls against running production service named papercusp-cupboard, Worker22576579: multipart create HTTP 201, operation state and reconnect HTTP 200, unfinalized public reads HTTP 404, raw private bucket HTTP 403. Maintained node --import tsx apps/papercusp-publish/scripts/verify-archive.ts against real private GCS22577190: file and manifest metadata HTTP 200, anonymous reads HTTP 401. Original receipts retained; no rerun.",
+          "testResult": "PASS: production Cupboard completion HTTP 201, replay HTTP 200 with identical generation, exact generation-pinned bytes, unfinalized HTTP 404 and private raw bucket HTTP 403. Archive file/manifest metadata HTTP 200 and anonymous HTTP 401; admitted bytes restored with tenant isolation. Owned fixtures removed with generation fences.",
           "build": "Cupboard Worker version968092d7-beeb-4bdb-a1b3-3953d4b9fefc, remote unit cloudflare-worker:f896982ea2f6d507e4f29eeecbd26e94/papercusp-cupboard, server-measured environment89a820f9bf69e5ed77f1e68b6ac2b59c680fdd165c40648690ec9f38d0baf2e6; clean causal controls443ebb84aba506fc69f172daec1f4599759ce1df. Archive executed5f07eaf39cba2f094bd193b3361c64070cd584c7, source hashes in retained receipt; no deployed publish Worker asserted."
         },
         {
           "kind": "logic",
-          "testsRun": "Canonical baselines/copy baselines/mutants22578350/61/70,22578351/63/71,22578352/64/72 plus retained mechanical/multipart/collision proof.",
+          "testsRun": "npm run test:file -- scripts/publish-workspace-host-artifacts.test.ts (saved65PASS); canonical clean apps/papercusp-publish/src/archive-storage.test.ts22578350/61/70, apps/operator-public/src/routes/gcs-storage.test.ts22578351/63/71 and apps/operator-public/src/routes/workspace-host-artifacts.test.ts22578352/64/72; retained mechanical/multipart/collision test files and ledger proof. No new execution.",
           "testResult": "Baselines pass and three deliberate changes caught: corrupted archive byte, private artifact leak, unfinalized public leak; source integrity preserved."
         },
         {

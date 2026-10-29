@@ -393,18 +393,16 @@ describe('code:run registration (B-CX-2A)', () => {
     const scriptDescription =
       (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
       '';
+    // code:run is a FLOOR tool with almost no seat headroom, so its script description is the
+    // compact form: pin the contract tokens it still carries, not the earlier long-form prose.
+    // The helper signatures and the state_limit_exceeded refusal are pinned behaviourally below.
     expect(scriptDescription).toContain('{ summary, media:');
     expect(scriptDescription).toContain('"image"|"audio"');
-    expect(scriptDescription).toContain('intermediate tool calls is never emitted implicitly');
-    expect(scriptDescription).toContain('generatedImage({ image_url:');
-    expect(scriptDescription).toContain('notify(value)');
-    expect(scriptDescription).toContain('yield_control()');
-    expect(scriptDescription).toContain('store(key, value)');
-    expect(scriptDescription).toContain('never hidden session memory');
-    expect(scriptDescription).toContain('200 keys and 65,536 UTF-8 bytes (64 KiB)');
-    expect(scriptDescription).toContain('state_limit_exceeded');
-    expect(scriptDescription).toContain('reduce large tool reads at the source');
-    expect(scriptDescription).toContain('projection.pick');
+    expect(scriptDescription).toContain('`generatedImage` appends validated media');
+    expect(scriptDescription).toContain('`notify` and `yield_control` stream output');
+    expect(scriptDescription).toContain('`store`/`load` with explicit `inputs`');
+    expect(scriptDescription).toContain('200 keys and 64 KiB');
+    expect(scriptDescription).toContain('reduce large reads with `projection.pick`');
     expect(scriptDescription).toContain("payloadTier:'full'");
     expect(scriptDescription).toContain('summaryNotice.rawSummaryCursor');
     expect(scriptDescription).toContain('capability:read');
@@ -505,6 +503,19 @@ describe('code:run → explicit final media (P-027 / D-021)', () => {
     expect(payload.summary).toEqual({ rendered: true });
     expect(payload.state).toEqual({ cursor: 2 });
     expect(String(res.content[0].text)).not.toContain('aGVsbG8=');
+  });
+
+  it('refuses replay state past its key and byte caps with state_limit_exceeded instead of truncating it', async () => {
+    for (const script of [
+      `for (let i = 0; i < 201; i++) store('k' + i, i); return { stored: true };`,
+      `store('big', 'x'.repeat(70000)); return { stored: true };`,
+    ]) {
+      const res = await codeRun().fn({ script }, mkCtx());
+      const payload = JSON.parse(String((res as { content: { text: string }[] }).content[0].text));
+      expect(payload.ok).toBe(false);
+      expect(String(payload.error)).toContain('state_limit_exceeded');
+      expect(payload.summary).toBeUndefined();
+    }
   });
 
   it('keeps a small script return visible when store replay state exceeds the result door', async () => {

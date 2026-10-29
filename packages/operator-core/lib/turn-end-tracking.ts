@@ -775,8 +775,9 @@ export function renderOpenTaskReminder(
     `⟦open-task-reminder ${attempt}/${maxAttempts}⟧ This turn ended with ${tasks.length} ` +
       `pending/in-progress session task${tasks.length === 1 ? '' : 's'} and no armed continuation.`,
     ...lines,
-    'Continue working now. Mark finished tasks completed, or drop/edit tasks that no longer describe real work. ' +
-      `This automatic continuation stops after ${maxAttempts} unchanged attempts.`,
+    'Snapshot from turn-end: before acting, re-read the canonical session task list with tasks:ops { op: "view" }. ' +
+      'Keep tasks that are now blocked/completed unchanged and honor their blocker/yield. ' +
+      'This automatic continuation stops after ' + String(maxAttempts) + ' unchanged attempts.',
   ].join('\n');
 }
 

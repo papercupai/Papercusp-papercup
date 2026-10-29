@@ -1,0 +1,351 @@
+{
+  "measuredAt": "2026-10-29T01:32:10.278Z",
+  "kind": "source-candidate-census",
+  "population": [
+    "apps/operator/app/admin/testing/_components/MemoryTab.tsx",
+    "apps/operator/app/admin/testing/_components/TestRunsTab.tsx",
+    "apps/operator/app/adv/sessions/AdvSessionsClient.tsx",
+    "apps/operator/app/_components/AuthSignInCards.tsx",
+    "apps/operator/app/_components/OperatorActiveToggle.tsx",
+    "apps/operator/app/_components/OperatorPanel.tsx",
+    "apps/operator/app/_components/UpdateChip.tsx",
+    "apps/operator/app/_components/SetupWizard/StepAgents.tsx",
+    "apps/operator/app/_components/SetupWizard/StepEmbeddedPg.tsx",
+    "apps/operator/app/_components/SetupWizard/StepGit.tsx",
+    "apps/operator/app/_components/SetupWizard/StepLocalModel.tsx",
+    "apps/operator/app/_components/SetupWizard/StepMobilePairing.tsx",
+    "apps/operator/app/_components/SetupWizard/useWizardStatuses.ts",
+    "apps/operator/app/_components/voice/VoiceAppBridge.tsx",
+    "apps/operator/app/coord/CoordDashboard.tsx",
+    "apps/operator/app/dev/_components/BackupsTab.tsx",
+    "apps/operator/app/dev/_components/PgTab.tsx",
+    "apps/operator/app/dev/_components/ProcessesTab.tsx",
+    "apps/operator/app/dev/_components/RightRail.tsx",
+    "apps/operator/app/dev/_components/StudioTab.tsx",
+    "apps/operator/app/harness/AgentInspectorModal.tsx",
+    "apps/operator/app/settings/deploy-accounts/page.tsx",
+    "apps/operator/app/settings/voice/page.tsx",
+    "apps/operator-vite/src/components/adv/AdvFramesTab.tsx",
+    "apps/operator-vite/src/components/adv/FleetRateControl.tsx",
+    "apps/operator-vite/src/components/adv/HealthTab.tsx",
+    "apps/operator-vite/src/components/env-switcher/EnvSwitcherBar.tsx",
+    "apps/operator-vite/src/components/VersionBadge.tsx",
+    "apps/operator-vite/src/routes/admin/dogfood-substrate.tsx",
+    "packages/operator-ui/src/accounts/AccountsTab.tsx"
+  ],
+  "rows": [
+    {
+      "path": "apps/operator/app/admin/testing/_components/MemoryTab.tsx",
+      "sourceSha256": "c06b6bb4018926e9c7627cf9673f39dc3b6d726a7a620ea3fa364bf89ebd67fc",
+      "timers": [
+        {
+          "line": 110,
+          "expression": "setInterval(() => { void tick(); }, RUN_POLL_MS)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/admin/testing/_components/TestRunsTab.tsx",
+      "sourceSha256": "eb5d8a39a5d1c9ebee234a05ef11bc044aa1c9feb1ebd76ec99605bdc563bf2c",
+      "timers": [
+        {
+          "line": 60,
+          "expression": "setInterval(() => { void tick(); }, 1000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/adv/sessions/AdvSessionsClient.tsx",
+      "sourceSha256": "1747bafdb7804eb5d7bac743a3f5f2f9621aad0ea137645bb6063f1ff8a353a0",
+      "timers": [
+        {
+          "line": 550,
+          "expression": "setInterval(() => void push(), 20_000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/_components/AuthSignInCards.tsx",
+      "sourceSha256": "51a6e8697e9ac6492f8c83e574fb18cf1609bf49a5f34e34020fc7eaaba4abbd",
+      "timers": [
+        {
+          "line": 119,
+          "expression": "setInterval(() => void refreshAuth(), 5000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/_components/OperatorActiveToggle.tsx",
+      "sourceSha256": "17baea0ee87f98c16ff95702985d3c18020ea3e18cd421d9848ade80c141a2bc",
+      "timers": [
+        {
+          "line": 96,
+          "expression": "setInterval(refresh, 5000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/_components/OperatorPanel.tsx",
+      "sourceSha256": "5090cd229e15b95610992e287752f5d36aaa17ecc64fbdfc46c222841dc6a4c3",
+      "timers": [
+        {
+          "line": 465,
+          "expression": "setInterval(() => forceTick((n) => n + 1), 30_000)"
+        },
+        {
+          "line": 755,
+          "expression": "window.setInterval(() => setNow(Date.now()), 5000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/_components/UpdateChip.tsx",
+      "sourceSha256": "f0347c33cb43c6583308c0947f87ec5891a6ea6ad2ef7c311317ced80a48409a",
+      "timers": [
+        {
+          "line": 376,
+          "expression": "window.setInterval(() => poll(true), POLL_INTERVAL_MS)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/_components/SetupWizard/StepAgents.tsx",
+      "sourceSha256": "4604653c178ecb10f717989a8ad6f9e8d93d8dd3fda5713a0c87d2b3ab1a4309",
+      "timers": [
+        {
+          "line": 63,
+          "expression": "setInterval(() => void refreshRuntime(), 5000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/_components/SetupWizard/StepEmbeddedPg.tsx",
+      "sourceSha256": "f13ced7b1bfb808570525e2397d9c24abddaecd6c656fbf5dafa32161091bd90",
+      "timers": [
+        {
+          "line": 30,
+          "expression": "setInterval(tick, 3000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/_components/SetupWizard/StepGit.tsx",
+      "sourceSha256": "dc9de1d18afd14d9263966b749337958ce895d8271ec52a08e40915279df7647",
+      "timers": [
+        {
+          "line": 97,
+          "expression": "setInterval(() => void refreshAuth(), 5000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/_components/SetupWizard/StepLocalModel.tsx",
+      "sourceSha256": "c251184346d06b588411a27ef0672ab166708d0dcd34a2744a5c82597a5a1a2f",
+      "timers": [
+        {
+          "line": 89,
+          "expression": "setInterval(() => void refresh(), 10000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/_components/SetupWizard/StepMobilePairing.tsx",
+      "sourceSha256": "7ae2babef664050ae65a7bc9e5ab7dfbe99994d344a2ba2bccc2cd15eaf87dea",
+      "timers": [
+        {
+          "line": 27,
+          "expression": "setInterval(() => setNow(Date.now()), 1000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/_components/SetupWizard/useWizardStatuses.ts",
+      "sourceSha256": "f14bb76ff6093c297de0ebab38881bab6de1d95e9e222283edbd3d0f6112d519",
+      "timers": [
+        {
+          "line": 50,
+          "expression": "setInterval(() => void refreshAll(), 10000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/_components/voice/VoiceAppBridge.tsx",
+      "sourceSha256": "5957dc8639ad4f6176e3def7bbeb422eae2b0db39f87eba8eb40477df2e325e0",
+      "timers": [
+        {
+          "line": 344,
+          "expression": "setInterval(() => {\n      if (stopped || voiceStateRef.current.mode === 'off') return;\n      // One-brain voice-OUT (voice-unified-sentinel-pipeline P-002): while a\n      // full-agent session is live, the SERVER-side sentinel-says pump owns the\n      // FIFO (synth + bus fan-out to every attached client) — this local-mode\n      // poll must not compete for the drain.\n      if (voiceStateRef.current.micOwnedByFullAgent) return;\n      // NOT gated on the pane dev path (WI-4838 E): the FIFO is fed by\n      // `voice:say` from ANY permitted agent, not just the dock pane. With\n      // no full-agent session and no local drain, those lines used to queue\n      // forever — the tool promised speech and delivered dead air. Voice\n      // mode on + no full-agent session ⇒ this webview is the consumer.\n      void (async () => {\n        const says = await drainSentinelOutput();\n        if (says.length === 0) return;\n        const { speak } = await import('./voice-mode');\n        for (const line of says) speak(line, 'system:operator', 'polite');\n      })();\n      // WI-5174: local-mode counterpart of voice-mode.ts's\n      // drainHindsightOnConnect (full-agent-only — see drainHindsightForSpeech's\n      // docstring). Same gating (mode on, no full-agent session) as the\n      // Sentinel FIFO poll above.\n      void (async () => {\n        const lines = await drainHindsightForSpeech();\n        if (lines.length === 0) return;\n        const { speak } = await import('./voice-mode');\n        for (const line of lines) speak(line, 'system:operator', 'polite');\n      })();\n    }, 1500)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/coord/CoordDashboard.tsx",
+      "sourceSha256": "5e64f85806ce2ee90508896c566f3f8529262a46a2814aa8f7da6cfc3287f625",
+      "timers": [
+        {
+          "line": 140,
+          "expression": "setInterval(() => {\n      if (document.visibilityState !== 'hidden') void tick();\n    }, 15_000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/dev/_components/BackupsTab.tsx",
+      "sourceSha256": "fa4d6d38e68f9007e327dbd7ac42d4f2c297072e23b5964724d9f2b660840df5",
+      "timers": [
+        {
+          "line": 103,
+          "expression": "setInterval(() => {\n      if (document.visibilityState !== 'hidden') void load();\n    }, 15_000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/dev/_components/PgTab.tsx",
+      "sourceSha256": "5a720ca7f2c384f85aba91745be452e98329ef3a74627940853ae152805613bc",
+      "timers": [
+        {
+          "line": 94,
+          "expression": "setInterval(() => {\n      if (document.visibilityState !== 'hidden') void refresh();\n    }, 10_000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/dev/_components/ProcessesTab.tsx",
+      "sourceSha256": "f20a62a81c29810bc75a5270cba9d7fecbd3b2f515d7afd2c5f8a1ec02562424",
+      "timers": [
+        {
+          "line": 127,
+          "expression": "setInterval(() => {\n      if (document.visibilityState !== 'hidden') void refresh();\n    }, 5_000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/dev/_components/RightRail.tsx",
+      "sourceSha256": "de642b4b000bf3ecf7f573263e761ec2ed859c7d12bb2f6991254028b87a85bc",
+      "timers": [
+        {
+          "line": 119,
+          "expression": "setInterval(() => {\n      if (document.visibilityState !== 'hidden') refresh();\n    }, 15_000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/dev/_components/StudioTab.tsx",
+      "sourceSha256": "6d49c6bd4324d73b2bddd824422bf160708faf39cdf0049a05c88362e322c40a",
+      "timers": [
+        {
+          "line": 55,
+          "expression": "setInterval(() => {\n      if (document.visibilityState !== 'hidden') void refresh();\n    }, 10_000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/harness/AgentInspectorModal.tsx",
+      "sourceSha256": "5dd5080158a6e7f11b1b83db234981e28a9fca1d45d66e3bf09e6960754876cd",
+      "timers": [
+        {
+          "line": 174,
+          "expression": "setInterval(() => setNow(Date.now()), 1000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/settings/deploy-accounts/page.tsx",
+      "sourceSha256": "10f61fbbffb81b94d3cd31549cb05b6d6c5e16cbe0a9313470f056d4d9c9d488",
+      "timers": [
+        {
+          "line": 289,
+          "expression": "setInterval(() => void tick(), 2500)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator/app/settings/voice/page.tsx",
+      "sourceSha256": "38966c93207ce3ac2473dac8b2933a8b36d5121137a422e5b7124b571ef96e91",
+      "timers": [
+        {
+          "line": 123,
+          "expression": "setInterval(tryRefresh, 500)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator-vite/src/components/adv/AdvFramesTab.tsx",
+      "sourceSha256": "2ed91d71226809c748c55e922106e62c3fe5008aae217cfe915407df108eebc5",
+      "timers": [
+        {
+          "line": 88,
+          "expression": "setInterval(pull, 30_000)"
+        },
+        {
+          "line": 160,
+          "expression": "setInterval(() => setNowTick((n) => n + 1), 2_000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator-vite/src/components/adv/FleetRateControl.tsx",
+      "sourceSha256": "34b2489ce34fabdffeb6ae52aa060c6b1e6da9becd1070346acaf6a1e3310944",
+      "timers": [
+        {
+          "line": 118,
+          "expression": "setInterval(pull, POLL_MS)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator-vite/src/components/adv/HealthTab.tsx",
+      "sourceSha256": "42c5dad1ac1b7f66ea155e228cf057e532e9a81c194daef2e0ded1de397fb4b5",
+      "timers": [
+        {
+          "line": 128,
+          "expression": "setInterval(() => setNowMs(Date.now()), 15_000)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator-vite/src/components/env-switcher/EnvSwitcherBar.tsx",
+      "sourceSha256": "4aa2eec9e387ef575c04241a877454db97846d9a58fb57476938bc87c405b975",
+      "timers": [
+        {
+          "line": 173,
+          "expression": "setInterval(() => void load(), REFRESH_MS)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator-vite/src/components/VersionBadge.tsx",
+      "sourceSha256": "73d370046db92ea9ee930216e5b3a5067b8f168227cfcf278744b4b39c5af99f",
+      "timers": [
+        {
+          "line": 53,
+          "expression": "setInterval(() => void poll(), POLL_MS)"
+        }
+      ]
+    },
+    {
+      "path": "apps/operator-vite/src/routes/admin/dogfood-substrate.tsx",
+      "sourceSha256": "f65a8dfc2b134fcfb1eb7e634fbef2b306b5e9a63dd8af3fe736e85dbf4429b5",
+      "timers": [
+        {
+          "line": 68,
+          "expression": "setInterval(() => void run(), 10_000)"
+        }
+      ]
+    },
+    {
+      "path": "packages/operator-ui/src/accounts/AccountsTab.tsx",
+      "sourceSha256": "fa48b2838a86abdefeddd31dda32e8df494ad023c851ae80e53248a06ba41e8f",
+      "timers": [
+        {
+          "line": 183,
+          "expression": "setInterval(() => setNow(Date.now()), intervalMs)"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Candidate list from plan Context; each callback requires dependency tracing before classification.",
+    "A fetch elsewhere in the file does not establish interval polling.",
+    "No request rates or runtime behavior claimed."
+  ]
+}

@@ -540,7 +540,7 @@ function keep(tree) {
   return false;
 }
 for (const tree of readFileSync(3, 'utf8').split('\n').filter(Boolean))
-  if (keep(tree)) console.log(tree);
+  if (keep(resolve(tree))) console.log(tree);
 JS
 }
 

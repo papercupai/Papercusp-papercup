@@ -58,6 +58,10 @@ describe('hosted runtime composition', () => {
 
     expect(plane.mounted.map((route) => `${route.method} ${route.path}`)).toEqual(HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS);
     expect(plane.components.providerDelegationManager).toBeTypeOf('function');
+    expect(plane.mounted.find(route => route.path === '/hosted/browser/lead-binding/redeem'))
+      .toMatchObject({ method: 'POST', auth: { capabilities: ['workspace:view'], kind: ['user'], trust: ['verified'] } });
+    expect((await plane.app.request('/api/hosted/browser/lead-binding?graphWorkspaceId=graph-a&personRef=PER-a')).status).toBe(401);
+    expect((await plane.app.request('/api/operator/lead-binding/challenge', { method: 'POST' })).status).toBe(404);
     const reduction = plane.mounted.find((route) => route.path.endsWith('/reduce-access'));
     expect(reduction).toMatchObject({ method: 'POST', auth: { capabilities: ['members:manage'], kind: ['user'], trust: ['verified'] } });
     // The service-role probe still precedes every secret read, and the boot

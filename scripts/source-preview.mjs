@@ -2102,7 +2102,7 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
   const cutoffs = [admission.childCutoffEpochMs, cutoffEpochMs,
     maxMs === undefined ? null : now() + maxMs].filter(value => value != null);
   const preparationCutoff = cutoffs.length ? Math.min(...cutoffs) : null;
-  env = { ...env, NODE_OPTIONS: '', NODE_PATH: '' };
+  env = verifierDependencyEnv(env);
   const run = (command, args) => runVerifierDependencyCommand(command, args,
     { cwd: dest, env, signal, maxMs, cutoffEpochMs: preparationCutoff, now });
   // A retry can retain staging and completed dependency trees. Only this
@@ -2146,7 +2146,7 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
       throw new PreviewError('verifier dependency preflight returned no source size', 2);
   });
   await runPhase('deps.source.after-preflight', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
-  return runPhase('deps.census', () => captureVerifierDependencies({ dest, receipt, env,
+  return runPhase('deps.census', () => captureVerifierCommandDependencies({ dest, receipt, env, run,
     onProgress: progress => runPhase.reportProgress?.('deps.census', progress) }));
 }
 
@@ -2160,11 +2160,37 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
 export function captureVerifierDependencies({ dest, receipt, env = process.env, onProgress }) {
   const root = realpathSync(dest);
   const result = spawnSync('bash', [join(root, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'trees', root],
-    { cwd: root, env: { ...env, NODE_OPTIONS: '', NODE_PATH: '' }, encoding: 'utf8',
+    { cwd: root, env: verifierDependencyEnv(env), encoding: 'utf8',
       timeout: 60_000, maxBuffer: 1024 * 1024 });
   if (result.error || result.status !== 0)
     throw new PreviewError(`verifier dependency enumeration failed: ${result.error?.message || result.stderr || result.status}`, 2);
-  const paths = result.stdout.trim().split('\n').filter(Boolean).sort();
+  return captureVerifierDependencyPopulation({ dest, receipt, env, onProgress }, result.stdout);
+}
+
+/** Managed commands use the existing process-group/deadline runner for discovery.
+ * Keep the synchronous capture API for callers that do not own an async command.
+ * Both paths share the exact installed-byte census and population validation.
+ * @param {Parameters<typeof captureVerifierDependencies>[0] & {
+ *   run: (command: string, args: string[]) => Promise<string> }} options
+ */
+async function captureVerifierCommandDependencies({ run, ...options }) {
+  const root = realpathSync(options.dest);
+  const output = await run('bash', [join(root, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'trees', root]);
+  return captureVerifierDependencyPopulation(options, output);
+}
+
+/** The verifier's helper must use the same interpreter even under a sanitized
+ * compiler PATH or an inherited dependency-generation override.
+ * @param {NodeJS.ProcessEnv} env */
+function verifierDependencyEnv(env) {
+  return { ...env, NODE_OPTIONS: '', NODE_PATH: '', DEPENDENCY_GENERATION_NODE: process.execPath };
+}
+
+/** @param {Parameters<typeof captureVerifierDependencies>[0]} options
+ * @param {string} output */
+function captureVerifierDependencyPopulation({ dest, receipt, env = process.env, onProgress }, output) {
+  const root = realpathSync(dest);
+  const paths = output.trim().split('\n').filter(Boolean).sort();
   assert.ok(paths.length > 0 && paths.length <= 1000 && new Set(paths).size === paths.length,
     'Verifier dependency tree population missing or duplicated');
   const policyPath = 'apps/operator/bin/release/dependency-generation.sh';
@@ -2186,7 +2212,7 @@ export function captureVerifierDependencies({ dest, receipt, env = process.env, 
     const records = spawnSync('bash', ['-c',
       'source "$1" || exit; records=$(mktemp) || exit; trap \'rm -f -- "$records" "$records.unsorted"\' EXIT; dependency_generation_source_records "$2" "$records" || exit; cat "$records"',
       'verifier-dependency-records', join(root, policyPath), tree],
-    { cwd: root, env: { ...env, NODE_OPTIONS: '', NODE_PATH: '' }, encoding: 'utf8',
+    { cwd: root, env: verifierDependencyEnv(env), encoding: 'utf8',
       timeout: 120_000, maxBuffer: 128 * 1024 * 1024 });
     if (records.error || records.status !== 0)
       throw new PreviewError(`verifier dependency census failed: ${records.error?.message || records.stderr || records.status}`, 2);
@@ -2462,7 +2488,23 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         checkCancellation();
       }
       const before = performance.now();
-      const result = await tracedPhase(phase, operation, metadata);
+      const result = await tracedPhase(phase, async () => {
+        const result = await operation();
+        if (phase === 'deps.snapshot') {
+          const snapshotReceipt = join(root, '.papercusp-pinned-deps');
+          // Retain the ORIGINAL selected generation before census can fail and
+          // owned-tree cleanup removes its only custody record. Older helpers
+          // may omit it; absence must stay absence rather than reconstruction.
+          if (existsSync(snapshotReceipt)) {
+            const identity = readBgIndependentOutputIdentity(snapshotReceipt);
+            const bytes = await fs.readFile(snapshotReceipt);
+            assert.equal(createHash('sha256').update(bytes).digest('hex'), identity.sha256,
+              'Verifier dependency snapshot receipt changed while retaining it');
+            await fs.writeFile(`${receiptPath}.snapshot.txt`, bytes, { flag: 'wx', mode: 0o600 });
+          }
+        }
+        return result;
+      }, metadata);
       measurements[phase] = Math.ceil(performance.now() - before);
       if (!mustFinishAfterCancellation) {
         await new Promise(resolve => setImmediate(resolve));
@@ -2611,7 +2653,10 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     if (childRunError) throw childRunError;
     if (privatePgReleaseError) throw privatePgReleaseError;
     await runPhase('deps.postverify', async () => {
-      const after = captureVerifierDependencies({ dest: root, receipt, env,
+      const after = await captureVerifierCommandDependencies({ dest: root, receipt, env,
+        run: (command, args) => runVerifierDependencyCommand(command, args,
+          { cwd: root, env: verifierDependencyEnv(env), signal: cancellation.signal,
+            cutoffEpochMs: budget.childCutoffEpochMs, now: clock.now }),
         onProgress: progress => runPhase.reportProgress?.('deps.postverify', progress) });
       // Keep the actual final census even on drift; never overwrite the
       // original observation with a reconstructed matching receipt.
@@ -2979,6 +3024,7 @@ function archiveVerifierTaskEvidence({ evidenceRoot, taskId, sourceCommit, recei
   phaseArchivePath, cleanup, childExitCode, error }) {
   const candidates = [
     ['source.json', receiptPath],
+    ['snapshot.txt', `${receiptPath}.snapshot.txt`],
     ['dependencies.json', `${receiptPath}.dependencies.json`],
     ['dependencies-after.json', `${receiptPath}.dependencies.after.json`],
     ['task.json', taskReceiptPath],
