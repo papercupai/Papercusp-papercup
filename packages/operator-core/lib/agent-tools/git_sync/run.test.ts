@@ -587,8 +587,8 @@ describe('git-sync:run', () => {
 
   // EI-22726196301284168: `held_exclusive` still must not advertise the global
   // lock-retry key, whose emitter deliberately excludes this refusal class. The
-  // release path now emits an exact resource key after the exclusive row is gone,
-  // so callers can await a truthful release boundary and retry safely.
+  // release path emits an exact resource key at the release boundary. The event
+  // is only a notification; it does not reserve the resource for the retry.
   it('advertises the exact resource release event for a held_exclusive skip', async () => {
     const outcome = {
       status: 'skipped' as const,
@@ -637,6 +637,9 @@ describe('git-sync:run', () => {
     });
     expect(continuation.completion_event).not.toMatchObject({ key: 'git-sync:lock-retry' });
     expect(result.note).toMatch(/exact resource release event/);
+    expect(result.note).toMatch(/does not reserve the resource/);
+    expect(result.note).toMatch(/may skip again and return a fresh continuation/);
+    expect(result.note).not.toMatch(/retry safely/);
     expect(result.note).not.toMatch(/git-sync:lock-retry/);
   });
 

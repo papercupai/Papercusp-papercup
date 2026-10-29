@@ -1941,10 +1941,18 @@ export function diffAcceptanceBarHashInputs(
 ): string[] {
   const beforeFields = new Map(acceptanceBarHashMaterial(before));
   const afterFields = new Map(acceptanceBarHashMaterial(after));
-  return [...new Set([...beforeFields.keys(), ...afterFields.keys()])]
-    .filter((field) => JSON.stringify(beforeFields.get(field)) !== JSON.stringify(afterFields.get(field)))
-    .map((field) => field === 'bar' ? 'model' : field)
-    .sort();
+  const beforeIntent = beforeFields.get('intent') as Record<string, unknown> | undefined;
+  const afterIntent = afterFields.get('intent') as Record<string, unknown> | undefined;
+  const emptyIntent = { request: '', constraints: [], rationale: '', sourceRefs: [] };
+  const changedIntentFields = (['request', 'constraints', 'rationale', 'sourceRefs'] as const)
+    .filter((field) => JSON.stringify(beforeIntent?.[field] ?? emptyIntent[field])
+      !== JSON.stringify(afterIntent?.[field] ?? emptyIntent[field]))
+    .map((field) => `intent.${field}`);
+  const changedFields = [...new Set([...beforeFields.keys(), ...afterFields.keys()])]
+    .filter((field) => field !== 'intent'
+      && JSON.stringify(beforeFields.get(field)) !== JSON.stringify(afterFields.get(field)))
+    .map((field) => field === 'bar' ? 'model' : field);
+  return [...changedFields, ...changedIntentFields].sort();
 }
 
 export function computeAcceptanceBarHash(criterion: AcceptanceBarHashInput): string {

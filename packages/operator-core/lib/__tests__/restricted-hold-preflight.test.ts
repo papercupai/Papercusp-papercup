@@ -8,6 +8,8 @@
  * a test beside the module under scripts/lib runs only under the root config, which no gate task runs.
  */
 import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -89,7 +91,6 @@ describe('interpretRestrictedHoldPreflight — fail closed', () => {
     }
   });
 });
-
 describe('restrictedHoldPreflightSkipReason', () => {
   it('skips only when testing:run already admitted the files, or when nested inside vitest', () => {
     expect(restrictedHoldPreflightSkipReason({ [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_DONE })).toBe('testing-run');
@@ -253,6 +254,21 @@ describe('runRestrictedHoldPreflight', () => {
     expect(existsSync(RESTRICTED_HOLD_PREFLIGHT_CLI)).toBe(true);
     expect(existsSync(COMMITTED_SOURCE_LOADER)).toBe(true);
   });
+
+  it('loads the real census CLI through the committed loader and tsx in a child process', () => {
+    const { argv, env } = censusSpawnArgs([], process.env);
+    const result = spawnSync(process.execPath, argv, {
+      cwd: dirname(RESTRICTED_HOLD_PREFLIGHT_CLI),
+      env,
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(RESTRICTED_HOLD_PREFLIGHT_EXIT.misuse);
+    expect(result.stdout).toContain(
+      `${RESTRICTED_HOLD_PREFLIGHT_MARKER} {"verdict":"refuse","error":"restricted_hold_state_unknown","hint":"restricted-hold preflight was started without a checkout root"}`,
+    );
+  });
 });
 
 // WI-10005764: the census's own closure lives in the tree it judges; the loader (first on the argv,
@@ -316,4 +332,11 @@ it('formats a refusal as one greppable line that says nothing was measured', () 
   expect(formatRestrictedHoldRefusal({ error: 'restricted_write_held', hint: 'x is held' })).toBe(
     'TEST_FILE_RESTRICTED_HOLD_REFUSED error=restricted_write_held measured=none x is held',
   );
+  expect(formatRestrictedHoldRefusal({ error: 'restricted_hold_state_unknown', hint: 'loader failed' }, 'copy-baseline')).toBe(
+    'TEST_FILE_RESTRICTED_HOLD_REFUSED phase=copy-baseline error=restricted_hold_state_unknown measured=none loader failed',
+  );
+  expect(formatRestrictedHoldRefusal({ error: 'restricted_hold_state_unknown', hint: 'loader failed' }, 'copy-baseline\nmutant')).toBe(
+    'TEST_FILE_RESTRICTED_HOLD_REFUSED error=restricted_hold_state_unknown measured=none loader failed',
+  );
 });
+

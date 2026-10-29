@@ -350,8 +350,11 @@ function spawnCensus({ repoRoot, files, env, timeoutMs, spawn, leading = [] }) {
 }
 
 /** One stderr line for a refusal; greppable, and it names the measured state: nothing ran. */
-export function formatRestrictedHoldRefusal(refusal) {
-  return `TEST_FILE_RESTRICTED_HOLD_REFUSED error=${refusal.error} measured=none ${refusal.hint}`;
+export function formatRestrictedHoldRefusal(refusal, phase) {
+  const phaseField = typeof phase === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(phase)
+    ? ` phase=${phase}`
+    : '';
+  return `TEST_FILE_RESTRICTED_HOLD_REFUSED${phaseField} error=${refusal.error} measured=none ${refusal.hint}`;
 }
 
 /** The vitest-root door's refusal line (vitest prints it as the globalSetup error). */

@@ -54,7 +54,16 @@ test('the /dev right rail reports API readiness through the :3055 Vite proxy', a
   const evidenceDir = join(phaseDir, 'playwright');
   mkdirSync(evidenceDir, { recursive: true });
   const screenshotPath = join(evidenceDir, 'dev-api-via-3055.png');
-  runTauri(['screenshot', '--pid', tauriPid, '--title', 'Papercusp Operator', '--output', screenshotPath]);
+  const nativeWindows = JSON.parse(runTauri(['list-windows', '--tauri', '--json'])) as Array<{
+    windowId: string;
+    pid?: number;
+    name?: string;
+  }>;
+  const nativeWindow = nativeWindows.find((window) => window.pid === Number(tauriPid));
+  if (!nativeWindow) throw new Error(`No native Tauri window found for verifier PID ${tauriPid}`);
+  const screenshotCapture = JSON.parse(runTauri([
+    'screenshot', '--window-id', nativeWindow.windowId, '--output', screenshotPath, '--json',
+  ]));
   expect(existsSync(screenshotPath), 'Tauri screenshot retained').toBe(true);
 
   writeFileSync(join(evidenceDir, 'dev-api-via-3055.json'), `${JSON.stringify({
@@ -65,6 +74,8 @@ test('the /dev right rail reports API readiness through the :3055 Vite proxy', a
     structuredCheck,
     probe,
     screenshotPath,
+    nativeWindow: { id: nativeWindow.windowId, name: nativeWindow.name ?? null, pid: nativeWindow.pid },
+    screenshotCapture,
     sourceRef: process.env.VERIFY_TAURI_SOURCE_REF ?? null,
     capturedAt: new Date().toISOString(),
   }, null, 2)}\n`);

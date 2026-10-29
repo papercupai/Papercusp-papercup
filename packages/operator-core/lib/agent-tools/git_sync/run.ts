@@ -577,8 +577,8 @@ export default defineTool({
             ? 'git-sync completed with a structured skipped-locked outcome; inspect outcome.skippedPaths and committedCount for the locked paths and any work this fire committed.'
           : outcome?.status === 'skipped'
             ? outcome.reason === 'held_exclusive' || outcome.reason === 'exclusive_pending'
-              ? // This is emitted at the actual release boundary, not at refusal
-                // time, so it cannot wake into the same held/pending state.
+              ? // The release event is a notification, not a reservation. Wake
+                // delivery is asynchronous, so a new holder can win before the retry.
                 `git-sync skipped: ${
                   outcome.reason === 'held_exclusive'
                     ? `${blockedByInFlightGitSync ? 'an in-flight git-sync auto-commit' : 'a peer'} holds`
@@ -586,7 +586,7 @@ export default defineTool({
                 } ` +
                 `${outcome.blockedOn ?? 'the git-sync resource'} ` +
                 `(${outcome.reason}). Wait for the exact resource release event in ` +
-                'continuation.completion_event, then retry git-sync:run. For the workspace-wide barrier, inspect current holders because another shared holder may remain. Your changes are ' +
+                'continuation.completion_event, then retry git-sync:run. The event reports a release but does not reserve the resource; if another exclusive holder wins before the retry, it may skip again and return a fresh continuation. For the workspace-wide barrier, inspect current holders because another shared holder may remain. Your changes are ' +
                 'not lost; continuation.progress_ref retains live holder state.'
               : `git-sync completed with status skipped (${outcome.reason}); await ${GIT_SYNC_LOCK_RETRY_EVENT} ` +
                 'for the next lock-retry signal and inspect continuation.progress_ref for live holder state.'

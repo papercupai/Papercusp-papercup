@@ -3795,7 +3795,7 @@ export async function main(
   if (!dry) {
     const restrictedHold = restrictedHoldPreflightImpl({ repoRoot, files: routes.map((route) => route.absolute) });
     if (restrictedHold.verdict === 'refuse') {
-      console.error(formatRestrictedHoldRefusal(restrictedHold));
+      console.error(formatRestrictedHoldRefusal(restrictedHold, process.env.PAPERCUSP_MUTATION_PHASE));
       return TEST_FILE_EXIT_NOT_MEASURED;
     }
     if (restrictedHold.verdict === 'admit') {

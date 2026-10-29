@@ -373,7 +373,7 @@ test.describe('/adv Conversations + Sessions e2e', () => {
     });
     await sync.waitForServed(['advRoster.list'], 30_000);
 
-    const chat = page.locator('.chat-panel');
+    const chat = page.getByTestId('session-chat-modal');
     await expect(chat).toBeVisible({ timeout: 30_000 });
     await expect(chat.getByText(ordinaryOwnerTurn, { exact: true })).toBeVisible();
     await expect(chat.getByText(ownerQuote, { exact: true })).toBeVisible();

@@ -1888,6 +1888,7 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
         rationale: 'New references are part of the signed BAR intent.',
         sourceRefs: ['D-021 §1-3', 'D-024 §1-5', 'D-027 §1-5'],
       },
+      evidenceRuntime: 'desktop-shell',
       method: 'Inspect the amended source references.',
     };
     changedCriterion.barHash = computeAcceptanceBarHash(changedCriterion);
@@ -1911,7 +1912,7 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
       expect.objectContaining({
         barKey: 'R-1',
         kinds: ['bar-meaning', 'method-only'],
-        fields: ['intent', 'method'],
+        fields: ['evidenceRuntime', 'intent.request', 'method'],
       }),
     ]);
 
@@ -1929,7 +1930,7 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
       },
       patch: { criteria: [changedCriterion] },
     });
-    expect(brief).toContain('Changed BARs: R-1 (bar-meaning+method-only: intent, method).');
+    expect(brief).toContain('Changed BARs: R-1 (bar-meaning+method-only: evidenceRuntime, intent.request, method).');
   });
 
   it('names a required proof-layer change instead of reporting a hash-only BAR amendment', () => {
