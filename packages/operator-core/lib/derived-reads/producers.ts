@@ -260,6 +260,8 @@ registerDerivedRead({
   ttlMs: 60_000,
   producerVersion: 1,
   scope: 'workspace',
+  // learning.dream view=observations serves its decision-journal windows from this snapshot.
+  alsoInvalidates: ['learning.dream'],
   excludeFromDefaultSweep: true,
   refreshOnRead: true,
   compute: async () => {
@@ -865,6 +867,8 @@ registerDerivedRead({
   ttlMs: 60_000,
   producerVersion: 1,
   scope: 'harness',
+  // Both PR panes read this snapshot (WI-6554700010030747); push them on a real change.
+  alsoInvalidates: ['harnessPrs.byHarness', 'harnessPrs.detail'],
   compute: async (ctx) => {
     const { computeHarnessPrGitFacts } = await import('../pr-host/pr-git-facts-compute');
     return computeHarnessPrGitFacts(ctx);

@@ -2574,7 +2574,11 @@ describe('BG inherited manifest and original source boundaries', () => {
     const installed = dirname(createRequire(import.meta.url).resolve('@papercusp/host-esbuild/package.json'));
     const privateCompiler = join(prepared.root, 'node_modules/@papercusp/host-esbuild');
     bgFixtureTrace('private-compiler-copy:start');
-    cpSync(installed, privateCompiler, { recursive: true, dereference: true });
+    // The pinned binary is bin/esbuild. Omit the unused platform-package
+    // fallback: copying it duplicates a 10MB executable in every mutable-input
+    // census and makes this hermetic fixture depend on an ambient fallback.
+    cpSync(installed, privateCompiler, { recursive: true, dereference: true,
+      filter: path => path !== join(installed, 'node_modules') });
     bgFixtureTrace('private-compiler-copy:completed');
     const dependencies = captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source });
     bgFixtureTrace('private-compiler:dependencies-ready');

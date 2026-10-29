@@ -487,43 +487,60 @@ dependency_generation_configure_workspace_dirs() {
 # An ignored standalone install lock cannot bind a frozen source generation.
 # Keep its private tree out of the snapshot too; never delete the donor's files.
 # npm-shrinkwrap takes precedence, just as it does for the install itself.
-dependency_generation_is_ignored_install_tree() {
-  local root="$1" tree="$2" name ignored=0
-  [ "$tree" != "$root/node_modules" ] || return 1
-  for name in npm-shrinkwrap.json package-lock.json; do
-    [ -f "${tree%/node_modules}/$name" ] || continue
-    dependency_generation_is_ignored_input "$root" "${tree%/node_modules}/$name" || return 1
-    ignored=1
-    break
-  done
-  # Install cleanup may have removed the ignored lock while leaving its tree.
-  # Git's ignore rule still describes that uncommittable input; an existing
-  # tracked/nonignored lock above always wins over this absent-file check.
-  for name in npm-shrinkwrap.json package-lock.json; do
-    dependency_generation_is_ignored_input "$root" "${tree%/node_modules}/$name" && ignored=1
-  done
-  [ "$ignored" = 1 ] || return 1
-  # A workspace's ignored local lock does not supersede its enclosing install.
-  # Retain trees with exact package paths in a nonignored ancestor lock.
-  "${DEPENDENCY_GENERATION_NODE:-node}" --input-type=module - "$root" "$tree" <<'JS'
-import {readFileSync, existsSync} from 'node:fs';
-import {dirname, join, relative, resolve} from 'node:path';
+dependency_generation_filter_install_trees() {
+  local root="$1"
+  # One process and one lockfile parse per enumeration, not per installed tree.
+  # fd 3 retains the candidate stream while stdin carries this maintained script.
+  # The caches live only for this invocation: a subsequent census rechecks edits.
+  "${DEPENDENCY_GENERATION_NODE:-node}" --input-type=module - "$root" 3<&0 <<'JS'
+import {readFileSync, existsSync, statSync} from 'node:fs';
+import {basename, dirname, join, relative, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
-const [root, tree] = process.argv.slice(2).map(p => resolve(p));
-for (let dir = dirname(dirname(tree)); dir === root || dir.startsWith(root + '/'); dir = dirname(dir)) {
-  for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
-    const file = join(dir, name);
-    if (!existsSync(file)) continue;
-    if (spawnSync('git', ['-C', dir, 'check-ignore', '-q', '--', name]).status === 0) break;
-    try {
-      const lock = JSON.parse(readFileSync(file, 'utf8'));
-      const prefix = relative(dir, tree).split('\\').join('/') + '/';
-      if (Object.keys(lock.packages ?? {}).some(key => key.startsWith(prefix))) process.exit(1);
-    } catch { process.exit(1); } // Unreadable custody is never permission to omit a tree.
+const root = resolve(process.argv[2]), names = ['npm-shrinkwrap.json', 'package-lock.json'];
+const hasGit = existsSync(join(root, '.git')), ignores = new Map(), locks = new Map();
+const ignored = file => {
+  if (!ignores.has(file)) ignores.set(file, hasGit && spawnSync('git',
+    ['-C', dirname(file), 'check-ignore', '-q', '--', basename(file)]).status === 0);
+  return ignores.get(file);
+};
+const isFile = file => { try { return statSync(file).isFile(); } catch { return false; } };
+const packages = file => {
+  if (!locks.has(file)) {
+    try { locks.set(file, Object.keys(JSON.parse(readFileSync(file, 'utf8')).packages ?? {})); }
+    catch { locks.set(file, null); }
+  }
+  return locks.get(file);
+};
+function keep(tree) {
+  if (tree === join(root, 'node_modules')) return true;
+  let localIgnored = false;
+  for (const name of names) {
+    const file = join(dirname(tree), name);
+    if (!isFile(file)) continue;
+    if (!ignored(file)) return true;
+    localIgnored = true;
     break;
   }
-  if (dir === root) break;
+  // Missing ignored locks still describe leftover installs. An existing
+  // nonignored lock above wins, including npm-shrinkwrap precedence.
+  localIgnored ||= names.some(name => ignored(join(dirname(tree), name)));
+  if (!localIgnored) return true;
+  for (let dir = dirname(dirname(tree)); dir === root || dir.startsWith(root + '/'); dir = dirname(dir)) {
+    for (const name of names) {
+      const file = join(dir, name);
+      if (!existsSync(file)) continue;
+      if (ignored(file)) break;
+      const keys = packages(file), prefix = relative(dir, tree).split('\\').join('/') + '/';
+      // Unreadable custody is never permission to omit a tree.
+      if (keys === null || keys.some(key => key.startsWith(prefix))) return true;
+      break;
+    }
+    if (dir === root) break;
+  }
+  return false;
 }
+for (const tree of readFileSync(3, 'utf8').split('\n').filter(Boolean))
+  if (keep(tree)) console.log(tree);
 JS
 }
 
@@ -533,15 +550,16 @@ dependency_generation_enumerate_node_modules() {
   # those copies have no committed lock at the emitted path. Source generations
   # include the desktop's own node_modules and ordinary source dirs named sidecar.
   if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'selected' ]; then
-    { [ -d "$root/node_modules" ] || [ -L "$root/node_modules" ]; } && printf '%s\n' "$root/node_modules"
-    for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
-      case "$dir" in .next|.next/*|*/.next|*/.next/*|apps/operator/dist-verify|apps/operator/dist-verify/*) continue ;; esac
-      if { [ -d "$root/$dir/node_modules" ] || [ -L "$root/$dir/node_modules" ]; } \
-        && ! dependency_generation_is_foreign_checkout "$root" "$root/$dir/node_modules" \
-        && ! dependency_generation_is_ignored_install_tree "$root" "$root/$dir/node_modules"; then
-        printf '%s\n' "$root/$dir/node_modules"
-      fi
-    done
+    {
+      { [ -d "$root/node_modules" ] || [ -L "$root/node_modules" ]; } && printf '%s\n' "$root/node_modules"
+      for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
+        case "$dir" in .next|.next/*|*/.next|*/.next/*|apps/operator/dist-verify|apps/operator/dist-verify/*) continue ;; esac
+        if { [ -d "$root/$dir/node_modules" ] || [ -L "$root/$dir/node_modules" ]; } \
+          && ! dependency_generation_is_foreign_checkout "$root" "$root/$dir/node_modules"; then
+          printf '%s\n' "$root/$dir/node_modules"
+        fi
+      done
+    } | dependency_generation_filter_install_trees "$root" || return $?
     return 0
   fi
   # -mindepth 1: the name patterns below must never prune the starting root
@@ -557,9 +575,8 @@ dependency_generation_enumerate_node_modules() {
     \( \( -type d -o -type l \) -name node_modules -prune -print \) \
     | while IFS= read -r dir; do
         dependency_generation_is_foreign_checkout "$root" "$dir" && continue
-        dependency_generation_is_ignored_install_tree "$root" "$dir" && continue
         printf '%s\n' "$dir"
-      done
+      done | dependency_generation_filter_install_trees "$root"
 }
 
 # Metadata identity deliberately avoids reading ~13 GiB of file contents. The

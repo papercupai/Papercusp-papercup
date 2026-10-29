@@ -1248,6 +1248,14 @@ describe('dispatchConsultResponder — the walk', () => {
       const r = await dispatchConsultResponder(OPTS, CTX, deps);
       expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
       expect(r.attempts[0]!.detail).not.toContain('First reply not written');
+      expect(r.attempts[0]!.answeringTurn).toEqual({
+        agent: 'claude', transcriptPath: '/native/answer.jsonl',
+        kickoffAt: new Date(NOW_MS).toISOString(),
+      });
+      const persisted = dispatchRecordEntry(calls.recorded[0]!, new Date(NOW_MS).toISOString()) as {
+        attempts: Array<{ answeringTurn?: unknown }>;
+      };
+      expect(persisted.attempts[0]!.answeringTurn).toEqual(r.attempts[0]!.answeringTurn);
       expect(calls.stopped).toEqual([]);
     });
 

@@ -1208,6 +1208,42 @@ describe('routines:list', () => {
     expect(out.warning).not.toContain("completionAuthority:'proposed'");
   });
 
+  it('treats an expired, stamp-matched exclusion sweep as historical and non-actionable', () => {
+    const now = Date.parse('2026-10-23T01:00:00.000Z');
+    const sweepAt = now - 2 * 60 * 60_000;
+    const out = deriveGitSyncExclusions(
+      {
+        last_status: 'synced',
+        last_skip_reason: 'locked-path',
+        last_skipped_at: sweepAt,
+        last_exclusions_at: sweepAt,
+        last_synced_at: sweepAt,
+        last_skipped_paths: [
+          {
+            scope: 'superproject',
+            path: 'packages/app/old.ts',
+            owner: 'su-a',
+            intent: TURN_HOLD_INTENT,
+            heldSince: new Date(sweepAt - 10 * 60_000).toISOString(),
+          },
+        ],
+      },
+      { status: 'fresh' },
+      now,
+    );
+
+    expect(out).toMatchObject({
+      sweep_stale: true,
+      sweep_age_ms: 2 * 60 * 60_000,
+      skipped_count: 1,
+      turn_holds: { count: 1 },
+    });
+    expect(out.warning).toContain('stale or unknown sweep vintage');
+    expect(out.warning).toContain('Wait for a fresh completed sweep');
+    expect(out.warning).not.toContain('use locks:acquire to hold a change across turns');
+    expect(out.warning).not.toContain("completionAuthority:'proposed'");
+  });
+
   it('treats legacy skip records without an exclusion stamp as stale even when freshness is recent', () => {
     const now = Date.parse('2026-10-23T01:00:00.000Z');
     const out = deriveGitSyncExclusions(

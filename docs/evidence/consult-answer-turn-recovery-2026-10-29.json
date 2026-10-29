@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-27272706320364592",
+  "kind": "verification-evidence",
+  "fullSuite": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts packages/operator-core/lib/consult/consult-expiry-core.integration.test.ts",
+    "startedAt": "2026-10-29T00:55:09.640Z",
+    "postRunAt": "2026-10-29T00:58:13.238Z",
+    "unitPassed": 190,
+    "integrationPassed": 79,
+    "skipped": 0,
+    "exitCode": 0,
+    "head": "1f4f8bdd88f3705810a6634174a621b0a867636f",
+    "scope": "Current working-tree sources and tests; no production activation claim."
+  },
+  "isolatedRun": {
+    "route": "background-federation",
+    "wrapper": "node scripts/with-test-pg.mjs --isolated-runtime -- node scripts/test-files.mjs packages/operator-core/lib/consult/consult-expiry-core.integration.test.ts --testNamePattern=<pattern below>",
+    "testNamePattern": "recovers a terminal account refusal after interim work|does not mistake healthy interim work",
+    "receiptId": "169e2230-c2bc-4894-a490-0887af05821e",
+    "startedAt": "2026-10-29T01:03:21.144Z",
+    "finishedAt": "2026-10-29T01:03:22.692Z",
+    "status": "pass",
+    "exitCode": 0,
+    "passed": 2,
+    "failed": 0,
+    "excludedByNameFilter": 77,
+    "passedCaseTitles": [
+      "a first-turn rejection that lands after the dispatch window (EI-27111739698817170) > recovers a terminal account refusal after interim work beyond the first-turn window",
+      "a first-turn rejection that lands after the dispatch window (EI-27111739698817170) > does not mistake healthy interim work or a quoted error for a terminal refusal"
+    ],
+    "cleanup": [
+      {
+        "kind": "isolated-runtime-cleanup",
+        "stage": "complete",
+        "elapsedMs": 2674,
+        "supervisorPid": 3770688,
+        "workspace": "test-runtime-dbb34bc3-4fb",
+        "runtimeRoot": "/tmp/pcv/papercusp-test-runtime-YmwrNz",
+        "dataDir": "/tmp/pcv/papercusp-test-pg-5d2Kxe",
+        "pgPort": 46329,
+        "runtimeRemoved": true,
+        "pgDataRemoved": true
+      }
+    ],
+    "receiptSha256": "758ddba28b7782805a03938aa20e4431779572400d374cf6745d550cf71f6b23"
+  },
+  "sourceSha256": {
+    "packages/operator-core/lib/consult/consult-dispatch.ts": "4fa625968ccf6085cd03ca6ffea077a539d3e2665970dadb3d21c41b6a7edca9",
+    "packages/operator-core/lib/consult/consult-dispatch.test.ts": "25f599d30edab6e5d74bbc42bfda2e14d4a195c6cff420e94d538fe6caa0745a",
+    "packages/operator-core/lib/consult/consult-expiry-core.ts": "a1e10a9b20422f0d592f40e5ff906c3deefe7337b1848bfb7c71fe1e62b93c11",
+    "packages/operator-core/lib/consult/consult-expiry-core.integration.test.ts": "b70e8229e0ddc2f32c4f47b66b9c33cc50eedc429b5e86399aa0a3e0cdbe73f8"
+  },
+  "limitations": [
+    "The focused full-suite run measured local uncommitted content; source hashes pin those bytes.",
+    "The isolated rerun selected two regression cases; the other77 were excluded by the name filter.",
+    "Runtime activation in staging-operator and bg-host is tracked separately on the work-item; this artifact does not assert deployment."
+  ]
+}

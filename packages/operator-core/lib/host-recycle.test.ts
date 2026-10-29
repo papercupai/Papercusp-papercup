@@ -842,6 +842,19 @@ describe('installFatalDiagnostics (WI-3849 — diagnostic report on native SIGAB
     expect(mkdir).not.toHaveBeenCalled();
   });
 
+  it('preserves the launcher-armed report signal and directory while enabling fatal reports', () => {
+    const report = { ...fakeReport(), reportOnSignal: true,
+      signal: 'SIGWINCH', directory: '/tmp/verifier-startup-reports' };
+    const log = vi.fn();
+    installFatalDiagnostics({ report, log });
+
+    expect(report.signal).toBe('SIGWINCH');
+    expect(report.directory).toBe('/tmp/verifier-startup-reports');
+    expect(report.reportOnSignal).toBe(true);
+    expect(report.reportOnFatalError).toBe(true);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('SIGWINCH'));
+  });
+
   it('is idempotent — a second call is a no-op (does not re-touch the report or re-log)', () => {
     const report = fakeReport();
     const log = vi.fn();

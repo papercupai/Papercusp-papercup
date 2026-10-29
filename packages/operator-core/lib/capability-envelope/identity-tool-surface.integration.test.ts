@@ -329,7 +329,11 @@ it('measures the production identity policy read in a private background runtime
           if (resetForTests) {
             await progress('operator-pg-pool-reset-start');
             await resetForTests();
-            await progress('operator-pg-pool-reset-complete');
+            await progress('operator-pg-pool-reset-complete', {
+              activeResources: process.getActiveResourcesInfo(),
+              activeHandleTypes: process._getActiveHandles().map(handle => handle.constructor?.name ?? typeof handle),
+              activeRequestTypes: process._getActiveRequests().map(request => request.constructor?.name ?? typeof request),
+            });
           }
         }
       `;

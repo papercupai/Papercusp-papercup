@@ -69,3 +69,16 @@ describe('Papercusp su override uses the generated workspace map', () => {
     expect(prompt).not.toMatch(/\/home\/[^/\s]+\/papercupai-workspace\//);
   });
 });
+
+describe('Papercusp su staging tool routing', () => {
+  it('distinguishes the direct main operator from the build-selecting MCP proxy', () => {
+    const prompt = readFileSync(join(POT_INSTANCES_DIR, 'papercup-pot.su.md'), 'utf8');
+
+    expect(prompt).toContain('http://localhost:9071/api/mcp');
+    expect(prompt).toContain("build:'staging'");
+    expect(prompt).toContain('older main schemas may reject the unrecognized');
+    expect(prompt).toContain('while builds that recognize it refuse the mismatch');
+    expect(prompt).toContain('build_mismatch');
+    expect(prompt).toContain('scripts/mcp-call.mjs');
+  });
+});

@@ -22,6 +22,9 @@ export const NATIVE_PROVIDERS = ['claude', 'codex', 'omp'] as const;
 export type NativeProvider = typeof NATIVE_PROVIDERS[number];
 export type NativeKind = 'shell' | 'browser';
 export type NativeCoverageStatus = 'measured' | 'unsupported' | 'missing' | 'truncated';
+/** Preserve PostgreSQL timestamp precision across native event/receipt windows. */
+export const nativeTimestampMicros = (value: string) => BigInt(Date.parse(value)) * 1000n
+  + BigInt(((/\.(\d+)/.exec(value)?.[1] ?? '').padEnd(6, '0').slice(3, 6)) || '0');
 const providers = new Set<string>(NATIVE_PROVIDERS);
 const shellTools = new Set(['bash', 'shell', 'run', 'exec', 'execute', 'exec_command', 'functions.exec_command', 'capability:bash', 'capability:terminal']);
 const browserTools = new Set(['browser', 'browser_navigate', 'browser_click', 'browser_type', 'navigate', 'click', 'type', 'browser.navigate', 'browser.click', 'browser.type']);
@@ -249,8 +252,9 @@ export async function fetchNativeOperations(opts: NativeCorpusOptions) {
   miningScopeId(opts.scope, opts.harnessSlug);
   const since = Date.parse(opts.since), until = Date.parse(opts.until);
   if (opts.workspaceId !== opts.scope.workspaceId || !Number.isFinite(since) || !Number.isFinite(until)
-    || until <= since || until - since > 30 * 86400_000
     || opts.after && (!Number.isFinite(Date.parse(opts.after.at)) || !/^\d+$/.test(opts.after.id))) throw new Error('invalid_native_window');
+  const sinceMicros = nativeTimestampMicros(opts.since), untilMicros = nativeTimestampMicros(opts.until);
+  if (untilMicros <= sinceMicros || untilMicros - sinceMicros > 30n * 86400_000_000n) throw new Error('invalid_native_window');
   if (!await boundedStage(() => opts.authorize({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
     sourceBoundary: opts.scope.sourceBoundary }), 1000)) throw new Error('native_source_denied');
   const sql = opts.client ?? getOrgPg().sql;
@@ -314,8 +318,9 @@ export async function fetchNativeOperations(opts: NativeCorpusOptions) {
           || !record.tool_use_id || transcript.callId !== record.tool_use_id) continue;
         // Activity pagination can select an original hook at receipt time.
         // Only the canonical event time admits its transcript to this window.
-        const eventAt = Date.parse(transcript.at);
-        if (!Number.isFinite(eventAt) || eventAt < since || eventAt >= until) continue;
+        if (!Number.isFinite(Date.parse(transcript.at))) continue;
+        const eventAt = nativeTimestampMicros(transcript.at);
+        if (eventAt < sinceMicros || eventAt >= untilMicros) continue;
         const value = observeNativeOperation(transcript, opts.scope);
         if (value) { observations.push(value);
           completeCopy ||= hydrated.status === 'measured' && value.evidenceGaps.length === 0;

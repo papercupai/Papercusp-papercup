@@ -1173,10 +1173,14 @@ export function deriveGitSyncExclusions(
   const hasByteExclusions = oversized.length > 0 || bulkExcluded.length > 0;
   const exclusionStampMatchesSweep =
     exclusionAtMs !== null && lastSyncedAtMs !== null && exclusionAtMs === lastSyncedAtMs;
+  const sweepAgeMs = exclusionAtMs === null ? null : Math.max(0, nowMs - exclusionAtMs);
   // The stamp and freshness verdict describe the whole completed sweep, including
-  // skip-only sweeps. Do not make stale skip records actionable just because no blob
-  // crossed a byte-exclusion limit.
-  const sweepStale = !exclusionStampMatchesSweep || freshness?.status === 'degraded';
+  // skip-only sweeps. A matching stamp proves the fields were written together, not
+  // that the snapshot is still current; expired turn-hold evidence is historical.
+  const sweepStale =
+    !exclusionStampMatchesSweep ||
+    freshness?.status === 'degraded' ||
+    (sweepAgeMs !== null && sweepAgeMs > TURN_HOLD_MAX_AGE_MS);
   const parts: string[] = [];
   const remedies: string[] = [];
   if (skipped.length > 0) {
@@ -1245,7 +1249,7 @@ export function deriveGitSyncExclusions(
     bulk_excluded_sample: bulkExcluded.slice(0, GIT_SYNC_EXCLUSION_SAMPLE),
     bulk_excluded_sample_truncated: bulkExcluded.length > GIT_SYNC_EXCLUSION_SAMPLE,
     sweep_at: isoAt(exclusionAtMs),
-    sweep_age_ms: exclusionAtMs === null ? null : Math.max(0, nowMs - exclusionAtMs),
+    sweep_age_ms: sweepAgeMs,
     sweep_stale: sweepStale,
     warning:
       warningParts.length === 0

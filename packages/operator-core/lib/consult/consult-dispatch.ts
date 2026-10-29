@@ -364,6 +364,8 @@ export interface ConsultDispatchAttempt {
    * expiry sweep re-reads to judge that reply later, with the same classifier.
    */
   firstTurnUnjudged?: FirstTurnUnjudged;
+  /** Keep observing an unanswered session after an interim assistant message. */
+  answeringTurn?: FirstTurnUnjudged;
 }
 
 /**
@@ -1013,6 +1015,13 @@ export function dispatchRecordEntry(input: ConsultDispatchRecordInput, nowIso: s
             },
           }
         : {}),
+      ...(a.answeringTurn && a.answeringTurn.transcriptPath.length <= DISPATCH_RECORD_TEXT_MAX
+        ? { answeringTurn: {
+            agent: a.answeringTurn.agent,
+            transcriptPath: a.answeringTurn.transcriptPath,
+            kickoffAt: a.answeringTurn.kickoffAt,
+          } }
+        : {}),
     })),
   };
 }
@@ -1188,6 +1197,7 @@ export interface PersistedDispatchRecord {
   answeringOwnerId?: string | null;
   attempts?: Array<{
     firstTurnUnjudged?: Partial<FirstTurnUnjudged>;
+    answeringTurn?: Partial<FirstTurnUnjudged>;
     outcome?: string;
     reason?: string;
     agent?: string;
@@ -2645,6 +2655,16 @@ async function launchAnsweringSession(
           `spawned, no live host after ${verify.waitedMs}ms — still booting (NOT a failure; the cascade ` +
           `expiry guards the reply). Log ${spawn.logPath ?? '?'}.`) + firstTurnNote,
       ...(firstTurnUnjudged ? { firstTurnUnjudged } : {}),
+      // An interim message is not a completed consult. Retain the same native
+      // evidence pointer until its answer, so a later terminal provider error
+      // can be handled by the existing expiry/cascade path.
+      ...(judgesFirstTurn && typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl')
+        ? { answeringTurn: {
+            agent: rank.agent as 'claude' | 'codex',
+            transcriptPath: answeringTranscript,
+            kickoffAt: new Date(kickoffSeenAtMs).toISOString(),
+          } }
+        : {}),
     },
     answeringOwnerId,
     verified: verify.started ? true : null,

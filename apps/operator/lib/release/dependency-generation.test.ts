@@ -538,6 +538,69 @@ describe('dependency source checkout boundaries', () => {
     expect(readFileSync(join(foreign, 'node_modules/foreign/index.js'), 'utf8')).toBe('unrelated\n');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('EI-27267673632472358: filters 98 install candidates in one Node process and rechecks ancestor locks on the next census', () => {
+    const integration = makeIntegration();
+    const lockPath = join(integration, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    const dirs = Array.from({ length: 95 }, (_, i) => `packages/census-${i}`);
+    for (const [i, dir] of dirs.entries()) {
+      mkdirSync(join(integration, dir, 'node_modules/local'), { recursive: true });
+      writeFileSync(join(integration, dir, 'package.json'), '{"private":true}\n');
+      if (i < 50) lock.packages[`${dir}/node_modules/local`] = { version: '1.0.0' };
+    }
+    writeFileSync(lockPath, JSON.stringify(lock));
+    writeFileSync(join(integration, '.gitignore'), 'node_modules/\n/packages/*/package-lock.json\n');
+    commitAllFixture(integration, 'record ancestor install custody');
+    for (const dir of dirs) writeFileSync(join(integration, dir, 'package-lock.json'), '{"packages":{}}');
+    const counter = join(integration, '.node-launches');
+    const wrapper = join(integration, '.count-node');
+    writeFileSync(wrapper, '#!/bin/bash\nprintf "launch\\n" >> "$CENSUS_NODE_COUNTER"\nexec "$CENSUS_REAL_NODE" "$@"\n');
+    chmodSync(wrapper, 0o755);
+    const enumerate = (selected = false) => spawnSync('bash', ['-c', [
+      'set -euo pipefail', 'source "$SCRIPT"',
+      ...(selected ? ['DEPENDENCY_GENERATION_SCOPE_MODE=selected',
+        'for dir in packages/*; do DEPENDENCY_GENERATION_WORKSPACE_DIRS+=("$dir"); done'] : []),
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+    ].join('\n')], { cwd: integration, encoding: 'utf8', env: { ...process.env, SCRIPT,
+      INTEGRATION: integration, DEPENDENCY_GENERATION_NODE: wrapper,
+      CENSUS_NODE_COUNTER: counter, CENSUS_REAL_NODE: process.execPath } });
+    const population = (result: ReturnType<typeof enumerate>) => {
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout.trim().split('\n').sort();
+    };
+    const expected = ['node_modules', 'packages/a/node_modules', 'packages/b/node_modules',
+      ...dirs.slice(0, 50).map(dir => `${dir}/node_modules`)].map(dir => join(integration, dir)).sort();
+    expect(population(enumerate())).toEqual(expected);
+    expect(readFileSync(counter, 'utf8')).toBe('launch\n');
+    expect(population(enumerate(true))).toEqual(expected);
+    expect(readFileSync(counter, 'utf8')).toBe('launch\nlaunch\n');
+
+    // No cache crosses census calls, even when a lock changes to equal-length bytes.
+    const before = readFileSync(lockPath, 'utf8');
+    const changed = before.replace('packages/census-0/node_modules/local', 'packages/census-X/node_modules/local');
+    expect(changed.length).toBe(before.length);
+    writeFileSync(lockPath, changed);
+    expect(population(enumerate())).toEqual(expected.filter(path => path !== join(integration, dirs[0], 'node_modules')));
+    // Malformed enclosing custody keeps the tree visible; it cannot authorize omission.
+    writeFileSync(lockPath, '{broken');
+    expect(population(enumerate())).toHaveLength(98);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it.each(['full', 'selected'])('EI-27267673632472358: propagates install filter failure (%s)', mode => {
+    const integration = makeIntegration();
+    const wrapper = join(integration, '.failed-node');
+    writeFileSync(wrapper, '#!/bin/bash\nexit 17\n');
+    chmodSync(wrapper, 0o755);
+    const result = spawnSync('bash', ['-c', [
+      'source "$SCRIPT"', `DEPENDENCY_GENERATION_SCOPE_MODE=${mode}`,
+      'DEPENDENCY_GENERATION_WORKSPACE_DIRS=(packages/a)',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+    ].join('\n')], { encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration,
+      DEPENDENCY_GENERATION_NODE: wrapper } });
+    expect(result.status).toBe(17);
+    expect(result.stdout).toBe('');
+  });
+
   it('WI-6554700010018380: an ignored install-generated lockfile is not a live input, so the live key still matches the exact ref', () => {
     const integration = makeIntegration();
     commitFixture(integration, 'seed source repository');

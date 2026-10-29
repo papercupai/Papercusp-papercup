@@ -237,7 +237,7 @@ describe('ptool HTTP request correlation', () => {
 
   it('sends distinct server trace IDs across discovery retries while preserving the request and response', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const response = new Response('private-response');
+    const response = new Response('private-response', { status: 401 });
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response);
     const send = createPtoolHttpTraceFetch(trace, { fetchImpl });
     const signal = new AbortController().signal;
@@ -257,9 +257,15 @@ describe('ptool HTTP request correlation', () => {
       expect(new Set(ids).size).toBe(2);
       for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
       const events = log.mock.calls.map(([line]) => JSON.parse(String(line).replace('ptool: connection trace ', '')));
-      expect(events.map(event => event.requestTraceId)).toEqual(ids);
-      for (const event of events) expect(event).toMatchObject({ ...trace, event: 'http-request-start',
+      const starts = events.filter(event => event.event === 'http-request-start');
+      const responses = events.filter(event => event.event === 'phase-complete');
+      expect(starts.map(event => event.requestTraceId)).toEqual(ids);
+      expect(responses.map(event => event.requestTraceId)).toEqual(ids);
+      for (const event of [...starts, ...responses]) expect(event).toMatchObject({ ...trace,
         route: { host: '127.0.0.1', port: 3271 } });
+      expect(responses).toEqual(expect.arrayContaining([
+        expect.objectContaining({ stage: 'http-response-headers', httpStatus: 401 }),
+      ]));
       expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-|old-request/);
       expect(init.headers['x-papercusp-mcp-trace-id']).toBe('old-request');
     } finally { log.mockRestore(); }
@@ -281,15 +287,33 @@ describe('ptool HTTP request correlation', () => {
       await vi.advanceTimersByTimeAsync(PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS);
       const headers = new Headers(fetchImpl.mock.calls[0][1]?.headers);
       expect(headers.get('authorization')).toBe('Bearer private-token');
-      const events = log.mock.calls.map(([line]) => JSON.parse(String(line).replace('ptool: connection trace ', '')));
-      expect(events).toHaveLength(2);
-      expect(events[1]).toMatchObject({ event: 'phase-pending', stage: 'http-response-headers',
+      const pendingEvents = log.mock.calls.map(([line]) => JSON.parse(String(line).replace('ptool: connection trace ', '')));
+      expect(pendingEvents).toHaveLength(2);
+      expect(pendingEvents[1]).toMatchObject({ event: 'phase-pending', stage: 'http-response-headers',
         requestTraceId: headers.get('x-papercusp-mcp-trace-id') });
       reject(failure);
       await rejected;
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line).replace('ptool: connection trace ', '')));
+      expect(events).toHaveLength(3);
+      expect(events[2]).toMatchObject({ event: 'phase-attempt-failed', stage: 'http-response-headers',
+        requestTraceId: headers.get('x-papercusp-mcp-trace-id') });
       expect(vi.getTimerCount()).toBe(0);
       expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-/);
     } finally { log.mockRestore(); vi.useRealTimers(); }
+  });
+
+  it('records a fast transport failure class without exposing its error text', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failure = new Error('fetch failed: private socket details');
+    const send = createPtoolHttpTraceFetch(trace, { fetchImpl: vi.fn<typeof fetch>().mockRejectedValue(failure) });
+    try {
+      await expect(send('http://127.0.0.1:3271/api/mcp')).rejects.toBe(failure);
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line).replace('ptool: connection trace ', '')));
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({ event: 'phase-attempt-failed', stage: 'http-response-headers',
+        failureKind: 'transport', requestTraceId: events[0].requestTraceId });
+      expect(JSON.stringify(events)).not.toContain(failure.message);
+    } finally { log.mockRestore(); }
   });
 });
 

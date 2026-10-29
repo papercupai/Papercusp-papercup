@@ -259,7 +259,7 @@ export async function recordEditAttribution(
       // Peers are scoped by the row's harness, else the editor's presence pot.
       const interfaceCapture = import('./code-intelligence/edit-interface-capture')
         .then(({ fillInterfaceEligibility }) => fillInterfaceEligibility(inserted, {
-          repoRoot: input.repoRoot, workspaceId: input.workspaceId ?? null, harnessSlug,
+          repoRoot: input.repoRoot, workspaceId: input.workspaceId ?? null, rowHarnessSlug: harnessSlug,
           scopeHarness: harnessSlug ?? presence?.potSlug ?? null, agentId: input.agentId,
         }, sql))
         .catch(() => 0);

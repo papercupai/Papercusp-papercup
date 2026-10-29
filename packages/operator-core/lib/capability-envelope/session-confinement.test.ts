@@ -8,6 +8,7 @@ import {
   directedImplementerConfinement,
   evaluateSessionConfinement,
   toDenyMatchKey,
+  validProductReadBoundary,
   type SessionToolConfinement,
 } from './session-confinement';
 
@@ -18,6 +19,30 @@ const CONFINEMENT: SessionToolConfinement = directedImplementerConfinement({
 
 const evaluate = (toolName: string) =>
   evaluateSessionConfinement({ toolName, confinement: CONFINEMENT });
+
+describe('session confinement — exact product test path families', () => {
+  const base = {
+    harness: 'papercusp',
+    docsHarness: 'engineering',
+    docsSlugs: ['agent-insights/product-guide'],
+  };
+
+  it.each([
+    ['Playwright spec', 'apps/operator/e2e/remote-access-setup.spec.ts'],
+    ['unit test', 'packages/operator-core/lib/capability-envelope/session-confinement.test.ts'],
+  ])('accepts an exact nominated %s path', (_label, testFile) => {
+    expect(validProductReadBoundary({ ...base, testFiles: [testFile] })).toBe(true);
+  });
+
+  it.each([
+    ['product source', 'apps/operator/src/remote-access.tsx'],
+    ['plan artifact', 'plans/remote-access.md'],
+    ['path traversal', '../outside/remote-access.spec.ts'],
+    ['non-test fixture', 'apps/operator/e2e/remote-access.fixture.ts'],
+  ])('rejects a %s path from the test-file boundary', (_label, testFile) => {
+    expect(validProductReadBoundary({ ...base, testFiles: [testFile] })).toBe(false);
+  });
+});
 
 describe('session confinement — basic gate', () => {
   it('is inert for an unconfined session, and says so via applied:false', () => {

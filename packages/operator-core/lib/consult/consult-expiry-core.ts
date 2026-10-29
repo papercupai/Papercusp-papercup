@@ -113,13 +113,16 @@ export function currentUnjudgedFirstTurn(
     const answerer = typeof record.answeringOwnerId === 'string' ? record.answeringOwnerId : null;
     if (stampedAnsweringOwnerId !== null && answerer !== stampedAnsweringOwnerId) return null;
     const attempt = (record.attempts ?? []).find((a) => a?.outcome === 'dispatched');
-    const unjudged = attempt?.firstTurnUnjudged;
+    const unjudged = attempt?.answeringTurn ?? attempt?.firstTurnUnjudged;
     if (!unjudged) return null;
     const { agent, transcriptPath, kickoffAt } = unjudged;
     if ((agent !== 'claude' && agent !== 'codex') || typeof transcriptPath !== 'string' || !transcriptPath) return null;
     const kickoffMs = typeof kickoffAt === 'string' ? Date.parse(kickoffAt) : Number.NaN;
     if (!Number.isFinite(kickoffMs) || !Number.isFinite(nowMs)) return null;
-    if (nowMs - kickoffMs > FIRST_TURN_REJUDGE_WINDOW_MS) return null;
+    // An interim reply can precede a terminal refusal by many minutes. The
+    // caller already limits this to the current, unexpired, unanswered slot.
+    // Keep the historical short window only for older first-turn probes.
+    if (!attempt?.answeringTurn && nowMs - kickoffMs > FIRST_TURN_REJUDGE_WINDOW_MS) return null;
     const launchLogPath = typeof attempt.launchLogPath === 'string' && attempt.launchLogPath.trim()
       ? attempt.launchLogPath
       : typeof unjudged.launchLogPath === 'string' && unjudged.launchLogPath.trim()
@@ -420,7 +423,8 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   // EI-27111739698817170: a provider refusal can land after the dispatcher's
   // first-turn window (a Codex convert's model_not_found arrived ~48s after
   // launch). Re-judge each non-due, unengaged slot whose current dispatch left
-  // its first turn unjudged; a rejection advances it now instead of after
+  // its first turn unjudged or retained an unanswered-turn pointer; a rejection
+  // advances it now instead of after
   // bounded pickup recovery (measured 13-27 min). A throw is not a rejection.
   const firstTurnRejections = new Map<string, string>();
   if (deps.rejudgeFirstTurn) {

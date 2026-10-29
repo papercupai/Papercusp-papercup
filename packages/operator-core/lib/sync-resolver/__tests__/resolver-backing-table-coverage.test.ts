@@ -54,6 +54,8 @@ import { describe, expect, it } from 'vitest';
 import { knownQueryNamesV2, getRegistryEntryV2 } from '../index';
 import { TABLE_TO_QUERY_NAMES } from '../table-to-query-names';
 import { OPERATOR_STATE_SYNC_NAMES } from '../../operator-state-pg';
+import { listDerivedReadProducers } from '../../derived-reads/registry';
+import '../../derived-reads/producers';
 
 /**
  * Declared (queryName, table) pairs that intentionally have NO table-driven invalidation, each with
@@ -510,6 +512,10 @@ function tableInvalidates(table: string, name: string): boolean {
   for (const t of TABLE_TO_QUERY_NAMES[table] ?? []) {
     if ((typeof t === 'string' ? t : t.name) === name) return true;
   }
+  // A derived-read CONSUMER is pushed by its producer's `alsoInvalidates` fan-out
+  // (derived-reads/registry.ts), read from the live registry rather than hand-listed.
+  if (table === 'harness_shared.derived_read_snapshots'
+    && listDerivedReadProducers().some((p) => p.alsoInvalidates?.includes(name))) return true;
   // OPERATOR_STATE_SYNC_NAMES is keyed by BARE table name; TABLE_TO_QUERY_NAMES by schema.table.
   const bare = table.includes('.') ? table.slice(table.indexOf('.') + 1) : table;
   const stateNames = (OPERATOR_STATE_SYNC_NAMES as Record<string, readonly string[] | undefined>)[bare];

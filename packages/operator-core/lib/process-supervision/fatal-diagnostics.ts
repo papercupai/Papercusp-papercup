@@ -91,19 +91,24 @@ export function installFatalDiagnostics(opts: FatalDiagnosticsOpts = {}): void {
     const report =
       opts.report ?? (process as unknown as { report?: FatalDiagnosticsOpts['report'] }).report;
     if (!report) return; // no diagnostic-report support on this Node build — best-effort
-    const directory = opts.directory ?? papercuspPath('crash-reports');
+    // A startup launcher may already have armed a non-fatal report signal.
+    // Replacing it removes Node's handler for that signal; the verifier's next
+    // diagnostic request can then terminate the very process being measured.
+    const signalAlreadyArmed = report.reportOnSignal === true && Boolean(report.signal);
+    const directory = opts.directory
+      ?? (signalAlreadyArmed && report.directory ? report.directory : papercuspPath('crash-reports'));
     if (!opts.report) {
       // Only touch the real filesystem when arming the real process.report.
       const mkdir = opts.mkdir ?? ((dir: string) => mkdirSync(dir, { recursive: true }));
       mkdir(directory);
     }
     report.directory = directory;
-    report.signal = 'SIGABRT';
+    if (!signalAlreadyArmed) report.signal = 'SIGABRT';
     report.reportOnSignal = true;
     report.reportOnFatalError = true;
     fatalDiagnosticsInstalled = true;
     (opts.log ?? ((m: string) => console.log(m)))(
-      `[host-recycle] fatal-diagnostics armed (WI-3849) — a native SIGABRT now writes a diagnostic report (native+JS stack, loaded modules) to ${directory} before the process dies`,
+      `[host-recycle] fatal-diagnostics armed (WI-3849) — ${report.signal} writes a diagnostic report (native+JS stack, loaded modules) to ${directory}; native fatal-error reporting enabled`,
     );
   } catch {
     // best-effort — arming diagnostics must never itself crash the host

@@ -585,7 +585,13 @@ function emitPtoolConnectionTrace(trace, event, extra = {}) {
   })}`);
 }
 
-export async function withPtoolConnectionPhaseTrace(trace, phase, route, operation) {
+export async function withPtoolConnectionPhaseTrace(
+  trace,
+  phase,
+  route,
+  operation,
+  { traceFastOutcome = false, completionFields } = {},
+) {
   const startedAtMs = Date.now();
   const phaseStartedAt = new Date(startedAtMs).toISOString();
   let pending = false;
@@ -600,23 +606,30 @@ export async function withPtoolConnectionPhaseTrace(trace, phase, route, operati
   }, PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS);
   try {
     const result = await operation();
-    if (pending) {
+    if (pending || traceFastOutcome) {
       // Catalog recovery returns { client, tools, error } so the caller can
       // retain the active transport for its scripted fallback. Resolving that
       // wrapper does not mean discovery succeeded; keep its returned error
       // visible without changing the recovery result or throwing it here.
       const catalogError = phase === 'tools-list' ? result?.error : null;
+      let resultFields = {};
+      try {
+        if (typeof completionFields === 'function') resultFields = completionFields(result) ?? {};
+      } catch {
+        // A diagnostic projection must never change the operation result.
+      }
       emitPtoolConnectionTrace(trace, catalogError ? 'phase-attempt-failed' : 'phase-complete', {
         stage: phase,
         route,
         phaseStartedAt,
         elapsedMs: Date.now() - startedAtMs,
         ...(catalogError ? { failureKind: classifyConnectFailure(catalogError) } : {}),
+        ...resultFields,
       });
     }
     return result;
   } catch (error) {
-    if (pending) {
+    if (pending || traceFastOutcome) {
       emitPtoolConnectionTrace(trace, 'phase-attempt-failed', {
         stage: phase,
         route,
@@ -647,7 +660,16 @@ export function createPtoolHttpTraceFetch(trace, { fetchImpl = globalThis.fetch 
     const route = describePtoolOperatorRoute(input instanceof Request ? input.url : String(input));
     emitPtoolConnectionTrace(requestTrace, 'http-request-start', { stage: 'http-response-headers', route });
     return withPtoolConnectionPhaseTrace(requestTrace, 'http-response-headers', route,
-      () => fetchImpl(input, { ...init, headers }));
+      () => fetchImpl(input, { ...init, headers }), {
+        // A slow tools/list can contain several fast HTTP errors before a
+        // successful retry. Record each response status and header latency so
+        // the outer discovery duration can be attributed to a request.
+        // Never record the response body or request headers.
+        traceFastOutcome: true,
+        completionFields: (response) => ({
+          httpStatus: Number.isInteger(response?.status) ? response.status : null,
+        }),
+      });
   };
 }
 

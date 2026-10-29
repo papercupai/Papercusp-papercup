@@ -62,6 +62,15 @@ export interface DerivedReadProducer<T = unknown> {
   /** 'workspace' ⇒ one snapshot per workspace; 'harness' ⇒ one per harness. */
   scope: 'workspace' | 'harness';
   /**
+   * OTHER sync queries that read this snapshot (beyond the query named `key`). A real
+   * payload change pushes `notifySyncInvalidate` for each of them too, so a consumer
+   * panel refreshes in the same tick as its producer. Without it the consumer only
+   * refreshes when one of its other backing tables moves.
+   * resolver-backing-table-coverage.test.ts derives its `derived_read_snapshots` pairs
+   * from this field.
+   */
+  alsoInvalidates?: readonly string[];
+  /**
    * Opt OUT of the default `precompute-derived-reads` sweep (EI-19457924854150358).
    * Such a producer runs ONLY when named explicitly in `refreshDerivedReads({ only })`.
    * By default that means its dedicated routine owns the fill and a read never warms
@@ -468,7 +477,10 @@ export async function refreshDerivedReads(ctx: {
       const changed = !refused && (!row || written[0]?.payload_md5 !== row.payload_md5);
       if (changed) {
         void trackDetached(import('../sync-sse'))
-          .then((m) => m.notifySyncInvalidate(producer.key))
+          .then((m) => {
+            m.notifySyncInvalidate(producer.key);
+            for (const consumer of producer.alsoInvalidates ?? []) m.notifySyncInvalidate(consumer);
+          })
           .catch(() => {});
       }
       outcomes.push({

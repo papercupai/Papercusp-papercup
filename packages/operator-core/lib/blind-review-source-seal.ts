@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { open, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
-import { moduleRepoRoot } from './module-repo-root';
+import { moduleRepoRoot } from '@papercusp/operator-core/lib/module-repo-root';
 
 const helper = join(moduleRepoRoot(import.meta.url), 'scripts/lib/blind-review-sealed-source.py');
 

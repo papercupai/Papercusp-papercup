@@ -8620,11 +8620,18 @@ async function runGitSyncPass(
           log(`[git-sync] ${repo}: early superproject commit deferred because generated declaration repair is blocked — pointer-bump will retry`);
         } else {
           const earlyMigrationPaths = migrationPaths(await dirtyFiles(runGitForTiming, repo));
+          // A root source with edit attribution is not "ordinary" early work: it may
+          // depend on a child gitlink or be covered by the child's migration fence.
+          // Leave it dirty until child sync succeeds and the final pointer-bump pass
+          // can enforce those cross-repo ordering and reservation checks.
+          const earlyAttribution = attributionMapForRepo(roster, '', repo);
+          const earlyAttributedPaths = [...earlyAttribution.keys()];
           const earlyExcludedPaths = [...new Set([
             ...rootProtectedPaths,
             ...subPaths,
             ...nestedPotPaths,
             ...earlyMigrationPaths,
+            ...earlyAttributedPaths,
             ...(declarationRepair.status === 'deferred' ? declarationRepair.atomicPaths : []),
           ])];
           if (declarationRepair.status === 'deferred') {
@@ -8645,7 +8652,7 @@ async function runGitSyncPass(
                 : [],
             protectedHoldings: rootProtectedHoldings,
             refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.('', subPaths),
-            attribution: attributionMapForRepo(roster, '', repo),
+            attribution: earlyAttribution,
             onAttribution,
             forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
             yieldIfRequested: yieldEarlySuperproject,

@@ -1,5 +1,8 @@
 /** Regression tests for the shared OS-level port availability probe. */
 import { createServer } from 'node:net';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { portAvailable, portAvailableSync } from './port-availability';
 
@@ -35,6 +38,30 @@ afterEach(async () => {
 });
 
 describe('portAvailable', () => {
+  it.each([
+    { stage: 'preload', phase: 'not-started' },
+    { stage: 'net-import', phase: 'started' },
+  ])('retains the last measured phase when the child stalls during $stage', async ({ stage, phase }) => {
+    const port = await freePort();
+    const directory = mkdtempSync(join(tmpdir(), 'port-probe-stall-'));
+    const preload = join(directory, 'stall.cjs');
+    const stall = 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,30000);';
+    writeFileSync(preload, stage === 'preload' ? stall : [
+      "const Module=require('node:module');const load=Module._load;",
+      "Module._load=function(request,...args){if(request==='node:net'){",
+      stall,
+      '}return load.call(this,request,...args);};',
+    ].join(''));
+    vi.stubEnv('NODE_OPTIONS', `${process.env.NODE_OPTIONS ?? ''} --require=${preload}`);
+    try {
+      expect(() => portAvailableSync(port, '127.0.0.1')).toThrow(
+        new RegExp(`code=ETIMEDOUT .*phase=${phase}\\b`),
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it('reports a failed probe subprocess instead of claiming a free port is occupied', async () => {
     const port = await freePort();
     vi.stubEnv('NODE_OPTIONS', '--require=/papercusp-missing-port-probe-preload.cjs');

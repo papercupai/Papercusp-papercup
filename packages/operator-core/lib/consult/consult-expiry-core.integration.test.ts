@@ -1662,6 +1662,7 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
     kickoffAt: string;
     answeringOwnerId?: string;
     launchLogPath?: string;
+    afterInterimReply?: boolean;
   }) {
     const record = {
       at: opts.kickoffAt,
@@ -1677,7 +1678,9 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
       attempts: [{
         rank: 3, agent: 'codex', model: 'sol', operation: 'convert', outcome: 'dispatched', detail: 'dispatched',
         ...(opts.launchLogPath ? { launchLogPath: opts.launchLogPath } : {}),
-        firstTurnUnjudged: { agent: 'codex', transcriptPath: opts.transcriptPath, kickoffAt: opts.kickoffAt },
+        [opts.afterInterimReply ? 'answeringTurn' : 'firstTurnUnjudged']: {
+          agent: 'codex', transcriptPath: opts.transcriptPath, kickoffAt: opts.kickoffAt,
+        },
       }],
     };
     await rootSql`
@@ -1799,6 +1802,51 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
       { conversationId: rejected, reason: 'answer-first-turn-rejected', stopOutcome: 'stopped exact answering session', recorded: true },
     ]);
     expect(r.answerFailures.filter((f) => f.conversationId === quoted)).toEqual([]);
+  });
+
+  it('recovers a terminal account refusal after interim work beyond the first-turn window', async () => {
+    const id = await nonDue();
+    await recordDispatch(id, {
+      transcriptPath: rolloutFile(`interim-wall-${id}`, started,
+        { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [
+          { type: 'output_text', text: 'Reading the remaining contract.' },
+        ] } },
+        { type: 'event_msg', payload: { type: 'task_complete', error: {
+          message: 'You have hit your usage limit. Upgrade to Pro',
+        } } }),
+      kickoffAt: new Date(NOW.getTime() - FIRST_TURN_REJUDGE_WINDOW_MS - 60_000).toISOString(),
+      afterInterimReply: true,
+    });
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    deps.rejudgeFirstTurn = (u) => rejudgeFirstTurn(u);
+    const stops: string[] = [];
+    deps.stopAnsweringSession = async (target) => { stops.push(target.conversationId); return 'stopped'; };
+
+    await sweepExpiredConsults(deps);
+
+    expect(await cascadeRow(id)).toMatchObject({ responder_id: 'resp-2', cascade_cursor: 1 });
+    expect(stops).toContain(id);
+    expect(reachCalls.filter((c) => c.conversationId === id).map((c) => c.responder)).toEqual(['resp-2']);
+    expect(String((await attemptsOf(id)).at(-1)?.detail)).toContain('provider account rejection');
+  });
+
+  it('does not mistake healthy interim work or a quoted error for a terminal refusal', async () => {
+    const id = await nonDue();
+    await recordDispatch(id, {
+      transcriptPath: rolloutFile(`interim-healthy-${id}`, started,
+        { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [
+          { type: 'output_text', text: 'The request quotes API Error: Request rejected (429); review continues.' },
+        ] } }),
+      kickoffAt: new Date(NOW.getTime() - FIRST_TURN_REJUDGE_WINDOW_MS - 60_000).toISOString(),
+      afterInterimReply: true,
+    });
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    deps.rejudgeFirstTurn = (u) => rejudgeFirstTurn(u);
+
+    await sweepExpiredConsults(deps);
+
+    expect(await cascadeRow(id)).toMatchObject({ responder_id: 'resp-1', cascade_cursor: 0 });
+    expect(reachCalls.filter((c) => c.conversationId === id)).toEqual([]);
   });
 
   it('does not re-judge past the re-judge window, a walk for a different stamped answerer, or an engaged consult', async () => {

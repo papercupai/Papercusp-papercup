@@ -16,6 +16,7 @@ vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstan
 
 const rubricsMocks = vi.hoisted(() => ({
   amendRubric: vi.fn(),
+  autoRatifyRubricOnFirstScorecard: vi.fn().mockResolvedValue(null),
   previewAcceptanceBarAmendment: vi.fn(),
   rubricCompleteness: vi.fn(),
   getRubric: vi.fn(),
@@ -111,6 +112,7 @@ vi.mock('../../work-items', async (importOriginal) => ({
 vi.mock('../../rubrics', () => ({
   AMENDABLE_CRITERION_FIELDS: ['title', 'model', 'method', 'driftMarkers', 'replication'],
   amendRubric: rubricsMocks.amendRubric,
+  autoRatifyRubricOnFirstScorecard: rubricsMocks.autoRatifyRubricOnFirstScorecard,
   previewAcceptanceBarAmendment: rubricsMocks.previewAcceptanceBarAmendment,
   rubricCompleteness: rubricsMocks.rubricCompleteness,
   getRubric: rubricsMocks.getRubric,
@@ -1144,7 +1146,7 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
       next: expect.stringContaining('workspace expert model allowlist'),
     });
     expect(JSON.stringify(z.toJSONSchema(amendTool.args as never))).toContain(
-      'workspace expert-model allowlist entry',
+      'workspace expert-model allowlist',
     );
 
     const unrelated = new Error('unexpected review failure');

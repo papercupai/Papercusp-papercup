@@ -129,7 +129,7 @@ export function validProductReadBoundary(value: unknown): value is ProductReadBo
     scope(row.harness) && scope(row.docsHarness) &&
     Array.isArray(row.docsSlugs) && row.docsSlugs.length <= 10 && row.docsSlugs.every(path) &&
     Array.isArray(row.testFiles) && row.testFiles.length <= 20 &&
-    row.testFiles.every(p => path(p) && /\.test\.[mc]?[jt]sx?$/.test(p));
+    row.testFiles.every(p => path(p) && /\.(?:test|spec)\.[mc]?[jt]sx?$/.test(p));
 }
 
 function withinProductReadBoundary(tool: string, args: unknown, boundary: ProductReadBoundary): boolean {

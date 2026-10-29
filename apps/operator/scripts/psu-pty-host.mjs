@@ -5651,7 +5651,7 @@ export function makeCarryRearmController({
   //
   // Defaulting to null preserves the existing unit callers that construct this
   // controller with `recycle` alone.
-  performDelivery = /** @type {null | ((message: any, ctx: {drillId: string, mode: string, key: string}) => Promise<{delivered: boolean, reason?: string, retryable?: boolean} | void>)} */ (null),
+  performDelivery = /** @type {null | ((message: any, ctx: {drillId: string, mode: string, key: string, getDeliveryIds: () => string[]}) => Promise<{delivered: boolean, reason?: string, retryable?: boolean, deliveryIds?: string[], handledMsgIds?: string[]} | void>)} */ (null),
   emitEvent, // (kind, extra) => void — writes BOTH the per-owner host log + shared ledger
   capMs = TURN_INJECT_BUSY_CAP_MS * 2,
   maxProductionAttempts = Number.POSITIVE_INFINITY,
@@ -5852,6 +5852,9 @@ export function makeCarryRearmController({
     beginFirstAttempt(msg) {
       if (disposed) return;
       inFlight.add(msg);
+      if (rearmModeOf(msg) === 'carry-respawn' && !msg?.drillId) {
+        emitEvent('respawn-carry-accepted', { mode: 'carry-respawn', capMs });
+      }
     },
     /** EI-18681914950138372: call exactly once, when that first attempt has
      *  fully concluded (delivered, dropped, errored, or handed off to
@@ -6116,7 +6119,7 @@ export function makeCarryRearmController({
                   return;
                 }
                 const result = performDelivery
-                  ? await performDelivery(deliver, { drillId, mode, key })
+                ? await performDelivery(deliver, { drillId, mode, key, getDeliveryIds: settledIds })
                   : await recycle(deliver.data, {
                     systemPromptAddendum: deliver.systemPromptAddendum ?? '',
                     drillId,
@@ -14571,7 +14574,7 @@ export function hostThroughPty(o) {
     // P-005 / D-004: dispatch a re-armed delivery by mode. Only the modes with
     // a verified single-call delivery primitive are registered; anything else
     // must fall through to the recycle default rather than be guessed at.
-    performDelivery: async (message, { drillId, mode }) => {
+    performDelivery: async (message, { drillId, mode, getDeliveryIds }) => {
       if (mode === 'turn') {
         // A deferred wake `turn` is re-INJECTED, never recycled — recycling
         // would kill the child and destroy the very turn being delivered.
@@ -14582,13 +14585,32 @@ export function hostThroughPty(o) {
           nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
         let nativeSubmission = null;
         let submittedTurn = null;
+        let cancellationCommit = null;
         const outcome = await injectTurnAtPrompt({
           text,
           label: 'turn re-arm',
           promptAlreadyVerified: true,
           terminateOnSubmitVerifyExhaustion: false,
           submitVerificationRequired: true,
-          validateBeforeWrite: () => rejectWakeProvenance(message, 'rearm-pre-write'),
+          validateBeforeWrite: () => {
+            const provenanceRejection = rejectWakeProvenance(message, 'rearm-pre-write');
+            if (provenanceRejection) return provenanceRejection;
+            // The first attempt's write loop checks this same dedup boundary,
+            // but a busy-gate re-arm bypasses that loop and writes through
+            // injectTurnAtPrompt. Re-check every ID the re-arm currently owns
+            // at its final synchronous pre-byte boundary so a cancellation
+            // accepted while the prompt was busy cannot be ignored.
+            const writeCommit = deliveryDedup.beginWrite(getDeliveryIds());
+            if (writeCommit.status !== 'cancelled') return null;
+            cancellationCommit = writeCommit;
+            appendHostEvent(ownerId, 'delivery-cancelled-before-write', {
+              deliveryIds: writeCommit.deliveryIds,
+              handledMsgIds: writeCommit.handledMsgIds,
+              bytesWritten: 0,
+              source: 'wake-rearm',
+            });
+            return 'cancelled-before-write';
+          },
           onSubmitted: (submission) => {
             submittedTurn = submission;
             if (nativeProofAvailable) nativeSubmission = { ...submission, marker, submissionOnly: true,
@@ -14610,6 +14632,14 @@ export function hostThroughPty(o) {
         // A submitted tagged wake can persist its native row after the bounded
         // verifier expires. Retain its exact write context for late proof;
         // neither this retry nor a later socket delivery may paste it again.
+        if (cancellationCommit) {
+          return {
+            delivered: false,
+            reason: 'cancelled-before-write',
+            deliveryIds: cancellationCommit.deliveryIds,
+            handledMsgIds: cancellationCommit.handledMsgIds,
+          };
+        }
         if (!outcome.delivered && nativeSubmission?.child === child) {
           return { ...outcome, reason: 'native-turn-start-unverified', nativeSubmission };
         }
@@ -14639,6 +14669,12 @@ export function hostThroughPty(o) {
         if (!deliveryId) continue;
         if (outcome?.delivered) {
           deliveryDedup.markCompleted(deliveryId);
+          nativeStartPending.delete(deliveryId);
+        } else if (
+          outcome?.reason === 'cancelled-before-write' &&
+          outcome.deliveryIds?.includes(String(deliveryId))
+        ) {
+          deliveryDedup.markCancelled(deliveryId, outcome.handledMsgIds);
           nativeStartPending.delete(deliveryId);
         } else if (outcome?.nativeSubmission?.child === child) {
           nativeStartPending.set(deliveryId, outcome.nativeSubmission);

@@ -20,7 +20,7 @@ const BODY_ONLY = BEFORE.replace('return n;', 'return n + 0;');
 const IMPORTER = "import { size } from '../lib/target.js';\nexport const x = size(1);\n";
 
 const ctx: InterfaceCaptureContext = {
-  repoRoot: ROOT, workspaceId: 'ws', harnessSlug: null, scopeHarness: 'papercusp', agentId: 'author',
+  repoRoot: ROOT, workspaceId: 'ws', rowHarnessSlug: null, scopeHarness: 'papercusp', agentId: 'author',
 };
 
 function enoent(): Error { return Object.assign(new Error('missing'), { code: 'ENOENT' }); }

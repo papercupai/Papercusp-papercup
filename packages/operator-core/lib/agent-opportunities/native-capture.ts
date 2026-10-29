@@ -10,7 +10,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { resolveMcpName } from '@papercusp/tooldef/tool-projection';
 import { canonicalJson } from '../external-bench/reproducibility/canonical-json';
 import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
-import { createNativeTranscriptReader, NATIVE_PROVIDERS, type NativeProvider } from './native-operation';
+import { createNativeTranscriptReader, nativeTimestampMicros as micros, NATIVE_PROVIDERS, type NativeProvider } from './native-operation';
 import type { SearchSource } from './search-reformulation';
 import { decodeOperatorSecretKey } from '../operator-secret-key';
 import { z } from 'zod';
@@ -33,8 +33,6 @@ export interface NativeCaptureOptions {
   client?: Client; authorize: () => Promise<boolean>;
 }
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const micros = (value: string) => BigInt(Date.parse(value)) * 1000n
-  + BigInt(((/\.(\d+)/.exec(value)?.[1] ?? '').padEnd(6, '0').slice(3, 6)) || '0');
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const nativeDispatchReceipt = z.object({
   version: z.literal(1), provider: z.literal('codex'),

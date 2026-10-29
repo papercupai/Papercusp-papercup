@@ -11,6 +11,7 @@ import { PosthogSpanExporter } from './posthog-exporter';
 import { measureBootOperatorArtifact, type OperatorArtifactIdentity,
   type OperatorArtifactParentExpectation } from '../release/operator-artifact';
 import { getBuildInfo } from '../build-info';
+import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
 
 type DispatchStart = Parameters<NonNullable<DispatchProjectedDeps['onDispatchStart']>>[0];
 type InvokeRequest = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
@@ -136,7 +137,9 @@ export function runToolTrace(request: InvokeRequest, invoke: () => ReturnType<In
   const receipts: ExecutionBoundaryReceipt[] = [];
   if (state.boundaryReceipts.size < 1024) state.boundaryReceipts.set(request.callId, receipts);
   return state.runtime.run(request.callId, () => state.boundaryContext.run({ callId: request.callId,
-    workspaceId: request.ctx.workspaceId ?? '', harness: request.ctx.harnessSlug ?? '',
+    // A receipt's harness is an identity: the operator `'*'` scope is not one, so it stays ''
+    // (receipt validation then rejects it, exactly as the consumer's scope check did for '*').
+    workspaceId: request.ctx.workspaceId ?? '', harness: resolveConcreteHarnessSlug(undefined, request.ctx) ?? '',
     tool: request.toolName, receipts }, invoke));
 }
 

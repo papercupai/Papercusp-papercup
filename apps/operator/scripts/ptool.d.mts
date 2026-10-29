@@ -134,7 +134,9 @@ export function ptoolConnectionRetryOptions(args?: {}, env?: NodeJS.ProcessEnv):
     maxAttempts: number;
     totalTimeoutMs?: undefined;
 };
-export function withPtoolConnectionPhaseTrace(trace: any, phase: any, route: any, operation: any): Promise<any>;
+export function withPtoolConnectionPhaseTrace(trace: any, phase: any, route: any, operation: any, { traceFastOutcome, completionFields }?: {
+    traceFastOutcome?: boolean | undefined;
+}): Promise<any>;
 /**
  * Correlate each direct HTTP request with the operator's existing MCP trace.
  * @returns {typeof fetch}

@@ -181,8 +181,10 @@ export async function readEditTimePeers(input: PeerEvidenceInput, deps: PeerEvid
 export interface InterfaceCaptureContext {
   repoRoot: string;
   workspaceId: string | null;
-  /** The ledger rows' own harness_slug (may be NULL): part of the journal identity. */
-  harnessSlug: string | null;
+  /** The ledger rows' own stored harness_slug (may be NULL): part of the journal identity,
+   * matched verbatim (IS NOT DISTINCT FROM). Deliberately NOT named `harnessSlug`: it is a
+   * stored row value, not a tool ctx's scope, so it must never pass through the `'*'` resolver. */
+  rowHarnessSlug: string | null;
   /** The harness peers are scoped by: the row's harness, else the editor's presence pot. */
   scopeHarness: string | null;
   agentId: string;
@@ -230,7 +232,7 @@ export async function fillInterfaceEligibility(rows: readonly { id: string; file
       if (!/^[1-9][0-9]*$/.test(row.id)) continue;
       const observation = await captureEditInterface(ctx, row.file, deps);
       if (!observation) continue;
-      if (await persist({ id: row.id, workspace, harness: ctx.harnessSlug, owner: ctx.agentId,
+      if (await persist({ id: row.id, workspace, harness: ctx.rowHarnessSlug, owner: ctx.agentId,
         repoRoot: ctx.repoRoot, file: row.file }, observation)) filled++;
     } catch {
       // best-effort: an unmeasured row stays unobserved, never wrong.

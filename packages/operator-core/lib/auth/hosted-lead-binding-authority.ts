@@ -5,8 +5,8 @@
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
-import { parseHostedLeadBindingScope, type HostedLeadBindingScope } from './hosted-lead-binding';
-import type { HostedLeadBindingAuthority, HostedLeadBindingStorage } from './hosted-lead-binding-service';
+import { HostedLeadBindingChallengeCodec, parseHostedLeadBindingScope, type HostedLeadBindingScope } from './hosted-lead-binding';
+import { HostedLeadBindingService, type HostedLeadBindingAuthority, type HostedLeadBindingStorage } from './hosted-lead-binding-service';
 import { PostgresHostedLeadBindingStore } from './hosted-lead-binding-postgres';
 
 /** Only a server-resolved opaque operator cookie may be supplied here. */
@@ -69,4 +69,16 @@ export class PostgresHostedLeadBindingAuthority implements HostedLeadBindingAuth
     operation: (store?: HostedLeadBindingStorage) => Promise<T>): Promise<T | null> {
     return this.authorize(scope, null, operation);
   }
+}
+
+/** Both operator issuance and hosted redemption must use this same host
+ * configuration and database. A raw request supplies none of these values. */
+export function createPostgresHostedLeadBindingService(config: {
+  graphWorkspaceId: string; environment: HostedLeadBindingScope['environment'];
+  secret: string | Uint8Array; runAuthority?: LeadBindingAuthorityRunner;
+}): HostedLeadBindingService {
+  const unbound = async (): Promise<never> => { throw new Error('lead_binding_transaction_required'); };
+  return new HostedLeadBindingService(new HostedLeadBindingChallengeCodec(config.secret),
+    { issue: unbound, redeem: unbound, read: unbound, revoke: unbound },
+    new PostgresHostedLeadBindingAuthority(config.graphWorkspaceId, config.runAuthority), config.environment);
 }

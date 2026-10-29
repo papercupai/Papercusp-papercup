@@ -217,6 +217,10 @@ describe('turn-end held-work guard (WI-6554700010015550)', () => {
       deps: deps({ listParkedAwaits: async () => [inboxKeepalive, untimed] }),
     });
     expect(text).toContain('TURN-END REFUSED');
+    expect(text).toContain('no bounded wake is guaranteed after this turn');
+    expect(text).toContain('An unbounded event wait may still wake if its event arrives');
+    expect(text).toContain('Arm a bounded wake');
+    expect(text).not.toContain('nothing will wake you after this turn');
   });
 
   it('lets the turn end when a deliberate wake is already queued', async () => {

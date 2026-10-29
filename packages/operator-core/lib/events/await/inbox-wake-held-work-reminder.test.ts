@@ -83,6 +83,24 @@ describe('prepareInboxWakeHeldWorkReminder (WI-6554700010018536)', () => {
     expect(getLoopActive).not.toHaveBeenCalled();
   });
 
+  it('drops a held item released after wake queueing but before delivery', async () => {
+    let heldAtDelivery = [item('WI-RELEASED')];
+    const readHeldWorkItems = vi.fn(async () => heldAtDelivery);
+    const queuedWake = { ...base };
+
+    // The wake is queued while the claim is held, then the owner checkpoints and releases it.
+    heldAtDelivery = [];
+    const t = await prepareInboxWakeHeldWorkReminder({
+      ...queuedWake,
+      deps: withTenant({ readHeldWorkItems }),
+    });
+
+    expect(readHeldWorkItems).toHaveBeenCalledTimes(1);
+    expect(readHeldWorkItems).toHaveBeenCalledWith('su-x', 'ws-1');
+    expect(t).toBe('');
+    expect(t).not.toContain('WI-RELEASED');
+  });
+
   it('ignores non-autonomy modes', async () => {
     const t = await prepareInboxWakeHeldWorkReminder({
       ...base,

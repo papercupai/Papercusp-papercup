@@ -3165,6 +3165,137 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
   );
 
   it(
+    'cancels the complete coalesced busy-gate re-arm before its first PTY byte',
+    async () => {
+      const busyMs = 4_000;
+      const ownerId = uniqueOwner('CANCEL-REARM-COALESCED');
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = bridgedIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', busyThenIdleChildCode(busyMs, 50, 5_000)],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_IDLE_MS: '60',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        },
+        ownerId,
+        advSessionId: 35_095,
+        io,
+        bridgeTty: true,
+        onExit: (code: number) => {
+          exitCode = code;
+        },
+      });
+
+      try {
+        const host = await waitForHost(ownerId);
+        expect(host).not.toBeNull();
+        expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+
+        const first = {
+          mode: 'turn' as const,
+          ownerId,
+          deliveryId: 'cancel-rearm-a',
+          data: 'stale rearm A',
+        };
+        const second = {
+          ...first,
+          deliveryId: 'cancel-rearm-b',
+          data: 'stale rearm B',
+        };
+        expect(await injectIntoHostWithConfirmation(sock, first)).toMatchObject({
+          ok: true, confirmation: 'acked', reason: 'accepted',
+        });
+
+        const firstRearmDeadline = Date.now() + 3_000;
+        let events = '';
+        while (Date.now() < firstRearmDeadline) {
+          events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          if (events.includes('"kind":"wake-rearm-queued"')) break;
+          await sleep(20);
+        }
+        expect(events).toContain('"kind":"wake-rearm-queued"');
+
+        expect(await injectIntoHostWithConfirmation(sock, second)).toMatchObject({
+          ok: true, confirmation: 'acked', reason: 'accepted',
+        });
+
+        const secondRearmDeadline = Date.now() + 3_000;
+        while (Date.now() < secondRearmDeadline) {
+          events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          if (
+            events.includes('"deliveryId":"cancel-rearm-b"') &&
+            events.includes('"reason":"deferred-busy-gate"')
+          ) break;
+          await sleep(20);
+        }
+        expect(events).toContain('"deliveryId":"cancel-rearm-b"');
+        expect(events).toContain('"reason":"deferred-busy-gate"');
+
+        const cancellation = await injectIntoHostWithConfirmation(sock, {
+          ...first,
+          data: 'handled wake group',
+          cancelDeliveryIds: ['cancel-rearm-a', 'cancel-rearm-b'],
+          handledMsgIds: ['msg-a', 'msg-b'],
+        });
+        expect(cancellation).toMatchObject({
+          ok: true, confirmation: 'acked', reason: 'cancel-requested',
+        });
+
+        const cancellationDeadline = Date.now() + 8_000;
+        while (Date.now() < cancellationDeadline) {
+          events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          if (
+            events.includes('"kind":"delivery-cancelled-before-write"') &&
+            events.includes('"deliveryIds":["cancel-rearm-a","cancel-rearm-b"]')
+          ) break;
+          await sleep(20);
+        }
+        expect(events).toContain('"kind":"delivery-cancelled-before-write"');
+        expect(events).toContain('"deliveryIds":["cancel-rearm-a","cancel-rearm-b"]');
+        expect(events).toContain('"bytesWritten":0');
+        expect(captured()).not.toContain('ECHO:stale rearm A');
+        expect(captured()).not.toContain('ECHO:stale rearm B');
+
+        const duplicate = await injectIntoHostWithConfirmation(sock, first);
+        expect(duplicate).toMatchObject({
+          ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
+        });
+
+        const fresh = await injectIntoHostWithConfirmation(sock, {
+          mode: 'turn',
+          ownerId,
+          deliveryId: 'fresh-assignment-after-cancel',
+          data: 'genuinely new assignment',
+        });
+        expect(fresh).toMatchObject({ ok: true, confirmation: 'acked', reason: 'accepted' });
+        expect(await waitForOutput(captured, 'ECHO:genuinely new assignment', 6_000)).toBe(true);
+        expect((captured().match(/ECHO:genuinely new assignment/g) ?? []).length).toBe(1);
+      } finally {
+        await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+        await done;
+        rmSync(meta, { force: true });
+      }
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+    },
+    20_000,
+  );
+
+  it(
     'a DIFFERENT deliveryId with the SAME text is a genuinely new delivery — not deduped',
     async () => {
       // Guards against an over-broad fix: dedup must key off the delivery ID, never

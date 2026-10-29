@@ -156,6 +156,31 @@ it.each([
   expect(page.coverage.complete).toBe(false);
 });
 
+it.each([
+  ['before-start', '2026-10-24T12:00:00.000000Z', false],
+  ['at-start', '2026-10-24T12:00:00.000001Z', true],
+  ['before-end', '2026-10-24T12:00:01.000000Z', true],
+  ['at-end', '2026-10-24T12:00:01.000001Z', false],
+] as const)('D030 microsecond event boundary %s is independent of receipt time', async (_boundary, at, admitted) => {
+  const id = await seed({ at: '2026-10-24T12:00:00.500000Z' });
+  transcripts.get(id)!.at = at;
+  const page = await fetchNativeOperations(opts({ since: '2026-10-24T12:00:00.000001Z',
+    until: '2026-10-24T12:00:01.000001Z' }));
+  expect(page.coverage.scanned).toBe(1);
+  expect(page.observations.filter(o => o.resultAvailable)).toHaveLength(admitted ? 1 : 0);
+  expect(page.coverage.incomplete).toBe(admitted ? 0 : 1);
+});
+
+it('D030 accepts a positive microsecond window within one millisecond', async () => {
+  const id = await seed({ at: '2026-10-24T12:00:00.000002Z' });
+  transcripts.get(id)!.at = '2026-10-24T12:00:00.000001Z';
+  const page = await fetchNativeOperations(opts({ since: '2026-10-24T12:00:00.000001Z',
+    until: '2026-10-24T12:00:00.000003Z' }));
+  expect(page.coverage.scanned).toBe(1);
+  expect(page.observations.filter(o => o.resultAvailable)).toHaveLength(1);
+  expect(page.coverage.incomplete).toBe(0);
+});
+
 it('R25-PASSIVE', async () => {
   const path = `/tmp/native-mining-sentinel-${process.pid}-${Date.now()}`;
   await seed({ args: { cmd: `touch ${path}` } });

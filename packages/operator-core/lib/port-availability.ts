@@ -58,31 +58,45 @@ export function portAvailableSync(port: number, host: string): boolean {
   if (!Number.isInteger(port) || port < 0 || port > 65535) return false;
 
   const probe = [
+    'const started=Date.now();',
+    "const report=fields=>process.stdout.write(JSON.stringify({...fields,elapsedMs:Date.now()-started})+'\\n');",
+    "report({phase:'started'});",
     "const net=require('node:net');",
     'const server=net.createServer();',
-    "server.once('error',error=>{process.stdout.write(JSON.stringify({errorCode:error.code??'UNKNOWN'}));process.exitCode=1;});",
-    `server.listen(${port}, ${JSON.stringify(host)}, () => server.close(() => {process.stdout.write('available');}));`,
+    "server.once('error',error=>{report({phase:'bind-error',errorCode:error.code??'UNKNOWN'});process.exitCode=1;});",
+    "report({phase:'binding'});",
+    `server.listen(${port}, ${JSON.stringify(host)}, () => {report({phase:'listening'});server.close(() => report({phase:'closed'}));});`,
   ].join('');
+  const started = Date.now();
   const result = spawnSync(process.execPath, ['-e', probe], {
     encoding: 'utf8',
     timeout: 5_000,
     maxBuffer: 64 * 1024,
   });
-  if (result.status === 0 && result.stdout === 'available') return true;
+  let phase = 'not-started';
+  let childElapsedMs: number | undefined;
   let errorCode: string | undefined;
   try {
-    const report: unknown = JSON.parse(result.stdout ?? '');
-    if (report && typeof report === 'object' && 'errorCode' in report && typeof report.errorCode === 'string') {
-      errorCode = report.errorCode;
+    for (const line of (result.stdout ?? '').trim().split('\n').filter(Boolean)) {
+      const report: unknown = JSON.parse(line);
+      if (!report || typeof report !== 'object' || !('phase' in report) || typeof report.phase !== 'string') {
+        throw new Error('Invalid port probe phase report');
+      }
+      phase = report.phase;
+      if ('elapsedMs' in report && typeof report.elapsedMs === 'number') childElapsedMs = report.elapsedMs;
+      if ('errorCode' in report && typeof report.errorCode === 'string') errorCode = report.errorCode;
     }
   } catch {
-    // No probe report means the subprocess failed before measuring the bind.
+    // Corrupt/foreign output cannot certify a successful availability check.
+    phase = 'invalid-report';
   }
-  if (result.status === 1 && errorCode === 'EADDRINUSE') return false;
+  if (!result.error && result.status === 0 && phase === 'closed') return true;
+  if (!result.error && result.status === 1 && phase === 'bind-error' && errorCode === 'EADDRINUSE') return false;
   const spawnCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
   throw new Error(
     `Port availability probe failed for ${host}:${port}: ` +
       `code=${spawnCode ?? errorCode ?? 'unmeasured'} exit=${result.status} signal=${result.signal} ` +
+      `phase=${phase} elapsedMs=${Date.now() - started} childElapsedMs=${childElapsedMs ?? 'unmeasured'} ` +
       `stderrPresent=${Boolean(result.stderr)}`,
   );
 }

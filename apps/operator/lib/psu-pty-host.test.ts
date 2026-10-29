@@ -6917,6 +6917,11 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
     drillId: 'd-77',
     sessionClass: 'gateway-claude-headless',
   };
+  const PROD_MSG = {
+    mode: 'carry-respawn',
+    data: 'managed carry',
+    systemPromptAddendum: '## Identity\nownerId: su-prod',
+  };
 
   // Typed explicitly: an untyped `{ …destructure… } = {}` param infers its shape from
   // the DEFAULTED bindings only, so every new knob (maxDrillAttempts, a prompt
@@ -6981,6 +6986,18 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
     };
     return { controller, events, recycles, order, settle, releaseCount: () => releases };
   }
+
+  it('records initial production acceptance before the first rearm result, but excludes drills', () => {
+    const drill = makeHarness();
+    drill.controller.beginFirstAttempt(DRILL_MSG);
+    expect(drill.events).toEqual([]);
+
+    const production = makeHarness();
+    production.controller.beginFirstAttempt(PROD_MSG);
+    expect(production.events).toEqual([
+      { kind: 'respawn-carry-accepted', mode: 'carry-respawn', capMs: 1234 },
+    ]);
+  });
 
   it('queues one retry, emits the durable rearm-queued row, and recycles at the settled prompt', async () => {
     const h = makeHarness();
@@ -7419,11 +7436,17 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
 
     controller.beginFirstAttempt(message);
     expect(controller.pendingCount('carry-respawn')).toBe(1);
-    expect(events).toEqual([]); // exact incident window: accepted, not yet rearm-queued
+    expect(events).toEqual([
+      expect.objectContaining({ kind: 'respawn-carry-accepted', mode: 'carry-respawn' }),
+    ]); // accepted, not yet rearm-queued
 
     expect(controller.dispose('host-ending')).toBe(true);
     expect(controller.pendingCount()).toBe(0);
     expect(events).toEqual([
+      expect.objectContaining({
+        kind: 'respawn-carry-accepted',
+        mode: 'carry-respawn',
+      }),
       expect.objectContaining({
         kind: 'respawn-carry-dropped',
         reason: 'host-ending',
@@ -7438,7 +7461,7 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
     expect(controller.schedule(message)).toBe('closed');
     controller.endFirstAttempt(message);
     expect(controller.pendingCount()).toBe(0);
-    expect(events).toHaveLength(1);
+    expect(events).toHaveLength(2);
     expect(settlements).toHaveLength(1);
   });
 

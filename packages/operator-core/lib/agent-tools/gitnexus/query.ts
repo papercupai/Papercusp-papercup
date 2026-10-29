@@ -43,6 +43,7 @@ import { FIRST_PARTY_CALLERS_DEFAULT_LIMIT } from '../../code-intelligence/first
 import { firstPartyCallersOffthread } from '../../code-intelligence/first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from '../../code-intelligence/lsp-adapter';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { SERVING_RUNTIME_IDS } from '../../serving-runtimes';
 import { sourceRuntimeProvenance } from '../../code-intelligence/source-runtime-provenance';
 import { scopedContractQuery } from '../../code-intelligence/scoped-contracts';
@@ -243,7 +244,10 @@ export default defineTool({
     if (op === 'provenance') {
       const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;
       const harness = args.harnesses?.length === 1 ? args.harnesses[0] : undefined;
-      if (!workspaceId || !harness || !args.file_path || ctx.harnessSlug && harness !== ctx.harnessSlug)
+      // Only a CONCRETE caller harness confines the request; the operator `'*'` scope is not
+      // a slug, and comparing against it refused every harness for operator callers.
+      const callerHarness = resolveConcreteHarnessSlug(undefined, ctx);
+      if (!workspaceId || !harness || !args.file_path || (callerHarness !== null && harness !== callerHarness))
         return { data: { status: 'unknown', error: 'provenance requires file_path and one authorized harnesses entry.' } };
       return { data: await readSymbolProvenance({ workspaceId, harness, root: resolveAgentWorkspaceRoot(ctx),
         path: args.file_path, name: args.name }) };

@@ -86,10 +86,10 @@ export function turnEndHeldWorkStopText(f: TurnEndHeldWorkFacts): string {
       : `events:await { event, timeout_sec, on_timeout: 'wake' } for what you are waiting on`;
   return [
     `⛔ TURN-END REFUSED: you are in ${f.autonomyModes.join('+')} mode and hold ${ids.length} unfinished work-item(s) [${listed}], ` +
-      'and nothing will wake you after this turn (no armed loop, no timed await). Ending now strands that work: this is the silent halt.',
+      'and no bounded wake is guaranteed after this turn (no armed loop, no wake-on-timeout await). An unbounded event wait may still wake if its event arrives, but ending now can strand this work if it does not: this is the silent halt.',
     'Answering or reconciling a wake message does not finish your lane. Before you stop, do ONE of:',
     '  1. Take the next step you can take now on a held item.',
-    `  2. Arm a wake: loop:arm { intervalSec, goal }, or ${awaitHint}.`,
+    `  2. Arm a bounded wake: loop:arm { intervalSec, goal }, or ${awaitHint}.`,
     '  3. work_items:checkpoint, then work_items:release the items you cannot advance, so someone else can.',
     '  4. work_items:complete the items that are actually finished.',
   ].join('\n');

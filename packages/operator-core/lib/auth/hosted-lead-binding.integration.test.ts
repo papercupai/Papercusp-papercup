@@ -7,9 +7,8 @@ import { HostedSessionStore } from './hosted-session';
 import { PostgresHostedMembershipAuthority } from './hosted-membership-authority';
 import { createHostedPrincipal } from './hosted-principal';
 import { PostgresHostedLeadBindingStore } from './hosted-lead-binding-postgres';
-import { PostgresHostedLeadBindingAuthority, hostedLeadBindingIssuerRef } from './hosted-lead-binding-authority';
-import { HostedLeadBindingService } from './hosted-lead-binding-service';
-import { HostedLeadBindingChallengeCodec } from './hosted-lead-binding';
+import { PostgresHostedLeadBindingAuthority, hostedLeadBindingIssuerRef, createPostgresHostedLeadBindingService,
+  type LeadBindingAuthorityRunner } from './hosted-lead-binding-authority';
 
 let db: OrgTestDb;
 beforeAll(async () => {
@@ -17,6 +16,8 @@ beforeAll(async () => {
   const migration = await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1607-hosted-lead-binding-receipts.sql', import.meta.url), 'utf8');
   await db.adminSql.unsafe(migration);
   await db.adminSql.unsafe(migration);
+  const graphRegistry = await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1383-relationship-graph-datatypes.sql', import.meta.url), 'utf8');
+  await db.adminSql.unsafe(graphRegistry.replaceAll('papercusp-workspace', 'graph-a'));
 }, 180_000);
 afterAll(async () => { await db?.cleanup(); });
 
@@ -79,10 +80,11 @@ async function authorityFixture() {
       AND s.expires_at > clock_timestamp() AND u.is_active = true AND s.capabilities @> ARRAY['*']::text[]
       AND encode(sha256(convert_to(s.token, 'UTF8')), 'hex') = ${hostedLeadBindingIssuerRef(token).slice('operator-session:'.length)}`;
   expect(issuers, 'exact operator issuer guard').toHaveLength(1);
-  const authority = new PostgresHostedLeadBindingAuthority('graph-a', async (_workspace, fn) =>
-    await db.adminSql.begin(tx => fn(tx as unknown as Sql)) as Awaited<ReturnType<typeof fn>>);
-  const binding = new HostedLeadBindingService(new HostedLeadBindingChallengeCodec('a'.repeat(32)),
-    store, authority, 'production');
+  const runAuthority: LeadBindingAuthorityRunner = async (_workspace, fn) =>
+    await db.adminSql.begin(tx => fn(tx as unknown as Sql)) as Awaited<ReturnType<typeof fn>>;
+  const authority = new PostgresHostedLeadBindingAuthority('graph-a', runAuthority);
+  const binding = createPostgresHostedLeadBindingService({ graphWorkspaceId: 'graph-a', environment: 'production',
+    secret: 'a'.repeat(32), runAuthority });
   const scope = { graphWorkspaceId: 'graph-a', personRef, environment: 'production' as const };
   return { token, operatorId: operator!.id, authority, binding, scope, issuerRef: hostedLeadBindingIssuerRef(token) };
 }

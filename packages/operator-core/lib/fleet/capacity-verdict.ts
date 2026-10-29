@@ -213,7 +213,7 @@ export function deriveCapacityVerdict(input: {
     writer: OUTCOME_WRITER,
     means: outcomes
       ? `${describeRefusals(provider, outcomes)}`
-      : 'gateway refusals (shed + upstream 429) were not measured on this read',
+      : "the gateway's refusals (its own and upstream 429s) were not measured on this read",
   });
 
   // ── The POOL leg.

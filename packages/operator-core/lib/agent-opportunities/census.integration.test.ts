@@ -397,7 +397,7 @@ it('binds a qualifying SQL candidate to the exact source set and fails closed if
     diagnostics: { reviewEligible: false, candidates: [], reason: 'sql_mining_source_missing' } });
   expect(JSON.stringify(first.families[0])).not.toMatch(/private-one|su-private-agent/);
 });
-it('persists native candidate identities from bound provider transcripts and retains UNKNOWN without settled evidence', async () => {
+it('D030 native index candidates and supplied transcript paths cannot authorize production evidence', async () => {
   const session = randomUUID(), actor = 'su-native-private';
   await f.db.adminSql`INSERT INTO harness_shared.adv_sessions (workspace_id,mode,coord_owner_id,agent,session_id)
     VALUES ('sql-mining-test','console',${actor},'codex',${session})`;
@@ -415,53 +415,46 @@ it('persists native candidate identities from bound provider transcripts and ret
   }
   const path = join(dir, 'native.jsonl'); await writeFile(path, lines.map(l => JSON.stringify(l)).join('\n') + '\n');
   const opts = f.opts({ rowBudget: 1, timeBudgetMs: 30_000 });
+  let bodyReads = 0, continuity: 'complete' | 'gap' | 'unknown' = 'complete';
+  const deps = { locateTranscript: async () => { bodyReads++; return path; }, readContinuity: async () => continuity };
   const result = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }),
-    { locateTranscript: async () => path });
+    deps);
   const [row] = await f.db.adminSql`SELECT diagnostics FROM harness_shared.sql_intent_family_runs
     WHERE run_id=${result.runId}::uuid AND family='native-operation'`;
   expect(row!.diagnostics.candidates).toEqual([expect.objectContaining({
     id: expect.stringMatching(/^[a-f0-9]{64}$/), reviewEligible: false,
-    metrics: { logicalDemand: 2, successful: 2, unknown: 0 },
+    metrics: { logicalDemand: 2, successful: 0, unknown: 2 },
   })]);
-  expect(row!.diagnostics.candidates[0].sourceRefs).toHaveLength(4);
+  expect(row!.diagnostics.candidates[0].sourceRefs).toHaveLength(2);
   expect(row!.diagnostics.candidates[0].operationRefs).toHaveLength(2);
   expect(JSON.stringify(row)).not.toMatch(/private-path|private-call|su-native-private|native.jsonl/);
-  const read = (locateTranscript = async () => path) => readProductionMonitoredCandidate({ ...opts,
-    family: 'native-operation', runId: result.runId, candidateId: row!.diagnostics.candidates[0].id }, { locateTranscript });
-  const allowed = await read();
-  expect(allowed).toMatchObject({ metrics: { logicalDemand: 2, successful: 2 } });
-  // A trusted native capture receipt is a separate prerequisite from readable
-  // records. This test seam is NOT a production or deployed coverage receipt.
-  let continuity: 'complete' | 'gap' | 'unknown' = 'complete';
-  const deps = { locateTranscript: async () => path, readContinuity: async () => continuity };
-  const eligible = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }), deps);
-  const native = eligible.families.find(r => r.family === 'native-operation')!;
+  const read = () => readProductionMonitoredCandidate({ ...opts,
+    family: 'native-operation', runId: result.runId, candidateId: row!.diagnostics.candidates[0].id }, deps);
+  expect(await read()).toBeNull();
+  // A complete-looking retention reply cannot replace exact-call authority.
+  // Candidate-only path overrides must never trigger production body IO.
+  const native = result.families.find(r => r.family === 'native-operation')!;
   expect(native).toMatchObject({ coverage: 'UNKNOWN', diagnostics: { reviewEligible: false,
-    sourceCoverage: { incomplete: 0, windowExhausted: true },
+    sourceCoverage: { incomplete: 2, windowExhausted: true },
     candidates: [expect.objectContaining({ reviewEligible: false })] } });
-  expect((native.diagnostics.sourceCoverage as { matrix: { source: string; status: string }[] }).matrix
-    .filter(c => c.source === 'transcript' && c.status !== 'missing').every(c => c.status === 'measured')).toBe(true);
-  const eligibleRead = () => readProductionMonitoredCandidate({ ...opts, family: 'native-operation',
-    runId: eligible.runId, candidateId: row!.diagnostics.candidates[0].id }, deps);
-  expect(await eligibleRead()).toMatchObject({ reviewEligible: false });
-  continuity = 'gap'; expect(await eligibleRead()).toMatchObject({ reviewEligible: false });
-  continuity = 'complete'; expect(await eligibleRead()).toMatchObject({ reviewEligible: false });
-  // A copy's deletion/change revokes the entire old aggregate, even when another
-  // canonical activity copy remains. A fresh allowed read never uses an ACL cache.
+  const transcripts = (native.diagnostics.sourceCoverage as { matrix: { source: string; status: string }[] }).matrix
+    .filter(c => c.source === 'transcript');
+  expect(transcripts).toHaveLength(6); expect(transcripts.every(c => c.status === 'missing')).toBe(true);
+  continuity = 'gap'; expect(await read()).toBeNull();
+  continuity = 'unknown'; expect(await read()).toBeNull();
+  continuity = 'complete'; expect(await read()).toBeNull();
+  // Mutating or deleting an untrusted path cannot create a readable packet.
   const original = readFileSync(path);
   await writeFile(path, original.toString().replaceAll('private-path', 'changed-path'));
   expect(await read()).toBeNull();
-  await writeFile(path, original); expect(await read()).toEqual(allowed);
-  expect(await read(async () => {
-    await f.db.adminSql`UPDATE harness_shared.agent_activity SET harness_slug='other-harness'
-      WHERE owner_id=${actor}`;
-    return path;
-  })).toBeNull();
+  await writeFile(path, original); expect(await read()).toBeNull();
+  await f.db.adminSql`UPDATE harness_shared.agent_activity SET harness_slug='other-harness'
+    WHERE owner_id=${actor}`;
+  expect(await read()).toBeNull();
   await f.db.adminSql`UPDATE harness_shared.agent_activity SET harness_slug='mining-test' WHERE owner_id=${actor}`;
-  expect(await read()).toEqual(allowed);
+  expect(await read()).toBeNull();
   await rm(path);
   expect(await read()).toBeNull();
-  expect(await eligibleRead()).toBeNull();
   const lost = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }), deps);
   expect(lost.families.find(r => r.family === 'native-operation')).toMatchObject({ coverage: 'UNKNOWN',
     diagnostics: { reviewEligible: false, sourceCoverage: { incomplete: 2 } } });
@@ -472,6 +465,7 @@ it('persists native candidate identities from bound provider transcripts and ret
     candidates: [expect.objectContaining({ reviewEligible: false, metrics: { logicalDemand: 2, successful: 0, unknown: 2 } })] } });
   const evidence = (unknown.diagnostics.candidates as Array<{ sourceRefs: string[] }>)[0]!;
   expect(evidence.sourceRefs).toHaveLength(2);
+  expect(bodyReads).toBe(0);
 });
 
 it('R13-CONTRACT ledger continuity and current output completeness gate all three activity candidate families', async () => {
@@ -528,7 +522,7 @@ it('R13-CONTRACT ledger continuity and current output completeness gate all thre
     diagnostics: { reviewEligible: false, continuity: { before: 'gap', after: 'gap' } } });
 });
 
-it('native eligibility needs the full provider/kind population and loses eligibility with one missing transcript', async () => {
+it('D030 all six native provider/kind indexes stay UNKNOWN without independently authorized transcripts', async () => {
   const paths = new Map<string, string>();
   // Cross a decimal-width boundary: ORDER BY the id::text projection would
   // disagree with the numeric keyset predicate and silently omit whole cells.
@@ -559,9 +553,9 @@ it('native eligibility needs the full provider/kind population and loses eligibi
     const path = join(dir, `${session}.jsonl`); paths.set(provider, path);
     await writeFile(path, lines.map(l => JSON.stringify(l)).join('\n') + '\n');
   }
-  let continuity: 'complete' | 'gap' = 'complete';
+  let bodyReads = 0, continuity: 'complete' | 'gap' = 'complete';
   const deps: NonNullable<Parameters<typeof runMonitoredCensus>[2]> = {
-    locateTranscript: async ({ provider }) => paths.get(provider) ?? null,
+    locateTranscript: async ({ provider }) => { bodyReads++; return paths.get(provider) ?? null; },
     readContinuity: async ({ family }) => family === 'native-operation' ? continuity : 'unknown',
   };
   const opts = f.opts({ rowBudget: 2, timeBudgetMs: 30_000 });
@@ -569,16 +563,20 @@ it('native eligibility needs the full provider/kind population and loses eligibi
   expect(population!.count).toBe(12);
   const run = () => runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }), deps);
   const complete = await run(), native = complete.families.find(r => r.family === 'native-operation')!;
-  expect(native).toMatchObject({ coverage: 'measured', diagnostics: { reviewEligible: true, sourceCoverage: { incomplete: 0, pages: 6 } } });
+  expect(native).toMatchObject({ coverage: 'UNKNOWN', diagnostics: { reviewEligible: false, sourceCoverage: { incomplete: 12, pages: 6 } } });
   const candidates = native.diagnostics.candidates as { id: string; reviewEligible: boolean }[];
-  expect(candidates).toHaveLength(2); expect(candidates.every(c => c.reviewEligible)).toBe(true);
+  expect(candidates).toHaveLength(2); expect(candidates.every(c => !c.reviewEligible)).toBe(true);
+  const transcripts = (native.diagnostics.sourceCoverage as { matrix: { source: string; status: string }[] }).matrix
+    .filter(c => c.source === 'transcript');
+  expect(transcripts).toHaveLength(6); expect(transcripts.every(c => c.status === 'missing')).toBe(true);
   const read = () => readProductionMonitoredCandidate({ ...opts, family: 'native-operation',
     runId: complete.runId, candidateId: candidates[0]!.id }, deps);
-  expect(await read()).toMatchObject({ reviewEligible: true });
+  expect(await read()).toBeNull();
   continuity = 'gap'; expect(await read()).toBeNull(); continuity = 'complete';
   const path = paths.get('omp')!, original = readFileSync(path);
   await rm(path); expect(await read()).toBeNull();
   expect((await run()).families.find(r => r.family === 'native-operation')).toMatchObject({ coverage: 'UNKNOWN',
-    diagnostics: { reviewEligible: false, sourceCoverage: { incomplete: 4 } } });
-  await writeFile(path, original); expect(await read()).toMatchObject({ reviewEligible: true });
+    diagnostics: { reviewEligible: false, sourceCoverage: { incomplete: 12 } } });
+  await writeFile(path, original); expect(await read()).toBeNull();
+  expect(bodyReads).toBe(0);
 });

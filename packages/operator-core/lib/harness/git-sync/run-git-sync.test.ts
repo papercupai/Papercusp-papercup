@@ -185,7 +185,7 @@ describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
         path: 'schema-consumer.ts',
         reason: 'migration-dependency-fence',
         detail:
-          'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
+          'deferred because this path is attributed to the same agent as a reservation-blocked migration at ' +
           'libs/sub/libs/db/sql/999-unreserved-migration.sql',
         // WI-10006493: structured provenance, so dev:pipeline_position can name the blocker.
         blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
@@ -5909,9 +5909,8 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
       refreshLiveLockHoldings,
     });
 
-    // One pre-stage census per repo (subA, subB, superproject), post-stage census in the two
-    // repos that staged, and a post-pass release check for subA's only held dirty path.
-    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(6);
+    // The early root pass adds pre/post-stage censuses before the regular per-repo checks.
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(8);
     expect(out.status).toBe('synced');
     expect(out.skippedPaths).toContainEqual({
       scope: 'libs/subA',
@@ -5931,14 +5930,18 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
     writeFileSync(join(repo, 'libs/subA', 'subA-other.txt'), 'ordinary submodule work\n');
     const probeLock = { path: 'libs/subA/subA.txt', owner: 'su-probe', intent: 'mutation probe' };
     let mutated = false;
+    let refreshCall = 0;
     const refreshLiveLockHoldings = vi.fn(async () => {
-      if (!mutated) {
+      refreshCall += 1;
+      // Calls one and two are the superproject's early pre/post-stage checks;
+      // call three is subA's pre-stage census, the race seam this case exercises.
+      if (!mutated && refreshCall === 3) {
         // subA's pre-stage census has just read; the probe now locks and mutates.
         mutated = true;
         writeFileSync(join(repo, 'libs/subA', 'subA.txt'), 'MUTANT\n');
         return [];
       }
-      return [probeLock];
+      return mutated ? [probeLock] : [];
     });
     const logs: string[] = [];
 

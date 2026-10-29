@@ -1132,16 +1132,18 @@ trap 'handle_signal HUP' HUP
 select_verifier_snapshot_root() {
   local work_root="${TMPDIR:-/tmp}" donor_device work_device root_device data_root data_device
   local mode="${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}"
+  local platform donor_mount="" work_mount=""
   case "$mode" in
     hardlink|copy) ;;
     *) echo 'FATAL: VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE must be hardlink or copy' >&2; return 2 ;;
   esac
+  platform="$(uname -s)" || return 1
   if [ -f "$REPO_DIR/.verifier-source.json" ] && [[ "$work_root/" == "$REPO_DIR/"* ]]; then
     work_root="$(dirname "$REPO_DIR")"
   fi
   donor_device="$(stat -c %d -- "$REPO_DIR")" || return 1
   work_device="$(stat -c %d -- "$work_root")" || return 1
-  if [ "$(uname -s)" = Linux ]; then
+  if [ "$platform" = Linux ]; then
     root_device="$(stat -c %d -- /)" || return 1
     if [ "$donor_device" = "$root_device" ]; then
       if [ "${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE+x}" = x ] && [ "$mode" = hardlink ]; then
@@ -1167,8 +1169,28 @@ select_verifier_snapshot_root() {
       fi
     fi
   fi
+  if [ "$mode" = hardlink ] && [ "$platform" = Linux ]; then
+    command -v findmnt >/dev/null 2>&1 || {
+      echo 'FATAL: findmnt is required to verify hardlink snapshot mount identity' >&2
+      return 1
+    }
+    donor_mount="$(findmnt -n -o ID -T "$REPO_DIR" 2>/dev/null)" || {
+      echo "FATAL: could not identify dependency donor mount: $REPO_DIR" >&2
+      return 1
+    }
+    work_mount="$(findmnt -n -o ID -T "$work_root" 2>/dev/null)" || {
+      echo "FATAL: could not identify verifier snapshot mount: $work_root" >&2
+      return 1
+    }
+    if [ -z "$donor_mount" ] || [ -z "$work_mount" ]; then
+      echo 'FATAL: hardlink snapshot mount identity is unavailable' >&2
+      return 1
+    fi
+  fi
   if [ "$mode" = hardlink ]; then
-    if [ "$donor_device" != "$work_device" ]; then
+    if [ "$donor_device" != "$work_device" ] || {
+      [ "$platform" = Linux ] && [ "$donor_mount" != "$work_mount" ]
+    }; then
       if [ -f "$REPO_DIR/.verifier-source.json" ]; then
         work_root="$(dirname "$REPO_DIR")"
       else
@@ -1176,9 +1198,19 @@ select_verifier_snapshot_root() {
       fi
       mkdir -p -- "$work_root" || return 1
       work_device="$(stat -c %d -- "$work_root")" || return 1
+      if [ "$platform" = Linux ]; then
+        work_mount="$(findmnt -n -o ID -T "$work_root" 2>/dev/null)" || {
+          echo "FATAL: could not identify verifier snapshot mount: $work_root" >&2
+          return 1
+        }
+      fi
     fi
     if [ "$donor_device" != "$work_device" ]; then
       echo "FATAL: no verifier snapshot root on the dependency donor filesystem: $work_root" >&2
+      return 1
+    fi
+    if [ "$platform" = Linux ] && [ "$donor_mount" != "$work_mount" ]; then
+      echo "FATAL: no verifier snapshot root on the dependency donor mount: $work_root" >&2
       return 1
     fi
   fi
@@ -4549,7 +4581,7 @@ collect_operator_startup_diagnostic() {
   # PID reuse, an old attempt and a foreign host must never receive this signal.
   tr '\0' '\n' < "/proc/$node_pid/cmdline" 2>/dev/null |
     grep -Fxq -- "$OPERATOR_HOST_BUNDLE" || return 0
-  kill -USR2 "$node_pid" 2>/dev/null || return 0
+  kill -WINCH "$node_pid" 2>/dev/null || return 0
   OPERATOR_STARTUP_DIAGNOSTIC_COLLECTED=1
   log "requested credential-free Node startup report from owned pid=$node_pid; retained at $OPERATOR_STARTUP_DIAGNOSTIC_DIR"
 }
