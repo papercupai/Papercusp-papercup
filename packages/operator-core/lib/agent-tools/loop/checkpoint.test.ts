@@ -733,6 +733,26 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
       ).toBe('last-fire-parked');
     });
 
+    it('ignores a dropped wake dispatched before the current arm, even if it settled after re-arm', () => {
+      expect(classifyLoopNextWake(loop({
+        armedAt: '2026-08-25T04:00:00.000Z',
+        lastWakeStatus: 'dropped',
+        lastWakeError: 'standing inbox-wake await cancelled before delivery (WI-1062047)',
+        lastWakeCreatedAt: '2026-08-25T03:59:00.000Z',
+        lastWakeAt: '2026-08-25T04:01:00.000Z',
+      }))).toEqual({ guaranteed: true, reason: null });
+    });
+
+    it('still rejects an undeliverable wake dispatched in the current arm epoch', () => {
+      expect(classifyLoopNextWake(loop({
+        armedAt: '2026-08-25T04:00:00.000Z',
+        lastWakeStatus: 'dropped',
+        lastWakeError: 'standing inbox-wake await cancelled before delivery (WI-1062047)',
+        lastWakeCreatedAt: '2026-08-25T04:00:01.000Z',
+        lastWakeAt: '2026-08-25T04:00:02.000Z',
+      }))).toEqual({ guaranteed: false, reason: 'last-fire-parked' });
+    });
+
     it.each(['queued', 'loop-armed'])('EI-26768128228185632: %s cannot hide an exhausted dropped delivery', (lastDeliveryOutcome) => {
       expect(classifyLoopNextWake(loop({
         lastDeliveryOutcome,

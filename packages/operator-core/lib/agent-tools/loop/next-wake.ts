@@ -39,8 +39,9 @@
  * here: suppressed-redundant wakes can leave an overdue schedule and zero loop fires
  * while a real turn is actively settling.
  *
- * A fourth shape, P-013 / EI-24023838400909760: the loop's newest fire PARKED undelivered
- * (see {@link lastLoopFireParked}). A fifth: reconciliation confirmed a delivered wake
+ * A fourth shape, P-013 / EI-24023838400909760: the loop's newest fire in the current arm
+ * epoch PARKED undelivered (see {@link lastLoopFireParked}). A pre-arm delivery row is
+ * historical and cannot invalidate a newly scheduled arm. A fifth: reconciliation confirmed a delivered wake
  * produced no loop-origin turn and recorded that failure in lastDeliveryOutcome.
  */
 import type { LoopStatus } from '../../harness/routines/loop';
@@ -99,8 +100,22 @@ export type LoopNextWakeInput =
  * start, and a quota-recovery operation retry. Their reasons end "retry remains durable".
  */
 export function lastLoopFireParked(
-  loop: Partial<Pick<LoopStatus, 'lastWakeStatus' | 'lastWakeError'>> | null | undefined,
+  loop: Partial<
+    Pick<LoopStatus, 'armedAt' | 'lastWakeStatus' | 'lastWakeError' | 'lastWakeAt' | 'lastWakeCreatedAt'>
+  > | null | undefined,
 ): boolean {
+  // Wake history outlives loop:arm. Bind this failure to the current arm epoch;
+  // createdAt is the dispatch stamp, while deliveredAt may settle after a re-arm.
+  // Older status readers without createdAt can use lastWakeAt. If neither clock
+  // is available, keep the existing conservative classification.
+  const armedAtMs = loop?.armedAt == null ? Number.NaN : Date.parse(loop.armedAt);
+  const wakeCreatedAtMs = loop?.lastWakeCreatedAt == null ? Number.NaN : Date.parse(loop.lastWakeCreatedAt);
+  const wakeAtMs = loop?.lastWakeAt == null ? Number.NaN : Date.parse(loop.lastWakeAt);
+  const wakeEpochAtMs = Number.isFinite(wakeCreatedAtMs) ? wakeCreatedAtMs : wakeAtMs;
+  if (Number.isFinite(armedAtMs) && Number.isFinite(wakeEpochAtMs) && wakeEpochAtMs < armedAtMs) {
+    return false;
+  }
+
   // WI-6554700010030084: a drop that records the psu host had already accepted the delivery is a
   // cold reset whose own SessionEnd cancelled the old session's inbox wake — delivered by the
   // respawn, not stuck. Without this, every cold-wake turn read rewakeGuaranteed:false.
