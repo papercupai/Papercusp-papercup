@@ -40,7 +40,7 @@
  * picked (D-009 §B) — a control that echoes its own input is plan D-002's silent
  * no-op in a nicer costume.
  */
-import { fetchSyncQuery } from '@papercusp/sync';
+import { fetchBrowserSyncQuery as fetchSyncQuery } from '../hosted-browser-api';
 import {
   accountFromArgv,
   isGatewayFreeAccount,

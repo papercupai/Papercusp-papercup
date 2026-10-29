@@ -413,7 +413,7 @@ async function insertRows(sql, rows, worktree, testRunReporter) {
   const { harnessSlug, workspaceId } = resolveCargoTestRunScope();
   for (const row of rows) {
     // WI-10006849: a complete per-row record, or the strict contract parser discards it.
-    const executionDetails = buildCargoExecutionDetails({ ...row.execution, root: REPO_ROOT, filePath: row.filePath, harnessSlug, workspaceId, worktree });
+    const executionDetails = buildCargoExecutionDetails({ ...row.execution, root: REPO_ROOT, filePath: row.filePath, runStartedAt: row.startedAt.toISOString(), harnessSlug, workspaceId, worktree });
     // Reuse the Vitest descriptor contract, including the measured Cargo target
     // source hash. A binary aggregate has no single test file to fingerprint.
     const mutation = testRunReporter?.mutationDescriptorForRow?.(

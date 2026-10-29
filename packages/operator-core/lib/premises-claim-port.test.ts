@@ -71,6 +71,15 @@ describe('detectAbsencePremises', () => {
     expect(p.recheck).not.toMatch(/search|grep|whole repo/i);
   });
 
+  it('does not mistake a negative action disposition for a missing surface', () => {
+    expect(derive('The checkpoint records that no such action is being taken now.')).toEqual([]);
+    expect(derive('The note says no such action, not reassigning or executing it.')).toEqual([]);
+  });
+
+  it('still flags an actually missing action surface', () => {
+    expect(derive('There is no action handler for this queue entry.')).toHaveLength(1);
+  });
+
   it('preserves explicit committed-file containment scope (EI-26715154436743115)', () => {
     const [p] = derive(
       'In staging build516579404d, file packages/operator-core/lib/agent-tools/capability/launch-agent.ts is selected and it lacks startupReservation.',

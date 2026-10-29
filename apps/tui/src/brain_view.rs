@@ -894,6 +894,18 @@ mod tests {
             }
         }
 
+        async fn advance_until(&self, budget: Duration, condition: impl Fn() -> bool) {
+            // Observe the asynchronous EOF before assuming its retry timer was
+            // armed. Full-suite scheduling can deliver EOF after a single large
+            // advance; stepping bounds the recovery without that false premise.
+            let deadline = Instant::now() + budget;
+            while !condition() && Instant::now() < deadline {
+                time::advance(Duration::from_millis(10)).await;
+                self.settle().await;
+            }
+            self.wait_for(condition).await;
+        }
+
         async fn wait_for(&self, condition: impl Fn() -> bool) {
             for step in 0..100_000 {
                 if condition() {
@@ -993,9 +1005,7 @@ mod tests {
         f.settle().await;
         let before = f.count("/api/workspaces");
         f.wire.send("CLOSE".into()).unwrap();
-        f.settle().await;
-        time::advance(RETRY_INTERVAL).await;
-        f.wait_for(|| {
+        f.advance_until(Duration::from_secs(3), || {
             f.count("/api/zero-harness/sse") == 2 && f.count("/api/adv/roster?workspace=a") == 3
         })
         .await;

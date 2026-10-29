@@ -112,7 +112,7 @@ Surfaces whose `error` cell is not-applicable because a failed fetch leaves the 
 |---|---|---|---|---|---|---|
 | Wake | PaneOnly | pane-only — `pui wake-pane` (main.rs pinned subcommand) | `W` → Operator | Fleet | 110 | app.rs:9, main.rs:6, ui.rs:5, wake_board.rs:5 |
 | AgentCtx | PaneOnly | pane-only — `pui prompt-pane` \| `mail-pane` \| `work-pane` (main.rs pinned subcommand) | `X` → Operator | Fleet | 8 | agent_ctx.rs:1, app.rs:7, event.rs:1, main.rs:5, ui.rs:3 |
-| PlansBoard | PaneOnly | pane-only — `pui context-pane` \| `plans-pane` (main.rs pinned subcommand) | `B` → Operator | Fleet | 590 | app.rs:17, main.rs:4, ui.rs:1 |
+| PlansBoard | PaneOnly | pane-only — `pui context-pane` \| `plans-pane` (main.rs pinned subcommand) | `B` → Operator | Fleet | 590 | app.rs:17, main.rs:4, public_release_ux_tests.rs:2, ui.rs:1 |
 
 ## Findings
 

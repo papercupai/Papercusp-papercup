@@ -12,7 +12,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promptsDir } from './prompt-assembly.js';
@@ -713,8 +713,10 @@ describe('promptsDir — integration-tree prompt root', () => {
   beforeEach(() => {
     saved.PAPERCUSP_PROMPTS_DIR = process.env.PAPERCUSP_PROMPTS_DIR;
     saved.PAPERCUSP_INTEGRATION_ROOT = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    saved.PAPERCUSP_CANONICAL_TREE = process.env.PAPERCUSP_CANONICAL_TREE;
     delete process.env.PAPERCUSP_PROMPTS_DIR;
     delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    delete process.env.PAPERCUSP_CANONICAL_TREE;
   });
   afterEach(() => {
     for (const [k, v] of Object.entries(saved)) {
@@ -737,12 +739,35 @@ describe('promptsDir — integration-tree prompt root', () => {
     expect(promptsDir()).toBe(join(root, 'apps/operator/prompts'));
   });
 
-  it('PAPERCUSP_PROMPTS_DIR (explicit) still wins over the integration root', () => {
+  it('uses the canonical edit-tree prompt instead of an older serving-generation prompt', () => {
+    const canonicalRoot = mkIntegRoot(), servingRoot = mkIntegRoot();
+    for (const [root, text] of [[canonicalRoot, 'current canonical instructions'], [servingRoot, 'old frozen instructions']]) {
+      const directory = join(root, 'apps/operator/prompts/pot-instances');
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, 'papercup-pot.su.md'), text);
+    }
+    process.env.PAPERCUSP_CANONICAL_TREE = canonicalRoot;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = servingRoot;
+    expect(promptsDir()).toBe(join(canonicalRoot, 'apps/operator/prompts'));
+    expect(readFileSync(join(promptsDir(), 'pot-instances/papercup-pot.su.md'), 'utf8'))
+      .toBe('current canonical instructions');
+  });
+
+  it('does not substitute a serving-generation prompt when the configured canonical source is missing', () => {
+    const root = mkIntegRoot(), missingCanonicalRoot = join(root, 'unavailable');
+    process.env.PAPERCUSP_CANONICAL_TREE = missingCanonicalRoot;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = root;
+    expect(promptsDir()).toBe(join(missingCanonicalRoot, 'apps/operator/prompts'));
+    expect(existsSync(promptsDir())).toBe(false);
+  });
+
+  it('PAPERCUSP_PROMPTS_DIR (explicit) still wins over both canonical and integration roots', () => {
     const explicit = mkdtempSync(join(tmpdir(), 'papercusp-explicit-prompts-'));
     tmps.push(explicit);
     const root = mkIntegRoot();
     process.env.PAPERCUSP_PROMPTS_DIR = explicit;
     process.env.PAPERCUSP_INTEGRATION_ROOT = root;
+    process.env.PAPERCUSP_CANONICAL_TREE = mkIntegRoot();
     expect(promptsDir()).toBe(explicit);
   });
 

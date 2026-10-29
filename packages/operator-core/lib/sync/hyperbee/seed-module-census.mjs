@@ -1,6 +1,6 @@
 // D-178: load FIRST, before tsx or the census/producer entry. One process-local
 // module census, carried through the existing frozen execution binding.
-import { registerHooks } from 'node:module';
+import { createRequire, registerHooks } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
@@ -23,3 +23,8 @@ registerHooks({
     return result;
   },
 });
+
+// Storage loads this migration lazily on the first fresh replica. Include its
+// code in the tracked population before any frozen execution baseline; loading
+// the module does not run a migration or open a store. Keep later growth fatal.
+createRequire(import.meta.url)('hypercore-storage/migrations/0');

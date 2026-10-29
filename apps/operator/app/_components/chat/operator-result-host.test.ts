@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { fetchSyncQuery } from '@papercusp/sync';
 import type { ChatResultBlock } from '@papercusp/chat-protocol';
 import { createOperatorResultHost } from './operator-result-host';
@@ -15,12 +15,13 @@ function host() {
     authorizationKey: 'current', openReport, openWorkItem }), openReport, openWorkItem };
 }
 beforeEach(() => vi.mocked(fetchSyncQuery).mockReset().mockResolvedValue([report]));
+afterEach(() => vi.unstubAllGlobals());
 
 describe('operator structured result adapter', () => {
   it('uses current report content with exact reference provenance and no activation during resolution', async () => {
     const h = host();
     expect(await h.resolve(request())).toEqual({ ok: true, value: { ...block, title: report.title, text: report.body_md } });
-    expect(fetchSyncQuery).toHaveBeenCalledExactlyOnceWith({ queryName: 'reports.get', args: { reportId: 'r-one' }, staleTime: 0 });
+    expect(fetchSyncQuery).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ queryName: 'reports.get', args: { reportId: 'r-one' }, staleTime: 0 }));
     expect(h.openReport).not.toHaveBeenCalled();
   });
 
@@ -65,9 +66,21 @@ describe('operator structured result adapter', () => {
     vi.mocked(fetchSyncQuery).mockResolvedValue([{ id: 'WI-123', title: 'Current work', summary: 'Verified scope' }]);
     const h = host();
     expect(await h.resolve(request(task))).toEqual({ ok: true, value: { ...task, title: 'Current work', text: 'Verified scope' } });
-    expect(fetchSyncQuery).toHaveBeenCalledWith({ queryName: 'workItems.detail', args: { harnessSlug: 'papercusp', id: 'WI-123' }, staleTime: 0 });
+    expect(fetchSyncQuery).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'workItems.detail', args: { harnessSlug: 'papercusp', id: 'WI-123' }, staleTime: 0 }));
     await h.activate!({ resultId: task.id, actionId: 'open', kind: 'open', ref: 'wi:WI-123' }, request(task));
     expect(h.openWorkItem).toHaveBeenCalledExactlyOnceWith('WI-123');
     expect(h.openReport).not.toHaveBeenCalled();
+  });
+
+  it('routes report authorization reads to the machine selected at each invocation', async () => {
+    vi.stubGlobal('window', { location: { href: 'http://localhost/?ws=workspace-one&desktopHost=host-a' } });
+    const h = host();
+    await h.resolve(request());
+    window.location.href = 'http://localhost/?ws=workspace-one&desktopHost=host-b';
+    await h.resolve(request());
+    const contexts = vi.mocked(fetchSyncQuery).mock.calls.map(([options]) => options.requestContext);
+    expect(contexts[0]?.headers?.['x-papercusp-machine']).toBe('host-a');
+    expect(contexts[1]?.headers?.['x-papercusp-machine']).toBe('host-b');
+    expect(contexts[0]?.key).not.toBe(contexts[1]?.key);
   });
 });

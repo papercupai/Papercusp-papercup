@@ -84,7 +84,7 @@ describe('REPORT-PINNED-DETAIL-P003 operator expansion', () => {
     expect(fetchSyncQuery).not.toHaveBeenCalled();
     fireEvent.click(button);
     await waitFor(() => expect(container.querySelector('.report-block-goal-body')?.textContent).toBe(bodyMd));
-    expect(fetchSyncQuery).toHaveBeenCalledExactlyOnceWith({ queryName: 'reports.get', args: { reportId: reference.reportId }, staleTime: Infinity });
+    expect(fetchSyncQuery).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ queryName: 'reports.get', args: { reportId: reference.reportId }, staleTime: Infinity }));
     for (const wall of snapshot.ownerWalls) expect(container.textContent).toContain(wall.exactAction);
     expect(container.querySelector('.report-block-plan')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Collapse full report' }));

@@ -49,8 +49,8 @@ const managedTasks = rawOptions.includes('--managed-tasks');
 const options = rawOptions.filter(option => option !== '--managed-tasks');
 const operatorApi = options.length === 1 && options[0] === '--isolated-runtime=operator-api';
 const isolatedRuntime = operatorApi || (options.length === 1 && options[0] === '--isolated-runtime');
-if (cmd.length === 0 || (options.length > 0 && !isolatedRuntime) || (managedTasks && !operatorApi)) {
-  console.error('usage: node scripts/with-test-pg.mjs [--isolated-runtime[=operator-api]] [--managed-tasks (operator-api only)] -- <command> [args...]');
+if (cmd.length === 0 || (options.length > 0 && !isolatedRuntime) || (managedTasks && !isolatedRuntime)) {
+  console.error('usage: node scripts/with-test-pg.mjs [--isolated-runtime[=operator-api]] [--managed-tasks (isolated runtime only)] -- <command> [args...]');
   process.exit(2);
 }
 
@@ -131,7 +131,8 @@ try {
   process.exit(1);
 }
 
-// R6 requires a real confined task. Opt in to ONLY the user manager's private
+// Native tools and background sidecar controls require real confined tasks.
+// Opt in to ONLY the user manager's private
 // control socket, never the desktop session bus or ambient product IPC. Reuse
 // the task manager's systemd-run scope probe before importing runtime bootstrap
 // dependencies or allocating PG. The worker still receives the private exact

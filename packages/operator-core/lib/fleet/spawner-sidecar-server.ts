@@ -40,6 +40,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as net from 'node:net';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { pgAcquireTimingSnapshot, withPgAcquireDiagnostics } from '@papercusp/db-org/acquire-registry';
@@ -381,6 +382,8 @@ export function runSpawnerSidecarServer(deps: {
         // and emit bounded static milestones only for slow executions. Fast reads
         // produce no logs; there is no periodic timer or durable per-read write.
         await withPgAcquireDiagnostics('spawner.process.exec', async (diagnosticRequestId) => {
+          // Admission and settlement callbacks may run in another request's async scope.
+          const requestPoolTimingSnapshot = AsyncLocalStorage.bind(pgAcquireTimingSnapshot);
           const startedAt = performance.now();
           let stage: ExecProcessStage | 'dispatch' = 'dispatch';
           let childPid: number | null = null;
@@ -394,7 +397,7 @@ export function runSpawnerSidecarServer(deps: {
           const elapsedMs = (): number => Math.max(0, Math.round(performance.now() - startedAt));
           const report = (event: 'slow' | 'progress' | 'request-settled'): void => {
             try {
-              const poolAcquisitions = pgAcquireTimingSnapshot();
+              const poolAcquisitions = requestPoolTimingSnapshot();
               const detail = {
                 event, serverGeneration, connectionId,
                 clientConnectionId: connection.clientConnectionId,

@@ -50,7 +50,7 @@ function padTo(n: number, rows: ReturnType<typeof liveRow>[]) {
 }
 
 const LIVE_DESCRIPTION =
-  'Read a documentation page by slug from the live registry. This sentence is the lead. ' +
+  'LIVE-REGISTRY: Read a documentation page by slug. This sentence is the lead. ' +
   'It carries several further sentences of prose that the COMPACT tier is expected to drop, ' +
   'because the whole point of the tier is that the prose half is the expensive half and the ' +
   'schema half is the part a caller actually needs to form a valid call.';
@@ -89,9 +89,10 @@ describe('projectCatalogToCompactTier', () => {
     expect(tool.description).not.toContain('CURATED-STAND-IN-DESCRIPTION');
     // The compact lead cap is measured separately from this instrument. Follow
     // the shipping projection's current cap instead of assuming the whole lead
-    // sentence fits; the live-registry phrase must still survive the projection.
+    // sentence fits. Keep the origin marker at the start so it survives even a
+    // short compact lead, while a curated stand-in still fails this assertion.
     expect(tool.description).toBe(summaryGuidanceDescription(LIVE_DESCRIPTION));
-    expect(tool.description).toContain('Read a documentation page by slug');
+    expect(tool.description).toContain('LIVE-REGISTRY:');
     // ...and the schema must come from the live row too.
     expect(Object.keys((tool.input_schema as { properties: object }).properties)).toEqual([
       'slug',

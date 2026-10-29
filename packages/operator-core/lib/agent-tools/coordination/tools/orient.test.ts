@@ -1182,6 +1182,10 @@ describe('coord:orient args', () => {
 
     const assignmentCall = nestedCalls.find((entry) => entry.name === 'fleet:assignments');
     expect(assignmentCall?.args).toEqual({ agent: 'self' });
+    expect(buildCompactionRecoveryMock).toHaveBeenCalledWith(ownerId, 'ws-test', {
+      sessionHarness: null,
+      sessionRole: 'judge',
+    });
     expect(result.data).toMatchObject({
       recoveredFleetScope: {
         fleet: 'orch-unify',

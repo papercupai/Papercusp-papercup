@@ -219,6 +219,7 @@ function RootComponent() {
 
   return (
     <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
+      <NuqsAdapter>
       <RootSyncProvider>
         <GlobalShortcutDispatcher />
         {/* EI-2425 / SSE budget fix: listen for flag flips on the sync bus
@@ -246,7 +247,6 @@ function RootComponent() {
         >
           <NavigationProgress />
           <Suspense fallback={null}>
-            <NuqsAdapter>
               <UiPresenceProvider />
               {/* Route EXTERNAL links (e.g. GitHub links in the Insights tab) to
                   the OS browser instead of navigating the Tauri webview away from
@@ -424,10 +424,10 @@ function RootComponent() {
                   polls /api/desktop/version and flips to an amber click-to-reload
                   when the server's sha changes under us (Restart-parity). */}
               <VersionBadge />
-            </NuqsAdapter>
           </Suspense>
         </ProgressProvider>
       </RootSyncProvider>
+      </NuqsAdapter>
     </Tooltip.Provider>
   );
 }

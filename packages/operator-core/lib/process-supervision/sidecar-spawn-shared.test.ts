@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import {
   resolveSidecarSpawnPlan,
@@ -19,6 +19,7 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
 
 describe('loopback listener ownership (P-530, WI-10005523)', () => {
   // Real /proc/net/tcp shape: sl local rem st tx:rx tr:when retrnsmt uid timeout inode
@@ -473,8 +474,73 @@ describe('gracefulStopChild', () => {
 });
 
 describe('registerSidecarShutdownHooks', () => {
+  let previousExitCode: typeof process.exitCode;
   beforeEach(() => {
+    previousExitCode = process.exitCode;
     _resetSidecarShutdownHookRegistryForTests();
+  });
+  afterEach(() => {
+    // Some cases invoke the fatal listener in this Vitest worker. Its exit
+    // status belongs to the runner; real process outcomes are asserted below.
+    process.exitCode = previousExitCode;
+  });
+
+  describe('fatal exception process outcomes (EI-27289258038460227)', () => {
+    const run = (mode: 'async' | 'async-with-exit', scenario: string) => spawnSync(
+      process.execPath,
+      ['--import', createRequire(import.meta.url).resolve('tsx'), '--input-type=module', '--eval', `
+        import { registerSidecarShutdownHooks } from ${JSON.stringify(new URL('./sidecar-spawn-shared.ts', import.meta.url).href)};
+        const scenario = ${JSON.stringify(scenario)};
+        let stops = 0;
+        if (scenario === 'prior-failure') process.exitCode = 7;
+        if (scenario === 'string-zero') process.exitCode = '0';
+        registerSidecarShutdownHooks({
+          label: 'fatal-process-control',
+          mode: ${JSON.stringify(mode)},
+          isFatalException: (err) => err.code !== 'EPIPE',
+          stop: async () => {
+            if (++stops > 1) return;
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            if (scenario === 'stop-failure') throw new Error('PC_STOP_FAILURE_SENTINEL');
+            console.log('PC_ASYNC_STOP_COMPLETE');
+          },
+        });
+        process.on('exit', (code) => console.log('PC_PROCESS_EXIT', code, 'STOPS', stops));
+        setImmediate(() => {
+          const error = new Error('PC_FATAL_HOOK_SENTINEL');
+          if (scenario === 'benign') error.code = 'EPIPE';
+          throw error;
+        });
+      `],
+      { encoding: 'utf8', timeout: 15_000 },
+    );
+
+    for (const mode of ['async', 'async-with-exit'] as const) {
+      it.each(['fatal', 'string-zero', 'prior-failure', 'stop-failure'])(`${mode}: preserves fatal error and unsuccessful exit (%s)`, (scenario) => {
+        const child = run(mode, scenario);
+        expect(child.error).toBeUndefined();
+        expect(child.signal).toBeNull();
+        expect(child.status).toBe(scenario === 'prior-failure' ? 7 : 1);
+        expect(child.stderr).toContain('Error: PC_FATAL_HOOK_SENTINEL');
+        if (scenario === 'stop-failure') {
+          expect(child.stderr).toContain('Error: PC_STOP_FAILURE_SENTINEL');
+        } else {
+          expect(child.stdout).toContain('PC_ASYNC_STOP_COMPLETE');
+        }
+      });
+
+      it(`${mode}: benign host error leaves the sidecar and successful exit alone`, () => {
+        const child = run(mode, 'benign');
+        expect(child.error).toBeUndefined();
+        expect(child.signal).toBeNull();
+        expect(child.status).toBe(0);
+        expect(child.stderr).not.toContain('PC_FATAL_HOOK_SENTINEL');
+        expect(child.stdout).not.toContain('PC_ASYNC_STOP_COMPLETE');
+        // async-with-exit may initiate cleanup at normal exit, but the benign
+        // exception itself must never trigger it while the process is alive.
+        expect(child.stdout).toContain(`PC_PROCESS_EXIT 0 STOPS ${mode === 'async-with-exit' ? 1 : 0}`);
+      });
+    }
   });
 
   it('is idempotent per label — a second call for the same label registers nothing new', () => {
@@ -573,12 +639,15 @@ describe('registerSidecarShutdownHooks', () => {
   // sidecar was torn down on a benign `write EPIPE` (a client disconnect) the
   // host's OWN guard already swallowed. `isFatalException` closes that gap.
   describe('uncaughtException gating (isFatalException — P-006)', () => {
+    afterEach(() => vi.restoreAllMocks());
     const newestUncaughtExceptionListener = (): ((err: unknown) => unknown) => {
       const listeners = process.listeners('uncaughtException');
       return listeners[listeners.length - 1] as (err: unknown) => unknown;
     };
 
     it('no isFatalException supplied (default) → stop() runs for any exception (back-compat)', async () => {
+      const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const error = new Error('anything');
       let stopped = false;
       registerSidecarShutdownHooks({
         label: 'test-uncaught-default',
@@ -586,8 +655,10 @@ describe('registerSidecarShutdownHooks', () => {
           stopped = true;
         },
       });
-      await newestUncaughtExceptionListener()(new Error('anything'));
+      await newestUncaughtExceptionListener()(error);
       expect(stopped).toBe(true);
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('uncaught exception'), error);
+      expect(process.exitCode).toBe(1);
       process.removeAllListeners('SIGTERM');
       process.removeAllListeners('SIGINT');
       process.removeAllListeners('uncaughtException');
@@ -612,6 +683,8 @@ describe('registerSidecarShutdownHooks', () => {
     });
 
     it('isFatalException returns true (a real bug) → stop() still runs', async () => {
+      const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const error = new TypeError('real bug — not EPIPE');
       let stopped = false;
       registerSidecarShutdownHooks({
         label: 'test-uncaught-fatal',
@@ -620,8 +693,10 @@ describe('registerSidecarShutdownHooks', () => {
         },
         isFatalException: (err) => (err as { code?: string })?.code !== 'EPIPE',
       });
-      await newestUncaughtExceptionListener()(new TypeError('real bug — not EPIPE'));
+      await newestUncaughtExceptionListener()(error);
       expect(stopped).toBe(true);
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('uncaught exception'), error);
+      expect(process.exitCode).toBe(1);
       process.removeAllListeners('SIGTERM');
       process.removeAllListeners('SIGINT');
       process.removeAllListeners('uncaughtException');

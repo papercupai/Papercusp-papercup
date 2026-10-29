@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import type { ReactElement } from "react";
 import type { WorkItemAdmissionSnapshot } from "@papercusp/operator-core/lib/work-items-admission-promoter";
+import { ISSUE_FAMILY_ROUTE_KINDS } from "@papercusp/harness/work-item-kinds";
 import { WORK_ITEM_PRESENTATION_LABELS } from "@papercusp/operator-core/lib/work-item-presentation-contract";
 
 let syncResult: {
@@ -155,7 +156,7 @@ function payload(
         scope: {
           workspaceId: "papercusp-workspace",
           harnessSlug: "papercusp",
-          itemKinds: ["bug", "change", "task"],
+          itemKinds: ISSUE_FAMILY_ROUTE_KINDS,
           population:
             "root issue-family rows excluding observation-lane records",
         },

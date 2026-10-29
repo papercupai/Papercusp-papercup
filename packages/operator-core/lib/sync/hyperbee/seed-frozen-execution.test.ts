@@ -24,6 +24,22 @@ const bash = (root: string, code: string, ...args: string[]) => execFileSync('ba
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe('D178 process module census', () => {
+  it('keeps the module census stable when the first fresh replica opens its storage', () => {
+    const root = temp();
+    const script = `import { createRequire } from 'node:module';
+      const require = createRequire(process.cwd() + '/package.json');
+      const Corestore = require('corestore');
+      const tracker = globalThis[Symbol.for('papercusp.seed-module-census')];
+      const census = () => [...new Set([...tracker.paths, ...Object.keys(require.cache)])].sort();
+      const before = census();
+      const store = new Corestore(${JSON.stringify(root)});
+      try { await store.ready(); } finally { await store.close(); }
+      console.log(JSON.stringify({ added: census().filter(path => !before.includes(path)) }));`;
+    const result = JSON.parse(execFileSync(process.execPath,
+      ['--import', moduleCensus, '--input-type=module', '-e', script], { encoding: 'utf8' }));
+    expect(result.added).toEqual([]);
+  });
+
   it('observes actual ESM, CommonJS and sodium native addon loads and refuses a late preload', () => {
     const root = temp();
     write(join(root, 'esm.mjs'), 'export default 1;');

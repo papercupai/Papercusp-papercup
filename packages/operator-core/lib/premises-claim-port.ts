@@ -331,12 +331,21 @@ const LIVE_STATE_ABSENCE_SUBJECT =
  */
 const LIVE_INBOX_ABSENCE_SUBJECT = /^(?:unanswered|unread)\s+(?:direct\s+)?messages?$/i;
 
+/**
+ * A negative action disposition describes what someone is doing, not whether a
+ * durable code surface exists. Keep the subject noun explicit so an actual
+ * absence such as "there is no action handler" still reaches the warning.
+ */
+const ACTION_DISPOSITION_ABSENCE_SUBJECT =
+  /^(?:action|step|operation|retry|request|call|command|change|reassignment|execution|invocation)\b(?:(?:[^.;\n]{0,60}\b(?:is|are|was|were)\s+(?:currently\s+)?(?:(?:not|never)\s+)?(?:being\s+)?(?:taken|made|performed|executed|invoked|called|run|issued|sent|attempted|started|applied|reassigned|continued)\b)|(?:[^.;\n]{0,60}\b(?:not|never)\s+(?:reassigning|executing|performing|running|calling|sending|issuing|attempting)\b))/i;
+
 function isNonSurfaceAbsenceSubject(subject: string): boolean {
   const normalized = subject.trim();
   return (
     RHETORICAL_ABSENCE_SUBJECT.test(normalized) ||
     LIVE_STATE_ABSENCE_SUBJECT.test(normalized) ||
-    LIVE_INBOX_ABSENCE_SUBJECT.test(normalized)
+    LIVE_INBOX_ABSENCE_SUBJECT.test(normalized) ||
+    ACTION_DISPOSITION_ABSENCE_SUBJECT.test(normalized)
   );
 }
 

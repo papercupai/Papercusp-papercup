@@ -62,9 +62,15 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
     // The native rig changes cwd during preparation. Check its explicit
     // launcher before initializing PostgreSQL or copying the operator tree.
     expect((await readFile(launcher)).byteLength).toBeGreaterThan(0);
+    const ptoolEnv = nativeEnv();
+    const explicitPtoolBase = ptoolEnv.PAPERCUSP_OPERATOR_BASE?.trim()
+      || ptoolEnv.PAPERCUSP_OPERATOR_URL?.trim();
+    if (!explicitPtoolBase) {
+      throw new Error('Native profile requires an explicit operator URL for ptool identity preflight; refusing inherited PAPERCUSP_HONO_PORT');
+    }
+    ptoolEnv.PAPERCUSP_OPERATOR_BASE = explicitPtoolBase;
     const { stdout } = await run('ptool', ['coord:whoami', '--json', '{}'], {
-      cwd: tmpdir(), timeout: 45_000,
-      env: { ...process.env, PAPERCUSP_PTOOL_LAUNCHER: launcher },
+      cwd: tmpdir(), timeout: 45_000, env: ptoolEnv,
     });
     expect(JSON.parse(stdout).ownerId).toBeTruthy();
     // Check the generated Rust wire types before paying for a native snapshot.

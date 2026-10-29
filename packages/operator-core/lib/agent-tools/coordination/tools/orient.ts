@@ -3627,7 +3627,10 @@ export default defineTool({
               const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
               const sessionHarness =
                 args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? null;
-              const recoveryResult = await withBoundedTimeout(buildCompactionRecovery(ownerId, ws, { sessionHarness }), {
+              const recoveryResult = await withBoundedTimeout(buildCompactionRecovery(ownerId, ws, {
+                sessionHarness,
+                sessionRole: ctx.role,
+              }), {
                 fallback: undefined,
                 timeoutMs: ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS,
                 label: 'orient:buildCompactionRecovery',

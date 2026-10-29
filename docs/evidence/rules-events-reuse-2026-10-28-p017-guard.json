@@ -1,0 +1,260 @@
+{
+  "plan": "rules-events-reuse-2026-10-28",
+  "workItem": "WI-6554700010042762",
+  "barKeys": [
+    "R-69",
+    "R-70",
+    "R-71"
+  ],
+  "runtime": "canonical staging source, maintained suite and guard CLI; not shipped acceptance",
+  "head": "44eb9e5f47352595d00bed9b5d05b367ea0aa999",
+  "sources": {
+    "scripts/check-no-bespoke-condition-op.mjs": "3499723c4385ca68b5778c28eaa5433389f1c54e474f76ec39dddcba87aaf406",
+    "scripts/no-bespoke-condition-op-baseline.json": "d0bd1301d0a4468e81c78a16a6c2c77d6e5abd116ce9b13c706ff2c4ae4bce3f",
+    "scripts/lib/shrink-only-guard.mjs": "4ff8a8bc31f6ca283d4d631085e152efb184a40cfc4db4234b89d3858510d62e",
+    "packages/operator-core/lib/dbos/no-bespoke-condition-op-guard.test.ts": "2bb54fa2d8397ce9189b733871a71886bfd6eff90e4b3cff143a21030e0fa93e"
+  },
+  "measuredSeed": [
+    {
+      "file": "packages/operator-core/lib/check-results-ledger.ts",
+      "key": "packages/operator-core/lib/check-results-ledger.ts",
+      "line": 125,
+      "subject": "expect.op",
+      "literals": [
+        "eq",
+        "gt",
+        "gte",
+        "lt",
+        "lte"
+      ],
+      "shape": "switch"
+    },
+    {
+      "file": "packages/operator-core/lib/continuity-probes.ts",
+      "key": "packages/operator-core/lib/continuity-probes.ts",
+      "line": 560,
+      "subject": "op",
+      "literals": [
+        "gt",
+        "gte",
+        "lt"
+      ],
+      "shape": "if-chain"
+    },
+    {
+      "file": "packages/operator-core/lib/continuity-probes.ts",
+      "key": "packages/operator-core/lib/continuity-probes.ts",
+      "line": 566,
+      "subject": "op",
+      "literals": [
+        "gt",
+        "gte",
+        "lt"
+      ],
+      "shape": "if-chain"
+    },
+    {
+      "file": "packages/operator-core/lib/continuity-probes.ts",
+      "key": "packages/operator-core/lib/continuity-probes.ts",
+      "line": 573,
+      "subject": "predicate.op",
+      "literals": [
+        "eq",
+        "exists",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "ne"
+      ],
+      "shape": "switch"
+    },
+    {
+      "file": "packages/operator-core/lib/endpoint-route/routes/dev/table-rows.ts",
+      "key": "packages/operator-core/lib/endpoint-route/routes/dev/table-rows.ts",
+      "line": 51,
+      "subject": "op",
+      "literals": [
+        "eq",
+        "gt",
+        "gte",
+        "in",
+        "lt",
+        "lte",
+        "ne"
+      ],
+      "shape": "switch"
+    },
+    {
+      "file": "packages/operator-core/lib/events/await/predicate-watch.ts",
+      "key": "packages/operator-core/lib/events/await/predicate-watch.ts",
+      "line": 382,
+      "subject": "op",
+      "literals": [
+        "contains",
+        "eq",
+        "exists",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "ne"
+      ],
+      "shape": "switch"
+    },
+    {
+      "file": "packages/operator-core/lib/events/await/predicate-watch.ts",
+      "key": "packages/operator-core/lib/events/await/predicate-watch.ts",
+      "line": 400,
+      "subject": "op",
+      "literals": [
+        "gt",
+        "gte",
+        "lt"
+      ],
+      "shape": "if-chain"
+    },
+    {
+      "file": "packages/operator-core/lib/work-admission/admission-rules.ts",
+      "key": "packages/operator-core/lib/work-admission/admission-rules.ts",
+      "line": 180,
+      "subject": "op",
+      "literals": [
+        "after",
+        "contains",
+        "eq",
+        "in"
+      ],
+      "shape": "if-chain"
+    }
+  ],
+  "runs": [
+    {
+      "log": "/tmp/p017-suite.log",
+      "sha256": "0506a97daba90262c251f58840295967d78eb610f52a1002949dcb8af3b7ae47",
+      "evidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        "  \u26d4 STALE-VERDICT TRAP: a PASS here does NOT make a gate verdict naming these path(s) stale \u2014 the pass can be riding on uncommitted work while the COMMITTED blob the gate judged still fails.",
+        " Test Files  1 failed (1)",
+        "      Tests  1 failed | 2 passed (3)",
+        "  \u26d4 STALE-VERDICT TRAP: a PASS here does NOT make a gate verdict naming these path(s) stale \u2014 the pass can be riding on uncommitted work while the COMMITTED blob the gate judged still fails.",
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=ae3706ae1d uncommittedPaths=1/1 provenance=unknown startedAt=2026-10-29T03:40:31.949Z childSubstituted=6 skippedTests=0"
+      ]
+    },
+    {
+      "log": "/tmp/p017-suite-fixed.log",
+      "sha256": "c2b7cc3a27b023a0834fe77fa1a499e49028100d9c68e6cfab72c9de577f25a4",
+      "evidence": [
+        "TEST_FILE_PROGRESS state=file-completed cwd=\"packages/operator-core\" elapsedMs=7305 capturedBytes=4142 completedFiles=[\"lib/dbos/no-bespoke-condition-op-guard.test.ts\"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending lastOutputLine={\"channel\":\"stdout\",\"text\":\"\u2713 lib/dbos/no-bespoke-condition-op-guard.test.ts (3 tests) 53ms\"}",
+        "  \u26d4 STALE-VERDICT TRAP: a PASS here does NOT make a gate verdict naming these path(s) stale \u2014 the pass can be riding on uncommitted work while the COMMITTED blob the gate judged still fails.",
+        " \u2713 lib/dbos/no-bespoke-condition-op-guard.test.ts (3 tests) 53ms",
+        " Test Files  1 passed (1)",
+        "      Tests  3 passed (3)",
+        "  \u26d4 STALE-VERDICT TRAP: a PASS here does NOT make a gate verdict naming these path(s) stale \u2014 the pass can be riding on uncommitted work while the COMMITTED blob the gate judged still fails.",
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=25ff40d243 uncommittedPaths=1/1 provenance=unknown startedAt=2026-10-29T03:43:53.567Z childSubstituted=6 skippedTests=0"
+      ]
+    },
+    {
+      "log": "/tmp/p017-exact.log",
+      "sha256": "79c5b257727b30acfba199b4ea271a5bc2c2a73507fabbc23a1d3e2de2fd30e6",
+      "evidence": [
+        "TEST_FILE_PROGRESS state=file-completed cwd=\"packages/operator-core\" elapsedMs=10007 capturedBytes=3847 completedFiles=[\"lib/dbos/no-bespoke-condition-op-guard.test.ts\"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending lastOutputLine={\"channel\":\"stdout\",\"text\":\"\u2713 lib/dbos/no-bespoke-condition-op-guard.test.ts (3 tests | 1 skipped) 59ms\"}",
+        " \u2713 lib/dbos/no-bespoke-condition-op-guard.test.ts (3 tests | 1 skipped) 59ms",
+        " Test Files  1 passed (1)",
+        "      Tests  2 passed | 1 skipped (3)",
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=c75b7cc8b8 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-29T03:45:31.355Z childSubstituted=6 skippedTests=1"
+      ]
+    },
+    {
+      "log": "/tmp/p017-mutation.log",
+      "sha256": "e04abd163622ad0e496f51483c35ef6cf7f53e9ee215e63489d911abf7ea40c9",
+      "evidence": [
+        "COMMAND [\"bash\", \"scripts/mutation-probe.sh\", \"--file\", \"packages/operator-core/lib/event-loop-stall-profile.ts\", \"--mutate\", \"$_ .= qq(\\\\nfunction p017Probe(op, a, b) { switch(op) { case 'eq': return a === b; case 'gt': return a > b; case 'lt': return a < b; } }\\\\n) if eof;\", \"--test\", \"node scripts/check-no-bespoke-condition-op.mjs --source {} --as packages/operator-core/lib/event-loop-stall-profile.ts\"]",
+        "no-bespoke-condition-op: PASS (0 measured dispatches)",
+        "no-bespoke-condition-op: PASS (0 measured dispatches)",
+        "packages/operator-core/lib/event-loop-stall-profile.ts:313: bespoke condition switch (eq, gt, lt): use @papercusp/rules",
+        "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) \u2014 the guard is falsifiable \u2713",
+        "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=ok assertion_evidence=exit-code-only relocation=overlay baseline_ledger=none copy_baseline_ledger=none mutant_ledger=none",
+        "[mutation-probe] tree integrity: VERIFIED \u2014 <repo>/packages/operator-core/lib/event-loop-stall-profile.ts is byte-identical to its pre-probe state"
+      ]
+    }
+  ],
+  "restoredGuard": "no-bespoke-condition-op: PASS (8 measured dispatches)\n",
+  "reachability": {
+    "name": "lint:no-bespoke-condition-op",
+    "impls": [
+      "scripts/check-no-bespoke-condition-op.mjs"
+    ],
+    "tiers": [
+      "repo-wide"
+    ],
+    "tier": "repo-wide",
+    "blocking": true,
+    "coverage": {
+      "verdict": "full",
+      "reason": "registered in REPO_WIDE_INVARIANT_GUARDS \u2014 runs on its own predicate"
+    }
+  },
+  "limitations": [
+    "R74 full real production caller positive control remains on P010/P011 migration integration. This lane supplies inspectMigratedCaller and negative/positive unit controls only.",
+    "Copy-out runner reported partial containment and concurrent changes to .papercusp/spawn-results. Subject bytes verified identical; no in-tree mutation.",
+    "Full reachability suite also reports an unrelated release frozen-repair-bounded-life-store module without a production caller. Both guards are full/blocking/repo-wide."
+  ],
+  "testCorrection": "Initial R69 compound-OR fixture failed because TypeScript forEachChild stops on a truthy Map returned by the visitor. Changed visitor to return void; maintained suite and exact BAR rerun pass.",
+  "priorSourceFingerprints": {
+    "scripts/check-no-bespoke-condition-op.mjs": "3499723c4385ca68b5778c28eaa5433389f1c54e474f76ec39dddcba87aaf406",
+    "scripts/no-bespoke-condition-op-baseline.json": "d0bd1301d0a4468e81c78a16a6c2c77d6e5abd116ce9b13c706ff2c4ae4bce3f",
+    "scripts/lib/shrink-only-guard.mjs": "4ff8a8bc31f6ca283d4d631085e152efb184a40cfc4db4234b89d3858510d62e",
+    "packages/operator-core/lib/dbos/no-bespoke-condition-op-guard.test.ts": "528c19d4c31abb1ab809d8aa08a20c6b669f51a4a6b38bf00f89126680ff9291"
+  },
+  "ledgerMutationRuns": [
+    {
+      "logSha256": "16e68fedc8cd38f877a704d674c0249e9a4a632fb1eeae730e4e3969590ccd71",
+      "receipt": {
+        "argv": [
+          "--file",
+          "packages/operator-core/lib/event-loop-stall-profile.ts",
+          "--mutate",
+          "$_ .= qq(\\nfunction p017Probe(op, a, b) { switch(op) { case 'eq': return a === b; case 'gt': return a > b; case 'lt': return a < b; } }\\n) if eof;",
+          "--test",
+          "PAPERCUSP_TEST_RUN_HARNESS=papercusp CONDITION_GUARD_SOURCE={} CONDITION_GUARD_AS=packages/operator-core/lib/event-loop-stall-profile.ts npm run test:file -- packages/operator-core/lib/dbos/no-bespoke-condition-op-guard.test.ts -- -t 'rules events reuse R-(69|70) '"
+        ],
+        "schemaVersion": 1,
+        "environment": {
+          "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto",
+          "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:9171/api/health",
+          "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED": 1,
+          "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+          "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO": "<repo>"
+        },
+        "result": {
+          "assertionEvidence": "test-file-assertion-failure",
+          "target": "copy-out",
+          "expected": "caught",
+          "relocation": "overlay",
+          "verdict": "caught",
+          "baselineLedger": "test_runs:22605434",
+          "baselineExit": 0,
+          "guardExit": 1,
+          "copyBaselineLedger": "test_runs:22605450",
+          "mutantParse": "ok",
+          "mutantLedger": "test_runs:22605456"
+        },
+        "runnerSha256": "e0eb6dc68a76e895e69343aca349cf8f549f6ae5d69a1c735b17ed9e9cb23c76",
+        "runnerPath": "scripts/mutation-probe.sh",
+        "cwd": ".",
+        "runnerCommit": "44c8d10268a328a1e796856579c9cc4e2826db1d"
+      },
+      "integrity": "subject byte-identical, verified by maintained probe"
+    }
+  ],
+  "finalSuite": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/dbos/no-raw-setinterval-guard.test.ts packages/operator-core/lib/dbos/no-bespoke-condition-op-guard.test.ts",
+    "result": [
+      "      Tests  13 passed (13)",
+      "TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed head=44c8d10268 uncommittedPaths=2/2 provenance=stamped startedAt=2026-10-29T03:59:28.100Z childSubstituted=0 skippedTests=0"
+    ],
+    "logSha256": "60e0721d4ffa318fd538a0303663a2121237ef95e37c419bb3edd730434d5623"
+  },
+  "artifactPortability": "Machine-specific checkout prefixes normalized to <repo>; original logs retained outside repo and pinned by SHA256."
+}

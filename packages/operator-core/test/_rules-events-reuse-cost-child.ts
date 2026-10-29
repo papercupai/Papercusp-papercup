@@ -64,8 +64,11 @@ if (routine === 'external-trigger-dispatch') {
   const fleet = 'measurement-terminal-fleet';
   await sql`INSERT INTO harness_shared.harness_plans
     (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items)
-    VALUES (${workspace}, 'papercusp', ${plan}, 'Measurement terminal plan', 'done',
+    VALUES (${workspace}, 'papercusp', ${plan}, 'Measurement terminal plan', 'shipped',
       '# Terminal fixture', 'measurement-v1', '[]'::jsonb)`;
+  const [terminalPlan] = await sql`SELECT status FROM harness_shared.harness_plans
+    WHERE workspace_id = ${workspace} AND harness_slug = 'papercusp' AND plan_slug = ${plan}`;
+  assert.equal(terminalPlan?.status, 'shipped', 'the control requires a canonical terminal plan');
   await createFleetIfAbsent({ workspaceId: workspace, fleetSlug: fleet, owner: 'measurement',
     leaderOwnerId: 'measurement', colorScheme: 'amber' });
   prepare = async () => setFleetHeadcountTarget({ workspaceId: workspace, fleetSlug: fleet, target: 1,

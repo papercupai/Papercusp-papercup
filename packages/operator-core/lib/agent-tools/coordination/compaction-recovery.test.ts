@@ -131,6 +131,16 @@ vi.mock('../../carry-brief', async (importOriginal) => ({
 }));
 
 describe('buildCompactionRecovery — held-item checkpoint fold', () => {
+  it('routes judge recovery through authorized work-item and self-transcript reads', async () => {
+    const { buildCompactionRecovery } = await import('./compaction-recovery');
+    const recovery = await buildCompactionRecovery('owner-x', 'ws-1', { sessionRole: 'judge' });
+
+    expect(recovery.selfRecall).toContain("work_items:list { mine:true, notTerminal:true }");
+    expect(recovery.selfRecall).toContain('work_items:get { id, harness }');
+    expect(recovery.selfRecall).toContain("sessions:read { session:'self', tail:40 }");
+    expect(recovery.selfRecall).not.toContain('sessions:search {');
+  });
+
   it('sanity: the incident shape exceeds CHECKPOINT_CAP(1200) and a plain cut lands before the superseding block', () => {
     expect(CHECKPOINT.length).toBeGreaterThan(1200);
     expect(CHECKPOINT.slice(0, 1199)).not.toContain('SUPERSEDING');

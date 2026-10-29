@@ -219,7 +219,9 @@ describe('delivery ledger', () => {
       parse: () => ({ prompt: 'PRIVATE PROMPT' }),
       render: () => 'must not render',
     };
-    const fetchImpl = vi.fn(async () => { throw new Error('private transport detail'); });
+    const fetchImpl = vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+      throw new Error('private transport detail');
+    });
 
     await expect(runInjection({
       adapter,

@@ -1,8 +1,7 @@
 /**
  * P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): storage for the frozen repair CARRY.
- * The check is PURE (`./frozen-repair-carry`); the WRITE of a pending carry happens inside each
- * retire's own locked row update (`retireFrozenRepairQueueForBoundedLife` in
- * `./frozen-repair-bounded-life-store`, `retireFrozenCandidateRepairQueue` in
+ * The check is PURE (`./frozen-repair-carry`); the WRITE of a pending carry happens inside the
+ * explicit retire's locked row update (`retireFrozenCandidateRepairQueue` in
  * `../harness/routines/release-actions`). This module owns the gate's two halves: reading the
  * pending carry at a fresh cut, and consuming it.
  *

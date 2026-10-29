@@ -34,6 +34,7 @@ import type { DedupCandidateStamp } from './dedup-candidates-stamp';
 import { resolvePotScope, POT_REQUIRED_DETAIL } from '../_pot-scope';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { getOrgPg } from '@papercusp/db-org';
+import { WorkItemDefinitionSchema, type WorkItemDefinition } from '../../work-item-definition';
 import { canonicalizeAssigneeOwnerId } from '../../work-item-holder-identity';
 // The goal-provenance stamp is SHARED with improvements:capture (WI-2140701 (b)):
 // every door that mints a work-item row stamps goal_id the same way.
@@ -89,6 +90,7 @@ export interface CreateOneWorkItemArgs {
   parent?: string;
   topics?: string[];
   payload?: Record<string, unknown>;
+  definition?: WorkItemDefinition;
   /** Explicit papercusp-way routing row; body prose is never classified. */
   routing_intent?: RoutingGateIntent;
   /** Required for routing_intent='schedule-recurrence'. */
@@ -655,6 +657,12 @@ export async function createOneWorkItem(
   args: CreateOneWorkItemArgs,
   ctx: CreateOneWorkItemCtx,
 ): Promise<CreateOneWorkItemResult> {
+  const rawDefinition = args.definition ?? args.payload?.workDefinition;
+  if (rawDefinition !== undefined) {
+    const parsed = WorkItemDefinitionSchema.safeParse(rawDefinition);
+    if (!parsed.success) return { ok: false, error: 'invalid_definition', message: parsed.error.message };
+    args = { ...args, payload: { ...args.payload, workDefinition: parsed.data } };
+  }
   if (args.conditionReplay === 'include-terminal') {
     const workspaceId = args.workspace?.trim() || (ctx.workspaceId !== '*' ? ctx.workspaceId : undefined);
     const key = args.conditionKey?.trim();

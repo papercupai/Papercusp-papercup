@@ -1082,3 +1082,20 @@ scenarios** `packages/operator-core/lib/llm-testing/scenarios/<role>/`. **Never*
 fires for a new subsystem, widen a domain in
 `packages/operator-core/lib/testing-domains-registry.ts` then `npm run
 gen:contract` (root). See `/internal/docs/testing` §1.0a.
+
+## Conditions, reactions and live data
+
+Server work triggered by a change uses declarative events; changing UI reads use sync.
+
+| You want | Use | Not |
+| --- | --- | --- |
+| Compare facts (rules) | `evaluateOperatorTest` (`@papercusp/rules`) | A local `switch (op)` |
+| React on the server (declarative events) | `emitSystemEvent` + `registerReactionRule` (standalone/plugin) | Cross-module `EventEmitter` or status-poll reactions |
+| Show changing UI data (sync) | `useSyncQuery` + producer `notifySyncInvalidate` | A fetch timer per panel |
+| Fuse ranked results | `rrfCombine` (`@papercusp/rrf`) | Another reciprocal-rank formula |
+| Cache reads | `cachedRead` / `createCache` (`@papercusp/cache`) | A new Map plus expiry checks |
+| Order dependent work | `orderByDependencies` (`@papercusp/dependency-order`) | Another topological sort |
+| Judge session liveness | `resolveSessionStates` / `sessionState`; detector internals: `@papercusp/failure-detector` | A new heartbeat-age or PID-based dead/alive guess |
+
+Events run server reactions across processes. Sync uses SSE; its invalidation does not execute server work.
+

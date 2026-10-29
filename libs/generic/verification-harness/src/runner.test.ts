@@ -574,7 +574,42 @@ describe('declared completion receipt retention', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it.each(['../outside.json', '/absolute.json', 'phases/../source.json', 'phases\\source.json'])
+  it('keeps the file bound for one selector covering too many declared phases', async () => {
+    const root = tmp(), runId = '20261029T000004Z-4';
+    try {
+      await expect(runHarness({
+        contract: { name: 'bounded-phase-proof', phases: Array.from({ length: 129 }, (_, i) => ({ id: `p${i}` })) },
+        evidenceRoot: root, runId, retainedArtifacts: ['phases/*/report-summary.json'],
+        runPhase: async ({ evidenceDir }) => {
+          writeFileSync(path.join(evidenceDir, 'report-summary.json'), '{}');
+          return { ok: true };
+        },
+      })).rejects.toThrow('file limit exceeded');
+      expect(existsSync(path.join(root, 'retained', runId, 'result.json'))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['missing', 'outside-symlink'] as const)('refuses %s phase-selected receipts before publishing success', async mode => {
+    const root = tmp(), outside = tmp(), runId = '20261029T000005Z-5';
+    try {
+      await expect(runHarness({
+        contract: { name: 'phase-proof', phases: [{ id: 'prepare' }] },
+        evidenceRoot: root, runId, retainedArtifacts: ['phases/*/report-summary.json'],
+        runPhase: async ({ evidenceDir }) => {
+          if (mode === 'outside-symlink') {
+            writeFileSync(path.join(outside, 'private.json'), 'private');
+            symlinkSync(path.join(outside, 'private.json'), path.join(evidenceDir, 'report-summary.json'));
+          }
+          return { ok: true };
+        },
+      })).rejects.toThrow();
+      expect(existsSync(path.join(root, 'retained', runId, 'result.json'))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  it.each(['../outside.json', '/absolute.json', 'phases/../source.json', 'phases\\source.json',
+    'phases/*/../source.json', 'phases/**/report-summary.json', 'other/*/report-summary.json',
+    'phases/*/*', 'phases/*/..'])
     ('refuses an unsafe declared receipt path %s before phase execution', async receipt => {
       const root = tmp(); let ran = false;
       try {

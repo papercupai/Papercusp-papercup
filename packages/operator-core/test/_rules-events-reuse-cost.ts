@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { resolve, join } from 'node:path';
@@ -9,6 +9,15 @@ import assert from 'node:assert/strict';
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
 export async function measureRoutineCost(routine: string) {
+  // Refuse mismatched child/parent bytes before paying for a private database boot.
+  for (const path of [
+    'packages/operator-core/test/_rules-events-reuse-cost-child.ts',
+    'packages/operator-core/test/_rules-events-reuse-cost.ts',
+    'packages/operator-core/lib/harness/routines/rules-events-reuse-baseline.integration.test.ts',
+  ]) {
+    const committed = execFileSync('git', ['show', `HEAD:${path}`], { cwd: root });
+    assert.ok(committed.equals(readFileSync(resolve(root, path))), `${path} must match its committed blob before measurement`);
+  }
   const result = await new Promise<{ code: number | null; output: string }>((finish, reject) => {
     const child = spawn(process.execPath, ['scripts/with-test-pg.mjs', '--isolated-runtime', '--',
       process.execPath, '--import', 'tsx', 'packages/operator-core/test/_rules-events-reuse-cost-child.ts', routine],
@@ -22,6 +31,11 @@ export async function measureRoutineCost(routine: string) {
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('close', code => { clearTimeout(timer); finish({ code, output }); });
   });
+  if (result.code !== 0 && process.env.RULES_EVENTS_BASELINE_OUTPUT_DIR) {
+    const dir = resolve(process.env.RULES_EVENTS_BASELINE_OUTPUT_DIR);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, `${routine}-failure.log`), result.output);
+  }
   assert.equal(result.code, 0, result.output.slice(-16_000));
   const line = result.output.split('\n').find(value => value.startsWith('RULES_EVENTS_COST_PROOF='));
   assert.ok(line, result.output.slice(-16_000));

@@ -113,6 +113,7 @@ export function currentUnjudgedFirstTurn(
     const answerer = typeof record.answeringOwnerId === 'string' ? record.answeringOwnerId : null;
     if (stampedAnsweringOwnerId !== null && answerer !== stampedAnsweringOwnerId) return null;
     const attempt = (record.attempts ?? []).find((a) => a?.outcome === 'dispatched');
+    if (!attempt) return null;
     const unjudged = attempt?.answeringTurn ?? attempt?.firstTurnUnjudged;
     if (!unjudged) return null;
     const { agent, transcriptPath, kickoffAt } = unjudged;

@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "rubricRef": "acceptance-bg-host-committed-generation-2026-10-24",
+  "revision": 10,
+  "criteriaHash": "4c72c9360ac99aa3526bfe17925d10894f38408acd23521b4df1ef5f15d67835",
+  "criterionKey": "r-1",
+  "cases": [
+    {
+      "rowId": "source-census",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "BG-PREP-EXACT-SELECTION rejects a changed frozen source census at either compiler boundary"
+    },
+    {
+      "rowId": "accepted-members",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "BG-PREP-EXACT-SELECTION rejects omitted or added accepted manifest members"
+    },
+    {
+      "rowId": "builder-identity",
+      "file": "apps/operator/lib/bundle-host-freshness.test.ts",
+      "testName": "BG-PREP-EXACT-SELECTION rejects changed builder configuration or toolchain identity"
+    },
+    {
+      "rowId": "parent-authority",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "BG-PREP-EXACT-SELECTION rejects missing unknown or substituted parent manifest authority at actual service boot"
+    },
+    {
+      "rowId": "parent-schema-digest",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "BG-PREP-EXACT-SELECTION rejects parent manifest schema or digest mismatch at actual service boot"
+    },
+    {
+      "rowId": "parent-literal-members",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "BG-PREP-EXACT-SELECTION rejects added omitted or changed literal parent manifest members at actual service boot"
+    },
+    {
+      "rowId": "bg-r1-source-changed-before-build",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-source-changed-before-build rejects changed frozen source before-build"
+    },
+    {
+      "rowId": "bg-r1-source-missing-before-build",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-source-missing-before-build rejects missing frozen source before-build"
+    },
+    {
+      "rowId": "bg-r1-source-added-before-build",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-source-added-before-build rejects added frozen source before-build"
+    },
+    {
+      "rowId": "bg-r1-member-omitted-before-build",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-member-omitted-before-build rejects omitted accepted member before-build"
+    },
+    {
+      "rowId": "bg-r1-member-added-before-build",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-member-added-before-build rejects added accepted member before-build"
+    },
+    {
+      "rowId": "bg-r1-builder-configuration-before-build",
+      "file": "apps/operator/lib/bundle-host-freshness.test.ts",
+      "testName": "bg-r1-builder-configuration-before-build rejects changed builder-configuration before-build"
+    },
+    {
+      "rowId": "bg-r1-toolchain-identity-before-build",
+      "file": "apps/operator/lib/bundle-host-freshness.test.ts",
+      "testName": "bg-r1-toolchain-identity-before-build rejects changed toolchain-identity before-build"
+    },
+    {
+      "rowId": "bg-r1-source-changed-before-publication",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-source-changed-before-publication rejects changed frozen source before-publication"
+    },
+    {
+      "rowId": "bg-r1-source-missing-before-publication",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-source-missing-before-publication rejects missing frozen source before-publication"
+    },
+    {
+      "rowId": "bg-r1-source-added-before-publication",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-source-added-before-publication rejects added frozen source before-publication"
+    },
+    {
+      "rowId": "bg-r1-member-omitted-before-publication",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-member-omitted-before-publication rejects omitted accepted member before-publication"
+    },
+    {
+      "rowId": "bg-r1-member-added-before-publication",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-member-added-before-publication rejects added accepted member before-publication"
+    },
+    {
+      "rowId": "bg-r1-builder-configuration-before-publication",
+      "file": "apps/operator/lib/bundle-host-freshness.test.ts",
+      "testName": "bg-r1-builder-configuration-before-publication rejects changed builder-configuration before-publication"
+    },
+    {
+      "rowId": "bg-r1-toolchain-identity-before-publication",
+      "file": "apps/operator/lib/bundle-host-freshness.test.ts",
+      "testName": "bg-r1-toolchain-identity-before-publication rejects changed toolchain-identity before-publication"
+    },
+    {
+      "rowId": "bg-r1-parent-authority-absent",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-parent-authority-absent rejects parent authority-absent at actual service boot"
+    },
+    {
+      "rowId": "bg-r1-parent-authority-unknown",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-parent-authority-unknown rejects parent authority-unknown at actual service boot"
+    },
+    {
+      "rowId": "bg-r1-parent-authority-candidate-substitution",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-parent-authority-candidate-substitution rejects parent authority-candidate-substitution at actual service boot"
+    },
+    {
+      "rowId": "bg-r1-parent-schema-mismatch",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-parent-schema-mismatch rejects parent schema-mismatch at actual service boot"
+    },
+    {
+      "rowId": "bg-r1-parent-digest-mismatch",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-parent-digest-mismatch rejects parent digest-mismatch at actual service boot"
+    },
+    {
+      "rowId": "bg-r1-parent-literal-member-added",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-parent-literal-member-added rejects parent literal-member-added at actual service boot"
+    },
+    {
+      "rowId": "bg-r1-parent-literal-member-omitted",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-parent-literal-member-omitted rejects parent literal-member-omitted at actual service boot"
+    },
+    {
+      "rowId": "bg-r1-parent-literal-member-changed",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-parent-literal-member-changed rejects parent literal-member-changed at actual service boot"
+    },
+    {
+      "rowId": "bg-r1-census",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-census requires exact predeclared selector and branch population"
+    },
+    {
+      "rowId": "bg-r1-compiler-source-transient-substitution-restored",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-compiler-source-transient-substitution-restored rejects selected source changed during real compiler consumption then restored before final fence"
+    },
+    {
+      "rowId": "bg-r1-compiler-dependency-transient-substitution-restored",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-compiler-dependency-transient-substitution-restored rejects selected dependency changed during real compiler consumption then restored before final fence"
+    },
+    {
+      "rowId": "bg-r1-compiler-immutable-input-positive-control",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-compiler-immutable-input-positive-control qualifies ordinary real compilation from the frozen accepted source and dependency bytes"
+    }
+  ]
+}

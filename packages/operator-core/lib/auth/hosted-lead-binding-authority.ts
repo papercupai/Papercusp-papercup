@@ -33,7 +33,7 @@ export class PostgresHostedLeadBindingAuthority implements HostedLeadBindingAuth
   }
 
   private async authorize<T>(input: HostedLeadBindingScope, issuerRef: string | null,
-    operation: (store?: HostedLeadBindingStorage) => Promise<T>): Promise<T | null> {
+    operation: (store: PostgresHostedLeadBindingStore) => Promise<T>): Promise<T | null> {
     const scope = parseHostedLeadBindingScope(input);
     if (scope.graphWorkspaceId !== this.graphWorkspaceId) return null;
     if (issuerRef !== null && !/^operator-session:[a-f0-9]{64}$/.test(issuerRef)) return null;
@@ -68,6 +68,11 @@ export class PostgresHostedLeadBindingAuthority implements HostedLeadBindingAuth
   withCurrentSubject<T>(scope: HostedLeadBindingScope,
     operation: (store?: HostedLeadBindingStorage) => Promise<T>): Promise<T | null> {
     return this.authorize(scope, null, operation);
+  }
+
+  /** D-053: canonical graph locks and receipt/consent read share one transaction. */
+  readServiceSubject(scope: HostedLeadBindingScope) {
+    return this.authorize(scope, null, store => store.readServiceSubject(scope));
   }
 }
 

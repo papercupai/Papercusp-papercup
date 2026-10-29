@@ -173,9 +173,30 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   ]));
   const snapshotPath = managed?.snapshotPath ?? join(homedir(), '.papercusp/graph-snapshot', harness, 'dependency-snapshot.json');
   await mkdir(join(snapshotPath, '..'), { recursive: true });
-  await writeFile(snapshotPath, JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
-    index: { backend: 'first-party-imports', lastCommit: baseline }, edges: [],
-    clones: { schema: 'clone-advisory-v1', files: cloneFiles } }), managed ? { flag: 'wx' } : undefined);
+  const writeCallerSnapshot = async (exclusive = false) => {
+    const sha = async (path: string) => createHash('sha256').update(await readFile(join(root, path))).digest('hex');
+    const callerPaths = [readerPath, testPath];
+    const targetSha = await sha(targetPath);
+    const sources = await Promise.all([targetPath, ...callerPaths]
+      .map(async path => ({ path, sha256: await sha(path) })));
+    const names = claimOnly ? ['f'] : ['aggregatePositive', 'updateValue'];
+    const symbols = await Promise.all(names.map(async (name, index) => ({
+      id: `private-reuse-${name}`, name, path: targetPath, line: index + 1, column: 17,
+      sha256: targetSha, signature: `${name}()`, aliases: [], sources,
+      callers: await Promise.all(callerPaths.map(async path => ({
+        path, line: 2, column: 1, sha256: await sha(path), spelling: name, workspace: '@fixture/reuse',
+      }))),
+    })));
+    await writeFile(snapshotPath, JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
+      index: { backend: 'first-party-imports', lastCommit: baseline },
+      edges: await Promise.all(callerPaths.map(async importer => ({
+        imported: targetPath, importer, importerSha256: await sha(importer),
+      }))),
+      symbols: { schema: 'code-intel-symbol-snapshot-v1', knowledge: 'syntax-bound', symbols },
+      clones: { schema: 'clone-advisory-v1', files: cloneFiles },
+    }), exclusive ? { flag: 'wx' } : undefined);
+  };
+  await writeCallerSnapshot(Boolean(managed));
   // D026: a real persisted planning timestamp and one explicitly controlled CLI
   // session qualify provenance. This does not represent a model-session census.
   // D029: sparse authored context only; never shorten the returned task brief.
@@ -310,6 +331,11 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   } else {
     await call('capability:edit', { file_path: join(root, targetPath), old_string: before, new_string: edited });
   }
+  // Completion reads require a per-file proof for the bytes that actually
+  // changed. Refresh the private fixture's maintained snapshot after the edit;
+  // otherwise the production reader correctly reports index-not-ready instead
+  // of silently forking a compiler worker at completion time.
+  await writeCallerSnapshot();
   // with-test-pg preserves the parent's durable evidence destination on purpose.
   // This nested run instead feeds the private operator's completion reader.
   if (!managed) {
@@ -404,7 +430,14 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
     });
     const { REUSE_PROVIDER_POLICY, briefCodePoints } = await import('../reuse-brief-providers.ts');
     const expected = expectedProviders;
-    assert.deepEqual(contributions.map((row: { provider: string }) => row.provider), expected, JSON.stringify(response));
+    const providerOutcomes = claimInvocations[0]?.providers?.[0]?.observations ?? [];
+    const inlineProviders = providerOutcomes.filter((row: any) => row.status === 'issued').map((row: any) => row.provider);
+    assert.deepEqual(contributions.map((row: { provider: string }) => row.provider), inlineProviders, JSON.stringify(response));
+    assert.deepEqual(providerOutcomes.filter((row: any) => expected.includes(row.provider)).map((row: any) => row.provider),
+      expected, JSON.stringify(claimInvocations));
+    const coverageOutcome = providerOutcomes.find((row: any) => row.provider === 'coverage');
+    assert(['issued', 'budget'].includes(coverageOutcome?.status), JSON.stringify(coverageOutcome));
+    if (coverageOutcome.status === 'budget') assert.equal(coverageOutcome.reason, 'truncated');
     for (const row of contributions) {
       const policy = REUSE_PROVIDER_POLICY[row.provider as keyof typeof REUSE_PROVIDER_POLICY];
       assert(briefCodePoints(row.text) <= policy.cap && row.sourceVersion === brief.sourceFingerprint && row.indexVersion);
@@ -416,7 +449,7 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
     const finalInvocation = issued.map(row => JSON.parse(row.subject)).find(row => row.provider === 'provenance')?.invocation;
     const finalIssued = issued.filter(row => JSON.parse(row.subject).invocation === finalInvocation);
     assert(finalInvocation, JSON.stringify(issued));
-    assert.deepEqual(finalIssued.map(row => JSON.parse(row.subject).provider).sort(), [...expected].sort());
+    assert.deepEqual(finalIssued.map(row => JSON.parse(row.subject).provider).sort(), [...inlineProviders].sort());
     assert(finalIssued.every(row => JSON.parse(row.subject).sourceVersion === brief.sourceFingerprint
       && JSON.parse(row.subject).indexVersion && row.chars > 0));
     const proof = { workspace, harness, root, fixtureWorkItem: id,

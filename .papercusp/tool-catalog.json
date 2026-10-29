@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 992,
+  "count": 993,
   "tools": [
     {
       "name": "ablation:report",
@@ -21408,6 +21408,79 @@
         "when": "An app or agent needs the person behind a name, address or number (contact lookup, recipient autocomplete, CRM person list).",
         "notWhen": "For one known PER- id, use people:get. For message or meeting content, use personal:search.",
         "chaining": "people:search → people:get { ids } after a stored id may have been merged."
+      }
+    },
+    {
+      "name": "people:usage",
+      "http": {
+        "path": "/api/agent-tools/people/usage",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read consented hosted product observations for one exact canonical PER- id and a window of at most 30 days. Requires an authenticated connected-app service bearer and an exact people:usage grant on both parent key and token. Broad people:* grants do not authorize this read. Current binding, membership and consent are rechecked around vendor reads. Returns { ok, usage }: observed counts with opaque bindingRef/evidenceRef, or unknown with a reason. No score, hosted identity ids or inferred consent.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "An explicitly authorized background collector needs original consented hosted usage for a canonically bound person.",
+        "notWhen": "For person identity use people:get; this does not grant communication consent or measure customer-runtime activity."
       }
     },
     {

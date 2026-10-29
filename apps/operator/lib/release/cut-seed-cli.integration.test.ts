@@ -9,13 +9,13 @@ describe('seed singleton with a live drainer', () => {
   let observer: postgres.Sql;
   const createLockClient = () => ({ sql: postgres(db.url, {
     max: 1, prepare: false,
-    connection: { idle_in_transaction_session_timeout: '100ms' },
+    connection: { idle_in_transaction_session_timeout: 100 },
   }) });
 
   beforeAll(async () => {
     db = await createFreshPgDb('seed_singleton');
     data = postgres(db.url, { max: 1, prepare: false,
-      connection: { idle_in_transaction_session_timeout: '100ms' } });
+      connection: { idle_in_transaction_session_timeout: 100 } });
     observer = postgres(db.url, { max: 1, prepare: false });
     await data`CREATE TABLE harness_shared.seed_refresh_probe (id text PRIMARY KEY)`;
   }, 60_000);

@@ -79,7 +79,7 @@ const h = vi.hoisted(() => ({
   // Legacy read cursor used only for message-less inbox notifications. Empty by
   // default, so existing tests that don't care about it never suppress anything.
   lastInboxReadAtBatch: vi.fn(async (_ownerIds: string[]): Promise<Map<string, string>> => new Map()),
-  readOpenTaskReminderSignature: vi.fn(async (_input: { ownerId: string; workspaceId: string }): Promise<string | null> => null),
+  readOpenTaskReminderFreshness: vi.fn(async (_input: { ownerId: string; workspaceId: string }): Promise<{ signature: string; wakeGuaranteed: boolean } | null> => null),
   // EI-18676763837940562: the reply-linkage leg's batched lookup — no replies on
   // record by default, matching the fail-open default (never suppresses anything
   // existing tests don't explicitly set up).
@@ -229,8 +229,8 @@ beforeEach(() => {
   h.store.claimDueDeliveries.mockResolvedValue([]);
   h.admitWakeFanout.mockResolvedValue(0);
   h.store.settleCancelledAwaitDeliveries.mockResolvedValue([]);
-  h.readOpenTaskReminderSignature.mockReset();
-  h.readOpenTaskReminderSignature.mockResolvedValue(null);
+  h.readOpenTaskReminderFreshness.mockReset();
+  h.readOpenTaskReminderFreshness.mockResolvedValue(null);
   h.compose.claimDueComposedRoots.mockResolvedValue([]);
   predicateTimeoutHook.getPredicateTimeoutContext.mockResolvedValue(null);
   // The engine logs wake outcomes deliberately (visible drops, D-004);
@@ -1146,13 +1146,13 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
       payload: { msg_id: 'm-ask' },
     });
     h.store.claimDueDeliveries.mockResolvedValueOnce([staleReminder, peerMessage]);
-    h.readOpenTaskReminderSignature.mockResolvedValueOnce('new-signature');
+    h.readOpenTaskReminderFreshness.mockResolvedValueOnce({ signature: 'new-signature', wakeGuaranteed: false });
 
     const stats = await pumpWakeDeliveries('ws-test', {
-      readOpenTaskReminderSignatureFn: h.readOpenTaskReminderSignature,
+      readOpenTaskReminderFreshnessFn: h.readOpenTaskReminderFreshness,
     });
 
-    expect(h.readOpenTaskReminderSignature).toHaveBeenCalledWith({
+    expect(h.readOpenTaskReminderFreshness).toHaveBeenCalledWith({
       ownerId: 'su-a',
       workspaceId: 'papercusp-workspace',
     });
@@ -1174,16 +1174,39 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
       payload: { kind: 'open-task-reminder', signature: 'same-signature', taskWorkspaceId: 'papercusp-workspace' },
     });
     h.store.claimDueDeliveries.mockResolvedValueOnce([reminder]);
-    h.readOpenTaskReminderSignature.mockResolvedValueOnce('same-signature');
+    h.readOpenTaskReminderFreshness.mockResolvedValueOnce({ signature: 'same-signature', wakeGuaranteed: false });
 
     const stats = await pumpWakeDeliveries('ws-test', {
-      readOpenTaskReminderSignatureFn: h.readOpenTaskReminderSignature,
+      readOpenTaskReminderFreshnessFn: h.readOpenTaskReminderFreshness,
     });
 
     expect(h.executeWake).toHaveBeenCalledTimes(1);
     expect(h.executeWake).toHaveBeenCalledWith(expect.objectContaining({ id: reminder.id }), expect.anything());
     expect(h.store.markDeliveryDropped).not.toHaveBeenCalled();
     expect(stats).toMatchObject({ dropped: 0, delivered: 1 });
+  });
+
+  it('drops a delayed reminder when a guaranteed wake source became active after it was queued', async () => {
+    const reminder = workRow({
+      id: 703,
+      subscriberId: 'su-awaited',
+      eventKey: 'coord:inbox-wake:su-awaited',
+      source: 'turn-end-open-task-reminder',
+      payload: { kind: 'open-task-reminder', signature: 'same-signature', taskWorkspaceId: 'papercusp-workspace' },
+    });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([reminder]);
+    h.readOpenTaskReminderFreshness.mockResolvedValueOnce({ signature: 'same-signature', wakeGuaranteed: true });
+
+    const stats = await pumpWakeDeliveries('ws-test', {
+      readOpenTaskReminderFreshnessFn: h.readOpenTaskReminderFreshness,
+    });
+
+    expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(
+      reminder.id,
+      'open-task reminder superseded by an active wake source',
+    );
+    expect(h.executeWake).not.toHaveBeenCalled();
+    expect(stats).toMatchObject({ dropped: 1, delivered: 0 });
   });
 
   it('an overdue bulk queue after restart cannot bypass execution admission; a directed wake stays immediate', async () => {

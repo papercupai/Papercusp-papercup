@@ -302,6 +302,7 @@ describe('PTY host event classification for Blender', () => {
     const unclassified = kinds.filter((kind) => classifyPtyHostEvent(kind) === 'unclassified');
     expect(unclassified, `unclassified PTY host event kinds: ${unclassified.join(', ')}`).toEqual([]);
     expect(classifyPtyHostEvent('pty-spawned')).toBe('routine');
+    expect(classifyPtyHostEvent('respawn-carry-accepted')).toBe('routine');
     // WI-6554700010030030: a failed in-place re-anchor is a failure; a benign skip is not.
     expect(classifyPtyHostEvent('reset-reanchor-failed')).toBe('failure');
     expect(classifyPtyHostEvent('reset-reanchor-skipped')).toBe('routine');

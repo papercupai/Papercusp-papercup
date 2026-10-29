@@ -170,3 +170,77 @@ export function sameTestFile(cited: string, recorded: string): boolean {
   const b = norm(recorded);
   return a === b || b.endsWith('/' + a) || a.endsWith('/' + b);
 }
+
+/** A frozen acceptance population, independent of the rows a test run happens to emit. */
+export interface TestCasePopulationMember extends TestCaseFilter {
+  rowId: string;
+}
+
+export interface TestCasePopulationReceipt extends RecordedTestCase {
+  file: string;
+  testRunId: number;
+}
+
+/**
+ * Post-run exact census. Callers supply completed canonical ledger rows and bind
+ * their source/build identity separately. This function neither runs tests nor
+ * creates receipts. Unlike a citation, a population requires ONE passing receipt
+ * per selector; aggregation must not hide duplicates or collapsed branches.
+ */
+export function resolveTestCasePopulation(
+  expected: readonly TestCasePopulationMember[],
+  recorded: readonly TestCasePopulationReceipt[],
+  namespacePrefixes: readonly string[],
+): {
+  ok: boolean;
+  matched: Array<{ rowId: string; receipt: TestCasePopulationReceipt }>;
+  issues: Array<{ code: string; rowId?: string; file?: string; caseKey?: string }>;
+} {
+  const issues: Array<{ code: string; rowId?: string; file?: string; caseKey?: string }> = [];
+  const matched: Array<{ rowId: string; receipt: TestCasePopulationReceipt }> = [];
+  const ids = new Set<string>(), selectors = new Set<string>();
+  const consumed = new Set<TestCasePopulationReceipt>();
+  const receiptKeys = new Set<string>();
+  const fileRuns = new Map<string, Set<number>>();
+  if (expected.length === 0) issues.push({ code: 'empty_population' });
+  if (namespacePrefixes.length === 0 || namespacePrefixes.some(prefix => !prefix.trim()))
+    issues.push({ code: 'invalid_namespace' });
+  for (const member of expected) {
+    const selector = JSON.stringify([member.file, member.testName]);
+    if (!member.rowId.trim() || !member.file.trim() || !member.testName.trim())
+      issues.push({ code: 'invalid_member', rowId: member.rowId });
+    if (ids.has(member.rowId)) issues.push({ code: 'duplicate_row_id', rowId: member.rowId });
+    if (selectors.has(selector)) issues.push({ code: 'duplicate_selector', rowId: member.rowId });
+    ids.add(member.rowId); selectors.add(selector);
+    const cases = recorded.filter(row => sameTestFile(member.file, row.file) &&
+      hasMatchingDeclaredCaseTitle(member.testName, [row.caseKey]));
+    if (cases.length !== 1) {
+      issues.push({ code: cases.length === 0 ? 'missing_case' : 'duplicate_receipt', rowId: member.rowId });
+      continue;
+    }
+    const receipt = cases[0]!;
+    const key = JSON.stringify([receipt.testRunId, receipt.caseKey, receipt.occurrence]);
+    if (consumed.has(receipt) || receiptKeys.has(key))
+      issues.push({ code: 'collapsed_receipt', rowId: member.rowId });
+    consumed.add(receipt); receiptKeys.add(key);
+    if (!Number.isSafeInteger(receipt.testRunId) || receipt.testRunId <= 0 || receipt.occurrence !== 1)
+      issues.push({ code: 'invalid_receipt_identity', rowId: member.rowId });
+    const runs = fileRuns.get(member.file) ?? new Set<number>();
+    runs.add(receipt.testRunId); fileRuns.set(member.file, runs);
+    if (receipt.status !== 'pass') issues.push({
+      code: receipt.status === 'skip' ? 'unexecuted_case' : 'failed_case', rowId: member.rowId,
+    });
+    matched.push({ rowId: member.rowId, receipt });
+  }
+  for (const [file, runs] of fileRuns) {
+    if (runs.size !== 1) issues.push({ code: 'mixed_file_runs', file });
+  }
+  for (const receipt of recorded) {
+    // Filtered cases are not execution. A skipped EXPECTED member was refused
+    // above; an unselected unrelated registration cannot become an extra run.
+    if (receipt.status === 'skip' || consumed.has(receipt)) continue;
+    if (receipt.caseKey.split(' > ').some(segment => namespacePrefixes.some(prefix => segment.startsWith(prefix))))
+      issues.push({ code: 'extra_case', file: receipt.file, caseKey: receipt.caseKey });
+  }
+  return { ok: issues.length === 0, matched, issues };
+}

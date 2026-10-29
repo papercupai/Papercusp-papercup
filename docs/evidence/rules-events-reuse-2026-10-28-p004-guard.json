@@ -1,0 +1,420 @@
+{
+  "plan": "rules-events-reuse-2026-10-28",
+  "workItem": "WI-6554700010042749",
+  "barKeys": [
+    "R-2",
+    "R-17",
+    "R-18",
+    "R-19"
+  ],
+  "runtime": "canonical staging tree, native maintained suite and guard CLI; not shipped acceptance",
+  "head": "1937281f51cf98177f05bde41818cf7182171a35",
+  "sources": {
+    "scripts/check-client-fetch-in-timer.mjs": "acd1d3222f1157489a6027c0696ce822f8a6fafc8d06b3d71c4105f24ad2dddd",
+    "scripts/client-fetch-in-timer-baseline.json": "a6816ed49ffca55bce45f33aabc85936175774ece010c2ade06edb33221790e9",
+    "scripts/lib/shrink-only-guard.mjs": "4ff8a8bc31f6ca283d4d631085e152efb184a40cfc4db4234b89d3858510d62e",
+    "packages/operator-core/lib/dbos/no-raw-setinterval-guard.test.ts": "5930aecfd36aa3dc9779fdfb292af410cfb4b5a81085d6c5e2bc0090c0d9b621"
+  },
+  "measuredSeed": [
+    {
+      "file": "apps/operator-vite/src/components/BundleFreshnessNotice.tsx",
+      "line": 106,
+      "key": "apps/operator-vite/src/components/BundleFreshnessNotice.tsx#613e0b5d53e8cdcd",
+      "text": "setInterval(() => void check(), POLL_MS)"
+    },
+    {
+      "file": "apps/operator-vite/src/components/VersionBadge.tsx",
+      "line": 53,
+      "key": "apps/operator-vite/src/components/VersionBadge.tsx#bca6659218d3da25",
+      "text": "setInterval(() => void poll(), POLL_MS)"
+    },
+    {
+      "file": "apps/operator-vite/src/components/adv/AdvFramesTab.tsx",
+      "line": 88,
+      "key": "apps/operator-vite/src/components/adv/AdvFramesTab.tsx#70ca2275a97c452e",
+      "text": "setInterval(pull, 30_000)"
+    },
+    {
+      "file": "apps/operator-vite/src/components/adv/CommunityBadge.tsx",
+      "line": 27,
+      "key": "apps/operator-vite/src/components/adv/CommunityBadge.tsx#af97389750543235",
+      "text": "setTimeout(load, POLL_MS)"
+    },
+    {
+      "file": "apps/operator-vite/src/components/adv/FleetRateControl.tsx",
+      "line": 118,
+      "key": "apps/operator-vite/src/components/adv/FleetRateControl.tsx#354f3bcbc8ba657c",
+      "text": "setInterval(pull, POLL_MS)"
+    },
+    {
+      "file": "apps/operator-vite/src/components/env-switcher/EnvSwitcherBar.tsx",
+      "line": 173,
+      "key": "apps/operator-vite/src/components/env-switcher/EnvSwitcherBar.tsx#2f170f52ff76e5d3",
+      "text": "setInterval(() => void load(), REFRESH_MS)"
+    },
+    {
+      "file": "apps/operator-vite/src/routes/admin/dogfood-substrate.tsx",
+      "line": 68,
+      "key": "apps/operator-vite/src/routes/admin/dogfood-substrate.tsx#904b60dd7004ab2e",
+      "text": "setInterval(() => void run(), 10_000)"
+    },
+    {
+      "file": "apps/operator/app/_components/AuthSignInCards.tsx",
+      "line": 119,
+      "key": "apps/operator/app/_components/AuthSignInCards.tsx#a072097bf00d3807",
+      "text": "setInterval(() => void refreshAuth(), 5000)"
+    },
+    {
+      "file": "apps/operator/app/_components/OnboardingConsole.tsx",
+      "line": 264,
+      "key": "apps/operator/app/_components/OnboardingConsole.tsx#83e678164e2d5d19",
+      "text": "setInterval(() => void checkGraduated(), 2000)"
+    },
+    {
+      "file": "apps/operator/app/_components/SetupWizard/StepAgents.tsx",
+      "line": 63,
+      "key": "apps/operator/app/_components/SetupWizard/StepAgents.tsx#bb2f39974dd9391d",
+      "text": "setInterval(() => void refreshRuntime(), 5000)"
+    },
+    {
+      "file": "apps/operator/app/_components/SetupWizard/StepEmbeddedPg.tsx",
+      "line": 30,
+      "key": "apps/operator/app/_components/SetupWizard/StepEmbeddedPg.tsx#841e96f9534a0a51",
+      "text": "setInterval(tick, 3000)"
+    },
+    {
+      "file": "apps/operator/app/_components/SetupWizard/StepGit.tsx",
+      "line": 97,
+      "key": "apps/operator/app/_components/SetupWizard/StepGit.tsx#a072097bf00d3807",
+      "text": "setInterval(() => void refreshAuth(), 5000)"
+    },
+    {
+      "file": "apps/operator/app/_components/SetupWizard/StepLocalModel.tsx",
+      "line": 89,
+      "key": "apps/operator/app/_components/SetupWizard/StepLocalModel.tsx#3a7e3388702cd572",
+      "text": "setInterval(() => void refresh(), 10000)"
+    },
+    {
+      "file": "apps/operator/app/_components/SetupWizard/StepOwnTunnel.tsx",
+      "line": 121,
+      "key": "apps/operator/app/_components/SetupWizard/StepOwnTunnel.tsx#e1aa2affcd0ff383",
+      "text": "setTimeout(tick, 2_000)"
+    },
+    {
+      "file": "apps/operator/app/_components/SetupWizard/useWizardStatuses.ts",
+      "line": 50,
+      "key": "apps/operator/app/_components/SetupWizard/useWizardStatuses.ts#a69cb0d39e2719fa",
+      "text": "setInterval(() => void refreshAll(), 10000)"
+    },
+    {
+      "file": "apps/operator/app/admin/testing/_components/MemoryTab.tsx",
+      "line": 75,
+      "key": "apps/operator/app/admin/testing/_components/MemoryTab.tsx#ba2fb85abcc5a4c5",
+      "text": "setTimeout(tick, HEALTH_POLL_MS)"
+    },
+    {
+      "file": "apps/operator/app/admin/testing/_components/MemoryTab.tsx",
+      "line": 110,
+      "key": "apps/operator/app/admin/testing/_components/MemoryTab.tsx#ce4b118fbca6630a",
+      "text": "setInterval(() => { void tick(); }, RUN_POLL_MS)"
+    },
+    {
+      "file": "apps/operator/app/admin/testing/_components/TestRunsTab.tsx",
+      "line": 60,
+      "key": "apps/operator/app/admin/testing/_components/TestRunsTab.tsx#448e5540c996d138",
+      "text": "setInterval(() => { void tick(); }, 1000)"
+    },
+    {
+      "file": "apps/operator/app/adv/harnesses/AdvGitGraphPanel.tsx",
+      "line": 159,
+      "key": "apps/operator/app/adv/harnesses/AdvGitGraphPanel.tsx#a350773320fcd191",
+      "text": "window.setInterval(load, 30_000)"
+    },
+    {
+      "file": "apps/operator/app/adv/sessions/AdvSessionsClient.tsx",
+      "line": 550,
+      "key": "apps/operator/app/adv/sessions/AdvSessionsClient.tsx#f99a0222e2cdd261",
+      "text": "setInterval(() => void push(), 20_000)"
+    },
+    {
+      "file": "apps/operator/app/coord/CoordDashboard.tsx",
+      "line": 140,
+      "key": "apps/operator/app/coord/CoordDashboard.tsx#451bafba655a1c69",
+      "text": "setInterval(() => {\n      if (document.visibilityState !== 'hidden') void tick();\n    }, 15_000)"
+    },
+    {
+      "file": "apps/operator/app/dev/_components/BackupsTab.tsx",
+      "line": 103,
+      "key": "apps/operator/app/dev/_components/BackupsTab.tsx#030d8bfa7b74c355",
+      "text": "setInterval(() => {\n      if (document.visibilityState !== 'hidden') void load();\n    }, 15_000)"
+    },
+    {
+      "file": "apps/operator/app/dev/_components/PgTab.tsx",
+      "line": 94,
+      "key": "apps/operator/app/dev/_components/PgTab.tsx#e53d80dc85815bb0",
+      "text": "setInterval(() => {\n      if (document.visibilityState !== 'hidden') void refresh();\n    }, 10_000)"
+    },
+    {
+      "file": "apps/operator/app/dev/_components/ProcessesTab.tsx",
+      "line": 127,
+      "key": "apps/operator/app/dev/_components/ProcessesTab.tsx#d097ecc2c0882fe7",
+      "text": "setInterval(() => {\n      if (document.visibilityState !== 'hidden') void refresh();\n    }, 5_000)"
+    },
+    {
+      "file": "apps/operator/app/dev/_components/RightRail.tsx",
+      "line": 119,
+      "key": "apps/operator/app/dev/_components/RightRail.tsx#6135e22d82ce8633",
+      "text": "setInterval(() => {\n      if (document.visibilityState !== 'hidden') refresh();\n    }, 15_000)"
+    },
+    {
+      "file": "apps/operator/app/dev/_components/StudioTab.tsx",
+      "line": 55,
+      "key": "apps/operator/app/dev/_components/StudioTab.tsx#e53d80dc85815bb0",
+      "text": "setInterval(() => {\n      if (document.visibilityState !== 'hidden') void refresh();\n    }, 10_000)"
+    },
+    {
+      "file": "apps/operator/app/harness/insights/ClaimAttemptTimelineClient.tsx",
+      "line": 71,
+      "key": "apps/operator/app/harness/insights/ClaimAttemptTimelineClient.tsx#d5b485ec2f78ea07",
+      "text": "window.setTimeout(tick, pollMs)"
+    },
+    {
+      "file": "apps/operator/app/harness/insights/ClaimAttemptTimelineClient.tsx",
+      "line": 74,
+      "key": "apps/operator/app/harness/insights/ClaimAttemptTimelineClient.tsx#d5b485ec2f78ea07",
+      "text": "window.setTimeout(tick, pollMs)"
+    },
+    {
+      "file": "apps/operator/app/settings/deploy-accounts/page.tsx",
+      "line": 289,
+      "key": "apps/operator/app/settings/deploy-accounts/page.tsx#01126b41159a8128",
+      "text": "setInterval(() => void tick(), 2500)"
+    }
+  ],
+  "runs": [
+    {
+      "log": "/tmp/p004-suite.log",
+      "sha256": "ba2a5403e03897258fc5afed102b7368eaa5a5d52310403a7533cfb79e8ab101",
+      "evidence": [
+        "TEST_FILE_PROGRESS state=file-completed cwd=\"packages/operator-core\" elapsedMs=23468 capturedBytes=7179 completedFiles=[\"lib/dbos/no-raw-setinterval-guard.test.ts\"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending lastOutputLine={\"channel\":\"stdout\",\"text\":\"\u2713 lib/dbos/no-raw-setinterval-guard.test.ts (10 tests) 16113ms\"}",
+        "  \u26d4 STALE-VERDICT TRAP: a PASS here does NOT make a gate verdict naming these path(s) stale \u2014 the pass can be riding on uncommitted work while the COMMITTED blob the gate judged still fails.",
+        " \u2713 lib/dbos/no-raw-setinterval-guard.test.ts (10 tests) 16113ms",
+        " Test Files  1 passed (1)",
+        "      Tests  10 passed (10)",
+        "  \u26d4 STALE-VERDICT TRAP: a PASS here does NOT make a gate verdict naming these path(s) stale \u2014 the pass can be riding on uncommitted work while the COMMITTED blob the gate judged still fails.",
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=cc81631ef9 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-29T03:23:23.958Z childSubstituted=0 skippedTests=0"
+      ]
+    },
+    {
+      "log": "/tmp/p004-exact.log",
+      "sha256": "36d5728c2c582e513fd6cabd2b3928d4800037857560e278e509860ed9c650f1",
+      "evidence": [
+        "TEST_FILE_PROGRESS state=file-completed cwd=\"packages/operator-core\" elapsedMs=10297 capturedBytes=5105 completedFiles=[\"lib/dbos/no-raw-setinterval-guard.test.ts\"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending lastOutputLine={\"channel\":\"stdout\",\"text\":\"\u2713 lib/dbos/no-raw-setinterval-guard.test.ts (10 tests | 7 skipped) 52ms\"}",
+        "  \u26d4 STALE-VERDICT TRAP: a PASS here does NOT make a gate verdict naming these path(s) stale \u2014 the pass can be riding on uncommitted work while the COMMITTED blob the gate judged still fails.",
+        " \u2713 lib/dbos/no-raw-setinterval-guard.test.ts (10 tests | 7 skipped) 52ms",
+        " Test Files  1 passed (1)",
+        "      Tests  3 passed | 7 skipped (10)",
+        "  \u26d4 STALE-VERDICT TRAP: a PASS here does NOT make a gate verdict naming these path(s) stale \u2014 the pass can be riding on uncommitted work while the COMMITTED blob the gate judged still fails.",
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=cc81631ef9 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-29T03:30:23.625Z childSubstituted=0 skippedTests=7"
+      ]
+    },
+    {
+      "log": "/tmp/p004-mutation-final-0.log",
+      "sha256": "407e64a333a0bfc47eb83bc741e7572c32ee0101ff3653b4a69302fca74c70d5",
+      "evidence": [
+        "COMMAND [\"bash\", \"scripts/mutation-probe.sh\", \"--file\", \"apps/operator-vite/src/components/VersionBadge.tsx\", \"--mutate\", \"$_ .= qq(\\\\nsetInterval(() => fetch('/api/p004-mutation'), 19001);\\\\n) if eof;\", \"--test\", \"node scripts/check-client-fetch-in-timer.mjs --source {} --as apps/operator-vite/src/components/VersionBadge.tsx\"]",
+        "client fetch-in-timer: PASS (copy-out source)",
+        "client fetch-in-timer: PASS (copy-out source)",
+        "apps/operator-vite/src/components/VersionBadge.tsx:114: client fetch-in-timer: use @papercusp/sync (apps/operator-vite/src/components/VersionBadge.tsx#4b24a0cbad9e5001)",
+        "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) \u2014 the guard is falsifiable \u2713",
+        "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=exit-code-only relocation=overlay baseline_ledger=none copy_baseline_ledger=none mutant_ledger=none",
+        "[mutation-probe] tree integrity: VERIFIED \u2014 <repo>/apps/operator-vite/src/components/VersionBadge.tsx is byte-identical to its pre-probe state"
+      ]
+    },
+    {
+      "log": "/tmp/p004-mutation-final-1.log",
+      "sha256": "7796b4b20e1e5da7d7415a3bc6b0f286a600fa0c80ef33171bb4ef4453c1e51b",
+      "evidence": [
+        "COMMAND [\"bash\", \"scripts/mutation-probe.sh\", \"--file\", \"apps/operator/app/_components/AuthSignInCards.tsx\", \"--mutate\", \"$_ .= qq(\\\\nsetInterval(() => fetch('/api/p004-mutation'), 19001);\\\\n) if eof;\", \"--test\", \"node scripts/check-client-fetch-in-timer.mjs --source {} --as apps/operator/app/_components/AuthSignInCards.tsx\"]",
+        "client fetch-in-timer: PASS (copy-out source)",
+        "client fetch-in-timer: PASS (copy-out source)",
+        "apps/operator/app/_components/AuthSignInCards.tsx:219: client fetch-in-timer: use @papercusp/sync (apps/operator/app/_components/AuthSignInCards.tsx#4b24a0cbad9e5001)",
+        "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) \u2014 the guard is falsifiable \u2713",
+        "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=exit-code-only relocation=overlay baseline_ledger=none copy_baseline_ledger=none mutant_ledger=none",
+        "[mutation-probe] tree integrity: VERIFIED \u2014 <repo>/apps/operator/app/_components/AuthSignInCards.tsx is byte-identical to its pre-probe state"
+      ]
+    },
+    {
+      "log": "/tmp/p004-mutation-final-2.log",
+      "sha256": "31b712b13a3397dbb9d405c3887007e488cbd445ec707de3a01db530c6e49688",
+      "evidence": [
+        "COMMAND [\"bash\", \"scripts/mutation-probe.sh\", \"--file\", \"packages/operator-ui/src/adv-navigation.ts\", \"--mutate\", \"$_ .= qq(\\\\nsetInterval(() => fetch('/api/p004-mutation'), 19001);\\\\n) if eof;\", \"--test\", \"node scripts/check-client-fetch-in-timer.mjs --source {} --as packages/operator-ui/src/adv-navigation.ts\"]",
+        "client fetch-in-timer: PASS (copy-out source)",
+        "client fetch-in-timer: PASS (copy-out source)",
+        "packages/operator-ui/src/adv-navigation.ts:67: client fetch-in-timer: use @papercusp/sync (packages/operator-ui/src/adv-navigation.ts#4b24a0cbad9e5001)",
+        "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) \u2014 the guard is falsifiable \u2713",
+        "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=ok assertion_evidence=exit-code-only relocation=overlay baseline_ledger=none copy_baseline_ledger=none mutant_ledger=none",
+        "[mutation-probe] tree integrity: VERIFIED \u2014 <repo>/packages/operator-ui/src/adv-navigation.ts is byte-identical to its pre-probe state"
+      ]
+    }
+  ],
+  "restoredGuard": "client fetch-in-timer: PASS (29 measured sites)\n",
+  "reachability": {
+    "name": "lint:client-fetch-in-timer",
+    "impls": [
+      "scripts/check-client-fetch-in-timer.mjs"
+    ],
+    "tiers": [
+      "logic-test",
+      "repo-wide"
+    ],
+    "tier": "repo-wide",
+    "blocking": true,
+    "coverage": {
+      "verdict": "full",
+      "reason": "registered in REPO_WIDE_INVARIANT_GUARDS \u2014 runs on its own predicate"
+    }
+  },
+  "limitations": [
+    "Syntactic read guard follows local callback calls; imported opaque helpers require a recognizable fetch/refetch name.",
+    "Copy-out mutation runner reported partial write containment with verified subject tree integrity; no in-tree mutation.",
+    "Initial candidate30 census is independent from this syntactic timer population."
+  ],
+  "invalidAttempts": [
+    "Discarded caller Perl quoting compile failure; discarded END print under perl -pi (no subject change). Final expressions preflight valid changed bytes and marker before maintained probe."
+  ],
+  "priorSourceFingerprints": {
+    "scripts/check-client-fetch-in-timer.mjs": "acd1d3222f1157489a6027c0696ce822f8a6fafc8d06b3d71c4105f24ad2dddd",
+    "scripts/client-fetch-in-timer-baseline.json": "a6816ed49ffca55bce45f33aabc85936175774ece010c2ade06edb33221790e9",
+    "scripts/lib/shrink-only-guard.mjs": "4ff8a8bc31f6ca283d4d631085e152efb184a40cfc4db4234b89d3858510d62e",
+    "packages/operator-core/lib/dbos/no-raw-setinterval-guard.test.ts": "bf9ebdfe73cdfb6e4d2a3303f63d274439111068f44b0cd22162930b9374851d"
+  },
+  "ledgerMutationRuns": [
+    {
+      "logSha256": "43a6f3999cc332687f116ea855e30e38af263a5757dc3d09d2162af2b8e12fb9",
+      "receipt": {
+        "runnerPath": "scripts/mutation-probe.sh",
+        "environment": {
+          "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:9171/api/health",
+          "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED": 1,
+          "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+          "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto",
+          "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO": "<repo>"
+        },
+        "result": {
+          "target": "copy-out",
+          "copyBaselineLedger": "test_runs:22605449",
+          "mutantLedger": "test_runs:22605477",
+          "mutantParse": "unchecked",
+          "expected": "caught",
+          "baselineExit": 0,
+          "assertionEvidence": "test-file-assertion-failure",
+          "relocation": "overlay",
+          "verdict": "caught",
+          "baselineLedger": "test_runs:22605432",
+          "guardExit": 1
+        },
+        "runnerSha256": "e0eb6dc68a76e895e69343aca349cf8f549f6ae5d69a1c735b17ed9e9cb23c76",
+        "argv": [
+          "--file",
+          "apps/operator-vite/src/components/VersionBadge.tsx",
+          "--mutate",
+          "$_ .= qq(\\nsetInterval(() => fetch('/api/p004-mutation'), 19001);\\n) if eof;",
+          "--test",
+          "PAPERCUSP_TEST_RUN_HARNESS=papercusp CLIENT_FETCH_TIMER_SOURCE={} CLIENT_FETCH_TIMER_AS=apps/operator-vite/src/components/VersionBadge.tsx npm run test:file -- packages/operator-core/lib/dbos/no-raw-setinterval-guard.test.ts -- -t 'rules events reuse R-(2|17|18) '"
+        ],
+        "schemaVersion": 1,
+        "runnerCommit": "44c8d10268a328a1e796856579c9cc4e2826db1d",
+        "cwd": "."
+      },
+      "integrity": "subject byte-identical, verified by maintained probe"
+    },
+    {
+      "logSha256": "d05fc0f1531db1e896a2d76fc7265327ddad521c38c68eca82d49dcea5d42597",
+      "receipt": {
+        "environment": {
+          "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto",
+          "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED": 1,
+          "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+          "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:9171/api/health",
+          "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO": "<repo>"
+        },
+        "runnerPath": "scripts/mutation-probe.sh",
+        "result": {
+          "guardExit": 1,
+          "verdict": "caught",
+          "assertionEvidence": "test-file-assertion-failure",
+          "baselineLedger": "test_runs:22605433",
+          "expected": "caught",
+          "target": "copy-out",
+          "copyBaselineLedger": "test_runs:22605451",
+          "mutantLedger": "test_runs:22605476",
+          "baselineExit": 0,
+          "mutantParse": "unchecked",
+          "relocation": "overlay"
+        },
+        "runnerCommit": "44c8d10268a328a1e796856579c9cc4e2826db1d",
+        "runnerSha256": "e0eb6dc68a76e895e69343aca349cf8f549f6ae5d69a1c735b17ed9e9cb23c76",
+        "argv": [
+          "--file",
+          "apps/operator/app/_components/AuthSignInCards.tsx",
+          "--mutate",
+          "$_ .= qq(\\nsetInterval(() => fetch('/api/p004-mutation'), 19001);\\n) if eof;",
+          "--test",
+          "PAPERCUSP_TEST_RUN_HARNESS=papercusp CLIENT_FETCH_TIMER_SOURCE={} CLIENT_FETCH_TIMER_AS=apps/operator/app/_components/AuthSignInCards.tsx npm run test:file -- packages/operator-core/lib/dbos/no-raw-setinterval-guard.test.ts -- -t 'rules events reuse R-(2|17|18) '"
+        ],
+        "cwd": ".",
+        "schemaVersion": 1
+      },
+      "integrity": "subject byte-identical, verified by maintained probe"
+    },
+    {
+      "logSha256": "b24dd654a41e8d766a706723882c342899e8e8a830c8d447c66269e3202151c1",
+      "receipt": {
+        "schemaVersion": 1,
+        "result": {
+          "mutantLedger": "test_runs:22605455",
+          "verdict": "caught",
+          "target": "copy-out",
+          "guardExit": 1,
+          "assertionEvidence": "test-file-assertion-failure",
+          "expected": "caught",
+          "relocation": "overlay",
+          "mutantParse": "ok",
+          "baselineLedger": "test_runs:22605431",
+          "copyBaselineLedger": "test_runs:22605448",
+          "baselineExit": 0
+        },
+        "runnerSha256": "e0eb6dc68a76e895e69343aca349cf8f549f6ae5d69a1c735b17ed9e9cb23c76",
+        "runnerCommit": "44c8d10268a328a1e796856579c9cc4e2826db1d",
+        "runnerPath": "scripts/mutation-probe.sh",
+        "argv": [
+          "--file",
+          "packages/operator-ui/src/adv-navigation.ts",
+          "--mutate",
+          "$_ .= qq(\\nsetInterval(() => fetch('/api/p004-mutation'), 19001);\\n) if eof;",
+          "--test",
+          "PAPERCUSP_TEST_RUN_HARNESS=papercusp CLIENT_FETCH_TIMER_SOURCE={} CLIENT_FETCH_TIMER_AS=packages/operator-ui/src/adv-navigation.ts npm run test:file -- packages/operator-core/lib/dbos/no-raw-setinterval-guard.test.ts -- -t 'rules events reuse R-(2|17|18) '"
+        ],
+        "cwd": ".",
+        "environment": {
+          "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO": "<repo>",
+          "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+          "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED": 1,
+          "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto",
+          "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:9171/api/health"
+        }
+      },
+      "integrity": "subject byte-identical, verified by maintained probe"
+    }
+  ],
+  "finalSuite": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/dbos/no-raw-setinterval-guard.test.ts packages/operator-core/lib/dbos/no-bespoke-condition-op-guard.test.ts",
+    "result": [
+      "      Tests  13 passed (13)",
+      "TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed head=44c8d10268 uncommittedPaths=2/2 provenance=stamped startedAt=2026-10-29T03:59:28.100Z childSubstituted=0 skippedTests=0"
+    ],
+    "logSha256": "60e0721d4ffa318fd538a0303663a2121237ef95e37c419bb3edd730434d5623"
+  },
+  "artifactPortability": "Machine-specific checkout prefixes normalized to <repo>; original logs retained outside repo and pinned by SHA256."
+}

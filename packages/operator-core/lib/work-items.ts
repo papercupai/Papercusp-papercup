@@ -29,6 +29,7 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { readWorkItemDefinition, type WorkItemDefinition } from './work-item-definition';
 import { createPlanSearchSource } from './agent-tools/search/knowledge-sources';
 import { observeFallback } from './degradation/fallback-observations';
 import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClaimSelection } from './typed-properties-db';
@@ -336,6 +337,8 @@ export function isWorkItemKind(k: string): k is WorkItemKind {
 // ── Unified shape ─────────────────────────────────────────────────────────────────
 export interface WorkItem {
   id: string;
+  /** Planned acceptance/scope/verification, read directly from structured storage. */
+  definition?: WorkItemDefinition | null;
   kind: WorkItemKind;
   family: WorkItemFamily;
   harness: string | null;
@@ -701,6 +704,7 @@ export function issueToWorkItem(i: EngineerIssue): WorkItem {
     ...(i.expectedCostCents !== undefined ? { expectedCostCents: i.expectedCostCents } : {}),
     parent: i.parent,
     payload: i.payload ?? null,
+    definition: readWorkItemDefinition(i.payload),
     ...(externalBlockers.length ? { externalBlockers } : {}),
     rank: i.assigneeRank,
     rankWriter: i.rankWriter,
@@ -824,6 +828,7 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     expectedCostCents: coerceFiniteNumber(r.expected_cost_cents),
     parent: r.parent_id,
     payload: r.payload ?? null,
+    definition: readWorkItemDefinition(r.payload),
     ...(externalBlockers.length ? { externalBlockers } : {}),
     rank: r.assignee_rank,
     rankWriter: isRankWriter(r.rank_writer) ? r.rank_writer : null,

@@ -6,6 +6,105 @@
   "migrationAccepted": false,
   "shipped": false,
   "observationDateUtc": "2026-10-29",
+  "preparationUpdateUtc": "2026-10-29T03:53:55.291525Z",
+  "subsequentPreparation": {
+    "dateUtc": "2026-10-29",
+    "copyClause": "R2GCS-COPY-P-005@1",
+    "copyMechanicalVerdict": "pass",
+    "currentBindings": [73933, 73934, 73953, 73970],
+    "manualCensusBinding": 73956,
+    "manualRetentionBoundaryBinding": 73931,
+    "evaluationMethod": "Read exact serverMeasurement.current tuples from the six independently current bindings, then evaluate the unchanged clauses with those tuples. COPY passed every applicable criterion.",
+    "copyScope": "Retained four-file P544 identities and saved original full-byte proof, with reused clean checksum/copy-baseline/caught-mutant and HTTP integration receipts. No production download or P002/P004 recertification was repeated.",
+    "bindingCorrection": {
+      "withdrawn": [73922, 73955],
+      "replacement": 73970,
+      "reason": "The caller mistakenly included a mutable later preparation document in the historical instrument source recipe. Used the documented attributable withdrawal and correction path; original rows and run22258800 remain in audit history.",
+      "authority": "spec-evidence-store.ts retractSpecEvidence and the repair-after-withdrawal integration test",
+      "consult": "conv-request-88ccae19906ac620c06ce13ad1f128bfe179e8aa650501c25e8bff523931948c",
+      "auditReadback": "Default/current replacement is current; includeRetracted readback retains both withdrawn rows with actor and reason. No spec change or historical runtime witness was introduced."
+    },
+    "remainingP005": [
+      "Independent retention-boundary review received; it does not accept R5 or RETAIN",
+      "RETAIN operational and falsifiability proof remains incomplete; manual source-exception ownership alone is insufficient",
+      "Original source keys/counts, retention and cutover deltas remain unmeasured within the explicit inaccessible-data boundary",
+      "Peer P003 publication and old-client recovery evidence remains required"
+    ],
+    "p003Await": { "id": 386912, "generation": 1, "result": "timed-out; completion event did not fire", "shipmentVerified": false },
+    "restartWarningFix": { "workItem": "EI-27256354404326334", "state": "done", "completionAuthority": "committed", "maintainedTests": "138 passed, 0 failed, 0 skipped" },
+    "readerCompatibilityFollowUp": {
+      "workItem": "EI-27285944879352300",
+      "assignee": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea",
+      "scope": "Exact stored test receipt22606981 is accepted by the current source parser but rejected as invalid-or-unsupported by the older staging reader. Pipeline containment confirms the staging reader lacks current execution-details.ts. Preserve the real passing report and original metadata; no live gate operation or blanket restart was performed.",
+      "recurrenceGuard": {
+        "file": "packages/operator-core/lib/agent-tools/testing/runs.test.ts",
+        "scenario": "Object and serialized reporter metadata with timing identity and both runtime capture statuses not-configured retain passing counts and root without inventing runtime witnesses.",
+        "command": "npm run test:file -- packages/operator-core/lib/agent-tools/testing/runs.test.ts",
+        "result": { "passed": 68, "failed": 0, "skipped": 0 },
+        "testRunId": 22609629,
+        "sourceScope": "Local b5ad445cd4 plus20 test lines; the old staging reader withholds this new row's execution details too. The original138-test report was not rerun."
+      },
+      "activationDependency": {
+        "workItem": "EI-27289220288494614",
+        "assignee": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea",
+        "observation": "Maintained staging-sync candidate b5ad445cd4 failed its SPA build at2026-10-29T05:08:17Z: HarnessSyncProvider imports getSyncQueryClient, absent from committed sync gitlink7f1edfa0. Canonical submodulec561b55 already exports it.",
+        "remedy": "Record the existing compatible submodule through maintained git-sync, then prepare a fresh staging generation and verify exact served-reader acceptance of the same retained receipt. Restarting the old pinned generation does not advance its source.",
+        "currentReaderVerified": false
+      }
+    },
+    "migrationAccepted": false,
+    "p544QualifiedOrShipped": false
+  },
+  "independentRetentionBoundaryReview": {
+    "conversation": "conv-request-0559630beec7594d880248d27680551e8bce2ae0d3b5de145643e86ee694fe23",
+    "reviewer": "su-a80225d0-8e12-4888-b4ee-516b840a66aa",
+    "answerPost": 1210139,
+    "closePost": 1210140,
+    "state": "closed_answered",
+    "verdict": "The precisely enumerated owned inaccessible-data exception and four-file destination/local custody do not prove continuous original R2 retention. RETAIN@1 and the retention conjunct of R5 remain unproven.",
+    "exceptionControlProposal": "A deterministic validator should reject an omitted population, missing owner, unknown count changed to zero, a copy claim without byte/metadata proof, or a premature acceptance claim. Such controls prove exception integrity only.",
+    "requiredSourceEvidence": "Authoritative evidence for the exact source buckets and cutover interval: restored source read entitlement and source snapshots, or immutable provider audit/retention/versioning records. No-delete instructions, unobserved delete calls and successful GCS copies cannot establish inaccessible source retention.",
+    "accountActionReference": "WI-6554700010022667",
+    "sourceExceptionWorkItem": "WI-6554700010025592",
+    "retentionVerified": false,
+    "migrationAccepted": false
+  },
+  "providerRetentionEvidenceAccess": {
+    "observedAt": "2026-10-29T05:20:38.885548Z",
+    "accountId": "f896982ea2f6d507e4f29eeecbd26e94",
+    "credentialSource": "Existing Wrangler OAuth configuration; values were not recorded or changed",
+    "positiveControls": [
+      { "route": "GET /accounts", "http": 200, "success": true, "paginationComplete": true, "returnedAccounts": 1 },
+      { "route": "GET /accounts/<account>/workers/scripts/papercusp-cupboard/deployments", "http": 200, "success": true }
+    ],
+    "auditWindow": { "since": "2026-10-23T00:00:00Z", "before": "2026-10-29T05:20:38.885548Z" },
+    "auditReads": [
+      { "route": "GET /accounts/<account>/audit_logs", "http": 403, "success": false, "errorCode": 10000, "errorMessage": "Authentication error", "populationMeasured": false },
+      { "route": "GET /accounts/<account>/logs/audit", "http": 403, "success": false, "errorCode": 10000, "errorMessage": "Authentication error", "populationMeasured": false }
+    ],
+    "credentialSearchScope": "25 existing dotenv/configuration files under the repository/app roots and standard home Papercusp/Cloudflare locations, plus the current process's standard Cloudflare credential variable names; no alternate API token/key was configured in that bounded scope.",
+    "coverageLimit": "The installed Cloudflare SDK also warns that audit v2 is beta and may omit entries. A successful bounded audit page would still need a coverage argument before proving continuous source retention.",
+    "interpretation": "The same credential can read the exact account and Worker, but audit access is refused. This is not an empty audit population, a source deletion result, or evidence of R2 retention. Disabled R2 object access was not queried again.",
+    "retentionVerified": false,
+    "accountActionReference": "WI-6554700010022667"
+  },
+  "scopedContentGuard": {
+    "observedAt": "2026-10-29T03:41:36.286Z",
+    "files": ["scripts/lib/workspace-host-gcs-publication.mjs", "scripts/lib/workspace-host-gcs-publication.d.mts"],
+    "maintainedCommand": "npm run content-lint -- --file=<exact file> --json",
+    "inScopeDetectors": [6, 4],
+    "exitCodes": [0, 0],
+    "flagged": [],
+    "errors": [],
+    "canonicalImporterGuard": "Clear-source baseline returned no offenders; excluding the source caught its exact generated declaration as a positive control.",
+    "workingBytesEqualHead": true,
+    "pairLastCommit": "c70f218bdb252c62ac291b7a47d0000422a14ac2",
+    "gitSyncSnapshot": { "lastFiredAt": "2026-10-29T03:39:37.487Z", "namedFilesInContentErrors": false, "contentErrorsOmitted": 0 },
+    "completionEvent": "plan:r2-to-gcs-storage-migration-2026-10-23:r2gcs-gcs-publication-guard-cleared-20261029",
+    "generation": 1,
+    "peerReply": "coord-send-b77d39ae985b2815eae84b310ae479051e86413aa66f7c9bab78c1b14ac276d4",
+    "scopeLimit": "Exact source/declaration pair only; unrelated git-sync findings remain. No global gate, P003 shipment or migration acceptance claim."
+  },
   "sourceAudit": {
     "scope": [
       "apps/operator-public/src and wrangler.toml",
@@ -38,14 +137,14 @@
       },
       {
         "path": "papercusp-desktop/bin/mac-vm-fresh-install-e2e.sh",
-        "classification": "Validation journey still has an R2 artifact-base default",
-        "remedy": "Use an explicit qualified GCS-backed artifact base and extend the maintained journey default under the existing P003 release lane.",
+        "classification": "Earlier census found an R2 artifact-base default. Current source now loads the maintained release-host configuration when no explicit artifact base is supplied and fails if configuration is missing.",
+        "remedy": "P003 owner reported the default repair and 38 passing maintained tests; current source read confirms configuration resolution. Exact released-artifact journey acceptance remains P003.",
         "ownerWorkItem": "WI-6554700010025562"
       },
       {
         "path": "papercusp-desktop/bin/offline-installer-journey.sh",
-        "classification": "Network egress probe still names the old R2 public origin among alternate reachability targets",
-        "remedy": "Update the maintained validation target under P003; this match is not a server storage backend.",
+        "classification": "Earlier census found an old R2 egress probe target. Current source uses archive.ubuntu.com, storage.googleapis.com and github.com.",
+        "remedy": "P003 owner reported the repair; current source read confirms the replacement egress targets. This is validation source evidence, not deployed release acceptance.",
         "ownerWorkItem": "WI-6554700010025562"
       },
       {
@@ -125,7 +224,7 @@
       "reuse": ["p002-production-execution.json", "p002-production-live.json", "p002-custody-retention.json"],
       "canonicalRun": 22258800,
       "binding": 73886,
-      "acceptanceRemaining": "Independent P002 grading audit; historical execution has no runtimeBefore/After witness. Do not repeat the production download for recall."
+      "acceptanceRemaining": "P002 completed with committed authority. Reuse its completed candidate and saved canonical proof; historical execution has no runtimeBefore/After witness. Do not repeat the production download for recall."
     },
     {
       "journey": "Private visibility, create-only collision, reconnect, finalization and archive restore",
@@ -143,7 +242,7 @@
       "reuse": ["p005-census-preparation-2026-10-29.json"],
       "ownerWorkItem": "WI-6554700010025564",
       "exceptionWorkItem": "WI-6554700010025592",
-      "acceptanceRemaining": "Bound copy/retention evidence and precise inaccessible-data dispositions; obtain P005 acceptance."
+      "acceptanceRemaining": "COPY clause mechanics pass with current audited bindings. R5 independent review and RETAIN operational/falsifiability proof remain incomplete; obtain P005 acceptance after its peer release dependency."
     }
   ],
   "sequence": {
@@ -153,5 +252,5 @@
     "newProviderExperimentStartedThisTurn": false,
     "p544QualifiedOrShipped": false
   },
-  "next": "Resolve P002 audit, accept P005 after peer release dependency, then obtain independent exact deployed migration acceptance. Preserve all original receipts and the separate P544 obligation."
+  "next": "Complete P005 copy/retention evidence and independent acceptance after the peer P003 release dependency, then obtain independent exact deployed migration acceptance. P002/P004 are complete. Preserve original receipts and the separate P544 obligation."
 }

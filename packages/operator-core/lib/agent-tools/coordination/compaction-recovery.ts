@@ -79,8 +79,8 @@ export const MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION =
  * summaries lose: (a) the caller's HELD work-items' checkpoints (the carry
  * notes a successor is normally re-injected with only on item pickup),
  * (b) the armed engine-loop status, and (c) the self-recall pointer — the
- * pre-compaction transcript survives on disk and is searchable via
- * sessions:search { session:'self' }. Resolving here ALSO force-tails the
+ * pre-compaction transcript survives on disk and is recoverable through
+ * the caller's authorized session/work-item surfaces. Resolving here ALSO force-tails the
  * caller's own transcript (ingestFileNow) so that pointer is FRESH the
  * moment it's handed out — client-neutral (claude/omp/codex), no hook
  * required.
@@ -227,17 +227,24 @@ export async function buildCompactionRecovery(
    *  canonical harness contradicts it — never to filter them out. */
   opts: {
     sessionHarness?: string | null;
+    /** Role-specific recovery guidance must not prescribe a tool the caller cannot use. */
+    sessionRole?: string | null;
     /** CarryDoc already paid this authoritative read. Reuse it so automatic
      *  delivery does not query held items twice at the boundary. */
     heldItems?: CarryBriefHeldItem[];
   } = {},
 ): Promise<CompactionRecovery> {
-  const recovery: CompactionRecovery = {
-    selfRecall:
-      "Your pre-compaction turns survive on disk and are INDEXED — recover any lost detail with " +
+  const selfRecall = opts.sessionRole === 'judge'
+    ? "The evidence-only judge lacks transcript-search permission and cannot open another session's transcript. Recover the active assignment with " +
+      "work_items:list { mine:true, notTerminal:true }, then read its brief and checkpoint with work_items:get { id, harness }. " +
+      "For turns available in your own judge transcript chain, use sessions:read { session:'self', tail:40 }; a separate predecessor " +
+      "ref is outside this role's scope. If the work-item ledger has no assignment or checkpoint, report that missing recovery context."
+    : "Your pre-compaction turns survive on disk and are INDEXED — recover any lost detail with " +
       "sessions:search { session:'self', mode:'verbatim', query:'<what you remember>' } " +
       "(or sessions:read { session:'self', tail: 40 } for the last 40 turns — pass tail:N, " +
-      "an integer; sessions:read has NO mode argument, that belongs to sessions:search only).",
+      "an integer; sessions:read has NO mode argument, that belongs to sessions:search only).";
+  const recovery: CompactionRecovery = {
+    selfRecall,
     coverage: {
       selfSession: false,
       control: false,

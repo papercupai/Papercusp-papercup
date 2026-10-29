@@ -9,7 +9,8 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { nativeCliCall, nativeCliTestTimeout, nativeFixtureProcess, scopedNativeFixtureArgs } from './native-cli.fixture';
 import './scoped-contracts.e2e.test';
 import { privateReuseTestEnvironment } from './__fixtures__/reuse-api-journey';
-import { captureIsolatedWorker, isolatedWorkerFailureDetail, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
+  recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 
 /** Resolve HEAD inside the owning repository, including test-config's submodule. */
 function requireCommittedNativeSource(root: string, path: string, expectedHash: string) {
@@ -107,7 +108,12 @@ function nativeFixtureFailureDiagnostic(
 /** bundle-host.sh stall window and ceiling; a fresh host bundle measured ~83s unloaded. */
 const hostBundleStallMs = 120_000;
 const hostBundleMaxMs = 360_000;
-const privateJourneyTimeoutMs = hostBundleMaxMs + 180_000 + 20_000;
+/** Reuse journeys run through the isolated proof with PHASE deadlines: private PG
+ * boot and its ~1,400 migrations get their own progress-aware bootstrap budget,
+ * so they never consume the fixture's 180s execute allowance (WI-6554700010042656:
+ * a single 180s clock spent ~110s on migrations and killed the worker mid-import). */
+const nativeIsolatedWorker = isolatedWorkerOptions(180_000);
+const privateJourneyTimeoutMs = hostBundleMaxMs + Math.max(180_000, nativeIsolatedWorker.testTimeoutMs) + 20_000;
 
 /**
  * One host-handler bundle per file (EI-27225287785052203): each of six journeys used to pay a
@@ -211,9 +217,9 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
           const child = fork(join(root, 'scripts/with-test-pg.mjs'), workerArgs,
             { cwd: root, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
           observe(child);
-          const captured = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 180_000 });
+          const captured = await captureIsolatedWorker(child, evidenceDir, nativeIsolatedWorker);
           result = { code: captured.code, signal: captured.signal, output: captured.output,
-            failureOutput: isolatedWorkerFailureDetail(captured.output) };
+            failureOutput: isolatedWorkerFailureDetail(captured.output, captured) };
           expect(captured, result.failureOutput).toMatchObject({ code: 0, signal: null,
             timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
         },

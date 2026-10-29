@@ -122,6 +122,7 @@ vi.mock('./_shared', () => ({
 import tool, {
   awaitMemberDrain,
   awaitReplacementMember,
+  launchOutcome,
   persistRespawnLaunchTransaction,
   reconcileRespawnLaunchTransaction,
 } from './respawn-member';
@@ -1306,13 +1307,96 @@ describe('fleet:respawn-member (P-008)', () => {
 });
 
 /**
- * WI-6936: capability:launch-agent returns once it has spawned the member's TERMINAL, whose
+ * WI-6936: capability:launch-agent can return after it has spawned the member's TERMINAL, whose
  * wrapper script ends in `exec "$SHELL" -l` — so a CLI that dies before its first turn leaves a
- * live pid, a live terminal, and no agent, while the launcher reports success. Only a new
- * coord_presence row proves an agent booted, so the respawn's `ok` must ride on that, not on the
- * launcher's return value.
+ * live pid, a live terminal, and no agent. The respawn accepts either an exact-owner nested
+ * first-turn verdict or a new coord_presence row; a bare launch return proves neither.
  */
 describe('fleet:respawn-member replacement verification (WI-6936)', () => {
+  it('uses the exact nested first-turn proof when the fleet roster is still behind', async () => {
+    getFleet.mockResolvedValue({ lastLaunchTransaction: launchTransaction() });
+    listFleetPresence.mockReset().mockResolvedValue([row(LEADER), row(MEMBER)]);
+    launchHandler.mockImplementationOnce((args: { __respawnOwnerId: string }) => ({
+      content: [{ type: 'text', text: `Launched ${args.__respawnOwnerId} into ${SLUG}` }],
+      data: {
+        launch: {
+          fleet: SLUG,
+          ownerIds: [args.__respawnOwnerId],
+          launchEvidence: { processOpened: 1, sessionRegistered: 1, firstTurn: true },
+          freshVerdict: { agentStarted: true, sessions: [{ ownerId: args.__respawnOwnerId }] },
+        },
+      },
+    }));
+
+    const p = parse(await tool.handler(
+      { member: MEMBER, model: 'opus[1m]', verifySec: 1 } as never,
+      {} as never,
+    ));
+
+    expect(p).toMatchObject({
+      ok: true,
+      verified: true,
+      newMember: p.replacementOwner,
+      verification: 'nested-first-turn',
+    });
+    expect(setFleetLaunchTransaction).toHaveBeenCalledWith(expect.objectContaining({
+      transaction: expect.objectContaining({
+        state: 'verified',
+        verifiedMemberIds: [p.replacementOwner],
+      }),
+    }));
+  });
+
+  it('uses the exact nested first-turn proof when the initial fleet roster read fails', async () => {
+    getFleet.mockResolvedValue({ lastLaunchTransaction: launchTransaction() });
+    listFleetPresence.mockReset().mockRejectedValueOnce(new Error('roster unavailable'));
+    launchHandler.mockImplementationOnce((args: { __respawnOwnerId: string }) => ({
+      content: [{ type: 'text', text: `Launched ${args.__respawnOwnerId} into ${SLUG}` }],
+      data: {
+        launch: {
+          fleet: SLUG,
+          ownerIds: [args.__respawnOwnerId],
+          launchEvidence: { processOpened: 1, sessionRegistered: 1, firstTurn: true },
+          freshVerdict: { agentStarted: true, sessions: [{ ownerId: args.__respawnOwnerId }] },
+        },
+      },
+    }));
+
+    const p = parse(await tool.handler(
+      { member: MEMBER, model: 'opus[1m]', verifySec: 1 } as never,
+      {} as never,
+    ));
+
+    expect(p).toMatchObject({
+      ok: true,
+      verified: true,
+      newMember: p.replacementOwner,
+      verification: 'nested-first-turn',
+    });
+    expect(setFleetLaunchTransaction).toHaveBeenCalledWith(expect.objectContaining({
+      transaction: expect.objectContaining({
+        state: 'verified',
+        verifiedMemberIds: [p.replacementOwner],
+      }),
+    }));
+  });
+
+  it('does not accept first-turn evidence bound to a different replacement owner', () => {
+    const outcome = launchOutcome({
+      content: [{ type: 'text', text: 'Launched another owner' }],
+      data: {
+        launch: {
+          fleet: SLUG,
+          ownerIds: ['su-respawn-other'],
+          launchEvidence: { processOpened: 1, sessionRegistered: 1, firstTurn: true },
+          freshVerdict: { agentStarted: true, sessions: [{ ownerId: 'su-respawn-other' }] },
+        },
+      },
+    }, SLUG, 'su-respawn-expected');
+
+    expect(outcome).toMatchObject({ ok: true, verifiedOwnerId: null });
+  });
+
   it('starts roster verification while the nested launcher waits for kickoff proof (EI-23092914186078936)', async () => {
     let releaseLaunch!: () => void;
     const launchResult = { content: [{ type: 'text', text: 'Launched su-new into rocket' }] };

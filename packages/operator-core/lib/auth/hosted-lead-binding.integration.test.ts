@@ -91,6 +91,20 @@ async function authorityFixture() {
 }
 
 describe('hosted binding current production authority', () => {
+  it('rechecks exact canonical graph on every service receipt read and refuses merged/retired subjects', async () => {
+    const f = await authorityFixture(); const principal = await actor();
+    const token = await f.binding.issue(f.scope, f.issuerRef);
+    const bound = await f.binding.redeem(f.scope, token, principal);
+    expect((await f.authority.readServiceSubject(f.scope))?.receipt).toEqual(bound);
+    expect(await f.authority.readServiceSubject({ ...f.scope, graphWorkspaceId: 'foreign' })).toBeNull();
+    expect(await f.authority.readServiceSubject({ ...f.scope, environment: 'staging' })).toBeNull();
+    await db.adminSql`UPDATE harness_shared.harness_features_consolidated SET payload = payload || '{"mergedInto":"PER-survivor"}'::jsonb
+      WHERE workspace_id = 'graph-a' AND feature_id = ${f.scope.personRef}`;
+    expect(await f.authority.readServiceSubject(f.scope)).toBeNull();
+    await db.adminSql`UPDATE harness_shared.harness_features_consolidated SET payload = (payload - 'mergedInto') || '{"retiredAt":"2026-10-29"}'::jsonb
+      WHERE workspace_id = 'graph-a' AND feature_id = ${f.scope.personRef}`;
+    expect(await f.authority.readServiceSubject(f.scope)).toBeNull();
+  });
   it('issues and redeems against the canonical graph and current operator session in one transaction', async () => {
     const f = await authorityFixture(); const principal = await actor();
     const token = await f.binding.issue(f.scope, f.issuerRef);

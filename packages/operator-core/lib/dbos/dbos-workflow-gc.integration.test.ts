@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import type { DBOS as DBOSType, DBOSClient as DBOSClientType } from '@dbos-inc/dbos-sdk';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { captureIsolatedWorker, isolatedTestFileWorkerOptions, recordIsolatedIntegrationProof }
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail, recordIsolatedIntegrationProof }
   from '../../test/isolated-integration-proof';
 import { DBOS_TERMINAL_STATUSES, DBOS_WORKFLOW_GC_CRONTAB, dbosWorkflowGcSqlDeps,
   DBOS_HISTORY_CEILING_CONDITION_KEY, runDbosWorkflowGcOnce, type DbosWorkflowGcResult } from './dbos-workflow-gc';
@@ -197,7 +197,7 @@ if (isWorker) {
         { cwd: root, detached: true, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         const result = await captureIsolatedWorker(child, evidenceDir, options);
-        expect(result, result.output.slice(-8000)).toMatchObject({ code: 0, signal: null, timedOut: false,
+        expect(result, isolatedWorkerFailureDetail(result.output, result)).toMatchObject({ code: 0, signal: null, timedOut: false,
           exitWaitTimedOut: false, stdioDrainTimedOut: false });
         expect(result.output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
         expect(result.output).toContain('skippedTests=0');

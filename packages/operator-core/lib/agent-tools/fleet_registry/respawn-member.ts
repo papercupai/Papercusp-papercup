@@ -417,13 +417,14 @@ export interface AwaitReplacementResult {
 /**
  * Wait for a NEW live member to appear in the fleet's presence roster after a launch.
  *
- * Why this exists (EI: fleet:respawn-member false success): capability:launch-agent returns
- * as soon as it has spawned the member's TERMINAL, and the terminal's launch script ends in
+ * Why this exists (EI: fleet:respawn-member false success): capability:launch-agent can return
+ * after it has spawned the member's TERMINAL, and the terminal's launch script ends in
  * `exec "$SHELL" -l` — so when the agent CLI dies before its first turn (an exhausted account
  * pool, a bad model spec, a missing credential) you are left with a live pid, a live terminal,
- * and NO agent, while the launcher reports success. An agent that actually booted writes a
- * coord_presence row; nothing else does. So the roster is the only sound oracle, and a respawn
- * that cannot observe one must report failure rather than inherit the launcher's optimism.
+ * and NO agent, while the launcher reports the spawn as successful. A fresh, exact-owner
+ * `freshVerdict` from that nested launch is the strongest startup evidence; otherwise this roster
+ * poll remains the fallback oracle. Without either, a respawn must report unverified rather than
+ * inherit the launcher's optimism.
  *
  * All IO is injected so this unit-tests without PG or real time.
  */
@@ -682,11 +683,44 @@ async function containWedgedMember(args: {
   return { decision, recovery };
 }
 
-/** capability:launch-agent returns human-readable TEXT + an `isError` flag (not JSON) —
- *  success is `!isError`. */
-function launchOutcome(res: unknown): { ok: boolean; text: string } {
-  const env = res as { isError?: boolean; content?: { text?: string }[] };
-  return { ok: !env.isError, text: env.content?.[0]?.text ?? '' };
+/** capability:launch-agent returns human-readable TEXT + an `isError` flag, and a structured
+ *  `data.launch` receipt. A positive first-turn verdict is sufficient only when every identity
+ *  leg binds that proof to this exact one-member respawn; aggregate evidence or a different owner
+ *  must leave the roster verifier authoritative. */
+export function launchOutcome(
+  res: unknown,
+  expectedFleet: string,
+  expectedOwnerId: string,
+): { ok: boolean; text: string; verifiedOwnerId: string | null } {
+  const env = res as {
+    isError?: boolean;
+    content?: { text?: string }[];
+    data?: {
+      launch?: {
+        fleet?: unknown;
+        ownerIds?: unknown;
+        launchEvidence?: { processOpened?: unknown; sessionRegistered?: unknown; firstTurn?: unknown };
+        freshVerdict?: { agentStarted?: unknown; sessions?: { ownerId?: unknown }[] };
+      };
+    };
+  };
+  const launch = env.data?.launch;
+  const ownerIds = launch?.ownerIds;
+  const sessions = launch?.freshVerdict?.sessions;
+  const exactFirstTurnProof =
+    !env.isError &&
+    launch?.fleet === expectedFleet &&
+    Array.isArray(ownerIds) && ownerIds.length === 1 && ownerIds[0] === expectedOwnerId &&
+    launch.launchEvidence?.processOpened === 1 &&
+    launch.launchEvidence.sessionRegistered === 1 &&
+    launch.launchEvidence.firstTurn === true &&
+    launch.freshVerdict?.agentStarted === true &&
+    Array.isArray(sessions) && sessions.length === 1 && sessions[0]?.ownerId === expectedOwnerId;
+  return {
+    ok: !env.isError,
+    text: env.content?.[0]?.text ?? '',
+    verifiedOwnerId: exactFirstTurnProof ? expectedOwnerId : null,
+  };
 }
 
 type RespawnFailureHeadcount = {
@@ -1543,7 +1577,7 @@ export default defineTool({
         deferFirstPoll: true,
       });
     }
-    const launch = launchOutcome(await launchRequest);
+    const launch = launchOutcome(await launchRequest, slug, replacementOwner);
 
     if (!launch.ok) {
       cancelReplacementVerification?.();
@@ -1582,11 +1616,10 @@ export default defineTool({
       );
     }
 
-    // 3. VERIFY the replacement actually booted. The launcher can only report that it spawned a
-    //    terminal, and that terminal outlives a CLI that dies on its first call — so without this
-    //    step ok:true means "a window opened", which reads as "the member is back" and is how a
-    //    respawn silently leaves a fleet a member down (WI-6936).
-    if (verifySec === 0 || !rosterReadable) {
+    // 3. VERIFY the replacement actually booted. The nested launcher may provide an exact-owner
+    //    fresh first-turn verdict; absent that proof, the roster check distinguishes an agent
+    //    from a terminal whose CLI died before its first call (WI-6936).
+    if (verifySec === 0 || (!rosterReadable && launch.verifiedOwnerId !== replacementOwner)) {
       const launchTransactionPersistence = await persistRespawnTransaction(
         'unverified',
         `respawn replacement ${replacementOwner} launched but verification was ${rosterReadable ? 'skipped' : 'unavailable'}`,
@@ -1615,14 +1648,26 @@ export default defineTool({
       });
     }
 
-    const verify = replacementVerification
+    // The nested launch verifier can finish before the outer roster read becomes consistent.
+    // Stop any remaining poll when its receipt proves the exact replacement took a real turn;
+    // an aggregate or differently-bound receipt never bypasses the roster check.
+    if (launch.verifiedOwnerId === replacementOwner) cancelReplacementVerification?.();
+    const rosterVerify = replacementVerification
       ? await replacementVerification
-      : await awaitReplacementMember({
+      : launch.verifiedOwnerId === replacementOwner
+        ? { verified: false, newMemberOwnerId: null, waitedMs: 0, rosterOwnerIds: [] }
+        : await awaitReplacementMember({
           before: rosterBefore,
           expectedOwnerId: replacementOwner,
           list: () => listFleetPresence(workspaceId, slug),
           timeoutMs: verifySec * 1000,
         });
+    const launchProofUsed = !rosterVerify.verified && launch.verifiedOwnerId === replacementOwner;
+    const verify = rosterVerify.verified
+      ? rosterVerify
+      : launchProofUsed
+        ? { ...rosterVerify, verified: true, newMemberOwnerId: replacementOwner }
+        : rosterVerify;
     const launchTransactionPersistence = await persistRespawnTransaction(
       verify.verified ? 'verified' : 'unverified',
       verify.verified
@@ -1649,6 +1694,7 @@ export default defineTool({
           preservedFields: savedLaunchSpec.preservedFields,
         },
         verified: verify.verified,
+        ...(verify.verified ? { verification: launchProofUsed ? 'nested-first-turn' : 'fleet-roster' } : {}),
         launchTransactionPersistence: summarizeRespawnLaunchTransaction(launchTransactionPersistence),
         newMember: verify.newMemberOwnerId,
         waitedMs: verify.waitedMs,

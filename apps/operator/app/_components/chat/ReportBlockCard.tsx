@@ -9,7 +9,7 @@ import { memo, useMemo, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parseAsString, useQueryState } from 'nuqs';
-import { fetchSyncQuery } from '@papercusp/sync';
+import { fetchBrowserSyncQuery as fetchSyncQuery } from '../../../lib/hosted-browser-api';
 import { parseGoalOwnerReportSnapshot, type GoalOwnerReportRefV1, type ReportBlock } from '@papercusp/chat-protocol';
 import {
   ReportBlockCard as SharedReportBlockCard,

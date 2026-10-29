@@ -1,0 +1,92 @@
+{
+  "slug": "quick-access-search-launcher-2026-10-26",
+  "harness": "papercusp",
+  "items": [
+    {
+      "specId": "QUICK-ACCESS-DEFAULT-P-002",
+      "sourceValId": null,
+      "planItemId": "P-002",
+      "behavior": "Opening the native Quick Panel presents Quick Access as the selected tab.",
+      "behaviorClass": "happy-path",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "e2e",
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "The native popup initially displays a different tab.",
+        "probeMethod": "Open the popup through its native command and inspect the initial active search surface."
+      },
+      "acceptanceRef": "acceptance-quick-access-search-launcher-2026-10-26@8:R-1",
+      "sourceBar": null,
+      "expectedRevision": 4
+    },
+    {
+      "specId": "QUICK-ACCESS-NESTED-ESCAPE-P-003",
+      "sourceValId": null,
+      "planItemId": "P-003",
+      "behavior": "Pressing Escape while a conversation is open leaves the native launcher visible.",
+      "behaviorClass": "boundary",
+      "requiredEvidence": [
+        "live"
+      ],
+      "requiredTestLayers": [
+        "e2e",
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "The native launcher becomes hidden when Escape dismisses its open conversation.",
+        "probeMethod": "Open a conversation in the native popup, press Escape and read native window visibility."
+      },
+      "acceptanceRef": "acceptance-quick-access-search-launcher-2026-10-26@8:R-5",
+      "sourceBar": null,
+      "expectedRevision": 4
+    },
+    {
+      "specId": "QUICK-ACCESS-SELECTION-P-001",
+      "sourceValId": null,
+      "planItemId": "P-001",
+      "behavior": "Selecting a search result displays the preview for that result's canonical identity.",
+      "behaviorClass": "happy-path",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "The preview belongs to a different result than the selected result.",
+        "probeMethod": "Select plans, agents and reports with distinct canonical identities in the registered launcher component tests."
+      },
+      "acceptanceRef": "acceptance-quick-access-search-launcher-2026-10-26@8:R-2",
+      "sourceBar": null,
+      "expectedRevision": 4
+    }
+  ],
+  "projection": {
+    "pick": [
+      "ok",
+      "results[].specId",
+      "results[].status",
+      "results[].revision",
+      "results[].code",
+      "results[].error",
+      "results[].clause.specId",
+      "results[].clause.revision"
+    ]
+  }
+}

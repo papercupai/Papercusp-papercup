@@ -15,6 +15,7 @@ describe('LLM scenario battery on the verification-harness contract', () => {
   let retentionRoot: string;
   beforeEach(() => {
     retentionRoot = mkdtempSync(path.join(tmpdir(), 'llm-battery-mutex-'));
+    vi.stubEnv('VH_EVIDENCE_ROOT_BASE', path.join(retentionRoot, 'canonical'));
     vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', path.join(retentionRoot, 'locks'));
     vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', path.join(retentionRoot, 'pins'));
   });
@@ -72,6 +73,43 @@ describe('LLM scenario battery on the verification-harness contract', () => {
     expect(summaryLine).toMatch(/^HARNESS_RESULT harness=llm-scenario-battery verdict=fail .*first_failure=op-S02-b\/run-scenario\/scenario-failed/);
     const kept = JSON.parse(readFileSync(path.join(root, 'latest', 'phases', 'op-S01-a', 'report-summary.json'), 'utf8'));
     expect(kept).toEqual({ id: 'op-S01-a' });
+  });
+
+  it.each(['executed', 'failed'] as const)('runs and retains all 63 original %s summaries after eviction', async outcome => {
+    const root = path.join(retentionRoot, 'large-battery');
+    const population = Array.from({ length: 63 }, (_, i) => ({
+      id: `su-S${i}`, target: 'su', description: `scenario ${i}`,
+    }));
+    const original = (id: string) => `${JSON.stringify({ id, outcome, diagnostic: 'original provider result' })}\n`;
+    const { outcomes, harness } = await runScenarioBattery({
+      scenarios: population, concurrency: 4, evidenceRoot: root,
+      runScenario: async (scenario, dir) => {
+        writeFileSync(path.join(dir, 'report-summary.json'), original(scenario.id));
+        writeFileSync(path.join(dir, 'unrelated.json'), 'do not retain');
+        return outcome;
+      },
+    });
+    expect(outcomes).toEqual(population.map(() => outcome));
+    expect(harness.phases.map(p => p.phase)).toEqual(population.map(s => s.id));
+    expect(harness.verdict).toBe(outcome === 'executed' ? 'pass' : 'fail');
+    const retained = path.join(root, 'retained', harness.runId);
+    const manifest = JSON.parse(readFileSync(path.join(retained, 'retained-artifacts.json'), 'utf8'));
+    expect(manifest.selectors).toEqual(['phases/*/report-summary.json']);
+    expect(manifest.artifacts).toHaveLength(64); // 63 originals and result.json
+    const later = '20991231T235959Z-999999';
+    mkdirSync(path.join(root, later));
+    unlinkSync(path.join(root, 'latest'));
+    symlinkSync(later, path.join(root, 'latest'));
+    const report = await pruneRunsWithReport(root, 1, Date.now(), {
+      measureDisk: async () => ({ totalBytes: 100, availableBytes: 100 }), reserveBytes: () => 1,
+    });
+    expect(report.removed).toContain(harness.runId);
+    expect(existsSync(harness.evidenceDir)).toBe(false);
+    for (const scenario of population) {
+      expect(readFileSync(path.join(retained, 'phases', scenario.id, 'report-summary.json'), 'utf8'))
+        .toBe(original(scenario.id));
+      expect(existsSync(path.join(retained, 'phases', scenario.id, 'unrelated.json'))).toBe(false);
+    }
   });
 
   it('a scenario whose runner throws is a failed phase and a failed outcome, never a pass', async () => {

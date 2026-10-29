@@ -329,6 +329,11 @@ const COORD_THREAD_RECOVERABLE_TRUNCATION_MARKERS = new Set([
   'to_truncated',
 ]);
 
+// artifacts:load returns a complete bounded content page with enough metadata
+// to request the next page. Its content_truncated marker describes the source
+// artifact, not an incomplete serialization of this response.
+const ARTIFACTS_LOAD_PAGE_TRUNCATION_MARKERS = new Set(['content_truncated']);
+
 function hasPartialFlag(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(hasPartialFlag);
   if (value === null || typeof value !== 'object') return false;
@@ -494,6 +499,50 @@ function hasOnlyRecoverableCoordThreadMarkers(
   const target = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
   return target === 'coord:thread' && markers.length > 0 &&
     markers.every((marker) => COORD_THREAD_RECOVERABLE_TRUNCATION_MARKERS.has(marker));
+}
+
+function hasOnlyRecoverableArtifactsLoadMarkers(
+  textItems: readonly string[],
+  markers: readonly string[],
+  toolName: string,
+  nestedTargetToolName?: string,
+): boolean {
+  const target = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
+  if (target !== 'artifacts:load' || markers.length === 0 ||
+      !markers.every((marker) => ARTIFACTS_LOAD_PAGE_TRUNCATION_MARKERS.has(marker))) {
+    return false;
+  }
+
+  const sourceText = textItems.join('\n\n');
+  const jsonSlice = findJsonPrefixSlice(sourceText);
+  let value: unknown;
+  try {
+    value = JSON.parse(jsonSlice ? sourceText.slice(jsonSlice.start, jsonSlice.end) : sourceText);
+  } catch {
+    return false;
+  }
+  if (!isJsonObject(value) || !Array.isArray(value.results) || value.results.length === 0) return false;
+
+  const pageRows = value.results.filter(
+    (row): row is JsonObject => isJsonObject(row) && row.content_truncated === true,
+  );
+  if (pageRows.length === 0) return false;
+  return value.results.every((row) => {
+    if (!isJsonObject(row)) return false;
+    if (row.content_truncated !== true) return true;
+    if (row.ok !== true || row.found !== true || typeof row.content !== 'string' || row.content.length === 0) {
+      return false;
+    }
+    const offset = row.content_offset;
+    const total = row.content_total_chars;
+    if (typeof offset !== 'number' || typeof total !== 'number' ||
+        !Number.isSafeInteger(offset) || !Number.isSafeInteger(total) ||
+        offset < 0 || total < 0 || offset >= total) {
+      return false;
+    }
+    const contentEnd = offset + row.content.length;
+    return Number.isSafeInteger(contentEnd) && contentEnd < total;
+  });
 }
 
 /**
@@ -868,6 +917,11 @@ function isWorkItemsReleaseCall(input: { toolName: string; nestedTargetToolName?
 function isWorkItemsGetCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
   return input.toolName === 'work_items:get' ||
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:get');
+}
+
+function isConversationsGetCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'conversations:get' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'conversations:get');
 }
 
 function isWorkItemsGetReceiptEntry(value: unknown): value is Record<string, unknown> & { id: string; delivered: boolean } {
@@ -2670,6 +2724,11 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
                   : isWorkItemsReleaseCall(input.opts)
                     ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
                       WORK_ITEMS_RELEASE_SPILL_RECOVERY
+                  : isConversationsGetCall(input.opts)
+                    ? 'Output exceeded its hard budget and the spill write failed (' + spillDiagnostic + '). ' +
+                      'No full-body reference was retained. Retry with projection: { pick: ["results[].id", ' +
+                      '"results[].posts[].id", "results[].posts[].author_id"] } to locate posts, then fetch each ' +
+                      'needed body with conversations:get { id: "thread-post:<postId>" }.'
                   : isScorecardsEmitCall(input.opts)
                     ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
                       SCORECARDS_EMIT_UNKNOWN_SPILL_RECOVERY
@@ -3597,6 +3656,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         opts.toolName,
         opts.nestedTargetToolName,
       );
+      const artifactsLoadMarkersRecoverable = hasOnlyRecoverableArtifactsLoadMarkers(
+        items.filter(isTextItem).map((item) => item.text),
+        innerTruncationMarkers,
+        opts.toolName,
+        opts.nestedTargetToolName,
+      );
       const projectedNotes = (
         result._meta as { resultProjection?: { notes?: unknown } } | undefined
       )?.resultProjection?.notes;
@@ -3610,7 +3675,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             items.some((item) => isTextItem(item) && item.text.includes(note)),
         );
       if ((!upstreamProjection?.truncated || inlineUpstreamProjectionWarning) &&
-        (innerTruncationMarkers.length === 0 || threadMarkersRecoverable || scratchReferenceRead)) {
+        (innerTruncationMarkers.length === 0 || threadMarkersRecoverable ||
+          artifactsLoadMarkersRecoverable || scratchReferenceRead)) {
         return reconcileWorkItemsGetReceiptResult(result, opts);
       }
       return spillResultAsReferenceEnvelope({

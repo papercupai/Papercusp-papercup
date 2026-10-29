@@ -8743,6 +8743,7 @@ async function runGitSyncPass(
             scope: 'superproject',
             migrationFenceRoster: roster,
             migrationDependencySubmodulePaths: subPaths,
+            priorityPaths: subPaths,
             excludePaths: earlyExcludedPaths,
             preDetectedContentOffenders:
               declarationRepair.status === 'deferred'

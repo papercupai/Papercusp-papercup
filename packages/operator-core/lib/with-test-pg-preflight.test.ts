@@ -178,7 +178,7 @@ describe('private admission pinned manager route', () => {
 });
 
 describe('private managed task preflight', () => {
-  it('probes a pinned owned bus when the private socket is unusable, without an ambient fallback', async () => {
+  it.each(['--isolated-runtime=operator-api', '--isolated-runtime'])('probes a pinned owned bus for %s when the private socket is unusable, without an ambient fallback', async profile => {
     const directory = mkdtempSync(join(tmpdir(), 'private-task-pinned-route-'));
     mkdirSync(join(directory, 'systemd')); mkdirSync(join(directory, 'bin'));
     const servers = [createServer(socket => socket.destroy()), createServer(socket => socket.destroy())];
@@ -201,7 +201,7 @@ describe('private managed task preflight', () => {
     }`;
     const script = `import { register } from 'node:module';
       register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
-      process.argv = [process.execPath, ${JSON.stringify(entry)}, '--isolated-runtime=operator-api', '--managed-tasks',
+      process.argv = [process.execPath, ${JSON.stringify(entry)}, ${JSON.stringify(profile)}, '--managed-tasks',
         '--', process.execPath, '-e', 'process.exit(91)'];
       await import(${JSON.stringify(pathToFileURL(entry).href)});`;
     try {
@@ -305,14 +305,14 @@ describe('private managed task preflight', () => {
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
-  it('requires the operator-api profile for an explicit managed task route', () => {
+  it('requires an isolated runtime for an explicit managed task route', () => {
     const startedAt = performance.now();
     const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
-      '--isolated-runtime', '--managed-tasks', '--', process.execPath, '-e', 'process.exit(91)'], {
+      '--managed-tasks', '--', process.execPath, '-e', 'process.exit(91)'], {
       cwd: root, encoding: 'utf8', timeout: 5000,
     });
     expect(result.status, childDiagnostic(result, startedAt)).toBe(2);
-    expect(result.stderr).toContain('operator-api only');
+    expect(result.stderr).toContain('isolated runtime only');
     expect(result.stdout).not.toContain('booting throwaway PG');
   });
 });

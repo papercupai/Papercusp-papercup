@@ -290,6 +290,26 @@ describe('testing:runs evidence identity', () => {
     expect(row).not.toHaveProperty('executionDetailsUnavailableReason');
   });
 
+  it.each([false, true])('recovers reporter timing and unconfigured runtime capture with serialized=%s', async serialized => {
+    // EI-27285944879352300: a real passing reporter row was withheld by an
+    // older reader that did not recognize this combination of optional fields.
+    const details = {
+      ...cappedDetails,
+      testTimingRuntimeIdentity: 'node:25.9.0 linux/x64 vitest:4.1.8',
+      runtimeEnvironmentBeforeCaptureStatus: 'not-configured',
+      runtimeEnvironmentAfterCaptureStatus: 'not-configured',
+    };
+    const row = await readDetails(serialized ? JSON.stringify(details) : details);
+
+    expect(row).toMatchObject({ root: details.root, executionDetails: details });
+    expect(row).not.toHaveProperty('executionDetailsUnavailableReason');
+    expect(row?.executionDetails).not.toHaveProperty('runtimeEnvironmentBefore');
+    expect(row?.executionDetails).not.toHaveProperty('runtimeEnvironmentAfter');
+    expect(shapeTestingRuns({ runs: [row] }, 'trimmed')).toMatchObject({
+      runs: [{ root: details.root, executionDetails: { passed: 80, failed: 0, skipped: 0 } }],
+    });
+  });
+
   it('preserves receipt roots with measured passing cases, including an unscoped receipt', async () => {
     let selectedSql = '';
     const row = {

@@ -319,7 +319,9 @@ export interface SidecarShutdownHooksOpts {
   stop: () => void | Promise<void>;
   /**
    * 'async' (default): SIGTERM/SIGINT/uncaughtException each log then `await
-   * stop()` — the substrate + spawner shape.
+   * stop()` — the substrate + spawner shape. Fatal exceptions preserve the
+   * original error and a nonzero exit status without forcing the host to exit
+   * before its teardown completes.
    * 'async-with-exit': the async signal/exception behavior above, plus an
    * exit listener that begins `stop()` synchronously before Node tears down
    * the event loop. This is for children that must not survive a short-lived
@@ -332,7 +334,7 @@ export interface SidecarShutdownHooksOpts {
    */
   mode?: 'async' | 'async-with-exit' | 'sync-with-exit';
   /**
-   * 'async' mode ONLY: gate the `uncaughtException` reaction on whether this
+   * Async modes ONLY: gate the `uncaughtException` reaction on whether this
    * particular exception is genuinely fatal to the HOST process. Node fires
    * `uncaughtException` listeners process-wide for EVERY uncaught exception,
    * not just ones related to this sidecar — so without a filter, an error the
@@ -406,8 +408,19 @@ export function registerSidecarShutdownHooks(opts: SidecarShutdownHooksOpts): vo
       // logs the benign classification for this same error.
       return;
     }
-    console.log(`[${opts.label}] uncaught exception, shutting down sidecar`);
-    await opts.stop();
+    // Installing a listener replaces Node's default fatal diagnostic/exit.
+    // Restore both without process.exit(), which would truncate owned cleanup.
+    if (process.exitCode === undefined || Number(process.exitCode) === 0) {
+      process.exitCode = 1;
+    }
+    console.error(`[${opts.label}] uncaught exception, shutting down sidecar:`, err);
+    try {
+      await opts.stop();
+    } catch (stopError) {
+      // An async event listener's rejection is otherwise unobserved and may
+      // re-enter uncaughtException under Node's unhandled-rejection policy.
+      console.error(`[${opts.label}] sidecar shutdown after uncaught exception failed:`, stopError);
+    }
   });
 }
 

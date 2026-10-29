@@ -4,7 +4,7 @@
  *
  * The carry check is pure and unit-tested in `frozen-repair-carry.test.ts`. What only a real
  * database can pin:
- *   - BOTH retire paths (P-021's bounded life and the owner's `release:repair-queue` retire) write
+ *   - the owner's explicit `release:repair-queue` retire writes
  *     the pending carry in the SAME row update that deletes the queue, so a restart between the
  *     retire and the next cut cannot lose the fixes;
  *   - a retire that finds an unconsumed carry unions with it instead of overwriting it;
@@ -30,8 +30,6 @@ import {
   type FrozenCandidateRepairQueue,
   type FrozenRepairAdmission,
 } from './frozen-candidate-repair-queue';
-import { buildFrozenRepairBoundedLifeRecord, frozenRepairConvergenceTrajectory } from './frozen-repair-bounded-life';
-import { retireFrozenRepairQueueForBoundedLife } from './frozen-repair-bounded-life-store';
 import {
   FROZEN_REPAIR_CARRY_LAST_METADATA_KEY,
   FROZEN_REPAIR_CARRY_METADATA_KEY,
@@ -82,7 +80,7 @@ function admission(paths: string[], blobs: Record<string, string | null>, from: 
   };
 }
 
-/** A non-improving queue (4 rounds since the low of 3), so the bounded-life rule retires it. */
+/** A non-improving queue whose age and trajectory must never retire it automatically. */
 function queue(extra: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidateRepairQueue {
   return {
     schemaVersion: 4,
@@ -105,19 +103,6 @@ function queue(extra: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidate
     admissions: [admission(['a.ts', 'b.ts'], { 'a.ts': 'blob-a', 'b.ts': 'blob-b' }, C, H)],
     ...extra,
   };
-}
-
-function boundedLifeRecord(q: FrozenCandidateRepairQueue) {
-  // Historical carry fixture; automatic retirement is no longer permitted.
-  const decision = { kind: 'retire' as const, trigger: 'non-improving' as const,
-    trajectory: frozenRepairConvergenceTrajectory(q.convergenceRounds), ageMs: NOW - q.openedAtMs };
-  return buildFrozenRepairBoundedLifeRecord({
-    queue: q,
-    decision,
-    nowMs: NOW,
-    target: { sha: TIP, source: 'staging-tip' },
-    carry: { carriedPaths: [], readmitPaths: [], truncated: false },
-  });
 }
 
 async function seed(metadata: Record<string, unknown>): Promise<void> {
@@ -219,36 +204,6 @@ describe('prepared checkpoint selection and carry share durable authority', () =
 describe('P-010 frozen repair carry store (real Postgres)', () => {
   it('the fixture queue (with admissions) survives the JSON round trip the stores read it through', () => {
     expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue())))?.admissions).toHaveLength(1);
-  });
-
-  it('a legacy bounded-life request preserves the queue and creates no carry', async () => {
-    const q = queue();
-    const original = { repair_queue: q, unrelated_key: { keep: 'me' } };
-    await seed(original);
-    await expect(retireFrozenRepairQueueForBoundedLife(target, q, boundedLifeRecord(q))).resolves.toEqual({
-      retired: false, refusal: 'automatic-retirement-disabled',
-    });
-    expect(await metadata()).toEqual(original);
-    await expect(readFrozenRepairPendingCarry(target)).resolves.toBeNull();
-  });
-
-  it('a refused bounded-life retire writes no carry', async () => {
-    const decidedOn = queue();
-    await seed({ repair_queue: { ...decidedOn, repairHead: H2, updatedAtMs: NOW } });
-    await expect(
-      retireFrozenRepairQueueForBoundedLife(target, decidedOn, boundedLifeRecord(decidedOn)),
-    ).resolves.toEqual({ retired: false, refusal: 'automatic-retirement-disabled' });
-    expect((await metadata())[FROZEN_REPAIR_CARRY_METADATA_KEY]).toBeUndefined();
-  });
-
-  it('an automatic retire remains forbidden even when the queue admitted nothing', async () => {
-    const q = queue({ admissions: [] });
-    await seed({ repair_queue: q });
-    await expect(retireFrozenRepairQueueForBoundedLife(target, q, boundedLifeRecord(q))).resolves.toEqual({
-      retired: false, refusal: 'automatic-retirement-disabled',
-    });
-    expect(Object.keys(await metadata())).not.toContain(FROZEN_REPAIR_CARRY_METADATA_KEY);
-    await expect(readFrozenRepairPendingCarry(target)).resolves.toBeNull();
   });
 
   it('the owner retire writes the pending carry too, unioned with an unconsumed one', async () => {

@@ -29,7 +29,7 @@ import {
 } from './result-door';
 import { applyResultProjection } from './result-projection/apply';
 import { parseProjection } from './result-projection/parse';
-import { parseScratchReference, readVolatileScratchReference } from './scratch-reference';
+import * as scratchReference from './scratch-reference';
 import { senderBodyDeliveryDiagnostics } from './agent-tools/coordination/tools/inbox-content-bounds';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
@@ -94,11 +94,11 @@ describe('discovery schema integrity', () => {
     expect(body._projection.cursor).toMatchObject({
       kind: 'volatile-scratch-page', reason: 'spill-write-failed', tool: 'capability:read',
     });
-    const recovered = readVolatileScratchReference(body._projection.cursor.uri,
+    const recovered = scratchReference.readVolatileScratchReference(body._projection.cursor.uri,
       { workspaceId: 'ws-1' });
     expect(recovered.payload.subarray(body._projection.cursor.bodyOffsetInPayload)
       .toString('utf8')).toBe(text);
-    expect(() => readVolatileScratchReference(body._projection.cursor.uri,
+    expect(() => scratchReference.readVolatileScratchReference(body._projection.cursor.uri,
       { workspaceId: 'another-workspace' })).toThrow();
     expect(out.structuredContent).toBe(source);
     expect(measureResultContextBytes(out)).toBeLessThanOrEqual(BUDGET_CHARS);
@@ -141,7 +141,7 @@ describe('fleet admission receipt recovery', () => {
       repairCall: source.repairCall });
     expect(body._projection.cursor).toEqual(firstBody._projection.cursor);
     const cursor = body._projection.cursor;
-    const reference = parseScratchReference(readFileSync(cursor.args.file_path))!;
+    const reference = scratchReference.parseScratchReference(readFileSync(cursor.args.file_path))!;
     expect(JSON.parse(reference.payload.subarray(cursor.bodyOffsetInPayload).toString())).toEqual(source);
   });
 });
@@ -255,7 +255,7 @@ describe('plans:start write receipt recovery', () => {
     });
     expect(body._projection.cursor.tool).toBe('capability:read');
     expect(body._projection.next).not.toMatch(/Re-call plans:start|Call plans:start again/);
-    const payload = parseScratchReference(readFileSync(body._projection.cursor.args.file_path))!.payload;
+    const payload = scratchReference.parseScratchReference(readFileSync(body._projection.cursor.args.file_path))!.payload;
     expect(JSON.parse(payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString())).toEqual(source);
   });
 
@@ -344,7 +344,7 @@ describe('plans:bind-spec-evidence target refusal recovery', () => {
       });
     }
     expect(measureResultContextBytes(out)).toBeLessThanOrEqual(BUDGET_CHARS);
-    const payload = parseScratchReference(readFileSync(body._projection.cursor.args.file_path))!.payload;
+    const payload = scratchReference.parseScratchReference(readFileSync(body._projection.cursor.args.file_path))!.payload;
     expect(JSON.parse(payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString())).toEqual(source);
   });
 });
@@ -355,13 +355,13 @@ function readSpill(ws: string, tool: string, runId: string): string {
   const files = readdirSync(dir);
   expect(files).toHaveLength(1);
   const bytes = readFileSync(join(dir, files[0]));
-  const reference = parseScratchReference(bytes);
+  const reference = scratchReference.parseScratchReference(bytes);
   expect(reference).not.toBeNull();
   return reference!.payload.toString('utf8');
 }
 
 function readVolatilePayloadText(uri: string): string {
-  const payload = readVolatileScratchReference(uri, { workspaceId: 'ws-1' }).payload.toString('utf8');
+  const payload = scratchReference.readVolatileScratchReference(uri, { workspaceId: 'ws-1' }).payload.toString('utf8');
   const parsed = JSON.parse(payload) as { content?: Array<{ text?: string }> };
   return parsed.content?.[0]?.text ?? '';
 }
@@ -460,6 +460,118 @@ describe('applyResultDoor', () => {
       const out = applyResultDoor(result, { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID });
       expect(JSON.parse((out.content[0] as { text: string }).text).incomplete.recoverable).toBe(false);
     });
+  });
+
+  describe('bounded artifacts:load pages', () => {
+    const pageResult = () => ({
+      content: [{ type: 'text' as const, text: JSON.stringify({
+        ok: true,
+        results: [{
+          ok: true,
+          slug: 'engineering',
+          rel_path: 'agent-insights/example.md',
+          found: true,
+          content: 'x'.repeat(1_200),
+          updated_at: 1,
+          content_total_chars: 5_000,
+          content_offset: 0,
+          content_truncated: true,
+        }],
+        counts: { ok: 1, failed: 0 },
+      }) }],
+    });
+
+    it.each(['direct', 'nested'] as const)(
+      'keeps a valid %s artifacts:load page inline without requiring scratch persistence',
+      (route) => {
+        const result = pageResult();
+        const out = applyResultDoor(result, {
+          toolName: route === 'direct' ? 'artifacts:load' : 'tools:invoke',
+          ...(route === 'nested' ? { nestedTargetToolName: 'artifacts:load' } : {}),
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          scratchWriteFailure: { error: Object.assign(new Error('scratch must not be needed'), { code: 'ENOSPC' }) },
+        });
+
+        expect(out).toBe(result);
+      },
+    );
+
+    it('keeps malformed content_truncated metadata on the conservative spill path', () => {
+      const result = {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          ok: true,
+          results: [{ ok: true, found: true, content: 'short page', content_truncated: true }],
+          counts: { ok: 1, failed: 0 },
+        }) }],
+      };
+
+      const out = applyResultDoor(result, {
+        toolName: 'artifacts:load',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+
+      expect(out).not.toBe(result);
+          expect(((out as DoorableResult)._meta as { resultDoor?: { reason?: string } } | undefined)?.resultDoor?.reason)
+        .toBe('under-budget-partial-result');
+    });
+  });
+
+  describe('conversations:get spill-failure recovery', () => {
+    it.each(['direct', 'nested'] as const)(
+      'explains per-post recovery for a %s full-thread read when both spill stores fail',
+      (route) => {
+        const volatileStore = vi.spyOn(scratchReference, 'storeVolatileScratchReference').mockReturnValue(null);
+        try {
+          const aggregateScope = beginResultDoorAggregate({
+            sessionKey: 'conversation-spill-failure',
+            outputGroupId: `turn-${route}`,
+          });
+          const filler = { content: [{ type: 'text' as const, text: 'x'.repeat(BUDGET_CHARS) }] };
+          for (let index = 0; index < 2; index += 1) {
+            applyResultDoor(filler, {
+              toolName: 'plans:get',
+              workspaceId: 'ws-1',
+              runId: RUN_ID,
+              aggregateScope,
+            });
+          }
+
+          const conversationResult = {
+            content: [{ type: 'text' as const, text: JSON.stringify({
+              ok: true,
+              results: [{
+                ok: true,
+                id: 'conv-large-thread',
+                conversation: { id: 'conv-large-thread', title: 'review' },
+                posts: [{ id: 42, author_id: 'su-reviewer', body: 'x'.repeat(BUDGET_CHARS) }],
+              }],
+              counts: { ok: 1, failed: 0 },
+            }) }],
+          };
+          const out = applyResultDoor(conversationResult, {
+            toolName: route === 'direct' ? 'conversations:get' : 'tools:invoke',
+            ...(route === 'nested' ? { nestedTargetToolName: 'conversations:get' } : {}),
+            workspaceId: 'ws-1',
+            runId: RUN_ID,
+            aggregateScope,
+            scratchWriteFailure: {
+              error: Object.assign(new Error('scratch persistence unavailable'), { code: 'EIO' }),
+            },
+          });
+          const envelope = JSON.parse((out.content[0] as { text: string }).text);
+
+          expect(envelope.error).toMatchObject({ code: 'output_spill_failed', retryable: true });
+          expect(envelope.error.message).toContain('projection');
+          expect(envelope.error.message).toContain('results[].posts[].id');
+          expect(envelope.error.message).toContain('thread-post:<postId>');
+          expect(JSON.stringify(envelope).length).toBeLessThanOrEqual(BUDGET_CHARS);
+        } finally {
+          volatileStore.mockRestore();
+        }
+      },
+    );
   });
 
   it('a result within the budget passes through as the SAME object (no copy, no spill)', () => {
@@ -2222,7 +2334,7 @@ describe('applyResultDoor', () => {
       { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID },
     );
     const spillPath = (doored._meta!.resultDoor as { spillPath: string }).spillPath;
-    const parsed = parseScratchReference(readFileSync(spillPath))!;
+    const parsed = scratchReference.parseScratchReference(readFileSync(spillPath))!;
 
     expect(parsed.manifest.evidence).toEqual(
       expect.arrayContaining([
@@ -2447,7 +2559,7 @@ describe('applyResultDoor', () => {
     expect(new Set(envelope.content.map((item: { uri: string }) => item.uri)).size).toBe(1);
     const spillDir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'code:run', RUN_ID);
     expect(readdirSync(spillDir)).toHaveLength(1);
-    const parsed = parseScratchReference(readFileSync(join(spillDir, readdirSync(spillDir)[0])))!;
+    const parsed = scratchReference.parseScratchReference(readFileSync(join(spillDir, readdirSync(spillDir)[0])))!;
     expect(parsed.manifest.evidence?.map((entry) => entry.evidenceClass)).toEqual([
       'work-item', 'event', 'fleet', 'capacity', 'account', 'release',
     ]);
@@ -3383,7 +3495,7 @@ describe('applyResultDoor', () => {
       const spillFiles = readdirSync(spillDir);
       expect(spillFiles).toHaveLength(5);
       const spillPayloads = spillFiles.map((file) => {
-        const parsed = parseScratchReference(readFileSync(join(spillDir, file)));
+        const parsed = scratchReference.parseScratchReference(readFileSync(join(spillDir, file)));
         expect(parsed).not.toBeNull();
         return parsed!.payload.toString('utf8');
       });
@@ -4193,7 +4305,7 @@ describe('applyResultDoor', () => {
       const spillDir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'work_items:get', RUN_ID);
       const spillFiles = readdirSync(spillDir);
       expect(spillFiles).toHaveLength(1);
-      const reference = parseScratchReference(readFileSync(join(spillDir, spillFiles[0])));
+      const reference = scratchReference.parseScratchReference(readFileSync(join(spillDir, spillFiles[0])));
       expect(reference).not.toBeNull();
       expect(reference!.manifest).toMatchObject({ mediaType: 'application/json', bodyOffsetInPayload: 0 });
       const rawEnvelope = JSON.parse(

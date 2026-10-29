@@ -1,0 +1,174 @@
+{
+  "evidence": [
+    {
+      "id": 73753,
+      "workItemId": "WI-6554700010029572",
+      "specId": "AUTO-BAR-R-3-P-001",
+      "specRevision": 8,
+      "testRunId": 22259678,
+      "details": {
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "packages/operator-core/lib/report-library.integration.test.ts"
+          ],
+          "sourcePaths": [
+            "packages/operator-core/lib/report-library.ts"
+          ],
+          "fixturePaths": [
+            "packages/operator-core/lib/report-library.integration.test.ts",
+            "packages/operator-core/test/_org-test-db.ts",
+            "packages/operator-core/test/fixtures/goal-owner-report.ts"
+          ],
+          "schemaVersion": 1
+        },
+        "adequacy": {
+          "outcome": "passed",
+          "skipped": false,
+          "executed": true,
+          "targeted": "AUTO-BAR-R-3-P-001",
+          "collected": true,
+          "testCases": [
+            "report_library store (real PG) > SPEC-P-002-visible-to-matrix: visibleTo grants exactly workspace + own-pot + authored",
+            "report_library store (real PG) > REPORT-CITED-READ-SCOPE-P001: a citation scope opens one exact private report only"
+          ],
+          "testLayer": "integration",
+          "falsifiable": true,
+          "pathReachable": true,
+          "fixtureCalibrated": true,
+          "oracleIndependent": true
+        }
+      },
+      "currentness": {
+        "overall": "stale",
+        "dimensions": {
+          "spec": "stale",
+          "source": "current",
+          "test": "current",
+          "fixture": "current",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [
+          "spec-stale"
+        ],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 73752,
+      "workItemId": "WI-6554700010029574",
+      "specId": "AUTO-BAR-R-5-P-003",
+      "specRevision": 8,
+      "testRunId": 22258955,
+      "details": {
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "packages/operator-core/lib/client-navigation.test.ts"
+          ],
+          "sourcePaths": [
+            "packages/operator-core/lib/client-navigation.ts"
+          ],
+          "fixturePaths": [
+            "packages/operator-core/lib/client-navigation.test.ts"
+          ],
+          "schemaVersion": 1
+        },
+        "adequacy": {
+          "outcome": "passed",
+          "skipped": false,
+          "executed": true,
+          "targeted": "AUTO-BAR-R-5-P-003",
+          "collected": true,
+          "testCases": [
+            "Quick Panel Escape across Docs navigation > respects Escape already consumed by the embedded answer and tolerates an inaccessible frame"
+          ],
+          "testLayer": "unit",
+          "pathReachable": true,
+          "fixtureCalibrated": true,
+          "oracleIndependent": true
+        }
+      },
+      "currentness": {
+        "overall": "stale",
+        "dimensions": {
+          "spec": "stale",
+          "source": "current",
+          "test": "current",
+          "fixture": "current",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [
+          "spec-stale"
+        ],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 73751,
+      "workItemId": "WI-6554700010029573",
+      "specId": "AUTO-BAR-R-1-P-002",
+      "specRevision": 8,
+      "testRunId": 22276543,
+      "details": {
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "apps/operator/lib/quick-panel-escape.test.tsx"
+          ],
+          "sourcePaths": [
+            "apps/operator-vite/src/routes/quick-panel.tsx",
+            "apps/operator/app/quick-panel/page.tsx"
+          ],
+          "fixturePaths": [
+            "apps/operator/lib/quick-panel-escape.test.tsx"
+          ],
+          "schemaVersion": 1
+        },
+        "adequacy": {
+          "outcome": "passed",
+          "skipped": false,
+          "executed": true,
+          "targeted": "AUTO-BAR-R-1-P-002",
+          "collected": true,
+          "testCases": [
+            "the native Quick Panel Docs frame lifecycle > opens Search by default, keeps the existing tabs and dismisses the native popup"
+          ],
+          "testLayer": "unit",
+          "pathReachable": true,
+          "fixtureCalibrated": true,
+          "oracleIndependent": true
+        }
+      },
+      "currentness": {
+        "overall": "stale",
+        "dimensions": {
+          "spec": "stale",
+          "source": "current",
+          "test": "current",
+          "fixture": "current",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [
+          "spec-stale"
+        ],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    }
+  ]
+}

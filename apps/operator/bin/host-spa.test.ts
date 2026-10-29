@@ -15,6 +15,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
@@ -294,7 +295,7 @@ describe('SPA shell pre-hydration globals', () => {
   it('records a tagged asset stream error without changing the response contract', async () => {
     const toWeb = vi.spyOn(Readable, 'toWeb').mockImplementation((source) => {
       (source as Readable).destroy();
-      return new ReadableStream<Uint8Array>({
+      return new NodeReadableStream<Uint8Array>({
         start(controller) {
           controller.error(new Error('fixture stream failure'));
         },

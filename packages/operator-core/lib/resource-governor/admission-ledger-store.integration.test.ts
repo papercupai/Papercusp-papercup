@@ -1,5 +1,8 @@
 /** Real-PostgreSQL behavior coverage for the ledger-only admission store. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import postgres from 'postgres';
+import { acquireTicketSnapshot, pgAcquireTimingSnapshot, withPgAcquireDiagnostics } from '@papercusp/db-org';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   allSessionsLiveResolver,
@@ -8,7 +11,7 @@ import {
 } from '../../test/_admission-ledger-fixture';
 import { AdmissionIdempotencyConflictError, Governor } from './admission';
 import { PgAdmissionLedgerQueueStore } from './admission-ledger-store';
-import { WorkItemAdmissionQueueDriver } from './queue';
+import { WorkItemAdmissionQueueDriver, type SqlClient } from './queue';
 
 let db: FreshPgDb;
 
@@ -58,6 +61,82 @@ function instance(
 }
 
 describe('PgAdmissionLedgerQueueStore', () => {
+  it.for(['pool', 'advisory'] as const)('distinguishes a controlled %s wait in the real admission transaction', { timeout: 20_000 }, async (mode) => {
+    const pool = `admission-control-${mode}`;
+    const client = postgres(db.url, { max: 1, prepare: false, onnotice: () => {} });
+    const store = new PgAdmissionLedgerQueueStore({
+      sql: client as unknown as SqlClient, acquirePool: pool, workspaceId: 'ws-ledger',
+      resolveSessionStatesFn: allSessionsLiveResolver,
+    });
+    const governor = new Governor(new WorkItemAdmissionQueueDriver(store, { namespace: 'integration' }));
+    const key = `controlled-${mode}`;
+    const lockKey = `resource-governor:ws-ledger:integration:id:${key}`;
+    const [{ pid: targetPid }] = await client<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+    const holder = await (mode === 'pool' ? client : db.sql).reserve();
+    const [{ pid: holderPid }] = await holder<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+    let pending: ReturnType<Governor['admit']> | undefined;
+    let released = false;
+    const release = async () => {
+      if (released) return;
+      if (mode === 'advisory') await holder`SELECT pg_advisory_unlock(hashtextextended(${lockKey}, 0))`;
+      holder.release();
+      released = true;
+    };
+    try {
+      if (mode === 'advisory') await holder`SELECT pg_advisory_lock(hashtextextended(${lockKey}, 0))`;
+      let requestId = '';
+      let snapshot: typeof pgAcquireTimingSnapshot = () => null;
+      const startedAt = performance.now();
+      pending = withPgAcquireDiagnostics('admission.wait-control', id => {
+        requestId = id;
+        snapshot = AsyncLocalStorage.bind(pgAcquireTimingSnapshot);
+        return governor.admit({ idempotencyKey: key, admissionClass: 'process' });
+      });
+      // Observe any early rejection while the blocker is still held. Finally
+      // releases it and drains this same operation; no admission is replayed.
+      void pending.catch(() => undefined);
+      let settled = false;
+      void pending.then(() => { settled = true; }, () => { settled = true; });
+      let observed: { wait_event_type: string | null; wait_event: string | null; blocking_pids: number[] } | undefined;
+      await expect.poll(async () => {
+        if (mode === 'pool') return acquireTicketSnapshot(pool).tickets.some(ticket =>
+          ticket.requestId === requestId && ticket.state === 'waiting');
+        [observed] = await db.sql<Array<NonNullable<typeof observed>>>`
+          SELECT wait_event_type, wait_event, pg_blocking_pids(pid) AS blocking_pids
+            FROM pg_stat_activity
+           WHERE pid = ${targetPid} AND datname = current_database() AND state = 'active'`;
+        return observed?.wait_event_type === 'Lock' && observed.wait_event === 'advisory'
+          && observed.blocking_pids.includes(holderPid);
+      }, { timeout: 5_000, interval: 10 }).toBe(true);
+      expect(settled).toBe(false);
+      const blocked = snapshot();
+      expect(blocked).toMatchObject({ requestId, operation: 'admission.wait-control', omitted: 0 });
+      if (mode === 'pool') {
+        expect(targetPid).toBe(holderPid);
+        expect(blocked?.acquisitions).toEqual([]);
+      } else {
+        expect(targetPid).not.toBe(holderPid);
+        expect(blocked?.acquisitions).toEqual([{ pool, elapsedMs: expect.any(Number), outcome: 'acquired' }]);
+        expect(acquireTicketSnapshot(pool).tickets).toEqual([
+          expect.objectContaining({ requestId, state: 'held' }),
+        ]);
+      }
+      await release();
+      const outcome = await pending;
+      const durationMs = performance.now() - startedAt;
+      expect(outcome.kind).toBe('queued');
+      const complete = snapshot();
+      expect(complete?.acquisitions).toEqual([{ pool, elapsedMs: expect.any(Number), outcome: 'acquired' }]);
+      expect(acquireTicketSnapshot(pool).active).toBe(0);
+      console.info('ADMISSION_WAIT_CONTROL', JSON.stringify({ mode, requestId, targetPid, holderPid,
+        blocked, observed, complete, durationMs }));
+    } finally {
+      await release();
+      await pending?.catch(() => undefined);
+      await client.end({ timeout: 5 });
+    }
+  });
+
   it('converges concurrent writers on one RG receipt and never creates a work item', async () => {
     const input = {
       idempotencyKey: 'restart-safe',

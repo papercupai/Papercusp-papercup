@@ -27,13 +27,13 @@
  *   2. a producer while the config still disclaims one → the disclaimer is a lie;
  *   3. an inert provider block carrying no disclaimer  → the original trap.
  */
-import { stripComments } from './gate-candidate-ref';
+import { stripCommentsOnly } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 /** Sentinel the config comment must carry while coverage is collected nowhere. */
 export const DISCLAIMER_SENTINEL = 'NOTHING AUTOMATED PASSES';
 
-/** Marks the Vitest coverage provider block as present in the shared config. */
-const PROVIDER_BLOCK = /provider:\s*['"]v8['"]/;
+/** Vitest supports built-in providers and a module-backed custom provider. */
+const PROVIDER_BLOCK = /provider:\s*['"](?:v8|istanbul|custom)['"]/;
 
 /** Anything that would hand `--coverage` to a test runner. */
 const COVERAGE_FLAG = /--coverage\b/;
@@ -88,7 +88,7 @@ function sites(name: string, lines: string[], pattern: RegExp): string[] {
 
 export function judgeCoverageWiring(input: CoverageWiringInput): CoverageWiringVerdict {
   const producerSites = [
-    ...sites('scripts/affected-tests.mjs', stripComments(input.runnerSource), COVERAGE_FLAG),
+    ...sites('scripts/affected-tests.mjs', stripCommentsOnly(input.runnerSource, 'affected-tests.mjs').split('\n'), COVERAGE_FLAG),
     ...input.workflows.flatMap((w) =>
       sites(w.name, stripYamlComments(w.source), COVERAGE_FLAG),
     ),
@@ -98,7 +98,7 @@ export function judgeCoverageWiring(input: CoverageWiringInput): CoverageWiringV
     sites(w.name, stripYamlComments(w.source), ARTIFACT_CONSUMER),
   );
 
-  const configLines = stripComments(input.configSource);
+  const configLines = stripCommentsOnly(input.configSource, 'vitest-config.ts').split('\n');
   const providerBlockPresent = configLines.some((line) => PROVIDER_BLOCK.test(line));
   // The sentinel lives in a COMMENT, so it is read from the raw source.
   const disclaimerPresent = input.configSource.includes(DISCLAIMER_SENTINEL);
@@ -174,27 +174,6 @@ export interface CoverageCompletenessVerdict {
 const COVERAGE_INCLUDE = /(?:^|[{,\s])include:\s*\[/;
 
 /**
- * Drop TypeScript comments LINE-WISE, leaving code lines byte-intact.
- *
- * `stripComments` (used by judgeCoverageWiring above) scans for `/*`, which every
- * glob in this config contains: `'**\/bin/**'` carries a literal `/` followed by `*`
- * at index 7, so a character-scanning stripper treats the rest of the file as a
- * block comment and the exclude list vanishes. That reads as "the excludes were
- * removed" — a false violation, in the direction that fails a correct config.
- *
- * Line-oriented is sufficient here because every setting this judge reads sits on
- * its own line, and it is the same trade `stripYamlComments` makes for quoted globs.
- */
-function stripTsLineComments(source: string): string[] {
-  return source.split('\n').map((line) => {
-    const trimmed = line.trimStart();
-    // A full-line `//`, or a `*` / `/*` continuation line inside a block comment.
-    if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return '';
-    return line;
-  });
-}
-
-/**
  * Build/tooling/story/example code, which the include makes visible for the first
  * time (it was never loaded before). Excluded in the same change that adds the
  * include, so the number is not depressed by files nobody intends to test.
@@ -211,7 +190,7 @@ export function judgeCoverageCompleteness(configSource: string): CoverageComplet
   // Comment-stripped on purpose: prose ABOUT `all: true` must not satisfy a check
   // that the setting is present — that is the same each-end-documents-the-other
   // trap judgeCoverageWiring above exists to catch, one level down.
-  const configLines = stripTsLineComments(configSource);
+  const configLines = stripCommentsOnly(configSource, 'vitest-config.ts').split('\n');
   const includePresent = configLines.some((line) => COVERAGE_INCLUDE.test(line));
   const body = configLines.join('\n');
   const missingToolingExcludes = TOOLING_EXCLUDES.filter((glob) => !body.includes(glob));

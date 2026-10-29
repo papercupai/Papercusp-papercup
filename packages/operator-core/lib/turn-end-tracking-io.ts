@@ -24,6 +24,7 @@ import {
   unregisteredArtifactTripwire,
   type UnguardedHaltTripwire,
   type UnregisteredArtifactTripwire,
+  type OpenTaskReminderTask,
   type OpenTaskReminderDecision,
   type OpenTaskReminderTripwire,
 } from './turn-end-tracking';
@@ -423,6 +424,53 @@ export async function sweepUnguardedHalt(input: {
   }
 }
 
+interface OpenTaskReminderLiveState {
+  tasks: OpenTaskReminderTask[];
+  signature: string;
+  wakeGuaranteed: boolean;
+}
+
+/**
+ * Re-read the canonical task snapshot and current continuation sources together.
+ * A queued reminder is only useful while its original task snapshot is current
+ * AND no loop/bounded await has since become a guaranteed wake source.
+ */
+async function readOpenTaskReminderLiveState(input: {
+  ownerId: string;
+  workspaceId: string;
+}): Promise<OpenTaskReminderLiveState | null> {
+  try {
+    const [db, tasksMod, loopMod, awaitMod] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('./session-tasks'),
+      import('./harness/routines/loop'),
+      import('./events/await/store'),
+    ]);
+    const { sql } = db.getOrgPg();
+    const sessionId = await tasksMod.taskSessionIdForOwner(sql, input.workspaceId, input.ownerId);
+    const [view, loop, awaits] = await Promise.all([
+      tasksMod.applySessionTaskOp(sql, {
+        op: 'view',
+        workspaceId: input.workspaceId,
+        sessionId,
+        idFactory: () => 'turn-end-task-reminder-freshness-view',
+      }),
+      loopMod.getLoopStatus(input.ownerId).catch(() => null),
+      awaitMod.listActiveAwaits(input.ownerId).catch(() => []),
+    ]);
+    const tasks = view.tasks as OpenTaskReminderTask[];
+    return {
+      tasks,
+      signature: openTaskReminderSignature(tasks),
+      wakeGuaranteed:
+        Boolean(loop?.active) ||
+        awaits.some((entry) => awaitGuaranteesRewake(entry, awaitMod.INBOX_WAKE_KEY_PREFIX)),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function boundedUnguardedHaltSweep(input: {
   ownerId: string;
   workspaceId: string;
@@ -447,33 +495,17 @@ export async function sweepOpenTaskReminder(input: {
   workspaceId: string;
 }): Promise<OpenTaskReminderDecision | null> {
   try {
-    const [db, tasksMod, loopMod, awaitMod, journalMod] = await Promise.all([
-      import('@papercusp/db-org'),
-      import('./session-tasks'),
-      import('./harness/routines/loop'),
-      import('./events/await/store'),
+    const [liveState, journalMod] = await Promise.all([
+      readOpenTaskReminderLiveState(input),
       import('./turn-journal-store'),
     ]);
-    const { sql } = db.getOrgPg();
-    const [view, loop, awaits, priorRows] = await Promise.all([
-      // D-019: an SU attached to a PUI conversation keeps its list under the chat id.
-      tasksMod.taskSessionIdForOwner(sql, input.workspaceId, input.ownerId).then((sessionId) =>
-        tasksMod.applySessionTaskOp(sql, {
-          op: 'view',
-          workspaceId: input.workspaceId,
-          sessionId,
-          idFactory: () => 'turn-end-task-view',
-        })),
-      loopMod.getLoopStatus(input.ownerId).catch(() => null),
-      awaitMod.listActiveAwaits(input.ownerId).catch(() => []),
-      journalMod.recentTurnJournal({ ownerId: input.ownerId, limit: 1 }).catch(() => []),
-    ]);
-    const boundedAwaitActive = awaits.some((entry) => awaitGuaranteesRewake(entry, awaitMod.INBOX_WAKE_KEY_PREFIX));
+    if (!liveState) return null;
+    const priorRows = await journalMod.recentTurnJournal({ ownerId: input.ownerId, limit: 1 }).catch(() => []);
     const prior = priorRows[0]?.tripwire;
     const priorTripwire: OpenTaskReminderTripwire | null = prior?.kind === 'open-task-reminder' ? prior : null;
     return decideOpenTaskReminder({
-      tasks: view.tasks,
-      wakeGuaranteed: Boolean(loop?.active) || boundedAwaitActive,
+      tasks: liveState.tasks,
+      wakeGuaranteed: liveState.wakeGuaranteed,
       priorTripwire,
     });
   } catch {
@@ -499,23 +531,16 @@ export async function readCurrentOpenTaskReminderSignature(input: {
   ownerId: string;
   workspaceId: string;
 }): Promise<string | null> {
-  try {
-    const [db, tasksMod] = await Promise.all([
-      import('@papercusp/db-org'),
-      import('./session-tasks'),
-    ]);
-    const { sql } = db.getOrgPg();
-    const sessionId = await tasksMod.taskSessionIdForOwner(sql, input.workspaceId, input.ownerId);
-    const view = await tasksMod.applySessionTaskOp(sql, {
-      op: 'view',
-      workspaceId: input.workspaceId,
-      sessionId,
-      idFactory: () => 'turn-end-task-reminder-freshness-view',
-    });
-    return openTaskReminderSignature(view.tasks);
-  } catch {
-    return null;
-  }
+  return (await readOpenTaskReminderLiveState(input))?.signature ?? null;
+}
+
+/** Read the current task signature and whether a loop/bounded await now makes a reminder redundant. */
+export async function readCurrentOpenTaskReminderFreshness(input: {
+  ownerId: string;
+  workspaceId: string;
+}): Promise<{ signature: string; wakeGuaranteed: boolean } | null> {
+  const state = await readOpenTaskReminderLiveState(input);
+  return state ? { signature: state.signature, wakeGuaranteed: state.wakeGuaranteed } : null;
 }
 
 /** Fire the already-persisted reminder back to this owner as one targeted turn. */

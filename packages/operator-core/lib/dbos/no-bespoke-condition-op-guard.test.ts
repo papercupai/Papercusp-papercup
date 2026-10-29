@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 // @ts-ignore — maintained bare-node source guard.
 import { findDispatches, inspectMigratedCaller, SEED_HASH } from '../../../../scripts/check-no-bespoke-condition-op.mjs';
 // @ts-ignore — shared bare-node policy validator.
@@ -9,6 +11,11 @@ const policy = () => JSON.parse(readFileSync(new URL('../../../../scripts/no-bes
 const path = 'packages/operator-core/lib/new-matcher.ts';
 
 it('rules events reuse R-69 rejects switch and if-chain shapes with three or more operator literals', () => {
+  if (process.env.CONDITION_GUARD_SOURCE) {
+    const run = spawnSync(process.execPath, [fileURLToPath(new URL('../../../../scripts/check-no-bespoke-condition-op.mjs', import.meta.url)),
+      '--source', process.env.CONDITION_GUARD_SOURCE, '--as', process.env.CONDITION_GUARD_AS!], { encoding: 'utf8' });
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+  }
   for (const source of [
     "switch (op) { case 'eq': return a === b; case 'gt': return a > b; case 'lt': return a < b; }",
     "if (op === 'eq') return a === b; else if (op === 'gt') return a > b; else if (op === 'lt') return a < b;",

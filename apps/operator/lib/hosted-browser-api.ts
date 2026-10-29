@@ -6,6 +6,8 @@
  * inspect `window` independently) gives sync and imperative workspace-host
  * actions one transport decision and one explicit local fallback.
  */
+import type { SyncQueryOptions, SyncRequestContext } from '@papercusp/sync';
+import { getBrowserMachineId, getBrowserWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
 
 export const HOSTED_BROWSER_API_MARKER_VERSION = 1 as const;
 export const HOSTED_BROWSER_API_GLOBAL =
@@ -183,6 +185,38 @@ export function resolveBrowserApiTransport(): BrowserApiTransport {
     restEndpoint: LOCAL_BROWSER_REST_ENDPOINT,
     workspaceHostEndpoints: LOCAL_WORKSPACE_HOST_ENDPOINTS,
   };
+}
+
+/** Shared by mounted providers and imperative reads. Resolve before queueing. */
+export function resolveBrowserSyncRequestContext({
+  restEndpoint = resolveBrowserApiTransport().restEndpoint,
+  userId = 'papercusp-anon',
+  workspace = getBrowserWorkspaceId(),
+  machine = getBrowserMachineId() ?? 'local',
+}: {
+  restEndpoint?: string;
+  userId?: string;
+  workspace?: string;
+  machine?: string;
+} = {}): SyncRequestContext {
+  const local = restEndpoint === LOCAL_BROWSER_REST_ENDPOINT;
+  return {
+    key: JSON.stringify([restEndpoint, userId, workspace, machine]),
+    headers: { 'x-papercusp-machine': machine, ...(local ? { 'x-papercusp-workspace': workspace } : {}) },
+    params: { desktopHost: machine, ...(local ? { ws: workspace } : {}) },
+  };
+}
+
+/** Keep the target and cache identity fixed even if selection changes in flight. */
+export async function fetchBrowserSyncQuery<T = unknown>(opts: SyncQueryOptions & {
+  maxInFlightFetches?: number;
+}): Promise<T[]> {
+  const { restEndpoint } = resolveBrowserApiTransport();
+  const requestContext = resolveBrowserSyncRequestContext({ restEndpoint });
+  // This module also supplies the server's data-only marker. Load the browser
+  // query implementation only when a client actually requests rows.
+  const { fetchSyncQuery } = await import('@papercusp/sync');
+  return fetchSyncQuery<T>({ ...opts, restEndpoint, requestContext });
 }
 
 export type HostedWorkspaceSelectionBootstrapResult =

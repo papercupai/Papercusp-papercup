@@ -142,7 +142,7 @@ function isCargoCaseTitle(value) {
  * fail-safe dirty, never an unmeasured claim of a clean tree.
  */
 export function buildCargoExecutionDetails({
-  root, filePath, passed = 0, failed = 0, skipped = 0, collectionFailed = false,
+  root, filePath, runStartedAt, passed = 0, failed = 0, skipped = 0, collectionFailed = false,
   failedCaseTitles = [], passedCaseTitles = [], testLayer, harnessSlug = null, workspaceId = null, env = process.env,
   worktree = UNMEASURED_CARGO_WORKTREE,
 }) {
@@ -157,6 +157,8 @@ export function buildCargoExecutionDetails({
     schemaVersion: 1,
     root,
     filePath,
+    // Preserve the measured pre-Cargo instant; historical callers must not invent one.
+    ...(runStartedAt !== undefined ? { runStartedAt } : {}),
     runGroupId: env.PAPERCUSP_TEST_RUN_GROUP ?? null,
     workspaceId,
     harnessSlug,

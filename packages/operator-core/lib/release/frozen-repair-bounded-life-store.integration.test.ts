@@ -1,4 +1,4 @@
-/** D-090/P-041: legacy automatic-retire calls never mutate the persisted frozen queue. */
+/** D-090/P-041: the real queue reader never retires an exhausted candidate. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -23,14 +23,7 @@ import {
   parseFrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
-import {
-  buildFrozenRepairBoundedLifeRecord,
-  frozenRepairConvergenceTrajectory,
-  type FrozenRepairBoundedLifeRecord,
-} from './frozen-repair-bounded-life';
-import {
-  retireFrozenRepairQueueForBoundedLife,
-} from './frozen-repair-bounded-life-store';
+import { readFrozenCandidateRepairQueueState } from '../harness/routines/release-actions';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -40,7 +33,6 @@ const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
 const C = 'c'.repeat(40);
 const H = 'd'.repeat(40);
-const RECUT = 'e'.repeat(40);
 
 beforeAll(async () => {
   org = await createOrgTestDb();
@@ -82,18 +74,6 @@ function queue(
 /** A non-improving queue: 4 rounds since the low of 3. */
 const NON_IMPROVING = [3, 5, 8, 12, 28];
 
-function recordFor(q: FrozenCandidateRepairQueue, nowMs = NOW): FrozenRepairBoundedLifeRecord {
-  const decision = { kind: 'retire' as const, trigger: 'non-improving' as const,
-    trajectory: frozenRepairConvergenceTrajectory(q.convergenceRounds), ageMs: nowMs - q.openedAtMs };
-  return buildFrozenRepairBoundedLifeRecord({
-    queue: q,
-    decision,
-    nowMs,
-    target: { sha: RECUT, source: 'staging-tip' },
-    carry: { carriedPaths: [{ path: 'a.ts', status: 'contained' }], readmitPaths: [], truncated: false },
-  });
-}
-
 async function seed(metadata: Record<string, unknown>): Promise<void> {
   await sql`
     INSERT INTO harness_shared.routines
@@ -110,7 +90,7 @@ async function metadata(): Promise<Record<string, unknown>> {
   return (typeof raw === 'string' ? JSON.parse(raw) : raw) as Record<string, unknown>;
 }
 
-describe('P-041: historical auto-retire requests cannot clear persisted queues', () => {
+describe('P-041: reading exhausted candidates cannot clear persisted queues', () => {
   it.each([
     { counts: NON_IMPROVING, ageMs: HOUR },
     { counts: [10, 8, 6], ageMs: 25 * HOUR },
@@ -121,8 +101,8 @@ describe('P-041: historical auto-retire requests cannot clear persisted queues',
       gate_health: { inconclusive: { status: 'repair-in-progress' } } };
     await seed(original);
     expect(parseFrozenCandidateRepairQueue((await metadata()).repair_queue)).not.toBeNull();
-    await expect(retireFrozenRepairQueueForBoundedLife(target, q, recordFor(q))).resolves.toEqual({
-      retired: false, refusal: 'automatic-retirement-disabled',
+    await expect(readFrozenCandidateRepairQueueState(target)).resolves.toMatchObject({
+      status: 'value', queue: q,
     });
     expect(await metadata()).toEqual(original);
     expect(liveness.probed).toEqual([]);

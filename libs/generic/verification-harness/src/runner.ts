@@ -78,7 +78,7 @@ export interface RunHarnessArgs {
   contract: HarnessContract;
   /** Parent of every run dir; the run lands at `<evidenceRoot>/<runId>`. */
   evidenceRoot: string;
-  /** Original receipts or bounded recursive PNG selections, relative to the run dir. */
+  /** Original receipts, bounded recursive PNG selections, or one filename across every declared phase. */
   retainedArtifacts?: readonly string[];
   runPhase: (ctx: PhaseContext) => Promise<PhaseOutcome>;
   /** Fast checks that run before any phase; a failure blocks every phase. */
@@ -189,6 +189,9 @@ export async function loadRunResult(runDir: string): Promise<HarnessRunResult> {
 }
 
 const PNG_SELECTION = '/**/*.png';
+// Expand declared phase identities, never a filesystem glob: missing passing receipts
+// must still fail, and undeclared directories must never enter proof custody.
+const PHASE_ARTIFACT_SELECTION = /^phases\/\*\/([^/*]+)$/;
 const RETAINED_MANIFEST = 'retained-artifacts.json';
 const MAX_RETAINED_FILES = 128;
 const MAX_RETAINED_BYTES = 64 * 1024 * 1024;
@@ -196,14 +199,15 @@ const MAX_RETAINED_BYTES = 64 * 1024 * 1024;
 function validateRetainedArtifacts(files: readonly string[]): void {
   if (files.length > 32 || files.some(file => !file || file.includes('\\') || path.isAbsolute(file)
     || file.split('/').some(part => !part || part === '.' || part === '..')
-    || (file.includes('*') && (!file.endsWith(PNG_SELECTION) || file.slice(0, -PNG_SELECTION.length).includes('*')))
+    || (file.includes('*') && !PHASE_ARTIFACT_SELECTION.test(file)
+      && (!file.endsWith(PNG_SELECTION) || file.slice(0, -PNG_SELECTION.length).includes('*')))
     || file === 'result.json' || file === RETAINED_MANIFEST)) {
     throw new Error('invalid retained harness artifact path');
   }
 }
 
 /** Expand only the explicit PNG selection; never follow links or sweep arbitrary diagnostics. */
-async function expandRetainedArtifacts(runRoot: string, selectors: readonly string[]): Promise<string[]> {
+async function expandRetainedArtifacts(runRoot: string, selectors: readonly string[], phases: HarnessRunResult['phases']): Promise<string[]> {
   const files = new Set<string>();
   let visited = 0;
   const add = (file: string) => {
@@ -228,6 +232,16 @@ async function expandRetainedArtifacts(runRoot: string, selectors: readonly stri
     }
   };
   for (const selector of selectors) {
+    const phaseArtifact = PHASE_ARTIFACT_SELECTION.exec(selector)?.[1];
+    if (phaseArtifact) {
+      for (const { phase } of phases) {
+        if (!phase || phase === '.' || phase === '..' || /[\\/*]/.test(phase)) {
+          throw new Error('invalid retained harness artifact phase');
+        }
+        add(`phases/${phase}/${phaseArtifact}`);
+      }
+      continue;
+    }
     if (!selector.endsWith(PNG_SELECTION)) { add(selector); continue; }
     const directory = selector.slice(0, -PNG_SELECTION.length);
     // A non-browser assertion or a blocked phase need not produce any PNGs.
@@ -266,7 +280,7 @@ export async function writeRunResult(result: HarnessRunResult, retainedArtifacts
   // available originals; a blocked phase may never have produced its receipt.
   const artifacts: { relativeFile: string; bytes: Buffer }[] = [];
   let totalBytes = 0;
-  for (const relativeFile of await expandRetainedArtifacts(runRoot, retainedArtifacts)) {
+  for (const relativeFile of await expandRetainedArtifacts(runRoot, retainedArtifacts, result.phases)) {
     const source = path.join(runRoot, relativeFile);
     const info = await lstat(source).catch(error => {
       if (result.verdict !== 'pass' && (error as NodeJS.ErrnoException).code === 'ENOENT') return null;

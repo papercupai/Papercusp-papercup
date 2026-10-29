@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beginAcquire } from '@papercusp/db-org/acquire-registry';
+import { beginAcquire, withPgAcquireDiagnostics } from '@papercusp/db-org/acquire-registry';
 import { createSpawnerSidecarLoopDelay } from './spawner-sidecar-loop-delay';
 
 const invocation = vi.hoisted(() => ({ loaded: vi.fn(), run: vi.fn() }));
@@ -168,6 +168,80 @@ describe('spawner sidecar health', () => {
       expect(settled?.poolAcquisitionContext).toMatchObject({ requestId: settled?.diagnosticRequestId });
       expect((settled?.poolAcquisitions as Array<{ elapsedMs: number }>)[0]?.elapsedMs).toBeGreaterThanOrEqual(0);
     } finally {
+      client.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      logs.mockRestore();
+      vi.unstubAllEnvs();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps progress pool timing on its originating request across foreign async callbacks', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'sidecar-exec-context-'));
+    const socketPath = join(directory, 'server.sock');
+    vi.stubEnv('PAPERCUSP_SPAWNER_IPC_SOCKET', socketPath);
+    const logs = vi.spyOn(console, 'info').mockImplementation(() => {});
+    let reportProgress: (() => void) | undefined;
+    let signalStarted!: () => void;
+    let settleExecution!: () => void;
+    const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const settlement = new Promise<void>((resolve) => { settleExecution = resolve; });
+    const server = runSpawnerSidecarServer({
+      slowExecMs: 0,
+      executeProcess: async (_params, deps) => {
+        const ticket = beginAcquire('origin-request');
+        ticket.acquired();
+        ticket.release();
+        reportProgress = () => {
+          deps?.onStage?.('settlement-complete');
+          deps?.onAdmissionPhase?.({ phase: 'enqueue', state: 'fulfilled', elapsedMs: 1 });
+        };
+        signalStarted();
+        await settlement;
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    const client = new SpawnerIpcClient(socketPath);
+    const stageLines = () => logs.mock.calls
+      .filter(([message]) => message === '[spawner-process-exec-stage]')
+      .map(([, detail]) => JSON.parse(String(detail)) as {
+        event: string;
+        diagnosticRequestId: string;
+        poolAcquisitionContext: { requestId: string; operation: string } | null;
+        poolAcquisitions: Array<{ pool: string; outcome: string }>;
+      });
+    try {
+      await once(server, 'listening');
+      const reply = client.call('process:exec', { command: 'node', args: ['-e', '0'], cwd: directory });
+      await started;
+      await vi.waitFor(() => expect(stageLines().some((line) => line.event === 'slow')).toBe(true));
+      expect(reportProgress).toBeTypeOf('function');
+      withPgAcquireDiagnostics('foreign.request', () => {
+        const ticket = beginAcquire('foreign-request');
+        ticket.acquired();
+        ticket.release();
+        reportProgress!();
+      });
+      // A callback dispatched without any acquisition scope must also retain its origin.
+      reportProgress!();
+      settleExecution();
+      await expect(reply).resolves.toMatchObject({ code: 0 });
+
+      const lines = stageLines();
+      expect(lines.map((line) => line.event)).toEqual([
+        'slow', 'progress', 'progress', 'progress', 'progress', 'request-settled',
+      ]);
+      expect(new Set(lines.map((line) => line.diagnosticRequestId)).size).toBe(1);
+      for (const line of lines) {
+        expect(line.poolAcquisitionContext).toEqual({
+          requestId: line.diagnosticRequestId, operation: 'spawner.process.exec',
+        });
+        expect(line.poolAcquisitions).toEqual([
+          { pool: 'origin-request', outcome: 'acquired', elapsedMs: expect.any(Number) },
+        ]);
+      }
+    } finally {
+      settleExecution();
       client.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       logs.mockRestore();

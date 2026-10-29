@@ -16,6 +16,14 @@ import { canonicalJson } from '../external-bench/reproducibility/canonical-json'
 
 let f: Awaited<ReturnType<typeof sqlMiningFixture>>;
 let root: string, oldCodexRoot: string | undefined;
+const nativeBodyReads = vi.hoisted(() => ({ target: '', opens: 0 }));
+vi.mock('node:fs/promises', async original => {
+  const fs = await original<typeof import('node:fs/promises')>();
+  return { ...fs, open: (...args: Parameters<typeof fs.open>) => {
+    if (String(args[0]) === nativeBodyReads.target) nativeBodyReads.opens++;
+    return fs.open(...args);
+  } };
+});
 // Exercise the real issuer SQL under the same workspace RLS as production.
 vi.mock('@papercusp/db-org', async original => ({
   ...await original<typeof import('@papercusp/db-org')>(),
@@ -243,7 +251,7 @@ it.each(['exec_command', 'functions.exec', 'browser', 'tools:invoke', 'code:run'
   });
 
 it.each(['authorized', 'unknown-sibling', 'outside-scope'] as const)(
-  'D030 production source phase reconciles %s calls without certifying continuity or moving the floor', async kind => {
+  'D030 production source phase reconciles %s calls before earning a prospective floor', async kind => {
     const s = await authorizedFixture();
     await f.db.adminSql.unsafe(await readFile(new URL(
       '../../../../libs/papercusp/libs/db/sql/1585-native-capture-reconciliation-receipt.sql', import.meta.url), 'utf8'));
@@ -286,11 +294,16 @@ it.each(['authorized', 'unknown-sibling', 'outside-scope'] as const)(
       expect(Object.values(roots[0]!.calls).map(p => p.scope).sort()).toEqual(
         kind === 'authorized' ? ['included'] : ['excluded', 'included']);
     }
-    expect(latest?.floor).toBe(enrolled?.floor);
+    if (kind === 'unknown-sibling') expect(latest?.floor).toBe(enrolled?.floor);
+    else {
+      expect(latest?.receipt.sourceReconciliation.closed).toMatchObject({ from: expect.any(String), signature: expect.any(String) });
+      expect(new Date(latest!.floor).getTime()).toBeGreaterThanOrEqual(new Date(enrolled!.floor).getTime());
+    }
     expect(JSON.stringify(latest?.receipt)).not.toMatch(/private-query|sibling-call|other-harness|su-exact-call/);
-    // Production preparation never manufactures an unsigned event-time index.
+    // Only independently authorized INCLUDED canonical calls get an event-time
+    // index copy; a root or an exclusion never supplies index scope.
     expect((await f.db.adminSql`SELECT id FROM harness_shared.agent_activity
-      WHERE NOT (detail ? 'nativeDispatch')`)).toHaveLength(0);
+      WHERE NOT (detail ? 'nativeDispatch')`)).toHaveLength(1);
   }, 120_000);
 
 it.each(['excluded-receipt-loss', 'excluded-receipt-rewrite', 'invocation-loss', 'key-rotation', 'source-rewrite'] as const)(
@@ -372,7 +385,8 @@ it('D030 production source preparation resumes bounded chunks without storing tr
     { calls: { [sha(JSON.stringify([owner, 'codex', s.source.namespace, s.source.callId]))]: { scope: 'included' } } },
   ]);
   expect(latest.receipt.sourceReconciliation.pending).toEqual({});
-  expect(latest.floor).toBe(enrolled.floor);
+  expect(latest.receipt.sourceReconciliation.closed).toMatchObject({ from: expect.any(String) });
+  expect(new Date(latest.floor).getTime()).toBeGreaterThanOrEqual(new Date(enrolled.floor).getTime());
 }, 120_000);
 
 it('pairs an unsigned event-time index only with the independent original receipt and canonical event', async () => {
@@ -387,6 +401,184 @@ it('pairs an unsigned event-time index only with the independent original receip
   expect((await read(input))?.sources[0]?.result?.body).toEqual({ private: 'canonical-result' });
   expect(await reconcileNativeCapture({ ...s.opts, since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' })).toBe('unknown');
 });
+
+it('D032 binds reusable canonical parsing to its original protected preparation, not serialized call labels', async () => {
+  const s = await authorizedFixture();
+  await f.db.adminSql.unsafe(await readFile(new URL(
+    '../../../../libs/papercusp/libs/db/sql/1585-native-capture-reconciliation-receipt.sql', import.meta.url), 'utf8'));
+  const opts = { ...s.opts, since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' };
+  await f.db.adminSql`UPDATE harness_shared.adv_sessions SET first_seen_at=${opts.since}::timestamptz
+    WHERE id=${s.binding.id}::bigint`;
+  const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
+    FROM harness_shared.sql_intent_progress WHERE harness_slug=${harness}`)[0]!.receipt;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    expect(await reconcileNativeCapture(opts)).toBe('unknown');
+    if (Object.keys((await receipt()).sourceReconciliation.roots).length) break;
+  }
+  const saved = await receipt(), rootKey = Object.keys(saved.sourceReconciliation.roots)[0]!;
+  expect(saved.sourceReconciliation.roots[rootKey].signature).toMatch(/^[a-f0-9]{64}$/);
+  const [callKey] = Object.keys(saved.sourceReconciliation.roots[rootKey].calls);
+  expect(saved.sourceReconciliation.roots[rootKey].calls[callKey!]).toMatchObject({ activityId: s.input.id, at: s.source.at });
+  // This is an actual additional canonical call, not a caller-supplied source.
+  // Copying an old root or changing its signed call population cannot hide it.
+  s.records.push({ type: 'response_item', timestamp: s.source.at, payload: { type: 'function_call',
+    name: s.source.tool, call_id: 'unproved-sibling', arguments: '{}' } });
+  await writeFile(s.path, s.records.map(r => JSON.stringify(r)).join('\n') + '\n');
+  saved.sourceReconciliation.roots[rootKey].calls[callKey!].scope = 'excluded';
+  await f.db.adminSql`UPDATE harness_shared.sql_intent_progress SET native_capture_receipt=${f.db.adminSql.json(saved)}`;
+  expect(await reconcileNativeCapture(opts)).toBe('unknown');
+  expect(Object.keys((await receipt()).sourceReconciliation.roots)).toHaveLength(0);
+}, 120_000);
+
+it('D032 earns a prospective floor and renews current authority while reusing unchanged canonical parsing', async () => {
+  const s = await authorizedFixture();
+  await f.db.adminSql.unsafe(await readFile(new URL(
+    '../../../../libs/papercusp/libs/db/sql/1585-native-capture-reconciliation-receipt.sql', import.meta.url), 'utf8'));
+  const opts = { ...s.opts, since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' };
+  await f.db.adminSql`UPDATE harness_shared.adv_sessions SET first_seen_at=${opts.since}::timestamptz
+    WHERE id=${s.binding.id}::bigint`;
+  const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt,
+    native_capture_from::text AS floor FROM harness_shared.sql_intent_progress WHERE harness_slug=${harness}`)[0]!;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    expect(await reconcileNativeCapture(opts)).toBe('unknown');
+    if ((await receipt()).receipt.sourceReconciliation.closed) break;
+  }
+  const baseline = await receipt();
+  expect(baseline.receipt.sourceReconciliation.closed).toMatchObject({ from: expect.any(String) });
+  const [{ detail }] = await f.db.adminSql`SELECT detail FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint`;
+  const original = detail.nativeDispatch;
+  const [{ now }] = await f.db.adminSql`SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC',
+    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS now`;
+  s.source.callId = 'after-floor'; s.source.at = now;
+  s.metadata.requestOrigin.nativeSession.callIdFingerprint = sha(s.source.callId);
+  await s.insert();
+  expect(await appendAuthorizedNativeDispatch({ workspaceId, harnessSlug: harness, ownerId: owner,
+    advSessionId: Number(s.binding.id), nativeSessionId: s.source.namespace!, callId: s.source.callId,
+    toolName: original.toolName, argsFingerprint: original.argsFingerprint, principal: original.principal },
+  async () => true, f.db.adminSql)).toBe(true);
+  const appended = await receipt();
+  // A brand-new protected attempt is an INSERT, not destructive loss of an
+  // earlier proof. Its transactional signing must not trip the UPDATE detector.
+  expect(appended.floor).toBe(baseline.floor);
+  expect(appended.receipt.sourceReconciliation.closed).toEqual(baseline.receipt.sourceReconciliation.closed);
+  s.records.push({ type: 'response_item', timestamp: now, payload: { type: 'function_call',
+    name: s.source.tool, call_id: s.source.callId, arguments: JSON.stringify(s.source.args) } });
+  await writeFile(s.path, s.records.map(r => JSON.stringify(r)).join('\n') + '\n');
+  const [{ until }] = await f.db.adminSql`SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC',
+    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS until`;
+  const current = { ...opts, since: baseline.receipt.sourceReconciliation.closed.from, until };
+  let verdict: 'complete' | 'gap' | 'unknown' = 'unknown';
+  for (let attempt = 0; attempt < 20 && verdict === 'unknown'; attempt++) verdict = await reconcileNativeCapture(current);
+  expect(verdict).toBe('complete');
+  const before = await receipt();
+  expect(before.floor).toBe(baseline.floor);
+  // No canonical body open on the next read: a source rewrite from an open
+  // callback would reveal a hidden replay; current manifests still run.
+  nativeBodyReads.target = s.path; nativeBodyReads.opens = 0;
+  try { expect(await reconcileNativeCapture(current)).toBe('complete'); }
+  finally { nativeBodyReads.target = ''; }
+  expect(nativeBodyReads.opens).toBe(0);
+  // Excluded receipt mutation elsewhere cannot be masked by a current marker.
+  await f.db.adminSql`DELETE FROM harness_shared.tool_invocations
+    WHERE metadata_json->'requestOrigin'->'nativeSession'->>'callIdFingerprint'=${sha(s.source.callId)}`;
+  expect(await reconcileNativeCapture(current)).toBe('unknown');
+  expect((await receipt()).receipt.sourceReconciliation.closed).toBeUndefined();
+}, 120_000);
+
+it.each(['excluded-delete', 'excluded-rewrite', 'invocation-delete', 'key-rotation', 'source-rewrite', 'population-insert'] as const)(
+  'D032 atomic whole-population closure rejects %s during the final progress write', async mutation => {
+    const s = await authorizedFixture();
+    await f.db.adminSql.unsafe(await readFile(new URL(
+      '../../../../libs/papercusp/libs/db/sql/1585-native-capture-reconciliation-receipt.sql', import.meta.url), 'utf8'));
+    const opts = { ...s.opts, harnessSlug: 'requested-scope', since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' };
+    await f.db.adminSql`UPDATE harness_shared.adv_sessions SET first_seen_at=${opts.since}::timestamptz
+      WHERE id=${s.binding.id}::bigint`;
+    const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt,
+      native_capture_revision::text AS revision,native_capture_from::text AS floor
+      FROM harness_shared.sql_intent_progress WHERE harness_slug=${opts.harnessSlug}`)[0]!;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      expect(await reconcileNativeCapture(opts)).toBe('unknown');
+      if ((await receipt()).receipt.sourceReconciliation.closed) break;
+    }
+    const before = await receipt();
+    expect(before.receipt.sourceReconciliation.closed).toMatchObject({ from: expect.any(String) });
+    let mutated = false;
+    const client = new Proxy(f.db.adminSql, { apply(target, thisArg, args) {
+      const query = Array.isArray(args[0]) ? args[0].join('') : '';
+      if (!mutated && query.includes('UPDATE harness_shared.sql_intent_progress SET') && query.includes('FULL JOIN')) {
+        mutated = true;
+        return (async () => {
+          if (mutation === 'excluded-delete') await f.db.adminSql`DELETE FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint`;
+          if (mutation === 'excluded-rewrite') await f.db.adminSql`UPDATE harness_shared.agent_activity SET
+            detail=jsonb_set(detail,'{nativeDispatch,callId}','"changed-call"'::jsonb) WHERE id=${s.input.id}::bigint`;
+          if (mutation === 'invocation-delete') await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${s.id}::bigint`;
+          if (mutation === 'key-rotation') await f.db.adminSql`UPDATE harness_shared.operator_secrets
+            SET value_b64=${Buffer.alloc(32, 74).toString('base64')} WHERE name='spawn-signing-key'`;
+          if (mutation === 'source-rewrite') await writeFile(s.path, JSON.stringify(s.records[0]) + '\n');
+          if (mutation === 'population-insert') await f.db.adminSql`INSERT INTO harness_shared.adv_sessions
+            (workspace_id,mode,coord_owner_id,agent,session_id,first_seen_at)
+            VALUES (${workspaceId},'console','su-new-issued','codex',${randomUUID()},${opts.since}::timestamptz)`;
+          return Reflect.apply(target, thisArg, args);
+        })();
+      }
+      return Reflect.apply(target, thisArg, args);
+    } });
+    expect(await reconcileNativeCapture({ ...opts, client })).toBe('unknown');
+    expect(mutated).toBe(true);
+    const after = await receipt();
+    expect(after.revision).toBe(before.revision);
+    expect(after.floor).toBe(before.floor);
+    // The old signed marker cannot bypass a new current renewal either.
+    expect(await reconcileNativeCapture(opts)).toBe('unknown');
+  }, 120_000);
+
+it('D032 renews an earlier excluded root across more than one preparation wave', async () => {
+  const first = await authorizedFixture();
+  const [{ detail }] = await f.db.adminSql`SELECT detail FROM harness_shared.agent_activity WHERE id=${first.input.id}::bigint`;
+  const original = detail.nativeDispatch;
+  for (let index = 1; index < 33; index++) {
+    const s = await fixture();
+    expect(await appendAuthorizedNativeDispatch({ workspaceId, harnessSlug: harness, ownerId: owner,
+      advSessionId: Number(s.binding.id), nativeSessionId: s.source.namespace!, callId: s.source.callId!,
+      toolName: original.toolName, argsFingerprint: original.argsFingerprint, principal: original.principal },
+    async () => true, f.db.adminSql)).toBe(true);
+    await canonicalFixture(s);
+  }
+  await f.db.adminSql.unsafe(await readFile(new URL(
+    '../../../../libs/papercusp/libs/db/sql/1585-native-capture-reconciliation-receipt.sql', import.meta.url), 'utf8'));
+  const opts = { ...first.opts, harnessSlug: 'requested-scope', since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' };
+  await f.db.adminSql`UPDATE harness_shared.adv_sessions SET first_seen_at=${opts.since}::timestamptz`;
+  const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt,
+    native_capture_from::text AS floor,native_capture_revision::text AS revision
+    FROM harness_shared.sql_intent_progress WHERE harness_slug=${opts.harnessSlug}`)[0]!;
+  let partial = false;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    expect(await reconcileNativeCapture(opts)).toBe('unknown');
+    const current = await receipt(), count = Object.keys(current.receipt.sourceReconciliation.roots).length;
+    if (count > 0 && count < 33) partial = true;
+    if (current.receipt.sourceReconciliation.closed) break;
+  }
+  const before = await receipt();
+  expect(partial).toBe(true);
+  expect(Object.keys(before.receipt.sourceReconciliation.roots)).toHaveLength(33);
+  expect(before.receipt.sourceReconciliation.closed).toMatchObject({ from: expect.any(String) });
+  let mutated = false;
+  const client = new Proxy(f.db.adminSql, { apply(target, thisArg, args) {
+    const query = Array.isArray(args[0]) ? args[0].join('') : '';
+    if (!mutated && query.includes('UPDATE harness_shared.sql_intent_progress SET') && query.includes('FULL JOIN')) {
+      mutated = true;
+      return (async () => {
+        await f.db.adminSql`DELETE FROM harness_shared.agent_activity WHERE id=${first.input.id}::bigint`;
+        return Reflect.apply(target, thisArg, args);
+      })();
+    }
+    return Reflect.apply(target, thisArg, args);
+  } });
+  expect(await reconcileNativeCapture({ ...opts, client })).toBe('unknown');
+  expect(mutated).toBe(true);
+  const after = await receipt();
+  expect(after.revision).toBe(before.revision); expect(after.floor).toBe(before.floor);
+}, 120_000);
 
 it.each(['event-time', 'receipt-time', 'scope', 'owner', 'tool', 'session', 'call', 'original-loss', 'revoked'] as const)(
   'an unsigned event-time index cannot replace original authority after %s', async mismatch => {
@@ -479,6 +671,23 @@ it('rechecks current ACL and full population after filesystem and authorization 
     return true;
   } })).toBeNull();
 });
+
+it.each(['receipt', 'invocation', 'runtime', 'key'] as const)(
+  'D030 the last per-call ACL callback cannot leave a stale %s proof', async mutation => {
+    const s = await authorizedFixture(); let checks = 0;
+    const proof = await readAuthorizedNativeDispatch({ ...s.input, source: s.source }, { ...s.opts, authorize: async () => {
+      if (++checks !== 3) return true;
+      if (mutation === 'receipt') await f.db.adminSql`DELETE FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint`;
+      if (mutation === 'invocation') await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${s.id}::bigint`;
+      if (mutation === 'runtime') await f.db.adminSql`UPDATE harness_shared.adv_sessions SET coord_owner_id='su-other'
+        WHERE id=${s.binding.id}::bigint`;
+      if (mutation === 'key') await f.db.adminSql`UPDATE harness_shared.operator_secrets
+        SET value_b64=${Buffer.alloc(32, 74).toString('base64')} WHERE name='spawn-signing-key'`;
+      return true;
+    } });
+    expect(checks).toBe(3);
+    expect(proof).toBeNull();
+  });
 
 it('does not scope an unsigned sibling in the same canonical runtime', async () => {
   const s = await authorizedFixture();

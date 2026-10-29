@@ -66,6 +66,26 @@ describe('CLAUDE.md gate-candidate-ref claim', () => {
       expect(verdict.violations.join('\n')).toMatch(/no longer holds/);
     });
 
+    it('does not mistake a candidate diagnostic string containing origin/ for a remote resolution', () => {
+      const source = [
+        'let candidate = await revParse(cfg.integrationRoot, cfg.integrationBranch);',
+        "log('green-checkpoint held: origin/${cfg.releaseRef} diverged from ${candidate.slice(0, 8)}');",
+      ].join('\n');
+      const verdict = judgeGateCandidateRef(pad(source));
+      expect(verdict.remoteRefSites).toEqual([]);
+      expect(verdict.ok).toBe(true);
+    });
+
+    it('catches a candidateRef assigned from a remote-tracking ref', () => {
+      const source = [
+        "const candidateRef = 'origin/staging';",
+        'let candidate = await revParse(cfg.integrationRoot, candidateRef);',
+      ].join('\n');
+      const verdict = judgeGateCandidateRef(pad(source));
+      expect(verdict.remoteRefSites).toHaveLength(1);
+      expect(verdict.violations.join('\n')).toMatch(/remote-tracking ref/);
+    });
+
     it('does NOT fire on a remote ref mentioned only in a comment', () => {
       const verdict = judgeGateCandidateRef(
         pad(`

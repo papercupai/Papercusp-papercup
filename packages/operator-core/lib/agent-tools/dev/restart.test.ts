@@ -2267,7 +2267,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     expect(spawnM).not.toHaveBeenCalled();
   });
 
-  it('coalesces a recent bg-host restart but explicitly reports a changed tree whose edit is not loaded', async () => {
+  it('coalesces a recent bg-host restart without inferring requested-edit absence from an unrelated newer source', async () => {
     acquireM.mockResolvedValue({
       ok: false,
       reason: 'held_exclusive',
@@ -2310,7 +2310,9 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
     });
     expect(b.note).toMatch(/runtime tree is newer than the bundle/i);
-    expect(b.note).toMatch(/requested edit is NOT loaded/i);
+    expect(b.note).toContain('packages/operator-core/lib/learning/model-policy.ts');
+    expect(b.note).toMatch(/requested edit.*unverified/i);
+    expect(b.note).not.toMatch(/requested edit is NOT loaded/i);
     expect(b.note).toMatch(/temporal throttle is preserved/i);
     expect(freshnessM).toHaveBeenCalledTimes(1);
     expect(guardM).not.toHaveBeenCalled();
@@ -2501,7 +2503,8 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       expect(freshnessM).toHaveBeenCalledTimes(1);
       expect(freshnessM).toHaveBeenCalledWith(BG_HOST_UNIT_ROOT);
       expect(b).toMatchObject({ coalesced: true, treeChangedSinceRestart: true, freshnessVerified: true });
-      expect(b.note).toMatch(/requested edit is NOT loaded/i);
+      expect(b.note).toMatch(/requested edit.*unverified/i);
+      expect(b.note).not.toMatch(/requested edit is NOT loaded/i);
     } finally {
       if (originalRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
       else process.env.PAPERCUSP_INTEGRATION_ROOT = originalRoot;

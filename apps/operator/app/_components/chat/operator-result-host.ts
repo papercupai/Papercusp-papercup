@@ -1,4 +1,4 @@
-import { fetchSyncQuery } from '@papercusp/sync';
+import { fetchBrowserSyncQuery as fetchSyncQuery } from '../../../lib/hosted-browser-api';
 import { parseStructuredResults, resultActionIntent, type ChatResultBlock } from '@papercusp/chat-protocol';
 import type { StructuredResultHost, StructuredResultRequest } from '@papercusp/chat-cards';
 

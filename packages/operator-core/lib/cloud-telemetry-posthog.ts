@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { getPosthogConfigWithSource } from './posthog-config';
 import { POSTHOG_PUBLIC_DEFAULTS } from './posthog-public-defaults';
-import { cloudTelemetryIdentity, deliverCloudTelemetry, type CloudTelemetryContext } from './cloud-telemetry';
+import { cloudTelemetryIdentity, cloudTelemetrySubjectIdentity, deliverCloudTelemetry, type CloudTelemetryContext } from './cloud-telemetry';
 import { cloudTelemetryConsentSchema } from './telemetry-kinds';
 
 /** Existing capture ingress is separate from the flag/admin API. A healthy
@@ -140,6 +140,29 @@ export async function readCloudProductUsage(input: {
   let identity: ReturnType<typeof cloudTelemetryIdentity>;
   try { identity = cloudTelemetryIdentity(input.context); }
   catch { return { status: 'unknown', reason: 'identity_unavailable' }; }
+  return readCloudProductUsageIdentity({ ...input, environment: input.context.environment, identity });
+}
+
+/** Internal service seam. Only a current receipt-derived storage subject may
+ * enter here; this function neither grants access nor fabricates a session. */
+export async function readCloudProductUsageForSubject(input: {
+  subject: { userId: string; organizationId: string };
+  environment: CloudTelemetryContext['environment']; windowStart: string; windowEnd: string;
+  readConsent: () => Promise<unknown>;
+}): Promise<CloudProductUsageObservation> {
+  let identity: ReturnType<typeof cloudTelemetrySubjectIdentity>;
+  try { identity = cloudTelemetrySubjectIdentity(input.subject, input.environment); }
+  catch { return { status: 'unknown', reason: 'identity_unavailable' }; }
+  return readCloudProductUsageIdentity({ ...input, identity, recheckBeforeQuery: true });
+}
+
+async function readCloudProductUsageIdentity(input: {
+  identity: ReturnType<typeof cloudTelemetryIdentity>; environment: CloudTelemetryContext['environment'];
+  windowStart: string; windowEnd: string; readConsent: () => Promise<unknown>;
+  onUnavailable?: (failure: CloudProductUsageFailure) => void;
+  recheckBeforeQuery?: boolean;
+}): Promise<CloudProductUsageObservation> {
+  const identity = input.identity;
   const start = Date.parse(input.windowStart), end = Date.parse(input.windowEnd);
   if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end || end - start > 30 * 86_400_000) {
     return { status: 'unknown', reason: 'invalid_window' };
@@ -158,13 +181,22 @@ export async function readCloudProductUsage(input: {
     `uniqExactIf(properties.operation_id, event = 'cloud_workspace_provisioning' AND properties.phase = 'ready' AND properties.source = 'control-plane') AS readyProvisioningObservations, ` +
     `uniqExactIf(properties.operation_id, event = 'cloud_feature_adoption') AS featureAdoptionObservations ` +
     `FROM events WHERE distinct_id = '${identity.distinctId}' AND properties.organization_id = '${identity.organizationId}' ` +
-    `AND properties.environment = '${input.context.environment}' AND properties.synthetic = false ` +
+    `AND properties.environment = '${input.environment}' AND properties.synthetic = false ` +
     `AND properties.source IN ('portal', 'control-plane') AND properties.operation_id IS NOT NULL AND properties.operation_id != '' ` +
     `AND (event IN ('cloud_portal_session', 'cloud_feature_adoption') OR (event = 'cloud_workspace_provisioning' AND properties.phase = 'ready' AND properties.source = 'control-plane')) ` +
     `AND timestamp >= toDateTime('${windowStart}') AND timestamp < toDateTime('${windowEnd}')`;
   let stage: CloudProductUsageFailure['stage'] = 'project-selection';
   try {
     const { projectId, root, request } = await configuredPosthogProject();
+    if (input.recheckBeforeQuery) {
+      // Project discovery is itself a network read. A service grant may have
+      // changed while it ran; recheck before sending subject selectors.
+      stage = 'consent-recheck';
+      const current = cloudTelemetryConsentSchema.parse(await input.readConsent());
+      if (!current.analytics.enabled || current.analytics.since !== consent.analytics.since) {
+        return { status: 'unknown', reason: 'consent_changed' };
+      }
+    }
     stage = 'usage-query';
     const result = await request(`${root}/query/`, { refresh: 'force_blocking', query: { kind: 'HogQLQuery', query } });
     const columns = ['observations', 'portalSessionObservations', 'readyProvisioningObservations', 'featureAdoptionObservations'];

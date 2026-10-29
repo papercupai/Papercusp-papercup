@@ -17,7 +17,7 @@ import { Maximize2, Minimize2 } from 'lucide-react';
 import { Button } from '../Button';
 import { usePopupMaximize } from '@/app/_components/chat/use-popup-maximize';
 import { DockWorkspace, createFetchDockLayoutStore, type DockLayoutRow, type DockLayoutStore } from '@papercusp/dock-workbench';
-import { fetchSyncQuery } from '@papercusp/sync';
+import { fetchBrowserSyncQuery as fetchSyncQuery } from '../../../lib/hosted-browser-api';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { beginInteraction, endInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import './dock-drawer-guard.css';

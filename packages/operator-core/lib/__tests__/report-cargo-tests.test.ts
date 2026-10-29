@@ -188,7 +188,10 @@ describe('Cargo reporter ledger destination (EI-26344781297566924)', () => {
             const slots = query.match(/VALUES\\s*\\(([^)]+)\\)/)[1].split(',');
             const groupSlot = slots[columns.indexOf('run_group_id')]?.match(/__value_(\\d+)__/);
             const runGroupId = groupSlot ? values[Number(groupSlot[1])] : '__missing_run_group_id__';
-            appendFileSync(process.env.CARGO_LEDGER_INSERTS, JSON.stringify({ url, execution, runGroupId }) + '\\n');
+            const valueFor = column => values[Number(slots[columns.indexOf(column)].match(/__value_(\\d+)__/)[1])];
+            appendFileSync(process.env.CARGO_LEDGER_INSERTS, JSON.stringify({
+              url, execution, runGroupId, startedAt: valueFor('started_at'), finishedAt: valueFor('finished_at'),
+            }) + '\\n');
             return [{ id: '70001' }];
           };
           sql.json = value => value;
@@ -206,6 +209,7 @@ describe('Cargo reporter ledger destination (EI-26344781297566924)', () => {
           return nextResolve(specifier, context);
         }});
       `);
+      const invocationStartedAt = Date.now();
       const result = spawnSync(process.execPath, [
         '--import', loader, resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs'),
         '--manifest-path', join(root, 'Cargo.toml'),
@@ -235,7 +239,14 @@ describe('Cargo reporter ledger destination (EI-26344781297566924)', () => {
       // the same run, including aggregates and runs without a group override.
       expect(recorded.map(row => row.runGroupId)).toEqual([runGroup ?? null, runGroup ?? null]);
       for (const row of recorded) {
-        expect(parseTestRunExecutionDetails(row.execution)).toMatchObject({ runGroupId: runGroup ?? null });
+        // EI-27285492452284903: validate the actual INSERT through the consumer's
+        // strict parser. Both aggregate and per-case proof need the measured start.
+        const parsed = parseTestRunExecutionDetails(row.execution);
+        expect(parsed).toMatchObject({ runGroupId: runGroup ?? null, runStartedAt: row.startedAt });
+        expect(typeof parsed?.runStartedAt).toBe('string');
+        expect(Date.parse(parsed!.runStartedAt!)).toBeGreaterThanOrEqual(invocationStartedAt);
+        expect(Date.parse(parsed!.runStartedAt!)).toBeLessThanOrEqual(Date.parse(row.finishedAt));
+        expect(Date.parse(row.finishedAt)).toBeLessThanOrEqual(Date.now());
       }
       // EI-26345752138365143: inspect the INSERT payload, not a hand-built
       // execution-details object. The shared descriptor parser rejects invalid

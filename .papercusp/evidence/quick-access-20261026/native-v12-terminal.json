@@ -1,0 +1,114 @@
+{
+  "measuredAt": "2026-10-29T04:38Z",
+  "taskId": "0mvt056xj2stm9mutqd",
+  "exitCode": 1,
+  "pin": "46f867505e78b0a8b5baf1362e9aee7e48d38f1f",
+  "failure": "R1 expect.poll(visible).toBe(true) at native fixture161 BEFORE second shortcut(false); cause unconfirmed",
+  "issue": "EI-27287192561301343",
+  "vetting": "closed_answered, post1210110. Full critique savedvetting-v12-complete.json. Contractweaknesses stillopen; no grading/acceptancePASS.",
+  "outer": {
+    "schemaVersion": 1,
+    "harness": "operator-e2e-isolated",
+    "runId": "20261029T034708Z-667072",
+    "evidenceDir": "/tmp/pcv/operator-e2e-isolated/20261029T034708Z-667072",
+    "selection": {
+      "only": null,
+      "from": null
+    },
+    "reuseFromRunId": null,
+    "preflight": {
+      "phase": "preflight",
+      "status": "passed",
+      "step": null,
+      "reasonCode": null,
+      "evidenceDir": "/tmp/pcv/operator-e2e-isolated/20261029T034708Z-667072/phases/preflight",
+      "startedAt": "2026-10-29T03:47:10.551Z",
+      "endedAt": "2026-10-29T03:47:45.444Z",
+      "elapsedMs": 34907
+    },
+    "phases": [
+      {
+        "phase": "preflight",
+        "status": "passed",
+        "step": null,
+        "reasonCode": null,
+        "evidenceDir": "/tmp/pcv/operator-e2e-isolated/20261029T034708Z-667072/phases/preflight",
+        "startedAt": "2026-10-29T03:47:10.551Z",
+        "endedAt": "2026-10-29T03:47:45.444Z",
+        "elapsedMs": 34907
+      },
+      {
+        "phase": "isolated-suite",
+        "status": "failed",
+        "step": null,
+        "reasonCode": "exit-1",
+        "evidenceDir": "/tmp/pcv/operator-e2e-isolated/20261029T034708Z-667072/phases/isolated-suite",
+        "startedAt": "2026-10-29T03:47:45.505Z",
+        "endedAt": "2026-10-29T04:33:41.233Z",
+        "elapsedMs": 2755741
+      }
+    ],
+    "verdict": "fail",
+    "firstFailure": {
+      "phase": "isolated-suite",
+      "step": null,
+      "reasonCode": "exit-1"
+    },
+    "guardRails": null,
+    "startedAt": "2026-10-29T03:47:10.494Z",
+    "endedAt": "2026-10-29T04:33:41.721Z"
+  },
+  "verifier": {
+    "schemaVersion": 1,
+    "harness": "verify-tauri-headless",
+    "runId": "20261029T034816Z-687340",
+    "evidenceDir": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261029T034816Z-687340",
+    "selection": {
+      "only": null,
+      "from": null
+    },
+    "reuseFromRunId": null,
+    "preflight": null,
+    "phases": [
+      {
+        "phase": "prepare",
+        "status": "passed",
+        "step": "isolated-database-prepare",
+        "reasonCode": null,
+        "evidenceDir": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261029T034816Z-687340/phases/prepare",
+        "startedAt": "2026-10-29T03:48:17.097Z",
+        "endedAt": "2026-10-29T04:21:04.281Z",
+        "elapsedMs": 1967190
+      },
+      {
+        "phase": "boot",
+        "status": "passed",
+        "step": "isolated-webview-storage",
+        "reasonCode": null,
+        "evidenceDir": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261029T034816Z-687340/phases/boot",
+        "startedAt": "2026-10-29T04:21:04.314Z",
+        "endedAt": "2026-10-29T04:25:45.853Z",
+        "elapsedMs": 281554
+      },
+      {
+        "phase": "assert",
+        "status": "failed",
+        "step": null,
+        "reasonCode": "exit-1",
+        "evidenceDir": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261029T034816Z-687340/phases/assert",
+        "startedAt": "2026-10-29T04:25:45.945Z",
+        "endedAt": "2026-10-29T04:33:39.802Z",
+        "elapsedMs": 473866
+      }
+    ],
+    "verdict": "fail",
+    "firstFailure": {
+      "phase": "assert",
+      "step": null,
+      "reasonCode": "exit-1"
+    },
+    "guardRails": null,
+    "startedAt": "2026-10-29T03:48:16.981Z",
+    "endedAt": "2026-10-29T04:33:40.324Z"
+  }
+}

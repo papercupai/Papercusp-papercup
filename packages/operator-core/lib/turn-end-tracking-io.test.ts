@@ -70,6 +70,7 @@ vi.mock('./agent-tools/coordination/inbox-wake', () => ({
 const {
   autoCheckpointStaleHeldItems,
   checkpointOnRelease,
+  readCurrentOpenTaskReminderFreshness,
   readCurrentOpenTaskReminderSignature,
   sweepOpenTaskReminder,
   wakeOpenTaskReminder,
@@ -348,6 +349,31 @@ describe('open-task reminder IO (P-005)', () => {
       workspaceId: 'ws-1',
       sessionId: 'chat-pui-1',
     }));
+  });
+
+  it('re-reads active continuation sources together with the delivery-time task snapshot', async () => {
+    applySessionTaskOp.mockResolvedValueOnce({
+      op: 'view',
+      changedTaskId: null,
+      tasks: [activeTask],
+      links: [],
+    });
+    getLoopStatus.mockResolvedValueOnce({ active: false });
+    listActiveAwaits.mockResolvedValueOnce([{
+      eventKey: 'work-item:done:WI-1',
+      expiresTs: '2026-10-29T05:00:00.000Z',
+      timeoutBehavior: 'wake',
+    }]);
+
+    await expect(readCurrentOpenTaskReminderFreshness({
+      ownerId: 'su-owner-1',
+      workspaceId: 'ws-1',
+    })).resolves.toEqual({
+      signature: openTaskReminderSignature([activeTask]),
+      wakeGuaranteed: true,
+    });
+    expect(getLoopStatus).toHaveBeenCalledWith('su-owner-1');
+    expect(listActiveAwaits).toHaveBeenCalledWith('su-owner-1');
   });
 
   it('returns an unknown signature when the canonical task read fails', async () => {

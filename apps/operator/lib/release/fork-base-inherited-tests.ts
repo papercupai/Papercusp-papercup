@@ -34,6 +34,7 @@
  * upstream main moves.
  */
 import type { FailingFile, IsolationResult } from './green-checkpoint';
+import { isInheritableGateEntry, type UpstreamInheritanceOutcome } from '@papercusp/operator-core/lib/release/upstream-inherited-legs';
 
 /** Start the base re-runs only with at least this much of the run's ceiling left: the
  *  re-runs (~10-15 min for ~20 files), then the post-suite legs (~15-20 min measured), then
@@ -237,6 +238,8 @@ export interface ForkBaseInheritanceDeps {
   git(args: string[]): Promise<{ code: number; stdout: string }>;
   /** The gate's own single-file isolation runner, in the same checkout. */
   runFile(f: FailingFile): Promise<IsolationResult>;
+  /** D-065's measured upstream non-test proof, before D-066 checks file coverage. */
+  inheritGateLegs?(entries: readonly string[]): Promise<UpstreamInheritanceOutcome>;
   /** ms left before the run's absolute ceiling; undefined/non-finite = unbounded. */
   remainingMs?(): number | undefined;
   log(line: string): void;
@@ -298,9 +301,27 @@ export async function attemptForkBaseInheritance(
   if (input.failingFiles.length === 0) return skip('no-located-files');
   const suiteRefusal = suiteResultRefusal(parseAffectedTestsResult(input.suiteOutput));
   if (suiteRefusal) return skip(suiteRefusal);
+  // A suite also runs workspace lint/generation tasks. D-065 used to run only AFTER
+  // this pass, so its inherited entries prevented D-066 from ever measuring test files.
+  // Only the existing measured classifier may discharge them; every other entry stays.
+  let inheritedGateEntries: string[] = [];
+  if (deps.inheritGateLegs && input.failingTests.some(isInheritableGateEntry)) {
+    try {
+      const inherited = await deps.inheritGateLegs(input.failingTests);
+      deps.log(inherited.logLine);
+      if (inherited.status === 'applied') {
+        const measured = new Set(inherited.inherited);
+        inheritedGateEntries = input.failingTests.filter(e => isInheritableGateEntry(e) && measured.has(e));
+      }
+    } catch {
+      deps.log('fork-base inheritance: upstream non-test proof unavailable; retaining every entry');
+    }
+  }
+  const inheritedGateSet = new Set(inheritedGateEntries);
+  const failingTests = input.failingTests.filter(e => !inheritedGateSet.has(e));
   // Before paying for any re-run: an entry no located file covers blocks regardless.
   const optimistic = classifyFailingEntries(
-    input.failingTests,
+    failingTests,
     input.failingFiles,
     new Set(input.failingFiles.map(fileKey)),
   );
@@ -393,10 +414,11 @@ export async function attemptForkBaseInheritance(
   }
   if (overlayError) return skip(`overlay-failed:${overlayError}`);
   const decision = decideForkBaseInheritance({
-    failingTests: input.failingTests,
+    failingTests,
     failingFiles: input.failingFiles,
     outcomes,
   });
+  decision.inheritedEntries.push(...inheritedGateEntries);
   const notRun = [...outcomes.values()].filter((o) => o === 'not-run').length;
   const errored = [...outcomes.values()].filter((o) => o === 'errored').length;
   const reason = decision.allInherited

@@ -235,7 +235,11 @@ describe("Selected nonmodal Joyride highlight lifecycle", () => {
     const resize = async () => {
       await act(async () => {
         for (const observer of observers) if (observer.targets.has(input.parentElement!)) {
-          observer.callback([{ target: input.parentElement!, contentRect: bounds } as ResizeObserverEntry], observer);
+          const size = { inlineSize: bounds.width, blockSize: bounds.height };
+          observer.callback([{
+            target: input.parentElement!, contentRect: bounds,
+            borderBoxSize: [size], contentBoxSize: [size], devicePixelContentBoxSize: [size],
+          }], observer);
         }
         await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
       });

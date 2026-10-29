@@ -294,7 +294,7 @@ describe('EI-25446866026477971 — host build paths across the package-cache rea
     );
 
     expect(stalled.result.status).toBeNull();
-    expect(stalled.result.error?.code).toBe('ETIMEDOUT');
+    expect(stalled.result.error).toMatchObject({ code: 'ETIMEDOUT' });
     expect(stalled.diagnostic).toContain('stage=stalled-cache-reader');
     expect(stalled.diagnostic).toContain('errorCode=ETIMEDOUT');
   });

@@ -831,6 +831,72 @@ it('retains the original structured worker failure after a long successful clean
   expect(isolatedWorkerFailureDetail('unstructured error')).toBe('unstructured error');
 });
 
+it('preserves the finalize deadline ahead of a worker error and long cleanup output', () => {
+  const detail = isolatedWorkerFailureDetail(
+    'TEST_FILE_FINALIZATION {"phase":"files-complete"}\n' +
+    'Error: service stopped after SIGTERM\n' + 'pg cleanup observation\n'.repeat(2_000),
+    { timedOut: true, timeoutPhase: 'finalize', signal: 'SIGTERM' });
+  expect(detail).toMatch(/^ISOLATED_WORKER_DEADLINE phase=finalize signal=SIGTERM /);
+  expect(detail).toContain('(any error below followed the harness kill)');
+  expect(detail).toContain('Error: service stopped after SIGTERM');
+  expect(detail.length).toBeLessThan(4_500);
+});
+
+it('bounds a runner stalled after file completion even when shutdown chatter continues', async () => {
+  vi.useFakeTimers();
+  const dir = mkdtempSync(join(tmpdir(), 'isolated-finalize-stall-'));
+  const child = new ChildProcess();
+  const stdout = new PassThrough(); Object.assign(child, { stdout });
+  const kill = vi.spyOn(child, 'kill').mockReturnValue(true);
+  try {
+    const captured = captureIsolatedWorker(child, dir, { testFileExecutionFromStdout: true,
+      phaseTimeouts: { bootstrapMs: 100, executeMs: 500, finalizeMs: 100, finalizeMaxMs: 300, teardownMs: 100 },
+      killGraceMs: 50 });
+    stdout.write('TEST_FILE_PROGRESS state=started cwd="packages/operator-core"\n');
+    stdout.write('TEST_FILE_FINALIZATION {"phase":"files-complete"}\n');
+    // The existing watchdog grants its initial progress window one extension.
+    await vi.advanceTimersByTimeAsync(190);
+    stdout.write('TEST_FILE_STARTUP_TRACE {"event":"worker-exit","signal":"SIGTERM"}\n');
+    stdout.write('TEST_FILE_FINALIZATION {"phase":"reporter-stage","reporter":"test-runs","stage":"pg-release","event":"start"}\n');
+    stdout.write('TEST_FILE_FINALIZATION {"phase":"files-complete"}\n');
+    expect(kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
+    Object.assign(child, { signalCode: 'SIGTERM' });
+    child.emit('exit', null, 'SIGTERM'); child.emit('close', null, 'SIGTERM');
+    expect(await captured).toMatchObject({ code: null, signal: 'SIGTERM', timedOut: true,
+      timeoutPhase: 'finalize', exitWaitTimedOut: false, stdioDrainTimedOut: false });
+    expect(JSON.parse(readFileSync(join(dir, 'worker-result.json'), 'utf8')))
+      .toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
+  } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('extends finalization for advancing source census but keeps its absolute ceiling', async () => {
+  vi.useFakeTimers();
+  const dir = mkdtempSync(join(tmpdir(), 'isolated-finalize-progress-'));
+  const child = new ChildProcess();
+  const stdout = new PassThrough(); Object.assign(child, { stdout });
+  const kill = vi.spyOn(child, 'kill').mockReturnValue(true);
+  try {
+    const captured = captureIsolatedWorker(child, dir, { testFileExecutionFromStdout: true,
+      phaseTimeouts: { bootstrapMs: 100, executeMs: 500, finalizeMs: 100, finalizeMaxMs: 300, teardownMs: 100 },
+      killGraceMs: 50 });
+    stdout.write('TEST_FILE_PROGRESS state=started\n');
+    stdout.write('TEST_FILE_FINALIZATION {"phase":"files-complete"}\n');
+    for (const completedFiles of [1, 2, 3]) {
+      await vi.advanceTimersByTimeAsync(90);
+      stdout.write('TEST_FILE_FINALIZATION ' + JSON.stringify({ phase: 'provenance-progress',
+        step: 'source-census', event: 'progress', completedFiles, totalFiles: 10 }) + '\n');
+      expect(kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    expect(kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
+    Object.assign(child, { signalCode: 'SIGTERM' });
+    child.emit('exit', null, 'SIGTERM'); child.emit('close', null, 'SIGTERM');
+    expect(await captured).toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
+  } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 it('pins the original short-lived Node worker before allowing its command to run', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'isolated-worker-start-'));
   const child = spawn(process.execPath, ['--import', join(import.meta.dirname, '../../../scripts/lib/isolated-runtime-start.mjs'),

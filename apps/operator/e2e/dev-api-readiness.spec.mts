@@ -54,7 +54,7 @@ test('the /dev right rail reports API readiness through the :3055 Vite proxy', a
   const evidenceDir = join(phaseDir, 'playwright');
   mkdirSync(evidenceDir, { recursive: true });
   const screenshotPath = join(evidenceDir, 'dev-api-via-3055.png');
-  runTauri(['screenshot', '--pid', tauriPid, '--output', screenshotPath]);
+  runTauri(['screenshot', '--pid', tauriPid, '--title', 'Papercusp Operator', '--output', screenshotPath]);
   expect(existsSync(screenshotPath), 'Tauri screenshot retained').toBe(true);
 
   writeFileSync(join(evidenceDir, 'dev-api-via-3055.json'), `${JSON.stringify({

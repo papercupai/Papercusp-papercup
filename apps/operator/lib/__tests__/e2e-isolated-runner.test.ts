@@ -453,12 +453,13 @@ describe('run-operator-e2e-isolated.sh', () => {
   });
 
   it('preflights default full-suite native prerequisites before starting the desktop', () => {
-    for (const args of [[], ['--workers=1'], ['--workers', '1']]) {
-    for (const env of [
+    const environments: Record<string, string>[] = [
       { VERIFY_TAURI_ISOLATED_SEED: 'fresh' },
       { PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: '' },
       { PAPERCUSP_TEST_RUN_RECEIPT_FILE: '' },
-    ]) {
+    ];
+    for (const args of [[], ['--workers=1'], ['--workers', '1']]) {
+    for (const env of environments) {
       const f = fixture(0);
       const marker = join(f.dir, 'rig-started');
       writeFileSync(f.rig, `#!/usr/bin/env bash\ntouch "${marker}"\nexit 0\n`);

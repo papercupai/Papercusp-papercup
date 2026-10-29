@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHostedPrincipal } from './auth/hosted-principal';
 import { cloudTelemetryIdentity, prepareCloudTelemetryDelivery } from './cloud-telemetry';
-import { readCloudProductUsage, ensureCloudMonitoringDashboard } from './cloud-telemetry-posthog';
-import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from './telemetry-kinds';
+import { readCloudProductUsage, readCloudProductUsageForSubject, ensureCloudMonitoringDashboard } from './cloud-telemetry-posthog';
+import { DEFAULT_CLOUD_TELEMETRY_CONSENT, type CloudTelemetryConsent } from './telemetry-kinds';
 
 const config = vi.hoisted(() => ({ value: { host: 'https://posthog.invalid', projectKey: 'capture-key', personalApiKey: 'admin-key' } as
   { host: string; projectKey: string; personalApiKey?: string } | null }));
@@ -10,7 +10,7 @@ vi.mock('./posthog-config', () => ({ getPosthogConfigWithSource: () => ({ config
 const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: 'tenant-a', userId: 'user-a',
   sessionId: 'session-a', sessionVersion: 1, permissions: [] });
 const context = { principal, environment: 'production' as const };
-const consent = { ...DEFAULT_CLOUD_TELEMETRY_CONSENT, analytics: { enabled: true, since: '2026-10-15T00:00:00Z' } };
+const consent: CloudTelemetryConsent = { ...DEFAULT_CLOUD_TELEMETRY_CONSENT, analytics: { enabled: true, since: '2026-10-15T00:00:00Z' } };
 const window = { windowStart: '2026-10-10T00:00:00Z', windowEnd: '2026-10-27T00:00:00Z' };
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 const observed = () => ({ columns: ['observations', 'portalSessionObservations', 'readyProvisioningObservations', 'featureAdoptionObservations'], results: [[4, 2, 1, 1]] });
@@ -30,6 +30,26 @@ afterEach(() => {
 });
 
 describe('P019 hosted product observations reuse capture identity, consent and project', () => {
+  it('service subject uses exactly the browser capture selectors and rechecks consent after the vendor read', async () => {
+    const fetcher = transport();
+    const readConsent = vi.fn(async () => consent);
+    const result = await readCloudProductUsageForSubject({ subject: { userId: principal.userId,
+      organizationId: principal.activeOrganizationId }, environment: 'production', ...window, readConsent });
+    expect(result.status).toBe('observed');
+    expect(readConsent).toHaveBeenCalledTimes(3);
+    const query = JSON.parse(String(fetcher.mock.calls[1]![1]!.body)).query.query as string;
+    const identity = cloudTelemetryIdentity(context);
+    expect(query).toContain(`distinct_id = '${identity.distinctId}'`);
+    expect(query).toContain(`properties.organization_id = '${identity.organizationId}'`);
+    expect(query).not.toMatch(/user-a|tenant-a|session-a/);
+    readConsent.mockResolvedValueOnce(consent).mockResolvedValueOnce({ ...consent, analytics: { enabled: false, since: null } });
+    expect(await readCloudProductUsageForSubject({ subject: { userId: principal.userId,
+      organizationId: principal.activeOrganizationId }, environment: 'production', ...window, readConsent }))
+      .toEqual({ status: 'unknown', reason: 'consent_changed' });
+    // The changed service authority is caught after catalog discovery and
+    // BEFORE a second query sends the subject selectors.
+    expect(fetcher.mock.calls.filter(call => new URL(String(call[0])).pathname.endsWith('/query/'))).toHaveLength(1);
+  });
   it.each([
     ['configuration', 'project-selection'],
     ['authentication', 'project-selection'],

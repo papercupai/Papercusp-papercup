@@ -120,6 +120,7 @@ import './datatypes/list';
 import './datatypes/get';
 import './people/search';
 import './people/get';
+import './people/usage';
 import './people/merge';
 // identities-v1 P-027 / D-010 — the shared leg and the global BROWSE were retired here:
 // `datatypes:publish` → cupboard:publish-datatype, `datatypes:catalog` →

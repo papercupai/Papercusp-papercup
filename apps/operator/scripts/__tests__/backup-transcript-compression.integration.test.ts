@@ -59,6 +59,8 @@ it('restores native PG18 transcript values and reduces paired snapshot archive b
   const work = await mkdtemp(join(tmpdir(), 'backup-transcript-p002-'));
   const bin = resolveNativePgBinDir();
   const source = await readFile(producerPath, 'utf8');
+  const producerFunctions = ['rm_tmp', 'install_transcript_archive', 'dump_one']
+    .map(name => functionFrom(source, name));
   const transcriptCall = source.split('\n').find(line =>
     line.trim().startsWith('if guarded_dump_one "$db" "$db-transcript"'));
   expect(transcriptCall, 'exercise the current transcript producer call site').toBeDefined();
@@ -105,6 +107,9 @@ it('restores native PG18 transcript values and reduces paired snapshot archive b
         'set -euo pipefail',
         'PGOUT="$FIXTURE_ROOT"; JOBS=4; TIMEOUT_SEC=60; TIMEOUT_MAX_SEC=120',
         'db=postgres; BACKUP_USER=fixture; BACKUP_MIGRATION_ADVISORY_DATABASE=not-this-fixture',
+        'declare -A ARTIFACT_DUMP_START_EPOCHS=() ARTIFACT_DUMP_SYSTEM_IDENTIFIERS=()',
+        'PSQL=fixture_psql',
+        'fixture_psql() { "$NATIVE_PG_BIN/psql" -h 127.0.0.1 -p "$FIXTURE_PORT" -U postgres -d postgres -tAc "$@"; }',
         'PC_BACKUP_SPACE_SAFETY=140; PC_BACKUP_MIN_FREE_GB=0; HOST_BACKUP_APPLICATION_NAME=pcbackup',
         "DISPOSABLE_SCHEMA_PATTERN='bench_memory*'",
         'inc=(--table=public.backup_transcript_fixture "--snapshot=$FIXTURE_SNAPSHOT")',
@@ -128,16 +133,26 @@ it('restores native PG18 transcript values and reduces paired snapshot archive b
         'run_bounded_watched() { shift 3; "$@"; }',
         'fs_avail_gb() { echo 1000; }',
         'log() { printf "%s\\n" "$*"; }',
-        functionFrom(source, 'rm_tmp'), functionFrom(source, 'dump_one'),
+        ...producerFunctions,
         'guarded_dump_one() { dump_one "$@"; }',
+        'declare -p ARTIFACT_DUMP_START_EPOCHS ARTIFACT_DUMP_SYSTEM_IDENTIFIERS >/dev/null',
+        'declare -F "$PSQL" rm_tmp install_transcript_archive dump_one >/dev/null',
       ].join('\n');
       const env = { ...process.env, FIXTURE_ROOT: work, FIXTURE_PORT: String(pg.port),
         NATIVE_PG_BIN: bin, FIXTURE_SNAPSHOT: String(snapshotId) };
-      await exec('bash', ['-c', `${harness}\ndump_one "$db" "$db-baseline" "\${inc[@]}"`],
-        { env, timeout: 120_000, maxBuffer: 1024 * 1024 });
+      const runDump = async (phase: string, command: string) => {
+        try {
+          await exec('bash', ['-c', `${harness}\n${command}`],
+            { env, timeout: 120_000, maxBuffer: 1024 * 1024 });
+        } catch (error) {
+          const detail = error instanceof Error && 'stderr' in error
+            ? String(error.stderr).slice(-4000) : String(error);
+          throw new Error(`${phase} dump fixture failed: ${detail}`, { cause: error });
+        }
+      };
+      await runDump('baseline', 'dump_one "$db" "$db-baseline" "${inc[@]}"');
       await sql`INSERT INTO public.backup_transcript_fixture VALUES (9999, ${Buffer.from('later row')}, 'after baseline')`;
-      await exec('bash', ['-c', `${harness}\n${transcriptCall!.trim().replace(/^if /, '').replace(/; then$/, '')}`],
-        { env, timeout: 120_000, maxBuffer: 1024 * 1024 });
+      await runDump('compressed transcript', transcriptCall!.trim().replace(/^if /, '').replace(/; then$/, ''));
       expect(await values(sql)).not.toEqual(originalValues);
     } finally {
       await snapshot.unsafe('ROLLBACK');
@@ -178,7 +193,7 @@ it('restores native PG18 transcript values and reduces paired snapshot archive b
       restoreVersion: restoreVersion.stdout.trim(), archives, ratio };
     // Vitest's JSON reporter persists task metadata, but drops annotations.
     // Keep the raw byte totals/digests in the ordinary machine-readable result.
-    context.task.meta.nativeBackupFixture = evidence;
+    Object.assign(context.task.meta, { nativeBackupFixture: evidence });
     await context.annotate(JSON.stringify(evidence), 'native-backup-fixture');
     expect(uncompressed.bytes).toBeGreaterThan(12 * 1024 * 1024);
     expect(ratio).toBeLessThanOrEqual(0.65);

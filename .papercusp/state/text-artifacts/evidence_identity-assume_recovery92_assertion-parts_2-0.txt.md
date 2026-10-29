@@ -1,0 +1,7 @@
+---
+rel_path: "evidence/identity-assume/recovery92/assertion-parts/2-0.txt"
+updated_at: 1793245058286
+_body: "content"
+---
+
+H4sIAAAAAAAC/01QTU/DMAy98zN8btd1ZdXaKxJoFw5cEQeTuiNqFkeJw0DT/jvOJhA35z2/D+cMJ45LCmjoGY8EIwQMFE1Oof5joALOYvjKe5ZaN5JNQpMykU8JxlYHEhsVGtcVpMWG8Dt/oMqM2bV919I8rIdh3nUd3vc4DN1m0/cT9oj9dt62U3GcbJRvGCVmqoBi5Aijz85VMFtHL5SyE408w2epwf6Wnr2nuJ/Iiy3qm0DRB/ZCX1IqOEJfOzbo4Eo9Rc5hP/13V9/XMwgledTX9TvMggdKDevRKBxrw5EaZ98bhb3UwuxSkyiVKg2mlI+0spp50HWFVsVspYWr0neyplTJfvF88nB5u1zufgDCKZfDhAEAAA==

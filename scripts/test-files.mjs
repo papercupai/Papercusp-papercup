@@ -3125,6 +3125,23 @@ export function runCapturedTestProcess(command, args, options = {}) {
               lifecycleReceipts++;
               onProgress(line);
             }
+          } else if (line.startsWith('TEST_FILE_FINALIZATION ') && lifecycleReceipts < 4096 && line.length <= 8192) {
+            const detail = JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length));
+            const census = detail.phase === 'provenance-progress' &&
+              ['git-checkout', 'source-census'].includes(detail.step) && ['start', 'progress', 'end'].includes(detail.event);
+            const reporter = detail.phase === 'reporter-stage' &&
+              ['test-runs', 'executed-source'].includes(detail.reporter) &&
+              ['source-snapshot', 'write-rows', 'onTestRunEnd', 'onExit', 'pg-release',
+                'completion-checkpoints', 'completion-snapshot'].includes(detail.stage) &&
+              ['start', 'end'].includes(detail.event) && typeof detail.operationId === 'string' &&
+              /^[0-9a-f-]{36}$/.test(detail.operationId);
+            if (!census && !reporter) continue;
+            // Reporter snapshots hash source in a worker while Vitest remains
+            // open. Relay measured census progress before close, just as the
+            // router relays its own post-run provenance. Reporter stages are
+            // diagnostics only; the outer watchdog never counts them as progress.
+            lifecycleReceipts++;
+            onProgress(line);
           } else if (line.startsWith('TEST_FILE_STARTUP_TRACE ') && lifecycleReceipts < 4096 && line.length <= 8192) {
             const detail = JSON.parse(line.slice('TEST_FILE_STARTUP_TRACE '.length));
             if (!['worker-forked', 'start-sent', 'started-received', 'stop-sent', 'stopped-received',
@@ -3459,6 +3476,12 @@ export function formatRouteError(detail) {
 export function assertExecutedProofOutputCustody(root, env = process.env) {
   const out = env.PC_EXECUTED_SOURCE_MAP_OUT?.trim();
   if (!out) return;
+  // OUT alone never arms the reporter. Refuse before collection instead of
+  // advertising an evidence path that this invocation cannot produce.
+  if (!env.PC_EXECUTED_SOURCE_MAP_WORKSPACE?.trim()) {
+    throw new Error('PC_EXECUTED_SOURCE_MAP_OUT requires PC_EXECUTED_SOURCE_MAP_WORKSPACE ' +
+      'to arm original-source capture; set the intended npm workspace explicitly (OUT alone does not arm the reporter)');
+  }
   const canonicalRoot = realpathSync(root);
   const physicalPath = path => {
     let parent = resolve(path);

@@ -48,6 +48,40 @@ const UPLOAD_STEP = `
 
 describe('coverage-wiring doc claim', () => {
   describe('fixture controls (the detector must be able to FAIL)', () => {
+    it('recognizes supported custom and built-in coverage providers without accepting an unknown provider', () => {
+      for (const provider of ['v8', 'istanbul', 'custom', 'unknown']) {
+        const verdict = judgeCoverageWiring({
+          runnerSource: "const args = ['--coverage'];",
+          workflows: [],
+          configSource: `coverage: { provider: '${provider}', customProviderModule: './coverage-provider.ts' },`,
+        });
+        expect(verdict.providerBlockPresent, provider).toBe(provider !== 'unknown');
+      }
+    });
+
+    it('preserves quoted globs before real coverage providers and producers', () => {
+      const verdict = judgeCoverageWiring({
+        runnerSource: "const glob = '**/*';\nconst args = ['--coverage'];",
+        workflows: [{ name: 'test.yml', source: UPLOAD_STEP }],
+        configSource: "const glob = '**/*';\nconst url = 'https://example.test';\ncoverage: { provider: 'v8' },",
+      });
+      expect(verdict.providerBlockPresent).toBe(true);
+      expect(verdict.producerSites).toEqual(['scripts/affected-tests.mjs:2']);
+      expect(verdict.ok).toBe(true);
+    });
+
+    it('does not promote provider or producer text inside inline block comments', () => {
+      const verdict = judgeCoverageWiring({
+        runnerSource: "const glob = '**/*'; /* args.push('--coverage') */",
+        workflows: [{ name: 'test.yml', source: UPLOAD_STEP }],
+        configSource: "const glob = '**/*'; /* provider: 'v8' */",
+      });
+      expect(verdict.providerBlockPresent).toBe(false);
+      expect(verdict.producerSites).toEqual([]);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations.join('\n')).toContain('consumer with no producer');
+    });
+
     it('catches the exact pre-2026-09-02 tree: an upload step with no producer', () => {
       const verdict = judgeCoverageWiring({
         runnerSource: 'const KNOWN_FLAGS = ["--all", "--integration"];',

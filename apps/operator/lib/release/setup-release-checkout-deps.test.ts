@@ -43,7 +43,7 @@ import {
 } from "node:fs";
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 // apps/operator/lib/release → apps/operator/bin/release/setup-release-checkout.sh
 /**
@@ -88,13 +88,15 @@ it('spawnFailureDetails reports timeout phase and bounded child output', () => {
     syscall: 'spawnSync bash',
     path: 'bash',
   });
-  const result = {
+  const result: ReturnType<typeof spawnSync> = {
+    pid: 1,
+    output: ['', 'x'.repeat(4_001), 'y'.repeat(4_001)],
     status: null,
     signal: 'SIGTERM',
     error,
     stdout: 'x'.repeat(4_001),
     stderr: 'y'.repeat(4_001),
-  } as ReturnType<typeof spawnSync>;
+  };
 
   const details = spawnFailureDetails('prepare explicit generation', 30_002, result);
 
@@ -2430,16 +2432,50 @@ describe('setup-release-checkout.sh --prepare-existing (EI-20336479620858625)', 
     expect(readFileSync(join(releaseRoot, 'ignored-cache', 'stale.txt'), 'utf8')).toBe('keep me too\n');
   });
 
-  it('EI-252238 holds one explicit-generation lease during source checkout and releases it after pinning', () => {
+  it('EI-252238 holds one explicit-generation lease during source checkout while the default copy lock is busy', async () => {
     const generationRoot = join(dirname(releaseRoot), 'fixture-generations');
+    const copyTmpRoot = join(dirname(releaseRoot), 'copy-tmp');
+    mkdirSync(copyTmpRoot);
+    const defaultCopyLock = join(copyTmpRoot, 'papercusp-dependency-generation-copy.lock');
+    const setupBusyLog = join(dirname(releaseRoot), 'setup-copy-lock-busy.log');
+    const defaultCopyEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      TMPDIR: copyTmpRoot,
+      DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '0',
+      DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '0',
+    };
+    delete defaultCopyEnv.DEPENDENCY_GENERATION_COPY_LOCK_FILE;
+    delete defaultCopyEnv.BASH_ENV;
     mkdirSync(join(integrationRoot, 'node_modules/lease-fixture'), { recursive: true });
-    writeFileSync(join(integrationRoot, 'node_modules/lease-fixture/package.json'), '{}');
+    writeFileSync(join(integrationRoot, 'package.json'), JSON.stringify({
+      name: 'prepare-int-fixture',
+      version: '1.0.0',
+      private: true,
+      dependencies: { 'lease-fixture': '1.0.0' },
+    }));
+    writeFileSync(join(integrationRoot, 'package-lock.json'), JSON.stringify({
+      name: 'prepare-int-fixture',
+      version: '1.0.0',
+      lockfileVersion: 3,
+      requires: true,
+      packages: {
+        '': {
+          name: 'prepare-int-fixture',
+          version: '1.0.0',
+          dependencies: { 'lease-fixture': '1.0.0' },
+        },
+        'node_modules/lease-fixture': { version: '1.0.0' },
+      },
+    }, null, 2));
+    writeFileSync(join(integrationRoot, 'node_modules/lease-fixture/package.json'), JSON.stringify({
+      name: 'lease-fixture',
+      version: '1.0.0',
+    }));
     const publishStartedAt = Date.now();
     const published = spawnSync('bash', ['-c',
       'set -euo pipefail; source "$1"; dependency_generation_ensure "$2" "$3"; printf "FIXTURE_ID=%s\\n" "$DEPENDENCY_GENERATION_ID"',
       'fixture', DEPENDENCY_GENERATION_SCRIPT, integrationRoot, generationRoot,
-    ], { encoding: 'utf8', timeout: 30_000, env: { ...process.env,
-      DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(generationRoot, 'fixture-copy.lock') } });
+    ], { encoding: 'utf8', timeout: 30_000, env: defaultCopyEnv });
     expect(
       published.status,
       spawnFailureDetails('publish explicit generation', Date.now() - publishStartedAt, published),
@@ -2459,21 +2495,215 @@ case " $* " in
 esac
 exec "$REGRESSION_REAL_GIT" "$@"
 `, { mode: 0o755 });
-    const prepareStartedAt = Date.now();
-    const result = spawnSync('bash', [SCRIPT_PATH,
-      '--integration', integrationRoot, '--release', releaseRoot, '--ref', targetSha,
-      '--node-modules', 'force', '--node-modules-copy', 'copy',
-      '--node-modules-generation', 'required', '--node-modules-generation-id', identity!,
-      '--dependency-generation-root', generationRoot,
-    ], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
-      DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(generationRoot, 'fixture-copy.lock'),
-      REGRESSION_REAL_GIT: realGit, REGRESSION_GENERATION_ROOT: generationRoot,
-      REGRESSION_GENERATION_ID: identity, REGRESSION_LEASE_OBSERVED: observed } });
+    const realFlock = spawnSync('which', ['flock'], { encoding: 'utf8' }).stdout.trim();
+    expect(realFlock).not.toBe('');
+    const bashEnv = join(bin, 'setup-lock-probe.bash');
+    writeFileSync(bashEnv, [
+      'flock() {',
+      '  local status=0 fd="" argument target holder',
+      '  "$REGRESSION_REAL_FLOCK" "$@" || status=$?',
+      '  for argument in "$@"; do fd="$argument"; done',
+      '  target="$(readlink "/proc/\${BASHPID}/fd/$fd" 2>/dev/null || true)"',
+      '  holder="$(head -n 1 "$REGRESSION_COPY_LOCK_FILE.holder" 2>/dev/null || true)"',
+      '  if [ "$status" -eq 1 ] && [ "$target" = "$REGRESSION_COPY_LOCK_FILE" ] && [[ "$holder" == "pid=$REGRESSION_COPY_LOCK_HOLDER_PID "* ]]; then',
+      '    echo "at=$(date +%s%3N) status=$status target=$target holder=$holder" >> "$REGRESSION_LOCK_BUSY_LOG"',
+      '  fi',
+      '  return "$status"',
+      '}',
+    ].join(String.fromCharCode(10)));
+    const traceHolder = spawn(realFlock, ['-x', defaultCopyLock, 'sleep', '1'], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    const traceHolderClosed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
+      traceHolder.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    let traceLockHeld = false;
+    const traceLockDeadline = Date.now() + 5_000;
+    while (Date.now() < traceLockDeadline && traceHolder.exitCode === null) {
+      const probe = spawnSync(realFlock, ['-n', defaultCopyLock, 'true'], { encoding: 'utf8' });
+      if (probe.status === 1) {
+        traceLockHeld = true;
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(traceLockHeld, 'instrumentation preflight did not acquire the default copy lock').toBe(true);
+    writeFileSync(defaultCopyLock + '.holder', 'pid=' + String(traceHolder.pid) + ' op=copy tracer-preflight\\n');
+    const traceProbe = spawnSync('bash', ['-c',
+      'exec {fd}>>"$REGRESSION_COPY_LOCK_FILE"; flock -n "$fd"',
+    ], { encoding: 'utf8', env: {
+      ...defaultCopyEnv,
+      BASH_ENV: bashEnv,
+      REGRESSION_REAL_FLOCK: realFlock,
+      REGRESSION_COPY_LOCK_FILE: defaultCopyLock,
+      REGRESSION_COPY_LOCK_HOLDER_PID: String(traceHolder.pid),
+      REGRESSION_LOCK_BUSY_LOG: setupBusyLog,
+    } });
+    const traceEvidence = existsSync(setupBusyLog) ? readFileSync(setupBusyLog, 'utf8') : '';
+    if (traceHolder.exitCode === null && traceHolder.signalCode === null) traceHolder.kill('SIGTERM');
+    const traceHolderExit = await traceHolderClosed;
+    expect(traceProbe.status, 'instrumentation probe: ' + traceEvidence).toBe(1);
+    expect(traceEvidence, 'instrumentation probe holder exit: ' + String(traceHolderExit.code)).toContain(
+      'status=1 target=' + defaultCopyLock + ' holder=pid=' + String(traceHolder.pid) + ' op=copy tracer-preflight',
+    );
+    rmSync(setupBusyLog, { force: true });
+    const competitorSource = join(dirname(releaseRoot), 'competitor-source');
+    const competitorDest = join(dirname(releaseRoot), 'competitor-copy');
+    const materializerStartSignal = join(dirname(releaseRoot), 'start-competitor-copy');
+    const materializerCopyStartedAtPath = join(dirname(releaseRoot), 'competitor-copy-started-at');
+    mkdirSync(competitorSource);
+    const competitorChunk = Buffer.alloc(35_232, 0x61);
+    for (let index = 0; index < 2_500; index += 1) {
+      writeFileSync(join(competitorSource, 'payload-' + index + '.bin'), competitorChunk);
+    }
+    writeFileSync(join(competitorSource, 'payload-tail.bin'), Buffer.alloc(384, 0x61));
+    expect(statSync(competitorSource).dev).toBe(statSync(dirname(competitorDest)).dev);
 
-    expect(
-      result.status,
-      spawnFailureDetails('prepare existing checkout with explicit generation', Date.now() - prepareStartedAt, result),
-    ).toBe(0);
+    const materializerStartedAt = Date.now();
+    const materializer = spawn('bash', [
+      '-c',
+      [
+        'set -euo pipefail',
+        'source "$1"',
+        'dependency_generation_acquire_copy_lock "copy $3"',
+        "trap 'dependency_generation_release_copy_lock' EXIT",
+        'while [ ! -e "$4" ]; do sleep 0.01; done',
+        'echo "$(date +%s%3N)" > "$5"',
+        'dependency_generation_copy_independent "$2" "$3"',
+      ].join('\n'),
+      'fixture',
+      DEPENDENCY_GENERATION_SCRIPT,
+      competitorSource,
+      competitorDest,
+      materializerStartSignal,
+      materializerCopyStartedAtPath,
+    ], { env: defaultCopyEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+    let materializerStdout = '';
+    let materializerStderr = '';
+    let materializerSpawnError: Error | undefined;
+    materializer.stdout?.on('data', chunk => {
+      materializerStdout = (materializerStdout + chunk.toString()).slice(-4_000);
+    });
+    materializer.stderr?.on('data', chunk => {
+      materializerStderr = (materializerStderr + chunk.toString()).slice(-4_000);
+    });
+    materializer.on('error', error => { materializerSpawnError = error; });
+    type ChildClose = { code: number | null; signal: NodeJS.Signals | null; closedAt: number };
+    const materializerClosed = new Promise<ChildClose>(resolve => {
+      materializer.once('close', (code, signal) => resolve({ code, signal, closedAt: Date.now() }));
+    });
+    const lockHolderPath = defaultCopyLock + '.holder';
+    const lockDeadline = Date.now() + 10_000;
+    let lockHolder = '';
+    let lockedByMaterializer = false;
+    let setup: ReturnType<typeof spawn> | undefined;
+    let setupClosed: Promise<ChildClose> | undefined;
+    let setupSpawnError: Error | undefined;
+    let setupStdout = '';
+    let setupStderr = '';
+    try {
+      while (Date.now() < lockDeadline && materializer.exitCode === null) {
+        lockHolder = existsSync(lockHolderPath) ? readFileSync(lockHolderPath, 'utf8') : '';
+        if (lockHolder.startsWith('pid=' + String(materializer.pid) + ' ')) {
+          const lockProbe = spawnSync('flock', ['-n', defaultCopyLock, 'true'], { encoding: 'utf8' });
+          if (lockProbe.status === 1) {
+            lockedByMaterializer = true;
+            break;
+          }
+        }
+        if (materializerSpawnError) break;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      const lockEvidence = 'pid=' + String(materializer.pid) + ' holder=' + lockHolder +
+        ' spawnError=' + String(materializerSpawnError ?? 'none') +
+        ' stdout=' + materializerStdout + ' stderr=' + materializerStderr;
+      expect(lockedByMaterializer, lockEvidence).toBe(true);
+
+      const setupStartedAt = Date.now();
+      const setupProcess = spawn('bash', [SCRIPT_PATH,
+        '--integration', integrationRoot, '--release', releaseRoot, '--ref', targetSha,
+        '--node-modules', 'force', '--node-modules-copy', 'copy',
+        '--node-modules-generation', 'required', '--node-modules-generation-id', identity!,
+        '--dependency-generation-root', generationRoot,
+      ], { stdio: ['ignore', 'pipe', 'pipe'], env: {
+        ...defaultCopyEnv,
+        PATH: [bin, process.env.PATH].filter(Boolean).join(':'),
+        BASH_ENV: bashEnv,
+        REGRESSION_REAL_GIT: realGit,
+        REGRESSION_REAL_FLOCK: realFlock,
+        REGRESSION_COPY_LOCK_FILE: defaultCopyLock,
+        REGRESSION_COPY_LOCK_HOLDER_PID: String(materializer.pid),
+        REGRESSION_LOCK_BUSY_LOG: setupBusyLog,
+        REGRESSION_GENERATION_ROOT: generationRoot,
+        REGRESSION_GENERATION_ID: identity,
+        REGRESSION_LEASE_OBSERVED: observed,
+      } });
+      setup = setupProcess;
+      setup.stdout?.on('data', chunk => {
+        setupStdout = (setupStdout + chunk.toString()).slice(-4_000);
+      });
+      setup.stderr?.on('data', chunk => {
+        setupStderr = (setupStderr + chunk.toString()).slice(-4_000);
+      });
+      setup.on('error', error => { setupSpawnError = error; });
+      setupClosed = new Promise<ChildClose>(resolve => {
+        setupProcess.once('close', (code, signal) => resolve({ code, signal, closedAt: Date.now() }));
+      });
+      const setupLockDeadline = Date.now() + 60_000;
+      while (Date.now() < setupLockDeadline && setupProcess.exitCode === null && !setupSpawnError
+        && !existsSync(setupBusyLog)) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      const setupLockContention = existsSync(setupBusyLog) ? readFileSync(setupBusyLog, 'utf8') : '';
+      const lockWaitEvidence = 'lock=' + defaultCopyLock +
+        ' holder=' + lockHolder +
+        ' setupPid=' + String(setupProcess.pid) +
+        ' setupSpawnError=' + String(setupSpawnError ?? 'none') +
+        ' setupLockTrace=' + setupLockContention +
+        ' setupStdout=' + setupStdout + ' setupStderr=' + setupStderr;
+      expect(setupLockContention, lockWaitEvidence).toContain(
+        'status=1 target=' + defaultCopyLock + ' holder=pid=' + String(materializer.pid) + ' op=copy ',
+      );
+      const setupLockAttemptText = /at=(\d+) status=1 target=/.exec(setupLockContention)?.[1];
+      if (!setupLockAttemptText) throw new Error('setup lock trace has no timestamp: ' + lockWaitEvidence);
+      const setupLockAttemptAt = Number(setupLockAttemptText);
+      expect(readFileSync(lockHolderPath, 'utf8'), lockWaitEvidence).toContain(
+        'pid=' + String(materializer.pid) + ' op=copy ',
+      );
+      expect(spawnSync(realFlock, ['-n', defaultCopyLock, 'true'], { encoding: 'utf8' }).status, lockWaitEvidence).toBe(1);
+      expect(setupLockAttemptAt, lockWaitEvidence).toBeGreaterThanOrEqual(setupStartedAt);
+
+      writeFileSync(materializerStartSignal, 'start');
+      const [materializerExit, setupExit] = await Promise.all([materializerClosed, setupClosed!]);
+      const materializerCopyStartedAt = Number(readFileSync(materializerCopyStartedAtPath, 'utf8').trim());
+      const overlapDetails = 'lock=' + defaultCopyLock +
+        ' setupLockAttemptAt=' + setupLockAttemptAt +
+        ' materializerCopyStartedAt=' + materializerCopyStartedAt +
+        ' materializerFinishedAt=' + materializerExit.closedAt +
+        ' materializerStatus=' + String(materializerExit.code) +
+        ' materializerSignal=' + String(materializerExit.signal) +
+        ' setupStartedAt=' + setupStartedAt +
+        ' setupFinishedAt=' + setupExit.closedAt +
+        ' setupStatus=' + String(setupExit.code) +
+        ' setupSignal=' + String(setupExit.signal) +
+        ' materializerSpawnError=' + String(materializerSpawnError ?? 'none') +
+        ' setupSpawnError=' + String(setupSpawnError ?? 'none');
+      console.info('[EI-268 measured overlap] ' + overlapDetails);
+      expect(materializerSpawnError, overlapDetails + '\n' + materializerStderr).toBeUndefined();
+      expect(setupSpawnError, overlapDetails + '\n' + setupStderr).toBeUndefined();
+      expect(materializerExit.code, overlapDetails + '\n' + materializerStdout + '\n' + materializerStderr).toBe(0);
+      expect(setupExit.code, overlapDetails + '\n' + setupStdout + '\n' + setupStderr).toBe(0);
+      expect(setupLockAttemptAt, overlapDetails).toBeLessThan(materializerCopyStartedAt);
+      expect(materializerCopyStartedAt, overlapDetails).toBeLessThan(materializerExit.closedAt);
+      expect(materializerCopyStartedAt, overlapDetails).toBeLessThan(setupExit.closedAt);
+      expect(materializerStartedAt, overlapDetails).toBeLessThan(setupExit.closedAt);
+    } finally {
+      if (setup && setup.exitCode === null && setup.signalCode === null) setup.kill('SIGTERM');
+      if (materializer.exitCode === null && materializer.signalCode === null) {
+        materializer.kill('SIGTERM');
+      }
+      await Promise.all([materializerClosed, ...(setupClosed ? [setupClosed] : [])]);
+    }
     const observedLeases = readFileSync(observed, 'utf8').trim();
     expect(observedLeases).toContain('/.leases/selector-');
     expect(observedLeases.split('\n')).toHaveLength(1);
@@ -2481,7 +2711,7 @@ exec "$REGRESSION_REAL_GIT" "$@"
     expect(existsSync(leaseDir)
       ? readdirSync(leaseDir).filter(name => name.startsWith('selector-')) : []).toEqual([]);
     expect(existsSync(join(releaseRoot, 'node_modules/lease-fixture/package.json'))).toBe(true);
-  });
+  }, 120_000);
 
   it('preserves an existing pinned clone while running dependency-only preparation', () => {
     mkdirSync(join(integrationRoot, 'node_modules', 'dependency-only-fixture'), { recursive: true });

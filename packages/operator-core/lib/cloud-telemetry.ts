@@ -134,9 +134,18 @@ export function cloudTelemetryIdentity(context: Pick<CloudTelemetryContext, 'pri
     throw new Error('cloud_telemetry_identity_unavailable');
   }
   const principal = context.principal;
+  return cloudTelemetrySubjectIdentity({ userId: principal.userId, organizationId: principal.activeOrganizationId }, context.environment);
+}
+
+/** Trusted storage subject only. This derives selectors, never authority or a
+ * browser principal. Service callers must independently validate the receipt. */
+export function cloudTelemetrySubjectIdentity(subject: { userId: string; organizationId: string },
+  environment: CloudTelemetryContext['environment']): { distinctId: string; organizationId: string } {
+  if (!subject.userId?.trim() || !subject.organizationId?.trim() ||
+      !['development', 'staging', 'production'].includes(environment)) throw new Error('cloud_telemetry_identity_unavailable');
   return {
-    distinctId: opaqueCloudIdentity('person', context.environment, principal.activeOrganizationId, principal.userId),
-    organizationId: opaqueCloudIdentity('organization', context.environment, principal.activeOrganizationId, principal.activeOrganizationId),
+    distinctId: opaqueCloudIdentity('person', environment, subject.organizationId, subject.userId),
+    organizationId: opaqueCloudIdentity('organization', environment, subject.organizationId, subject.organizationId),
   };
 }
 

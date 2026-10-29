@@ -41,6 +41,7 @@ import workItemsSetBlocker from '../work_items/set_blocker';
 import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
 import coordConditions from '../coordination/tools/conditions';
+import coordDispatch from '../coordination/tools/dispatch';
 import sessionsRead from '../sessions/read';
 import ompSessions from '../omp/sessions';
 import sessionCarryDrill from '../session/carry-drill';
@@ -481,6 +482,25 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
 
     expect(hit).toBeDefined();
     expect(hit?.argSchema).toContain('condition_key?:string(1-2000)');
+  });
+
+  it('publishes coord:dispatch over-cap note/body bounds from the projected discovery schema', async () => {
+    expect(coordDispatch.name).toBe('coord:dispatch');
+
+    const { schemaByTool } = buildCorpus();
+    const schema = schemaByTool.get('coord:dispatch') as {
+      properties?: Record<string, { type?: string; minLength?: number; maxLength?: number }>;
+    } | undefined;
+    expect(schema?.properties?.note).toMatchObject({ type: 'string', minLength: 1 });
+    expect(schema?.properties?.note).not.toHaveProperty('maxLength');
+    expect(schema?.properties?.body).toMatchObject({ type: 'string', minLength: 1 });
+    expect(schema?.properties?.body).not.toHaveProperty('maxLength');
+
+    const result = await callHandler({ query: 'coord:dispatch', limit: 1 });
+    const hit = result.hits.find((entry) => entry.tool === 'coord:dispatch');
+    expect(hit?.argSchema).toContain('note:string(≥1)');
+    expect(hit?.argSchema).toContain('body?:string(≥1)');
+    expect(hit?.argSchema).not.toMatch(/(?:note|body):string\(1-600\)/);
   });
 
   it('publishes capability:launch-agent conditional brief requirements in discovery output', async () => {

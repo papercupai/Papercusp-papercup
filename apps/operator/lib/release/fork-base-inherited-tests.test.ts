@@ -21,6 +21,7 @@ import {
   type RawDiffEntry,
 } from './fork-base-inherited-tests';
 import type { FailingFile, IsolationResult } from './green-checkpoint';
+import { inheritUpstreamGateLegs } from '@papercusp/operator-core/lib/release/upstream-inherited-legs';
 
 const OC = '@papercusp/operator-core';
 const A: FailingFile = { workspace: OC, file: 'lib/a.test.ts' };
@@ -229,6 +230,52 @@ function fakeDeps(opts: {
 }
 
 describe('attemptForkBaseInheritance', () => {
+  it('combines measured upstream workspace lints with measured failing files before coverage checks', async () => {
+    const lint = `${OC} :: lint:condition-rail`;
+    const { deps, events } = fakeDeps({});
+    deps.inheritGateLegs = entries => inheritUpstreamGateLegs({
+      failingTests: entries, upstreamInstall: 'papercusp', workspaceId: 'test', nowMs: 1000,
+      read: async () => ({ failingTestsMeasured: true, failingTests: [lint], observedAt: 900 }),
+    });
+    const out = await attemptForkBaseInheritance(input({ failingTests: [...input().failingTests, lint] }), deps);
+    expect(out.status).toBe('inherited');
+    expect(out.decision?.inheritedEntries).toContain(lint);
+    expect(out.decision?.blockingEntries).toEqual([]);
+    expect(events.filter(e => e.startsWith('run:'))).toEqual(['run:lib/a.test.ts', 'run:lib/b.test.ts']);
+    expect(events.at(-2)).toBe('checkout:candidate:lib/a.ts,lib/new.ts');
+  });
+
+  it.each(['new', 'unmeasured', 'stale', 'read-error'] as const)(
+    'keeps a %s upstream non-test claim blocking without touching the checkout', async kind => {
+      const lint = `${OC} :: lint:condition-rail`;
+      const { deps, calls } = fakeDeps({});
+      deps.inheritGateLegs = entries => inheritUpstreamGateLegs({
+        failingTests: entries, upstreamInstall: 'papercusp', workspaceId: 'test', nowMs: 1000, maxAgeMs: 100,
+        read: async () => {
+          if (kind === 'read-error') throw new Error('unavailable');
+          return { failingTestsMeasured: kind !== 'unmeasured', failingTests: kind === 'new' ? [] : [lint],
+            observedAt: kind === 'stale' ? 1 : 950 };
+        },
+      });
+      const out = await attemptForkBaseInheritance(input({ failingTests: [...input().failingTests, lint] }), deps);
+      expect(out).toMatchObject({ status: 'skipped', reason: `uncovered-entry:${lint}` });
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it('still blocks a file that passes at base when its accompanying lint is inherited', async () => {
+    const lint = `${OC} :: lint:condition-rail`;
+    const { deps } = fakeDeps({ passAtBase: ['lib/b.test.ts'] });
+    deps.inheritGateLegs = entries => inheritUpstreamGateLegs({
+      failingTests: entries, upstreamInstall: 'papercusp', workspaceId: 'test', nowMs: 1000,
+      read: async () => ({ failingTestsMeasured: true, failingTests: [lint, 'lib/b.test.ts'], observedAt: 900 }),
+    });
+    const out = await attemptForkBaseInheritance(input({ failingTests: [...input().failingTests, lint] }), deps);
+    expect(out.status).toBe('blocking');
+    expect(out.decision?.blockingFiles).toEqual([`${OC}::lib/b.test.ts`]);
+    expect(out.decision?.inheritedEntries).toContain(lint);
+  });
+
   it('overlays the delta at base, re-runs every file, then restores the candidate', async () => {
     const { deps, events } = fakeDeps({});
     const out = await attemptForkBaseInheritance(input(), deps);

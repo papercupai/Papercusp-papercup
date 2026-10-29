@@ -6,7 +6,7 @@
   "qualificationTask": "0mvt002oa4zs01s1c27",
   "qualification": "exit0,134cleanup+4sealchecksPASS; clean snapshot",
   "args": ".papercusp/evidence/quick-access-20261026/native-v12-launch-args.json",
-  "state": "running",
+  "state": "2026-10-29 04:22Z: same native running; snapshot, SPA, host bundle and host import smoke passed; isolated Xvfb :90 started. Acceptance unverified.",
   "launchReceipt": {
     "ok": true,
     "bash_id": "13956321-73e",
@@ -17,5 +17,26 @@
     "timeout_ms": 7200000,
     "deadline": "2026-10-29T05:47:04.037Z",
     "advice": "Background shell started. Preserve durable task_id \"0mvt056xj2stm9mutqd\" across carry. Read output: capability:bash_output { task_id: \"0mvt056xj2stm9mutqd\" } (or { bash_id: \"13956321-73e\" } in this launching context). Stop: processes:kill { taskId: \"0mvt056xj2stm9mutqd\" }. It is terminated at 2026-10-29T05:47:04.037Z \u2014 re-launch with a larger `timeout` (max 43200000ms) if the shell job needs longer. All descendants in this task's confined service share that deadline; use a dedicated service launcher when a descendant needs a separate lifetime."
-  }
+  },
+  "qualificationRunIds": [
+    22602964,
+    22602965,
+    22602972
+  ],
+  "nativeMemoryProof": {
+    "memoryMaxMb": 16384,
+    "confined": true,
+    "insideOperatorCgroup": false,
+    "scopeUnit": "pc-0mvt056xj2stm9mutqd.service"
+  },
+  "review": {
+    "state": "approved thread-post:1210066; amendment committed via3170, rubric8 criteriaHash d821a8f36c574bf582d292a533be27cb923ad79d6debcccd5d8b5828ea6a098f, subject plan13/D-008. Vetting pending conv-request-ac19cf447278c4c42a5d8038e050b3847c84061885d39ba9a0fe88ce42aa67bc.",
+    "previewPostRef": "thread-post:1210056",
+    "ownerId": "su-112ec875-f781-49a5-880f-744b5e5c9afd",
+    "taskId": "0mvt07cn07d5pyujoyc",
+    "conversationId": "conv-mvt074h3-0000-8e2443b9571c4e4aadd207bb1f24fe7a",
+    "statusFile": ".papercusp/evidence/quick-access-20261026/amend-v12-status.json"
+  },
+  "latestCheckpoint": "WI-6554700010029574 appended04:23Z. Manual3 specs revised4->5 @rubric8; 21 unit/integration/mutation bindings PREPARED ONLY in rebind-v12-unit-prepared.json, vet first. Details in proof-v12-batch0..5.json; all21 source/test/fixture/testRun dimensions current per proof-v12-21current.json. Final native/evidence/adequacy/activation/grade/close/delivery OPEN.",
+  "nativeEvidenceRoot": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261029T034816Z-687340"
 }

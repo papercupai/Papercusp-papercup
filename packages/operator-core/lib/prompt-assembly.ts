@@ -135,12 +135,21 @@ export function promptsDir(): string {
   // so persona loads would throw at boot.
   const fromEnv = process.env.PAPERCUSP_PROMPTS_DIR;
   if (fromEnv && existsSync(fromEnv)) return fromEnv;
+  // Managed runtimes pin INTEGRATION_ROOT to their immutable serving generation,
+  // while CANONICAL_TREE names the separately maintained prompt source. Reading
+  // that generation's older prompt can re-seed the shared instance cache with
+  // stale instructions on every launch (EI-27275821161542549).
+  // Preserve a configured canonical path even when unavailable: loaders must
+  // fail closed rather than silently using an older serving-tree source.
+  const canonicalRoot = process.env.PAPERCUSP_CANONICAL_TREE?.trim();
+  if (canonicalRoot) return join(canonicalRoot, 'apps/operator/prompts');
   // Integration-tree prompt root (decouple-agent-prompts-from-release-gate
   // P-002 / D-001): prefer the integration/staging checkout's operator prompts
   // so a chat-surface prompt edit (operator/oracle/sentinel persona/tools) goes
   // live WITHOUT a code-release promotion. PAPERCUSP_PROMPTS_DIR (above) is the
   // explicit direct override; this derives apps/operator/prompts from the
-  // repo-root PAPERCUSP_INTEGRATION_ROOT. CODE stays on the running checkout.
+  // repo-root PAPERCUSP_INTEGRATION_ROOT when no canonical edit tree is configured.
+  // CODE stays on the running checkout.
   const integRoot = process.env.PAPERCUSP_INTEGRATION_ROOT?.trim();
   if (integRoot) {
     const fromInteg = join(integRoot, 'apps/operator/prompts');

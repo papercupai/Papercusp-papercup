@@ -4,6 +4,7 @@
   "workItem": "WI-6554700010025564",
   "status": "preparation-only",
   "migrationAccepted": false,
+  "preparedThroughUtc": "2026-10-29T03:53:55.291525Z",
   "sourceInventory": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/inventory.json",
   "observationDateUtc": "2026-10-29",
   "destinationCensus": {
@@ -98,10 +99,58 @@
     "currentSourceRetentionIndependentlyMeasured": false,
     "rule": "Retain originals. Do not infer source existence, absence or complete recovery from successful destination delivery."
   },
+  "retainedOriginalObservation": {
+    "observedAt": "2026-10-29T03:53:55.291525Z",
+    "pathBase": "Operating account home directory",
+    "root": ".papercusp/release-artifacts/p544-7a9e83f6-restore20261024",
+    "method": "Read-only stat of the four retained files; SHA-256 of manifest, detached signature and SBOM compared with p002-custody-retention.json. The bundle was not rehashed or downloaded.",
+    "files": [
+      { "name": "manifest.json", "sizeBytes": 12555, "sizeMatches": true, "sha256CheckedNow": true, "hashMatches": true },
+      { "name": "server.tgz.minisig", "sizeBytes": 295, "sizeMatches": true, "sha256CheckedNow": true, "hashMatches": true },
+      { "name": "sbom.cdx.json", "sizeBytes": 800554, "sizeMatches": true, "sha256CheckedNow": true, "hashMatches": true },
+      { "name": "server.tgz", "sizeBytes": 2118168717, "sizeMatches": true, "sha256CheckedNow": false, "fullByteEvidence": "Existing canonical 22258800, not repeated" }
+    ],
+    "scopeLimit": "Local custody observation only. Original R2 retention, source population completeness and cutover-window deltas remain unmeasured; an inaccessible-source exception is not a recovered object."
+  },
+  "inventoryCoverage": [
+    { "integration": "cupboard-workspace-host", "disposition": "Original R2 population and multipart outcome inaccessible; retained P544 originals and four verified GCS copies are separately identified", "exceptionWorkItem": "WI-6554700010025592" },
+    { "integration": "cupboard-self-describing", "disposition": "Original R2 public-object population inaccessible", "exceptionWorkItem": "WI-6554700010025592" },
+    { "integration": "cupboard-private-creator", "disposition": "Original R2 private-object population inaccessible; no inference from public-object copies", "exceptionWorkItem": "WI-6554700010025592" },
+    { "integration": "cupboard-public-mirror", "disposition": "Original R2 mirror population inaccessible; public visibility policy remains a separate P004 proof", "exceptionWorkItem": "WI-6554700010025592" },
+    { "integration": "publish-archive", "disposition": "Original archive population inaccessible; source-configured publish Worker absent from the inventoried account", "exceptionWorkItem": "WI-6554700010025592" },
+    { "integration": "release-producers", "disposition": "Original desktop/mobile/TUI, manifest, history and instruction populations inaccessible; new qualified release publication remains P003", "exceptionWorkItem": "WI-6554700010025592", "dependencyWorkItem": "WI-6554700010025562" },
+    { "integration": "installed-release-consumers", "disposition": "Baked R2 addresses require explicit tested recovery under P003; changing producer configuration does not update installed clients", "dependencyWorkItem": "WI-6554700010025562" },
+    { "integration": "retained-p544-publication", "disposition": "Four exact admitted original files have saved full-byte destination verification plus the separately dated metadata/custody observations; P002 completed with committed authority", "completedWorkItem": "WI-6554700010025561" }
+  ],
+  "clauseProofPreparation": {
+    "R2GCS-COPY-P-005@1": {
+      "unitBaselineBinding": 73921,
+      "operationalBinding": 73922,
+      "caughtControlBinding": 73923,
+      "canonicalProductionRun": 22258800,
+      "canonicalBaselineRun": 22590677,
+      "canonicalCaughtControlRun": 22590682,
+      "initialIndependentCurrentness": "All three current before this evidence record was extended; operational measurement must be refreshed for the changed record before acceptance.",
+      "scope": "Known four-file retained P544 population only. No P003 publication or inaccessible source object is called copied."
+    },
+    "R2GCS-RETAIN-P-005@1": {
+      "localCustody": "retainedOriginalObservation",
+      "sourceExceptionWorkItem": "WI-6554700010025592",
+      "sourceRetentionIndependentlyMeasured": false,
+      "sourceObjectCount": null,
+      "sourceHighWaterMark": null,
+      "migrationWindowDeltas": null,
+      "remaining": "Independent assessment of precise inaccessible-data dispositions and original-source retention, plus P003 release/legacy-client evidence."
+    },
+    "AUTO-BAR-R-5-P-005@3": {
+      "population": "Every integration id in the pinned inventory is mapped in inventoryCoverage; unknown object keys/counts are not a completed object census.",
+      "exceptionOwner": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea",
+      "acceptance": "incomplete"
+    }
+  },
   "remainingAcceptance": [
-    "P002 independent audit and committed completion",
     "P003 release data/configuration and explicit legacy-client recovery under its existing owner",
-    "Bind the bounded copy/metadata and retention/exception evidence to exact P005 clauses and obtain independent acceptance",
+    "Refresh the bounded copy binding after this record change, bind the retention/exception scope, and obtain independent acceptance",
     "Reconcile a source high-water mark and cutover deltas, or explicitly accept the enumerated inaccessible-data boundary through the existing contract"
   ]
 }

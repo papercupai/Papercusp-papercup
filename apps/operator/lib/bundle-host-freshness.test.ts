@@ -14,7 +14,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildSync } from 'esbuild';
-import { makeBgCompilerCandidate } from '../../../packages/operator-core/lib/source-preview.fixture';
+import { makeBgCompilerCandidate, BG_R1_BUILDER_CASES, BG_R1_PARENT_SELECTORS } from '../../../packages/operator-core/lib/source-preview.fixture';
 import { prepareBgVerifierBuildRecord, verifyBgVerifierBuildRecord } from '../../../scripts/source-preview.mjs';
 
 // Overridable so scripts/mutation-probe.sh can point the suite at a mutated COPY.
@@ -98,10 +98,10 @@ describe('BG original builder identity', () => {
     expect(readFileSync(join(prepared.root, '.verifier-source.json'))).toEqual(originalReceipt);
   }
 
-  for (const boundary of boundaries) for (const defect of ['builder-configuration', 'toolchain-identity'] as const) {
-    it(`bg-r1-${defect}-${boundary} rejects changed ${defect} ${boundary}`, () => invocationDefect(boundary, defect));
+  for (const { boundary, defect, testName } of BG_R1_BUILDER_CASES) {
+    it(testName, () => invocationDefect(boundary, defect));
   }
-  it('BG-PREP-EXACT-SELECTION rejects changed builder configuration or toolchain identity', async () => {
+  it(BG_R1_PARENT_SELECTORS.builder.testName, async () => {
     for (const boundary of boundaries) for (const defect of ['builder-configuration', 'toolchain-identity'] as const)
       await invocationDefect(boundary, defect);
   });

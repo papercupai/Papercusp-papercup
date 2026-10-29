@@ -58,7 +58,9 @@ export async function runScenarioBattery<S extends BatteryScenario>(args: {
     evidenceRoot: args.evidenceRoot ?? llmBatteryEvidenceRoot(),
     // Preserve original diagnostics before retention can evict completed runs,
     // including failed provider attempts that remain evidence for open work.
-    retainedArtifacts: args.scenarios.map(s => `phases/${s.id}/report-summary.json`),
+    // One bounded selector covers the declared population, including batteries
+    // larger than the harness's selector limit, without sweeping unrelated files.
+    retainedArtifacts: ['phases/*/report-summary.json'],
     concurrency: args.concurrency,
     runPhase: async (ctx) => {
       ctx.markStep('run-scenario');

@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { measureBootOperatorArtifact as measureArtifact, operatorArtifactSource, writeOperatorArtifactManifest,
   type OperatorArtifactParentExpectation } from './operator-artifact';
-import { BG_INPUTS, makeBgCompilerCandidate } from '../source-preview.fixture';
+import { BG_INPUTS, makeBgCompilerCandidate, BG_R1_PARENT_CASES, BG_R1_PARENT_SELECTORS,
+  BG_R1_COMPILER_CASES, BG_R1_COMPILER_POSITIVE_CASE } from '../source-preview.fixture';
 import { captureVerifierDependencies, createBgVerifierCompilerCustody, verifyBgVerifierSource } from '../../../../scripts/source-preview.mjs';
 
 // Fixtures represent files written before a fresh child would be launched.
@@ -116,9 +117,7 @@ describe('operator release artifact provenance', () => {
       schemaVersion: 1, sha256: createHash('sha256').update(bytes).digest('hex'), members } };
   }
 
-  for (const defect of ['authority-absent', 'authority-unknown', 'authority-candidate-substitution',
-    'schema-mismatch', 'digest-mismatch', 'literal-member-added', 'literal-member-omitted', 'literal-member-changed'] as const) {
-    it(`refuses inherited boot parent ${defect} with an independently measured artifact control`, () => {
+  function parentDefect(defect: typeof BG_R1_PARENT_CASES[number]['defect']) {
       const f = fixture(); const written = f.write(); const parent = inheritedParent(f);
       const boot = (input: OperatorArtifactParentExpectation) => measureArtifact(f.entry, f.sourceSha, Date.now() + 1000, input);
       expect(boot(parent)).toEqual(written);
@@ -145,8 +144,24 @@ describe('operator release artifact provenance', () => {
       if (defect.startsWith('literal-member-')) writeFileSync(parent.acceptedManifest!.path,
         JSON.stringify({ schemaVersion: 1, sourceBlobs: parent.acceptedManifest!.members }));
       expect(boot(parent)).toEqual(written);
-    });
   }
+  for (const { defect, testName } of BG_R1_PARENT_CASES) {
+    it(testName, () => parentDefect(defect));
+  }
+  // These source-level fixtures exercise the maintained boot artifact reader.
+  // Full actual-service qualification still requires the independently retained
+  // runtime packet; the selector's presence cannot confer that authority.
+  it(BG_R1_PARENT_SELECTORS.authority.testName, () => {
+    for (const defect of ['authority-absent', 'authority-unknown', 'authority-candidate-substitution'] as const)
+      parentDefect(defect);
+  });
+  it(BG_R1_PARENT_SELECTORS.schemaDigest.testName, () => {
+    for (const defect of ['schema-mismatch', 'digest-mismatch'] as const) parentDefect(defect);
+  });
+  it(BG_R1_PARENT_SELECTORS.literalMembers.testName, () => {
+    for (const defect of ['literal-member-added', 'literal-member-omitted', 'literal-member-changed'] as const)
+      parentDefect(defect);
+  });
 
   it('refuses candidate artifact membership differing from the original inherited parent', () => {
     const f = fixture(); const file = f.manifest(); const parent = inheritedParent(f);
@@ -225,9 +240,8 @@ describe('BG compiler input custody', () => {
     return makeBgCompilerCandidate(root);
   }
 
-  for (const kind of ['source', 'dependency'] as const) {
-    const selector = `bg-r1-compiler-${kind}-transient-substitution-restored rejects selected ${kind} changed during real compiler consumption then restored before final fence`;
-    it(selector, async () => {
+  for (const { kind, testName } of BG_R1_COMPILER_CASES) {
+    it(testName, async () => {
       const { prepared, dependencies } = await compilerCandidate();
       const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
       const { build } = await import('esbuild');
@@ -262,7 +276,7 @@ describe('BG compiler input custody', () => {
     });
   }
 
-  it('bg-r1-compiler-immutable-input-positive-control qualifies ordinary real compilation from the frozen accepted source and dependency bytes', async () => {
+  it(BG_R1_COMPILER_POSITIVE_CASE.testName, async () => {
     const { prepared, dependencies } = await compilerCandidate();
     const originalReceipt = readFileSync(join(prepared.root, '.verifier-source.json'));
     const custody = createBgVerifierCompilerCustody({ prepared, dependencies });

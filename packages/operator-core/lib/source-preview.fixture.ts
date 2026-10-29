@@ -14,6 +14,59 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ROOT as SOURCE_ROOT, prepareBgVerifierSource, captureVerifierDependencies } from '../../../scripts/source-preview.mjs';
+import type { TestCasePopulationMember } from './testing-case-filter';
+
+// Registration data is deliberately independent of the literal reviewed BAR
+// fixture. The source guard compares them; post-run ledger census proves execution.
+const R1_SOURCE_FILE = 'packages/operator-core/lib/source-preview-export.test.ts';
+const R1_BUILDER_FILE = 'apps/operator/lib/bundle-host-freshness.test.ts';
+const R1_ARTIFACT_FILE = 'packages/operator-core/lib/release/operator-artifact.test.ts';
+const r1Case = (rowId: string, file: string, testName: string): Readonly<TestCasePopulationMember> =>
+  Object.freeze({ rowId, file, testName });
+const R1_BOUNDARIES = ['before-build', 'before-publication'] as const;
+export const BG_R1_SOURCE_CASES = Object.freeze(R1_BOUNDARIES.flatMap(boundary =>
+  (['changed', 'missing', 'added'] as const).map(defect => Object.freeze({ boundary, defect,
+    ...r1Case(`bg-r1-source-${defect}-${boundary}`, R1_SOURCE_FILE,
+      `bg-r1-source-${defect}-${boundary} rejects ${defect} frozen source ${boundary}`) }))));
+export const BG_R1_MEMBER_CASES = Object.freeze(R1_BOUNDARIES.flatMap(boundary =>
+  (['omitted', 'added'] as const).map(defect => Object.freeze({ boundary, defect,
+    ...r1Case(`bg-r1-member-${defect}-${boundary}`, R1_SOURCE_FILE,
+      `bg-r1-member-${defect}-${boundary} rejects ${defect} accepted member ${boundary}`) }))));
+export const BG_R1_BUILDER_CASES = Object.freeze(R1_BOUNDARIES.flatMap(boundary =>
+  (['builder-configuration', 'toolchain-identity'] as const).map(defect => Object.freeze({ boundary, defect,
+    ...r1Case(`bg-r1-${defect}-${boundary}`, R1_BUILDER_FILE,
+      `bg-r1-${defect}-${boundary} rejects changed ${defect} ${boundary}`) }))));
+export const BG_R1_PARENT_CASES = Object.freeze((['authority-absent', 'authority-unknown',
+  'authority-candidate-substitution', 'schema-mismatch', 'digest-mismatch', 'literal-member-added',
+  'literal-member-omitted', 'literal-member-changed'] as const).map(defect => Object.freeze({ defect,
+    ...r1Case(`bg-r1-parent-${defect}`, R1_ARTIFACT_FILE,
+      `bg-r1-parent-${defect} rejects parent ${defect} at actual service boot`) })));
+export const BG_R1_COMPILER_CASES = Object.freeze((['source', 'dependency'] as const).map(kind => Object.freeze({ kind,
+  ...r1Case(`bg-r1-compiler-${kind}-transient-substitution-restored`, R1_ARTIFACT_FILE,
+    `bg-r1-compiler-${kind}-transient-substitution-restored rejects selected ${kind} changed during real compiler consumption then restored before final fence`) })));
+export const BG_R1_PARENT_SELECTORS = Object.freeze({
+  source: r1Case('source-census', R1_SOURCE_FILE,
+    'BG-PREP-EXACT-SELECTION rejects a changed frozen source census at either compiler boundary'),
+  members: r1Case('accepted-members', R1_SOURCE_FILE,
+    'BG-PREP-EXACT-SELECTION rejects omitted or added accepted manifest members'),
+  builder: r1Case('builder-identity', R1_BUILDER_FILE,
+    'BG-PREP-EXACT-SELECTION rejects changed builder configuration or toolchain identity'),
+  authority: r1Case('parent-authority', R1_ARTIFACT_FILE,
+    'BG-PREP-EXACT-SELECTION rejects missing unknown or substituted parent manifest authority at actual service boot'),
+  schemaDigest: r1Case('parent-schema-digest', R1_ARTIFACT_FILE,
+    'BG-PREP-EXACT-SELECTION rejects parent manifest schema or digest mismatch at actual service boot'),
+  literalMembers: r1Case('parent-literal-members', R1_ARTIFACT_FILE,
+    'BG-PREP-EXACT-SELECTION rejects added omitted or changed literal parent manifest members at actual service boot'),
+});
+export const BG_R1_CENSUS_CASE = r1Case('bg-r1-census', R1_SOURCE_FILE,
+  'bg-r1-census requires exact predeclared selector and branch population');
+export const BG_R1_COMPILER_POSITIVE_CASE = r1Case('bg-r1-compiler-immutable-input-positive-control', R1_ARTIFACT_FILE,
+  'bg-r1-compiler-immutable-input-positive-control qualifies ordinary real compilation from the frozen accepted source and dependency bytes');
+export const BG_R1_CASE_REGISTRY = Object.freeze([
+  ...Object.values(BG_R1_PARENT_SELECTORS), ...BG_R1_SOURCE_CASES, ...BG_R1_MEMBER_CASES,
+  ...BG_R1_BUILDER_CASES, ...BG_R1_PARENT_CASES, BG_R1_CENSUS_CASE,
+  ...BG_R1_COMPILER_CASES, BG_R1_COMPILER_POSITIVE_CASE,
+].map(({ rowId, file, testName }) => r1Case(rowId, file, testName)));
 
 const GIT_ID = ['-c', 'user.name=Fixture Author', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false'];
 

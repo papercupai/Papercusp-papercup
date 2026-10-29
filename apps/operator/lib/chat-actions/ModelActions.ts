@@ -44,7 +44,7 @@
  * D-009 §B the value rendered is always the EFFECTIVE one read back off the
  * session's own launch argv, never the value that was picked.
  */
-import { fetchSyncQuery } from '@papercusp/sync';
+import { fetchBrowserSyncQuery as fetchSyncQuery } from '../hosted-browser-api';
 import {
   DEFAULT_MODEL_TIERS,
   modelSpecFromArgv,

@@ -331,7 +331,12 @@ describe('mode-grade — the rubric picker lives ON the pill', () => {
   it('offers Off first, then one row per ACTIVE rubric — never a proposed or retired one', async () => {
     fetchSyncQueryMock.mockResolvedValue(rubricRows);
     const opts = await getChatModeAction('mode-grade')!.options(ctx);
-    expect(fetchSyncQueryMock).toHaveBeenCalledWith({ queryName: 'rubrics.list', args: {} });
+    expect(fetchSyncQueryMock).toHaveBeenCalledWith(expect.objectContaining({
+      queryName: 'rubrics.list', args: {}, restEndpoint: '/api/zero-harness',
+      requestContext: expect.objectContaining({ headers: {
+        'x-papercusp-machine': 'local', 'x-papercusp-workspace': 'default',
+      } }),
+    }));
     expect(opts.map((o) => o.id)).toEqual(['off', 'hive-coordination-health']);
     expect(opts[1].label).toBe('Hive coordination health');
   });

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { clearPollingCache } from '../../../libs/generic/sync/src/transports/polling/queryClient';
+import { _resetQueryFetchersForTests } from '../../../libs/generic/sync/src/transports/polling/query-fetcher';
 import {
   HOSTED_BROWSER_API_ALIAS_GLOBAL,
   HOSTED_BROWSER_API_GLOBAL,
@@ -13,12 +15,76 @@ import {
   bootstrapHostedWorkspaceSelection,
   readHostedBrowserApiMarker,
   resolveBrowserApiTransport,
+  resolveBrowserSyncRequestContext,
+  fetchBrowserSyncQuery,
 } from "./hosted-browser-api";
 
 const marker = hostedBrowserApiMarker("control-plane");
 
 afterEach(() => {
+  clearPollingCache();
+  _resetQueryFetchersForTests();
   vi.unstubAllGlobals();
+});
+
+describe('imperative browser sync target isolation', () => {
+  function select(machine: string) {
+    vi.stubGlobal('window', { location: { href: `http://localhost/?ws=workspace-one&desktopHost=${machine}` } });
+  }
+
+  it('shares the mounted provider identity and isolates cached rows between machines', async () => {
+    select('host-a');
+    const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => new Response(JSON.stringify({
+      rows: [{ machine: new Headers(init?.headers).get('x-papercusp-machine') }], version: '1',
+    })));
+    vi.stubGlobal('fetch', fetcher);
+    const options = { queryName: 'instance.identity', staleTime: 60_000 };
+    await expect(fetchBrowserSyncQuery(options)).resolves.toEqual([{ machine: 'host-a' }]);
+    const a = resolveBrowserSyncRequestContext();
+    expect(a).toEqual(resolveBrowserSyncRequestContext({ restEndpoint: LOCAL_BROWSER_REST_ENDPOINT,
+      userId: 'papercusp-anon', workspace: 'workspace-one', machine: 'host-a' }));
+    select('host-b');
+    await expect(fetchBrowserSyncQuery(options)).resolves.toEqual([{ machine: 'host-b' }]);
+    expect(resolveBrowserSyncRequestContext().key).not.toBe(a.key);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    select('host-a');
+    await expect(fetchBrowserSyncQuery(options)).resolves.toEqual([{ machine: 'host-a' }]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('captures queued reads before a selection change and does not deduplicate targets', async () => {
+    select('host-a');
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (fetcher.mock.calls.length === 1) await blocked;
+      return new Response(JSON.stringify({ rows: [{ machine: new Headers(init?.headers).get('x-papercusp-machine') }], version: '1' }));
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const first = fetchBrowserSyncQuery({ queryName: 'blocker', maxInFlightFetches: 1 });
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    const a = fetchBrowserSyncQuery({ queryName: 'queued.identity', maxInFlightFetches: 1 });
+    select('host-b');
+    const b = fetchBrowserSyncQuery({ queryName: 'queued.identity', maxInFlightFetches: 1 });
+    release();
+    await first;
+    await expect(a).resolves.toEqual([{ machine: 'host-a' }]);
+    await expect(b).resolves.toEqual([{ machine: 'host-b' }]);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it('uses the authenticated hosted boundary without supplying a local workspace override', async () => {
+    select('host-a');
+    window[HOSTED_BROWSER_API_GLOBAL] = marker;
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ rows: [], version: '1' })));
+    vi.stubGlobal('fetch', fetcher);
+    await fetchBrowserSyncQuery({ queryName: 'workspaceHosts.control' });
+    const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain(`${HOSTED_BROWSER_REST_ENDPOINT}/rest-query?`);
+    expect(new URL(url, window.location.href).searchParams.has('ws')).toBe(false);
+    expect(new Headers(init.headers).has('x-papercusp-workspace')).toBe(false);
+    expect(new Headers(init.headers).get('x-papercusp-machine')).toBe('host-a');
+  });
 });
 
 describe("hosted workspace selection bootstrap", () => {

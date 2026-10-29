@@ -505,10 +505,13 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
   // sidecar down (and triggers a warm-respawn + a fresh `[swarm] DHT
   // bootstrap` the next time a caller needs it).
   describe('registerSpawnerSidecarShutdownHooks (P-006 — benign-exception gate)', () => {
+    let previousExitCode: typeof process.exitCode;
     beforeEach(() => {
+      previousExitCode = process.exitCode;
       _resetSidecarShutdownHookRegistryForTests();
     });
     afterEach(() => {
+      process.exitCode = previousExitCode;
       process.removeAllListeners('SIGTERM');
       process.removeAllListeners('SIGINT');
       process.removeAllListeners('uncaughtException');
@@ -537,6 +540,8 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
 
     it('a genuinely fatal uncaught exception still stops the sidecar', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const error = new TypeError('a real bug, not EPIPE');
       const child = makeChild();
       spawnMock.mockReturnValueOnce(child);
       const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
@@ -544,9 +549,11 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
       await ready;
 
       registerSpawnerSidecarShutdownHooks();
-      await newestUncaughtExceptionListener()(new TypeError('a real bug, not EPIPE'));
+      await newestUncaughtExceptionListener()(error);
 
       expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('uncaught exception'), error);
+      expect(process.exitCode).toBe(1);
       warn.mockRestore();
     });
   });

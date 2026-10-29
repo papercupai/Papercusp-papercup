@@ -6,8 +6,11 @@ import {
   hasMatchingDeclaredCaseTitle,
   hasSameCaseTitleIdentity,
   resolveTestCaseFilter,
+  resolveTestCasePopulation,
   sameTestFile,
   type RecordedTestCase,
+  type TestCasePopulationMember,
+  type TestCasePopulationReceipt,
 } from './testing-case-filter';
 
 const FILE = 'packages/operator-core/lib/rubric-probe-sql.test.ts';
@@ -23,6 +26,82 @@ const RECORDED: RecordedTestCase[] = [
   rc('probe sql > nested > times out', 'fail'),
   rc('probe sql > is skipped on CI', 'skip'),
 ];
+
+describe('resolveTestCasePopulation post-run exact census', () => {
+  const expected: TestCasePopulationMember[] = [
+    { rowId: 'a', file: FILE, testName: 'governed-a refuses substitution' },
+    { rowId: 'b', file: FILE, testName: 'governed-b retains the ordinary control' },
+  ];
+  const receipts = (): TestCasePopulationReceipt[] => expected.map(row => ({
+    ...rc(`suite > ${row.testName}`), file: row.file, testRunId: 123,
+  }));
+  const census = (rows = receipts(), manifest = expected) =>
+    resolveTestCasePopulation(manifest, rows, ['governed-']);
+  it('retains each uniquely passing canonical receipt instead of an aggregate', () => {
+    const rows = receipts(), result = census(rows);
+    expect(result).toMatchObject({ ok: true, issues: [] });
+    expect(result.matched.map(row => row.rowId)).toEqual(['a', 'b']);
+    expect(result.matched[0]!.receipt).toBe(rows[0]);
+  });
+  it('refuses missing execution even when a source declaration exists', () => {
+    expect(census(receipts().slice(1))).toMatchObject({ ok: false,
+      issues: [{ code: 'missing_case', rowId: 'a' }] });
+  });
+  it('refuses duplicate occurrences and repeated receipts', () => {
+    for (const occurrence of [1, 2]) {
+      const rows = receipts(); rows.push({ ...rows[0]!, occurrence });
+      expect(census(rows).issues).toContainEqual({ code: 'duplicate_receipt', rowId: 'a' });
+    }
+  });
+  it.each(['skip', 'fail'] as const)('refuses a mandatory %s row', status => {
+    const rows = receipts(); rows[0]!.status = status;
+    expect(census(rows)).toMatchObject({ ok: false });
+    expect(census(rows).issues).toContainEqual({
+      code: status === 'skip' ? 'unexecuted_case' : 'failed_case', rowId: 'a',
+    });
+  });
+  it('refuses executed extras while ignoring filtered registrations and other namespaces', () => {
+    const rows = receipts();
+    rows.push({ ...rows[0]!, caseKey: 'suite > unrelated control' });
+    rows.push({ ...rows[0]!, caseKey: 'suite > governed-filtered registration', status: 'skip' });
+    expect(census(rows).ok).toBe(true);
+    rows.push({ ...rows[0]!, caseKey: 'suite > governed-extra unexpected branch' });
+    expect(census(rows)).toMatchObject({ ok: false,
+      issues: [{ code: 'extra_case', file: FILE, caseKey: 'suite > governed-extra unexpected branch' }] });
+  });
+  it('refuses two distinct expected selectors collapsed onto one executed row', () => {
+    const manifest = [expected[0]!, { ...expected[0]!, rowId: 'other', testName: `suite > ${expected[0]!.testName}` }];
+    expect(census(receipts().slice(0, 1), manifest).issues)
+      .toContainEqual({ code: 'collapsed_receipt', rowId: 'other' });
+  });
+  it('refuses duplicate row IDs, selectors, and empty populations', () => {
+    expect(census(receipts(), [...expected, { ...expected[0]! }]).issues)
+      .toEqual(expect.arrayContaining([{ code: 'duplicate_row_id', rowId: 'a' },
+        { code: 'duplicate_selector', rowId: 'a' }]));
+    expect(census([], []).issues).toContainEqual({ code: 'empty_population' });
+  });
+  it('refuses mixing runs for one file and invalid receipt identities', () => {
+    const rows = receipts(); rows[1]!.testRunId = 124;
+    expect(census(rows).issues).toContainEqual({ code: 'mixed_file_runs', file: FILE });
+    rows[1]!.testRunId = 123; rows[0]!.testRunId = Number.NaN;
+    expect(census(rows).issues).toContainEqual({ code: 'invalid_receipt_identity', rowId: 'a' });
+  });
+  it('keeps file identity exact enough that another file cannot discharge a row', () => {
+    const rows = receipts(); rows[0]!.file = 'other.test.ts';
+    expect(census(rows).issues).toContainEqual({ code: 'missing_case', rowId: 'a' });
+  });
+  it('refuses a governed extra even in an undeclared file', () => {
+    const rows = receipts();
+    rows.push({ ...rows[0]!, file: 'extra.test.ts', caseKey: 'governed-extra outside the frozen file population' });
+    expect(census(rows).issues).toContainEqual({ code: 'extra_case', file: 'extra.test.ts',
+      caseKey: 'governed-extra outside the frozen file population' });
+  });
+  it('requires a nonempty explicit namespace so extra execution cannot be hidden', () => {
+    for (const namespace of [[], ['']])
+      expect(resolveTestCasePopulation(expected, receipts(), namespace).issues)
+        .toContainEqual({ code: 'invalid_namespace' });
+  });
+});
 
 describe('resolveTestCaseFilter', () => {
   it('refuses a testName that matches zero recorded cases instead of passing', () => {

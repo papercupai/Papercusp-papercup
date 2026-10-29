@@ -792,14 +792,17 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
   }, 180_000);
 
   it.each([
-    ["inherited deadline", { runStartedAtMs: 1, totalRefires: 0 }],
+    ["inherited deadline", { runStartedAtMs: 1, totalRefires: 0 }, "1"],
     [
       "absolute retry ceiling",
       { runStartedAtMs: Date.now(), totalRefires: Number.MAX_SAFE_INTEGER },
+      undefined,
     ],
   ] as const)(
     "authority churn terminates at the exhausted %s without leaving a lock",
-    async (_label, budget) => {
+    async (_label, budget, runBudgetMs) => {
+      // The deadline is opt-in; leave time unbounded when checking the count ceiling.
+      vi.stubEnv("PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS", runBudgetMs);
       const f = await lineage();
       let revision = 0;
       let preparationCount = 0;
@@ -936,17 +939,12 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
     const f = await lineage();
     const queue = liveQueue(f);
     const before = structuredClone(queue);
-    let retirements = 0;
     let writes = 0;
     f.deps.readFrozenRepairQueue = async () => queue;
-    f.deps.readFrozenRepairBoundedLifeState = async () => ({ schemaVersion: 1,
-      lastRetire: null, lastRateLimitedEscalation: null, history: [] });
-    f.deps.retireFrozenRepairQueueForBoundedLife = async () => { retirements += 1; return { retired: true }; };
     f.deps.writeFrozenRepairQueue = async () => { writes += 1; };
     const prepared = await f.prepare({ noPush: true });
     expect(prepared.candidate).toBe(queue.repairHead);
     expect(prepared.prewarmedDependencyGeneration.inputFingerprint).toBe(f.knownGoodGeneration.inputFingerprint);
-    expect(retirements).toBe(0);
     expect(writes).toBe(0);
     expect(queue).toEqual(before);
     expect(f.events).not.toContain("select-known-good");

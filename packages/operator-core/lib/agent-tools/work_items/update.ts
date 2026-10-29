@@ -15,6 +15,7 @@
  * one not-found item never fails the rest.
  */
 import { z } from 'zod';
+import { WorkItemDefinitionSchema } from '../../work-item-definition';
 import { defineTool } from '@papercusp/agent-mcp';
 import { clampText, hardText, softText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -72,6 +73,7 @@ const PAYLOAD_FLAG_KEYS = {
  * wake that no fire can prove.
  */
 const PAYLOAD_MERGE_RESERVED_KEYS: ReadonlySet<string> = new Set([
+  'workDefinition',
   'agentReview',
   'externalBlockers',
   'implementationReadiness',
@@ -216,6 +218,7 @@ function hasColumnEdit(it: {
 }
 
 const FIELDS = {
+  definition: WorkItemDefinitionSchema.nullable().optional().describe('Replace structured work fields, or null to clear. Use alone; available to both work-item families.'),
   frozenTests: frozenTestsRegistrationSchema.optional().describe('Opted-in frozenTests: pilot only. Register an independently authored manual test-only evidence binding plus red calibration; use alone. Re-freeze requires a named Decision and expectedRevision.'),
   title: hardText(LIMITS.SHORT_TITLE).optional(),
   body: hardText(8000).optional(),
@@ -413,6 +416,7 @@ export default defineTool({
           // ok:true. Wire it exactly like the sibling needsTwoMachineRig flag.
           needsHuman: it.needsHuman !== undefined ? it.needsHuman : args.needsHuman,
           payload: it.payload ?? args.payload,
+          definition: it.definition !== undefined ? it.definition : args.definition,
           frozenTests: it.frozenTests ?? args.frozenTests,
           reporterQuestion: it.reporterQuestion ?? args.reporterQuestion,
           harness: it.harness ?? args.harness,
@@ -433,6 +437,7 @@ export default defineTool({
             needsTwoMachineRig: args.needsTwoMachineRig,
             needsHuman: args.needsHuman, // WI-5689
             payload: args.payload, // WI-41509
+            definition: args.definition,
             frozenTests: args.frozenTests,
             reporterQuestion: args.reporterQuestion,
             harness: args.harness,
@@ -455,7 +460,7 @@ export default defineTool({
               `authority or claim state that the scheduler and lifecycle tools read as canonical. ` +
               `Writing them through a generic shallow merge can bypass validation and strand or admit ` +
               `work on a stamp nothing else agrees with. Use the owning workflow tools instead. ` +
-              `The dedicated args are plan_item, needsTwoMachineRig, needsHuman. Keys prefixed ` +
+              `The dedicated args are plan_item, needsTwoMachineRig, needsHuman, definition. Keys prefixed ` +
               `"_" are system-written bookkeeping and are never caller-writable.` +
               (reserved.some((key) => key === 'agentReview' || key === 'implementationReadiness')
                 ? ` agentReview and implementationReadiness are written by the agent-review lifecycle ` +
@@ -473,6 +478,17 @@ export default defineTool({
           const otherEdits = Object.entries(it).some(([key, value]) => !['id', 'harness', 'reporterQuestion'].includes(key) && value !== undefined);
           if (otherEdits) return { ok: false as const, id: it.id, error: 'reporterQuestion-must-be-used-without-other-edits' };
           return askReporterQuestion({ id: it.id, harness: it.harness, actor: ident.ownerId, text: it.reporterQuestion });
+        }
+        if (it.definition !== undefined) {
+          if (Object.entries(it).some(([key, value]) => !['id', 'harness', 'definition'].includes(key) && value !== undefined)) {
+            return { ok: false as const, id: it.id, error: 'definition-must-be-used-without-other-edits' };
+          }
+          const parsed = it.definition === null ? null : WorkItemDefinitionSchema.safeParse(it.definition);
+          if (parsed && !parsed.success) return { ok: false as const, id: it.id, error: 'invalid_definition' };
+          const item = await mergeWorkItemPayload(it.id,
+            parsed?.success ? { workDefinition: parsed.data } : {},
+            { harness: it.harness, ...(it.definition === null ? { unset: ['workDefinition'] } : {}) });
+          return item ? { ok: true as const, id: it.id, item } : { ok: false as const, id: it.id, error: 'not_found' };
         }
         if (it.frozenTests !== undefined) {
           if (Object.entries(it).some(([key, value]) => !['id','harness','frozenTests'].includes(key) && value !== undefined)) {

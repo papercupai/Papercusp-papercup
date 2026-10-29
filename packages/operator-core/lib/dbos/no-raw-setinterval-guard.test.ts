@@ -9,6 +9,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
 import { findOffenders, usesRawSetInterval } from '../../../../scripts/check-no-raw-setinterval.mjs';
@@ -20,6 +22,11 @@ import { fingerprint, judgeSites, validatePolicy } from '../../../../scripts/lib
 const timerPolicy = () => JSON.parse(readFileSync(new URL('../../../../scripts/client-fetch-in-timer-baseline.json', import.meta.url), 'utf8'));
 
 it('rules events reuse R-2 rejects a fetch timer in every declared UI source root', () => {
+  if (process.env.CLIENT_FETCH_TIMER_SOURCE) {
+    const run = spawnSync(process.execPath, [fileURLToPath(new URL('../../../../scripts/check-client-fetch-in-timer.mjs', import.meta.url)),
+      '--source', process.env.CLIENT_FETCH_TIMER_SOURCE, '--as', process.env.CLIENT_FETCH_TIMER_AS!], { encoding: 'utf8' });
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+  }
   for (const root of ROOTS) {
     for (const source of [
       "setInterval(() => fetch('/api/work'), 1000)",

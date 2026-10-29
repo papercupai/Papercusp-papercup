@@ -69,6 +69,8 @@ import {
   sourceYear,
 } from '../../../scripts/source-preview.mjs';
 import { BG_INPUTS, DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeBgCandidate, makeBgCompilerCandidate, makeSuperproject, write, type Superproject } from './source-preview.fixture';
+import { BG_R1_CASE_REGISTRY, BG_R1_SOURCE_CASES, BG_R1_MEMBER_CASES, BG_R1_PARENT_SELECTORS } from './source-preview.fixture';
+import r1Manifest from './source-preview.r1-cases.fixture.json';
 import { captureTestSourceSnapshot } from './testing-worktree';
 import { measureBootOperatorArtifact } from './release/operator-artifact';
 import { cleanupEndedVerifierDirectories, verifierSourceFiles, writeVerifierTaskReceipt } from './verifier-source';
@@ -79,6 +81,23 @@ import type { TaskRow } from './task-manager/types';
 let tmp: string;
 let fx: Superproject;
 let out: string;
+
+// This ordinary CI guard proves declarations only. Acceptance additionally needs
+// a completed canonical receipt for every manifest row, including this guard.
+it('bg-r1-census requires exact predeclared selector and branch population', () => {
+  const key = (row: { rowId: string; file: string; testName: string }) =>
+    JSON.stringify([row.rowId, row.file, row.testName]);
+  expect(r1Manifest.revision).toBe(10);
+  expect(r1Manifest.cases).toHaveLength(32);
+  expect(BG_R1_CASE_REGISTRY.map(key).sort()).toEqual(r1Manifest.cases.map(key).sort());
+  expect(new Set(BG_R1_CASE_REGISTRY.map(row => row.rowId)).size).toBe(32);
+  expect(new Set(BG_R1_CASE_REGISTRY.map(row => JSON.stringify([row.file, row.testName]))).size).toBe(32);
+  expect(new Set(BG_R1_CASE_REGISTRY.map(row => row.file))).toEqual(new Set([
+    'packages/operator-core/lib/source-preview-export.test.ts',
+    'apps/operator/lib/bundle-host-freshness.test.ts',
+    'packages/operator-core/lib/release/operator-artifact.test.ts',
+  ]));
+});
 
 describe('immutable generation verifier snapshots', () => {
   it.each(['complete', 'verifier-binding', 'missing-selector', 'changed-input', 'changed-token', 'changed-publication-after-copy', 'missing-output'])(
@@ -2374,11 +2393,11 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(existsSync(c.options.acceptedManifest.path)).toBe(true);
   }
 
-  it('BG-PREP-EXACT-SELECTION rejects a changed frozen source census at either compiler boundary', async () => {
+  it(BG_R1_PARENT_SELECTORS.source.testName, async () => {
     for (const boundary of boundaries) for (const defect of changes) await sourceDefect(boundary, defect);
   });
-  for (const boundary of boundaries) for (const defect of changes) {
-    it(`bg-r1-source-${defect}-${boundary} rejects ${defect} frozen source ${boundary}`,
+  for (const { boundary, defect, testName } of BG_R1_SOURCE_CASES) {
+    it(testName,
       () => sourceDefect(boundary, defect));
   }
 
@@ -2402,12 +2421,12 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(() => verifyBgVerifierSource(replaced, boundary)).toThrow('BG parent manifest literal membership mismatch');
   }
 
-  it('BG-PREP-EXACT-SELECTION rejects omitted or added accepted manifest members', async () => {
+  it(BG_R1_PARENT_SELECTORS.members.testName, async () => {
     for (const boundary of boundaries) for (const defect of ['omitted', 'added'] as const)
       await memberDefect(boundary, defect);
   });
-  for (const boundary of boundaries) for (const defect of ['omitted', 'added'] as const) {
-    it(`bg-r1-member-${defect}-${boundary} rejects ${defect} accepted member ${boundary}`,
+  for (const { boundary, defect, testName } of BG_R1_MEMBER_CASES) {
+    it(testName,
       () => memberDefect(boundary, defect));
   }
 

@@ -75,6 +75,9 @@ export function stripComments(source: string): string[] {
 const RESOLVES_REF = /revParse\s*\(|['"]rev-parse['"]/;
 const INTEGRATION_BRANCH = /integrationBranch/;
 const REMOTE_REF = /origin\//;
+// A diagnostic can mention both `origin/` and `${candidate}` without resolving a ref.
+// Keep the non-resolver fallback to actual candidate-ref assignments only.
+const REMOTE_CANDIDATE_REF_ASSIGNMENT = /\b(?:candidate|candidateRef)\s*[:=]\s*[^;\n]*\borigin\//i;
 const GIT_FETCH = /git\s+fetch|(['"])fetch\1/;
 
 /**
@@ -86,7 +89,10 @@ const GIT_FETCH = /git\s+fetch|(['"])fetch\1/;
  * lines) so an unrelated later integration-branch mention cannot satisfy an earlier `revParse`.
  */
 function refResolutionWindow(lines: readonly string[], start: number): string {
-  const out = [lines[start] ?? ''];
+  const first = lines[start] ?? '';
+  if (/\)\s*[,;]?\s*$/.test(first)) return first;
+
+  const out = [first];
   for (let i = start + 1; i < Math.min(lines.length, start + 12); i += 1) {
     const line = lines[i] ?? '';
     out.push(line);
@@ -122,7 +128,10 @@ export function judgeGateCandidateRef(source: string, minLines = 100): GateCandi
     const resolvesRef = RESOLVES_REF.test(line);
     const resolution = resolvesRef ? refResolutionWindow(codeLines, i) : line;
     if (resolvesRef && INTEGRATION_BRANCH.test(resolution)) candidateSites.push(at(i, resolution));
-    if ((resolvesRef && REMOTE_REF.test(resolution)) || (REMOTE_REF.test(line) && /candidate/i.test(line))) {
+    if (
+      (resolvesRef && REMOTE_REF.test(resolution)) ||
+      REMOTE_CANDIDATE_REF_ASSIGNMENT.test(line)
+    ) {
       remoteRefSites.push(at(i, resolution));
     }
     if (GIT_FETCH.test(line)) fetchSites.push(at(i, line));

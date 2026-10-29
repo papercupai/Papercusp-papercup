@@ -21,12 +21,15 @@ type CallEvidence = Record<string, { fingerprint: string; at: string }>;
 type SourceContinuation = { snapshot: string; files: Record<string, {
   offset: number; lines: number; identity: boolean; retainedBytes: number; calls: number; fingerprint: string; done: boolean;
 }> };
-type PreparedNativeCalls = Record<string, { fingerprint: string; scope: 'included' | 'excluded' }>;
+type PreparedNativeCalls = Record<string, { fingerprint: string; scope: 'included' | 'excluded'; activityId: string; at: string }>;
+type PreparedNativeRoot = { snapshot: string; calls: PreparedNativeCalls; signature?: string };
+type PendingNativeRoot = { continuation: SourceContinuation; calls: PreparedNativeCalls; signature?: string };
 type CaptureReceipt = { manifest?: Record<string, string[]>; enrolling?: boolean;
   sourceEnrollment?: { version: 1; prepared: boolean; snapshots: Record<string, string>; cursor: string | null };
   sourceReconciliation?: { version: 1; window: string; cursor: string | null;
-    roots: Record<string, { snapshot: string; calls: PreparedNativeCalls }>;
-    pending?: Record<string, { continuation: SourceContinuation; calls: PreparedNativeCalls }> };
+    roots: Record<string, PreparedNativeRoot>;
+    pending?: Record<string, PendingNativeRoot>;
+    closed?: { from: string; signature: string } };
   population?: string; cursor?: string; scanWindow?: string;
   pendingSources?: Record<string, { continuation: SourceContinuation; calls: CallEvidence; indexFingerprint?: string }>;
   scans?: Record<string, { snapshot: string; fingerprint: string;
@@ -53,12 +56,35 @@ const nativeDispatchReceipt = z.object({
 type NativeDispatchReceipt = z.infer<typeof nativeDispatchReceipt>;
 export type NativeDispatchAppend = Omit<NativeDispatchReceipt, 'activityId' | 'version' | 'provider' | 'issuedAt' | 'signature'>;
 
-async function nativeDispatchSignature(sql: Client, receipt: Omit<NativeDispatchReceipt, 'signature'>) {
+async function nativeSigningKey(sql: Client) {
   const [key] = await sql<{ value_b64: string }[]>`
     SELECT value_b64 FROM harness_shared.operator_secrets WHERE name='spawn-signing-key'`;
   if (!key) throw new Error('native_dispatch_signing_key_unavailable');
-  return createHmac('sha256', decodeOperatorSecretKey(key.value_b64, 'spawn-signing-key'))
+  return decodeOperatorSecretKey(key.value_b64, 'spawn-signing-key');
+}
+async function nativeDispatchSignature(sql: Client, receipt: Omit<NativeDispatchReceipt, 'signature'>) {
+  return createHmac('sha256', await nativeSigningKey(sql))
     .update(canonicalJson(['native-dispatch-receipt-v1', receipt])).digest('hex');
+}
+
+/** Protected provenance for saved PARSING, never a read authorization. Bind the
+ * exact canonical source population, window, runtime and complete parsed calls;
+ * old unsigned preparation cannot be upgraded without rereading its sources. */
+function nativePreparationSignature(key: Buffer, opts: NativeCaptureOptions, window: string, binding: Binding,
+  evidence: PreparedNativeRoot | PendingNativeRoot) {
+  const { signature: _, ...unsigned } = evidence;
+  return createHmac('sha256', key).update(canonicalJson(['native-source-preparation-v1',
+    opts.workspaceId, opts.harnessSlug, opts.sourceBoundary, window, binding, unsigned])).digest('hex');
+}
+function verifiedNativePreparation(key: Buffer, opts: NativeCaptureOptions, window: string, binding: Binding,
+  evidence: PreparedNativeRoot | PendingNativeRoot) {
+  return typeof evidence.signature === 'string' && /^[a-f0-9]{64}$/.test(evidence.signature)
+    && timingSafeEqual(Buffer.from(evidence.signature, 'hex'),
+      Buffer.from(nativePreparationSignature(key, opts, window, binding, evidence), 'hex'));
+}
+function nativeCaptureFloorSignature(key: Buffer, opts: NativeCaptureOptions, revision: string, from: string) {
+  return createHmac('sha256', key).update(canonicalJson(['native-source-floor-v1',
+    opts.workspaceId, opts.harnessSlug, opts.sourceBoundary, revision, from])).digest('hex');
 }
 
 /** Host-only append after the existing dispatcher's resource ACL. Reuse the
@@ -76,18 +102,19 @@ export async function appendAuthorizedNativeDispatch(input: NativeDispatchAppend
     return await client.begin(async transaction => {
       const sql = transaction as unknown as Client;
       if (!await authorize()) throw new Error('native_dispatch_authority_withdrawn');
-      // The placeholder is invisible outside this transaction. Sign the actual
-      // allocated row ID so a copied receipt cannot authenticate a replacement.
-      const [row] = await sql<{ id: string }[]>`INSERT INTO harness_shared.agent_activity
-        (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,summary,detail,created_at)
-        VALUES (${input.workspaceId},${input.harnessSlug},${input.ownerId},'codex',${input.nativeSessionId},
-          'tool',${input.toolName},'pre',${input.callId},'Authorized native dispatch','{}',${issuedAt}::timestamptz)
-        RETURNING id::text`;
+      // Allocate from the existing sequence, sign that exact ID, then INSERT
+      // once. Updating a placeholder would trip the destructive receipt-loss
+      // detector and reset every earned floor on every new authorized attempt.
+      const [row] = await sql<{ id: string }[]>`SELECT
+        nextval(pg_get_serial_sequence('harness_shared.agent_activity','id'))::text AS id`;
       if (!row) throw new Error('native_dispatch_append_unavailable');
       const unsigned = { ...input, activityId: row.id, version: 1 as const, provider: 'codex' as const, issuedAt };
       const receipt = nativeDispatchReceipt.parse({ ...unsigned, signature: await nativeDispatchSignature(sql, unsigned) });
-      await sql`UPDATE harness_shared.agent_activity SET detail=${sql.json({ nativeDispatch: receipt })}::jsonb
-        WHERE id=${row.id}::bigint`;
+      await sql`INSERT INTO harness_shared.agent_activity
+        (id,workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,summary,detail,created_at)
+        VALUES (${row.id}::bigint,${input.workspaceId},${input.harnessSlug},${input.ownerId},'codex',${input.nativeSessionId},
+          'tool',${input.toolName},'pre',${input.callId},'Authorized native dispatch',
+          ${sql.json({ nativeDispatch: receipt })}::jsonb,${issuedAt}::timestamptz)`;
       if (!await authorize()) throw new Error('native_dispatch_authority_withdrawn');
       return true;
     }) as boolean;
@@ -157,6 +184,16 @@ export async function readAuthorizedNativeDispatch(input: {
       || micros(String(row.created_at)) !== micros(receipt.issuedAt)
       || ['tools:invoke', 'code:run'].includes(receipt.toolName)) return null;
     const eventCopy = String(candidate.id) !== receipt.activityId;
+    // The sole optional index copy is part of the exact-call population even
+    // when the original receipt was selected. It cannot hide a scope/tool/time
+    // conflict merely by being a different row from the caller's selected ID.
+    if (before.activity.some(a => String(a.row.id) !== receipt.activityId &&
+      (canonicalJson(a.row.detail) !== '{}' || a.row.workspace_id !== receipt.workspaceId
+        || a.row.harness_slug !== receipt.harnessSlug || a.row.owner_id !== receipt.ownerId
+        || a.row.agent !== receipt.provider || a.row.session_id !== receipt.nativeSessionId
+        || a.row.tool_use_id !== receipt.callId || a.row.tool_name !== receipt.toolName
+        || a.row.kind !== 'tool' || a.row.phase !== 'pre'
+        || input.source && micros(String(a.row.created_at)) !== micros(input.source.at)))) return null;
     if (eventCopy && (canonicalJson(candidate.detail) !== '{}'
       || candidate.workspace_id !== receipt.workspaceId || candidate.harness_slug !== receipt.harnessSlug
       || candidate.owner_id !== receipt.ownerId || candidate.agent !== receipt.provider
@@ -188,12 +225,15 @@ export async function readAuthorizedNativeDispatch(input: {
       || source.callId !== receipt.callId || resolveMcpName(source.tool)?.expose.mcp?.name !== receipt.toolName
       || canonicalJson(source.args) !== canonicalJson(args)
       || eventCopy && micros(String(candidate.created_at)) !== micros(source.at))) return null;
-    if (!await opts.authorize() || canonicalJson(before) !== canonicalJson(await read())
-      || canonicalJson(runtimes) !== canonicalJson(await runtime()) || !await verifyNativeDispatchReceipt(receipt, sql)
-      || !await opts.authorize()) return null;
+    // Finish every caller-supplied ACL await BEFORE the final database/key
+    // renewal. Even a callback returning true may yield while a receipt,
+    // invocation, runtime binding or signing key changes.
+    if (!await opts.authorize() || !await opts.authorize()
+      || canonicalJson(before) !== canonicalJson(await read())
+      || canonicalJson(runtimes) !== canonicalJson(await runtime()) || !await verifyNativeDispatchReceipt(receipt, sql)) return null;
     return { binding: { id: String(receipt.advSessionId), owner: receipt.ownerId,
       provider: receipt.provider, harness: receipt.harnessSlug } satisfies Binding,
-      fingerprint: digest([before, runtimes]) };
+      fingerprint: digest(canonicalJson([before, runtimes])) };
   } catch { return null; }
 }
 
@@ -225,7 +265,7 @@ export async function reconcileAuthorizedNativeCall(source: SearchSource, bindin
     if (!read || read.binding.id !== binding.id || read.binding.owner !== binding.owner
       || read.binding.provider !== binding.provider) return null;
     return { scope: receipt.harnessSlug === opts.harnessSlug ? 'included' as const : 'excluded' as const,
-      fingerprint: read.fingerprint };
+      fingerprint: read.fingerprint, activityId: rows[0]!.id, at: source.at };
   } catch { return null; }
 }
 /** D030: exact dispatch correlation is a necessary check, NEVER an authority
@@ -463,13 +503,110 @@ async function nativeRuntimePopulation(opts: NativeCaptureOptions, since: string
   }
 }
 
+type NativeClosureCall = { key: string; id: string; session: string; call: string; runtime: string };
+/** Same unfiltered exact-call populations as readAuthorizedNativeDispatch.
+ * This query is also embedded in the progress CAS: a later ACL, filesystem or
+ * database await cannot hide a mutation to an earlier INCLUDED or EXCLUDED call.
+ * Full current rows are transient only; the progress receipt retains no bodies. */
+function nativeClosurePopulation(sql: Client, calls: NativeClosureCall[]) {
+  return sql<{ key: string; activity: unknown[]; dispatch: unknown[]; runtimes: unknown[]; signing_key: string | null }[]>`
+    SELECT k.key,
+      (SELECT COALESCE(jsonb_agg(q.item),'[]'::jsonb) FROM (
+        SELECT jsonb_build_object('row',to_jsonb(a),'population',count(*) OVER ()::text) AS item
+        FROM harness_shared.agent_activity a WHERE a.id=k.id::bigint
+          OR (a.session_id=k.session AND a.tool_use_id=k.call AND a.kind='tool')
+          OR (a.detail->'nativeDispatch'->>'nativeSessionId'=k.session AND a.detail->'nativeDispatch'->>'callId'=k.call)
+        ORDER BY a.id LIMIT 2) q) AS activity,
+      (SELECT COALESCE(jsonb_agg(q.item),'[]'::jsonb) FROM (
+        SELECT jsonb_build_object('row',to_jsonb(i),'population',count(*) OVER ()::text) AS item
+        FROM harness_shared.tool_invocations i
+        WHERE i.metadata_json->'requestOrigin'->'nativeSession'->>'valueFingerprint'=encode(sha256(convert_to(k.session,'UTF8')),'hex')
+          AND i.metadata_json->'requestOrigin'->'nativeSession'->>'callIdFingerprint'=encode(sha256(convert_to(k.call,'UTF8')),'hex')
+        ORDER BY i.id LIMIT 2) q) AS dispatch,
+      (SELECT COALESCE(jsonb_agg(to_jsonb(q)),'[]'::jsonb) FROM (
+        SELECT id::text,workspace_id,coord_owner_id,agent FROM harness_shared.adv_sessions WHERE id=k.runtime::bigint) q) AS runtimes,
+      (SELECT value_b64 FROM harness_shared.operator_secrets WHERE name='spawn-signing-key') AS signing_key
+    FROM jsonb_to_recordset(${sql.json(calls)}::jsonb) AS k(key text,id text,session text,call text,runtime text)
+    ORDER BY k.key`;
+}
+
+async function renewNativeCapturePopulation(opts: NativeCaptureOptions, roster: Binding[],
+  roots: Record<string, PreparedNativeRoot>, manifest: Record<string, string[]>, deadline: number, preparationKey: Buffer) {
+  const sql = opts.client ?? getOrgPg().sql;
+  const key = (b: Binding) => digest([b.id, b.owner, b.provider]);
+  const unchanged = async () => {
+    for (let offset = 0; offset < roster.length; offset += ENROLLMENT_BATCH) {
+      if (Date.now() >= deadline) return false;
+      const wave = roster.slice(offset, offset + ENROLLMENT_BATCH);
+      const reads = await Promise.allSettled(wave.map(b => canonicalNativeRuntimeManifest(b, deadline)));
+      for (const [index, read] of reads.entries()) {
+        const id = key(wave[index]!);
+        if (read.status !== 'fulfilled' || read.value.snapshot !== roots[id]?.snapshot
+          || canonicalJson(read.value.identities) !== canonicalJson(manifest[id])) {
+          delete roots[id]; return false;
+        }
+      }
+    }
+    return true;
+  };
+  if (!roster.every(b => roots[key(b)]) || !await unchanged()) return null;
+  const expected = roster.flatMap(binding => Object.entries(roots[key(binding)]!.calls)
+    .map(([id, proof]) => ({ id, proof, binding })));
+  if (expected.length > 2000 || new Set(expected.map(c => c.id)).size !== expected.length) return null;
+  const calls: NativeClosureCall[] = [];
+  // Bound outstanding DB work. A large/slow population still fails closed at
+  // the original deadline; a cached scope label is never a substitute.
+  for (let offset = 0; offset < expected.length; offset += 8) {
+    if (Date.now() >= deadline) return null;
+    const results = await Promise.allSettled(expected.slice(offset, offset + 8).map(async ({ id, proof, binding }) => {
+      const [row] = await sql<{ receipt: unknown }[]>`SELECT detail->'nativeDispatch' AS receipt
+        FROM harness_shared.agent_activity WHERE id=${proof.activityId}::bigint`;
+      const parsed = nativeDispatchReceipt.safeParse(row?.receipt);
+      if (!parsed.success) throw new Error('native_capture_original_unavailable');
+      const receipt = parsed.data;
+      if (digest([binding.owner, binding.provider, receipt.nativeSessionId, receipt.callId]) !== id
+        || (receipt.harnessSlug === opts.harnessSlug ? 'included' : 'excluded') !== proof.scope)
+        throw new Error('native_capture_original_changed');
+      const current = await readAuthorizedNativeDispatch({ id: proof.activityId, actor: binding.owner,
+        provider: binding.provider, sessionId: receipt.nativeSessionId, callId: receipt.callId },
+      { ...opts, harnessSlug: receipt.harnessSlug });
+      if (!current || current.fingerprint !== proof.fingerprint || current.binding.id !== binding.id)
+        throw new Error('native_capture_authority_changed');
+      return { key: id, id: proof.activityId, session: receipt.nativeSessionId, call: receipt.callId, runtime: binding.id };
+    }));
+    if (results.some(r => r.status !== 'fulfilled')) {
+      for (const [index, result] of results.entries())
+        if (result.status !== 'fulfilled') delete roots[key(expected[offset + index]!.binding)];
+      return null;
+    }
+    for (const result of results) if (result.status === 'fulfilled') calls.push(result.value);
+  }
+  // Last caller-owned callbacks BEFORE the global database/key snapshot. Its
+  // equality guard runs again inside the progress UPDATE, closing overlap with
+  // every subsequent await, including source-manifest renewal.
+  if (!await opts.authorize() || !await opts.authorize() || Date.now() >= deadline) return null;
+  const current = await nativeClosurePopulation(sql, calls);
+  if (current.length !== expected.length) return null;
+  const fingerprints = new Map(expected.map(c => [c.id, c.proof.fingerprint]));
+  for (const row of current) {
+    if (digest(canonicalJson([{ activity: row.activity, dispatch: row.dispatch }, row.runtimes])) !== fingerprints.get(row.key)
+      || !row.signing_key || !decodeOperatorSecretKey(row.signing_key, 'spawn-signing-key').equals(preparationKey)) {
+      for (const id of Object.keys(roots)) delete roots[id];
+      return null;
+    }
+  }
+  // Empty source populations must renew the signing key too.
+  if (!(await nativeSigningKey(sql)).equals(preparationKey) || !await unchanged()) return null;
+  return { calls, current, unchanged };
+}
+
 /** Production continuity boundary (D030). Protected dispatch receipts establish
  * individual historical attempts, not the runtime/source population or its
  * prospective retention floor. The candidate indexer attributes entire roots
  * and writes opts.harnessSlug; it cannot turn per-call proof into continuity.
- * Keep UNKNOWN until every source in an independently complete population has
- * authority. The remaining continuity work is EI-27075012317842664. */
-export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promise<'unknown'> {
+ * Only a fresh complete-population closure can establish a prospective floor;
+ * missing historical authority remains UNKNOWN. */
+export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promise<'complete' | 'gap' | 'unknown'> {
   const sql = opts.client ?? getOrgPg().sql, deadline = Date.now() + 1000;
   try {
     if (!opts.workspaceId || opts.workspaceId === '*' || !opts.harnessSlug || opts.harnessSlug === '*'
@@ -482,8 +619,9 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     const scope = `native:${digest([opts.workspaceId, opts.harnessSlug, opts.sourceBoundary])}`;
     await sql`INSERT INTO harness_shared.sql_intent_progress (workspace_id,scope_id,harness_slug)
       VALUES (${opts.workspaceId},${scope},${opts.harnessSlug}) ON CONFLICT DO NOTHING`;
-    const [progress] = await sql<{ revision: string; receipt: CaptureReceipt | null }[]>`
-      SELECT native_capture_revision::text AS revision,native_capture_receipt AS receipt
+    const [progress] = await sql<{ revision: string; receipt: CaptureReceipt | null; since: string }[]>`
+      SELECT native_capture_revision::text AS revision,native_capture_receipt AS receipt,
+        to_char(native_capture_from AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS since
       FROM harness_shared.sql_intent_progress WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope}`;
     if (!progress) return 'unknown';
     // Candidate baselines are not production preparation. Preserve source IDs
@@ -531,20 +669,35 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     // own protected receipt. Keep opaque preparation evidence only: saved roots
     // do not certify coverage, and must all be renewed before a future verdict.
     const window = digest([opts.since, opts.until]);
+    let preparationKey: Buffer | null = null;
+    // Metadata enrollment is useful even before capture authority is installed.
+    // Missing/corrupt key blocks protected parsing and closure, not the durable
+    // progress of the independently enumerated source population.
+    try { preparationKey = await nativeSigningKey(sql); } catch { /* no authority */ }
     const oldReconciliation = prior?.sourceReconciliation?.window === window ? prior.sourceReconciliation : null;
     const roots = { ...oldReconciliation?.roots };
     const pending = { ...oldReconciliation?.pending };
-    for (const id of Object.keys(roots))
-      if (!keys.has(id) || roots[id]?.snapshot !== snapshots[id]) delete roots[id];
-    for (const id of Object.keys(pending))
-      if (!keys.has(id) || pending[id]?.continuation.snapshot !== snapshots[id]) delete pending[id];
+    const bindings = new Map(roster.map(b => [key(b), b]));
+    const expectedCalls = new Map<string, string[]>();
+    for (const id of Object.keys(roots)) {
+      const binding = bindings.get(id), root = roots[id]!;
+      if (binding && preparationKey && verifiedNativePreparation(preparationKey, opts, window, binding, root))
+        expectedCalls.set(id, Object.keys(root.calls));
+      if (!binding || !preparationKey || root.snapshot !== snapshots[id]
+        || !verifiedNativePreparation(preparationKey, opts, window, binding, root)) delete roots[id];
+    }
+    for (const id of Object.keys(pending)) {
+      const binding = bindings.get(id), root = pending[id]!;
+      if (!binding || !preparationKey || root.continuation.snapshot !== snapshots[id]
+        || !verifiedNativePreparation(preparationKey, opts, window, binding, root)) delete pending[id];
+    }
     let sourceCursor = oldReconciliation?.cursor ?? null;
     const currentRoots = new Map<string, { binding: Binding; unchanged: () => Promise<boolean>;
       renewals: { source: SearchSource; fingerprint: string }[] }>();
-    if (prepared && prior?.sourceEnrollment?.prepared) {
+    if (prepared && prior?.sourceEnrollment?.prepared && preparationKey) {
       const next = roster.findIndex(b => key(b) === sourceCursor);
       const ordered = next < 0 ? roster : [...roster.slice(next + 1), ...roster.slice(0, next + 1)];
-      for (const binding of ordered.slice(0, ENROLLMENT_BATCH)) {
+      for (const binding of ordered.filter(b => !roots[key(b)]).slice(0, ENROLLMENT_BATCH)) {
         if (Date.now() >= deadline - 100) break;
         sourceCursor = key(binding);
         delete roots[sourceCursor];
@@ -562,8 +715,26 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
           const renewals: { source: SearchSource; fingerprint: string }[] = [];
           for (const call of source.sources) {
             if (micros(call.at) < micros(opts.since) || micros(call.at) >= micros(opts.until)) continue;
-            const proof = await reconcileAuthorizedNativeCall(call, binding, opts);
+            let proof = await reconcileAuthorizedNativeCall(call, binding, opts);
             if (!proof || Date.now() >= deadline - 100) throw new Error('native_capture_call_authority');
+            if (proof.scope === 'included') {
+              // Reuse the existing event-time index, now from an independently
+              // verified canonical call and its original protected receipt.
+              // The copy is never an authority source. Excluded calls create
+              // no row in the requested harness.
+              await sql`INSERT INTO harness_shared.agent_activity
+                (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,summary,detail,created_at)
+                SELECT a.workspace_id,a.harness_slug,a.owner_id,a.agent,a.session_id,'tool',a.tool_name,'pre',
+                  a.tool_use_id,'Canonical native operation','{}'::jsonb,${call.at}::timestamptz
+                FROM harness_shared.agent_activity a WHERE a.id=${proof.activityId}::bigint
+                  AND a.workspace_id=${opts.workspaceId} AND a.harness_slug=${opts.harnessSlug}
+                  AND a.detail ? 'nativeDispatch'
+                  AND NOT EXISTS (SELECT 1 FROM harness_shared.agent_activity e WHERE
+                    e.session_id=a.session_id AND e.tool_use_id=a.tool_use_id AND e.kind='tool'
+                    AND e.created_at=${call.at}::timestamptz)`;
+              proof = await reconcileAuthorizedNativeCall(call, binding, opts);
+              if (!proof || proof.scope !== 'included') throw new Error('native_capture_event_index_changed');
+            }
             const id = digest([call.actor, call.provider, call.namespace, call.callId]);
             if (calls[id]) throw new Error('native_capture_duplicate_call');
             calls[id] = proof; renewals.push({ source: call, fingerprint: proof.fingerprint });
@@ -576,8 +747,18 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
           }
           if (!await opts.authorize() || canonicalJson(roster) !== canonicalJson(await population())
             || !await source.unchanged()) continue;
-          if (source.complete) roots[sourceCursor] = { snapshot: source.snapshot, calls };
-          else pending[sourceCursor] = { continuation: source.continuation!, calls };
+          if (source.complete) {
+            // Rewriting the same predecessor cannot silently shrink a trusted
+            // earlier canonical call population in this same window.
+            if (expectedCalls.get(sourceCursor)?.some(id => !calls[id])) throw new Error('native_capture_source_call_loss');
+            const root: PreparedNativeRoot = { snapshot: source.snapshot, calls };
+            root.signature = nativePreparationSignature(preparationKey, opts, window, binding, root);
+            roots[sourceCursor] = root;
+          } else {
+            const root: PendingNativeRoot = { continuation: source.continuation!, calls };
+            root.signature = nativePreparationSignature(preparationKey, opts, window, binding, root);
+            pending[sourceCursor] = root;
+          }
           currentRoots.set(sourceCursor, { binding, unchanged: source.unchanged, renewals });
         } catch { /* An unknown sibling keeps this root unreconciled. */ }
       }
@@ -596,6 +777,23 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
         if (!await root.unchanged()) throw new Error('native_capture_changed');
       } catch { delete roots[id]; delete pending[id]; }
     }
+    const closure = preparationKey
+      ? await renewNativeCapturePopulation(opts, roster, roots, manifest, deadline, preparationKey) : null;
+    const savedFloor = prior?.sourceReconciliation?.closed;
+    const established = savedFloor && preparationKey && savedFloor.from === progress.since
+      && savedFloor.signature === nativeCaptureFloorSignature(preparationKey, opts, progress.revision, savedFloor.from);
+    let closed = established ? savedFloor : undefined;
+    if (closure && !closed && preparationKey) {
+      // A complete present-day scan cannot manufacture historical retention.
+      // Establish a floor from the database clock only AFTER actual authority
+      // closure, and guard all subsequent database awaits in the final CAS.
+      const [floor] = await sql<{ since: string }[]>`SELECT
+        to_char(GREATEST(native_capture_from,clock_timestamp()) AT TIME ZONE 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS since
+        FROM harness_shared.sql_intent_progress WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope}`;
+      if (!floor) return 'unknown';
+      closed = { from: floor.since, signature: nativeCaptureFloorSignature(preparationKey, opts, progress.revision, floor.since) };
+    }
     // Final authority awaits must precede the last filesystem renewal, just as
     // in enrollment. This metadata pass neither reopens bodies nor grants scope.
     for (const { binding, snapshot } of observed.values())
@@ -603,17 +801,33 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     if (Date.now() >= deadline) return 'unknown';
     const receipt = { version: 1, manifest, population: digest(roster), revision: progress.revision,
       sourceEnrollment: { version: 1, prepared, snapshots, cursor: last },
-      sourceReconciliation: { version: 1, window, cursor: sourceCursor, roots, pending } };
+      sourceReconciliation: { version: 1, window, cursor: sourceCursor, roots, pending,
+        ...(closure && closed ? { closed } : {}) } };
     const previous = progress.receipt == null ? null : sql.json(progress.receipt);
-    await sql`UPDATE harness_shared.sql_intent_progress SET
-      native_capture_from=CASE WHEN ${prepared && !prior?.sourceEnrollment?.prepared}
+    const written = await sql`UPDATE harness_shared.sql_intent_progress SET
+      native_capture_from=CASE WHEN ${Boolean(closure && closed)} THEN ${closed?.from ?? progress.since}::timestamptz
+        WHEN ${prepared && !prior?.sourceEnrollment?.prepared}
         THEN GREATEST(native_capture_from,clock_timestamp()) ELSE native_capture_from END,
       native_capture_receipt=${sql.json(receipt)}
       WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope}
         AND native_capture_revision=${progress.revision}::bigint
-        AND native_capture_receipt IS NOT DISTINCT FROM ${previous}::jsonb`;
-    // Preparation is neither an authorized source scan nor continuity. Calls,
-    // outside-scope exclusions and retention still need independent evidence.
+        AND native_capture_receipt IS NOT DISTINCT FROM ${previous}::jsonb
+        AND (${!closure} OR (
+          (SELECT value_b64 FROM harness_shared.operator_secrets WHERE name='spawn-signing-key')=${preparationKey?.toString('base64') ?? ''}
+          AND NOT EXISTS (SELECT 1 FROM (${nativeClosurePopulation(sql, closure?.calls ?? [])}) c
+            FULL JOIN jsonb_to_recordset(${sql.json((closure?.current ?? []) as Parameters<Client['json']>[0])}::jsonb)
+              AS e(key text,activity jsonb,dispatch jsonb,runtimes jsonb,signing_key text) USING(key)
+            WHERE c.key IS NULL OR e.key IS NULL OR
+              (c.activity,c.dispatch,c.runtimes,c.signing_key) IS DISTINCT FROM (e.activity,e.dispatch,e.runtimes,e.signing_key))
+          AND (SELECT COALESCE(jsonb_agg(jsonb_build_object('id',s.id::text,'owner',s.coord_owner_id,
+            'provider',s.agent,'harness',NULL) ORDER BY s.id),'[]'::jsonb) FROM harness_shared.adv_sessions s
+            WHERE s.workspace_id=${opts.workspaceId} AND s.first_seen_at < ${opts.until}::timestamptz
+              AND (s.ended_at IS NULL OR s.ended_at >= ${opts.since}::timestamptz))=${sql.json(roster)}::jsonb))
+      RETURNING 1`;
+    // A saved closed marker is never the verdict. Every read above and the
+    // atomic global guard must pass again, followed by current source renewal.
+    if (!written.length || !closure || !closed || !await closure.unchanged() || Date.now() >= deadline) return 'unknown';
+    return !established ? 'unknown' : micros(opts.since) < micros(closed.from) ? 'gap' : 'complete';
   } catch { /* Missing sources/infrastructure/ACL remain UNKNOWN. */ }
   return 'unknown';
 }

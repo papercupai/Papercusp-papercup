@@ -111,6 +111,9 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'kickoff-waiting-for-codex-startup' ||
     kind === 'claude-resume-compaction-summary-selected' ||
     kind === 'shutdown-accepted' ||
+    // The host accepted the carry request for processing; terminal delivery
+    // success or failure is recorded by a later event.
+    kind === 'respawn-carry-accepted' ||
     kind === 'host-teardown' ||
     // A slow Codex composer paste still inside the kickoff delivery deadline.
     // Its terminal outcome is recorded separately as `-confirmed` (routine) or

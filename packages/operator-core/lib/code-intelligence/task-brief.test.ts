@@ -32,10 +32,14 @@ describe('P039 completion pre-review briefs', () => {
     const root = fixture();
     writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
     writeFileSync(join(root, 'target.test.ts'), 'import { target } from "./target"; target();');
+    // Prepare real compiler evidence before the brief starts its six-second capture.
+    // Reuse it across advice/toolset/coverage calls; nativeChangeReport still checks
+    // its source hashes, so an edit cannot turn this fixture into stale evidence.
+    const compiler = firstPartyCallers({ ts, root, name: 'target', filePath: 'target.ts',
+      op: 'impact', direction: 'downstream', paths: ['.'], includeInterfaces: true });
     const report: typeof nativeChangeReport = (args, subject) => nativeChangeReport(args, subject, {
       exec: async () => ({ stdout: '', stderr: '' }), writeArtifact: async () => 'fixture-artifact',
-      graph: async () => firstPartyCallers({ ts, root, name: subject.symbol, filePath: subject.file,
-        op: 'impact', direction: 'downstream', paths: ['.'], includeInterfaces: true }),
+      graph: async () => compiler,
     });
     return { root, report, rootResolver: async () => root };
   };

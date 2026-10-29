@@ -861,20 +861,18 @@ describe('ptool operator routing', () => {
     )).toBe(false);
     expect(catalogSupportsBuildSelector('tools:invoke', { name: 'work_items:get', args: {} }, legacyCatalog)).toBe(true);
 
-    const currentCatalog = [
-      {
-        ...legacyCatalog[0],
-        inputSchema: {
-          type: 'object',
-          properties: {
-            name: { type: 'string' },
-            args: { type: 'object' },
-            build: { type: 'string', enum: ['main', 'staging'] },
-          },
+    const currentInvoke = {
+      ...legacyCatalog[0],
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          args: { type: 'object' },
+          build: { type: 'string', enum: ['main', 'staging'] },
         },
       },
-      target,
-    ];
+    };
+    const currentCatalog = [currentInvoke, target];
     expect(catalogSupportsBuildSelector('tools:invoke', callArgs, currentCatalog)).toBe(true);
     expect(isReadOnlyPtoolRecoveryRequest('tools:invoke', callArgs, currentCatalog)).toBe(true);
     expect(canDispatchPtoolOnFallback(
@@ -899,9 +897,9 @@ describe('ptool operator routing', () => {
     const mainOnlyCatalog = [{
       ...currentCatalog[0],
       inputSchema: {
-        ...currentCatalog[0].inputSchema,
+        ...currentInvoke.inputSchema,
         properties: {
-          ...currentCatalog[0].inputSchema.properties,
+          ...currentInvoke.inputSchema.properties,
           build: { type: 'string', enum: ['main'] },
         },
       },

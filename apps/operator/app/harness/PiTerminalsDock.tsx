@@ -25,7 +25,7 @@ import { Plus, TerminalSquare } from "lucide-react";
 import PiPanel from './PiPanel';
 import ChatPanel from './ChatPanel';
 import { Tooltip } from './Tooltip';
-import { fetchSyncQuery } from '@papercusp/sync';
+import { fetchBrowserSyncQuery as fetchSyncQuery } from '../../lib/hosted-browser-api';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 interface PiTerminalsDockProps {

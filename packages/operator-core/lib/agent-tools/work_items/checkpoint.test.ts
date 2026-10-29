@@ -5347,6 +5347,19 @@ describe('work_items:checkpoint — absence-premise continuity lint (WI-7238)', 
     expect(await one({ id: 'WI-CLEAN', checkpoint: body })).not.toHaveProperty('absenceLint');
   });
 
+  it('does not warn on a negative action disposition and preserves the checkpoint write', async () => {
+    const body = 'The checkpoint records that no such action is being taken now.';
+    getWorkItem.mockResolvedValue({ id: 'WI-ACTION-DISPOSITION', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-ACTION-DISPOSITION', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('absenceLint');
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalled();
+  });
+
   it('suppresses the advisory when the stored check rows already carry the falsifier', async () => {
     const check = {
       claim,

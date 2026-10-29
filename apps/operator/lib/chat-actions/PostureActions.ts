@@ -31,7 +31,7 @@
  * trip just to pre-populate the card.
  */
 import { z } from 'zod';
-import { fetchSyncQuery } from '@papercusp/sync';
+import { fetchBrowserSyncQuery as fetchSyncQuery } from '../hosted-browser-api';
 import { modeById, modeChipLabel } from '@papercusp/operator-core/lib/modes/registry';
 import { registerChatModeAction } from './registry';
 import type { ChatActionContext } from './types';

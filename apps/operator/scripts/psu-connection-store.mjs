@@ -330,6 +330,7 @@ function validateStoredProfile(value) {
   );
 }
 
+/** @param {string} [home] */
 export function defaultPsuConnectionStorePath(home) {
   // A private runtime home must also isolate saved machine credentials. An
   // explicit home remains the caller's override (tests and profile migration).

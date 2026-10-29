@@ -1003,8 +1003,10 @@ describe('test-files router', () => {
       const originalOut = join(proofRoot, 'sources.json');
       const files = ['one/a.test.ts', 'one/b.test.ts', 'two/c.test.ts', 'three/d.test.ts'];
       const saved = { NODE_ENV: process.env.NODE_ENV, PC_EXECUTED_SOURCE_MAP_OUT: process.env.PC_EXECUTED_SOURCE_MAP_OUT,
+        PC_EXECUTED_SOURCE_MAP_WORKSPACE: process.env.PC_EXECUTED_SOURCE_MAP_WORKSPACE,
         PAPERCUSP_TEST_RUN_RECEIPT_FILE: process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE };
       process.env.NODE_ENV = 'production';
+      process.env.PC_EXECUTED_SOURCE_MAP_WORKSPACE = '@papercusp/router-fixture';
       process.env.PC_EXECUTED_SOURCE_MAP_OUT = originalOut;
       delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -2841,6 +2843,34 @@ describe('failed assertion diagnostics — consume the report before private cle
     });
   });
 
+  it('emits mutation assertion evidence for the serialized Vitest promise settlement assertion', async () => {
+    let failure: Error | undefined;
+    try {
+      await expect(Promise.reject(new Error('caller recovery changed'))).resolves.toBeDefined();
+    } catch (error) {
+      failure = error as Error;
+    }
+    expect(failure?.name).toBe('AssertionError');
+    withReport({
+      testResults: [{
+        name: '/repo/lib/promise.test.ts',
+        status: 'failed',
+        assertionResults: [{
+          status: 'failed',
+          fullName: 'guard > preserves caller recovery',
+          failureMessages: [failure?.stack || failure?.message],
+        }],
+      }],
+    }, (path) => {
+      const failures = failedAssertionsFromReport(path, '/repo');
+      expect(failures).toHaveLength(1);
+      expect(failures?.[0]?.assertionEvidence).toBe(true);
+      const diagnostics = formatFailedAssertionDiagnostics(failures);
+      expect(diagnostics).toContain('TEST_FILE_ASSERTION_FAILURE file="/repo/lib/promise.test.ts"');
+      expect(diagnostics).not.toContain('TEST_FILE_NON_ASSERTION_FAILURE');
+    });
+  });
+
   it('does not emit mutation assertion evidence for a runtime exception before the assertion', () => {
     withReport({
       testResults: [{
@@ -2906,6 +2936,8 @@ describe('main() — failed assertion details survive private report cleanup (EI
   it('prints the failed assertion message before removing the injected report directory', async () => {
     let reportPath: string | undefined;
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const list = vi.fn(async () => ({ status: 0, signal: null, timedOut: false,
+      stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '' }));
     const runCapturedTestProcessMock = vi.fn(async (_command: string, args: string[]) => {
       const outputArg = args.find((arg) => arg.startsWith('--outputFile='));
       if (!outputArg) throw new Error('test fixture expected the injected output path');
@@ -2933,26 +2965,38 @@ describe('main() — failed assertion details survive private report cleanup (EI
 
     const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
     const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    const receiptMarker = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
     delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
     delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    // This child is synthetic: its report fixture cannot write a real receipt
+    // into the enclosing test run's ledger sink.
+    delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
     let code: number;
     let visibleOutput = '';
     try {
       code = await main(
         ['packages/operator-core/lib/__tests__/test-file-router.test.ts'],
-        { runCapturedTestProcessImpl: runCapturedTestProcessMock },
+        {
+          createRouterProofCustodyImpl: () => null,
+          restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+          runVitestListImpl: list,
+          runCapturedTestProcessImpl: runCapturedTestProcessMock,
+        },
       );
     } finally {
       if (readyMarker === undefined) delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
       else process.env.PC_HEAVY_PREEMPT_READY_FILE = readyMarker;
       if (finalizationMarker === undefined) delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
       else process.env.PC_HEAVY_PSI_FINALIZATION_FILE = finalizationMarker;
+      if (receiptMarker === undefined) delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = receiptMarker;
       // Capture the writes before restoring the spy; mockRestore() clears its call history.
       visibleOutput = stdoutSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('');
       stdoutSpy.mockRestore();
     }
 
     expect(code, JSON.stringify(errSpy.mock.calls)).toBe(1);
+    expect(list).toHaveBeenCalledOnce();
     const output = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     expect(output).toContain(
       'TEST_FILE_ASSERTION_FAILURE file="/repo/lib/bad.test.ts" name="router > reports the real assertion" message="AssertionError: expected 1 to be 2"',
@@ -2981,21 +3025,53 @@ describe('executed proof output custody (EI-26908539061140583)', () => {
   it('refuses publishable output and an ignored JSON with publishable executable sidecars', () => {
     for (const name of ['docs/evidence/run.json', 'only-report.json']) {
       expect(() => assertExecutedProofOutputCustody(root, {
+        PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/router-fixture',
         PC_EXECUTED_SOURCE_MAP_OUT: join(root, name),
       })).toThrow('Git-ignored custody directory');
     }
   });
   it('accepts external and ignored custody without changing the requested path', () => {
     for (const path of [join(outside, 'nested/run.json'), join(root, '.papercusp/scratch/run.json')]) {
-      const env = Object.freeze({ PC_EXECUTED_SOURCE_MAP_OUT: path });
+      const env = Object.freeze({ PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/router-fixture',
+        PC_EXECUTED_SOURCE_MAP_OUT: path });
       expect(() => assertExecutedProofOutputCustody(root, env)).not.toThrow();
       expect(env.PC_EXECUTED_SOURCE_MAP_OUT).toBe(path);
     }
     expect(() => assertExecutedProofOutputCustody(root, {})).not.toThrow();
   });
+  it.each([undefined, '', ' \t '])('refuses unarmed source capture with workspace %j', workspace => {
+    const env = Object.freeze({ PC_EXECUTED_SOURCE_MAP_OUT: join(outside, 'run.json'),
+      PC_EXECUTED_SOURCE_MAP_WORKSPACE: workspace });
+    expect(() => assertExecutedProofOutputCustody(root, env)).toThrow('PC_EXECUTED_SOURCE_MAP_WORKSPACE');
+    expect(env.PC_EXECUTED_SOURCE_MAP_WORKSPACE).toBe(workspace);
+  });
+  it('refuses unarmed source capture before collection and output advertisement', async () => {
+    const keys = ['PC_EXECUTED_SOURCE_MAP_OUT', 'PC_EXECUTED_SOURCE_MAP_WORKSPACE'] as const;
+    const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    process.env.PC_EXECUTED_SOURCE_MAP_OUT = join(outside, 'run.json');
+    delete process.env.PC_EXECUTED_SOURCE_MAP_WORKSPACE;
+    const list = vi.fn(), run = vi.fn();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await main(['some.test.ts'], { repoRoot: root,
+        runVitestListImpl: list, runCapturedTestProcessImpl: run })).toBe(2);
+      expect(list).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      expect(error.mock.calls.flat().join('\n')).toContain('PC_EXECUTED_SOURCE_MAP_WORKSPACE');
+      expect(log.mock.calls.flat().join('\n')).not.toMatch(/TEST_FILE_(?:RESULT|SOURCE_MAP_OUT)/);
+      expect(process.env.PC_EXECUTED_SOURCE_MAP_WORKSPACE).toBeUndefined();
+    } finally {
+      log.mockRestore(); error.mockRestore();
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
+      }
+    }
+  });
   it('checks physical destinations when an external directory points into publishable source', () => {
     symlinkSync(root, join(outside, 'back-to-source'), 'dir');
     expect(() => assertExecutedProofOutputCustody(root, {
+      PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/router-fixture',
       PC_EXECUTED_SOURCE_MAP_OUT: join(outside, 'back-to-source/run.json'),
     })).toThrow('Git-ignored custody directory');
   });
@@ -3273,11 +3349,18 @@ describe('main() — the pc-heavy marker addresses stop at this router (EI-25671
     const savedFinalization = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
     process.env.PC_HEAVY_PREEMPT_READY_FILE = readyFile;
     process.env.PC_HEAVY_PSI_FINALIZATION_FILE = finalizationFile;
+    const list = vi.fn(async () => ({ status: 0, signal: null, timedOut: false,
+      stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '' }));
     let leftInProcessEnv: { ready: string | undefined; finalization: string | undefined };
     try {
       await main(
         ['packages/operator-core/lib/__tests__/test-file-router.test.ts'],
-        { runCapturedTestProcessImpl: runCapturedTestProcessMock },
+        {
+          createRouterProofCustodyImpl: () => null,
+          restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+          runVitestListImpl: list,
+          runCapturedTestProcessImpl: runCapturedTestProcessMock,
+        },
       );
     } finally {
       leftInProcessEnv = {
@@ -3290,7 +3373,8 @@ describe('main() — the pc-heavy marker addresses stop at this router (EI-25671
       else process.env.PC_HEAVY_PSI_FINALIZATION_FILE = savedFinalization;
     }
 
-    expect(runCapturedTestProcessMock).toHaveBeenCalled();
+    expect(list).toHaveBeenCalledOnce();
+    expect(runCapturedTestProcessMock).toHaveBeenCalledOnce();
     for (const child of seen) {
       // The child sees neither address...
       expect(child.childReady).toBeUndefined();
@@ -3527,6 +3611,37 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(phases.at(-1)).toBe('governed-returned');
   });
 
+  it('relays reporter census progress before child close and rejects unrelated finalization chatter', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const progress: string[] = [];
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      files: ['a.test.ts'], env: { PATH: '/usr/bin' }, systemdRunPath: null, setsidPath: null,
+      spawnImpl: () => child, onProgress: (line: string) => progress.push(line),
+      governedProcessImpl: (_opts: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+    });
+    const line = 'TEST_FILE_FINALIZATION ' + JSON.stringify({ phase: 'provenance-progress',
+      origin: 'reporter-snapshot', step: 'source-census', event: 'progress', completedFiles: 256, totalFiles: 512 });
+    try {
+      child.stderr.write(line.slice(0, 40));
+      expect(progress).not.toContain(line);
+      child.stderr.write(line.slice(40) + '\n');
+      child.stderr.write('TEST_FILE_FINALIZATION {"phase":"provenance-progress","step":"heartbeat","event":"progress"}\n');
+      child.stderr.write('TEST_FILE_FINALIZATION malformed\n');
+      expect(progress.filter(row => row.includes('"phase":"provenance-progress"'))).toEqual([line]);
+      const stage = 'TEST_FILE_FINALIZATION ' + JSON.stringify({ phase: 'reporter-stage', reporter: 'test-runs',
+        stage: 'pg-release', event: 'start', operationId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' });
+      child.stderr.write(stage + '\n');
+      child.stderr.write(stage.replace('pg-release', 'invented') + '\n');
+      child.stderr.write(stage.replace('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', 'unbounded') + '\n');
+      expect(progress.filter(row => row.includes('"phase":"reporter-stage"'))).toEqual([stage]);
+    } finally {
+      child.emit('exit', 0, null); child.emit('close', 0, null);
+      expect(await pending).toMatchObject({ status: 0, timedOut: false });
+    }
+  });
+
   it('captures the owned tree after file completion while outer close is still pending', async () => {
     vi.useFakeTimers();
     const child = Object.assign(new EventEmitter(), {
@@ -3668,10 +3783,15 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     // the fixture so the outer real router does not diagnose its own worker.
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const list = vi.fn(async () => ({ status: 0, signal: null, timedOut: false,
+      stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '' }));
     let capturedStderr = '';
     let code: number;
     try {
       code = await main(['packages/operator-core/lib/__tests__/test-file-router.test.ts'], {
+        createRouterProofCustodyImpl: () => null,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        runVitestListImpl: list,
         runCapturedTestProcessImpl: async () => ({
           status: 0,
           signal: null,
@@ -3692,6 +3812,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     }
     const output = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     const errors = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    expect(list).toHaveBeenCalledOnce();
     expect(code, errors).toBe(3);
     expect(output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
     expect(output).toContain('finalizationError=true');

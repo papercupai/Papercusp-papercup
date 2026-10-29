@@ -484,6 +484,24 @@ async function runNativeTaskBriefJourney({ call, workspace, root, owner }: {
     projection: { pick: ['ok', 'taskBrief'] } });
   assert.equal(held.ok, true); assert.equal(held.taskBrief, undefined, JSON.stringify(held));
   await writeFile(join(root, paths[0]!), 'export function briefTarget() { return 2; }\n');
+  // Completion consumes the cooperative caller snapshot and intentionally does
+  // not fork a compiler worker when that snapshot is cold. Seed the exact
+  // current-source proof this private fixture claims to exercise, after the
+  // target edit so its per-file hash cannot be stale by construction.
+  const sha = (path: string) => createHash('sha256').update(readFileSync(join(root, path))).digest('hex');
+  const snapshotPath = join(homedir(), '.papercusp/graph-snapshot', workspace, 'dependency-snapshot.json');
+  await mkdir(resolve(snapshotPath, '..'), { recursive: true });
+  const sources = paths.map(path => ({ path, sha256: sha(path) }));
+  await writeFile(snapshotPath, JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
+    index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) },
+    edges: paths.slice(1).map(importer => ({ imported: paths[0], importer, importerSha256: sha(importer) })),
+    symbols: { schema: 'code-intel-symbol-snapshot-v1', knowledge: 'syntax-bound', symbols: [{
+      id: 'private-task-brief-target', name: 'briefTarget', path: paths[0], line: 1, column: 17,
+      sha256: sha(paths[0]!), signature: 'briefTarget()', aliases: [], sources,
+      callers: paths.slice(1).map(path => ({ path, line: 2, column: 1, sha256: sha(path),
+        spelling: 'briefTarget', workspace: '@fixture/task-brief' })),
+    }] },
+  }));
   const test = spawnSync(process.execPath, ['--test', paths[2]!], { cwd: root, encoding: 'utf8', timeout: 15_000 });
   assert.equal(test.error, undefined); assert.equal(test.status, 0, test.stdout + test.stderr);
   assert.match(test.stdout, /native completion assertion/);

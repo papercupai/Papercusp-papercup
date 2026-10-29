@@ -23,6 +23,7 @@
  * remains the immediate-bypass (requestUrgentHiveWake) for fire-now cases.
  */
 import { z } from 'zod';
+import { WorkItemDefinitionSchema } from '../../work-item-definition';
 import { itemClassOfPayload } from '../../scout/ideation-origin';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
@@ -248,6 +249,7 @@ function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
 
 /** One per-item create spec — the same per-item shape as the single-call fields. */
 const itemSpec = z.object({
+  definition: WorkItemDefinitionSchema.optional().describe('Structured acceptance criteria, scope, verification target and first unit; independent of body headings.'),
   // Built-in kind OR a workspace-registered generic-kind datatype (P-001) — validated
   // per item in createOneWorkItem; an unregistered kind is rejected there as `unknown_kind`.
   kind: z.string().min(1).max(80).describe("built-in kind (feature, bug, change, task); 'chunk' is deprecated (historical rows remain readable) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)"),
@@ -376,6 +378,7 @@ export default defineTool({
   args: z
     .object({
       // ── single-create shorthand (n=1) ──
+      definition: WorkItemDefinitionSchema.optional().describe('Structured acceptance criteria, scope, verification target and first unit.'),
       // Built-in kind OR a workspace-registered generic-kind datatype — validated in
       // createOneWorkItem (P-001). Relaxed from z.enum so a registered kind passes; an
       // unregistered one is rejected there with `unknown_kind` (was a zod enum error).
@@ -499,6 +502,7 @@ export default defineTool({
             parent: args.parent,
             topics: args.topics,
             payload: args.payload,
+            definition: args.definition,
             routing_intent: args.routing_intent,
             cadence: args.cadence,
             state: args.state, // EI-10897

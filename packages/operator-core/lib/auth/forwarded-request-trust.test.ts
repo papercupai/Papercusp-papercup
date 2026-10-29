@@ -136,7 +136,9 @@ describe('every Host-based local-trust gate refuses forwarded traffic', () => {
 
   it('the default-user fallback is withheld from forwarded traffic', async () => {
     expect(await getSessionUserOrLocalDefault(req('http://localhost:3070/api/x', forwarded))).toBeNull();
-    expect(await getSessionUserOrLocalDefault(req('http://localhost:3070/api/x'))).toEqual({ id: 'default-user' });
+    expect(await getSessionUserOrLocalDefault(req('http://localhost:3070/api/x'))).toEqual({
+      id: 'default-user', workspace_id: 'ws-test',
+    });
   });
 
   it('the external-ingress listener refuses every gate for a plain loopback request', async () => {

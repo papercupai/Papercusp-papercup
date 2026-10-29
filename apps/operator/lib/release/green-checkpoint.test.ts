@@ -191,10 +191,6 @@ import {
   DEFAULT_REFIRE_RUN_BUDGET_MS,
 } from "./green-checkpoint";
 import type {
-  FrozenRepairBoundedLifeRecord,
-  FrozenRepairBoundedLifeState,
-} from "@papercusp/operator-core/lib/release/frozen-repair-bounded-life";
-import type {
   FrozenRepairCarryRecord,
   FrozenRepairPendingCarry,
 } from "@papercusp/operator-core/lib/release/frozen-repair-carry";
@@ -17819,22 +17815,11 @@ describe("P-041: automatic candidate retirement is forbidden", () => {
     };
   }
 
-  function boundedLifeDeps(queue: FrozenCandidateRepairQueue, state: FrozenRepairBoundedLifeState | null) {
+  function retentionDeps(queue: FrozenCandidateRepairQueue) {
     const { deps } = stubDeps(true);
-    const retired: FrozenRepairBoundedLifeRecord[] = [];
-    const escalations: string[] = [];
     deps.readFrozenRepairQueueState = async () => ({ status: "value", queue });
-    deps.readFrozenRepairBoundedLifeState = async () => state;
-    deps.retireFrozenRepairQueueForBoundedLife = vi.fn(async (_queue, record) => {
-      retired.push(record);
-      return { retired: true };
-    });
-    deps.recordFrozenRepairBoundedLifeEscalation = vi.fn(async () => undefined);
-    deps.escalate = vi.fn(async (summary: string) => {
-      escalations.push(summary);
-    });
     deps.dispatchFrozenRepairFixer = async () => ({ spawnId: "fixer", runId: "run" });
-    return { deps, retired, escalations };
+    return deps;
   }
 
   it.each([
@@ -17844,13 +17829,11 @@ describe("P-041: automatic candidate retirement is forbidden", () => {
   ])('retains the selected candidate with age $ageMs and changed failure counts', async (basis) => {
     const lineage = await frozenLineage();
     const queue = queueWith({ ...lineage, ...basis });
-    const { deps, retired } = boundedLifeDeps(queue, null);
+    const deps = retentionDeps(queue);
     deps.resolveKnownGoodRecutTarget = async () => lineage.knownGood;
     const write = vi.fn(async (_queue: FrozenCandidateRepairQueue | null) => undefined);
     deps.writeFrozenRepairQueue = write;
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-    expect(deps.retireFrozenRepairQueueForBoundedLife).not.toHaveBeenCalled();
-    expect(retired).toEqual([]);
     expect(write.mock.calls.some(([next]) => next === null)).toBe(false);
     expect(result.candidate).toBe(lineage.frozen);
     expect(result.candidate).not.toBe(lineage.tip);

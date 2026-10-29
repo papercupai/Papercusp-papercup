@@ -305,7 +305,8 @@ export type BgHostRestartFreshnessSnapshot = {
 export type BgHostRestartFreshness = BgHostRestartFreshnessSnapshot & {
   /**
    * `true` means the newest runtime source on disk is newer than the bundle
-   * produced for the coalesced restart, so the caller's edit is not loaded.
+   * produced for the coalesced restart. This does not identify whether the
+   * caller's requested edit is loaded; that requires checking its path or marker.
    * `null` is UNKNOWN — never turn an unreadable artifact/tree into `false`.
    */
   treeChangedSinceRestart: boolean | null;
@@ -2119,7 +2120,7 @@ export default defineTool({
                 : freshness.treeChangedSinceRestart
                   ? ` WARNING: the runtime tree is newer than the bundle used by this restart${
                       freshness.newestSourcePath ? ` (newest source: ${freshness.newestSourcePath})` : ''
-                    }; the requested edit is NOT loaded. The temporal throttle is preserved; retry after the remaining cooldown (~${cooldownRemainingSec}s) when safe.`
+                    }; whether the requested edit is loaded remains unverified. Check its specific path or runtime marker. The temporal throttle is preserved; retry after the remaining cooldown (~${cooldownRemainingSec}s) when safe.`
                   : ' Tree/bundle freshness checked: no runtime source is newer than the bundle used by this restart.';
           if (bgHostEnvironmentDropInDrift === null) {
             return json({

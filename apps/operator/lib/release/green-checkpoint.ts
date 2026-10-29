@@ -115,11 +115,6 @@ import {
   shouldRunSuiteAfterEarlyTypecheckFailure,
 } from "@papercusp/operator-core/lib/release/round-one-measurement";
 import {
-  type FrozenRepairBoundedLifeEscalation,
-  type FrozenRepairBoundedLifeRecord,
-  type FrozenRepairBoundedLifeState,
-} from "@papercusp/operator-core/lib/release/frozen-repair-bounded-life";
-import {
   assessFrozenRepairCarryAtCut,
   buildFrozenRepairCarryRecord,
   frozenRepairCarrySummary,
@@ -1581,28 +1576,13 @@ export interface CheckpointDeps {
   readFrozenRepairQueue?(): Promise<FrozenCandidateRepairQueue | null>;
   /** P-025: branchable storage read; production prefers this over the legacy null API. */
   readFrozenRepairQueueState?(): Promise<FrozenCandidateRepairQueueRead>;
-  /**
-   * P-021 (green-main-cycle-time-2026-10-08, D-023): the frozen queue's BOUNDED LIFE. Without the
-   * read + retire pair the rule is inert (historical stubs, non-recording CLI runs). The retire
-   * re-checks identity, the decision, the 24h rate limit and fixer liveness under the routine row
-   * lock and persists the retirement record in the same write.
-   */
-  readFrozenRepairBoundedLifeState?(): Promise<FrozenRepairBoundedLifeState | null>;
-  retireFrozenRepairQueueForBoundedLife?(
-    queue: FrozenCandidateRepairQueue,
-    record: FrozenRepairBoundedLifeRecord,
-  ): Promise<{ retired: boolean; refusal?: string }>;
-  /** Dedupes the escalation a rate-limited trigger raises (once per candidate per window). */
-  recordFrozenRepairBoundedLifeEscalation?(
-    escalation: FrozenRepairBoundedLifeEscalation,
-  ): Promise<void>;
   /** P-012 seam: the newest known-good staging commit, or null (re-cut at the staging tip). */
   resolveKnownGoodRecutTarget?(): Promise<string | null>;
   /** Blob/gitlink of `path` at `sha` (null = absent). Default: `git ls-tree` in the integration root. */
   frozenRepairBlobAt?(sha: string, path: string): Promise<string | null>;
   /**
    * P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): the PENDING CARRY every retire writes
-   * (bounded-life or owner), read at the next fresh cut. Without the read + consume pair the
+   * (explicit owner retirement), read at the next fresh cut. Without the read + consume pair the
    * carry is inert (historical stubs, non-recording CLI runs).
    */
   readFrozenRepairPendingCarry?(): Promise<FrozenRepairPendingCarry | null>;
@@ -13196,7 +13176,6 @@ async function applyFrozenRepairCarryAtCut(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
   candidate: string,
-  boundedLifeRetire: FrozenRepairBoundedLifeRecord | null,
 ): Promise<string> {
   if (!deps.readFrozenRepairPendingCarry || !deps.consumeFrozenRepairCarry) return candidate;
   const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -13208,16 +13187,6 @@ async function applyFrozenRepairCarryAtCut(
     return candidate;
   }
   if (!pending) return candidate;
-  // A known-good re-cut deliberately judges an OLDER commit; re-admitting the carried fixes onto
-  // it is P-012's executor, which consults this pending carry. Advancing to the tip here would
-  // undo that choice, so the carry stays pending.
-  if (boundedLifeRetire?.recutTargetSource === "known-good") {
-    deps.log(
-      `P-010 carry from retired ${pending.fromCandidate.slice(0, 8)} left pending: this pass re-cuts at the ` +
-        `known-good target ${candidate.slice(0, 8)}, whose re-admission is P-012's`,
-    );
-    return candidate;
-  }
   try {
     const stagingTip = await revParse(cfg.integrationRoot, cfg.integrationBranch);
     const blobAt =
@@ -13295,7 +13264,6 @@ async function selectCheckpointFreshCandidate(
     !retainsSelectedCandidate &&
     !repairVerification &&
     !initialCandidateVerification &&
-    // P-021: a bounded-life re-cut judges exactly the target its carry was measured against.
     quietCutSecFromEnv() > 0
   ) {
     try {
@@ -13334,9 +13302,8 @@ async function selectCheckpointFreshCandidate(
   // P-012 (green-main-cycle-time-2026-10-08): FREEZE FROM KNOWN-GOOD POINTS. A fresh cut judges
   // the newest staging commit whose per-sync batch check passed (sync_delta.lastPassed), not the
   // bare tip, when that commit is on the tip's lineage and strictly ahead of the green pin (see
-  // known-good-freeze.ts for why those two rules keep the gate from starving). Not on a
-  // bounded-life re-cut: that run judges exactly the target its carry was measured against,
-  // which P-021 already chose under the same rules. The record rides on the verdict, with the
+  // known-good-freeze.ts for why those two rules keep the gate from starving). A repair
+  // verification retains its selected candidate. The record rides on the verdict, with the
   // round's red legs (`redLegsAtR1`), so every fresh candidate says where it came from.
   let freezeCut: FreezeCutRecord | null = null;
   if (
@@ -14834,7 +14801,7 @@ async function runGreenCheckpointInner(
     !diagnosticOnly &&
     repairQueue === null
   ) {
-    const carried = await applyFrozenRepairCarryAtCut(cfg, deps, candidate, null);
+    const carried = await applyFrozenRepairCarryAtCut(cfg, deps, candidate);
     if (carried !== candidate) {
       candidate = carried;
       // The judged commit is the tip now; the quiet cut's excluded window no longer applies.
@@ -23345,26 +23312,6 @@ export function realCheckpointDeps(
               await import("@papercusp/operator-core/lib/release/sync-batch-delta-check-deps");
             return readSyncDeltaKnownGood(repairTarget.installSlug);
           },
-          async readFrozenRepairBoundedLifeState() {
-            const { readFrozenRepairBoundedLifeState } =
-              await import("@papercusp/operator-core/lib/release/frozen-repair-bounded-life-store");
-            return readFrozenRepairBoundedLifeState(repairTarget);
-          },
-          async retireFrozenRepairQueueForBoundedLife(
-            queue: FrozenCandidateRepairQueue,
-            record: FrozenRepairBoundedLifeRecord,
-          ) {
-            const { retireFrozenRepairQueueForBoundedLife } =
-              await import("@papercusp/operator-core/lib/release/frozen-repair-bounded-life-store");
-            return retireFrozenRepairQueueForBoundedLife(repairTarget, queue, record);
-          },
-          async recordFrozenRepairBoundedLifeEscalation(
-            escalation: FrozenRepairBoundedLifeEscalation,
-          ) {
-            const { recordFrozenRepairBoundedLifeEscalation } =
-              await import("@papercusp/operator-core/lib/release/frozen-repair-bounded-life-store");
-            await recordFrozenRepairBoundedLifeEscalation(repairTarget, escalation);
-          },
           async readFrozenRepairPendingCarry() {
             const { readFrozenRepairPendingCarry } =
               await import("@papercusp/operator-core/lib/release/frozen-repair-carry-store");
@@ -24738,6 +24685,16 @@ export function realCheckpointDeps(
                   notifyProgress("phase:fork-base-rerun");
                 }
               },
+              inheritGateLegs: async (entries) => {
+                const target = gateVerdictTargetFromEnv();
+                if (!target) throw new Error('fork gate verdict target unavailable');
+                return inheritUpstreamGateLegs({
+                  failingTests: entries,
+                  upstreamInstall: forkUpstreamInstall,
+                  workspaceId: target.workspaceId,
+                  nowMs: Date.now(),
+                });
+              },
               remainingMs,
               log,
             },
@@ -24941,7 +24898,9 @@ export function realCheckpointDeps(
       if (suiteInheritedFromBase) {
         summary =
           `${summary}\n\nInherited test failures (also fail at the fork's upstream base ` +
-          `${(base ?? "none").slice(0, 12)}, #D-066): ${suiteInheritedFromBase.inheritedFiles.join(", ")}`.slice(-2000);
+          `${(base ?? "none").slice(0, 12)}, #D-066): ${suiteInheritedFromBase.inheritedFiles.join(", ")}` +
+          `\nInherited suite entries (#D-065/#D-066): ${suiteInheritedFromBase.inheritedEntries.join(", ")}`;
+        summary = summary.slice(-2000);
       }
       // EI-19340004308033958 wanted to stop a MANGLED failingTests path (a truncated
       // suffix of a real file) misleading a triager, and DROPPED any FILE-shaped entry
