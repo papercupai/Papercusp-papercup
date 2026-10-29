@@ -332,11 +332,18 @@ it('formats a refusal as one greppable line that says nothing was measured', () 
   expect(formatRestrictedHoldRefusal({ error: 'restricted_write_held', hint: 'x is held' })).toBe(
     'TEST_FILE_RESTRICTED_HOLD_REFUSED error=restricted_write_held measured=none x is held',
   );
-  expect(formatRestrictedHoldRefusal({ error: 'restricted_hold_state_unknown', hint: 'loader failed' }, 'copy-baseline')).toBe(
-    'TEST_FILE_RESTRICTED_HOLD_REFUSED phase=copy-baseline error=restricted_hold_state_unknown measured=none loader failed',
-  );
-  expect(formatRestrictedHoldRefusal({ error: 'restricted_hold_state_unknown', hint: 'loader failed' }, 'copy-baseline\nmutant')).toBe(
-    'TEST_FILE_RESTRICTED_HOLD_REFUSED error=restricted_hold_state_unknown measured=none loader failed',
-  );
+  const oldPhase = process.env.PAPERCUSP_MUTATION_PHASE;
+  try {
+    process.env.PAPERCUSP_MUTATION_PHASE = 'copy-baseline';
+    expect(formatRestrictedHoldRefusal({ error: 'restricted_hold_state_unknown', hint: 'loader failed' })).toBe(
+      'TEST_FILE_RESTRICTED_HOLD_REFUSED phase=copy-baseline error=restricted_hold_state_unknown measured=none loader failed',
+    );
+    process.env.PAPERCUSP_MUTATION_PHASE = 'copy-baseline\nmutant';
+    expect(formatRestrictedHoldRefusal({ error: 'restricted_hold_state_unknown', hint: 'loader failed' })).toBe(
+      'TEST_FILE_RESTRICTED_HOLD_REFUSED error=restricted_hold_state_unknown measured=none loader failed',
+    );
+  } finally {
+    if (oldPhase === undefined) delete process.env.PAPERCUSP_MUTATION_PHASE;
+    else process.env.PAPERCUSP_MUTATION_PHASE = oldPhase;
+  }
 });
-

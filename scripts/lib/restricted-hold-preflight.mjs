@@ -350,7 +350,7 @@ function spawnCensus({ repoRoot, files, env, timeoutMs, spawn, leading = [] }) {
 }
 
 /** One stderr line for a refusal; greppable, and it names the measured state: nothing ran. */
-export function formatRestrictedHoldRefusal(refusal, phase) {
+export function formatRestrictedHoldRefusal(refusal, phase = process.env.PAPERCUSP_MUTATION_PHASE) {
   const phaseField = typeof phase === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(phase)
     ? ` phase=${phase}`
     : '';

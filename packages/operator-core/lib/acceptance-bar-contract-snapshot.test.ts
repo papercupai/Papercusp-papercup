@@ -1878,15 +1878,19 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
 
   it('reports changed requirement intent in the amendment candidate diff', () => {
     const input = fixture(1);
-    const before = projectAcceptanceBarContractSnapshot(input);
     const rubric = input.rubrics.rows[0]!;
+    rubric.criteria[0]!.intent = {
+      request: 'The original acceptance request.',
+      constraints: ['Preserve the acceptance contract.'],
+      rationale: 'New references are part of the signed BAR intent.',
+      sourceRefs: ['D-021 §1-3', 'D-024 §1-5', 'D-027 §1-5'],
+    };
+    const before = projectAcceptanceBarContractSnapshot(input);
     const changedCriterion = {
       ...rubric.criteria[0]!,
       intent: {
+        ...rubric.criteria[0]!.intent!,
         request: 'Keep the amended source lineage explicit.',
-        constraints: ['Preserve the acceptance contract.'],
-        rationale: 'New references are part of the signed BAR intent.',
-        sourceRefs: ['D-021 §1-3', 'D-024 §1-5', 'D-027 §1-5'],
       },
       evidenceRuntime: 'desktop-shell',
       method: 'Inspect the amended source references.',
