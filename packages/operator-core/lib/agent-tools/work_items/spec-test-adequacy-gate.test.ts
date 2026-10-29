@@ -164,6 +164,8 @@ function listedEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
     createdBy: 'su-test',
     createdAt: '2026-08-20T00:01:31.000Z',
     ...evidence(),
+    // No repository measurement is attached to this store fixture by default.
+    serverMeasurement: undefined,
     // This suite stubs the store reader, whose current contract certifies fixture absence
     // with independent verification citations. Binder-authored fixtureFree alone is not proof.
     fixtureAbsenceVerification: { verifierBindingIds: [5001] },
@@ -1043,8 +1045,8 @@ describe('specTestAdequacyCompletionGate', () => {
       // revision 4 a non-current test binding also cannot corroborate the counterexample's
       // canonical test file, so falsifiability blocks beside it (WI-10006856).
       expect(result.reason).toMatch(/unknown \[[^\]]*\bfreshness\b[^\]]*\]/);
-      expect(result.reason).toContain('Current fingerprints are missing for: test:reconnect');
-      expect(result.reason).toContain('testFingerprint omitted');
+      expect(result.reason).toContain('Freshness is unknown because the currentness probe reported:');
+      expect(result.reason).toContain('test:reconnect: testFingerprint omitted');
     }
   });
 
@@ -1853,7 +1855,12 @@ describe('P-043: adequacy cards across an evaluator rule revision', () => {
     baseline.testRunExecution = { ...passingExecution(), passed: testCases.length, passedCaseTitles: testCases };
     baseline.details = {
       ...baseline.details,
-      adequacy: { ...((baseline.details.adequacy ?? {}) as Record<string, unknown>), scenarioIds: scenarios, testCases },
+      adequacy: {
+        ...((baseline.details.adequacy ?? {}) as Record<string, unknown>),
+        scenarioIds: scenarios,
+        scenarioTestCases: Object.fromEntries(scenarios.map((scenario, index) => [scenario, [testCases[index]]])),
+        testCases,
+      },
     };
     const mutations = scenarios.map((target, index) => {
       const row = counterexampleEvidence({ id: 2 + index });

@@ -598,6 +598,7 @@ describe('gather + execute against a real temporary repo', () => {
     expect(dry.cap.beforeBytes).toBeGreaterThan(8192 * 3);
     expect(fs.existsSync(older)).toBe(true);
     const result = await reclaimCutWorktrees(plan, { maxBytes: 1 }, deps);
+    if (!('execution' in result)) throw new Error('Expected a reclaim execution receipt');
     expect(result.ok).toBe(true);
     expect(result.targets).toEqual(dry.targets);
     expect(result.execution?.ok && result.execution.results.map((r) => r.path)).toEqual([older, newer]);
@@ -926,6 +927,7 @@ describe('gather + execute against a real temporary repo', () => {
       nowMs: () => clock, scanHolders: () => verified, archive, rmrf,
       archiveDir: path.join(ret, 'reclaim-archive'), appendAudit: () => {},
     });
+    if (!('execution' in result)) throw new Error('Expected a reclaim execution receipt');
     expect(result.ok).toBe(false);
     expect(result.execution).toMatchObject({ ok: true, results: [
       { path: trees[0], removed: true },
@@ -953,6 +955,7 @@ describe('gather + execute against a real temporary repo', () => {
         scanHolders: () => verified,
         archiveDir: path.join(ret, 'reclaim-archive'), appendAudit: () => {},
       });
+      if (!('execution' in protectedResult)) throw new Error('Expected a reclaim execution receipt');
       expect(protectedResult.ok).toBe(false);
       expect(protectedResult.execution).toMatchObject({ ok: true, results: [
         { path: trees[1], removed: false, reason: 'active retention pin' },
@@ -1249,6 +1252,7 @@ describe('gather + execute against a real temporary repo', () => {
     const deps = { scanHolders: () => verified, archiveDir: path.join(ret, 'reclaim-archive'), appendAudit: () => {} };
     try {
       const first = await reclaimCutWorktrees(plan, {}, deps);
+      if (!('execution' in first)) throw new Error('Expected a reclaim execution receipt');
       expect(Date.now()).toBeGreaterThan(expires);
       expect(first.execution).toMatchObject({ ok: true, results: [{ removed: false, reason: 'active retention pin' }] });
       expect(first.cap.pinnedBytes).toBe((fs.statSync(child).blocks + fs.statSync(data).blocks) * 512);

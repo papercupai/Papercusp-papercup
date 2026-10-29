@@ -301,7 +301,7 @@ describe('exact shipped engineering evidence detector', () => {
       const result = verifyEngineeringRelease({
         root: dir, inputsPath, nonce: f.nonce, env: {},
         read: path => path === inputsPath ? f.bytes : receipt,
-        run: (_command, _args, options) => spawnSync(process.execPath, ['-e', childScript], options),
+        run: (_command, _args, options) => spawnSync(process.execPath, ['-e', childScript], { ...options, encoding: 'utf8' }),
       });
       const observedAt = Number(readFileSync(markerPath, 'utf8'));
       const exitedAt = Number(readFileSync(endedPath, 'utf8'));
@@ -324,7 +324,7 @@ describe('exact shipped engineering evidence detector', () => {
         read: path => path === inputsPath ? f.bytes : JSON.stringify({ driver: 'tauri-agent-tools',
           plane: f.proof.plane, buildSha: f.proof.buildSha, manifestSha256: f.proof.manifestSha256, nonce: f.nonce }),
         run: (_command, _args, options) => spawnSync(process.execPath,
-          ['-e', `process.stdout.write('x'.repeat(${maxBuffer + 1}))`], options) });
+          ['-e', `process.stdout.write('x'.repeat(${maxBuffer + 1}))`], { ...options, encoding: 'utf8' }) });
       const phase = result.phases.browser!;
       const stdout = readFileSync(phase.stdoutPath, 'utf8');
       expect(result.status).toBe('unknown');

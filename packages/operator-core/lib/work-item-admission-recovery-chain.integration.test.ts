@@ -685,6 +685,8 @@ function dispatch(args: Parameters<typeof assignAndWakeActionableWorkItems>[0]) 
   return assignAndWakeActionableWorkItems(args, {
     observe: wi.observeWorkItem, claim: h.claim, authorize: authorizeWorkItemDispatch,
     explainClaimFloors: wi.explainIssueClaimFloors, blockers: wi.readUnresolvedDepBlockers,
+    readClaimConcurrency: async () => ({ blocked: false, activeClaims: 0, maxConcurrentClaims: 1,
+      heldIds: [], blockerParkedIds: [] }),
     planBlock: planItemLaneBlockReason, planClaim: planItemLiveClaimReason,
     resolveTarget: async () => ({
       requested: reviewerOwnerId, ownerId: reviewerOwnerId, present: true, sessionState: 'parked', wakeable: true,

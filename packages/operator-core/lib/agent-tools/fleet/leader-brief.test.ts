@@ -571,7 +571,15 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
       });
       return items;
     });
-    const occurrenceCounts = new Map([['WI-1', 2]]);
+    const occurrenceCounts = {
+      canonicalClusters: 1, rawOccurrences: 2, duplicateOccurrences: 1,
+      units: {
+        canonicalClusters: 'distinct canonical work-item ids with occurrences' as const,
+        rawOccurrences: 'append-only report rows' as const,
+        duplicateOccurrences: 'report rows not creating a canonical item' as const,
+      },
+      writer: 'harness_shared.work_item_occurrences' as const,
+    };
     const occurrencePromise = Promise.resolve(occurrenceCounts);
     const readOccurrences = vi.fn(() => occurrencePromise);
     const build = vi.fn(async (_resolution, _items, opts) => {
@@ -1957,7 +1965,7 @@ describe('selectLeaderBriefMembers (EI-11840)', () => {
       agentId,
       sessionState: 'live',
       alive: true,
-      lastActiveAt: new Date(NOW - (15_000 + index * 12_000)).toISOString(),
+      lastActiveSecAgo: 15 + index * 12,
       claims: [{ type: 'work-item', id: `WI-${index + 1}` }] as never,
     }));
 
@@ -2040,9 +2048,11 @@ describe('bench target identity index (EI-21242929839064139)', () => {
   it('keeps every suggested member and puts suggested rows first in bounded detail', () => {
     const members = [
       { agentId: 'ordinary-a' },
-      { agentId: 'bench-a', benchSuggestion: { kind: 'laneless-idle' as const } },
+      { agentId: 'bench-a', benchSuggestion: { kind: 'laneless-idle' as const,
+        reason: 'no active lane', item: null, itemTitle: null } },
       { agentId: 'ordinary-b' },
-      { agentId: 'bench-b', benchSuggestion: { kind: 'stalled-no-mcp' as const } },
+      { agentId: 'bench-b', benchSuggestion: { kind: 'stalled-no-mcp' as const,
+        reason: 'no recent tool activity', item: null, itemTitle: null } },
     ];
 
     expect(compactLeaderBriefBenchSuggestions(members)).toEqual([

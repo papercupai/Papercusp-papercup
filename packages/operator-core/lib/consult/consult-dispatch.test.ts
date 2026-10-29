@@ -1936,6 +1936,7 @@ describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
 // task_complete carrying model_not_found ~48s after launch.
 describe('rejudgeFirstTurn (the same first-turn judge, run after the window)', () => {
   const codex = (...records: object[]) => ({
+    readLaunchLogReason: async () => null,
     analyzeClaudeTranscript: () => null,
     analyzeCodexRollout: () => analyzeCodexRolloutText(records.map((r) => JSON.stringify(r)).join('\n')),
   });
@@ -1973,12 +1974,14 @@ describe('rejudgeFirstTurn (the same first-turn judge, run after the window)', (
     await expect(rejudgeFirstTurn(target, codex(started, {
       type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'answered' },
     }))).resolves.toEqual({ status: 'replied' });
-    await expect(rejudgeFirstTurn(target, { analyzeClaudeTranscript: () => null, analyzeCodexRollout: () => null }))
+    await expect(rejudgeFirstTurn(target, { analyzeClaudeTranscript: () => null, analyzeCodexRollout: () => null,
+      readLaunchLogReason: async () => null }))
       .resolves.toEqual({ status: 'unreadable' });
   });
 
   it('a Claude first reply is judged by the Claude reader, never the Codex one', async () => {
     const verdict = await rejudgeFirstTurn({ agent: 'claude', transcriptPath: '/native/answer.jsonl' }, {
+      readLaunchLogReason: async () => null,
       analyzeClaudeTranscript: (path) => path === '/native/answer.jsonl' ? {
         trailingMissingToolReferenceTurns: 0, lastMissingToolReferenceName: null,
         assistantTurnsSinceLastPrompt: 1, trailingContextLimitTurns: 1, lastContextLimitEvidence: 'Prompt is too long',

@@ -1366,11 +1366,12 @@ describe('wake provenance TTL guard (EI-18126834395314388)', () => {
 
   it('rechecks wake provenance at the actual PTY write boundary for a re-armed turn', () => {
     const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
-    const rearmStart = src.indexOf('performDelivery: async (message, { drillId, mode }) => {');
+    const rearmStart = src.indexOf('performDelivery: async (message, {');
     const rearmEnd = src.indexOf('return recycleChild(message?.data', rearmStart);
-    const rearmGuard = src.indexOf(
-      "validateBeforeWrite: () => rejectWakeProvenance(message, 'rearm-pre-write')",
-      rearmStart,
+    const rearmGuard = src.indexOf('validateBeforeWrite: () => {', rearmStart);
+    const provenanceCheck = src.indexOf(
+      "const provenanceRejection = rejectWakeProvenance(message, 'rearm-pre-write');",
+      rearmGuard,
     );
     const writeLoop = src.indexOf('for (let stepIndex = 0; stepIndex < steps.length; stepIndex++)');
     const finalGuard = src.indexOf('const writeValidationRejection = validateBeforeWrite?.();', writeLoop);
@@ -1380,7 +1381,8 @@ describe('wake provenance TTL guard (EI-18126834395314388)', () => {
     expect(rearmStart).toBeGreaterThan(-1);
     expect(rearmEnd).toBeGreaterThan(rearmStart);
     expect(rearmGuard).toBeGreaterThan(rearmStart);
-    expect(rearmGuard).toBeLessThan(rearmEnd);
+    expect(provenanceCheck).toBeGreaterThan(rearmGuard);
+    expect(provenanceCheck).toBeLessThan(rearmEnd);
     expect(writeLoop).toBeGreaterThan(-1);
     expect(finalGuard).toBeGreaterThan(-1);
     expect(finalGuard).toBeLessThan(chunks);

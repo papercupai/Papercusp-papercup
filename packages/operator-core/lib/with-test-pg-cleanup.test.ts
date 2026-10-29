@@ -115,13 +115,14 @@ describe('private PostgreSQL independent cleanup', () => {
       await expect(handle({ kind: 'papercusp-private-test-pg-release', token: 'wrong', requestId: 'wrong' }))
         .resolves.toBe(false);
       expect(stop).not.toHaveBeenCalled();
-      await expect(requestPrivateTestPgRelease(token, { processRef: channel, timeoutMs: 1000 })).resolves.toBe(true);
+      await expect(requestPrivateTestPgRelease(token, { processRef: channel as unknown as NodeJS.Process,
+        timeoutMs: 1000 })).resolves.toBe(true);
       expect(stop).toHaveBeenCalledTimes(1);
       expect(f.calls).toEqual(['pg']);
       expect(existsSync(f.resources.dataDir)).toBe(true);
       expect(existsSync(f.resources.runtimeRoot)).toBe(true);
 
-      await cleanupOwnedTestState({ ...f.resources, pg: { ...f.resources.pg, stop: stopOnce } });
+      await cleanupOwnedTestState({ ...f.resources, pg: { ...f.resources.pg, stop: async () => { await stopOnce(); } } });
       expect(stop).toHaveBeenCalledTimes(1);
       expect(f.calls).toEqual(['pg', 'child', 'profile', 'observe', 'observation-stopped']);
       expect(existsSync(f.resources.dataDir)).toBe(false);
@@ -284,6 +285,7 @@ describe('private PostgreSQL independent cleanup', () => {
         cleanupOwnedState(): Promise<void> };
       const scope = {
         ...f.resources, cleanupOwnedTestState, managedTasks: false, managedTaskCleanupEnv: null,
+        stopPrivatePg: async (): Promise<unknown> => undefined,
         isolatedRuntime: true, cleanupStartedAt: Date.now(), runtimeId: 'test-runtime-ipc',
         runtimeRoot: f.resources.runtimeRoot, dataDir: f.resources.dataDir, port: 12345,
         child: f.resources.child, cleanupReceiptFailures: receiptFailures, pendingCleanupReceipts: pendingReceipts,

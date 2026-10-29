@@ -4987,13 +4987,18 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
   it.each(['parent pin', 'child HEAD'])('retains the attributed-source hold when the %s is unreadable', async (unreadable) => {
     const subRepo = join(repo, 'libs/sub');
     const originalPointer = git(repo, 'rev-parse', 'HEAD:libs/sub');
-    const stalePointer = git(subRepo, 'commit-tree', git(subRepo, 'rev-parse', 'HEAD^{tree}'),
-      '-p', originalPointer, '-m', 'stale index fixture');
-    git(repo, 'update-index', '--cacheinfo', '160000', stalePointer, 'libs/sub');
+    // A pending child commit survives private-index seeding; stale shared-index
+    // dirt is intentionally discarded by the full sync before this guard runs.
+    writeFileSync(join(subRepo, 'sub.txt'), 'sub-v2\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'protected pointer fixture');
+    expect(git(subRepo, 'rev-parse', 'HEAD')).not.toBe(originalPointer);
     writeFileSync(join(repo, 'root-attributed.ts'), 'export const sourceVersion = 2;\n');
     let readingChild = false;
     let refusedReads = 0;
+    const pinReads: Array<{ cwd: string; args: string[] }> = [];
     const runGit: RunGit = async (args, cwd, options) => {
+      if (args.includes('rev-parse')) pinReads.push({ cwd, args });
       if (cwd === repo && args.join(' ') === 'rev-parse --verify HEAD:libs/sub') {
         readingChild = true;
         if (unreadable === 'parent pin') {
@@ -5009,18 +5014,20 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       }
       return directRunGit(args, cwd, options);
     };
-    const logs: string[] = [];
-
-    await runGitSync('test', {
-      repoPath: repo, runGit, log: message => logs.push(message),
-      loadRoster: async () => [{
+    const deferred: string[] = [];
+    const out = await commitAttributedGroups(runGit, repo, new Map([
+      ['root-attributed.ts', {
         agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'update independent root source',
-        files: ['root-attributed.ts'],
       }],
+    ]), ['libs/sub'], 'auto-commit test', {
+      priorityPaths: ['libs/sub'],
+      deferAttributedPaths: paths => deferred.push(...paths),
     });
 
-    expect(refusedReads).toBeGreaterThan(0);
-    expect(logs.join('\n')).toContain('deferring attributed source path(s)');
+    expect(refusedReads, JSON.stringify(pinReads)).toBeGreaterThan(0);
+    expect(out.committedAny).toBe(false);
+    expect(deferred).toEqual(['root-attributed.ts']);
+    expect(git(repo, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain('root-attributed.ts');
     expect(git(superOrigin, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('root-attributed.ts');
     expect(readFileSync(join(repo, 'root-attributed.ts'), 'utf8')).toBe('export const sourceVersion = 2;\n');
     expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(originalPointer);
@@ -5233,8 +5240,11 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     expect(out.status).toBe('synced');
     expect(loadMigrationFenceRoster).toHaveBeenCalledOnce();
     const fence = out.skippedPaths?.find(
-      (entry) => entry.reason === 'migration-dependency-fence' && entry.path === 'schema-consumer.ts',
+      (entry) => 'reason' in entry && entry.reason === 'migration-dependency-fence' && entry.path === 'schema-consumer.ts',
     );
+    if (!fence || !('reason' in fence) || fence.reason !== 'migration-dependency-fence') {
+      throw new Error('Expected a migration dependency fence receipt');
+    }
     expect(fence).toMatchObject({
       scope: 'superproject',
       path: 'schema-consumer.ts',
@@ -5930,23 +5940,23 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
     writeFileSync(join(repo, 'libs/subA', 'subA-other.txt'), 'ordinary submodule work\n');
     const probeLock = { path: 'libs/subA/subA.txt', owner: 'su-probe', intent: 'mutation probe' };
     let mutated = false;
-    let refreshCall = 0;
-    const refreshLiveLockHoldings = vi.fn(async () => {
-      refreshCall += 1;
-      // Calls one and two are the superproject's early pre/post-stage checks;
-      // call three is subA's pre-stage census, the race seam this case exercises.
-      if (!mutated && refreshCall === 3) {
-        // subA's pre-stage census has just read; the probe now locks and mutates.
+    const subRepo = join(repo, 'libs/subA');
+    const runGit: RunGit = async (args, cwd, options) => {
+      // Trigger after the submodule's pre-stage census but immediately before its
+      // add. This keeps the regression tied to the race boundary, independent of
+      // how many root or sibling lock refreshes the setup performs.
+      if (!mutated && cwd === subRepo && args[0] === 'add') {
         mutated = true;
-        writeFileSync(join(repo, 'libs/subA', 'subA.txt'), 'MUTANT\n');
-        return [];
+        writeFileSync(join(subRepo, 'subA.txt'), 'MUTANT\n');
       }
-      return mutated ? [probeLock] : [];
-    });
+      return directRunGit(args, cwd, options);
+    };
+    const refreshLiveLockHoldings = vi.fn(async () => mutated ? [probeLock] : []);
     const logs: string[] = [];
 
-    const out = await runGitSync('test', { repoPath: repo, refreshLiveLockHoldings, log: (m) => logs.push(m) });
+    const out = await runGitSync('test', { repoPath: repo, runGit, refreshLiveLockHoldings, log: (m) => logs.push(m) });
 
+    expect(mutated).toBe(true);
     expect(out.status).toBe('synced');
     expect(logs.join('\n')).toContain('libs/subA: post-stage guard held back');
     expect(git(subAOrigin, 'show', 'main:subA.txt')).toBe('subA-v1');
