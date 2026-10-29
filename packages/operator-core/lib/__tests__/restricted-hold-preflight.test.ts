@@ -9,7 +9,7 @@
  */
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -37,6 +37,10 @@ const UNRESTRICTED_ENV = { PATH: '/usr/bin' };
 // WI-10005764: every census spawn loads the committed-source loader BEFORE tsx.
 const CENSUS_PREFIX = ['--import', COMMITTED_SOURCE_LOADER, '--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI];
 const LOADER_OPTION = `--import=${pathToFileURL(COMMITTED_SOURCE_LOADER).href}`;
+const REPO_ROOT = resolve(dirname(RESTRICTED_HOLD_PREFLIGHT_CLI), '../../../../..');
+const NPM_INSTALL_SAFE = resolve(REPO_ROOT, 'scripts/npm-install-safe.mjs');
+const BWRAP_AVAILABLE = process.platform === 'linux'
+  && spawnSync('bwrap', ['--dev-bind', '/', '/', '--', 'true'], { encoding: 'utf8' }).status === 0;
 
 describe('interpretRestrictedHoldPreflight — fail closed', () => {
   it('admits only an explicit admit verdict with the admit exit code', () => {
@@ -255,10 +259,22 @@ describe('runRestrictedHoldPreflight', () => {
     expect(existsSync(COMMITTED_SOURCE_LOADER)).toBe(true);
   });
 
-  it('loads the real census CLI through the committed loader and tsx in a child process', () => {
+  it.skipIf(!BWRAP_AVAILABLE)('loads the real census CLI through the committed loader and tsx under the mutation-probe lease and mount namespace', () => {
     const { argv, env } = censusSpawnArgs([], process.env);
-    const result = spawnSync(process.execPath, argv, {
-      cwd: dirname(RESTRICTED_HOLD_PREFLIGHT_CLI),
+    const result = spawnSync(process.execPath, [
+      NPM_INSTALL_SAFE,
+      '--repo-root', REPO_ROOT,
+      '--exec-under-lock',
+      '--',
+      'bwrap',
+      '--dev-bind', '/', '/',
+      '--chdir', REPO_ROOT,
+      '--die-with-parent',
+      '--',
+      process.execPath,
+      ...argv,
+    ], {
+      cwd: REPO_ROOT,
       env,
       encoding: 'utf8',
       timeout: 30_000,

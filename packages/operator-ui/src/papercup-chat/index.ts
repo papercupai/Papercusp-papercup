@@ -17,6 +17,7 @@ export {
   lookedAtTools,
   papercupChatUrlTransform,
   withHardBreaks,
+  useDeferredReportMarkdown,
   CHAT_LINK_PROTOCOLS,
   type PapercupChatProps,
   type PapercupChatHostTrust,

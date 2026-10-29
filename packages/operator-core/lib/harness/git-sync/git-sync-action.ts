@@ -3245,6 +3245,28 @@ async function nestedInstallLockPrefix(
   return nestedInstallRepoPrefix(slug, repoPath, parentRoot);
 }
 
+/** Resolve a migration editor from the exact lock row captured in this git-sync census. */
+function liveLockAuthorForScopedFile(
+  liveLockHoldings: readonly LockHoldingCoordinates[],
+  scope: string,
+  file: string,
+): string | undefined {
+  const normalize = (value: string): string => value
+    .split(String.fromCharCode(92)).join('/')
+    .split('/')
+    .filter((part) => part.length > 0 && part !== '.')
+    .join('/');
+  const scopePath = scope === 'superproject' ? '' : normalize(scope);
+  const expectedPath = normalize([scopePath, file].filter(Boolean).join('/'));
+  const owners = new Set(
+    liveLockHoldings
+      .filter((holding) => normalize(holding.path) === expectedPath)
+      .map((holding) => holding.owner.trim())
+      .filter((owner) => owner.length > 0 && !owner.startsWith('system:')),
+  );
+  return owners.size === 1 ? owners.values().next().value : undefined;
+}
+
 /** EI-24649116564770033: bound for each `rev-list`/`rev-parse` identity probe of a lock domain. */
 const LOCK_DOMAIN_IDENTITY_TIMEOUT_MS = 10_000;
 
@@ -3309,6 +3331,7 @@ async function notifySkippedLockedPaths(
   slug: string,
   workspaceId: string,
   outcome: GitSyncOutcome,
+  liveLockHoldings: readonly LockHoldingCoordinates[] = [],
 ): Promise<void> {
   const skippedPaths = outcome.skippedPaths ?? [];
   if (skippedPaths.length === 0) return;
@@ -3393,7 +3416,11 @@ async function notifySkippedLockedPaths(
   for (const skipped of migrationReservations) {
     // agentsForScopedFiles resolves the right repo-relative map for each scope,
     // including nested repo paths; keep its established first-declared-wins rule.
-    const [author] = agentsForScopedFiles(roster, [{ scope: skipped.scope, file: skipped.path }], superRoot);
+    const [rosterAuthor] = agentsForScopedFiles(roster, [{ scope: skipped.scope, file: skipped.path }], superRoot);
+    // The exact live lock is same-sweep edit evidence when the roster has no row yet
+    // (notably for turn-scoped edits). Never infer an author from a same-basename file
+    // in another repo, or from an ambiguous/system-owned lock.
+    const author = rosterAuthor ?? liveLockAuthorForScopedFile(liveLockHoldings, skipped.scope, skipped.path);
     if (!author) continue;
     const rows = byAuthor.get(author) ?? [];
     if (!rows.some((row) => row.scope === skipped.scope && row.path === skipped.path)) rows.push(skipped);
@@ -4152,6 +4179,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   const guarded = <T>(phase: string | (() => string), operation: () => Promise<T>): Promise<T> =>
     liveness.run(operation, phase);
   let outcome: GitSyncOutcome;
+  let liveLockHoldingRows: Awaited<ReturnType<typeof liveLockHoldingsStrict>> = [];
   // These values are consumed by the post-pipeline escalation/recording tail;
   // the surrounding catch rethrows every setup failure before that tail runs.
   let prev!: Awaited<ReturnType<typeof readEscalationCounters>>;
@@ -4213,7 +4241,6 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // File locks are the automatic edit-plane authority. Keep git-sync's broad
     // whole-tree sweep from staging a peer's in-flight paths; the pure pipeline
     // maps these superproject-root-relative paths into each submodule before add.
-    let liveLockHoldingRows: Awaited<ReturnType<typeof liveLockHoldingsStrict>>;
     type CensusLeg = GitSyncCensusLeg;
     type CensusLegState = {
       status: 'not-started' | 'running' | 'complete' | 'failed';
@@ -4816,6 +4843,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           prevContentTicks: prev.contentTicks,
           prevSignatureContentTicks,
           prevOversizedKeys: prev.oversizedKeys,
+          liveLockHoldings: liveLockHoldingRows,
           cumulativePeelTicks,
           zeroAttributionTicks,
           attributionShareDropTicks,
@@ -8428,6 +8456,7 @@ async function recordAndEscalateTick(a: {
   prevContentTicks: number;
   prevSignatureContentTicks: number;
   prevOversizedKeys: string[];
+  liveLockHoldings: readonly LockHoldingCoordinates[];
   /** EI-21906459740652039: consecutive ticks (incl. this one) the cumulative-limit
    *  guard peeled — persisted here and read back by the NEXT tick, so a CHRONIC peel
    *  the edge-triggered oversized broadcast structurally cannot see gets re-announced. */
@@ -8511,7 +8540,7 @@ async function recordAndEscalateTick(a: {
     },
   });
 
-  await notifySkippedLockedPaths(slug, workspaceId, outcome);
+  await notifySkippedLockedPaths(slug, workspaceId, outcome, a.liveLockHoldings);
 
   if (outcome.status === 'conflict') {
     // P-010/P-012: refresh the escalation (listing every conflicted scope) + dispatch

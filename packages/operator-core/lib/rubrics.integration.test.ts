@@ -6150,7 +6150,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
     // Another map: R-2 onto P-001 AND the dropped P-002. Its own preview is a valid review object.
     const otherMap = { ...amendment, barMappingDelta: [moveR2(['P-001', 'P-002'])] };
     await expect(rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(otherMap) }))
-      .rejects.toThrow(/acceptance_bar_approval_(source|mapping)_mismatched/);
+      .rejects.toThrow(/acceptance_bar_approval_(patch|source|mapping)_mismatched/);
 
     // The isolating case: same BARs, same hashes, same proposed source, only the delta missing.
     // Pre-fix nothing bound the map, so this receipt would have authorized the move.
@@ -6184,7 +6184,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const approvalRef = await postApproval(reviewed);
 
     const different = { ...reviewed, barMappingDelta: [moveR2(['P-001', 'P-002'])], approvalRef };
-    await expect(rubrics.amendRubric(different)).rejects.toThrow(/acceptance_bar_approval_(source|mapping)_mismatched/);
+    await expect(rubrics.amendRubric(different)).rejects.toThrow(/acceptance_bar_approval_(patch|source|mapping)_mismatched/);
     expect((await rubrics.getRubric(rubricSlug))!.revision).toBe(before.revision);
     expect(await subjectSource(subject)).toBe(sourceBefore);
     expect(await subjectClauses(subject)).toEqual(clausesBefore);

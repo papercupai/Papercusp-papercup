@@ -2714,9 +2714,14 @@ export async function cancelStaleEvidencePendingGradingAuditAtomically(
 export async function cancelPendingGradingAuditsForBindingInTransaction(
   tx: OrgSql,
   workspaceId: string,
-  bindingId: number,
+  bindingId: number | readonly number[],
 ): Promise<string[]> {
-  if (!workspaceId.trim() || !Number.isSafeInteger(bindingId) || bindingId <= 0) return [];
+  const bindingIds = [...new Set(
+    (typeof bindingId === 'number' ? [bindingId] : [...bindingId])
+      .filter((id) => Number.isSafeInteger(id) && id > 0)
+      .map(String),
+  )];
+  if (!workspaceId.trim() || bindingIds.length === 0) return [];
   const updated = await tx<{ feature_id: string }[]>`
     UPDATE harness_shared.work_items AS target
        SET payload = jsonb_set(
@@ -2739,7 +2744,7 @@ export async function cancelPendingGradingAuditsForBindingInTransaction(
            FROM jsonb_array_elements_text(
              target.payload->'observation'->'rerunRecipe'->'selection'->'bindingIds'
            ) AS cited(binding_id)
-          WHERE cited.binding_id = ${String(bindingId)}
+          WHERE cited.binding_id = ANY(${bindingIds}::text[])
        )
     RETURNING target.feature_id`;
   return updated.map((row) => row.feature_id);

@@ -116,6 +116,7 @@ import {
   measureWorkItemsEvidenceForScope,
   hasMatchingDeclaredCaseTitle,
   retractSpecEvidence,
+  supersedeSpecEvidenceAtRevisionBatch,
   testRunEnvironmentUnprovenWarning,
 } from './spec-evidence-store';
 
@@ -3563,6 +3564,123 @@ describe('ledger-state server measurement', () => {
   });
 });
 
+describe('batched spec evidence supersession', () => {
+  it('handles 14 clause bindings in one workspace transaction and one set-based pass', async () => {
+    h.rows = [{
+      input_ordinal: 7,
+      outcome: 'kept',
+      id: 42001,
+      work_item_id: 'WI-420',
+      plan_slug: 'batch-plan',
+      spec_id: 'SPEC-BATCH-08',
+      spec_revision: 2,
+      evidence_kind: 'test',
+      evidence_ref: 'test/current.test.ts',
+      subject: 'test/current.test.ts',
+      retracted_at: null,
+      retracted_by: null,
+      retraction_reason: null,
+      keep_reason: 'different-subject',
+    }];
+    h.queries = [];
+    h.workspaceScopes = [];
+    h.completedWorkspaceTransactions = 0;
+    const items = Array.from({ length: 14 }, (_, index) => ({
+      planSlug: 'batch-plan',
+      specId: 'SPEC-BATCH-' + String(index + 1).padStart(2, '0'),
+      specRevision: 2,
+      evidenceKind: 'test' as const,
+      supersedingBindingId: 43000 + index,
+    }));
+
+    const result = await supersedeSpecEvidenceAtRevisionBatch({
+      harnessSlug: 'papercusp',
+      actorId: 'su-batch',
+      keepBindingIds: items.map((item) => item.supersedingBindingId),
+      items,
+    });
+
+    expect(result.results).toHaveLength(14);
+    expect(result.results[7]?.kept).toEqual([{
+      id: 42001,
+      work_item_id: 'WI-420',
+      evidence_ref: 'test/current.test.ts',
+      subject: 'test/current.test.ts',
+      keep_reason: 'different-subject',
+    }]);
+    expect(result.results.filter((entry) => entry.kept.length > 0)).toHaveLength(1);
+    expect(result.cancelledAuditIssueIds).toEqual([]);
+    expect(h.workspaceScopes).toEqual(['workspace-test']);
+    expect(h.completedWorkspaceTransactions).toBe(1);
+    expect(h.queries).toHaveLength(1);
+    expect(h.queries[0]?.sql).toContain('jsonb_to_recordset');
+    expect(h.queries[0]?.sql).toContain('eligible_retractions');
+    const requestJson = h.queries[0]?.values.find(
+      (value): value is string => typeof value === 'string' && value.includes('input_ordinal'),
+    );
+    expect(requestJson).toBeDefined();
+    expect(JSON.parse(requestJson ?? '[]')).toHaveLength(14);
+  });
+
+  it('cancels every affected grading audit in the same transaction before notifying once', async () => {
+    h.rows = [{
+      input_ordinal: 1,
+      outcome: 'retracted',
+      id: 42002,
+      work_item_id: 'WI-421',
+      plan_slug: 'batch-plan',
+      spec_id: 'SPEC-BATCH-02',
+      spec_revision: 2,
+      evidence_kind: 'test',
+      evidence_ref: 'test/old.test.ts',
+      subject: null,
+      retracted_at: new Date('2026-10-29T00:00:00.000Z'),
+      retracted_by: 'su-batch',
+      retraction_reason: 'superseded by binding 43002',
+      keep_reason: null,
+      feature_id: 'EI-AUDIT',
+    }];
+    h.queries = [];
+    h.workspaceScopes = [];
+    h.completedWorkspaceTransactions = 0;
+    const notifyCancelledAuditors = vi.fn(async () => {
+      expect(h.completedWorkspaceTransactions).toBe(1);
+    });
+    const items = [0, 1].map((index) => ({
+      planSlug: 'batch-plan',
+      specId: 'SPEC-BATCH-0' + (index + 1),
+      specRevision: 2,
+      evidenceKind: 'test' as const,
+      supersedingBindingId: 43001 + index,
+    }));
+
+    const result = await supersedeSpecEvidenceAtRevisionBatch({
+      harnessSlug: 'papercusp',
+      actorId: 'su-batch',
+      keepBindingIds: items.map((item) => item.supersedingBindingId),
+      items,
+    }, { notifyCancelledAuditors });
+
+    expect(result.results[0]?.retracted).toEqual([]);
+    expect(result.results[1]?.retracted).toMatchObject([{
+      id: 42002,
+      work_item_id: 'WI-421',
+      evidence_ref: 'test/old.test.ts',
+      retracted_by: 'su-batch',
+    }]);
+    expect(result.cancelledAuditIssueIds).toEqual(['EI-AUDIT']);
+    expect(notifyCancelledAuditors).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'workspace-test',
+      harness: 'papercusp',
+      issueIds: ['EI-AUDIT'],
+      reason: 'spec evidence was superseded by bindings 43001, 43002',
+    });
+    expect(h.completedWorkspaceTransactions).toBe(1);
+    expect(h.queries.filter(({ sql }) => sql.includes('UPDATE harness_shared.work_items'))).toHaveLength(1);
+    expect(h.queries.at(-1)?.values).toContainEqual(['42002']);
+  });
+});
+
 describe('spec evidence retraction and grading-audit cancellation', () => {
   beforeEach(() => {
     h.completedWorkspaceTransactions = 0;
@@ -3611,6 +3729,6 @@ describe('spec evidence retraction and grading-audit cancellation', () => {
     expect(cancellation.sql).toContain("gradingAudit'->>'state' = 'pending'");
     expect(cancellation.sql).toContain('jsonb_array_elements_text');
     expect(cancellation.sql).toContain("cited.binding_id =");
-    expect(cancellation.values).toEqual(expect.arrayContaining(['workspace-test', '30308']));
+    expect(cancellation.values).toEqual(expect.arrayContaining(['workspace-test', ['30308']]));
   });
 });

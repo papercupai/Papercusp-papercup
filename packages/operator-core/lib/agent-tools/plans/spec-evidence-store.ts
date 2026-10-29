@@ -3818,6 +3818,266 @@ export async function supersedeSpecEvidenceAtRevision(
   return result;
 }
 
+export type SupersedeSpecEvidenceBatchItem = Pick<
+  SupersedeSpecEvidenceOptions,
+  'planSlug' | 'specId' | 'specRevision' | 'evidenceKind' | 'supersedingBindingId'
+>;
+
+export interface SupersedeSpecEvidenceBatchOptions {
+  harnessSlug?: string;
+  actorId: string;
+  /** Every binding created by this call, excluded from all sibling withdrawals. */
+  keepBindingIds: readonly number[];
+  items: readonly SupersedeSpecEvidenceBatchItem[];
+}
+
+export interface SupersedeSpecEvidenceBatchResult {
+  results: SupersessionResult[];
+  cancelledAuditIssueIds: string[];
+}
+
+interface SupersedeSpecEvidenceBatchRow {
+  input_ordinal: number;
+  outcome: 'retracted' | 'kept';
+  id: number | string;
+  work_item_id: string;
+  plan_slug: string;
+  spec_id: string;
+  spec_revision: number;
+  evidence_kind: SpecEvidenceKind;
+  evidence_ref: string;
+  subject: string | null;
+  retracted_at: Date | string | null;
+  retracted_by: string | null;
+  retraction_reason: string | null;
+  keep_reason: SupersessionKeepReason | null;
+}
+
+/**
+ * Supersede a group of clause bindings in one set-based pass and one workspace transaction.
+ * Stable input order assigns a prior row to the first sufficient replacement that covers it.
+ */
+export async function supersedeSpecEvidenceAtRevisionBatch(
+  options: SupersedeSpecEvidenceBatchOptions,
+  deps: SpecEvidenceGradingAuditNotificationDeps = {},
+): Promise<SupersedeSpecEvidenceBatchResult> {
+  if (options.items.length === 0) return { results: [], cancelledAuditIssueIds: [] };
+  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const actorId = options.actorId.trim();
+  const keepBindingIds = [...new Set([
+    ...options.keepBindingIds,
+    ...options.items.map((item) => item.supersedingBindingId),
+  ])];
+  const requested = options.items.map((item, input_ordinal) => ({
+    input_ordinal,
+    plan_slug: item.planSlug,
+    spec_id: item.specId,
+    spec_revision: item.specRevision,
+    evidence_kind: item.evidenceKind,
+    superseding_binding_id: item.supersedingBindingId,
+    keep_binding_ids: keepBindingIds,
+  }));
+  const requestJson = JSON.stringify(requested);
+  const result = await withWorkspace(scope.workspaceId, async (tx) => {
+    const rows = await tx<SupersedeSpecEvidenceBatchRow[]>`
+      WITH requested AS (
+        SELECT * FROM jsonb_to_recordset(${requestJson}::jsonb)
+          AS input_rows(
+            input_ordinal integer,
+            plan_slug text,
+            spec_id text,
+            spec_revision integer,
+            evidence_kind text,
+            superseding_binding_id bigint,
+            keep_binding_ids bigint[]
+          )
+      ), groups AS (
+        SELECT DISTINCT plan_slug, spec_id, spec_revision, evidence_kind
+          FROM requested
+      ), target_policy AS (
+        SELECT groups.plan_slug, groups.spec_id, groups.spec_revision,
+               CASE WHEN jsonb_typeof(revision.falsifier->'requiredScenarios') = 'array'
+                    THEN jsonb_array_length(revision.falsifier->'requiredScenarios') = 0
+                    ELSE true END AS accepts_self_target
+          FROM groups
+          LEFT JOIN harness_shared.plan_spec_clause_revisions revision
+            ON revision.workspace_id = ${scope.workspaceId}
+           AND revision.harness_slug = ${scope.harnessSlug}
+           AND revision.plan_slug = groups.plan_slug
+           AND revision.spec_id = groups.spec_id
+           AND revision.revision = groups.spec_revision
+      ), clause_rows AS (
+        SELECT binding.id, binding.work_item_id, binding.plan_slug, binding.spec_id,
+               binding.spec_revision, binding.evidence_kind, binding.evidence_ref,
+               COALESCE(NULLIF(test_run.file_path, ''),
+                        NULLIF(binding.details->'testRun'->>'filePath', ''),
+                        binding.evidence_ref) AS subject,
+               CASE WHEN jsonb_typeof(binding.details->'adequacy'->'targeted') = 'string' THEN
+                      CASE WHEN policy.accepts_self_target
+                                     AND binding.details->'adequacy'->>'targeted'
+                                         IN (groups.spec_id, lower(groups.spec_id))
+                           THEN groups.spec_id
+                           ELSE binding.details->'adequacy'->>'targeted' END
+                    END AS targeted,
+               CASE WHEN jsonb_typeof(binding.details->'adequacy'->'causalPairIds') = 'array'
+                    THEN binding.details->'adequacy'->'causalPairIds' ELSE '[]'::jsonb END AS causal_pair_ids
+          FROM groups
+          JOIN harness_shared.spec_evidence_bindings binding
+            ON binding.workspace_id = ${scope.workspaceId}
+           AND binding.harness_slug = ${scope.harnessSlug}
+           AND binding.plan_slug = groups.plan_slug
+           AND binding.spec_id = groups.spec_id
+           AND binding.spec_revision = groups.spec_revision
+           AND binding.evidence_kind = groups.evidence_kind
+           AND binding.retracted_at IS NULL
+          LEFT JOIN harness_shared.test_runs test_run ON test_run.id = binding.test_run_id
+          LEFT JOIN target_policy policy
+            ON policy.plan_slug = groups.plan_slug
+           AND policy.spec_id = groups.spec_id
+           AND policy.spec_revision = groups.spec_revision
+      ), superseding AS (
+        SELECT requested.input_ordinal, binding.id, binding.subject, binding.targeted,
+               binding.causal_pair_ids
+          FROM requested
+          LEFT JOIN clause_rows binding ON binding.id = requested.superseding_binding_id
+      ), comparisons AS (
+        SELECT requested.input_ordinal, sibling.id, sibling.work_item_id, sibling.plan_slug,
+               sibling.spec_id, sibling.spec_revision, sibling.evidence_kind, sibling.evidence_ref,
+               sibling.subject,
+               CASE WHEN superseding.id IS NULL THEN 'superseding-binding-not-live'
+                    WHEN sibling.subject IS DISTINCT FROM superseding.subject THEN 'different-subject'
+                    WHEN sibling.targeted IS NOT NULL
+                         AND sibling.targeted IS DISTINCT FROM superseding.targeted THEN 'different-target'
+                    WHEN NOT (sibling.causal_pair_ids <@ superseding.causal_pair_ids)
+                      THEN 'different-causal-pairs'
+               END AS keep_reason
+          FROM requested
+          JOIN clause_rows sibling
+            ON sibling.plan_slug = requested.plan_slug
+           AND sibling.spec_id = requested.spec_id
+           AND sibling.spec_revision = requested.spec_revision
+           AND sibling.evidence_kind = requested.evidence_kind
+          LEFT JOIN superseding ON superseding.input_ordinal = requested.input_ordinal
+         WHERE NOT (sibling.id = ANY(requested.keep_binding_ids))
+      ), eligible_retractions AS (
+        SELECT id, MIN(input_ordinal) AS input_ordinal
+          FROM comparisons
+         WHERE keep_reason IS NULL
+         GROUP BY id
+      ), retracted AS (
+        UPDATE harness_shared.spec_evidence_bindings AS binding
+           SET retracted_at = now(),
+               retracted_by = ${actorId},
+               retraction_reason = 'superseded by binding ' || requested.superseding_binding_id::text
+                 || ' (plans:bind-spec-evidence supersedeAtRevision)'
+          FROM eligible_retractions eligible
+          JOIN requested ON requested.input_ordinal = eligible.input_ordinal
+         WHERE binding.workspace_id = ${scope.workspaceId}
+           AND binding.harness_slug = ${scope.harnessSlug}
+           AND binding.id = eligible.id
+           AND binding.retracted_at IS NULL
+        RETURNING binding.id, binding.work_item_id, binding.plan_slug, binding.spec_id,
+                  binding.spec_revision, binding.evidence_kind, binding.evidence_ref,
+                  binding.retracted_at, binding.retracted_by, binding.retraction_reason
+      ), retracted_with_input AS (
+        SELECT eligible.input_ordinal, retracted.*
+          FROM retracted
+          JOIN eligible_retractions eligible ON eligible.id = retracted.id
+      ), kept AS (
+        SELECT DISTINCT ON (comparison.input_ordinal, comparison.id)
+               comparison.input_ordinal, comparison.id, comparison.work_item_id,
+               comparison.plan_slug, comparison.spec_id, comparison.spec_revision,
+               comparison.evidence_kind, comparison.evidence_ref, comparison.subject,
+               comparison.keep_reason
+          FROM comparisons comparison
+         WHERE comparison.keep_reason IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM eligible_retractions eligible WHERE eligible.id = comparison.id
+           )
+         ORDER BY comparison.input_ordinal, comparison.id
+      ), combined AS (
+        SELECT input_ordinal, 'retracted'::text AS outcome, id, work_item_id, plan_slug,
+               spec_id, spec_revision, evidence_kind, evidence_ref, NULL::text AS subject,
+               retracted_at, retracted_by, retraction_reason, NULL::text AS keep_reason
+          FROM retracted_with_input
+        UNION ALL
+        SELECT input_ordinal, 'kept'::text AS outcome, id, work_item_id, plan_slug,
+               spec_id, spec_revision, evidence_kind, evidence_ref, subject,
+               NULL::timestamptz AS retracted_at, NULL::text AS retracted_by,
+               NULL::text AS retraction_reason, keep_reason
+          FROM kept
+      )
+      SELECT input_ordinal, outcome, id, work_item_id, plan_slug, spec_id, spec_revision,
+             evidence_kind, evidence_ref, subject, retracted_at, retracted_by,
+             retraction_reason, keep_reason
+        FROM combined
+       ORDER BY input_ordinal, outcome, id`;
+    const retractedRows = rows.filter((row) => row.outcome === 'retracted');
+    const cancelledAuditIssueIds = retractedRows.length > 0
+      ? [...new Set(await (async () => {
+          const { cancelPendingGradingAuditsForBindingInTransaction } = await import('../../scorecards');
+          return cancelPendingGradingAuditsForBindingInTransaction(
+            tx,
+            scope.workspaceId,
+            retractedRows.map((row) => Number(row.id)),
+          );
+        })())].sort()
+      : [];
+    const results = options.items.map((_, inputOrdinal): SupersessionResult => {
+      const retracted: RetractedBindingRow[] = [];
+      const kept: SupersessionKeptRow[] = [];
+      for (const row of rows) {
+        if (row.input_ordinal !== inputOrdinal) continue;
+        if (row.outcome === 'retracted') {
+          retracted.push({
+            id: Number(row.id),
+            work_item_id: row.work_item_id,
+            plan_slug: row.plan_slug,
+            spec_id: row.spec_id,
+            spec_revision: row.spec_revision,
+            evidence_kind: row.evidence_kind,
+            evidence_ref: row.evidence_ref,
+            retracted_at: row.retracted_at,
+            retracted_by: row.retracted_by,
+            retraction_reason: row.retraction_reason,
+          });
+        } else if (row.keep_reason) {
+          kept.push({
+            id: Number(row.id),
+            work_item_id: row.work_item_id,
+            evidence_ref: row.evidence_ref,
+            subject: row.subject ?? row.evidence_ref,
+            keep_reason: row.keep_reason,
+          });
+        }
+      }
+      return { retracted, kept };
+    });
+    return { results, cancelledAuditIssueIds };
+  });
+  if (result.cancelledAuditIssueIds.length > 0) {
+    const supersedingIds = options.items.map((item) => item.supersedingBindingId);
+    await notifyCancelledAuditorsAfterCommit({
+      workspaceId: scope.workspaceId,
+      harnessSlug: scope.harnessSlug,
+      issueIds: result.cancelledAuditIssueIds,
+      reason: supersedingIds.length === 1
+        ? 'spec evidence was superseded by binding ' + supersedingIds[0]
+        : 'spec evidence was superseded by bindings ' + supersedingIds.join(', '),
+    }, deps);
+  }
+  if (result.results.some((entry) => entry.retracted.length > 0)) {
+    void trackDetached(import('../../sync-sse'))
+      .then((m) => {
+        m.notifySyncInvalidate('scorecards.list');
+        m.notifySyncInvalidate('rubrics.trend');
+        m.notifySyncInvalidate('learning.releaseReadiness');
+      })
+      .catch(() => {});
+  }
+  return result;
+}
+
 /**
  * Strip only inert description/guidance properties of a direct imported defineTool.
  * Everything outside those spans remains byte-identical. Dynamic metadata, root

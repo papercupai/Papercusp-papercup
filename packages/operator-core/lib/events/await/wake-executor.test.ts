@@ -3806,6 +3806,30 @@ describe('executeWake — the liveness ladder', () => {
     );
   });
 
+  it('keeps native-turn-start-unverified host-owned because late proof can still arrive', async () => {
+    const injectPsuHostWithConfirmation = vi.fn(async () => ({
+      ok: false,
+      confirmation: 'acked' as const,
+      reason: 'native-turn-start-unverified',
+    }));
+    const host = { sock: '/tmp/x.sock', ownerId: 'su-a', caps: ['native-turn-start'] };
+    const out = await executeWake(
+      work({ wakeHandle: null }),
+      deps({
+        findPsuHost: vi.fn(() => host) as never,
+        injectPsuHost: undefined,
+        injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+      }),
+    );
+
+    expect(out).toMatchObject({
+      kind: 'park',
+      reason: expect.stringContaining('psu-host accepted: native-turn-start-unverified'),
+      hostCommitPending: true,
+    });
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a deferred loop-fire retry host-owned and preserves exact delivery identity and turn proof', async () => {
     const ownerId = 'su-loop-deferral';
     const delivery = work({

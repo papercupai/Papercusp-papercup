@@ -114,14 +114,17 @@ describe('REPORT-PINNED-DETAIL-P003 operator expansion', () => {
 });
 
 describe('ReportBlockCard', () => {
-  it('reuses unchanged report markdown across status refreshes while updating text and link authority', () => {
+  it('defers first report parsing, then reuses unchanged markdown across status refreshes', async () => {
     reportMarkdownParses.mockClear();
     const firstActivate = vi.fn();
     const nextActivate = vi.fn();
     const makeReport = (status: string, text = 'See **WI-37945**'): ReportBlock => ({
       plans: [{ title: 'Progress', items: [{ id: 'P-001', text, status }] }],
     });
-    const { rerender } = rtlRender(<ReportBlockCard report={makeReport('wip')} harnessSlug="papercusp" onWorkRefActivate={firstActivate} />);
+    const { container, rerender } = rtlRender(<ReportBlockCard report={makeReport('wip')} harnessSlug="papercusp" onWorkRefActivate={firstActivate} />);
+    expect(reportMarkdownParses).not.toHaveBeenCalled();
+    expect(container.querySelector('.report-block-item-text')?.textContent).toBe('See **WI-37945**');
+    await waitFor(() => expect(reportMarkdownParses).toHaveBeenCalled());
     const initialParses = reportMarkdownParses.mock.calls.length;
     expect(initialParses).toBeGreaterThan(0);
     rerender(<ReportBlockCard report={makeReport('done')} harnessSlug="papercusp" onWorkRefActivate={firstActivate} />);
@@ -129,7 +132,7 @@ describe('ReportBlockCard', () => {
     expect(screen.getByTitle('done')).toBeTruthy();
 
     rerender(<ReportBlockCard report={makeReport('done', 'Updated **WI-6601**')} harnessSlug="papercusp" onWorkRefActivate={nextActivate} />);
-    expect(reportMarkdownParses.mock.calls.length).toBeGreaterThan(initialParses);
+    await waitFor(() => expect(reportMarkdownParses.mock.calls.length).toBeGreaterThan(initialParses));
     expect(screen.queryByLabelText('WI-37945')).toBeNull();
     fireEvent.click(screen.getByLabelText('WI-6601'));
     expect(nextActivate).toHaveBeenCalledWith({ id: 'WI-6601', kind: 'work-item', planSlug: undefined });
@@ -184,20 +187,21 @@ describe('ReportBlockCard', () => {
     expect(onDrillIn).toHaveBeenCalledWith('escalation:e1');
   });
 
-  it('renders item markdown instead of exposing the producer syntax', () => {
+  it('renders item markdown instead of exposing the producer syntax', async () => {
     const { container } = render(<ReportBlockCard report={curatorCard} />);
+    await waitFor(() => expect(container.querySelector('.report-block-item-text strong')?.textContent).toBe('Blocked'));
     const itemText = container.querySelector('.report-block-item-text');
     expect(itemText?.querySelector('strong')?.textContent).toBe('Blocked');
     expect(itemText?.textContent).toContain('Blocked');
     expect(itemText?.textContent).not.toContain('**');
   });
 
-  it('uses the existing work-ref markdown plugin and hydrated pill renderer', () => {
+  it('uses the existing work-ref markdown plugin and hydrated pill renderer', async () => {
     const refReport: ReportBlock = {
       plans: [{ title: 'Refs', items: [{ text: 'See WI-37945 and P-003', status: 'wip' }] }],
     };
     render(<ReportBlockCard report={refReport} harnessSlug="papercusp" planSlug="nonp2p-bug-drain-2026-08-08" />);
-    expect(screen.getByLabelText('WI-37945')).toBeTruthy();
+    await screen.findByLabelText('WI-37945');
     expect(screen.getByLabelText('P-003')).toBeTruthy();
   });
 
@@ -233,18 +237,19 @@ describe('ReportBlockCard — an unopenable ref must not render as a control (WI
     plans: [{ title: 'Refs', items: [{ text: 'See WI-6601 and P-003', status: 'wip' }] }],
   };
 
-  it('renders an openable work-item ref as a button and an unscoped plan-item ref as inert text, in the SAME card', () => {
+  it('renders an openable work-item ref as a button and an unscoped plan-item ref as inert text, in the SAME card', async () => {
     // One card, one wired seam, one harness — so the ONLY thing separating the
     // two pills is whether the ref resolves to somewhere to go.
     render(
       <ReportBlockCard report={refReport} harnessSlug="papercusp" onWorkRefActivate={() => {}} />,
     );
+    await screen.findByLabelText('WI-6601');
 
     expect(screen.getByLabelText('WI-6601').tagName).toBe('BUTTON');
     expect(screen.getByLabelText('P-003').tagName).toBe('SPAN');
   });
 
-  it('renders a plan-item ref as a real control once the card carries its plan', () => {
+  it('renders a plan-item ref as a real control once the card carries its plan', async () => {
     // The mirror: the pill is inert because the ref cannot be resolved, NOT
     // because plan refs are second-class. Without this, making every plan pill
     // inert unconditionally would also pass.
@@ -257,13 +262,14 @@ describe('ReportBlockCard — an unopenable ref must not render as a control (WI
       />,
     );
 
+    await screen.findByLabelText('P-003');
     expect(screen.getByLabelText('P-003').tagName).toBe('BUTTON');
   });
 
-  it('renders no control at all when the host wired no seam', () => {
+  it('renders no control at all when the host wired no seam', async () => {
     render(<ReportBlockCard report={refReport} harnessSlug="papercusp" />);
 
-    expect(screen.getByLabelText('WI-6601').tagName).toBe('SPAN');
+    expect((await screen.findByLabelText('WI-6601')).tagName).toBe('SPAN');
     expect(screen.getByLabelText('P-003').tagName).toBe('SPAN');
   });
 });

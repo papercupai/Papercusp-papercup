@@ -20,7 +20,7 @@ import {
   listSpecEvidence,
   retractSpecEvidence,
   SPEC_EVIDENCE_KINDS,
-  supersedeSpecEvidenceAtRevision,
+  supersedeSpecEvidenceAtRevisionBatch,
   type SupersessionKeepReason,
 } from './spec-evidence-store';
 import { isAcceptedMutationTarget, mutationTargetRequirement, supersedeEligibilityGaps } from './spec-test-adequacy';
@@ -513,7 +513,13 @@ async function supersedeSiblings(input: {
       })
     : [];
   const persistedById = new Map(persistedEvidence.map((evidence) => [Number(evidence.id), evidence] as const));
-  const outcomes: SupersessionOutcome[] = [];
+  const outcomes = new Map<number, SupersessionOutcome>();
+  const eligible: Array<{
+    index: number;
+    row: { id: number; planSlug: string; specId: string; specRevision: number };
+    declared: z.infer<typeof bindingSchema>;
+    clause: string;
+  }> = [];
   for (const [index, row] of bound.entries()) {
     const declared = input.bindings[index];
     if (!row || !declared) continue;
@@ -523,7 +529,7 @@ async function supersedeSiblings(input: {
       ? supersedeEligibilityGaps(persisted)
       : ['canonical evidence row unavailable from the scoped evidence read'];
     if (gaps.length > 0) {
-      outcomes.push({
+      outcomes.set(index, {
         bindingId: row.id,
         status: 'refused',
         clause,
@@ -531,35 +537,45 @@ async function supersedeSiblings(input: {
       });
       continue;
     }
-    const { retracted, kept } = await supersedeSpecEvidenceAtRevision({
-      harnessSlug: input.harnessSlug,
-      planSlug: row.planSlug,
-      specId: row.specId,
-      specRevision: row.specRevision,
-      evidenceKind: declared.evidenceKind,
-      supersedingBindingId: row.id,
-      keepBindingIds,
-      actorId: input.actorId,
-    });
-    outcomes.push({
-      bindingId: row.id,
-      status: 'superseded',
-      clause,
-      evidenceKind: declared.evidenceKind,
-      retracted: retracted.map((r) => ({
-        bindingId: Number(r.id),
-        workItemId: r.work_item_id,
-        evidenceRef: r.evidence_ref,
-      })),
-      kept: kept.map((r) => ({
-        bindingId: r.id,
-        workItemId: r.work_item_id,
-        evidenceRef: r.evidence_ref,
-        reason: r.keep_reason,
-      })),
-    });
+    eligible.push({ index, row, declared, clause });
   }
-  return outcomes;
+  if (eligible.length > 0) {
+    const batch = await supersedeSpecEvidenceAtRevisionBatch({
+      harnessSlug: input.harnessSlug,
+      actorId: input.actorId,
+      keepBindingIds,
+      items: eligible.map(({ row, declared }) => ({
+        planSlug: row.planSlug,
+        specId: row.specId,
+        specRevision: row.specRevision,
+        evidenceKind: declared.evidenceKind,
+        supersedingBindingId: row.id,
+      })),
+    });
+    for (const [batchIndex, entry] of eligible.entries()) {
+      const { retracted, kept } = batch.results[batchIndex] ?? { retracted: [], kept: [] };
+      outcomes.set(entry.index, {
+        bindingId: entry.row.id,
+        status: 'superseded',
+        clause: entry.clause,
+        evidenceKind: entry.declared.evidenceKind,
+        retracted: retracted.map((r) => ({
+          bindingId: Number(r.id),
+          workItemId: r.work_item_id,
+          evidenceRef: r.evidence_ref,
+        })),
+        kept: kept.map((r) => ({
+          bindingId: r.id,
+          workItemId: r.work_item_id,
+          evidenceRef: r.evidence_ref,
+          reason: r.keep_reason,
+        })),
+      });
+    }
+  }
+  return [...outcomes.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, outcome]) => outcome);
 }
 
 /**

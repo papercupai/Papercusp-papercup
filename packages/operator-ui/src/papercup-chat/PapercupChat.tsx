@@ -35,6 +35,7 @@
  */
 import {
   memo,
+  startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -159,6 +160,26 @@ export function papercupChatUrlTransform(url: string, key?: string): string {
  */
 export function withHardBreaks(text: string): string {
   return text.replace(/\n/g, '  \n');
+}
+
+/**
+ * Keep report markdown out of the card's synchronous mount render. The plain
+ * text fallback commits first; parsing then runs in a transition, and later
+ * content changes use React's deferred value so urgent chat input can preempt
+ * the render. The caller retains the existing trust-specific plugins.
+ */
+export function useDeferredReportMarkdown(text: string): string | null {
+  const deferredText = useDeferredValue(text);
+  const [initialRenderCommitted, setInitialRenderCommitted] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      startTransition(() => setInitialRenderCommitted(true));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  return initialRenderCommitted ? deferredText : null;
 }
 
 // Hoisted so the plugin lists are REFERENTIALLY STABLE across renders — an
@@ -605,6 +626,7 @@ const ReportItemText = memo(function ReportItemText({
   onWorkRefActivate?: (ref: { id: string; kind: WorkRefKind; planSlug?: string | null }) => void;
 }): ReactNode {
   const isOwner = hostTrust === 'owner';
+  const markdownText = useDeferredReportMarkdown(text);
   const components = useMemo<Components>(() => {
     const map: Record<string, unknown> = { ...REPORT_ITEM_COMPONENTS };
     if (isOwner) {
@@ -634,13 +656,17 @@ const ReportItemText = memo(function ReportItemText({
     return map as Components;
   }, [isOwner, harnessSlug, planSlug, onWorkRefActivate]);
 
+  if (markdownText === null) {
+    return <span className="report-block-item-text">{text}</span>;
+  }
+
   return (
     <ReactMarkdown
       remarkPlugins={isOwner ? OWNER_REMARK_PLUGINS : PUBLIC_REMARK_PLUGINS}
       components={components}
       urlTransform={papercupChatUrlTransform}
     >
-      {withHardBreaks(text)}
+      {withHardBreaks(markdownText)}
     </ReactMarkdown>
   );
 });

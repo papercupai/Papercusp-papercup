@@ -279,6 +279,22 @@ describe('computeLoopFireStarvation (EI-21301493615546911 — no post-arm fire)'
     expect(computeLoopFireStarvation(base)).toBe(true);
   });
 
+  it('does not call a measured in-flight run fire-starved after an older post-arm prompt', () => {
+    const inFlight = {
+      ...base,
+      armedAtMs: NOW - 66 * 60_000,
+      lastFiredAtMs: null,
+      expectedFiresSinceArm: 52,
+      lastActiveAtMs: NOW - 5_000,
+      firstPromptAfterArmAtMs: NOW - 60 * 60_000,
+    };
+
+    // The old prompt proves the arming turn ended, so fresh presence alone cannot excuse
+    // the missing fires. A per-fire executionRecovery receipt is the distinguishing evidence.
+    expect(computeLoopFireStarvation(inFlight)).toBe(true);
+    expect(computeLoopFireStarvation({ ...inFlight, currentExecutionInFlight: true })).toBe(false);
+  });
+
   it('stays quiet before the three-opportunity floor', () => {
     expect(
       computeLoopFireStarvation({

@@ -64,6 +64,9 @@ const LEGACY_FIELD_DISPOSITION: Record<string, Record<string, Disposition>> = {
     description: { kind: 'fronted', unifiedPath: 'script.description' },
     dryRun: { kind: 'fronted', unifiedPath: 'dryRun' },
     timeoutSec: { kind: 'fronted', unifiedPath: 'timeoutSec' },
+    // The durable convenience door keeps its deadline nested and maps it to the
+    // unified top-level timeoutSec before inspection/admission.
+    execution: { kind: 'fronted', unifiedPath: 'execution' },
     kernel: {
       kind: 'legacy-door-only',
       why:

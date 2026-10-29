@@ -4778,6 +4778,42 @@ describe('clean sync outcome', () => {
     expect((input as { summary: string }).summary).toContain('libs/sub/libs/db/sql/999-unreserved-migration.sql');
   });
 
+  it('EI-266: falls back to the exact same-sweep lock holder when reservation author attribution is missing', async () => {
+    const skippedPaths = [
+      {
+        scope: 'libs/sub',
+        path: 'libs/db/sql/999-unreserved-migration.sql',
+        reason: 'migration-reservation' as const,
+        detail: '[migration-reservation-guard] 999-unreserved-migration.sql has no reservation row',
+      },
+    ];
+    liveLockHoldingsStrictMock.mockResolvedValue([
+      {
+        path: 'libs/sub/libs/db/sql/999-unreserved-migration.sql',
+        owner: 'su-live-migration-author',
+        intent: 'turn-scoped migration edit',
+      },
+      {
+        path: 'libs/other/libs/db/sql/999-unreserved-migration.sql',
+        owner: 'su-wrong-scope',
+        intent: 'unrelated same-basename file',
+      },
+    ]);
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, skippedPaths });
+
+    await action(ctx);
+
+    expect(upsertConditionWorkItemMock).toHaveBeenCalledOnce();
+    expect(upsertConditionWorkItemMock.mock.calls[0]?.[1]).toMatchObject({
+      assignee: 'su-live-migration-author',
+      payload: {
+        source: 'git-sync-migration-reservation',
+        author: 'su-live-migration-author',
+        migrations: [{ scope: 'libs/sub', path: 'libs/db/sql/999-unreserved-migration.sql' }],
+      },
+    });
+  });
+
   // P-009 (ex-P-028): last_skipped_paths is overwritten every tick, so the bounded
   // git_sync_history ring must carry what EACH tick withheld.
   it('P-009: records the tick\'s exclusions in its git_sync_history entry, capped per entry', async () => {

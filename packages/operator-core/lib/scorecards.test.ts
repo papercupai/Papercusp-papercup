@@ -140,17 +140,52 @@ describe('cancelling pending audits during an evidence retraction', () => {
     expect(write.text).toContain("gradingAudit'->>'state' = 'pending'");
     expect(write.text).toContain("jsonb_typeof(target.payload->'observation'->'rerunRecipe'->'selection'->'bindingIds') = 'array'");
     expect(write.text).toContain('jsonb_array_elements_text');
-    expect(write.text).toContain("cited.binding_id = ?");
+    expect(write.text).toContain("cited.binding_id = ANY(?::text[])");
     expect(write.text).toContain("jsonb_build_object('state', 'cancelled')");
     expect(write.text).toContain("#- '{dispatchReservation}'");
     expect(write.text).toContain("#- '{dispatchBackoff}'");
-    expect(write.values).toEqual(expect.arrayContaining(['ws-test', '30308']));
+    expect(write.values).toEqual(expect.arrayContaining(['ws-test', ['30308']]));
+  });
+
+  it('cancels audits citing a batch of retracted bindings in one set-based update', async () => {
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      statements.push({ text, values });
+      return [{ feature_id: 'EI-TARGET' }];
+    }) as never;
+
+    await expect(cancelPendingGradingAuditsForBindingInTransaction(withUnsafe(tx), 'ws-test', [30308, 30309, 30308]))
+      .resolves.toEqual(['EI-TARGET']);
+
+    expect(statements).toHaveLength(1);
+    expect(statements[0]?.text).toContain('cited.binding_id = ANY(?::text[])');
+    expect(statements[0]?.values).toEqual(expect.arrayContaining(['ws-test', ['30308', '30309']]));
   });
 
   it('rejects an invalid binding id before opening a transaction', async () => {
     const tx = vi.fn() as never;
     await expect(cancelPendingGradingAuditsForBindingInTransaction(tx, 'ws-test', 0)).resolves.toEqual([]);
     expect(tx).not.toHaveBeenCalled();
+  });
+
+  it('accepts a set of binding ids and deduplicates them before the single cancellation write', async () => {
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      statements.push({ text, values });
+      return [{ feature_id: 'EI-TARGET' }];
+    }) as never;
+
+    await expect(cancelPendingGradingAuditsForBindingInTransaction(
+      withUnsafe(tx),
+      'ws-test',
+      [30308, 30309, 30308],
+    )).resolves.toEqual(['EI-TARGET']);
+
+    expect(statements).toHaveLength(1);
+    expect(statements[0]?.text).toContain('cited.binding_id = ANY(?::text[])');
+    expect(statements[0]?.values).toContainEqual(['30308', '30309']);
   });
 });
 

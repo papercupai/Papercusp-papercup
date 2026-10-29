@@ -3528,16 +3528,27 @@ export function quotaRecoveryPickupConfirmed(
 
 /**
  * WI-10005134: an ACKED `deferred-*` refusal (busy gate, pending carry-respawn,
- * owner typing, quota wall) is the live psu host deciding "not now". The host is
- * alive and owns the session, so the only safe outcome is a durable park. Treating
- * it as a socket miss (null) let the executor fall through to `resume-headless`,
- * which put a second `claude --resume` process on the live session.
+ * owner typing, quota wall) is the live psu host deciding "not now". Likewise,
+ * `native-turn-start-unverified` follows a PTY write whose native turn may still
+ * persist after the bounded verifier expires. Both outcomes remain host-owned:
+ * park the exact delivery and prevent a competing resume or redundant-inbox
+ * suppression until the host reports its terminal receipt.
  */
 export function parkOnHostDeferral(
   confirmation: InjectConfirmation | null | undefined,
   reason: string | null | undefined,
 ): WakeOutcome | null {
-  if (confirmation !== 'acked' || typeof reason !== 'string' || !reason.startsWith('deferred-')) return null;
+  if (confirmation !== 'acked' || typeof reason !== 'string') return null;
+  if (reason === 'native-turn-start-unverified') {
+    return {
+      kind: 'park',
+      reason:
+        `psu-host accepted: native-turn-start-unverified for this exact delivery; ` +
+        'the host may still confirm a late native turn start, so retain host ownership until its receipt',
+      hostCommitPending: true,
+    };
+  }
+  if (!reason.startsWith('deferred-')) return null;
   return {
     kind: 'park',
     reason: `psu-host ${reason}: the live host deferred this wake; parked for a durable retry, never a second process`,

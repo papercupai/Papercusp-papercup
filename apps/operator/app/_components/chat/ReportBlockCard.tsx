@@ -10,6 +10,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parseAsString, useQueryState } from 'nuqs';
 import { fetchBrowserSyncQuery as fetchSyncQuery } from '../../../lib/hosted-browser-api';
+import { useDeferredReportMarkdown } from '@papercusp/operator-ui/papercup-chat';
 import { parseGoalOwnerReportSnapshot, type GoalOwnerReportRefV1, type ReportBlock } from '@papercusp/chat-protocol';
 import {
   ReportBlockCard as SharedReportBlockCard,
@@ -95,6 +96,7 @@ const RichItemText = memo(function RichItemText({
   planSlug?: string | null;
   onWorkRefActivate?: (ref: ReportWorkRef) => void;
 }): ReactNode {
+  const markdownText = useDeferredReportMarkdown(text);
   const components = useMemo(
     () => ({
       ...REPORT_MARKDOWN_COMPONENTS,
@@ -123,9 +125,14 @@ const RichItemText = memo(function RichItemText({
     }),
     [harnessSlug, planSlug, onWorkRefActivate],
   );
+
+  if (markdownText === null) {
+    return <span className="report-block-item-text">{text}</span>;
+  }
+
   return (
     <ReactMarkdown remarkPlugins={REPORT_REMARK_PLUGINS} components={components}>
-      {withHardBreaks(text)}
+      {withHardBreaks(markdownText)}
     </ReactMarkdown>
   );
 });

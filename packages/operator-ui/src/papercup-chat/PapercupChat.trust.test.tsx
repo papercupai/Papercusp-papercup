@@ -347,7 +347,7 @@ describe('PapercupChat — the view over a controller', () => {
 
   it.each(['owner', 'public'] as const)(
     'the default report renderer preserves markdown and applies %s work-ref trust without a host override',
-    (hostTrust) => {
+    async (hostTrust) => {
       const reportTurn: ChatTurn = {
         id: `report-${hostTrust}`,
         role: 'assistant',
@@ -359,6 +359,7 @@ describe('PapercupChat — the view over a controller', () => {
       render(<PapercupChat chat={controller({ turns: [reportTurn] })} hostTrust={hostTrust} harnessSlug="papercusp" />);
 
       const card = screen.getByRole('group', { name: 'Fleet update' });
+      await waitFor(() => expect(card.querySelector('strong')?.textContent).toBe('Escalation'));
       expect(card.querySelector('strong')?.textContent).toBe('Escalation');
       expect(card.querySelector('.report-block-item-text')?.textContent).toContain('resolved in WI-4321');
       expect(card.querySelector('.report-block-item-text')?.tagName).toBe('SPAN');
@@ -370,20 +371,22 @@ describe('PapercupChat — the view over a controller', () => {
     },
   );
 
-  it('reuses default report markdown on status refresh and still updates changed text and trust', () => {
+  it('defers first report parsing, reuses unchanged markdown, and keeps trust changes live', async () => {
     reportMarkdownParses.mockClear();
     const turn = (status: string, text = '**Escalation** resolved in WI-4321'): ChatTurn => ({
       id: 'stable-report', role: 'assistant', text: '', createdAt: 1000,
       report: { title: 'Progress', plans: [{ title: 'Work', items: [{ id: 'P-001', status, text }] }] },
     });
     const view = render(<PapercupChat chat={controller({ turns: [turn('wip')] })} hostTrust="owner" harnessSlug="papercusp" />);
+    expect(reportMarkdownParses).not.toHaveBeenCalled();
+    await waitFor(() => expect(reportMarkdownParses).toHaveBeenCalled());
     const initialParses = reportMarkdownParses.mock.calls.length;
     expect(initialParses).toBeGreaterThan(0);
     view.rerender(<PapercupChat chat={controller({ turns: [turn('done')] })} hostTrust="owner" harnessSlug="papercusp" />);
     expect(reportMarkdownParses).toHaveBeenCalledTimes(initialParses);
     expect(screen.getByTitle('done')).toBeTruthy();
     view.rerender(<PapercupChat chat={controller({ turns: [turn('done', 'Updated **WI-6601**')] })} hostTrust="owner" harnessSlug="papercusp" />);
-    expect(reportMarkdownParses.mock.calls.length).toBeGreaterThan(initialParses);
+    await waitFor(() => expect(reportMarkdownParses.mock.calls.length).toBeGreaterThan(initialParses));
     expect(screen.getByLabelText('WI-6601')).toBeTruthy();
     view.rerender(<PapercupChat chat={controller({ turns: [turn('done', 'Updated **WI-6601**')] })} hostTrust="public" harnessSlug="papercusp" />);
     expect(screen.queryByLabelText('WI-6601')).toBeNull();

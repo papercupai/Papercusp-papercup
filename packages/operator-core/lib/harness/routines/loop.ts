@@ -1339,6 +1339,8 @@ export const LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES = 3;
 export function computeLoopFireStarvation(input: {
   active: boolean;
   parked: boolean;
+  /** True only when executionRecovery ties a running inference/native operation to the latest fire. */
+  currentExecutionInFlight?: boolean;
   firesSinceArm: number;
   expectedFiresSinceArm: number | null;
   armedAtMs: number | null;
@@ -1354,6 +1356,9 @@ export function computeLoopFireStarvation(input: {
   nowMs?: number;
 }): boolean {
   if (!input.active) return false;
+  // A measured operation for this fire has not had a chance to complete its loop-origin
+  // turn yet. Presence alone is weaker: it can stay fresh because of unrelated owner turns.
+  if (input.currentExecutionInFlight === true) return false;
 
   const expected = input.expectedFiresSinceArm;
   if (expected == null || !Number.isFinite(expected) || expected < LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES) {
@@ -2163,6 +2168,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
   const fireStarved = computeLoopFireStarvation({
     active: Boolean(r.active),
     parked,
+    currentExecutionInFlight,
     firesSinceArm,
     expectedFiresSinceArm: cadence.expectedFiresSinceArm,
     armedAtMs,
