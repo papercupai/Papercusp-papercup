@@ -151,7 +151,7 @@ container_pin_guard_acquire() {
   coproc CONTAINER_PIN_GUARD {
     exec node --input-type=module -e '
       import { pathToFileURL } from "node:url";
-      import { realpathSync } from "node:fs";
+      import { realpathSync, statSync } from "node:fs";
       import { execFileSync } from "node:child_process";
       import { isAbsolute, normalize } from "node:path";
       const released = new Promise(resolve => {
@@ -264,6 +264,23 @@ except Exception as error:
           const physicalRoot = resolvePath(root);
           receipt.physicalRoot = physicalRoot;
           if (physicalRoot === "/") throw new Error("filesystem root is not a container store");
+          const identityFor = path => {
+            try {
+              const stat = statSync(path, { bigint: true });
+              return String(stat.dev) + ":" + String(stat.ino);
+            } catch (error) {
+              if (!privileged || !["EACCES", "EPERM"].includes(error.code)) throw error;
+              const identity = execFileSync("sudo", ["-n", "stat", "-Lc", "%d:%i", "--", path], {
+                encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
+              }).trim();
+              if (!/^[0-9]+:[0-9]+$/.test(identity)) throw new Error("rootful storage identity is invalid");
+              return identity;
+            }
+          };
+          const identity = identityFor(physicalRoot);
+          const verifyIdentity = () => {
+            if (identityFor(physicalRoot) !== identity) throw new Error("store root identity changed");
+          };
           const measure = () => {
             const args = ["-c", census];
             const options = { input: JSON.stringify({ root: physicalRoot, pins: pinPaths }),
@@ -273,26 +290,49 @@ except Exception as error:
               result = JSON.parse(execFileSync("sudo", ["-n", "python3", ...args], options));
             }
             if (!result.complete) throw new Error(result.error || "incomplete allocation census");
+            if (result.identity !== identity) throw new Error("store root identity changed");
             return result;
           };
-          const before = measure();
+          let before = { identity };
           const pinned = isPinned(root);
-          receipt.beforeBytes = before.bytes;
+          let beforeError = null;
+          try {
+            before = measure();
+            receipt.beforeBytes = before.bytes;
+          } catch (error) { beforeError = error; }
+          verifyIdentity();
           process.stdout.write(`${pinned ? "PINNED" : "LOCKED"}\t${before.identity}\n`);
           const [failures, skip] = (await released).trim().split("\t");
           receipt.nativeFailures = Number(failures) || 0;
-          const after = measure();
-          if (after.identity !== before.identity) throw new Error("store root identity changed");
-          receipt.measurementComplete = true;
-          receipt.afterBytes = after.bytes;
-          receipt.pinnedBytes = after.pinnedBytes;
-          receipt.reclaimedBytes = Math.max(0, before.bytes - after.bytes);
-          receipt.pinnedOverageBytes = Math.max(0, after.pinnedBytes - maxBytes);
-          receipt.unprotectedOverageBytes = Math.max(0, after.bytes - Math.max(maxBytes, after.pinnedBytes));
-          receipt.status = skip || (receipt.nativeFailures ? "native-failed"
-            : receipt.unprotectedOverageBytes ? (pinned ? "pinned-unrelated-overage" : "unprotected-overage")
-            : receipt.pinnedOverageBytes ? "pinned-overage" : "within-cap");
-          receipt.complete = !skip && !receipt.nativeFailures && !receipt.unprotectedOverageBytes;
+          let after, afterError = null;
+          if (!pinned || before) {
+            try { after = measure(); }
+            catch (error) { afterError = error; }
+          }
+          try { verifyIdentity(); }
+          catch (error) { after = undefined; afterError = afterError || error; }
+          if (after) {
+            receipt.afterBytes = after.bytes;
+            receipt.pinnedBytes = after.pinnedBytes;
+            receipt.pinnedOverageBytes = Math.max(0, after.pinnedBytes - maxBytes);
+            receipt.unprotectedOverageBytes = Math.max(0, after.bytes - Math.max(maxBytes, after.pinnedBytes));
+          }
+          if (before && after && !afterError) {
+            receipt.measurementComplete = true;
+            receipt.reclaimedBytes = skip || pinned ? 0 : Math.max(0, before.bytes - after.bytes);
+            receipt.status = skip || (receipt.nativeFailures ? "native-failed"
+              : receipt.unprotectedOverageBytes ? (pinned ? "pinned-unrelated-overage" : "unprotected-overage")
+              : receipt.pinnedOverageBytes ? "pinned-overage" : "within-cap");
+            receipt.complete = !skip && !receipt.nativeFailures && !receipt.unprotectedOverageBytes;
+          } else {
+            receipt.measurementComplete = false;
+            receipt.complete = false;
+            const errors = [];
+            if (beforeError) errors.push("before: " + String(beforeError).slice(0, 120));
+            if (afterError) errors.push("after: " + String(afterError).slice(0, 120));
+            if (errors.length) receipt.error = errors.join("; ").slice(0, 240);
+            receipt.status = skip || (receipt.nativeFailures ? "native-failed" : "measurement-failed");
+          }
           process.stdout.write(JSON.stringify(receipt) + "\n");
         }, { resolvePath, nowMs });
       } catch (error) {
@@ -603,7 +643,11 @@ fi
 AFTER="$(avail_bytes)"
 if [[ -n "$AFTER" ]]; then
   FREED=$(( AFTER - BEFORE ))
-  log "done: $((AFTER / 1073741824)) GiB free (df delta: $((FREED / 1048576)) MiB reclaimed)"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "done: $((AFTER / 1073741824)) GiB free (dry-run observed df delta: $((FREED / 1048576)) MiB; not attributed to this run)"
+  else
+    log "done: $((AFTER / 1073741824)) GiB free (df delta observed: $((FREED / 1048576)) MiB)"
+  fi
 else
   log "done: could not re-read df"
 fi

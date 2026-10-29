@@ -8,7 +8,7 @@
  * leaving client-credentials mode ends live tokens, a signed assertion is accepted once, and the
  * dispatch seat applies a narrowed token's scope on top of the client's.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
 import {
@@ -21,7 +21,7 @@ import {
   type ClientCredentialsStore,
   type ClientKeyRow,
 } from './client-credentials';
-import { appKeyToolListFilter, enforceAppKeyScope } from './enforce';
+import { appKeyToolListFilter, enforceAppKeyScope, enforceExactServiceAppKeyScope, type EnforceAppKeyScopeDeps } from './enforce';
 import { mintAccessToken, mintAppKey } from './key';
 import { accessTokenVerdictOf, appKeyVerdictOf, type AppKeyRow, type AppKeyScopes } from './store';
 import type { AppScopeRow } from './scope-policy';
@@ -283,6 +283,57 @@ describe('the dispatch seat applies the token scope on top of the client scope',
     expect(await call('plans:get', `app:${parent.id}/${'u'.repeat(16)}`)).toMatchObject({ code: 'app_scope:key_unknown' });
     expect(await call('plans:get', tokenSlug, false)).toMatchObject({ code: 'app_scope:key_unknown' });
     expect(await call('plans:get', `app:${parent.id}/`)).toMatchObject({ code: 'app_scope:key_unknown' });
+  });
+});
+
+describe('D-053 explicit sensitive service reads reuse the live app-scope seat', () => {
+  const parent: AppScopeRow = { id: 'p'.repeat(16), workspace_id: 'ws-1', scopes: { tools: ['people:usage'] },
+    revoked_at: null, paused_at: null, expires_at: null };
+  const token: AppScopeRow = { ...parent, id: 't'.repeat(16) };
+  const principal = { kind: 'service', trust: 'verified', authMethod: 'bearer-token',
+    slug: `app:${parent.id}/${token.id}`, workspaceId: 'ws-1' };
+  function fixture(parentRow: AppScopeRow | null = parent, tokenRow: AppScopeRow | null = token) {
+    const deps: EnforceAppKeyScopeDeps = {
+      loadRow: vi.fn(async () => parentRow), loadAccessTokenRow: vi.fn(async () => tokenRow),
+      lookupTool: name => ({ name, capabilities: [] }), now: () => NOW,
+    };
+    const call = (patch: Record<string, unknown> = {}, workspaceId = 'ws-1', toolName = 'people:usage') =>
+      enforceExactServiceAppKeyScope({ toolName, capabilities: [], boundary: 'http', args: {},
+        ctx: { principal: { ...principal, ...patch }, workspaceId } } as unknown as KernelEnforcementRequest, deps);
+    return { call, deps };
+  }
+  it('accepts an exact current parent/token grant and rereads both rows on every check', async () => {
+    const f = fixture();
+    expect(await f.call()).toBeNull(); expect(await f.call()).toBeNull();
+    expect(f.deps.loadRow).toHaveBeenCalledTimes(2); expect(f.deps.loadAccessTokenRow).toHaveBeenCalledTimes(2);
+    expect(await f.call({ slug: `app:${parent.id}` })).toBeNull();
+  });
+  it.each([
+    { kind: 'user' }, { trust: 'local' }, { authMethod: 'cookie-session' }, { slug: 'operator' }, { slug: 'app:' },
+  ])('refuses non-app or unverified service identity before data access: %j', async patch => {
+    const f = fixture();
+    expect(await f.call(patch)).toMatchObject({ decision: 'deny' });
+    expect(f.deps.loadRow).not.toHaveBeenCalled();
+  });
+  it.each([['people:*'], ['*'], ['people:get'], []].map(tools => ({ tools })))('does not upgrade a broad/nonusage grant: %j', async ({ tools }) => {
+    expect(await fixture({ ...parent, scopes: { tools } }).call()).toMatchObject({ code: 'app_scope:exact_tool_grant_required' });
+    expect(await fixture(parent, { ...token, scopes: { tools } }).call()).toMatchObject({ code: 'app_scope:exact_tool_grant_required' });
+  });
+  it.each([{ revoked_at: NOW }, { paused_at: NOW }, { expires_at: NOW }, { workspace_id: 'other' }])('retains parent AND token restrictions: %j', async restriction => {
+    expect(await fixture({ ...parent, ...restriction }).call()).toMatchObject({ decision: 'deny' });
+    expect(await fixture(parent, { ...token, ...restriction }).call()).toMatchObject({ decision: 'deny' });
+  });
+  it('retains current workspace isolation, missing-row and failed-loader refusal', async () => {
+    expect(await fixture().call({}, 'other')).toMatchObject({ code: 'app_scope:workspace_mismatch' });
+    expect(await fixture(null).call()).toMatchObject({ code: 'app_scope:key_unknown' });
+    expect(await fixture(parent, null).call()).toMatchObject({ code: 'app_scope:key_unknown' });
+    const f = fixture(); f.deps.loadRow = async () => { throw new Error('unavailable'); };
+    expect(await f.call()).toMatchObject({ code: 'app_scope:unavailable' });
+  });
+  it('retains the hard-deny policy even with an exact sensitive-read grant', async () => {
+    const key = { ...parent, scopes: { tools: ['dev:restart'] } };
+    expect(await fixture(key, { ...token, scopes: key.scopes }).call({}, 'ws-1', 'dev:restart'))
+      .toMatchObject({ code: 'app_scope:hard_denied' });
   });
 });
 

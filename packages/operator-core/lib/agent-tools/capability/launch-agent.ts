@@ -2858,6 +2858,7 @@ export default defineTool({
                   ? 'system:lineage-neutral-successor'
                   : callerOwnerId ?? undefined,
                 fleetSlug,
+                ...(args.workItem?.trim() ? { workItemId: args.workItem.trim() } : {}),
                 ...(gradingAuditTaskDetail
                   ? { ledgerDetail: { gradingAudit: gradingAuditTaskDetail, ...(auditRuntime ? { gradingAuditRuntimeBinding: auditRuntime } : {}) } }
                   : auditRuntime ? { ledgerDetail: { gradingAuditRuntimeBinding: auditRuntime } } : {}),

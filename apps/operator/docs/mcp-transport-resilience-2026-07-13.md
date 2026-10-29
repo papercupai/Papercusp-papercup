@@ -87,9 +87,11 @@ Extend `mcp-dark-watchdog.ts` with a SECOND sweep for interactive sessions:
   lives IS the transport-death signature.
 - **Heal ladder (headed):** `mcpReconnectViaPty` (rate-capped 2/owner/hour) →
   poll presence beat up to ~2min → advanced ⇒ healed: inject ONE follow-up wake
-  turn ("your MCP transport died at <t> and was auto-reconnected — re-verify
-  loop:status and re-arm; your events:await registrations died with the old
-  transport; re-park unflushed state") → not advanced ⇒ fall through to the
+  turn ("your MCP transport died at <t> and was auto-reconnected — use
+  loop:status only if your role permits it; if unavailable or role_not_allowed,
+  do not retry or seek broader access, and continue from authorized checkpoints;
+  re-arm only an interrupted active mission, never an ended loop. Re-park
+  unflushed state with tools your role permits") → not advanced ⇒ fall through to the
   existing notify + broadcast path.
 - **Headless** [owner-approved]: kill+resume via the existing recycle/resume
   machinery (wake-executor channel 2 already resumes dead processes; a

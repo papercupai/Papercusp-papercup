@@ -3,10 +3,23 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { verifyCutSourceClone } from './cut-source-clone';
+import { verifyCutSourceClone, type ReleaseCutPhaseTiming } from './cut-source-clone';
 
 vi.mock('../../resource-governor/execution', () => ({
-  runGovernedOperation: async (_input: unknown, run: (context: unknown) => Promise<unknown>) => run({}),
+  runGovernedOperation: async (
+    input: {
+      onAdmissionPhase?: (event: {
+        phase: 'enqueue';
+        state: 'pending' | 'fulfilled';
+        elapsedMs: number;
+      }) => void;
+    },
+    run: (context: unknown) => Promise<unknown>,
+  ) => {
+    input.onAdmissionPhase?.({ phase: 'enqueue', state: 'pending', elapsedMs: 0 });
+    input.onAdmissionPhase?.({ phase: 'enqueue', state: 'fulfilled', elapsedMs: 1 });
+    return run({});
+  },
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-workspace' }));
 
@@ -44,6 +57,34 @@ describe('independent release source clone authority', () => {
 
   it('admits the exact clean detached clone with independently materialized gitlink pins', async () => {
     await expect(verify()).resolves.toEqual({ ok: true, path: clone });
+  });
+  it('reports path-free governor, gitlink, and per-command timing metrics', async () => {
+    const phases: ReleaseCutPhaseTiming[] = [];
+
+    await expect(
+      verifyCutSourceClone(clone, [{ path: source }], sha, { onPhase: (event) => phases.push(event) }),
+    ).resolves.toEqual({ ok: true, path: clone });
+
+    expect(phases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'governor-enqueue', stage: 'start' }),
+      expect.objectContaining({ phase: 'governor-enqueue', stage: 'finish', outcome: 'fulfilled' }),
+      expect.objectContaining({ phase: 'source-clone-authority-checks', stage: 'finish', outcome: 'fulfilled' }),
+      expect.objectContaining({
+        phase: 'source-clone-gitlink-verification',
+        stage: 'finish',
+        outcome: 'fulfilled',
+        metrics: expect.objectContaining({ repositoryCount: 2, gitlinkCount: 1 }),
+      }),
+      expect.objectContaining({
+        phase: 'source-clone-git-command-timing',
+        stage: 'finish',
+        metrics: expect.objectContaining({ gitCallCount: expect.any(Number) }),
+      }),
+    ]));
+    const gitTimings = phases.find((event) => event.phase === 'source-clone-git-command-timing' && event.stage === 'finish');
+    expect(gitTimings?.metrics?.git_rev_parse_path_format_absolute_count).toBeGreaterThan(0);
+    expect(JSON.stringify(phases)).not.toContain(clone);
+    expect(JSON.stringify(phases)).not.toContain(source);
   });
   it('requires the exact source SHA even for read-only requests', async () => {
     await expect(verifyCutSourceClone(clone, [{ path: source }], undefined, { readOnly: true })).resolves.toMatchObject({ ok: false });

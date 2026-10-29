@@ -761,6 +761,20 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
       expect(classifyLoopNextWake(loop()).guaranteed).toBe(true);
     });
 
+    it('keeps a durable parked retry as a guarantee despite the sticky no-loop-turn outcome', () => {
+      expect(
+        classifyLoopNextWake(
+          loop({
+            lastDeliveryOutcome: 'loop-delivered-wake-no-loop-turn',
+            lastFiredAt: '2026-10-03T05:00:00.000Z',
+            lastFailedFireLoopTurnCompletedAt: null,
+            lastWakeStatus: 'parked',
+            lastWakeError: 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+          }),
+        ),
+      ).toEqual({ guaranteed: true, reason: null });
+    });
+
     it('a dead-man bound still wins over the park diagnosis (ordering is stable)', () => {
       expect(
         classifyLoopNextWake(loop({ firesSinceArm: 12, maxFires: 12, lastWakeStatus: 'parked', lastWakeError: NO_HOST })).reason,

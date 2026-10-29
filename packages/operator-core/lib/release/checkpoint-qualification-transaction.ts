@@ -2814,7 +2814,10 @@ function assessPreSuiteRepairRetarget(
   if (!queue) return refused('queue-missing-or-unreadable');
   if (queue.phase !== 'ready-to-verify') return refused('queue-not-ready-to-verify');
   if (queue.qualificationAttemptId !== current.attemptId) return refused('queue-attempt-mismatch');
-  if (queue.fixerSpawnId !== null) return refused('queue-fixer-active');
+  // `ready-to-verify` is reached only after the fixer has finished (or an admission moved the
+  // head). Its `fixerSpawnId` is deliberately retained as provenance; it is not evidence of an
+  // active fixer in this phase. Treating it as live wedges every pre-suite retarget produced by
+  // `markFrozenRepairFixerFinished`, even though the queue policy correctly selects verify-repair.
   if (queue.dispatchReservation != null) return refused('queue-dispatch-reserved');
   if (queue.repairHead !== requested) return refused('queue-head-mismatch');
   if (!frozenRepairHeadAwaitsVerification(queue)) return refused('queue-head-already-judged');

@@ -179,7 +179,7 @@ export default defineTool({
     ),
   }),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
-    if (ctx.role === 'judge' && args.session !== 'self') {
+    if (ctx.role === 'judge' && args.session !== 'self' && !args.ref) {
       return {
         content: [{
           type: 'text' as const,
@@ -251,6 +251,21 @@ export default defineTool({
       } else {
         selfNote = 'self transcript could not be pinned; used owner-scoped session history';
       }
+    } else if (ctx.role === 'judge' && parsedRef) {
+      // A clipped self-read's readMore pointer is a canonical turn ref, so
+      // judge continuations must accept refs while retaining the same owner
+      // boundary as session:'self'. The explicit ref still selects its exact
+      // source turn; the owner predicate prevents it from reading another
+      // session's matching ref.
+      const callerOwnerId = resolveAgentIdentity(ctx).ownerId ?? '';
+      const { resolveSearchFilters } = await import('../search/filters');
+      const resolved = await resolveSearchFilters(
+        tx,
+        { session: 'self' },
+        callerOwnerId,
+        { workspaceId },
+      );
+      ownerIds = resolved.filters?.owners ?? (callerOwnerId ? [callerOwnerId] : []);
     } else {
       // Keep the historical/indexed read and archive fall-through unchanged;
       // the helper refreshes only an active target found in adv_sessions.

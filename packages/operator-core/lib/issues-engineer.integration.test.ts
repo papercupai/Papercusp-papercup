@@ -446,12 +446,14 @@ describe('engineer issues surface (real PG)', () => {
 
     await backdate();
     expectFresh(notTripped(await issues.updateIssue(id, { title: 'edited' }))?.updatedAt);
-    await backdate();
-    expectFresh((await issues.setIssueState(id, 'resolved', 'agA', 'test'))?.updatedAt);
+    // Claim/release run while the row is OPEN: a terminal row is not reassigned by
+    // claim (EI-26547411992035448 superseded the WI-5826 by-id escape hatch).
     await backdate();
     expectFresh((await issues.claimIssue(id, 'agB'))?.updatedAt);
     await backdate();
     expectFresh((await issues.releaseIssue(id))?.updatedAt);
+    await backdate();
+    expectFresh((await issues.setIssueState(id, 'resolved', 'agA', 'test'))?.updatedAt);
     await backdate();
     expectFresh((await issues.mergeIssuePayload(id, { note: 'x' }))?.updatedAt);
   });
@@ -1872,7 +1874,7 @@ describe('claimIssue by id applies the acceptance floor to a NEW holder (P-007 /
     await expect(issues.claimIssue(legacy, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
   });
 
-  it('exempts a same-holder re-claim and a terminal row (WI-5826 reopen escape hatch)', async () => {
+  it('exempts a same-holder re-claim and never reassigns a terminal row (EI-26547411992035448 supersedes WI-5826)', async () => {
     const held = await seedIssue();
     await expect(issues.claimIssue(held, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
     await db.sql`UPDATE harness_shared.work_items SET created_ts = ${POST} WHERE feature_id = ${held}`;
@@ -1880,8 +1882,10 @@ describe('claimIssue by id applies the acceptance floor to a NEW holder (P-007 /
     // …while a different holder is still refused on that same row.
     expect(await issues.claimIssue(held, 'agC', { fromHolder: 'agB' })).toBeNull();
 
+    // A terminal row is not reassigned by claim; reopen it explicitly first.
     const finished = await seedIssue({ createdTs: POST, status: 'done' });
-    await expect(issues.claimIssue(finished, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
+    expect(await issues.claimIssue(finished, 'agB')).toBeNull();
+    expect((await issues.getIssue(finished))?.assignee).not.toBe('agB');
   });
 });
 

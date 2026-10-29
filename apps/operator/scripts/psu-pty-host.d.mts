@@ -226,22 +226,37 @@ export function readManagedKickoffFile(path: any, expectedRenderedHash: any): {
  * @param {number} [nowMs]
  */
 export function tagSessionPortTurn(text: string, sid: string, env?: EnvironmentMap, nowMs?: number): string;
-/** WI-6554700010017571: a `reset`/`recycle` control message's `data` is the
- * carry-note the fresh context opens on. It is machine-delivered by contract;
- * the owner's keystrokes reach the child through the PTY, never through this
- * verb. Production senders put a ⟦turn-origin⟧ envelope on it. A hand-built
- * control message did not: on 2026-10-18 an agent recycled itself by writing
- * `{v:1, mode:'recycle', data}` straight to the control socket, and its kickoff
- * ("... — not an owner turn") was recorded as owner-typed. Stamp a verified
- * host-control envelope on any untagged lifecycle carry-note so it can never
- * fall through to the owner default. Already-enveloped and empty text pass
+/** The control-socket modes whose `data` is submitted as a prompt. A live
+ * `mode:'turn'` is machine input too: the owner types through the PTY, never
+ * through this control socket. On 2026-10-24 an untagged peer diagnostic sent
+ * with `{v:1, mode:'turn', data}` was therefore classified as owner input.
+ * Stamp any untagged control prompt with a verified host-control origin before
+ * the gates can defer or deliver it. Already-enrolled and empty text pass
  * through unchanged.
+ *
+ * Lifecycle carry-note precedent (WI-6554700010017571 / EI-26565736281520734):
+ * reset, recycle and carry-respawn controls already use this same host-owned
+ * ledger writer. This extends that boundary guard to live control turns while
+ * leaving direct owner keystrokes and their owner-interactive classification
+ * untouched.
  * @param {string} text
  * @param {string} sid
  * @param {EnvironmentMap} [env]
  * @param {number} [nowMs]
  */
-export function stampUntaggedLifecycleCarry(text: string, sid: string, env?: EnvironmentMap, nowMs?: number): string;
+export function stampUntaggedControlPrompt(text: string, sid: string, env?: EnvironmentMap, nowMs?: number): string;
+/** Stamp an unenrolled control-socket prompt in place. Owner input typed through
+ * the PTY never crosses this boundary. Returns true only when it stamps. Exported
+ * for the control-boundary regression tests.
+ * @param {{ mode?: string, data?: string } | null | undefined} msg
+ * @param {string} sid
+ * @param {EnvironmentMap} [env]
+ * @param {number} [nowMs]
+ */
+export function stampUnenrolledControlPrompt(msg: {
+    mode?: string;
+    data?: string;
+} | null | undefined, sid: string, env?: EnvironmentMap, nowMs?: number): boolean;
 /** Stamp a decoded lifecycle control message's untagged carry text in place.
  * Returns true only when it stamped. Exported for tests.
  * @param {{ mode?: string, data?: string } | null | undefined} msg
@@ -6050,15 +6065,10 @@ export const MAX_CONTROL_PAYLOAD_BYTES: number;
  * standalone ESM process and cannot import the TypeScript module. */
 export const KICKOFF_PROOF_PATH_ENV: "PAPERCUSP_KICKOFF_PROOF_PATH";
 export const KICKOFF_PROOF_TOKEN_ENV: "PAPERCUSP_KICKOFF_PROOF_TOKEN";
-/** EI-26565736281520734: every control mode whose `data` becomes the FIRST typed
- * turn of a fresh context. carry-respawn belongs here as much as reset/recycle.
- * On 2026-10-21 an agent self-recycled by writing `{v:1, mode:'carry-respawn',
- * data}` with no envelope. The stamp checked only reset/recycle, so the
- * successor's first prompt was recorded as owner-typed (owner directive #2136).
- * A live `turn` is deliberately NOT listed. Its machine senders already envelope
- * their text, and this change does not establish that no owner-facing path uses
- * that mode. */
+/** Lifecycle subset whose control data opens a fresh context. */
 export const LIFECYCLE_CARRY_MODES: readonly string[];
+/** Every managed-host control mode that types a prompt into the child. */
+export const HOST_CONTROL_PROMPT_MODES: readonly string[];
 /** WI-10002745: how many trailing nonce characters a truncated provenance
  * marker must still carry to count as this injection's. 8 hex characters are
  * 32 random bits, and the row must also pass the same timestamp fence and

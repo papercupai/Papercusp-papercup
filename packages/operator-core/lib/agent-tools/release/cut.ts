@@ -102,7 +102,7 @@ import {
   type BeginCutOperationResult,
 } from '../../release-cut-operation';
 import { markSpawned } from '../../task-manager/store';
-import { verifyCutSourceClone } from './cut-source-clone';
+import { verifyCutSourceClone, type ReleaseCutPhaseTiming } from './cut-source-clone';
 
 const cutRootArg = z
   .string()
@@ -218,6 +218,52 @@ export interface CutRootResolutionOptions {
    * write ops; the root must still be a registered cut worktree.
    */
   readOnly?: boolean;
+  /** Path-free diagnostics for the read-only release:cut status route. */
+  onPhase?: (event: ReleaseCutPhaseTiming) => void;
+}
+
+function emitCutRootPhase(
+  onPhase: CutRootResolutionOptions['onPhase'],
+  event: ReleaseCutPhaseTiming,
+): void {
+  try {
+    onPhase?.(event);
+  } catch {
+    // Diagnostics must not change root selection.
+  }
+}
+
+async function measureCutRootPhase<T>(
+  onPhase: CutRootResolutionOptions['onPhase'],
+  phase: string,
+  run: () => T | Promise<T>,
+  metricsForResult?: (result: T) => Record<string, number>,
+): Promise<T> {
+  if (!onPhase) return await run();
+  const startedAt = performance.now();
+  let outcome: ReleaseCutPhaseTiming['outcome'] = 'rejected';
+  let metrics: Record<string, number> | undefined;
+  emitCutRootPhase(onPhase, { phase, stage: 'start' });
+  try {
+    const result = await run();
+    outcome = 'fulfilled';
+    if (metricsForResult) {
+      try {
+        metrics = metricsForResult(result);
+      } catch {
+        // Optional diagnostic summaries never change the operation.
+      }
+    }
+    return result;
+  } finally {
+    emitCutRootPhase(onPhase, {
+      phase,
+      stage: 'finish',
+      elapsedMs: Math.round((performance.now() - startedAt) * 10) / 10,
+      outcome,
+      ...(metrics ? { metrics } : {}),
+    });
+  }
 }
 
 export const RELEASE_RESUME_VERSION_PATHS = [
@@ -706,7 +752,12 @@ export async function resolveCutRoot(
   const canonical = deps.canonicalPath ?? defaultCanonicalPath;
   let registry: HarnessRegistry;
   try {
-    registry = await loadRegistry(activeWorkspaceId());
+    registry = await measureCutRootPhase(
+      options.onPhase,
+      'registry-load',
+      () => loadRegistry(activeWorkspaceId()),
+      (result) => ({ registeredProjectCount: result.projects.length }),
+    );
   } catch (err) {
     return {
       ok: false,
@@ -714,18 +765,29 @@ export async function resolveCutRoot(
     };
   }
 
-  const candidates = new Map<string, CutWorktree>();
   const projects = registry.projects.filter((project) => project.path.trim().length > 0);
-  for (const project of projects) {
-    try {
-      for (const worktree of await listWorktrees(project.path)) {
-        if (worktree.prunable) continue;
-        candidates.set(canonical(worktree.path), worktree);
+  const candidates = await measureCutRootPhase(
+    options.onPhase,
+    'registered-worktree-discovery',
+    async () => {
+      const found = new Map<string, CutWorktree>();
+      for (const project of projects) {
+        try {
+          for (const worktree of await listWorktrees(project.path)) {
+            if (worktree.prunable) continue;
+            found.set(canonical(worktree.path), worktree);
+          }
+        } catch {
+          // A repo-less/non-Git registered project is not a valid cut-root carrier.
+        }
       }
-    } catch {
-      // A repo-less/non-Git registered project is not a valid cut-root carrier.
-    }
-  }
+      return found;
+    },
+    (found) => ({
+      registeredProjectCount: projects.length,
+      candidateWorktreeCount: found.size,
+    }),
+  );
 
   const requestedPath = canonical(requested);
   const requestedDesktopParent = path.basename(requestedPath) === 'papercusp-desktop'
@@ -736,8 +798,14 @@ export async function resolveCutRoot(
   if (!selected) selected = candidates.get(requestedPath);
   if (!selected) {
     if (options.sourceSha && path.isAbsolute(requested)) {
-      const clone = await (deps.verifySourceClone ?? verifyCutSourceClone)(
-        requestedDesktopParent ?? requestedPath, projects, options.sourceSha, options,
+      const sourceSha = options.sourceSha;
+      const clone = await measureCutRootPhase(
+        options.onPhase,
+        'source-clone-admission',
+        () => (deps.verifySourceClone ?? verifyCutSourceClone)(
+          requestedDesktopParent ?? requestedPath, projects, sourceSha, options,
+        ),
+        (result) => ({ accepted: Number(result.ok) }),
       );
       if (!clone.ok) return clone;
       selected = { path: clone.path, prunable: false };
@@ -758,7 +826,12 @@ export async function resolveCutRoot(
 
   let dirty: string;
   try {
-    dirty = await status(selected.path);
+    dirty = await measureCutRootPhase(
+      options.onPhase,
+      'selected-root-status',
+      () => status(selected.path),
+      () => ({ readOnly: Number(Boolean(options.readOnly)) }),
+    );
   } catch (err) {
     return {
       ok: false,
@@ -1406,45 +1479,85 @@ export default defineTool({
 
     // ── status: read-only poll (latest host-wide cut, or one registered root) ──
     if (args.op === 'status') {
-      const selected = args.root === undefined
-        ? undefined
-        : await resolveCutRoot(args.root, undefined, { readOnly: true, sourceSha: args.sourceSha });
-      if (selected && !selected.ok) {
-        return json({ ok: false, op: 'status', refused: true, reason: selected.reason });
+      const handlerStartedAt = performance.now();
+      const suppliedTraceId = ctx.requestOrigin?.mcpRequestTraceId;
+      const traceId =
+        typeof suppliedTraceId === 'string' && suppliedTraceId.trim() && suppliedTraceId.length <= 128
+          ? suppliedTraceId
+          : null;
+      const logStatusTiming = (event: ReleaseCutPhaseTiming) => {
+        try {
+          ctx.log?.('[release:cut] status timing ' + JSON.stringify({ traceId, ...event }));
+        } catch {
+          // Timing diagnostics must never change this read-only result.
+        }
+      };
+      let handlerOutcome: ReleaseCutPhaseTiming['outcome'] = 'fulfilled';
+      logStatusTiming({ phase: 'handler', stage: 'start' });
+      try {
+        const selected = args.root === undefined
+          ? undefined
+          : await measureCutRootPhase(
+              logStatusTiming,
+              'root-resolution',
+              () => resolveCutRoot(args.root, undefined, {
+                readOnly: true,
+                sourceSha: args.sourceSha,
+                onPhase: logStatusTiming,
+              }),
+              (result) => ({ selected: Number(result.ok) }),
+            );
+        if (selected && !selected.ok) {
+          return json({ ok: false, op: 'status', refused: true, reason: selected.reason });
+        }
+        const status = await measureCutRootPhase(
+          logStatusTiming,
+          'read-cut-status',
+          () => readCutStatus({
+            platform: args.platform,
+            ...(selected ? { root: selected.desktopRoot } : {}),
+          }),
+        );
+        const unit = status.operation?.taskId ? cutUnitForTask(status.operation.taskId) : cutUnitFor(args.platform);
+        const legNote = args.platform ? `leg '${args.platform}' (unit ${unit})` : `unit ${unit}`;
+        const scopeNote = selected ? `for root ${selected.desktopRoot}` : 'on this host';
+        const note =
+          status.state === 'running'
+            ? `A cut is in flight (${legNote}). Poll again; the log tail is above. Do NOT start a second cut${args.platform ? ' for this leg' : ''}.`
+            : status.state === 'done'
+              ? `The last ${legNote} finished OK. ${args.platform ? 'Once every leg is done, run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed, then release:cut{op:handoff,version}.' : 'Run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed for each leg, then release:cut{op:handoff,version} to collect the artifacts for the owner.'}`
+              : status.state === 'failed'
+                ? `The last ${legNote} FAILED (exit ${status.exitCode}). Inspect the log tail above / ${status.logPath}; fix and re-run.`
+                : status.state === 'interrupted'
+                  ? `The last ${legNote} was INTERRUPTED before its DONE sentinel was written. ${
+                      status.operation?.operationId
+                        ? `It ran under managed operation ${status.operation.operationId}, so its committed phase receipts survive — a re-run resumes from the last one rather than rebuilding.`
+                        : 'It ran UNMANAGED (no operation id on the started marker), so there are no phase receipts to resume from — a re-run rebuilds from the start.'
+                    } Inspect the log tail above / ${status.logPath}; fix or intentionally restart it.`
+                  : `No cut in flight and no recent result for ${legNote} ${scopeNote}.`;
+        return json({
+          ok: true,
+          op: 'status',
+          ...(selected ? {
+            root: selected.desktopRoot,
+            ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
+          } : {}),
+          ...(args.platform ? { platform: args.platform } : {}),
+          ...status,
+          unit,
+          note,
+        });
+      } catch (error) {
+        handlerOutcome = 'rejected';
+        throw error;
+      } finally {
+        logStatusTiming({
+          phase: 'handler',
+          stage: 'finish',
+          elapsedMs: Math.round((performance.now() - handlerStartedAt) * 10) / 10,
+          outcome: handlerOutcome,
+        });
       }
-      const status = readCutStatus({
-        platform: args.platform,
-        ...(selected ? { root: selected.desktopRoot } : {}),
-      });
-      const unit = status.operation?.taskId ? cutUnitForTask(status.operation.taskId) : cutUnitFor(args.platform);
-      const legNote = args.platform ? `leg '${args.platform}' (unit ${unit})` : `unit ${unit}`;
-      const scopeNote = selected ? `for root ${selected.desktopRoot}` : 'on this host';
-      const note =
-        status.state === 'running'
-          ? `A cut is in flight (${legNote}). Poll again; the log tail is above. Do NOT start a second cut${args.platform ? ' for this leg' : ''}.`
-          : status.state === 'done'
-            ? `The last ${legNote} finished OK. ${args.platform ? 'Once every leg is done, run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed, then release:cut{op:handoff,version}.' : 'Run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed for each leg, then release:cut{op:handoff,version} to collect the artifacts for the owner.'}`
-            : status.state === 'failed'
-              ? `The last ${legNote} FAILED (exit ${status.exitCode}). Inspect the log tail above / ${status.logPath}; fix and re-run.`
-              : status.state === 'interrupted'
-                ? `The last ${legNote} was INTERRUPTED before its DONE sentinel was written. ${
-                    status.operation?.operationId
-                      ? `It ran under managed operation ${status.operation.operationId}, so its committed phase receipts survive — a re-run resumes from the last one rather than rebuilding.`
-                      : 'It ran UNMANAGED (no operation id on the started marker), so there are no phase receipts to resume from — a re-run rebuilds from the start.'
-                  } Inspect the log tail above / ${status.logPath}; fix or intentionally restart it.`
-              : `No cut in flight and no recent result for ${legNote} ${scopeNote}.`;
-      return json({
-        ok: true,
-        op: 'status',
-        ...(selected ? {
-          root: selected.desktopRoot,
-          ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
-        } : {}),
-        ...(args.platform ? { platform: args.platform } : {}),
-        ...status,
-        unit,
-        note,
-      });
     }
 
     // ── handoff: collect the LOCAL deliverable ──

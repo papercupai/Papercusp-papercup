@@ -16,10 +16,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { classify, readLedgerRows } from '@papercusp/operator-core/lib/turn-provenance/turn-provenance';
 
 import {
+  HOST_CONTROL_PROMPT_MODES,
   LIFECYCLE_CARRY_MODES,
   decodeControl,
+  stampUnenrolledControlPrompt,
   stampLifecycleControlCarry,
-  stampUntaggedLifecycleCarry,
+  stampUntaggedControlPrompt,
   tagSessionPortTurn,
 } from '../scripts/psu-pty-host.mjs';
 
@@ -30,7 +32,7 @@ const KICKOFF = [
 ].join('\n');
 const LOOP_FIRE_MARKER = '⟦turn-origin:loop-fire nonce:3a18c46b99bfc429⟧';
 
-describe('stampUntaggedLifecycleCarry', () => {
+describe('stampUntaggedControlPrompt', () => {
   let dir: string;
   let env: NodeJS.ProcessEnv;
 
@@ -45,7 +47,7 @@ describe('stampUntaggedLifecycleCarry', () => {
 
   it('stamps an untagged recycle carry-note so the classifier verifies it as host-control', () => {
     const now = Date.now();
-    const stamped = stampUntaggedLifecycleCarry(KICKOFF, SID, env, now);
+    const stamped = stampUntaggedControlPrompt(KICKOFF, SID, env, now);
 
     expect(stamped).toMatch(/^⟦turn-origin:host-control nonce:[a-f0-9]{16}⟧\n/);
     expect(stamped.endsWith(KICKOFF)).toBe(true);
@@ -65,17 +67,17 @@ describe('stampUntaggedLifecycleCarry', () => {
 
   it('passes an already-enveloped carry-note through unchanged and writes no ledger row', () => {
     const tagged = `${LOOP_FIRE_MARKER}\ncold wake carry-note`;
-    expect(stampUntaggedLifecycleCarry(tagged, SID, env)).toBe(tagged);
+    expect(stampUntaggedControlPrompt(tagged, SID, env)).toBe(tagged);
 
     const pasted = `\n\n<pasted_content id="3e9a">\n${LOOP_FIRE_MARKER}\ncold wake carry-note\n</pasted_content id="3e9a">\n`;
-    expect(stampUntaggedLifecycleCarry(pasted, SID, env)).toBe(pasted);
+    expect(stampUntaggedControlPrompt(pasted, SID, env)).toBe(pasted);
 
     expect(readLedgerRows(SID, { dir, includeExpired: true })).toHaveLength(0);
   });
 
   it('leaves an empty carry-note alone (a reset with no carry text)', () => {
-    expect(stampUntaggedLifecycleCarry('', SID, env)).toBe('');
-    expect(stampUntaggedLifecycleCarry('  \n', SID, env)).toBe('  \n');
+    expect(stampUntaggedControlPrompt('', SID, env)).toBe('');
+    expect(stampUntaggedControlPrompt('  \n', SID, env)).toBe('  \n');
     expect(readLedgerRows(SID, { dir, includeExpired: true })).toHaveLength(0);
   });
 
@@ -133,11 +135,29 @@ describe('stampLifecycleControlCarry (decoded control messages)', () => {
     expect(readLedgerRows(SID, { dir, includeExpired: true })).toHaveLength(0);
   });
 
-  it('does not stamp a live turn', () => {
+  it('includes live mode:turn controls and stamps untagged diagnostics as host-control', () => {
+    expect(HOST_CONTROL_PROMPT_MODES).toEqual(expect.arrayContaining(['turn', ...LIFECYCLE_CARRY_MODES]));
     const msg = decodeControl(JSON.stringify({ v: 1, mode: 'turn', data: 'hello', ownerId: SID }));
     expect(msg.mode).toBe('turn');
-    expect(stampLifecycleControlCarry(msg, SID, env)).toBe(false);
-    expect(msg.data).toBe('hello');
+    const now = Date.now();
+    expect(stampUnenrolledControlPrompt(msg, SID, env, now)).toBe(true);
+    expect(msg.data).toMatch(/^⟦turn-origin:host-control nonce:[a-f0-9]{16}⟧\nhello$/);
+    expect(classify(msg.data, readLedgerRows(SID, { dir, nowMs: now }), { nowMs: now })).toMatchObject({
+      verdict: 'verified-agent',
+      origin: 'host-control',
+      matchedBy: 'nonce+hash',
+    });
+  });
+
+  it('does not change genuine untagged owner input typed through the PTY', () => {
+    expect(classify('owner draft typed at the PTY', [], { nowMs: Date.now() }).verdict).toBe('owner-interactive');
+  });
+
+  it('passes an enrolled live turn through unchanged', () => {
+    const tagged = `${LOOP_FIRE_MARKER}\nmanaged wake body`;
+    const msg = decodeControl(JSON.stringify({ v: 1, mode: 'turn', data: tagged, ownerId: SID }));
+    expect(stampUnenrolledControlPrompt(msg, SID, env)).toBe(false);
+    expect(msg.data).toBe(tagged);
     expect(readLedgerRows(SID, { dir, includeExpired: true })).toHaveLength(0);
   });
 });

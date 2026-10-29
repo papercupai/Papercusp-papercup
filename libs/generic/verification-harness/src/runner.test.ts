@@ -26,6 +26,7 @@ const tmp = () => mkdtempSync(path.join(tmpdir(), 'vh-'));
 let privateRetention: string;
 beforeEach(() => {
   privateRetention = tmp();
+  vi.stubEnv('VH_EVIDENCE_ROOT_BASE', path.join(privateRetention, 'canonical'));
   vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', path.join(privateRetention, 'mutex'));
   vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', path.join(privateRetention, 'pins'));
   vi.stubEnv('PAPERCUSP_DISABLE_FS_MUTEX', '0');
@@ -365,6 +366,55 @@ describe('exact VH pin allocation and cap verdict', () => {
 });
 
 describe('declared completion receipt retention', () => {
+  it('publishes exact bounded custom-root proof to the canonical reader location before teardown', async () => {
+    const root = tmp(), runId = '20261029T000001Z-1';
+    try {
+      const result = await complete(root, runId);
+      const canonical = path.join(privateRetention, 'canonical', 'receipt-proof', 'retained', runId);
+      await writeRunResult(result, receipts); // Re-finalization accepts only the same originals.
+      for (const file of [...receipts, 'result.json', 'retained-artifacts.json']) {
+        expect(readFileSync(path.join(canonical, file))).toEqual(readFileSync(path.join(root, 'retained', runId, file)));
+      }
+      expect(readdirSync(canonical).sort()).toEqual(['phases', 'result.json', 'retained-artifacts.json']);
+      rmSync(root, { recursive: true });
+      expect(await loadRunResult(canonical)).toEqual(result);
+      expect(readFileSync(path.join(canonical, receipts[0]))).toEqual(source);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['../outside', '/absolute', 'nested/harness', 'nested\\harness', '.', '..'])(
+    'refuses a harness identity that could escape canonical retention: %s', async harness => {
+      const root = tmp(), runId = '20261029T000003Z-3';
+      try {
+        await expect(runHarness({ contract: { name: harness, phases: [{ id: 'proof' }] },
+          evidenceRoot: root, runId, runPhase: async () => ({ ok: true }),
+        })).rejects.toThrow('invalid retained harness name');
+        expect(existsSync(path.join(privateRetention, 'canonical'))).toBe(false);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    },
+  );
+
+  it.each(['conflict', 'symlink'] as const)('refuses canonical proof %s without replacing or escaping custody', async mode => {
+    const root = tmp(), outside = tmp(), runId = '20261029T000002Z-2';
+    const canonical = path.join(privateRetention, 'canonical', 'receipt-proof', 'retained');
+    mkdirSync(path.dirname(canonical), { recursive: true });
+    const original = Buffer.from('previous original');
+    if (mode === 'symlink') symlinkSync(outside, canonical);
+    else {
+      mkdirSync(path.join(canonical, runId, 'phases/prepare'), { recursive: true });
+      writeFileSync(path.join(canonical, runId, receipts[0]), original);
+    }
+    try {
+      await expect(complete(root, runId)).rejects.toThrow(mode === 'conflict'
+        ? 'retained harness artifact changed' : 'outside evidence root');
+      if (mode === 'conflict') expect(readFileSync(path.join(canonical, runId, receipts[0]))).toEqual(original);
+      else expect(readdirSync(outside)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it.each(['count', 'bytes', 'symlink', 'ancestor-symlink'])(
     'refuses unsafe browser artifact %s before publishing a retained completion', async mode => {
       const root = tmp(), outside = tmp(), runId = '20261022T000001Z-1';

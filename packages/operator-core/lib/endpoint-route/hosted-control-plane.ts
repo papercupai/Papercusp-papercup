@@ -97,7 +97,7 @@ export interface HostedControlPlaneConfig {
   readonly directoryBindingManager?: HostedDirectoryBindingManager;
   /** Constructed with current operator/graph authority by the deployment host.
    * Browser configuration cannot provide issuance or background CRM authority. */
-  readonly leadBinding?: Pick<Parameters<typeof createHostedLeadBindingRoutes>[0], 'service' | 'environment'>;
+  readonly leadBinding?: Pick<Parameters<typeof createHostedLeadBindingRoutes>[0], 'service' | 'environment' | 'runTenant'>;
   /**
    * psu CLI sign-in + terminal tickets (WI-10002874). Mounted only beside a connector gateway,
    * which is what the terminal route issues tickets through.

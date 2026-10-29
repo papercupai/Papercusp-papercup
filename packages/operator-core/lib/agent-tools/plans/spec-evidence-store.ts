@@ -199,6 +199,7 @@ const MAX_REPO_MEASUREMENT_SOURCE_GLOBS = 16;
 const MAX_REPO_MEASUREMENT_GLOB_MATCHES = 128;
 const MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES = 4096;
 const MAX_REPO_MEASUREMENT_GLOB_DEPTH = 16;
+const MAX_REPO_MEASUREMENT_IMPORTED_FIXTURE_PATHS = 128;
 
 const evidenceFingerprintSchema = z.string().trim().min(1).max(256);
 const repoMeasurementPathSchema = z
@@ -455,9 +456,95 @@ function hasRepoFixturePaths(recipe: RepoFilesEvidenceMeasurement): boolean {
   return Boolean(recipe.fixturePaths || recipe.fixtureGlobs);
 }
 
-async function expandedRepoFixturePathsAtRoot(root: string, recipe: RepoFilesEvidenceMeasurement): Promise<string[]> {
+async function expandedRepoFixturePathsAtRoot(
+  root: string,
+  recipe: RepoFilesEvidenceMeasurement,
+  importedFixturePaths: readonly string[] = [],
+): Promise<string[]> {
   const matches = await expandRepoMeasurementGlobsAtRoot(root, recipe.fixtureGlobs ?? [], MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES);
-  return [...new Set([...(recipe.fixturePaths ?? []), ...matches])].sort();
+  return [...new Set([...(recipe.fixturePaths ?? []), ...matches, ...importedFixturePaths])].sort();
+}
+
+/**
+ * Resolve the bounded, direct relative `.fixture.ts` imports named by testPaths.
+ * The source/test measurement already has an 8 MiB per-file and total read bound;
+ * keep the extra parse pass under the same byte budget and cap its output set.
+ */
+async function inferRelativeRepoFixtureImportsAtRoot(
+  root: string,
+  testPaths: readonly string[],
+  readTestSource: (path: string) => Promise<string | null>,
+): Promise<string[]> {
+  const fixturePaths = new Set<string>();
+  let totalBytes = 0;
+  for (const testPath of testPaths) {
+    const source = await readTestSource(testPath);
+    if (source === null) throw new Error(`repo_measurement_test_import_source_unavailable:${testPath}`);
+    totalBytes += Buffer.byteLength(source);
+    if (totalBytes > REPO_FILE_SET_READ_LIMITS.maxTotalBytes) {
+      throw new Error(`repo_measurement_test_import_sources_too_large:${totalBytes}>${REPO_FILE_SET_READ_LIMITS.maxTotalBytes}`);
+    }
+
+    const sourceFile = ts.createSourceFile(
+      testPath,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      testPath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
+    const addSpecifier = (specifier: ts.Expression | undefined) => {
+      if (!specifier || !ts.isStringLiteralLike(specifier)) return;
+      const modulePath = specifier.text;
+      if ((!modulePath.startsWith('./') && !modulePath.startsWith('../'))
+        || (!modulePath.endsWith('.fixture') && !modulePath.endsWith('.fixture.ts'))) return;
+      const resolvedModule = modulePath.endsWith('.fixture.ts') ? modulePath : `${modulePath}.ts`;
+      const candidate = resolve(root, dirname(testPath), resolvedModule);
+      if (!containedBy(root, candidate)) {
+        throw new Error(`repo_measurement_fixture_import_outside_root:${testPath}:${modulePath}`);
+      }
+      const path = relative(root, candidate).split(sep).join('/');
+      const validPath = repoMeasurementPathSchema.safeParse(path);
+      if (!validPath.success) throw new Error(`repo_measurement_invalid_fixture_import_path:${testPath}:${modulePath}`);
+      fixturePaths.add(path);
+      if (fixturePaths.size > MAX_REPO_MEASUREMENT_IMPORTED_FIXTURE_PATHS) {
+        throw new Error(`repo_measurement_too_many_imported_fixture_files:${fixturePaths.size}>${MAX_REPO_MEASUREMENT_IMPORTED_FIXTURE_PATHS}`);
+      }
+    };
+
+    for (const statement of sourceFile.statements) {
+      if (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) {
+        addSpecifier(statement.moduleSpecifier);
+      } else if (ts.isImportEqualsDeclaration(statement) && ts.isExternalModuleReference(statement.moduleReference)) {
+        addSpecifier(statement.moduleReference.expression);
+      }
+    }
+  }
+  return [...fixturePaths].sort();
+}
+
+async function inferRepoFixtureImportsAtWorkingTree(root: string, testPaths: readonly string[]): Promise<string[]> {
+  const canonicalRoot = await realpath(root);
+  return inferRelativeRepoFixtureImportsAtRoot(canonicalRoot, testPaths, async (testPath) => {
+    const candidate = resolve(canonicalRoot, testPath);
+    if (!containedBy(canonicalRoot, candidate)) throw new Error(`repo_measurement_path_outside_root:${testPath}`);
+    const canonical = await realpath(candidate);
+    if (!containedBy(canonicalRoot, canonical)) throw new Error(`repo_measurement_symlink_outside_root:${testPath}`);
+    const info = await stat(canonical);
+    if (!info.isFile()) throw new Error(`repo_measurement_not_file:${testPath}`);
+    if (info.size > REPO_FILE_SET_READ_LIMITS.maxFileBytes) {
+      throw new Error(`repo_measurement_too_large:${info.size}>${REPO_FILE_SET_READ_LIMITS.maxFileBytes}`);
+    }
+    return readFile(canonical, 'utf8');
+  });
+}
+
+async function inferRepoFixtureImportsAtCommit(
+  root: string,
+  commit: string,
+  testPaths: readonly string[],
+): Promise<string[]> {
+  return inferRelativeRepoFixtureImportsAtRoot(root, testPaths, (path) =>
+    readCommittedMeasurementText(root, commit, path, REPO_FILE_SET_READ_LIMITS.maxFileBytes));
 }
 
 async function expandedRepoSourcePathsAtRoot(
@@ -487,12 +574,21 @@ async function readCommittedMeasurementText(
   root: string,
   commit: string,
   path: string,
+  maxBytes?: number,
 ): Promise<string | null> {
   const locations = await locateCommittedBlobs(root, commit, [path]);
   const location = locations.get(path);
   if (!location || !location.isFile) return null;
   const repoPath = location.repo === '.' ? path : path.slice(location.repo.length + 1);
-  return defaultGitRunner(join(root, location.repo), ['show', `${location.commitSha}:${repoPath}`]);
+  const committedRef = `${location.commitSha}:${repoPath}`;
+  const repoRoot = join(root, location.repo);
+  if (maxBytes !== undefined) {
+    const sizeText = await defaultGitRunner(repoRoot, ['cat-file', '-s', committedRef]);
+    const size = Number(sizeText.trim());
+    if (!Number.isSafeInteger(size) || size < 0) throw new Error(`repo_measurement_invalid_committed_test_size:${path}`);
+    if (size > maxBytes) throw new Error(`repo_measurement_too_large:${size}>${maxBytes}`);
+  }
+  return defaultGitRunner(repoRoot, ['show', committedRef]);
 }
 
 /**
@@ -671,7 +767,13 @@ async function readRepoFilesProbeSnapshots(
       const fixtureRoot = hasRepoFixturePaths(recipe)
         ? await rootFor(recipe, 'fixture').catch(() => null)
         : primaryRoot;
-      const fixturePaths = fixtureRoot ? await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe).catch(() => null) : [];
+      const importedFixturePaths = fixtureRoot === primaryRoot
+        ? await inferRepoFixtureImportsAtWorkingTree(primaryRoot, recipe.testPaths ?? []).catch(() => null)
+        : [];
+      if (!importedFixturePaths) return;
+      const fixturePaths = fixtureRoot
+        ? await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe, importedFixturePaths).catch(() => null)
+        : [];
       if (!fixturePaths) return;
       const primaryPaths = await repoFilesPrimaryPathsAtRoot(primaryRoot, recipe).catch(() => null);
       if (!primaryPaths) return;
@@ -715,7 +817,10 @@ export async function measureRepoFilesEvidenceDetailedAtRoot(
     throw new Error('repo_measurement_fixture_root_identity_required');
   }
   const sourcePaths = await expandedRepoSourcePathsAtRoot(root, parsed);
-  const fixturePaths = await expandedRepoFixturePathsAtRoot(fixtureRoot, parsed);
+  const importedFixturePaths = fixtureRoot === root
+    ? await inferRepoFixtureImportsAtWorkingTree(root, parsed.testPaths ?? [])
+    : [];
+  const fixturePaths = await expandedRepoFixturePathsAtRoot(fixtureRoot, parsed, importedFixturePaths);
   const measuredPaths = [
     ...sourcePaths,
     ...(parsed.testPaths ?? []),
@@ -783,6 +888,9 @@ export async function measureRepoFilesEvidenceDetailedAtCommit(
     return path.slice(prefix.length + 1);
   };
   const fromRepo = (path: string) => (prefix ? `${prefix}/${path}` : path);
+  const importedFixturePaths = fixtureRoot === root && parsed.testPaths?.length
+    ? (await inferRepoFixtureImportsAtCommit(repoDir, commit, parsed.testPaths.map(inRepo))).map(fromRepo)
+    : [];
   const fileSetAt = async (baseRoot: string, paths: readonly string[], atCommit: string, prefixPaths = false, limits = REPO_FILE_SET_READ_LIMITS) => {
     const measured = await fingerprintRepoFileSetAtCommit(
       prefixPaths ? repoDir : baseRoot,
@@ -813,13 +921,13 @@ export async function measureRepoFilesEvidenceDetailedAtCommit(
         deps,
       )).map((path) => fixtureRoot === root ? fromRepo(path) : path)
     : await expandRepoMeasurementGlobsAtRoot(fixtureRoot, parsed.fixtureGlobs ?? [], MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES);
-  const fixturePaths = [...new Set([...(parsed.fixturePaths ?? []), ...fixtureGlobPaths])].sort();
+  const fixturePaths = [...new Set([...(parsed.fixturePaths ?? []), ...fixtureGlobPaths, ...importedFixturePaths])].sort();
   const fixtureIsWorkingTree = Boolean(fixturePaths.length && !fixtureCommit);
   if (fixtureIsWorkingTree) await refuseMutationProbePaths(fixtureRoot, fixturePaths);
   const [source, test, fixture] = await Promise.all([
     fileSetAt(root, sourcePaths, commit, true),
     parsed.testPaths ? fileSetAt(root, parsed.testPaths, commit, true) : Promise.resolve(null),
-    hasRepoFixturePaths(parsed)
+    fixturePaths.length > 0
       ? fixtureCommit
         ? fileSetAt(fixtureRoot, fixturePaths, fixtureCommit, fixtureRoot === root, REPO_FIXTURE_READ_LIMITS)
         : fingerprintRepoFileSet(fixtureRoot, fixturePaths, REPO_FIXTURE_READ_LIMITS)
@@ -870,7 +978,7 @@ async function fingerprintRepoFilesMeasurement(
   const [source, test, fixture] = await Promise.all([
     fingerprintRepoFileSet(root, sourcePaths),
     parsed.testPaths ? fingerprintRepoFileSet(root, parsed.testPaths) : Promise.resolve(null),
-    hasRepoFixturePaths(parsed) ? fingerprintRepoFileSet(fixtureRoot, fixturePaths, REPO_FIXTURE_READ_LIMITS) : Promise.resolve(null),
+    fixturePaths.length > 0 ? fingerprintRepoFileSet(fixtureRoot, fixturePaths, REPO_FIXTURE_READ_LIMITS) : Promise.resolve(null),
   ]);
   const fixtureIdentity = fixtureRootHarnessSlug ? { rootHarnessSlug: fixtureRootHarnessSlug } : {};
   return {
@@ -4722,7 +4830,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             detailed = await measurement;
           } else if (snapshot && (fixtureRoot === measurementRoot || !hasRepoFixturePaths(recipe) || fixtureSnapshot)) {
             const sourcePaths = await expandedRepoSourcePathsAtRoot(measurementRoot, recipe);
-            const fixturePaths = await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe);
+            const importedFixturePaths = fixtureRoot === measurementRoot
+              ? await inferRepoFixtureImportsAtWorkingTree(measurementRoot, recipe.testPaths ?? [])
+              : [];
+            const fixturePaths = await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe, importedFixturePaths);
             const measuredPaths = [
               ...sourcePaths,
               ...(recipe.testPaths ?? []),
@@ -4741,6 +4852,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                 primaryRecipe,
                 sourcePaths,
                 measurementRoot,
+                undefined,
+                [],
               );
               let fixtureFingerprint: string;
               let fixtureFiles: Array<{ path: string; sha256: string; gitBlob: string }>;
@@ -4779,6 +4892,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                 sourcePaths,
                 fixtureRoot,
                 hasRepoFixturePaths(recipe) ? fixtureRootHarnessSlug : undefined,
+                fixturePaths,
               );
             }
           } else {
@@ -4851,7 +4965,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         let paths: string[];
         if (sourceRoot === root) {
           paths = await repoFilesPrimaryPathsAtRoot(root, recipe);
-          if (fixtureRoot === root) paths.push(...await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe));
+          if (fixtureRoot === root) {
+            const importedFixturePaths = await inferRepoFixtureImportsAtWorkingTree(root, recipe.testPaths ?? []);
+            paths.push(...await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe, importedFixturePaths));
+          }
         } else if (fixtureRoot === root && hasRepoFixturePaths(recipe)) {
           paths = await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe);
         } else {

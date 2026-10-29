@@ -1,0 +1,157 @@
+{
+  "schemaVersion": "r2gcs-p006-acceptance-preparation-v1",
+  "plan": "r2-to-gcs-storage-migration-2026-10-23",
+  "workItem": "WI-6554700010025565",
+  "status": "preparation-only",
+  "migrationAccepted": false,
+  "shipped": false,
+  "observationDateUtc": "2026-10-29",
+  "sourceAudit": {
+    "scope": [
+      "apps/operator-public/src and wrangler.toml",
+      "apps/papercusp-publish/src and wrangler.toml",
+      "scripts/publish-workspace-host-artifacts.mjs",
+      "scripts/lib/workspace-host-gcs-publication.mjs",
+      "apps/tui/scripts",
+      "papercusp-desktop/bin",
+      "papercusp-desktop/src-tauri/src and build.rs"
+    ],
+    "method": "Bounded rg scan for R2 bucket/credential/endpoint patterns, excluding test/selftest files, followed by content reads of the configured storage seams and remaining matches.",
+    "findings": [
+      {
+        "paths": ["apps/operator-public/wrangler.toml", "apps/operator-public/src/env.ts"],
+        "classification": "GCS configuration and ObjectStore seam; no configured R2 bucket binding in this file",
+        "liveEvidence": "Current runtime bindings are separate evidence; source configuration alone is not deployed proof."
+      },
+      {
+        "paths": ["apps/papercusp-publish/wrangler.toml", "apps/papercusp-publish/src/index.ts", "apps/papercusp-publish/src/r2-archive.ts"],
+        "classification": "Entrypoint injects configuredGcsObjectStore into ARCHIVE; retained r2-archive filename is not an R2 backend",
+        "limitation": "D1 and KV identifiers in this configuration are local-dev-stub-id. The saved account inventory did not find a deployed publish Worker. P004 archive proof exercises the maintained adapter against real GCS; it does not assert a deployed publish service."
+      },
+      {
+        "path": "scripts/lib/workspace-host-gcs-publication.mjs",
+        "classification": "GCS publication and verification; r2UploadId is a compatibility field in the existing upload wire contract"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/release-artifacts.sh",
+        "classification": "R2 hostname admission/legacy compatibility check; not a configured storage endpoint"
+      },
+      {
+        "path": "papercusp-desktop/bin/mac-vm-fresh-install-e2e.sh",
+        "classification": "Validation journey still has an R2 artifact-base default",
+        "remedy": "Use an explicit qualified GCS-backed artifact base and extend the maintained journey default under the existing P003 release lane.",
+        "ownerWorkItem": "WI-6554700010025562"
+      },
+      {
+        "path": "papercusp-desktop/bin/offline-installer-journey.sh",
+        "classification": "Network egress probe still names the old R2 public origin among alternate reachability targets",
+        "remedy": "Update the maintained validation target under P003; this match is not a server storage backend.",
+        "ownerWorkItem": "WI-6554700010025562"
+      },
+      {
+        "path": "papercusp-desktop/bin/verify-provenance-parity.sh",
+        "classification": "Explicit fake parity fixture hostname; not an active storage endpoint"
+      }
+    ],
+    "limitation": "This is a source/configuration census of the named scopes, not a whole-workspace or every-account assertion. No live gate or P003 operation was performed."
+  },
+  "expandedSourceCensus": {
+    "scope": "apps, packages, libs, scripts and papercusp-desktop; includes non-test source and provisioning templates. Dependencies, build output, tests, fixtures, documentation and retained evidence were excluded from the endpoint-pattern census.",
+    "method": "Read every path returned by the bounded endpoint/binding/credential scan, then supplement with R2Bucket, R2Multipart and r2BucketName identifiers. Compatibility matches were inspected in their actual caller context.",
+    "additionalMatches": [
+      {
+        "path": "papercusp-desktop/bin/upload-release.sh",
+        "classification": "Historical R2 bot/User-Agent comments in the generic manifest artifact probe; current code uses the manifest URL rather than a hardcoded R2 delivery endpoint."
+      },
+      {
+        "path": "papercusp-desktop/bin/recover-release.mjs",
+        "classification": "Explicit rejection of R2 recovery addresses; not a remaining R2 reader."
+      },
+      {
+        "path": "packages/operator-core/lib/dao-hr/wallet-binding-fixture.ts",
+        "classification": "Named test fixture; not a storage runtime integration."
+      },
+      {
+        "path": "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+        "classification": "R2Multipart/R2-compatible wire identifiers on the maintained ObjectStore upload seam; actual storage injection is GCS."
+      },
+      {
+        "paths": [
+          "libs/papercusp/plugins/cloudflare-stack/papercusp.json",
+          "libs/papercusp/plugins/cloudflare-stack/provision/setup.sh",
+          "libs/papercusp/plugins/cloudflare-stack/examples/wrangler.toml.tmpl"
+        ],
+        "classification": "Reusable Cloudflare provisioning capability still offers R2 bucket creation and a generated R2 binding. It is not silently classified as migrated.",
+        "runtimeObservation": "plugins:runtime_status on staging3170 lists @papercupai/cloudflare-stack version0.1.0 as loaded. Its manifest declares provisioning hooks but no runtime entry, actions, API or events.",
+        "scopeAuthority": "Plan Product shaping requires every inventoried active Papercusp-owned R2 integration and excludes unrelated Workers/D1/KV/Pages changes. Loading a provisioning manifest alone does not establish that a Papercusp-owned R2 data flow was provisioned by it.",
+        "activePapercuspResources": "No managed provision-state rows for either plugin alias in papercusp-workspace; attributed scoped read passed its same-table/workspace positive control. This is not an absence claim about manually created or unrecorded provider resources.",
+        "resourceLedgerRead": {
+          "tool": "code:run -> dev:pg_query",
+          "table": "harness_shared.provision_state",
+          "workspace": "papercusp-workspace",
+          "pluginAliases": ["@papercupai/cloudflare-stack", "cloudflare-stack"],
+          "returnedRows": 0,
+          "truncated": false,
+          "positiveControl": "passed: same table/workspace returned sheets/dbos-cutover-test",
+          "absenceVerdict": "verified within the named registry scope",
+          "classification": "Loaded provisioning capability with no recorded workspace provisioning instance; no runtime plugin storage entrypoint. Its generic R2 option remains explicitly disclosed."
+        },
+        "ownerWorkItem": "WI-6554700010025565",
+        "next": "Preserve this scoped classification and remaining generic R2 provisioning option in the independent migration dependency report. Unrecorded original R2 populations remain covered by the separate source inventory and owned inaccessible-data exception. No provisioning or teardown was invoked."
+      }
+    ],
+    "scopeLimit": "The census finds endpoint/type/config references, not every possible computed runtime value. Final active-dependency acceptance remains open."
+  },
+  "sanitizedProducerReadback": {
+    "releaseHostFile": "~/.papercusp/release-host.env",
+    "releaseHostGcsFile": "~/.papercusp/release-host-gcs.env",
+    "PAPERCUSP_RELEASE_HOST": {
+      "origin": "https://papercusp-cupboard.aviynw.workers.dev",
+      "valueSha256": "a583568ff0ba737f0dd0e388437c63ecc3ec30b7b61d59e123bf6fe7048d1767"
+    },
+    "PAPERCUSP_UPDATE_BASE_URL": {
+      "origin": "https://papercusp-cupboard.aviynw.workers.dev",
+      "valueSha256": "a583568ff0ba737f0dd0e388437c63ecc3ec30b7b61d59e123bf6fe7048d1767"
+    },
+    "releaseStorageFile": "~/.papercusp/release-storage.env",
+    "PAPERCUSP_RELEASE_GCS_BUCKET": "pc-p317-host-bundle-20260917",
+    "privatePathOmitted": true,
+    "secretValuesRecorded": false,
+    "rule": "These are current file values only. Verify the exact shipped artifact and deployed configuration separately."
+  },
+  "journeyMap": [
+    {
+      "journey": "Retained signed P544 publish and read",
+      "reuse": ["p002-production-execution.json", "p002-production-live.json", "p002-custody-retention.json"],
+      "canonicalRun": 22258800,
+      "binding": 73886,
+      "acceptanceRemaining": "Independent P002 grading audit; historical execution has no runtimeBefore/After witness. Do not repeat the production download for recall."
+    },
+    {
+      "journey": "Private visibility, create-only collision, reconnect, finalization and archive restore",
+      "reuse": ["p004-completion-candidate-2026-10-29.json"],
+      "acceptanceRemaining": "P004 is already complete with committed authority. Reuse its bounded receipts and five independent audits without re-closing or rerunning them. Deployed publish Worker absence remains explicit."
+    },
+    {
+      "journey": "Actual desktop/server install, upgrade, updater and explicit old-client recovery",
+      "reuse": ["p003-vm-candidate-journey-0.0.32.json", "p003-old-client-update-probe.json"],
+      "ownerWorkItem": "WI-6554700010025562",
+      "acceptanceRemaining": "Peer release owner must supply exact qualified publication, platform scope and deployed-artifact acceptance. Saved candidate evidence alone is not shipment."
+    },
+    {
+      "journey": "Data census, source retention and cutover deltas",
+      "reuse": ["p005-census-preparation-2026-10-29.json"],
+      "ownerWorkItem": "WI-6554700010025564",
+      "exceptionWorkItem": "WI-6554700010025592",
+      "acceptanceRemaining": "Bound copy/retention evidence and precise inaccessible-data dispositions; obtain P005 acceptance."
+    }
+  ],
+  "sequence": {
+    "D090": "Complete full migration and independent shipment acceptance before new P544 provider experiments.",
+    "D086": "Then resume integrated hybrid pool plus swap, six cost categories, total under $20, finite deadline/teardown and exact independent qualification/shipment.",
+    "p544WorkItem": "WI-6554700010016277",
+    "newProviderExperimentStartedThisTurn": false,
+    "p544QualifiedOrShipped": false
+  },
+  "next": "Resolve P002 audit, accept P005 after peer release dependency, then obtain independent exact deployed migration acceptance. Preserve all original receipts and the separate P544 obligation."
+}

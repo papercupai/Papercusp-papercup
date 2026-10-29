@@ -9,6 +9,9 @@ import * as databaseTargets from '@papercusp/db-org/connection';
 import type { TaskRow } from '../task-manager/types';
 import { readGradingAuditSourcePin } from './grading-audit-source-pin';
 import { requestOnlyIdentityGuardMarker } from '../harness/env-operator-launcher';
+import { ownerPidFromSocketPath, resolveSpawnerSocketPath, SPAWNER_SOCKET_ENV } from '../fleet/spawner-socket-path';
+import { SPAWNER_SCOPE_ENV } from '../fleet/sidecar-exec-lifetime';
+import { SUBSTRATE_SOCKET_ENV } from '../sync/hyperbee/substrate-socket-path';
 import { writeOperatorArtifactManifest } from './operator-artifact';
 import { ensureGradingAuditRuntime, gradingAuditRuntimeChildEnv, retireUnusedGradingAuditRuntimes, recoverGradingAuditRuntimeSource,
   qualifyRematerializedGradingAuditSource, gradingAuditRuntimeSupervisorArgs,
@@ -22,6 +25,7 @@ vi.mock('../task-manager/control', () => ({ killTask: killManaged }));
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
 afterEach(() => vi.restoreAllMocks());
+afterEach(() => vi.unstubAllEnvs());
 
 function fixture(evaluatorBuild = { sha: 'exact123456', version: '1.2.3' }) {
   const root = mkdtempSync(join(tmpdir(), 'audit-runtime-'));
@@ -446,5 +450,29 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect(env).toMatchObject({ DATABASE_URL: admin, HARNESS_ADMIN_DATABASE_URL: admin,
       HARNESS_DATABASE_URL: app, PAPERCUSP_DATABASE_URL: admin,
       PAPERCUSP_INTEGRATION_ROOT: f.source.sourceRoot });
+  });
+
+  it('does not inherit a retired parent sidecar owner when launching an exact evaluator', async () => {
+    const f = fixture();
+    await ensureGradingAuditRuntime(f.input, f.deps);
+    const parentSocket = '/tmp/papercusp-spawner-2147483647.sock';
+    vi.stubEnv(SPAWNER_SOCKET_ENV, parentSocket);
+    vi.stubEnv(SPAWNER_SCOPE_ENV, 'pc-retired-parent.scope');
+    vi.stubEnv(SUBSTRATE_SOCKET_ENV, '/tmp/papercusp-substrate-2147483647.sock');
+
+    const env = gradingAuditRuntimeChildEnv(f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator);
+
+    expect(env[SPAWNER_SOCKET_ENV]).toBeUndefined();
+    expect(env[SPAWNER_SCOPE_ENV]).toBeUndefined();
+    expect(env[SUBSTRATE_SOCKET_ENV]).toBeUndefined();
+    expect(process.env[SPAWNER_SOCKET_ENV]).toBe(parentSocket);
+    expect(process.env[SPAWNER_SCOPE_ENV]).toBe('pc-retired-parent.scope');
+    expect(env).toMatchObject({ PAPERCUSP_BUILD_SHA: f.input.evaluatorBuild.sha,
+      PAPERCUSP_INTEGRATION_ROOT: f.source.sourceRoot, PAPERCUSP_HONO_PORT: '45187' });
+
+    vi.stubEnv(SPAWNER_SOCKET_ENV, env[SPAWNER_SOCKET_ENV]);
+    const socket = resolveSpawnerSocketPath();
+    expect(socket).not.toBe(parentSocket);
+    expect(ownerPidFromSocketPath(socket)).toBe(process.pid);
   });
 });

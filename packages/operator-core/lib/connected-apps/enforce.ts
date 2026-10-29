@@ -192,9 +192,33 @@ export async function enforceAppKeyScope(
   request: KernelEnforcementRequest,
   deps: EnforceAppKeyScopeDeps = DEFAULT_DEPS,
 ): Promise<KernelEnforcementResult | null> {
+  return enforceAppKeyScopePolicy(request, deps, false);
+}
+
+/** Sensitive service reads must be explicitly named on BOTH the app key and
+ * its optional access token. A generic graph/group grant is not a new data
+ * grant. Call only with the transport's authenticated principal, never JSON.
+ * This does not authenticate a hosted person or grant analytics consent. */
+export async function enforceExactServiceAppKeyScope(
+  request: KernelEnforcementRequest,
+  deps: EnforceAppKeyScopeDeps = DEFAULT_DEPS,
+): Promise<KernelEnforcementResult | null> {
+  return enforceAppKeyScopePolicy(request, deps, true);
+}
+
+async function enforceAppKeyScopePolicy(
+  request: KernelEnforcementRequest,
+  deps: EnforceAppKeyScopeDeps,
+  exactServiceGrant: boolean,
+): Promise<KernelEnforcementResult | null> {
   const principal = request.ctx?.principal ?? null;
+  if (exactServiceGrant && (principal?.kind !== 'service' || principal.trust !== 'verified' ||
+      principal.authMethod !== 'bearer-token')) {
+    return deny('service_required', 'a verified connected-app bearer service is required');
+  }
   const ref = appPrincipalRefOfSlug(principal?.slug);
   if (!ref) {
+    if (exactServiceGrant) return deny('service_required', 'a connected-app key must name the service');
     // A slug that CLAIMS the app namespace but names no key is refused, not waved through.
     if (typeof principal?.slug === 'string' && principal.slug.startsWith(APP_PRINCIPAL_SLUG_PREFIX)) {
       return deny('key_unknown', 'the principal names no app key');
@@ -207,6 +231,9 @@ export async function enforceAppKeyScope(
     }
     const rows = await scopeRowsFor(ref, deps);
     if (!rows) return deny('key_unknown', ref.tokenId ? 'access token no longer exists' : 'app key no longer exists');
+    if (exactServiceGrant && rows.some(row => !row.scopes.tools?.includes(request.toolName))) {
+      return deny('exact_tool_grant_required', 'the key and token must each explicitly name this tool');
+    }
 
     const known = deps.lookupTool(request.toolName);
     const tool: AppScopeTool = known

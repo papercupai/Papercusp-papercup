@@ -1128,6 +1128,21 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     });
   });
 
+  it('forwards the exact work-item into headless task enrollment', async () => {
+    const workItem = 'EI-audit-1';
+    const res = await launchAgent.handler({
+      brief: 'audit the retained scorecard task',
+      harness: 'papercusp',
+      workItem,
+      headless: true,
+    }, ctx);
+
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledOnce();
+    expect(spawnHeadlessMock.mock.calls[0]?.[0]).toMatchObject({ workItemId: workItem });
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
   describe('accepted operation worker feature binding', () => {
     const workItem = 'WI-10007113';
     const matchingBinding = { workItemId: workItem };

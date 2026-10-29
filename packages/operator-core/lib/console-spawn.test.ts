@@ -731,6 +731,25 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(release).toHaveBeenCalled();
   });
 
+  it('records the exact work-item on the headless task-ledger enrollment', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7795));
+    const workItemId = 'EI-26931290267778996';
+    const result = await spawnHeadless({
+      envelope,
+      workItemId,
+      bootProbes: { windowMs: 0 },
+      ...noSystemdRun,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(taskEnrolment.complete).toHaveBeenCalledOnce();
+    expect(taskEnrolment.complete).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ class: 'agent-session', workItemId }),
+      7795,
+    );
+  });
+
   it('establishes kickoff proof on the private runtime mount when scratch is unusable', async () => {
     const root = mkdtempSync(join(tmpdir(), 'kickoff-runtime-'));
     const runtime = join(root, 'runtime');

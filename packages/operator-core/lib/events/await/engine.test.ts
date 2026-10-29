@@ -79,6 +79,7 @@ const h = vi.hoisted(() => ({
   // Legacy read cursor used only for message-less inbox notifications. Empty by
   // default, so existing tests that don't care about it never suppress anything.
   lastInboxReadAtBatch: vi.fn(async (_ownerIds: string[]): Promise<Map<string, string>> => new Map()),
+  readOpenTaskReminderSignature: vi.fn(async (_input: { ownerId: string; workspaceId: string }): Promise<string | null> => null),
   // EI-18676763837940562: the reply-linkage leg's batched lookup — no replies on
   // record by default, matching the fail-open default (never suppresses anything
   // existing tests don't explicitly set up).
@@ -228,6 +229,8 @@ beforeEach(() => {
   h.store.claimDueDeliveries.mockResolvedValue([]);
   h.admitWakeFanout.mockResolvedValue(0);
   h.store.settleCancelledAwaitDeliveries.mockResolvedValue([]);
+  h.readOpenTaskReminderSignature.mockReset();
+  h.readOpenTaskReminderSignature.mockResolvedValue(null);
   h.compose.claimDueComposedRoots.mockResolvedValue([]);
   predicateTimeoutHook.getPredicateTimeoutContext.mockResolvedValue(null);
   // The engine logs wake outcomes deliberately (visible drops, D-004);
@@ -1127,6 +1130,62 @@ describe('emitAwaitedEvent — WI-4014 Part 2: standing event-key inject subscri
 });
 
 describe('pumpWakeDeliveries — pacing (D-007)', () => {
+  it('drops a stale task reminder before coalescing while preserving other messages for the same recipient', async () => {
+    const staleReminder = workRow({
+      id: 700,
+      subscriberId: 'su-a',
+      eventKey: 'coord:inbox-wake:su-a',
+      source: 'turn-end-open-task-reminder',
+      payload: { kind: 'open-task-reminder', signature: 'old-signature', taskWorkspaceId: 'papercusp-workspace' },
+    });
+    const peerMessage = workRow({
+      id: 701,
+      subscriberId: 'su-a',
+      eventKey: 'coord:inbox-wake:su-a',
+      source: 'coord:send',
+      payload: { msg_id: 'm-ask' },
+    });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([staleReminder, peerMessage]);
+    h.readOpenTaskReminderSignature.mockResolvedValueOnce('new-signature');
+
+    const stats = await pumpWakeDeliveries('ws-test', {
+      readOpenTaskReminderSignatureFn: h.readOpenTaskReminderSignature,
+    });
+
+    expect(h.readOpenTaskReminderSignature).toHaveBeenCalledWith({
+      ownerId: 'su-a',
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(
+      staleReminder.id,
+      'open-task reminder snapshot changed before delivery',
+    );
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(h.executeWake).toHaveBeenCalledWith(expect.objectContaining({ id: peerMessage.id }), expect.anything());
+    expect(stats).toMatchObject({ dropped: 1, delivered: 1 });
+  });
+
+  it('delivers a task reminder when its canonical task signature is still current', async () => {
+    const reminder = workRow({
+      id: 702,
+      subscriberId: 'su-current',
+      eventKey: 'coord:inbox-wake:su-current',
+      source: 'turn-end-open-task-reminder',
+      payload: { kind: 'open-task-reminder', signature: 'same-signature', taskWorkspaceId: 'papercusp-workspace' },
+    });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([reminder]);
+    h.readOpenTaskReminderSignature.mockResolvedValueOnce('same-signature');
+
+    const stats = await pumpWakeDeliveries('ws-test', {
+      readOpenTaskReminderSignatureFn: h.readOpenTaskReminderSignature,
+    });
+
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(h.executeWake).toHaveBeenCalledWith(expect.objectContaining({ id: reminder.id }), expect.anything());
+    expect(h.store.markDeliveryDropped).not.toHaveBeenCalled();
+    expect(stats).toMatchObject({ dropped: 0, delivered: 1 });
+  });
+
   it('an overdue bulk queue after restart cannot bypass execution admission; a directed wake stays immediate', async () => {
     process.env.PAPERCUSP_AWAIT_MAX_RESUMES_PER_TICK = '250';
     const bulk = Array.from({ length: 200 }, (_, i) => workRow({ id: 10_000 + i, subscriberId: `bulk-${i}`, source: 'resume-fleet',

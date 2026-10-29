@@ -1,11 +1,20 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HarnessContract } from './contract.js';
 import { runHarness } from './runner.js';
 
 const tmp = () => mkdtempSync(path.join(tmpdir(), 'vh-conc-'));
+let canonical: string;
+beforeEach(() => {
+  canonical = tmp();
+  vi.stubEnv('VH_EVIDENCE_ROOT_BASE', canonical);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(canonical, { recursive: true, force: true });
+});
 
 /** A battery: independent scenarios plus one phase that needs the first scenario to pass. */
 const contract: HarnessContract = {

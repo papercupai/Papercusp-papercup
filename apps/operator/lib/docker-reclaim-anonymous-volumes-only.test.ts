@@ -172,12 +172,15 @@ describe('Podman stores use the existing guarded image policy', () => {
     executable('docker', '[[ "${DOCKER_UP:-0}" == 1 ]] || exit 1\nif [[ "$1" == info ]]; then [[ "$*" != *--format* ]] || echo "$FIXTURE_ROOT/stores/docker"; exit 0; fi\nprintf "docker %s\\n" "$*" >>"$FIXTURE_LOG"\n');
     executable('sudo', '[[ "$1" == "-n" ]] && shift\nexport STORE=rootful\nexec "$@"\n');
     executable('podman', 'if [[ "$1" == "info" ]]; then [[ "$*" != *--format* ]] || echo "${FIXTURE_ALIAS:-$FIXTURE_ROOT/stores/${STORE:-rootless}}"; exit "${PODMAN_DOWN:-0}"; fi\nprintf "%s %s\\n" "${STORE:-rootless}" "$*" >>"$FIXTURE_LOG"\nif [[ -n "${FIXTURE_PAUSE:-}" && "${STORE:-rootless}" == rootless ]]; then touch "$FIXTURE_PAUSE"; while [[ ! -e "$FIXTURE_PAUSE.continue" ]]; do sleep 0.01; done; fi\nexit "${FIXTURE_NATIVE_EXIT:-0}"\n');
-    executable('df', 'if [[ "$*" == *--output=avail* ]]; then echo "${FIXTURE_AVAILABLE:-100000000000}"; else echo 100000000000; fi\n');
+    executable('df', 'if [[ "$*" == *--output=avail* ]]; then if [[ -n "$FIXTURE_AVAILABLE_AFTER" && -f "$FIXTURE_DF_COUNTER" ]]; then echo "$FIXTURE_AVAILABLE_AFTER"; else value="$FIXTURE_AVAILABLE"; [[ -n "$value" ]] || value=100000000000; echo "$value"; touch "$FIXTURE_DF_COUNTER"; fi; else echo 100000000000; fi\n');
     const env = { ...process.env, PATH: root + ':' + process.env.PATH, FIXTURE_ROOT: root, FIXTURE_LOG: log,
       PAPERCUSP_RELEASE_RETENTION_ROOT: join(root, 'pins'), PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, 'mutex'),
+      FIXTURE_DF_COUNTER: join(root, 'df-counter'),
       PAPERCUSP_FS_MUTEX_TIMEOUT_MS: '2000', DRY_RUN: '0', SKIP_IMAGES: '0', SKIP_TESTCONTAINERS: '1',
       FIXTURE_ALIAS: '', IMAGE_MAX_AGE: '168h', RECLAIM_MIN_FREE_PCT: '101' };
-    return { root, env, calls: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [] };
+    const installFailedCensus = () => executable('python3',
+      'if [[ "$1" == "-c" ]]; then echo \'{"complete":false,"permissionDenied":false,"error":"filesystem boundary"}\'; exit 0; fi\nexit 97\n');
+    return { root, env, calls: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [], installFailedCensus };
   };
   const pin = (f: ReturnType<typeof fixture>, path: string, expired = false) => {
     const nowMs = Date.now() - (expired ? 120_000 : 0);
@@ -201,6 +204,26 @@ describe('Podman stores use the existing guarded image policy', () => {
     expect(result.calls.some(call => call.startsWith('docker '))).toBe(false);
     expect(result.calls).toHaveLength(2);
     expect(result.output).toContain('retention pin protects docker');
+  });
+
+  it('runs native cleanup when pin admission succeeds but the allocation census hits a boundary', () => {
+    const result = runFixture({}, f => f.installFailedCensus());
+    expect(result.calls).toEqual([
+      'rootless image prune -af --filter until=168h',
+      'rootful image prune -af --filter until=168h',
+    ]);
+    expect(result.receipts).toHaveLength(2);
+    expect(result.receipts.every(r => r.measurementComplete === false && r.complete === false
+      && r.error.includes('filesystem boundary'))).toBe(true);
+  });
+
+  it('keeps a live store pin blocking native cleanup when the allocation census fails', () => {
+    const result = runFixture({}, f => {
+      f.installFailedCensus();
+      pin(f, join(f.root, 'stores/rootless'));
+    });
+    expect(result.calls).toEqual(['rootful image prune -af --filter until=168h']);
+    expect(result.output).toContain('retention pin protects podman-rootless');
   });
 
   it('protects a custom physical Podman store through its logical alias', () => {
@@ -266,6 +289,13 @@ describe('Podman stores use the existing guarded image policy', () => {
     expect(result.calls).toEqual([]);
     expect(result.output).toContain('DRY_RUN would run: podman image prune -af --filter until=168h');
     expect(result.output).toContain('DRY_RUN would run: sudo -n podman image prune -af --filter until=168h');
+  });
+
+  it('does not attribute unrelated free-space changes to cleanup during DRY_RUN', () => {
+    const result = runFixture({ DRY_RUN: '1', FIXTURE_AVAILABLE: '1000000000', FIXTURE_AVAILABLE_AFTER: '2000000000' });
+    expect(result.output).toContain('dry-run observed df delta: 953 MiB; not attributed to this run');
+    expect(result.output).not.toContain('MiB reclaimed');
+    expect(result.receipts.every(r => r.reclaimedBytes === 0)).toBe(true);
   });
 
   it('honors the existing image-sweep kill switch for both Podman stores', () => {

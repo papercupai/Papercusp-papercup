@@ -270,11 +270,8 @@ describe("sessions:read session:'self' resolver integration (EI-2159293118197497
     expect(tx.mock.calls.some(([strings]) => String(strings).includes('owner = ANY'))).toBe(true);
   });
 
-  it('judge rejects arbitrary session and turn-reference selectors before reading', async () => {
-    for (const args of [
-      { session: 'claude:unrelated-session' },
-      { ref: 'session_turn:claude:unrelated-session:4' },
-    ]) {
+  it('judge rejects arbitrary session selectors before reading', async () => {
+    for (const args of [{ session: 'claude:unrelated-session' }]) {
       const tx = makeTx();
       const dispatched = await dispatchProjectedTool(
         projected,
@@ -310,5 +307,69 @@ describe("sessions:read session:'self' resolver integration (EI-2159293118197497
       });
       expect(tx).not.toHaveBeenCalled();
     }
+  });
+
+  it('judge can follow a self readMore ref while keeping the ref owner-scoped', async () => {
+    await seedFixture();
+
+    const ownTx = makeTx();
+    const ownRef = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { ref: `session_turn:codex:${PREDECESSOR}:8`, text_offset: 5, text_limit: 12 },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'read-judge-self-ref-test',
+        role: 'judge',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: ownTx,
+      },
+      {},
+    );
+
+    expect(ownRef.ok, JSON.stringify(ownRef)).toBe(true);
+    expect(ownRef.result?.structuredContent).toMatchObject({
+      ok: true,
+      turn_count: 1,
+      turns: [{
+        ref: `session_turn:codex:${PREDECESSOR}:8`,
+        text_offset: 5,
+        text: 'e determinis',
+      }],
+    });
+    expect(ownTx.mock.calls.some(([strings]) => String(strings).includes('owner = ANY'))).toBe(true);
+
+    const foreignTx = makeTx();
+    const foreignRef = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { ref: 'session_turn:claude:unrelated-session:4' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'read-judge-foreign-ref-test',
+        role: 'judge',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: foreignTx,
+      },
+      {},
+    );
+
+    expect(foreignRef.ok, JSON.stringify(foreignRef)).toBe(true);
+    expect(foreignRef.result?.structuredContent).toMatchObject({ ok: true, turn_count: 0, turns: [] });
+    expect(foreignTx.mock.calls.some(([strings]) => String(strings).includes('owner = ANY'))).toBe(true);
   });
 });

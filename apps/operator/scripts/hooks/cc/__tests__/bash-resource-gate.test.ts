@@ -4458,6 +4458,39 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
     );
   });
 
+  describe('apostrophe-spliced interpreter payloads (EI-27266551901301989)', () => {
+    const splices = [
+      ['backslash-escaped apostrophe', "'\\''"],
+      ['double-quoted apostrophe', "'\"'\"'"],
+    ] as const;
+    const shellWord = (value: string, splice: string) =>
+      "'" + value.replaceAll("'", splice) + "'";
+    const readOnlyPayload = [
+      "const phase = 'imports';",
+      "const clean = value => String(value).replace(/https?:\\/\\/[^\\s\"'<>]+/g, '[URL REDACTED]');",
+      "console.log(clean(phase));",
+    ].join('\n');
+
+    it.each(splices)('allows a read-only payload using %s', (_label, splice) => {
+      const command = 'node --import tsx --input-type=module -e ' + shellWord(readOnlyPayload, splice);
+      expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    });
+
+    it.each(splices)('still denies a neighboring shell redirect using %s', (_label, splice) => {
+      const command = 'node -e ' + shellWord(readOnlyPayload, splice) + ' > apps/operator/generated.ts';
+      const reason = expectShellWriteDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+      expect(reason).toContain('apps/operator/generated.ts');
+    });
+
+    it.each(splices)('still denies an interpreter write using %s', (_label, splice) => {
+      const code = "require('node:fs').writeFileSync('apps/operator/generated.ts', 'x')";
+      const command = 'node -e ' + shellWord(code, splice);
+      const reason = denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+      expect(reason).toContain('EI-18691482279179647');
+      expect(reason).toContain('apps/operator/generated.ts');
+    });
+  });
+
   it('allows the exact unquoted JavaScript arrow-function repro in node --eval', () => {
     const command = `node -e "import('./scripts/check-declared-consumed.mjs').then(m=>console.log(Object.keys(m).join(' ')))"`;
     expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));

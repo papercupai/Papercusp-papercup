@@ -407,6 +407,31 @@ describe('release:cut — constrained root selector', () => {
     expect(result).toEqual({ ok: false, reason: 'root_clone_invalid — pin mismatch' });
   });
 
+  it('reports path-free registry, clone-admission, and root-status timings', async () => {
+    const cloneRoot = '/tmp/private-release-clone';
+    const events: Array<{ phase: string; stage: 'start' | 'finish'; metrics?: Record<string, number> }> = [];
+    const result = await resolveCutRoot(cloneRoot + '/papercusp-desktop', {
+      loadRegistry: async () => ({ projects: [{ slug: 'source', path: '/registered/private-source' }] }),
+      listWorktrees: () => [],
+      canonicalPath: (candidate) => candidate,
+      status: () => '',
+      verifySourceClone: async () => ({ ok: true as const, path: cloneRoot }),
+    }, {
+      sourceSha: 'b'.repeat(40),
+      onPhase: (event) => events.push(event),
+    });
+
+    expect(result).toMatchObject({ ok: true, worktreeRoot: cloneRoot });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'registry-load', stage: 'start' }),
+      expect.objectContaining({ phase: 'registered-worktree-discovery', stage: 'finish' }),
+      expect.objectContaining({ phase: 'source-clone-admission', stage: 'finish', metrics: { accepted: 1 } }),
+      expect.objectContaining({ phase: 'selected-root-status', stage: 'finish' }),
+    ]));
+    expect(JSON.stringify(events)).not.toContain(cloneRoot);
+    expect(JSON.stringify(events)).not.toContain('/registered/private-source');
+  });
+
   it('rejects a selected worktree with uncommitted changes', async () => {
     const result = await resolveCutRoot('isolated', {
       loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),
@@ -1345,6 +1370,32 @@ describe('release:cut — status (per-leg, WI-4233)', () => {
     expect(statusM).toHaveBeenCalledWith({ platform: 'mac' });
     expect(b).toMatchObject({ ok: true, op: 'status', platform: 'mac', state: 'done', unit: 'pc-taskmac1234.service' });
     expect(b.note).toContain("leg 'mac' (unit pc-taskmac1234.service)");
+  });
+
+  it('correlates path-free phase timings to the status request', async () => {
+    statusM.mockReturnValue({
+      state: 'done',
+      running: false,
+      exitCode: 0,
+      logTail: 'mac build ok',
+      logPath: '/tmp/private-status.log',
+      donePath: '/tmp/private-status.done',
+      operation: { operationId: 'op-mac', taskId: 'taskmac1234', startedAtSec: 1_700_000_000 },
+    });
+    const log = vi.fn();
+
+    await tool.handler(
+      { op: 'status' } as never,
+      { role: 'cup', requestOrigin: { mcpRequestTraceId: 'mcp-status-trace' }, log } as never,
+    );
+
+    const lines = log.mock.calls.map(([message]) => String(message));
+    expect(lines).toEqual(expect.arrayContaining([
+      expect.stringContaining('"traceId":"mcp-status-trace","phase":"handler","stage":"start"'),
+      expect.stringContaining('"traceId":"mcp-status-trace","phase":"read-cut-status","stage":"finish"'),
+      expect.stringContaining('"traceId":"mcp-status-trace","phase":"handler","stage":"finish"'),
+    ]));
+    expect(lines.join('\n')).not.toContain('/tmp/');
   });
 });
 

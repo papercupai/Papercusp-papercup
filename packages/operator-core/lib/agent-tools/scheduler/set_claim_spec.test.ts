@@ -941,6 +941,35 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     }));
   });
 
+  it('refuses a cooled-down member target even when the leader writer is eligible', async () => {
+    const targetCooldown = {
+      ...eligible,
+      admissible: false,
+      refusedBy: 'release-cooldown',
+      detail: 'target release cooldown',
+    };
+    getWorkItem.mockResolvedValueOnce({ family: 'issue' });
+    explainIssueClaimFloors.mockClear();
+    explainIssueClaimFloors.mockImplementationOnce(async (_harness, _ids, opts) =>
+      opts?.assignee === 'su-member' ? [targetCooldown] : [eligible],
+    );
+    setClaimSpec.mockClear();
+
+    const result = await (setClaimSpecTool as any).handler(
+      { cupId: 'su-member', harness: 'papercusp', spec: fixedSpec([held.id]) },
+      { isSuperuser: true, uiClientId: 'su-leader', workspaceId: 'ws-test', harnessSlug: 'papercusp' },
+    );
+
+    expect(result.data.ok).toBe(false);
+    expect(result.data.errors.join('\n')).toContain(`${held.id}:release-cooldown`);
+    expect(explainIssueClaimFloors).toHaveBeenCalledOnce();
+    expect(explainIssueClaimFloors).toHaveBeenCalledWith('papercusp', [held.id], {
+      assignee: 'su-member',
+      states: ['open'],
+    });
+    expect(setClaimSpec).not.toHaveBeenCalled();
+  });
+
   it('validates fleet existence before any held-cohort membership read or persistence', async () => {
     getFleet.mockResolvedValueOnce(null);
     listFleetControlMembers.mockClear();

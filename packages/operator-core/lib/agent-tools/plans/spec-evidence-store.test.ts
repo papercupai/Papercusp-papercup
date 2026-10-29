@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cp, mkdtemp, mkdir, readFile, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -19,6 +19,9 @@ const h = vi.hoisted(() => ({
   measurementRoot: '',
   fixtureMeasurementRoot: '',
   caseRows: null as Array<Record<string, unknown>> | null,
+  mutationProbeLocks: [] as Array<{ coordinationDomain: string; path: string; intent: string }>,
+  mutationProbeReads: 0,
+  mutationProbeLockAfterRead: 0,
 }));
 
 vi.mock('../../acceptance-author-identity', () => ({
@@ -32,13 +35,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
     ...actual,
     withWorkspace: async <T>(workspaceId: string, fn: (tx: unknown) => Promise<T>) => {
       h.workspaceScopes.push(workspaceId);
-      const tx = ((strings: TemplateStringsArray | string[], ...values: unknown[]) => {
+      const tx = Object.assign((strings: TemplateStringsArray | string[], ...values: unknown[]) => {
         const sql = Array.from(strings).join(' ');
         h.queries.push({ sql, values });
         if (sql.includes('to_regclass')) return Promise.resolve([{ present: h.caseRows !== null }]);
         if (sql.includes('FROM harness_shared.test_case_runs')) return Promise.resolve(h.caseRows ?? []);
         return Promise.resolve(sql.includes('provisional') ? h.scorecardRows : h.rows);
-      }) as unknown;
+      }, { unsafe: (fragment: string) => fragment }) as unknown;
       const result = await fn(tx);
       h.completedWorkspaceTransactions += 1;
       return result;
@@ -68,7 +71,17 @@ vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 vi.mock('../locks/su-lock-store', () => ({
   ensureBootstrap: vi.fn(async () => undefined),
   getTxPool: vi.fn(() => ({})),
-  readQueue: vi.fn(async () => ({ active_locks: [], waiting: [], completed: [] })),
+  readQueue: vi.fn(async (_pool: unknown, options: { coordinationDomain?: string; paths?: string[] }) => {
+    h.mutationProbeReads += 1;
+    const locksVisible = h.mutationProbeLockAfterRead === 0 || h.mutationProbeReads >= h.mutationProbeLockAfterRead;
+    return {
+      active_locks: locksVisible ? h.mutationProbeLocks
+        .filter(lock => lock.coordinationDomain === options.coordinationDomain && options.paths?.includes(lock.path))
+        .map(({ path, intent }) => ({ path, intent })) : [],
+      waiting: [],
+      completed: [],
+    };
+  }),
 }));
 
 // A replay that MEASURES resolves a real harness checkout. Point that resolution at this
@@ -504,6 +517,25 @@ describe('completed isolated runtime certification', () => {
     const evidence = await read();
     expect(evidence.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
       dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
+  });
+  it('certifies custom-root completion after teardown through the producer canonical retention contract', async () => {
+    const state = await setup();
+    const custom = await mkdtemp(join(tmpdir(), 'completed-runtime-custom-root-'));
+    try {
+      for (const [harness, runId, result, selectors] of [
+        ['verify-tauri-headless', verifierRunId, { ...state.verifier, startedAt: at(0), endedAt: at(50) },
+          ['phases/prepare/verifier-source-receipt.json']],
+        ['native-journey', journeyRunId, state.journey, ['phases/native/manifest.json']],
+      ] as const) {
+        const evidenceDir = join(custom, harness, runId);
+        await cp(join(artifacts, harness, runId), evidenceDir, { recursive: true });
+        await rm(join(artifacts, harness), { recursive: true });
+        await verificationHarness.writeRunResult({ ...result, evidenceDir } as Parameters<typeof verificationHarness.writeRunResult>[0], selectors);
+      }
+      await rm(custom, { recursive: true });
+      expect((await read()).currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
+        dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
+    } finally { await rm(custom, { recursive: true, force: true }); }
   });
   it.each(['native', 'integration'] as const)(
     'reads original retained %s proof after the default evidence root moves', async kind => {
@@ -1379,6 +1411,150 @@ export const census = () => APP_ROOTS.map(walk);
     expect(changed.fixtureFingerprint).not.toBe(first.fixtureFingerprint);
     expect(changed.sourceFingerprint).toBe(first.sourceFingerprint);
     expect(changed.testFingerprint).toBe(first.testFingerprint);
+  });
+
+  it('includes relative fixture imports in current and committed measurements and mutation fences', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'spec-evidence-imported-fixture-'));
+    const previousMeasurementRoot = h.measurementRoot;
+    const previousFixtureMeasurementRoot = h.fixtureMeasurementRoot;
+    const previousRows = h.rows;
+    const fixturePath = 'fixture/voice.fixture.ts';
+    const testPath = 'test/feature.test.ts';
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'],
+      testPaths: [testPath],
+    };
+    try {
+      await Promise.all([
+        mkdir(join(root, 'src'), { recursive: true }),
+        mkdir(join(root, 'test'), { recursive: true }),
+        mkdir(join(root, 'fixture'), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(join(root, 'src/feature.ts'), 'export const feature = true;\n'),
+        writeFile(join(root, testPath), "import { voicePort } from '../fixture/voice.fixture';\nexpect(voicePort).toBe(8080);\n"),
+        writeFile(join(root, fixturePath), 'export const voicePort = 8080;\n'),
+      ]);
+
+      const working = await measureRepoFilesEvidenceDetailedAtRoot(root, recipe);
+      expect(working.fixtureFingerprint).toMatch(/^sha256-file-set-v1:[0-9a-f]{64}$/);
+      expect(working.files).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: fixturePath, dimension: 'fixture' }),
+      ]));
+
+      h.mutationProbeLocks.push({
+        coordinationDomain: resolve(root),
+        path: fixturePath,
+        intent: 'mutation probe',
+      });
+      await expect(measureRepoFilesEvidenceDetailedAtRoot(root, recipe))
+        .rejects.toThrow(`repo_measurement_mutation_probe_active:${resolve(root)}:${fixturePath}`);
+      h.mutationProbeLocks.length = 0;
+
+      h.measurementRoot = root;
+      h.fixtureMeasurementRoot = '';
+      h.rows = [{
+        id: 57,
+        work_item_id: 'WI-imported-fixture',
+        plan_slug: 'plan-one',
+        spec_id: 'SPEC-imported-fixture',
+        source_val_id: null,
+        spec_revision: 1,
+        current_revision: 1,
+        spec_fingerprint: 'sha256:spec-imported-fixture',
+        evidence_kind: 'fixture',
+        evidence_ref: 'fixture:imported-module',
+        source_fingerprint: working.sourceFingerprint,
+        test_fingerprint: working.testFingerprint,
+        fixture_fingerprint: working.fixtureFingerprint,
+        rubric_fingerprint: null,
+        environment_fingerprint: null,
+        coverage_evidence_ref: null,
+        coverage_evidence_present: false,
+        test_run_id: null,
+        test_run_present: false,
+        details: { currentMeasurement: recipe },
+        observed_at: '2026-10-29T00:00:00.000Z',
+        binding_fingerprint: 'sha256:imported-fixture-binding',
+        created_by: 'su-test',
+        created_at: '2026-10-29T00:00:01.000Z',
+        spec_is_current: true,
+      }];
+
+      h.mutationProbeLocks.push({
+        coordinationDomain: resolve(root),
+        path: fixturePath,
+        intent: 'mutation probe',
+      });
+      const [fenced] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+      expect(fenced.serverMeasurement).toMatchObject({
+        status: 'unavailable',
+        reason: `repo_measurement_mutation_probe_active:${resolve(root)}:${fixturePath}`,
+      });
+      h.mutationProbeLocks.length = 0;
+
+      h.mutationProbeReads = 0;
+      h.mutationProbeLockAfterRead = 2;
+      h.mutationProbeLocks.push({
+        coordinationDomain: resolve(root),
+        path: fixturePath,
+        intent: 'mutation probe',
+      });
+      const [postReadFenced] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+      expect(postReadFenced.serverMeasurement).toMatchObject({
+        status: 'unavailable',
+        reason: `repo_measurement_mutation_probe_active:${resolve(root)}:${fixturePath}`,
+      });
+      h.mutationProbeLocks.length = 0;
+      h.mutationProbeLockAfterRead = 0;
+      h.mutationProbeReads = 0;
+
+      const [currentEvidence] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+      expect(currentEvidence.currentness).toMatchObject({
+        overall: 'current',
+        dimensions: { fixture: 'current' },
+      });
+
+      await writeFile(join(root, fixturePath), 'export const voicePort = 9090;\n');
+      const changed = await measureRepoFilesEvidenceDetailedAtRoot(root, recipe);
+      expect(changed.fixtureFingerprint).not.toBe(working.fixtureFingerprint);
+      expect(changed.sourceFingerprint).toBe(working.sourceFingerprint);
+      expect(changed.testFingerprint).toBe(working.testFingerprint);
+      const [staleEvidence] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+      expect(staleEvidence.currentness).toMatchObject({
+        overall: 'stale',
+        dimensions: { fixture: 'stale' },
+        staleReasons: ['fixture-stale'],
+      });
+
+      await writeFile(join(root, fixturePath), 'export const voicePort = 8080;\n');
+      execFileSync('git', ['init', '-q', root]);
+      execFileSync('git', ['-C', root, 'add', '.']);
+      execFileSync('git', ['-C', root, '-c', 'user.name=Spec test', '-c', 'user.email=spec@example.invalid',
+        '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture import measurement']);
+      const commit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      const committed = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, commit);
+      expect(committed.fixtureFingerprint).toBe(working.fixtureFingerprint);
+      expect(committed.files).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: fixturePath, dimension: 'fixture' }),
+      ]));
+
+      await writeFile(join(root, fixturePath), 'export const voicePort = 9090;\n');
+      const changedAfterCommit = await measureRepoFilesEvidenceDetailedAtRoot(root, recipe);
+      expect(changedAfterCommit.fixtureFingerprint).not.toBe(working.fixtureFingerprint);
+      expect((await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, commit)).fixtureFingerprint)
+        .toBe(committed.fixtureFingerprint);
+    } finally {
+      h.mutationProbeLocks.length = 0;
+      h.mutationProbeLockAfterRead = 0;
+      h.mutationProbeReads = 0;
+      h.measurementRoot = previousMeasurementRoot;
+      h.fixtureMeasurementRoot = previousFixtureMeasurementRoot;
+      h.rows = previousRows;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('preserves the fixture root through scope-level measurement and pinning', async () => {

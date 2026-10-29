@@ -369,9 +369,11 @@ describe('planInteractiveHeal (the cross-pass heal ladder — tri-state verdicts
 });
 
 describe('healedWakeText', () => {
-  it('tells the healed session to re-arm its loop and re-park state', () => {
+  it('keeps loop recovery role-aware and re-parks state', () => {
     const text = healedWakeText('su-x', 45);
-    expect(text).toContain('loop:status');
+    expect(text).toContain('use loop:status only if your role permits it');
+    expect(text).toContain('role_not_allowed, do not retry or seek broader access');
+    expect(text).toContain('roles without loop controls should not re-arm');
     expect(text).toContain('do NOT re-arm a deliberately ended loop');
     expect(text).toContain('re-park');
     expect(text).toContain('~45m');

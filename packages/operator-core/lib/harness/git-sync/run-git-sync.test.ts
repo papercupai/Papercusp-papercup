@@ -185,7 +185,7 @@ describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
         path: 'schema-consumer.ts',
         reason: 'migration-dependency-fence',
         detail:
-          'deferred because this path is attributed to the same agent as a reservation-blocked migration at ' +
+          'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
           'libs/sub/libs/db/sql/999-unreserved-migration.sql',
         // WI-10006493: structured provenance, so dev:pipeline_position can name the blocker.
         blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
@@ -243,7 +243,7 @@ describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
         path: 'schema-consumer.ts',
         reason: 'migration-dependency-fence',
         detail:
-          'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
+          'deferred because this path is attributed to the same agent as a reservation-blocked migration at ' +
           'libs/sub/libs/db/sql/999-unreserved-migration.sql',
         blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
         blockingAgents: ['su-migration'],

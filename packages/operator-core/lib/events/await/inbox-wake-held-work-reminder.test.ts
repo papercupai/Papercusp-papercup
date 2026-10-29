@@ -11,11 +11,23 @@ const item = (id: string): HeldWorkItem => ({ id, harness: 'papercusp', status: 
 
 describe('inboxWakeHeldWorkReminderText (WI-6554700010018536)', () => {
   it('is empty when the recipient holds nothing, whatever its mode', () => {
-    expect(inboxWakeHeldWorkReminderText({ held: [], autonomyModes: ['auto'], loopActive: false })).toBe('');
+    expect(
+      inboxWakeHeldWorkReminderText({
+        held: [],
+        autonomyModes: ['auto'],
+        loopActive: false,
+        guaranteedAwaitWake: false,
+      }),
+    ).toBe('');
   });
 
   it('labels held items as a snapshot and requires a live recheck before acting', () => {
-    const t = inboxWakeHeldWorkReminderText({ held: [item('WI-1'), item('WI-2')], autonomyModes: [], loopActive: null });
+    const t = inboxWakeHeldWorkReminderText({
+      held: [item('WI-1'), item('WI-2')],
+      autonomyModes: [],
+      loopActive: null,
+      guaranteedAwaitWake: null,
+    });
     expect(t).toContain('work list snapshot): a recent read found 2 unfinished work-item(s) [WI-1, WI-2]');
     expect(t).toContain("recheck each item's current state and assignee with work_items:get");
     expect(t).toContain('does not finish any still-open items');
@@ -27,23 +39,64 @@ describe('inboxWakeHeldWorkReminderText (WI-6554700010018536)', () => {
 
   it('adds the no-wake sentence only for an autonomy mode with no loop armed', () => {
     const held = [item('WI-1')];
-    const noLoop = inboxWakeHeldWorkReminderText({ held, autonomyModes: ['auto'], loopActive: false });
-    expect(noLoop).toContain('You are in auto mode with no loop armed, so nothing will wake you after this turn');
-    expect(noLoop).toContain('loop:arm');
-    expect(noLoop).toContain('work_items:release');
+    const noLoop = inboxWakeHeldWorkReminderText({
+      held,
+      autonomyModes: ['auto'],
+      loopActive: false,
+      guaranteedAwaitWake: false,
+    });
+    expect(noLoop).toContain('No bounded wake is currently guaranteed');
+    expect(noLoop).toContain('recheck loop:status and events:status');
+    expect(noLoop).not.toContain('nothing will wake you');
 
-    expect(inboxWakeHeldWorkReminderText({ held, autonomyModes: ['auto'], loopActive: true })).not.toContain(
-      'nothing will wake you',
-    );
+    expect(
+      inboxWakeHeldWorkReminderText({
+        held,
+        autonomyModes: ['auto'],
+        loopActive: true,
+        guaranteedAwaitWake: false,
+      }),
+    ).not.toContain('No bounded wake is currently guaranteed');
     // Unknown loop state never claims "no loop".
-    expect(inboxWakeHeldWorkReminderText({ held, autonomyModes: ['auto'], loopActive: null })).not.toContain(
-      'nothing will wake you',
-    );
+    expect(
+      inboxWakeHeldWorkReminderText({
+        held,
+        autonomyModes: ['auto'],
+        loopActive: null,
+        guaranteedAwaitWake: false,
+      }),
+    ).not.toContain('No bounded wake is currently guaranteed');
+  });
+
+  it('does not claim there is no bounded wake when a timed await is active', () => {
+    const t = inboxWakeHeldWorkReminderText({
+      held: [item('WI-1')],
+      autonomyModes: ['auto'],
+      loopActive: false,
+      guaranteedAwaitWake: true,
+    });
+    expect(t).not.toContain('No bounded wake is currently guaranteed');
+    expect(t).not.toContain('nothing will wake you');
+  });
+
+  it('omits the wake claim when the await read is unknown', () => {
+    const t = inboxWakeHeldWorkReminderText({
+      held: [item('WI-1')],
+      autonomyModes: ['auto'],
+      loopActive: false,
+      guaranteedAwaitWake: null,
+    });
+    expect(t).not.toContain('No bounded wake is currently guaranteed');
   });
 
   it('caps the listed ids and summarises the rest', () => {
     const held = Array.from({ length: INBOX_WAKE_HELD_WORK_LISTED_CAP + 3 }, (_, i) => item(`WI-${i + 1}`));
-    const t = inboxWakeHeldWorkReminderText({ held, autonomyModes: [], loopActive: null });
+    const t = inboxWakeHeldWorkReminderText({
+      held,
+      autonomyModes: [],
+      loopActive: null,
+      guaranteedAwaitWake: null,
+    });
     expect(t).toContain(`a recent read found ${held.length} unfinished`);
     expect(t).toContain(`WI-${INBOX_WAKE_HELD_WORK_LISTED_CAP}, +3 more]`);
     expect(t).not.toContain(`WI-${INBOX_WAKE_HELD_WORK_LISTED_CAP + 1},`);
@@ -55,6 +108,7 @@ describe('prepareInboxWakeHeldWorkReminder (WI-6554700010018536)', () => {
   // Hermetic: every case stubs the tenant resolver, so none reaches Postgres.
   const withTenant = <T extends object>(deps: T) => ({
     resolveRecipientWorkspace: vi.fn(async () => 'ws-1'),
+    hasGuaranteedAwaitWake: vi.fn(async () => false),
     ...deps,
   });
 
@@ -68,7 +122,38 @@ describe('prepareInboxWakeHeldWorkReminder (WI-6554700010018536)', () => {
       }),
     });
     expect(t).toContain('[WI-A, WI-B]');
-    expect(t).toContain('nothing will wake you after this turn');
+    expect(t).toContain('No bounded wake is currently guaranteed');
+  });
+
+  it('does not tell an autonomous owner nothing will wake when a timed await is active at delivery', async () => {
+    const hasGuaranteedAwaitWake = vi.fn(async () => true);
+    const t = await prepareInboxWakeHeldWorkReminder({
+      ...base,
+      deps: withTenant({
+        readHeldWorkItems: vi.fn(async () => [item('WI-OPEN')]),
+        getModes: vi.fn(async () => [{ mode: 'auto' }]),
+        getLoopActive: vi.fn(async () => false),
+        hasGuaranteedAwaitWake,
+      }),
+    });
+    expect(hasGuaranteedAwaitWake).toHaveBeenCalledWith('su-x');
+    expect(t).toContain('work list snapshot');
+    expect(t).not.toContain('No bounded wake is currently guaranteed');
+    expect(t).not.toContain('nothing will wake you');
+  });
+
+  it('does not assert there is no wake when the current await state cannot be read', async () => {
+    const t = await prepareInboxWakeHeldWorkReminder({
+      ...base,
+      deps: withTenant({
+        readHeldWorkItems: vi.fn(async () => [item('WI-OPEN')]),
+        getModes: vi.fn(async () => [{ mode: 'auto' }]),
+        getLoopActive: vi.fn(async () => false),
+        hasGuaranteedAwaitWake: vi.fn(async () => Promise.reject(new Error('awaits down'))),
+      }),
+    });
+    expect(t).toContain('work list snapshot');
+    expect(t).not.toContain('No bounded wake is currently guaranteed');
   });
 
   it('skips the mode and loop reads when nothing is held', async () => {
@@ -168,13 +253,14 @@ describe('prepareInboxWakeHeldWorkReminder tenant resolution (WI-655470001001867
         readHeldWorkItems,
         getModes,
         getLoopActive: vi.fn(async () => false),
+        hasGuaranteedAwaitWake: vi.fn(async () => false),
       },
     });
     expect(readHeldWorkItems).toHaveBeenCalledWith('su-held', TENANT);
     expect(getModes).toHaveBeenCalledWith(TENANT, 'su-held');
     expect(t).toContain('[WI-548]');
-    // The autonomy sentence depends on the tenant-keyed mode read too.
-    expect(t).toContain('You are in auto mode with no loop armed');
+    // The no-wake sentence also depends on the current await read.
+    expect(t).toContain('No bounded wake is currently guaranteed');
   });
 
   it("never reads under the coordination namespace when the recipient's tenant is unknown", async () => {

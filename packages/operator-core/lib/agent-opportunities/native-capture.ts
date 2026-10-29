@@ -22,6 +22,7 @@ type SourceContinuation = { snapshot: string; files: Record<string, {
   offset: number; lines: number; identity: boolean; retainedBytes: number; calls: number; fingerprint: string; done: boolean;
 }> };
 type CaptureReceipt = { manifest?: Record<string, string[]>; enrolling?: boolean;
+  sourceEnrollment?: { version: 1; prepared: boolean; snapshots: Record<string, string>; cursor: string | null };
   population?: string; cursor?: string; scanWindow?: string;
   pendingSources?: Record<string, { continuation: SourceContinuation; calls: CallEvidence; indexFingerprint?: string }>;
   scans?: Record<string, { snapshot: string; fingerprint: string;
@@ -401,6 +402,28 @@ export async function canonicalNativeRuntimeSources(binding: Binding, context: {
     unchanged: async () => (await canonicalNativeRuntimeManifest(binding, Date.now() + 1000)).snapshot === snapshot };
 }
 
+/** The existing issued-runtime registry defines roots, never their call scope.
+ * Attribution is deliberately omitted on the production path: NULL, a current
+ * brief, or another harness label cannot remove a possible predecessor. */
+async function nativeRuntimePopulation(opts: NativeCaptureOptions, since: string, deadline: number, attribution: boolean) {
+  const sql = opts.client ?? getOrgPg().sql, rows: Binding[] = [];
+  let cursor = '0';
+  for (;;) {
+    if (Date.now() >= deadline) throw new Error('native_capture_bound');
+    const page = await sql<Binding[]>`SELECT s.id::text,s.coord_owner_id AS owner,s.agent AS provider,
+      CASE WHEN ${attribution}::boolean THEN
+        harness_shared.harness_slug_for_usage_attribution(s.workspace_id,s.coord_owner_id,s.session_id,s.id)
+        ELSE NULL END AS harness
+      FROM harness_shared.adv_sessions s WHERE s.workspace_id=${opts.workspaceId} AND s.id > ${cursor}::bigint
+        AND s.first_seen_at < ${opts.until}::timestamptz
+        AND (s.ended_at IS NULL OR s.ended_at >= ${since}::timestamptz)
+      ORDER BY s.id LIMIT 250`;
+    rows.push(...page);
+    if (page.length < 250) return rows;
+    cursor = page.at(-1)!.id;
+  }
+}
+
 /** Production continuity boundary (D030). Protected dispatch receipts establish
  * individual historical attempts, not the runtime/source population or its
  * prospective retention floor. The candidate indexer attributes entire roots
@@ -408,8 +431,100 @@ export async function canonicalNativeRuntimeSources(binding: Binding, context: {
  * Keep UNKNOWN until every source in an independently complete population has
  * authority. The remaining continuity work is EI-27075012317842664. */
 export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promise<'unknown'> {
-  try { await opts.authorize(); } catch { /* Revocation/unavailable ACL is also UNKNOWN. */ }
+  const sql = opts.client ?? getOrgPg().sql, deadline = Date.now() + 1000;
+  try {
+    if (!opts.workspaceId || opts.workspaceId === '*' || !opts.harnessSlug || opts.harnessSlug === '*'
+      || !opts.sourceBoundary || !Number.isFinite(Date.parse(opts.since)) || !Number.isFinite(Date.parse(opts.until))
+      || micros(opts.since) >= micros(opts.until) || micros(opts.until) > BigInt(Date.now()) * 1000n
+      || !await opts.authorize()) return 'unknown';
+    const population = () => nativeRuntimePopulation(opts, opts.since, deadline, false);
+    const roster = await population();
+    if (!roster.length || !await nativeCaptureInfrastructureReady(sql)) return 'unknown';
+    const scope = `native:${digest([opts.workspaceId, opts.harnessSlug, opts.sourceBoundary])}`;
+    await sql`INSERT INTO harness_shared.sql_intent_progress (workspace_id,scope_id,harness_slug)
+      VALUES (${opts.workspaceId},${scope},${opts.harnessSlug}) ON CONFLICT DO NOTHING`;
+    const [progress] = await sql<{ revision: string; receipt: CaptureReceipt | null }[]>`
+      SELECT native_capture_revision::text AS revision,native_capture_receipt AS receipt
+      FROM harness_shared.sql_intent_progress WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope}`;
+    if (!progress) return 'unknown';
+    // Candidate baselines are not production preparation. Preserve source IDs
+    // only from this explicit source-enrollment format, with no call authority.
+    const prior = progress.receipt?.sourceEnrollment?.version === 1 ? progress.receipt : null;
+    const manifest = { ...prior?.manifest }, snapshots = { ...prior?.sourceEnrollment?.snapshots };
+    const key = (b: Binding) => digest([b.id, b.owner, b.provider]);
+    const keys = new Set(roster.map(key));
+    if (Object.keys(manifest).some(id => !keys.has(id))) return 'unknown';
+    const remaining = roster.filter(b => !manifest[key(b)] || !snapshots[key(b)]);
+    // Rotate failures rather than letting one missing root starve every later
+    // issued root. Failed roots stay in the full population and block readiness.
+    const cursor = remaining.findIndex(b => key(b) === prior?.sourceEnrollment?.cursor);
+    const ordered = cursor < 0 ? remaining : [...remaining.slice(cursor + 1), ...remaining.slice(0, cursor + 1)];
+    const revisit = roster.findIndex(b => key(b) === prior?.sourceEnrollment?.cursor);
+    const refresh = revisit < 0 ? roster : [...roster.slice(revisit + 1), ...roster.slice(0, revisit + 1)];
+    const wave = (ordered.length ? ordered : refresh).slice(0, ENROLLMENT_BATCH);
+    const observed = new Map<string, { binding: Binding; snapshot: string }>();
+    let last = prior?.sourceEnrollment?.cursor ?? null;
+    for (const binding of wave) {
+      if (Date.now() >= deadline - 100) break;
+      last = key(binding);
+      try {
+        const source = await canonicalNativeRuntimeManifest(binding, deadline - 100);
+        // Losing a predecessor is a gap, never a smaller completed population.
+        if (manifest[last]?.some(id => !source.identities.includes(id))) return 'unknown';
+        manifest[last] = source.identities; snapshots[last] = source.snapshot;
+        observed.set(last, { binding, snapshot: source.snapshot });
+      } catch {
+        // Retain expected predecessor identities, but revoke their preparation
+        // snapshot when a previously observed root becomes unavailable.
+        delete snapshots[last];
+      }
+    }
+    if (!await opts.authorize() || !await opts.authorize()
+      || canonicalJson(roster) !== canonicalJson(await population())) return 'unknown';
+    // Close the ACL/DB await gap without opening any transcript body. A source
+    // changed during renewal cannot be saved as this turn's enrollment evidence.
+    for (const { binding, snapshot } of observed.values())
+      if ((await canonicalNativeRuntimeManifest(binding, deadline)).snapshot !== snapshot) return 'unknown';
+    if (Date.now() >= deadline) return 'unknown';
+    const prepared = roster.every(b => manifest[key(b)] && snapshots[key(b)]);
+    const receipt = { version: 1, manifest, population: digest(roster), revision: progress.revision,
+      sourceEnrollment: { version: 1, prepared, snapshots, cursor: last } };
+    const previous = progress.receipt == null ? null : sql.json(progress.receipt);
+    await sql`UPDATE harness_shared.sql_intent_progress SET
+      native_capture_from=CASE WHEN ${prepared && !prior?.sourceEnrollment?.prepared}
+        THEN GREATEST(native_capture_from,clock_timestamp()) ELSE native_capture_from END,
+      native_capture_receipt=${sql.json(receipt)}
+      WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope}
+        AND native_capture_revision=${progress.revision}::bigint
+        AND native_capture_receipt IS NOT DISTINCT FROM ${previous}::jsonb`;
+    // Preparation is neither an authorized source scan nor continuity. Calls,
+    // outside-scope exclusions and retention still need independent evidence.
+  } catch { /* Missing sources/infrastructure/ACL remain UNKNOWN. */ }
   return 'unknown';
+}
+
+async function nativeCaptureInfrastructureReady(sql: Client) {
+  const [ready] = await sql<{ ready: boolean }[]>`SELECT
+    EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=to_regclass('harness_shared.sql_intent_progress')
+      AND attname='native_capture_receipt' AND NOT attisdropped)
+    AND (SELECT count(*)=3 FROM pg_trigger WHERE tgrelid=to_regclass('harness_shared.agent_activity')
+      AND tgenabled='A' AND NOT tgisinternal AND (tgname,tgtype,tgfoid) IN (
+      ('native_capture_index_delete',8,to_regprocedure('harness_shared.native_capture_index_changed()')),
+      ('native_capture_index_update',16,to_regprocedure('harness_shared.native_capture_index_changed()')),
+      ('native_capture_index_truncate',32,to_regprocedure('harness_shared.native_capture_index_truncated()'))))
+    AND (SELECT count(*)=2 FROM pg_trigger WHERE tgrelid=to_regclass('harness_shared.adv_sessions')
+      AND tgenabled='A' AND NOT tgisinternal AND (tgname,tgtype,tgfoid) IN (
+      ('native_capture_population_delete',8,to_regprocedure('harness_shared.native_capture_population_changed()')),
+      ('native_capture_population_update',16,to_regprocedure('harness_shared.native_capture_population_changed()'))))
+    AND EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('harness_shared.adv_sessions')
+      AND tgenabled='A' AND tgname='native_capture_population_truncate' AND tgtype=32
+      AND tgfoid=to_regprocedure('harness_shared.native_capture_index_truncated()'))
+    AND (SELECT count(*)=3 FROM pg_trigger WHERE tgrelid=to_regclass('harness_shared.session_briefs')
+      AND tgenabled='A' AND NOT tgisinternal AND (tgname,tgtype,tgfoid) IN (
+      ('native_capture_authority_delete',8,to_regprocedure('harness_shared.native_capture_authority_changed()')),
+      ('native_capture_authority_update',16,to_regprocedure('harness_shared.native_capture_authority_changed()')),
+      ('native_capture_authority_truncate',32,to_regprocedure('harness_shared.native_capture_index_truncated()')))) AS ready`;
+  return ready?.ready === true;
 }
 
 /** @internal Technical candidate-index preparation, NOT scope authorization or
@@ -422,27 +537,7 @@ export async function indexNativeCaptureCandidates(opts: NativeCaptureOptions): 
     if (!opts.harnessSlug || !opts.sourceBoundary || !Number.isFinite(Date.parse(opts.since))
       || !Number.isFinite(Date.parse(opts.until)) || micros(opts.since) >= micros(opts.until)
       || !await opts.authorize()) return 'unknown';
-    const [ready] = await sql<{ ready: boolean }[]>`SELECT
-      EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=to_regclass('harness_shared.sql_intent_progress')
-        AND attname='native_capture_receipt' AND NOT attisdropped)
-      AND (SELECT count(*)=3 FROM pg_trigger WHERE tgrelid=to_regclass('harness_shared.agent_activity')
-        AND tgenabled='A' AND NOT tgisinternal AND (tgname,tgtype,tgfoid) IN (
-        ('native_capture_index_delete',8,to_regprocedure('harness_shared.native_capture_index_changed()')),
-        ('native_capture_index_update',16,to_regprocedure('harness_shared.native_capture_index_changed()')),
-        ('native_capture_index_truncate',32,to_regprocedure('harness_shared.native_capture_index_truncated()'))))
-      AND (SELECT count(*)=2 FROM pg_trigger WHERE tgrelid=to_regclass('harness_shared.adv_sessions')
-        AND tgenabled='A' AND NOT tgisinternal AND (tgname,tgtype,tgfoid) IN (
-        ('native_capture_population_delete',8,to_regprocedure('harness_shared.native_capture_population_changed()')),
-        ('native_capture_population_update',16,to_regprocedure('harness_shared.native_capture_population_changed()'))))
-      AND EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('harness_shared.adv_sessions')
-        AND tgenabled='A' AND tgname='native_capture_population_truncate' AND tgtype=32
-        AND tgfoid=to_regprocedure('harness_shared.native_capture_index_truncated()'))
-      AND (SELECT count(*)=3 FROM pg_trigger WHERE tgrelid=to_regclass('harness_shared.session_briefs')
-        AND tgenabled='A' AND NOT tgisinternal AND (tgname,tgtype,tgfoid) IN (
-        ('native_capture_authority_delete',8,to_regprocedure('harness_shared.native_capture_authority_changed()')),
-        ('native_capture_authority_update',16,to_regprocedure('harness_shared.native_capture_authority_changed()')),
-        ('native_capture_authority_truncate',32,to_regprocedure('harness_shared.native_capture_index_truncated()')))) AS ready`;
-    if (!ready?.ready) return 'unknown';
+    if (!await nativeCaptureInfrastructureReady(sql)) return 'unknown';
     const scope = `native:${digest([opts.workspaceId, opts.harnessSlug, opts.sourceBoundary])}`;
     await sql`INSERT INTO harness_shared.sql_intent_progress (workspace_id,scope_id,harness_slug)
       VALUES (${opts.workspaceId},${scope},${opts.harnessSlug}) ON CONFLICT DO NOTHING`;
@@ -456,22 +551,8 @@ export async function indexNativeCaptureCandidates(opts: NativeCaptureOptions): 
         ${opts.until}::timestamptz > clock_timestamp() AS future
       FROM harness_shared.sql_intent_progress WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope}`;
     if (!progress || progress.future) return 'unknown';
-    const population = async () => {
-      const rows: Binding[] = [];
-      let cursor = '0';
-      for (;;) {
-        if (Date.now() >= deadline) throw new Error('native_capture_bound');
-        const page = await sql<Binding[]>`SELECT s.id::text,s.coord_owner_id AS owner,s.agent AS provider,
-          harness_shared.harness_slug_for_usage_attribution(s.workspace_id,s.coord_owner_id,s.session_id,s.id) AS harness
-          FROM harness_shared.adv_sessions s WHERE s.workspace_id=${opts.workspaceId} AND s.id > ${cursor}::bigint
-            AND s.first_seen_at < ${opts.until}::timestamptz
-            AND (s.ended_at IS NULL OR s.ended_at >= ${progress.since}::timestamptz)
-          ORDER BY s.id LIMIT 250`;
-        rows.push(...page);
-        if (page.length < 250) return rows;
-        cursor = page.at(-1)!.id;
-      }
-    };
+    if (progress.receipt?.sourceEnrollment) return 'unknown';
+    const population = () => nativeRuntimePopulation(opts, progress.since, deadline, true);
     const roster = await population();
     const bindings = roster.filter(r => r.harness === opts.harnessSlug);
     if (!bindings.length) return 'unknown';

@@ -108,7 +108,13 @@ export function lastLoopFireParked(
     return !(loop.lastWakeError ?? '').includes(HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER);
   }
   if (loop?.lastWakeStatus !== 'parked') return false;
-  return !/retry remains durable/i.test(loop.lastWakeError ?? '');
+  return !lastLoopFireHasDurableRetry(loop);
+}
+
+function lastLoopFireHasDurableRetry(
+  loop: Partial<Pick<LoopStatus, 'lastWakeStatus' | 'lastWakeError'>> | null | undefined,
+): boolean {
+  return loop?.lastWakeStatus === 'parked' && /retry remains durable/i.test(loop.lastWakeError ?? '');
 }
 
 function hasCompletedLoopTurnAfterLastFire(
@@ -213,11 +219,13 @@ export function classifyLoopNextWake(
   // reconciler records this exact outcome only after its bounded grace found no
   // loop-origin assistant turn and re-armed the loop as an error. A delayed turn may
   // complete after that verdict, including after a later loop:arm; clear the failure
-  // only when the per-fire status query proves completion strictly after lastFiredAt.
-  // Missing, stale, or malformed proof keeps the previous fail-closed behavior.
+  // only when the per-fire status query proves completion strictly after lastFiredAt. An
+  // accepted parked wake with its own durable retry also remains a continuation path, even
+  // before turn-start proof; an exhausted or failed park was rejected above.
   if (
     loop.lastDeliveryOutcome === 'loop-delivered-wake-no-loop-turn' &&
-    !hasCompletedLoopTurnAfterLastFire(loop)
+    !hasCompletedLoopTurnAfterLastFire(loop) &&
+    !lastLoopFireHasDurableRetry(loop)
   ) {
     return { guaranteed: false, reason: 'last-fire-no-loop-turn' };
   }

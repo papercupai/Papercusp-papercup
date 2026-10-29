@@ -1853,7 +1853,10 @@ export default defineTool({
       // verdict and what survived transport are two different reductions, and a
       // single number cannot honestly stand for both.
       population: censusWithLiveness,
-      alive: agents.filter((a) => a.alive).length,
+      // Snapshot reads skip the lifecycle oracle. Heartbeat freshness is not
+      // evidence that the owner is still alive, so this legacy count is unknown
+      // until the full read reconciles sessionState.
+      alive: snapshotRead ? null : agents.filter((a) => a.alive).length,
       claims: rows.filter((r) => r.source !== 'presence').length,
       // This uses the scheduler's exact held-work-item predicate. It can exceed
       // claims/load because blocked and needs-human holds consume scheduler capacity
@@ -1952,6 +1955,12 @@ export default defineTool({
     // `isSelf:true`, so a reader of "who's on what" can tell which agent is
     // itself. Best-effort — an unattributable caller just gets no marker.
     const selfMarkedAgents = markSelfRows(boundedAgents, self, 'agentId');
+    // Keep the snapshot roster, but do not publish its heartbeat-only input as a
+    // liveness verdict. The raw signal remains available internally as
+    // heartbeatFresh; the public `alive` field is explicitly unknown.
+    const responseAgents = snapshotRead
+      ? selfMarkedAgents.map((agent) => ({ ...agent, alive: null }))
+      : selfMarkedAgents;
     // P-010: the byte budget above is a SECOND reduction, independent of the
     // stale-idle filter — `summary.agents` stays the true count (that is
     // deliberate, see the comment where it is computed), which means the array
@@ -1997,11 +2006,13 @@ export default defineTool({
                 'critical_context',
                 'unanswered_directed',
                 'member.sessionState',
+                'member.alive',
                 'member.wakeability',
                 'member.selfWake',
                 'member.verdict',
                 'member.loopState',
                 'member.lastToolCallAt',
+                'summary.alive',
                 'population.liveness',
               ],
             }
@@ -2109,7 +2120,7 @@ export default defineTool({
           : {}),
         // DAG-filter frontier (includeDag) — omitted unless requested (+ a plan).
         ...(dagView ? { dag: dagView } : {}),
-        agents: selfMarkedAgents,
+        agents: responseAgents,
         ...(agentsTruncated
           ? {
               agents_truncated: true,

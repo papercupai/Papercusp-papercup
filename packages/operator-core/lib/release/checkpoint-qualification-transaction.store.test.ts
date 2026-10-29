@@ -1154,8 +1154,13 @@ describe('reserveStoredQualificationRunner pre-suite retarget (WI-10005957)', ()
   };
 
   it('attaches the CLI to the owning queue\'s never-judged repair head instead of refusing conflict', async () => {
-    const queue = owningQueue();
-    expect(queue).toMatchObject({ phase: 'ready-to-verify', qualificationAttemptId: 'attempt-1', repairHead: 'repair-1' });
+    // A completed fixer's id remains on a ready-to-verify queue as historical provenance.
+    // It must not be mistaken for a still-active fixer when the joined run retargets.
+    const queue = { ...owningQueue(), fixerSpawnId: 'finished-spawn-1' };
+    expect(queue).toMatchObject({
+      phase: 'ready-to-verify', qualificationAttemptId: 'attempt-1', repairHead: 'repair-1',
+      fixerSpawnId: 'finished-spawn-1',
+    });
     const { statements } = transactionHarness({ qualificationTransaction: wedgedAttempt(), repair_queue: queue });
 
     const result = await reserveStoredQualificationRunner(target, attach);
@@ -1199,8 +1204,6 @@ describe('reserveStoredQualificationRunner pre-suite retarget (WI-10005957)', ()
         candidate: 'candidate-1', guard: 'queue-head-already-judged' },
       { name: 'queue is awaiting a fixer', transaction: wedgedAttempt(), queue: unadmitted, candidate: 'candidate-1',
         guard: 'queue-not-ready-to-verify' },
-      { name: 'a fixer is dispatched', transaction: wedgedAttempt(), queue: { ...queue, fixerSpawnId: 'spawn-1' }, candidate: 'repair-1',
-        guard: 'queue-fixer-active' },
       { name: 'a fixer dispatch is reserved', transaction: wedgedAttempt(), candidate: 'repair-1',
         queue: { ...queue, dispatchReservation: { token: 'dispatch-1', claimedAtMs: 200, expiresAtMs: 500 } },
         guard: 'queue-dispatch-reserved' },

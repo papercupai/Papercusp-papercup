@@ -24,6 +24,7 @@ import { join, resolve } from 'node:path';
 import { execPath } from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
+import { classify, readLedgerRows } from '@papercusp/operator-core/lib/turn-provenance/turn-provenance';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 
 const subjectPath = process.env.PROBE_SCRIPT
@@ -95,6 +96,64 @@ function injectRaw(socketPath: string, data: string): Promise<void> {
     connection.on('close', () => resolveInject());
   });
 }
+
+describe('managed-host live-turn provenance', () => {
+  it('stamps an untagged mode:turn diagnostic before submitting it to the child PTY', async () => {
+    const ownerId = `su-control-turn-origin-${process.pid}-${Math.floor(performance.now())}`;
+    const socketPath = socketPathFor(ownerId);
+    const eventLog = eventLogPathForOwner(ownerId);
+    const provenanceDir = mkdtempSync(join(tmpdir(), 'control-turn-provenance-'));
+    const diagnostic = '[peer:su-4a84c] Parent recovery diagnostic — not an owner prompt';
+    const { captured, io } = fakeIo();
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');" +
+        "process.stdin.on('data',d=>process.stdout.write('INPUT:'+d));setTimeout(()=>process.exit(0),5000);"],
+      cwd: '/tmp',
+      env: {
+        ...hermeticEnv(),
+        PAPERCUSP_SID: ownerId,
+        PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
+      },
+      ownerId,
+      io,
+      bridgeTty: false,
+      onExit: () => {},
+    });
+
+    try {
+      const readyDeadline = Date.now() + 2_000;
+      while (!captured().includes('READY') && Date.now() < readyDeadline) await sleep(10);
+      expect(captured()).toContain('READY');
+
+      expect(await injectEnvelope(socketPath, {
+        mode: 'turn', ownerId, deliveryId: 'idop-test-unenrolled-turn-v1', data: diagnostic,
+      })).toMatchObject({ ok: true });
+
+      const deliveryDeadline = Date.now() + 2_000;
+      while (!captured().includes(diagnostic) && Date.now() < deliveryDeadline) await sleep(10);
+      const typed = captured();
+      expect(typed).toContain(diagnostic);
+      const marker = /⟦turn-origin:host-control nonce:[a-f0-9]{16}⟧/.exec(typed)?.[0];
+      expect(marker).toBeDefined();
+      expect(readFileSync(eventLog, 'utf8')).toContain('control-carry-origin-stamped');
+      expect(readLedgerRows(ownerId, { dir: provenanceDir })).toHaveLength(1);
+      expect(classify(`${marker}\n${diagnostic}`, readLedgerRows(ownerId, { dir: provenanceDir }))).toMatchObject({
+        verdict: 'verified-agent',
+        origin: 'host-control',
+        matchedBy: 'nonce+hash',
+      });
+    } finally {
+      if (existsSync(socketPath)) await injectRaw(socketPath, 'QUIT');
+      await done;
+      if (existsSync(eventLog)) unlinkSync(eventLog);
+      const metaPath = metaPathFor(ownerId);
+      if (existsSync(metaPath)) unlinkSync(metaPath);
+      rmSync(provenanceDir, { recursive: true, force: true });
+    }
+  }, 10_000);
+});
 
 describe('carry-respawn native-turn delivery authority', () => {
   it.each([

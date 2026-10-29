@@ -7,6 +7,9 @@ import { adminUrl, appUrl } from '@papercusp/db-org/connection';
 import { papercuspPath } from '@papercusp/host-platform/home';
 import { getBuildInfo, type BuildInfo } from '../build-info';
 import { requestOnlyIdentityGuardMarker } from '../harness/env-operator-launcher';
+import { SPAWNER_SOCKET_ENV } from '../fleet/spawner-socket-path';
+import { SPAWNER_SCOPE_ENV } from '../fleet/sidecar-exec-lifetime';
+import { SUBSTRATE_SOCKET_ENV } from '../sync/hyperbee/substrate-socket-path';
 import { acquireGradingAuditSubjectMutex } from '../scorecards';
 import { killTask } from '../task-manager/control';
 import { managedSpawn } from '../task-manager/managed-spawn';
@@ -141,7 +144,7 @@ export function gradingAuditRuntimeChildEnv(locator: GradingAuditRuntimeLocator)
   // child cannot silently discover a different local database.
   const admin = adminUrl();
   const app = appUrl();
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     DATABASE_URL: admin, HARNESS_ADMIN_DATABASE_URL: admin,
     HARNESS_DATABASE_URL: app, PAPERCUSP_DATABASE_URL: admin,
@@ -159,6 +162,13 @@ export function gradingAuditRuntimeChildEnv(locator: GradingAuditRuntimeLocator)
     PAPERCUSP_LSP_DAEMON_MODE: '0', PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE: '0',
     PAPERCUSP_REPAIR_PRECHECK_WORKER_MODE: '0',
   };
+  // These handles identify the launching host, which can exit while this
+  // retained sibling is still serving. Let its sidecars resolve their own
+  // owner instead of repeatedly exiting against a dead parent's socket.
+  delete env[SPAWNER_SOCKET_ENV];
+  delete env[SPAWNER_SCOPE_ENV];
+  delete env[SUBSTRATE_SOCKET_ENV];
+  return env;
 }
 
 /**

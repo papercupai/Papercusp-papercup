@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "r2gcs-p005-census-preparation-v1",
+  "plan": "r2-to-gcs-storage-migration-2026-10-23",
+  "workItem": "WI-6554700010025564",
+  "status": "preparation-only",
+  "migrationAccepted": false,
+  "sourceInventory": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/inventory.json",
+  "observationDateUtc": "2026-10-29",
+  "destinationCensus": {
+    "method": "gcloud storage ls --json against the exact retained P544 digest prefix; metadata only, no object download",
+    "bucket": "pc-p317-host-bundle-20260917",
+    "prefix": "artifacts/workspace-host/sha256/7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948/",
+    "commandExitCode": 0,
+    "returnedObjects": 5,
+    "completeScope": "The named destination prefix only; this is not a source-bucket or migration-window census.",
+    "objects": [
+      {
+        "file": "server.tgz",
+        "generation": "1792799154148744",
+        "metageneration": "2",
+        "sizeBytes": 2118168717,
+        "contentType": "application/gzip",
+        "crc32c": "oTKWpw==",
+        "fileSha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948",
+        "disposition": "Current destination identity and metadata match the retained admitted bundle and saved full-byte delivery proof."
+      },
+      {
+        "file": "server.tgz.minisig",
+        "generation": "1792799162572395",
+        "metageneration": "2",
+        "sizeBytes": 295,
+        "contentType": "text/plain",
+        "crc32c": "lzKe5w==",
+        "fileSha256": "b5f807a758144e47571e62d9c01c7ecb40f2c8e9acf055c111b631126054fa54",
+        "disposition": "Current destination identity and metadata match the retained detached signature and saved full-byte delivery proof."
+      },
+      {
+        "file": "sbom.cdx.json",
+        "generation": "1792799168769239",
+        "metageneration": "2",
+        "sizeBytes": 800554,
+        "contentType": "application/json",
+        "crc32c": "QYdBCw==",
+        "fileSha256": "4da8c37595532e330653f551d4785190205a09a5c07a7e5959eeb744f12eff0d",
+        "disposition": "Current destination identity and metadata match the retained SBOM and saved full-byte delivery proof."
+      },
+      {
+        "file": "manifest.json",
+        "generation": "1792819009016719",
+        "metageneration": "1",
+        "sizeBytes": 12555,
+        "contentType": "application/json; charset=utf-8",
+        "crc32c": "P+qedA==",
+        "fileSha256": "5370e36a16d6c777b4bc6371bbf7790eb645420db1f03b7841d6415451073bc8",
+        "disposition": "Current destination identity and metadata match the retained manifest and saved full-byte delivery proof."
+      },
+      {
+        "file": ".finalized.json",
+        "generation": "1792819010039712",
+        "metageneration": "1",
+        "sizeBytes": 660,
+        "contentType": "application/json; charset=utf-8",
+        "crc32c": "BSdqHg==",
+        "manifestSha256": "5370e36a16d6c777b4bc6371bbf7790eb645420db1f03b7841d6415451073bc8",
+        "namespace": "workspace-host-v1",
+        "disposition": "Destination admission marker, separate from the four retained source artifacts. No new read of marker bytes is claimed."
+      }
+    ]
+  },
+  "checksumEvidence": {
+    "canonicalProductionRun": 22258800,
+    "currentOperationalBinding": 73886,
+    "execution": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-production-execution.json",
+    "originalFullByteObservation": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-production-live.json",
+    "custody": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-custody-retention.json",
+    "scope": "Current metadata is compared with previously hashed full-byte proof. This preparation does not repeat that download or create a historical execution-time runtime witness."
+  },
+  "inaccessibleSourceDispositions": {
+    "workItem": "WI-6554700010025592",
+    "assignee": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea",
+    "sourceListingLastResult": "NotEntitled; saved source inventory, not re-measured this turn",
+    "sourceObjectCount": null,
+    "sourceHighWaterMark": null,
+    "populations": [
+      "papercusp-releases: desktop, mobile, TUI, updater manifests, release history and instructions",
+      "papercusp-marketplace-tarballs: workspace-host objects and original multipart state beyond known saved identities",
+      "papercusp-marketplace-tarballs: cupboard and private creator objects",
+      "papercusp-marketplace-tarballs: publish archives"
+    ],
+    "disposition": "Precisely bounded owned inaccessible-data exceptions. Ownership does not mean recovery; unknown keys, counts and migration-window deltas remain unknown.",
+    "accountActionReference": "WI-6554700010022667"
+  },
+  "retention": {
+    "sourceDeletionPerformedThisTurn": false,
+    "sourceOverwritePerformedThisTurn": false,
+    "originalMultipartOutcome": "unknown; preserved",
+    "retainedArtifactRoot": "Operating account home: .papercusp/release-artifacts/p544-7a9e83f6-restore20261024",
+    "currentSourceRetentionIndependentlyMeasured": false,
+    "rule": "Retain originals. Do not infer source existence, absence or complete recovery from successful destination delivery."
+  },
+  "remainingAcceptance": [
+    "P002 independent audit and committed completion",
+    "P003 release data/configuration and explicit legacy-client recovery under its existing owner",
+    "Bind the bounded copy/metadata and retention/exception evidence to exact P005 clauses and obtain independent acceptance",
+    "Reconcile a source high-water mark and cutover deltas, or explicitly accept the enumerated inaccessible-data boundary through the existing contract"
+  ]
+}

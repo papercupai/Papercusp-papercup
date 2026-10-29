@@ -2359,6 +2359,8 @@ export interface SpawnHeadlessOpts {
    *  this is the hand-off key bootstrap uses to attach the pre-fork ledger row
    *  to the native session id. Omit rather than infer it from command text. */
   coordOwnerId?: string | null;
+  /** Exact work-item owning this headless session, persisted on its task-ledger row. */
+  workItemId?: string | null;
   /**
    * Structured, caller-owned facts merged into the ledger row's `detail` bag
    * (after the spawner's own keys, which it cannot override). This is how a
@@ -2836,6 +2838,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
         argv: [bin, ...args.slice(0, 6)],
         cwd: envelope.cwd,
         launchedBy: opts.launchedBy ?? 'console-spawn:headless',
+        workItemId: opts.workItemId ?? null,
         fleetSlug: opts.fleetSlug ?? null,
         logPath,
         memoryMaxBytes,

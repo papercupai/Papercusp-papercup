@@ -1240,6 +1240,28 @@ preflight_verifier_copy_memory() {
 }
 verifier_run_step verifier-copy-memory preflight_verifier_copy_memory || exit $?
 
+# Refuse pinned acceptance inputs that already differ before native Cargo or
+# native-console preparation. The snapshot and export checks below remain as
+# race guards for changes made after this early preflight.
+preflight_verifier_pinned_inputs() {
+  [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] || return 0
+  local source_repo="${VERIFY_TAURI_SOURCE_REPO_DIR:-$REPO_DIR}"
+  [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ] || {
+    echo 'FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE tested acceptance paths' >&2
+    return 1
+  }
+  local input_args=(--tauri-inputs)
+  if [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}" ]; then
+    input_args+=(--inputs "$VERIFY_TAURI_SOURCE_INPUTS")
+  fi
+  if [ -n "${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
+    input_args+=(--inputs-file "$VERIFY_TAURI_SOURCE_INPUTS_FILE")
+  fi
+  node "$source_repo/scripts/source-preview.mjs" verifier-inputs-check \
+    --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" "${input_args[@]}"
+}
+verifier_run_step verifier-pinned-inputs-preflight preflight_verifier_pinned_inputs || exit $?
+
 # EI-25558788631579977: claim the actual native slot and reject its known
 # capacity shortage before source/dependency/SPA/database preparation. Keep the
 # slot descriptor for the whole run; tauri-guarded inherits this exact target.
@@ -2253,8 +2275,8 @@ snapshot_committed_operator_source() {
   if [ -n "${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
     input_args+=(--inputs-file "$VERIFY_TAURI_SOURCE_INPUTS_FILE")
   fi
-  # Reject stale tested paths before disk admission or snapshot allocation.
-  # verifier-prepare repeats this check after export as the race guard.
+  # Repeat the early input check at snapshot time to catch intervening edits.
+  # verifier-prepare repeats it after export as the final race guard.
   node "$source_repo/scripts/source-preview.mjs" verifier-inputs-check \
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" "${input_args[@]}" || return $?
   preflight_verifier_runtime_assets "$source_repo" || return $?

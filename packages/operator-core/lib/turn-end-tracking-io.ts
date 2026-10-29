@@ -19,6 +19,7 @@ import {
   detectUnguardedHalt,
   isStaleHeldCheckpoint,
   mergeMechanicalCheckpoint,
+  openTaskReminderSignature,
   settledMessagesCursor,
   unregisteredArtifactTripwire,
   type UnguardedHaltTripwire,
@@ -491,6 +492,32 @@ export async function boundedOpenTaskReminderSweep(
   return value;
 }
 
+/** Read the current canonical task snapshot for a delayed reminder delivery.
+ *  A null result means the source could not be re-read, so the caller should
+ *  preserve delivery with an explicit snapshot warning rather than infer freshness. */
+export async function readCurrentOpenTaskReminderSignature(input: {
+  ownerId: string;
+  workspaceId: string;
+}): Promise<string | null> {
+  try {
+    const [db, tasksMod] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('./session-tasks'),
+    ]);
+    const { sql } = db.getOrgPg();
+    const sessionId = await tasksMod.taskSessionIdForOwner(sql, input.workspaceId, input.ownerId);
+    const view = await tasksMod.applySessionTaskOp(sql, {
+      op: 'view',
+      workspaceId: input.workspaceId,
+      sessionId,
+      idFactory: () => 'turn-end-task-reminder-freshness-view',
+    });
+    return openTaskReminderSignature(view.tasks);
+  } catch {
+    return null;
+  }
+}
+
 /** Fire the already-persisted reminder back to this owner as one targeted turn. */
 export async function wakeOpenTaskReminder(input: {
   ownerId: string;
@@ -501,7 +528,10 @@ export async function wakeOpenTaskReminder(input: {
     const { wakeRecipients } = await import('./agent-tools/coordination/inbox-wake');
     const result = await wakeRecipients([input.ownerId], {
       summary: input.decision.prompt,
-      payload: input.decision.tripwire,
+      // event_wake_deliveries.workspace_id is the shared corpus namespace.
+      // Carry the task tenant explicitly so the async pump can re-read the
+      // same canonical session list immediately before starting a delayed turn.
+      payload: { ...input.decision.tripwire, taskWorkspaceId: input.workspaceId },
       source: 'turn-end-open-task-reminder',
       workspaceId: input.workspaceId,
     });

@@ -1,13 +1,18 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type HarnessContract, validateContract } from './contract.js';
 import { type GuardRailProbe, GUARD_RAIL_SOURCE_ENV, runGuardRails, selectGuardRails } from './guard-rails.js';
 import { formatSummaryLine, runHarness } from './runner.js';
 
 const tmp = () => mkdtempSync(path.join(tmpdir(), 'vh-gr-'));
+let canonical: string;
+beforeEach(() => {
+  canonical = tmp();
+  vi.stubEnv('VH_EVIDENCE_ROOT_BASE', canonical);
+});
 
 const probe = (key: string, command: string, scope: string[], extra: Partial<GuardRailProbe> = {}): GuardRailProbe => ({
   key,
@@ -25,6 +30,8 @@ const contract: HarnessContract = {
 
 afterEach(() => {
   delete process.env[GUARD_RAIL_SOURCE_ENV];
+  vi.unstubAllEnvs();
+  rmSync(canonical, { recursive: true, force: true });
 });
 
 describe('selectGuardRails', () => {

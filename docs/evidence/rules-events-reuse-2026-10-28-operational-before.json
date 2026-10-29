@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "kind": "measurement",
+  "workspace": "papercusp-workspace",
+  "measurements": [
+    {
+      "key": "lint-freshness",
+      "args": {
+        "allowUnscoped": false,
+        "maxRows": 1,
+        "sql": "WITH plan AS (SELECT seq,created_at,content_hash FROM harness_shared.plan_revisions WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND plan_slug='rules-events-reuse-2026-10-28' ORDER BY seq DESC LIMIT 1), snap AS (SELECT computed_at,compute_ms,producer_version FROM harness_shared.derived_read_snapshots WHERE workspace_id='papercusp-workspace' AND harness_slug='' AND key='plans.lint') SELECT now() AS measured_at,p.seq AS plan_revision,p.created_at AS edit_epoch_ms,p.content_hash,s.computed_at AS snapshot_computed_epoch_ms,s.compute_ms,s.producer_version,s.computed_at < p.created_at AS predates_edit FROM plan p LEFT JOIN snap s ON true"
+      },
+      "result": {
+        "mode": "query",
+        "rowCount": 1,
+        "truncated": false,
+        "fields": [
+          "measured_at",
+          "plan_revision",
+          "edit_epoch_ms",
+          "content_hash",
+          "snapshot_computed_epoch_ms",
+          "compute_ms",
+          "producer_version",
+          "predates_edit"
+        ],
+        "elapsedMs": 4,
+        "rows": [
+          {
+            "measured_at": "2026-10-29 01:53:19.390695+00",
+            "plan_revision": 31,
+            "edit_epoch_ms": "1793238181197",
+            "content_hash": "1147de1c796ecbd6a5fe85d54b92a66aa977403fe1ba195656e2cc383065cbad",
+            "snapshot_computed_epoch_ms": "1788552509055",
+            "compute_ms": 518436,
+            "producer_version": 4,
+            "predates_edit": true
+          }
+        ]
+      },
+      "sqlSha256": "2fc1f1bfe23a793a7debb7f20a68be442c30842779cb0c2434433a5965c0dac4"
+    },
+    {
+      "key": "trigger-latency",
+      "args": {
+        "allowUnscoped": false,
+        "maxRows": 10,
+        "sql": "SELECT now() AS measured_at,status,count(*)::int AS rows,count(*) FILTER(WHERE attempts=1 AND started_at IS NOT NULL AND outcome->>'coalescedInto' IS NULL)::int AS eligible_pairs,percentile_cont(0.5) WITHIN GROUP(ORDER BY extract(epoch FROM(started_at-triggered_at))*1000) FILTER(WHERE attempts=1 AND started_at IS NOT NULL AND outcome->>'coalescedInto' IS NULL) AS enqueue_to_claim_p50_ms,percentile_cont(0.95) WITHIN GROUP(ORDER BY extract(epoch FROM(started_at-triggered_at))*1000) FILTER(WHERE attempts=1 AND started_at IS NOT NULL AND outcome->>'coalescedInto' IS NULL) AS enqueue_to_claim_p95_ms FROM harness_shared.trigger_runs WHERE workspace_id='papercusp-workspace' AND triggered_at>=timestamptz '2026-10-28 00:00:00+00' AND triggered_at<timestamptz '2026-10-29 00:00:00+00' GROUP BY status ORDER BY status",
+        "positiveControlSql": "SELECT id FROM harness_shared.trigger_runs WHERE workspace_id='papercusp-workspace' ORDER BY triggered_at DESC LIMIT 1"
+      },
+      "result": {
+        "mode": "query",
+        "rowCount": 0,
+        "truncated": false,
+        "fields": [],
+        "elapsedMs": 25,
+        "rows": [],
+        "positiveControl": {
+          "rows": [
+            {
+              "id": "c793b61e-251f-45af-89f2-a3ad38a92f90"
+            }
+          ],
+          "rowCount": 1,
+          "truncated": false,
+          "fields": [
+            "id"
+          ],
+          "status": "passed"
+        },
+        "absence": {
+          "status": "verified",
+          "code": "positive-control-passed"
+        }
+      },
+      "sqlSha256": "5e111da8e191aa9544bd651db19d844adb353114f7126f4232066a7998120fa1",
+      "positiveControlSqlSha256": "01ecc5219f790e87e8ebbaf29775536c67ed6ce8f7da351fd56ab244c5564239"
+    }
+  ],
+  "limitations": [
+    "Lint measurement observes the workspace-scoped stored snapshot; it does not measure a live UI refresh or exact time to repair.",
+    "The preceding complete UTC24h trigger cohort is empty, verified against an existing same-table row; latency p50/p95 are unknown, never zero.",
+    "Trigger started_at is claim time and is overwritten on retry. Query excludes retry attempts and coalesced mirror rows; this is enqueue-to-claim, not proof of successful final dispatch.",
+    "These measurements alone cannot authorize a scheduling go or complete R4; attributable CPU/query/no-op and paired comparator evidence remain required."
+  ],
+  "sourceFingerprints": {
+    "packages/operator-core/lib/derived-reads/registry.ts": "2a5273eabbe1ed9e62a24afdf67c87a93c4b18797def28b9bf9ac089022f716b",
+    "packages/operator-core/lib/derived-reads/producers.ts": "437e5a1020afc874c1464c552d351084a3170d5a7b788ea0e4c7491e63214a66",
+    "packages/operator-core/lib/sync-resolver/index.ts": "60f5a357ff1be2b7e688b5402acb7dcae8b546b27b5106836162c2a1f70ea2e5",
+    "packages/operator-core/lib/external-triggers/binding-engine.ts": "46ddc0968c019f35ae8efb1c42b0230bdde8d6c4bfa400bb2373244c0c1a7c4e",
+    "packages/operator-core/lib/agent-tools/plans/revisions.ts": "62c49ff2964abdd65fa2a848388d1b334fc7d0f3cd9e8b43d858fbd772373b78"
+  }
+}

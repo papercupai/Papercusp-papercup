@@ -29,7 +29,7 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 export { canonicalEvidenceRootBase, defaultEvidenceRoot, isLegacyEvidenceRoot, legacyEvidenceRoot } from './evidence-root.js';
-import { isLegacyEvidenceRoot } from './evidence-root.js';
+import { defaultEvidenceRoot, isLegacyEvidenceRoot } from './evidence-root.js';
 import {
   type HarnessContract,
   type HarnessRunResult,
@@ -287,12 +287,7 @@ export async function writeRunResult(result: HarnessRunResult, retainedArtifacts
     artifacts.push({ relativeFile, bytes: artifactBytes });
   }
   artifacts.push({ relativeFile: 'result.json', bytes });
-  const retainedRoot = path.join(root, 'retained');
-  await mkdir(retainedRoot, { recursive: true });
-  if (!insideRoot(await realpath(retainedRoot))) throw new Error('retained harness result outside evidence root');
-  const parent = path.join(retainedRoot, result.runId);
-  await mkdir(parent, { recursive: true });
-  if (!insideRoot(await realpath(parent))) throw new Error('retained harness result outside evidence root');
+  const parent = path.join(root, 'retained', result.runId);
   if (retainedArtifacts.length) {
     artifacts.push({ relativeFile: RETAINED_MANIFEST, bytes: Buffer.from(`${JSON.stringify({
       schemaVersion: 1, harness: result.harness, runId: result.runId,
@@ -306,6 +301,31 @@ export async function writeRunResult(result: HarnessRunResult, retainedArtifacts
       })),
     }, null, 2)}\n`) });
   }
+  // Completed-runtime selectors carry harness/run identity, never a caller path.
+  // Publish the same bounded originals at their maintained reader location as
+  // well as beside custom logs. Keep the custody manifest byte-identical.
+  if (!result.harness || result.harness === '.' || result.harness === '..' || /[/\\]/.test(result.harness)) {
+    throw new Error('invalid retained harness name');
+  }
+  await writeRetainedArtifacts(root, result.runId, artifacts);
+  const canonical = defaultEvidenceRoot(result.harness);
+  await mkdir(canonical, { recursive: true });
+  const canonicalRoot = await realpath(canonical);
+  if (canonicalRoot !== root) await writeRetainedArtifacts(canonicalRoot, result.runId, artifacts);
+}
+
+async function writeRetainedArtifacts(root: string, runId: string,
+  artifacts: readonly { relativeFile: string; bytes: Buffer }[]): Promise<void> {
+  const insideRoot = (target: string) => {
+    const relative = path.relative(root, target);
+    return !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
+  };
+  const retainedRoot = path.join(root, 'retained');
+  await mkdir(retainedRoot, { recursive: true });
+  if (!insideRoot(await realpath(retainedRoot))) throw new Error('retained harness result outside evidence root');
+  const parent = path.join(retainedRoot, runId);
+  await mkdir(parent, { recursive: true });
+  if (!insideRoot(await realpath(parent))) throw new Error('retained harness result outside evidence root');
   for (const artifact of artifacts) {
     const destination = path.join(parent, artifact.relativeFile);
     await mkdir(path.dirname(destination), { recursive: true });

@@ -32,7 +32,14 @@ import { getLoopStatus } from '../../harness/routines/loop';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
 import { concreteWorkspaceIdOrNull } from '../../workspace-registry';
-import { readHeldWorkItems, type HeldWorkItem } from './wake-source-predicate';
+import { INBOX_WAKE_KEY_PREFIX, listParkedAwaitsForSubscribers } from './store';
+import { isTurnEndRewakeKey } from './turn-end-rewake';
+import {
+  guaranteesWake,
+  readHeldWorkItems,
+  readWorkItemAwaitTargets,
+  type HeldWorkItem,
+} from './wake-source-predicate';
 
 /** How many held ids the reminder names before summarising the rest. */
 export const INBOX_WAKE_HELD_WORK_LISTED_CAP = 5;
@@ -48,6 +55,8 @@ export interface InboxWakeHeldWorkFacts {
   autonomyModes: readonly string[];
   /** true = an engine loop is armed; false = none; null = unknown (never claims "no loop"). */
   loopActive: boolean | null;
+  /** Whether a current, bounded await guarantees a wake; null = unknown. */
+  guaranteedAwaitWake: boolean | null;
 }
 
 /** The single-line reminder for these facts; '' when the session holds nothing. Pure. */
@@ -62,11 +71,10 @@ export function inboxWakeHeldWorkReminderText(f: InboxWakeHeldWorkFacts): string
       " This snapshot may be stale by the time you act; recheck each item's current state and assignee with work_items:get before continuing. " +
       'Answering or reconciling this message does not finish any still-open items.',
   ];
-  if (f.autonomyModes.length > 0 && f.loopActive === false) {
+  if (f.autonomyModes.length > 0 && f.loopActive === false && f.guaranteedAwaitWake === false) {
     parts.push(
-      `You are in ${f.autonomyModes.join('+')} mode with no loop armed, so nothing will wake you after this turn:` +
-        ' before you end it, take the next step on a held item, arm a wake (loop:arm, or events:await with' +
-        " on_timeout:'wake'), or work_items:checkpoint + work_items:release what you cannot advance.",
+      'No bounded wake is currently guaranteed (the recent read found no armed loop or wake-on-timeout await). ' +
+        'This snapshot may be stale by the time you stop; recheck loop:status and events:status before ending with held work.',
     );
   }
   return parts.join(' ');
@@ -79,6 +87,7 @@ export interface InboxWakeHeldWorkDeps {
   readHeldWorkItems: (ownerId: string, workspaceId: string) => Promise<HeldWorkItem[]>;
   getModes: (workspaceId: string, ownerId: string) => Promise<Array<{ mode: string }>>;
   getLoopActive: (ownerId: string) => Promise<boolean | null>;
+  hasGuaranteedAwaitWake: (ownerId: string) => Promise<boolean>;
   budgetMs: number;
 }
 
@@ -89,6 +98,13 @@ const defaultDeps: InboxWakeHeldWorkDeps = {
   getLoopActive: async (ownerId) => {
     const status = await getLoopStatus(ownerId);
     return status ? status.active === true : null;
+  },
+  hasGuaranteedAwaitWake: async (ownerId) => {
+    const awaits = (await listParkedAwaitsForSubscribers([ownerId])).filter(
+      (entry) => !isTurnEndRewakeKey(entry.eventKey),
+    );
+    const targets = await readWorkItemAwaitTargets(awaits);
+    return awaits.some((entry) => guaranteesWake(entry, targets, INBOX_WAKE_KEY_PREFIX));
   },
   budgetMs: INBOX_WAKE_HELD_WORK_BUDGET_MS,
 };
@@ -135,10 +151,16 @@ export async function prepareInboxWakeHeldWorkReminder(input: {
     ]);
     const autonomyModes =
       modes === 'timeout' ? [] : modes.map((row) => row.mode).filter((mode) => modeImpliesAutonomy(mode));
+    let guaranteedAwaitWake: boolean | null = null;
+    if (autonomyModes.length > 0 && loopActive === false) {
+      const awaitWake = await within(deps.hasGuaranteedAwaitWake(ownerId).catch(() => null));
+      guaranteedAwaitWake = awaitWake === 'timeout' ? null : awaitWake;
+    }
     return inboxWakeHeldWorkReminderText({
       held,
       autonomyModes,
       loopActive: loopActive === 'timeout' ? null : loopActive,
+      guaranteedAwaitWake,
     });
   } catch {
     return '';

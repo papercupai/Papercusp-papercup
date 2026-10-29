@@ -524,6 +524,7 @@ export async function createHostedRuntime(
     sessionCookieSecret,
     controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,
     leadBinding: {
+      runTenant,
       // Same environment selection as the hosted browser's telemetry writer.
       environment: process.env.PORT === '3170' ? 'staging' : process.env.NODE_ENV === 'production' ? 'production' : 'development',
       service: createPostgresHostedLeadBindingService({

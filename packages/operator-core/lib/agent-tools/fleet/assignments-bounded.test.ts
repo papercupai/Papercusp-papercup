@@ -113,6 +113,7 @@ import fleetAssignmentsTool, {
   FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS,
   FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS,
 } from './assignments';
+import { shapeFleetAssignments } from './assignments-shape';
 
 const ctx = { workspaceId: 'papercusp-workspace' } as unknown as Parameters<
   typeof fleetAssignmentsTool.handler
@@ -422,7 +423,12 @@ describe('fleet:assignments bounded handler reads', () => {
         unmeasuredMetrics?: string[];
         scope?: { fleet?: string | null };
         summary: Record<string, unknown>;
-        agents: Array<{ agentId?: string; claims?: unknown[] }>;
+        agents: Array<{
+          agentId?: string;
+          claims?: unknown[];
+          alive?: boolean | null;
+          heartbeatFresh?: boolean;
+        }>;
         readTimings?: Array<{ phase: string }>;
       };
     };
@@ -432,7 +438,7 @@ describe('fleet:assignments bounded handler reads', () => {
       scope: { fleet: 'test-fleet' },
       summary: {
         agents: 1,
-        alive: 1,
+        alive: null,
         claims: 1,
         scheduler_claim_state_status: 'unknown',
         scheduler_active_work_item_claims: null,
@@ -441,9 +447,17 @@ describe('fleet:assignments bounded handler reads', () => {
         reclaimable_claims: null,
         unanswered_directed: null,
       },
-      agents: [expect.objectContaining({ agentId: 'su-worker' })],
+      agents: [expect.objectContaining({ agentId: 'su-worker', alive: null, heartbeatFresh: true })],
     });
+    const shaped = shapeFleetAssignments(result.data, 'trimmed') as {
+      summary?: { alive?: unknown };
+      agents?: Array<{ alive?: unknown }>;
+    };
+    expect(shaped.summary?.alive).toBeNull();
+    expect(shaped.agents?.[0]?.alive).toBeNull();
     expect(result.data.unmeasuredMetrics).toContain('orphaned_claims');
+    expect(result.data.unmeasuredMetrics).toContain('summary.alive');
+    expect(result.data.unmeasuredMetrics).toContain('member.alive');
     expect(result.data.unmeasuredMetrics).toContain('member.verdict');
     expect(result.data.readTimings?.map((timing) => timing.phase)).not.toEqual(
       expect.arrayContaining(['coverage', 'unanswered', 'loop', 'lastToolCalls', 'residue']),

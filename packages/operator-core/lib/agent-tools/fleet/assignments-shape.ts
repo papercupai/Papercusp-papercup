@@ -75,7 +75,9 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
         : null;
     const base = {
       agentId: r.agentId ?? null,
-      alive: r.alive === true,
+      // Snapshot detail marks this unmeasured (`null`); preserve that unknown
+      // instead of collapsing it into a confident dead verdict.
+      alive: typeof r.alive === "boolean" ? r.alive : null,
       // EI-6077: the coordinator-facing session state (live|parked|ended|recorded),
       // derived from wakeability — surfaced alongside `alive` so a caller can tell
       // "really runnable" from "just looks alive" without a second coord:presence

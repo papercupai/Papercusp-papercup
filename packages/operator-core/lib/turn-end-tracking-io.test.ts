@@ -67,7 +67,15 @@ vi.mock('./agent-tools/coordination/inbox-wake', () => ({
   wakeRecipients: (...a: unknown[]) => wakeRecipients(...a),
 }));
 
-const { autoCheckpointStaleHeldItems, checkpointOnRelease, sweepOpenTaskReminder, wakeOpenTaskReminder, observeUnpublishedReportTurn } = await import('./turn-end-tracking-io');
+const {
+  autoCheckpointStaleHeldItems,
+  checkpointOnRelease,
+  readCurrentOpenTaskReminderSignature,
+  sweepOpenTaskReminder,
+  wakeOpenTaskReminder,
+  observeUnpublishedReportTurn,
+} = await import('./turn-end-tracking-io');
+const { openTaskReminderSignature } = await import('./turn-end-tracking');
 
 const REF = { releasingOwnerId: 'su-holder-1', workspaceId: 'ws-1', harness: 'papercusp', workItemId: 'WI-1' };
 
@@ -312,6 +320,44 @@ describe('open-task reminder IO (P-005)', () => {
     expect(applySessionTaskOp).toHaveBeenCalledWith(sql, expect.objectContaining({ sessionId: 'chat-pui-1' }));
   });
 
+  it('reads the delivery-time canonical task signature, excluding a task now blocked', async () => {
+    const blockedTask = {
+      ...activeTask,
+      status: 'blocked',
+      blockerRef: 'work-item:WI-1',
+      updatedAt: '2026-10-24T15:10:48.000Z',
+    };
+    taskSessionIdForOwner.mockResolvedValueOnce('chat-pui-1');
+    applySessionTaskOp.mockResolvedValueOnce({
+      op: 'view',
+      changedTaskId: null,
+      tasks: [blockedTask],
+      links: [],
+    });
+
+    const signature = await readCurrentOpenTaskReminderSignature({
+      ownerId: 'su-attached-1',
+      workspaceId: 'ws-1',
+    });
+
+    expect(signature).toBe(openTaskReminderSignature([]));
+    expect(signature).not.toBe(openTaskReminderSignature([activeTask]));
+    expect(taskSessionIdForOwner).toHaveBeenCalledWith(sql, 'ws-1', 'su-attached-1');
+    expect(applySessionTaskOp).toHaveBeenCalledWith(sql, expect.objectContaining({
+      op: 'view',
+      workspaceId: 'ws-1',
+      sessionId: 'chat-pui-1',
+    }));
+  });
+
+  it('returns an unknown signature when the canonical task read fails', async () => {
+    applySessionTaskOp.mockRejectedValueOnce(new Error('task read unavailable'));
+    await expect(readCurrentOpenTaskReminderSignature({
+      ownerId: 'su-owner-1',
+      workspaceId: 'ws-1',
+    })).resolves.toBeNull();
+  });
+
   it('suppresses when a loop or bounded await already guarantees continuation', async () => {
     applySessionTaskOp.mockResolvedValue({
       op: 'view',
@@ -363,7 +409,7 @@ describe('open-task reminder IO (P-005)', () => {
     ).resolves.toBe(true);
     expect(wakeRecipients).toHaveBeenCalledWith(['su-owner-1'], {
       summary: decision.prompt,
-      payload: decision.tripwire,
+      payload: { ...decision.tripwire, taskWorkspaceId: 'ws-1' },
       source: 'turn-end-open-task-reminder',
       workspaceId: 'ws-1',
     });

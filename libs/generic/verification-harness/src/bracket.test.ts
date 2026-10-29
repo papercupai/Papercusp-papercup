@@ -52,6 +52,7 @@ const tmp = () => mkdtempSync(path.join(tmpdir(), 'vh-bracket-'));
 let privateRetention: string;
 beforeEach(() => {
   privateRetention = tmp();
+  vi.stubEnv('VH_EVIDENCE_ROOT_BASE', path.join(privateRetention, 'canonical'));
   vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', path.join(privateRetention, 'mutex'));
   vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', path.join(privateRetention, 'pins'));
   vi.stubEnv('PAPERCUSP_DISABLE_FS_MUTEX', '0');
@@ -96,7 +97,7 @@ describe('vh.sh bracket mode', () => {
     const r = run(`
 vh_phase prep ""
 vh_init legacy "$HOME/.local/state/verification-harness/legacy"
-`, { HOME: home, VH_FAIL_OPEN: '0' });
+`, { HOME: home, VH_FAIL_OPEN: '0', VH_EVIDENCE_ROOT_BASE: '' });
     expect(r.code).toBe(2);
     expect(r.stderr).toContain('VH_EVIDENCE_ROOT_REFUSED harness=legacy');
     expect(r.stderr).toContain('legacy-evidence-root:');

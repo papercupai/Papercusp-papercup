@@ -1551,6 +1551,110 @@ describe("independent copy memory admission precedes native preparation", () => 
   });
 });
 
+describe("pinned verifier inputs fail before native preparation", () => {
+  const preflightStartIdx = src.indexOf("preflight_verifier_pinned_inputs() {");
+  const preflightEndIdx = src.indexOf('NATIVE_CARGO_DISK_RESERVATION_FILE=""', preflightStartIdx);
+  const earlyCallIdx = src.indexOf(
+    "verifier_run_step verifier-pinned-inputs-preflight preflight_verifier_pinned_inputs",
+    preflightStartIdx,
+  );
+  const nativeCargoIdx = src.indexOf("verifier_run_step native-cargo-capacity preflight_native_cargo");
+  const nativeConsoleIdx = src.indexOf(
+    "verifier_run_step native-console-platform-check preflight_native_console_platform",
+  );
+  const committedSnapshotStartIdx = src.indexOf("snapshot_committed_operator_source() {");
+  const committedInputCheckIdx = src.indexOf("verifier-inputs-check", committedSnapshotStartIdx);
+  const committedExportIdx = src.indexOf(
+    'node "$source_repo/scripts/source-preview.mjs" verifier-prepare',
+    committedSnapshotStartIdx,
+  );
+
+  function run(nodeStatus: number, pinned = true, testedInputs = true) {
+    expect(preflightStartIdx).toBeGreaterThan(-1);
+    expect(preflightEndIdx).toBeGreaterThan(preflightStartIdx);
+    const fixture = mkdtempSync(resolve(tmpdir(), "verifier-pinned-inputs-"));
+    const orderPath = resolve(fixture, "order");
+    const nodeArgsPath = resolve(fixture, "node-args");
+    try {
+      const result = spawnSync("bash", ["-c", [
+        "set -u",
+        'verifier_run_step() { local step="$1"; shift; printf "%s\\n" "$step" >> "$TEST_ORDER"; "$@"; }',
+        'node() { printf "%s\\n" "$*" >> "$TEST_NODE_ARGS"; return "$TEST_NODE_STATUS"; }',
+        src.slice(preflightStartIdx, preflightEndIdx),
+        'printf "native-cargo-capacity\\n" >> "$TEST_ORDER"',
+        'printf "native-console-platform-check\\n" >> "$TEST_ORDER"',
+      ].join("\n")], {
+        encoding: "utf8",
+        timeout: 5_000,
+        env: {
+          ...hermeticSpawnEnv(),
+          TEST_ORDER: orderPath,
+          TEST_NODE_ARGS: nodeArgsPath,
+          TEST_NODE_STATUS: String(nodeStatus),
+          REPO_DIR: "/donor",
+          VERIFY_TAURI_SOURCE_REPO_DIR: "/selected/source",
+          VERIFY_TAURI_SOURCE_REF: pinned ? "selected-ref" : undefined,
+          VERIFY_TAURI_SOURCE_INPUTS: testedInputs ? "scripts/verify-tauri-headless.sh" : undefined,
+          VERIFY_TAURI_SOURCE_INPUTS_FILE: undefined,
+        },
+      });
+      return {
+        ...result,
+        order: existsSync(orderPath) ? readFileSync(orderPath, "utf8").trim().split("\n") : [],
+        nodeArgs: existsSync(nodeArgsPath) ? readFileSync(nodeArgsPath, "utf8") : "",
+      };
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }
+
+  it("runs before Cargo and native-console checks, while retaining later race guards", () => {
+    expect(earlyCallIdx).toBeGreaterThan(preflightStartIdx);
+    expect(earlyCallIdx).toBeLessThan(nativeCargoIdx);
+    expect(earlyCallIdx).toBeLessThan(nativeConsoleIdx);
+    expect(committedInputCheckIdx).toBeGreaterThan(committedSnapshotStartIdx);
+    expect(committedInputCheckIdx).toBeLessThan(committedExportIdx);
+  });
+
+  it("stops before native preparation when the pinned-input check finds a mismatch", () => {
+    const result = run(75);
+    expect(result.status, spawnDiagnostic(result)).toBe(75);
+    expect(result.order).toEqual(["verifier-pinned-inputs-preflight"]);
+    expect(result.nodeArgs.trim().split(/\s+/)).toEqual([
+      "/selected/source/scripts/source-preview.mjs",
+      "verifier-inputs-check",
+      "--repo",
+      "/selected/source",
+      "--ref",
+      "selected-ref",
+      "--tauri-inputs",
+      "--inputs",
+      "scripts/verify-tauri-headless.sh",
+    ]);
+  });
+
+  it("keeps unpinned runs on the existing native preparation path", () => {
+    const result = run(0, false);
+    expect(result.status, spawnDiagnostic(result)).toBe(0);
+    expect(result.order).toEqual([
+      "verifier-pinned-inputs-preflight",
+      "native-cargo-capacity",
+      "native-console-platform-check",
+    ]);
+    expect(result.nodeArgs).toBe("");
+  });
+
+  it("rejects a pinned run with no explicit tested paths before invoking Node", () => {
+    const result = run(0, true, false);
+    expect(result.status, spawnDiagnostic(result)).toBe(1);
+    expect(result.order).toEqual(["verifier-pinned-inputs-preflight"]);
+    expect(result.nodeArgs).toBe("");
+    expect(result.stderr).toContain(
+      "FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE",
+    );
+  });
+});
+
 describe('native shell dependency preflight', () => {
   const check = src.match(/^verify_frozen_native_cli\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
 

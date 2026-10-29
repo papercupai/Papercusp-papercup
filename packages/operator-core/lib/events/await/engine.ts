@@ -1008,7 +1008,42 @@ export function coalesceDeliveries(group: DeliveryWork[]): DeliveryWork {
  * single wake carrying their union — one turn for N events, not N turns. `urgent` deliveries
  * bypass the floor. Resume-spawns are still capped per tick across subscribers (D-007).
  */
-export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWakeDeps = {}): Promise<PumpStats> {
+type OpenTaskReminderSignatureReader = (input: {
+  ownerId: string;
+  workspaceId: string;
+}) => Promise<string | null>;
+
+type PumpWakeDeps = ExecuteWakeDeps & {
+  /** Delivery-pump test seam for the canonical task snapshot freshness read. */
+  readOpenTaskReminderSignatureFn?: OpenTaskReminderSignatureReader;
+};
+
+function openTaskReminderSnapshot(delivery: DeliveryWork): { signature: string; workspaceId: string } | null {
+  if (delivery.source !== 'turn-end-open-task-reminder') return null;
+  const payload = delivery.payload;
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const reminder = payload as Record<string, unknown>;
+  if (
+    reminder.kind !== 'open-task-reminder' ||
+    typeof reminder.signature !== 'string' ||
+    typeof reminder.taskWorkspaceId !== 'string'
+  ) return null;
+  return { signature: reminder.signature, workspaceId: reminder.taskWorkspaceId };
+}
+
+async function readOpenTaskReminderSignature(input: {
+  ownerId: string;
+  workspaceId: string;
+}): Promise<string | null> {
+  try {
+    const { readCurrentOpenTaskReminderSignature } = await import('../../turn-end-tracking-io');
+    return await readCurrentOpenTaskReminderSignature(input);
+  } catch {
+    return null;
+  }
+}
+
+export async function pumpWakeDeliveries(workspaceId?: string, deps: PumpWakeDeps = {}): Promise<PumpStats> {
   const stats: PumpStats = {
     claimed: 0,
     cancelled: 0,
@@ -1038,7 +1073,33 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
     const cancelledIds = await settleCancelledAwaitDeliveries(claimed);
     stats.cancelled = cancelledIds.length;
     const cancelled = new Set(cancelledIds);
-    const executable = claimed.filter((delivery) => !cancelled.has(delivery.id));
+    const eligible = claimed.filter((delivery) => !cancelled.has(delivery.id));
+    const signatureReader = deps.readOpenTaskReminderSignatureFn ?? readOpenTaskReminderSignature;
+    const signatureReads = new Map<string, Promise<string | null>>();
+    const staleReminderIds = new Set<number>();
+    await Promise.all(eligible.map(async (delivery) => {
+      const snapshot = openTaskReminderSnapshot(delivery);
+      if (!snapshot) return;
+      const key = JSON.stringify([delivery.subscriberId, snapshot.workspaceId]);
+      let currentSignature = signatureReads.get(key);
+      if (!currentSignature) {
+        currentSignature = withBoundedTimeout(
+          signatureReader({ ownerId: delivery.subscriberId, workspaceId: snapshot.workspaceId }),
+          { fallback: null, timeoutMs: 2_000, label: 'await-open-task-reminder-freshness' },
+        ).then(({ value }) => value).catch(() => null);
+        signatureReads.set(key, currentSignature);
+      }
+      const current = await currentSignature;
+      if (current !== null && current !== snapshot.signature) staleReminderIds.add(delivery.id);
+    }));
+    for (const delivery of eligible) {
+      if (!staleReminderIds.has(delivery.id)) continue;
+      await markDeliveryDropped(delivery.id, 'open-task reminder snapshot changed before delivery');
+      stats.dropped++;
+    }
+    // Filter stale rows before grouping so a reminder cannot cause unrelated
+    // coalesced inbox messages to be dropped with it.
+    const executable = eligible.filter((delivery) => !staleReminderIds.has(delivery.id));
     if (executable.length === 0) return stats;
 
     // Group claimed deliveries by subscriber — the coalesce + floor unit.

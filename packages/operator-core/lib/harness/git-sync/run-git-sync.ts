@@ -6142,6 +6142,8 @@ interface CommitRepoOpts {
   /** Root paths that are submodule gitlinks, not superproject source files for dependency fencing. */
   migrationDependencySubmodulePaths?: readonly string[];
   migrationFenceRoster?: readonly AttributionRosterEntry[];
+  /** Full root-relative lock census, including paths under submodules. */
+  migrationFenceLiveLockHoldings?: readonly GitSyncLockHolding[];
   loadMigrationFenceRoster?: () => Promise<AttributionRosterEntry[]>;
   /** Superproject-only safe-boundary probe; the caller retains its anti-starvation cap. */
   yieldIfRequested?: (boundary: GitSyncSuperprojectYieldBoundary) => Promise<void>;
@@ -6473,7 +6475,16 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
               'committed under an agent trailer',
           );
         }
-        o.onAttribution({ ...held.tally, ...(share ?? {}) });
+        const attributableFileCount = share?.attributableFileCount ?? held.tally.attributableFileCount ?? 0;
+        if (
+          held.tally.agentGroupCount > 0 ||
+          held.tally.agentCommitCount > 0 ||
+          held.tally.failedGroups > 0 ||
+          held.tally.error !== null ||
+          attributableFileCount > 0
+        ) {
+          o.onAttribution({ ...held.tally, ...(share ?? {}) });
+        }
       }
     }
   };
@@ -6667,7 +6678,7 @@ async function commitOneRepoWithScratch(
           dirtySuperprojectPaths,
           migrationFenceRoster,
           repoPath,
-          o.liveLockHoldings ?? [],
+          o.migrationFenceLiveLockHoldings ?? [],
         ),
       );
       skippedPaths.push(...migrationDependencyFenceSkippedPaths);
@@ -8233,6 +8244,18 @@ async function runGitSyncPass(
     ? (repoRelPrefix: string, knownSubmodulePaths: readonly string[]) => async (): Promise<GitSyncLockHolding[]> =>
         mapLiveLockHoldingsForRepo(await opts.refreshLiveLockHoldings!(), repoRelPrefix, knownSubmodulePaths)
     : undefined;
+  let migrationFenceRosterForTick: Promise<AttributionRosterEntry[]> | undefined;
+  const loadMigrationFenceRosterForTick = (): Promise<AttributionRosterEntry[]> => {
+    if (!migrationFenceRosterForTick) {
+      migrationFenceRosterForTick = Promise.resolve()
+        .then(() => opts.loadMigrationFenceRoster!())
+        .catch((error) => {
+          migrationFenceRosterForTick = undefined;
+          throw error;
+        });
+    }
+    return migrationFenceRosterForTick;
+  };
   const repoO = {
     harnessSlug: slug,
     remote,
@@ -8251,7 +8274,7 @@ async function runGitSyncPass(
     isGitLockOpen: opts.isGitLockOpen,
     diffSubjects: opts.diffSubjects ?? true,
     migrationReservationChecker: opts.migrationReservationChecker,
-    loadMigrationFenceRoster: opts.loadMigrationFenceRoster,
+    loadMigrationFenceRoster: opts.loadMigrationFenceRoster ? loadMigrationFenceRosterForTick : undefined,
     excludePaths: protectedPaths,
   };
 
@@ -8626,12 +8649,64 @@ async function runGitSyncPass(
           // can enforce those cross-repo ordering and reservation checks.
           const earlyAttribution = attributionMapForRepo(roster, '', repo);
           const earlyAttributedPaths = [...earlyAttribution.keys()];
+          let earlyMigrationFenceExcludedPaths: string[] = [];
+          if (repoO.migrationReservationChecker) {
+            const potentialMigrationRefusals: Array<Extract<GitSyncSkippedPath, { reason: 'migration-reservation' }>> = [];
+            for (const subPath of subPaths) {
+              const childDirty = await dirtyFiles(runGitForTiming, join(repo, subPath));
+              potentialMigrationRefusals.push(
+                ...migrationPaths(childDirty).map((path) => ({
+                  scope: subPath,
+                  path,
+                  reason: 'migration-reservation' as const,
+                  detail: 'migration reservation is checked during child sync',
+                })),
+              );
+            }
+            if (potentialMigrationRefusals.length > 0) {
+              let earlyFenceRoster: AttributionRosterEntry[] = [];
+              try {
+                const loaded = await repoO.loadMigrationFenceRoster?.();
+                earlyFenceRoster = Array.isArray(loaded) ? loaded : [];
+              } catch (error) {
+                log(
+                  `[git-sync] superproject: early migration attribution read failed; deferring candidate-dependent root paths fail-closed: ` +
+                    (error instanceof Error ? error.message : String(error)),
+                );
+              }
+              let earlyFenceHoldings = opts.liveLockHoldings ?? [];
+              if (opts.refreshLiveLockHoldings) {
+                try {
+                  earlyFenceHoldings = await opts.refreshLiveLockHoldings();
+                } catch (error) {
+                  // A lock-only migration attribution cannot safely be ruled out on a failed read.
+                  earlyFenceRoster = [];
+                  earlyFenceHoldings = [];
+                  log(
+                    `[git-sync] superproject: early migration lock refresh failed; deferring candidate-dependent root paths fail-closed: ` +
+                      (error instanceof Error ? error.message : String(error)),
+                  );
+                }
+              }
+              const earlyRootDirtyPaths = (await dirtyFiles(runGitForTiming, repo)).filter(
+                (path) => !subPaths.some((subPath) => path === subPath || path.startsWith(`${subPath}/`)),
+              );
+              earlyMigrationFenceExcludedPaths = migrationDependencyFenceSkips(
+                potentialMigrationRefusals,
+                earlyRootDirtyPaths,
+                earlyFenceRoster,
+                repo,
+                earlyFenceHoldings,
+              ).map((entry) => entry.path);
+            }
+          }
           const earlyExcludedPaths = [...new Set([
             ...rootProtectedPaths,
             ...subPaths,
             ...nestedPotPaths,
             ...earlyMigrationPaths,
             ...earlyAttributedPaths,
+            ...earlyMigrationFenceExcludedPaths,
             ...(declarationRepair.status === 'deferred' ? declarationRepair.atomicPaths : []),
           ])];
           if (declarationRepair.status === 'deferred') {
@@ -8945,14 +9020,32 @@ async function runGitSyncPass(
       );
     }
     const commitStartedAt = performance.now();
+    const migrationDependencyRefusals = sub.skippedPaths.filter(
+      (entry): entry is Extract<GitSyncSkippedPath, { reason: 'migration-reservation' }> =>
+        'reason' in entry && entry.reason === 'migration-reservation',
+    );
+    let migrationFenceLiveLockHoldings = opts.liveLockHoldings ?? [];
+    let migrationFenceRoster = roster;
+    if (migrationDependencyRefusals.length > 0 && opts.refreshLiveLockHoldings) {
+      try {
+        migrationFenceLiveLockHoldings = await opts.refreshLiveLockHoldings();
+      } catch (error) {
+        // Without the refreshed child lock plane, roster-only attribution can miss the holder.
+        // Empty both inputs so migrationDependencyFenceSkips fails closed on every dirty root path.
+        migrationFenceLiveLockHoldings = [];
+        migrationFenceRoster = [];
+        log(
+          `[git-sync] superproject: migration lock refresh failed; holding candidate-dependent root paths fail-closed: ` +
+            (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
     const committed = await commitOneRepo(runGit, repo, {
       ...repoO,
       scope: 'superproject',
-      migrationFenceRoster: roster,
-      migrationDependencyRefusals: sub.skippedPaths.filter(
-        (entry): entry is Extract<GitSyncSkippedPath, { reason: 'migration-reservation' }> =>
-          'reason' in entry && entry.reason === 'migration-reservation',
-      ),
+      migrationFenceRoster,
+      migrationFenceLiveLockHoldings,
+      migrationDependencyRefusals,
       migrationDependencySubmodulePaths: submodulePaths,
       excludePaths: [...superprojectExcludePaths, ...deferredDeclarationPaths],
       preDetectedContentOffenders:

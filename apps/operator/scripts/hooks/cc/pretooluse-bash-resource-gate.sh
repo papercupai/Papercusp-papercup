@@ -984,6 +984,13 @@ def _strip_quotes_and_comments(s, preserve_expansions=False):
                 break  # comment runs to end of input — nothing after it
             i = j      # leave the newline itself to be emitted normally
             continue
+        if c == '\\' and i + 1 < n:
+            # Outside quotes the escaped character is data, not an opening
+            # quote. In particular, POSIX apostrophe splicing must not invert
+            # quote parity and expose interpreter source as shell redirects.
+            out.append(s[i:i + 2])
+            i += 2
+            continue
         if c == "'":
             j = s.find("'", i + 1)
             if j == -1:
@@ -1716,6 +1723,10 @@ def _strip_comments_outside_quotes(s):
             if j == -1:
                 break  # comment runs to end of input — nothing after it
             i = j      # leave the newline itself as a real separator
+            continue
+        if c == '\\' and i + 1 < n:
+            out.append(s[i:i + 2])
+            i += 2
             continue
         if c == "'":
             j = s.find("'", i + 1)
@@ -6046,11 +6057,19 @@ _INLINE_CODE_FLAG_RE = re.compile(r'(?:^|\s)-[ce]\b')
 
 
 def _extract_quoted_flag_bodies(cmd):
-    # The quoted argument to a `-c`/`-e` flag (either quote style, DOTALL so
-    # a multi-line script matches) — extracted from the RAW command, since
-    # quote-stripping (used elsewhere to find command-position tokens) would
-    # erase exactly the text this needs to scan.
-    return [m.group(2) for m in re.finditer(r'-[ce]\s+([\'"])(.*?)\1', cmd, re.DOTALL)]
+    # A shell word can concatenate several quoted spans and escaped
+    # apostrophes. A quote-pair regex only recovered the first fragment,
+    # hiding literal interpreter writes after the first apostrophe.
+    import shlex
+    try:
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=';&|()<>')
+        lexer.whitespace_split = True
+        lexer.commenters = ''
+        words = list(lexer)
+    except ValueError:
+        # Preserve the existing conservative scan for malformed shell input.
+        return [m.group(2) for m in re.finditer(r'-[ce]\s+([\'"])(.*?)\1', cmd, re.DOTALL)]
+    return [words[i + 1] for i, word in enumerate(words[:-1]) if word in ('-c', '-e')]
 
 
 def _extract_heredoc_bodies(cmd):

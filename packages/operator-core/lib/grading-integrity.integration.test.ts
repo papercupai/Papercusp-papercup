@@ -304,6 +304,81 @@ it('retires cancelled missions from real private ledgers and preserves a pending
   expect(launch).not.toHaveBeenCalled();
 });
 
+it('persists retained grading-auditor work-item custody and suppresses a duplicate launch', async () => {
+  const ownerId = 'su-retained-auditor';
+  await seed(issueId, { state: 'pending', stampedAt: prior.reservedAt });
+  const liveTask = await registerTask({
+    class: 'agent-session',
+    title: 'live independent grading auditor',
+    argv: [],
+    launchedBy: GRADING_AUDIT_DISPATCH_ACTOR,
+    harnessSlug: 'papercusp',
+    workItemId: issueId,
+    detail: { label: reservation.key, coordOwnerId: ownerId },
+  }, { workspaceId }, db.sql);
+  await markSpawned(liveTask.taskId, {}, db.sql);
+
+  const exactTasks = await listTasks({
+    workspaceId,
+    workItemId: issueId,
+    states: ['pending', 'running'],
+    classes: ['agent-session'],
+    limit: 10,
+  }, db.sql);
+  expect(exactTasks.map((task) => task.taskId)).toEqual([liveTask.taskId]);
+
+  const launch: LaunchHandler = vi.fn(async () => { throw new Error('duplicate grading auditor launch'); });
+  const result = await dispatchPendingGradingAudits(
+    {
+      targetIds: [issueId],
+      ctx: { workspaceId, harnessSlug: 'papercusp' } as DispatchPendingGradingAuditsInput['ctx'],
+      harness: 'papercusp',
+    },
+    {
+      listScorecards: async (filter) => {
+        const rows = await db.sql`
+          SELECT feature_id, payload->'observation'->'gradingAudit' AS audit
+            FROM harness_shared.work_items
+           WHERE workspace_id = ${workspaceId}
+             AND feature_id = ANY(${filter?.issueIds ?? [issueId]}::text[])`;
+        return rows.map((row): ScorecardRow => ({
+          issueId: row.feature_id,
+          createdAt: now.toISOString(),
+          createdBy: 'fixture-evaluator',
+          rubricRef: 'standard-rubric',
+          ratings: {},
+          nKeys: 0,
+          missingKeys: [],
+          extraKeys: [],
+          rubricResolved: true,
+          synthesized: false,
+          score10: null,
+          linkedItems: [],
+          evidenceFingerprint: 'fixture-evidence',
+          gradingAudit: row.audit,
+        }));
+      },
+      getRubric: async () => standardRubric(),
+      listTasks: (filter) => listTasks(filter, db.sql),
+      readRetainedTaskKernelVerdicts: async () => new Map(),
+      isCurrentSourceAuditResponder: async () => true,
+      listWorkspaceWideLoopStanddownOwners: async () => new Set(),
+      launch,
+    },
+  );
+
+  expect(result.receipts[0]).toMatchObject({
+    issueId,
+    state: 'deduped',
+    launch: {
+      deduped: true,
+      mode: 'live-task-guard',
+      tasks: [{ taskId: liveTask.taskId }],
+    },
+  });
+  expect(launch).not.toHaveBeenCalled();
+});
+
 it('rebinds a live null-session auditor to its paced 429 transcript before launching an independent replacement', async () => {
   const ownerId = 'su-retained-auditor';
   const sessionId = 'native-retained-session';

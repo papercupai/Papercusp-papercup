@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { sealRuntimeSourceHandle } from './blind-review-source-seal';
+import { moduleRepoRoot } from './module-repo-root';
 
 const roots: string[] = [], handles: FileHandle[] = [];
 afterEach(async () => {
@@ -47,5 +48,19 @@ print('RETAINED_SEAL_VERIFIED')`], { stdio: ['ignore', 'pipe', 'pipe', sealed.fd
   it('honors cancellation before starting an exporter', async () => {
     const f = await fixture(); const controller = new AbortController(); controller.abort();
     await expect(sealRuntimeSourceHandle(f.original, f.sha256, f.bytes, controller.signal)).rejects.toThrow();
+  });
+
+  it('loads through native Node ESM without the tsx loader', () => {
+    const moduleUrl = new URL('./blind-review-source-seal.ts', import.meta.url).href;
+    const result = spawnSync(process.execPath, [
+      '--experimental-strip-types', '--input-type=module', '-e',
+      `await import(${JSON.stringify(moduleUrl)});`,
+    ], {
+      cwd: moduleRepoRoot(import.meta.url),
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    expect(result.status, [result.stderr, result.error?.message].filter(Boolean).join('\n')).toBe(0);
   });
 });
