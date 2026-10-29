@@ -215,6 +215,42 @@ describe('readLastAssistantTurn / resolveTranscriptPath', () => {
     expect(turn!.ts?.toISOString()).toBe('2026-07-14T10:00:20.000Z');
   });
 
+  it('selects the latest completed Codex final and ignores later active commentary', async () => {
+    const f = join(sandbox, 'codex.jsonl');
+    const codexMessage = (role: 'user' | 'assistant', text: string, turnId: string, phase?: string) => JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role,
+        ...(phase ? { phase } : {}),
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }],
+      },
+    });
+    writeFileSync(f, [
+      codexMessage('user', 'first request', 'turn-1'),
+      codexMessage('assistant', 'completed answer ⟦journal⟧ selected', 'turn-1', 'commentary'),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1', error: null, last_agent_message: 'completed answer' } }),
+      codexMessage('assistant', 'later active commentary', 'turn-2', 'commentary'),
+    ].join('\n') + '\n');
+
+    await expect(readLastAssistantTurn(f, 'codex')).resolves.toMatchObject({
+      speaker: 'assistant',
+      text: 'completed answer ⟦journal⟧ selected',
+      requestId: 'turn-1',
+      responseDisposition: 'delivered',
+    });
+
+    writeFileSync(f, codexMessage('assistant', 'commentary without a completed final', 'turn-3', 'commentary') + '\n');
+    await expect(readLastAssistantTurn(f, 'codex')).resolves.toBeNull();
+
+    writeFileSync(f, [
+      codexMessage('assistant', 'interrupted commentary', 'turn-4', 'commentary'),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-4', error: { message: 'interrupted' }, last_agent_message: null } }),
+    ].join('\n') + '\n');
+    await expect(readLastAssistantTurn(f, 'codex')).resolves.toBeNull();
+  });
+
   it('a transcript whose tail is user turns still finds the previous assistant text', async () => {
     const f = join(sandbox, 'sess.jsonl');
     writeFileSync(

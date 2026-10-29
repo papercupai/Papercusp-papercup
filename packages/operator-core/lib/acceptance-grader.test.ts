@@ -2096,6 +2096,16 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     })).toBeNull();
   });
 
+  it('classifies a terminal native Claude 429 receipt as quota and preserves its retry hint', () => {
+    const receipt = '[psu] native-turn-failed agent=claude code=api_error_429 retryable=false retryAfterMs=60000';
+    const raw = 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s\n'
+      + receipt;
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toMatchObject({
+      code: 'model_quota_exhausted',
+      evidence: expect.stringContaining('retry after 60s'),
+    });
+  });
+
   it('matches a completed inference-gateway 5xx turn only for a controlled caller', () => {
     const raw =
       '\u001b[38;5;220m●\u001b[3GAPI Error: 500 inference-gateway internal error. This is a server-side\r\n' +

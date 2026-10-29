@@ -2931,11 +2931,12 @@ export async function classifyProtectedPathExclusions(
   return { ignoredUntracked, beyondSymlink, inSubmodule };
 }
 
-/** The `git add`/`git commit` fatal for a held index lock ("Unable to create
- *  '….git/index.lock': File exists"). Exported for unit testing (a git wording
- *  change must fail a test, not silently disable the self-heal below). */
+/** The `git add`/`git commit` fatal for a held index lock. Git emits both quoted
+ *  relative paths and unquoted absolute paths (the latter was recorded by the
+ *  bg-host on 2026-10-25); both must reach the retry and stale-lock recovery
+ *  below. Exported for unit testing so wording drift cannot silently disable it. */
 export function isIndexLockFailure(output: string): boolean {
-  return /Unable to create '[^']*index\.lock': File exists/i.test(output);
+  return /Unable to create (?:'[^']*index\.lock'|[^\r\n]*?index\.lock): File exists/i.test(output);
 }
 
 /** The `git submodule sync` fatal for a held repository config lock. Git names

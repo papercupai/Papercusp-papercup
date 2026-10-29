@@ -1,6 +1,7 @@
 /** Expected execution recovery shares the existing routine, wake and
  * transition stores. No new scheduler or watchdog owns this state. */
 import type { Sql } from 'postgres';
+import { resetFireErrors as defaultResetFireErrors } from '../../autoloop';
 import { findLiveHostAsync, type PsuPtyHost } from '../../events/await/psu-pty-discovery';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { fetchGatewayOwnerExecution } from '../../inference-gateway/observability';
@@ -15,6 +16,8 @@ export interface ExecutionRecoveryState {
   observedAt: number;
   generation: string | null;
   lastAttemptAt: number | null;
+  /** The current host-bound native turn began after this exact loop fire. */
+  verifiedSuccessorFireAt?: number;
 }
 
 export interface ExecutionRecoveryInput {
@@ -56,8 +59,18 @@ export function decideLoopExecutionRecovery(i: ExecutionRecoveryInput): {
     nextProbeAt: i.nowMs + PROBE_INTERVAL_MS, observedAt: i.nowMs,
     generation, lastAttemptAt: prior?.lastAttemptAt ?? null,
   };
+  const eMatchesCurrentHost = !!e && e.ownerId === i.ownerId && e.hostPid === i.host.pid
+    && e.childPid === i.host.ptyPid && Number.isInteger(e.childGeneration) && Number(e.childGeneration) > 0
+    && Number.isFinite(e.receivedAtMs) && Number(e.receivedAtMs) >= i.host.startedAt
+    && e.observedAt <= i.nowMs && i.nowMs - e.observedAt <= OBSERVATION_MAX_AGE_MS;
+  // `firedAt` is the millisecond projection of a microsecond timestamptz. Equality is
+  // ambiguous and may precede the actual fire by <1ms, so only a strictly later native
+  // turn start can clear this fire's failure streak.
+  const verifiedSuccessorFireAt = eMatchesCurrentHost && e?.turnStartedAt != null
+    && e.turnStartedAt > i.firedAt ? i.firedAt : undefined;
   const protect = (reason: string, status: ExecutionRecoveryState['status'] = 'blocked') => ({ action: 'protect' as const,
-    state: { ...state, reason, status } });
+    state: { ...state, reason, status,
+      ...(verifiedSuccessorFireAt == null ? {} : { verifiedSuccessorFireAt }) } });
   if (!i.active) return protect('deliberate-stop');
   if (!i.parked) return protect('intentional-cadence');
   if (i.host.quotaBlocked) return protect('provider-hold');
@@ -66,10 +79,7 @@ export function decideLoopExecutionRecovery(i: ExecutionRecoveryInput): {
   const inferenceFresh = i.inference.observedAt != null && i.inference.observedAt <= i.nowMs
     && i.nowMs - i.inference.observedAt <= OBSERVATION_MAX_AGE_MS;
   if (inferenceFresh && Number(i.inference.active) > 0) return protect('active-inference', 'running');
-  const fresh = e && e.ownerId === i.ownerId && e.hostPid === i.host.pid
-    && e.childPid === i.host.ptyPid && Number.isInteger(e.childGeneration) && Number(e.childGeneration) > 0
-    && Number.isFinite(e.receivedAtMs) && Number(e.receivedAtMs) >= i.host.startedAt
-    && e.observedAt <= i.nowMs && i.nowMs - e.observedAt <= OBSERVATION_MAX_AGE_MS;
+  const fresh = eMatchesCurrentHost;
   if (fresh && (e.phase === 'running' || e.pendingTools > 0)) return protect('native-operation', 'running');
   if (fresh && e.phase === 'settled' && Number(e.lastProgressAt) >= i.firedAt) {
     return { action: 'settle', state: { ...state, status: 'running', reason: 'native-turn-settled', attempts: 0, probes: 0 } };
@@ -121,6 +131,7 @@ export interface ExecutionRecoveryDeps {
   findHost?: (owner: string) => Promise<PsuPtyHost | null>;
   inference?: typeof fetchGatewayOwnerExecution;
   arm?: typeof armInboxWake;
+  resetFireErrors?: typeof defaultResetFireErrors;
 }
 
 /** Both the reconciler and stalled guard use this same row-locked decision.
@@ -128,6 +139,8 @@ export interface ExecutionRecoveryDeps {
  * A failed prerequisite retains its reason and next probe in routine metadata. */
 export async function recoverExpectedLoopExecution(input: {
   sql: Sql; routineId: string; ownerId: string; nowMs: number; dryRun?: boolean;
+  /** Permit only the fenced error-streak reset while suppressing wake repair and routine writes. */
+  resetVerifiedSuccessorStreak?: boolean;
 }, deps: ExecutionRecoveryDeps = {}): Promise<{ handled: boolean; state?: ExecutionRecoveryState; rearmed?: boolean }> {
   const getHost = deps.findHost ?? findLiveHostAsync;
   const host = await getHost(input.ownerId);
@@ -164,8 +177,18 @@ export async function recoverExpectedLoopExecution(input: {
     const decision = decideLoopExecutionRecovery({ ownerId: input.ownerId, active: row.active,
       parked: row.parked, firedAt: Number(row.fired_ms), nowMs, host: current, inference, prior });
     if (decision.action === 'settle' || decision.action === 'protect') {
+      if (
+        (!input.dryRun || input.resetVerifiedSuccessorStreak === true) &&
+        decision.state.verifiedSuccessorFireAt === Number(row.fired_ms)
+      ) {
+        await (deps.resetFireErrors ?? defaultResetFireErrors)(row.install_slug, row.name, {
+          workspaceId: row.workspace_id,
+          expectedLastFiredAt: row.fired_at,
+        });
+      }
       if (!input.dryRun && (prior?.status !== decision.state.status || prior?.reason !== decision.state.reason
-        || prior?.generation !== decision.state.generation || prior?.attempts !== decision.state.attempts)) {
+        || prior?.generation !== decision.state.generation || prior?.attempts !== decision.state.attempts
+        || prior?.verifiedSuccessorFireAt !== decision.state.verifiedSuccessorFireAt)) {
         await tx`UPDATE harness_shared.routines
           SET metadata = COALESCE(metadata, '{}'::jsonb) || ${tx.json({ executionRecovery: { ...decision.state } })}
           WHERE id = ${input.routineId} AND active = TRUE AND next_fire_at = 'infinity'::timestamptz`;

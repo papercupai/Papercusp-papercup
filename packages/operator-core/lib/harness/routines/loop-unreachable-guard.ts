@@ -213,8 +213,8 @@ export function evaluateUnreachableTerminalGuard(input: {
 export interface UnreachableTerminalGuardDeps {
   /** Injected for tests; defaults to the real reachability probe. */
   probeReachability?: typeof probeWakeReachability;
-  /** Fresh, read-only host/inference check before terminating a reachable owner. */
-  probeCurrentExecution?: typeof recoverExpectedLoopExecution;
+  /** Fresh host/inference recovery check before terminating a reachable owner. */
+  recoverCurrentExecution?: typeof recoverExpectedLoopExecution;
   /** Injected for tests; defaults to the real auto-pause write. */
   autoPause?: typeof autoPauseLoopRoutine;
 }
@@ -246,7 +246,7 @@ export async function checkUnreachableTerminalGuard(
   deps: UnreachableTerminalGuardDeps = {},
 ): Promise<UnreachableTerminalGuardResult> {
   const probeReachability = deps.probeReachability ?? probeWakeReachability;
-  const probeCurrentExecution = deps.probeCurrentExecution ?? recoverExpectedLoopExecution;
+  const recoverCurrentExecution = deps.recoverCurrentExecution ?? recoverExpectedLoopExecution;
   const autoPause = deps.autoPause ?? autoPauseLoopRoutine;
 
   let reachability: WakeReachabilityVerdict;
@@ -268,22 +268,24 @@ export async function checkUnreachableTerminalGuard(
   });
 
   // COMATOSE-HOST is the only terminal branch allowed to pause a genuinely live,
-  // injectable host. Before taking that irreversible step, read the host's current
-  // native-operation and inference lease. The stored executionRecovery row is not
-  // enough here: a carry successor can be active after the failure streak was recorded.
-  // This check is candidate-only and read-only; unknown/error evidence fails open.
+  // injectable host. Before taking that irreversible step, use the canonical recovery
+  // path to read the host's current native-operation and inference lease. A host-bound
+  // native turn that began after this fire may clear only this routine's stale failure
+  // streak, fenced by the exact fire timestamp; wake repair and routine writes stay disabled.
+  // Unknown/error evidence fails open.
   if (verdict.breach && reachability.reachable && reachability.durableWhileAlive !== false) {
     let execution: Awaited<ReturnType<typeof recoverExpectedLoopExecution>>;
     try {
-      execution = await probeCurrentExecution({
+      execution = await recoverCurrentExecution({
         sql: input.sql,
         routineId: input.routineId,
         ownerId: input.targetOwnerId,
         nowMs: Date.now(),
         dryRun: true,
+        resetVerifiedSuccessorStreak: true,
       });
     } catch {
-      return { breach: false, reason: 'current-execution-unavailable', reachability };
+      return { breach: false, reason: 'current-execution-recovery-unavailable', reachability };
     }
 
     const activeReason = execution.state?.reason;

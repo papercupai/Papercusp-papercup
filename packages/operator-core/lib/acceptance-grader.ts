@@ -842,6 +842,16 @@ export function classifyAcceptanceGraderTerminalFailure(
     const before = normalized.slice(0, nativeFailure.index);
     const after = normalized.slice(nativeFailure.index! + nativeFailure[0].length);
     const quoted = (before.match(/^[ \t]*```/gm)?.length ?? 0) % 2 !== 0;
+    // Claude's native JSONL API-error row carries status 429 separately from
+    // its text. The PTY host's terminal receipt preserves that status as
+    // api_error_429; older hosts may still emit native_error beside the exact
+    // gateway screen. Keep either shape on the reset-aware quota path.
+    const nativeQuotaFailure =
+      /\bcode=api_error_429\b/i.test(nativeFailure[0]) ||
+      /API Error:\s*Request rejected \(429\)/i.test(before);
+    if (nativeQuotaFailure && !quoted) {
+      return { code: 'model_quota_exhausted', evidence: nativeFailure[0].trim() };
+    }
     if (!quoted && !hasAcceptanceGraderFirstTurnProgress(after) &&
         !/^[ \t]*(?:●|❯[ \t]*\S|>[ \t]*\S)/mu.test(after)) {
       return { code: 'native_turn_failed', evidence: nativeFailure[0].trim() };
@@ -994,7 +1004,9 @@ export function classifyAcceptanceGraderTerminalFailure(
     : null;
   if (gatewayError) {
     return {
-      code: 'inference_gateway_error',
+      code: /Request rejected \(429\)/i.test(gatewayError[0])
+        ? 'model_quota_exhausted'
+        : 'inference_gateway_error',
       evidence: gatewayError[0].replace(/\s+/g, ' ').trim().slice(0, 400),
     };
   }

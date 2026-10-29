@@ -74,6 +74,44 @@ describe('durable recovery against isolated Postgres', () => {
     expect((await state(f.input.routineId)).parked).toBe(true);
   });
 
+  it('clears the failure streak only for a fresh host-bound turn that started after the exact fire', async () => {
+    const f = await routine('recovery-verified-successor');
+    f.host.execution!.phase = 'running';
+    f.host.execution!.turnStartedAt = nowMs - 20_000;
+    f.host.execution!.receivedAtMs = nowMs - 20_000;
+    const resetFireErrors = vi.fn(async () => 1);
+    const result = await recoverExpectedLoopExecution(f.input, {
+      ...f.deps,
+      resetFireErrors,
+      inference: async () => ({ ...await f.deps.inference(), active: 1 }),
+    });
+
+    expect(result).toMatchObject({ handled: true, state: {
+      status: 'running', reason: 'active-inference', verifiedSuccessorFireAt: nowMs - 60_000,
+    } });
+    expect(resetFireErrors).toHaveBeenCalledWith('papercusp', f.input.routineId, {
+      workspaceId: ws,
+      expectedLastFiredAt: expect.any(String),
+    });
+    expect((await state(f.input.routineId)).metadata.executionRecovery).toMatchObject({
+      verifiedSuccessorFireAt: nowMs - 60_000,
+    });
+  });
+
+  it('does not clear the failure streak for active inference without post-fire native-turn proof', async () => {
+    const f = await routine('recovery-no-successor-proof');
+    const resetFireErrors = vi.fn(async () => 1);
+    const result = await recoverExpectedLoopExecution(f.input, {
+      ...f.deps,
+      resetFireErrors,
+      inference: async () => ({ ...await f.deps.inference(), active: 1 }),
+    });
+
+    expect(result).toMatchObject({ handled: true, state: { status: 'running', reason: 'active-inference' } });
+    expect(result.state?.verifiedSuccessorFireAt).toBeUndefined();
+    expect(resetFireErrors).not.toHaveBeenCalled();
+  });
+
   // WI-6554700010012442 — before the fix this returned handled:true on every sweep, so both
   // callers `continue`d and the parked loop was never re-armed by anything.
   it('hands a spent unknown-probe budget to the ordinary actors instead of holding the loop parked', async () => {

@@ -3946,6 +3946,7 @@ describe('dispatchPendingGradingAudits', () => {
       .mockResolvedValue('/tmp/grading-retained-native.jsonl');
     const nowMs = Date.now();
     const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' as const }));
+    const providerCanServe = vi.fn(async () => true);
     const ptyLog =
       'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s';
 
@@ -3956,7 +3957,7 @@ describe('dispatchPendingGradingAudits', () => {
         listNativeSessionsByTranscriptHandles: listNativeSessions,
         findSessionTranscript: resolveTranscript,
         killTask,
-        providerCanServe: vi.fn(async () => true),
+        providerCanServe,
         isCurrentSourceAuditResponder: vi.fn(async () => true),
         readLogTail: (path) => path.endsWith('.jsonl')
           ? nativeTranscript
@@ -3974,12 +3975,15 @@ describe('dispatchPendingGradingAudits', () => {
     expect(resolveTranscript).toHaveBeenCalledExactlyOnceWith(sessionId, { owner: ownerId });
     expect(killTask).toHaveBeenCalledWith(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
     expect(d.launch).toHaveBeenCalledOnce();
+    expect(providerCanServe).toHaveBeenCalledWith('codex');
+    expect(d.launch.mock.calls[0]?.[0]).toMatchObject({ agent: 'codex' });
     expect(result.receipts[0]).toMatchObject({
       issueId: 'EI-retained-native',
       state: 'launched',
       terminalRecovery: {
         retiredTaskIds: [task.taskId],
-        codes: ['inference_gateway_error'],
+        codes: ['model_quota_exhausted'],
+        routedTo: 'codex',
       },
     });
   });

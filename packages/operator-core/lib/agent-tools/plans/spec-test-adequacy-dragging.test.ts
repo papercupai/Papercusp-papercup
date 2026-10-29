@@ -133,6 +133,7 @@ function row(
         outcome: 'passed',
         targeted: DRAG_SCENARIO,
         scenarioIds: [DRAG_SCENARIO],
+        scenarioTestCases: { [DRAG_SCENARIO]: ['dragging binding control'] },
         testCases: ['dragging binding control'],
         coverageRungs: { l3: true },
         ...adequacy,
@@ -335,6 +336,22 @@ describe('any-drags adequacy names the dragging binding (P-019)', () => {
     expect(result.verdict).toBe('fail');
     expect(result.wouldBlock).toContain('traceability');
     expect(result.draggingBindingIds).toEqual({});
+  });
+
+  it('blames only the missing fixture fingerprint, not a current calibrated fixture-dependent proof', () => {
+    const calibrated = row(50);
+    const missingFingerprint = row(51, {
+      fingerprints: { ...calibrated.fingerprints, fixtureFingerprint: null },
+      adequacy: { fixtureCalibrated: undefined, fixtureFree: false },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [calibrated, missingFingerprint],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
+    expect(result.draggingBindingIds['fixture-calibration']).toEqual([51]);
   });
 
   it('surfaces the ledger requirement, including where mutation-probe rows are listed, on a ledger-gated refusal', () => {

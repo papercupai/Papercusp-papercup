@@ -438,7 +438,7 @@ describe('checkUnreachableTerminalGuard (WI-1399 — IO wrapper)', () => {
     async reason => {
       const autoPause = vi.fn(async () => {});
       const probeReachability = vi.fn(async () => verdict(true));
-      const probeCurrentExecution = vi.fn(async () => ({
+      const recoverCurrentExecution = vi.fn(async () => ({
         handled: true as const,
         state: {
           status: 'running' as const,
@@ -454,15 +454,16 @@ describe('checkUnreachableTerminalGuard (WI-1399 — IO wrapper)', () => {
 
       const res = await checkUnreachableTerminalGuard(
         { ...input, circuitOpen: true, stuckFireCount: comatoseStuckFiresForTermination() },
-        { autoPause, probeReachability, probeCurrentExecution },
+        { autoPause, probeReachability, recoverCurrentExecution },
       );
 
       expect(res).toMatchObject({ breach: false, reason: `current-execution-active:${reason}` });
-      expect(probeCurrentExecution).toHaveBeenCalledWith(expect.objectContaining({
+      expect(recoverCurrentExecution).toHaveBeenCalledWith(expect.objectContaining({
         sql: input.sql,
         routineId: input.routineId,
         ownerId: input.targetOwnerId,
         dryRun: true,
+        resetVerifiedSuccessorStreak: true,
       }));
       expect(autoPause).not.toHaveBeenCalled();
     },
@@ -471,25 +472,25 @@ describe('checkUnreachableTerminalGuard (WI-1399 — IO wrapper)', () => {
   it('COMATOSE-HOST: unavailable execution evidence fails open instead of removing wake reachability', async () => {
     const autoPause = vi.fn(async () => {});
     const probeReachability = vi.fn(async () => verdict(true));
-    const probeCurrentExecution = vi.fn(async () => { throw new Error('execution observer unavailable'); });
+    const recoverCurrentExecution = vi.fn(async () => { throw new Error('execution observer unavailable'); });
 
     const res = await checkUnreachableTerminalGuard(
       { ...input, circuitOpen: true, stuckFireCount: comatoseStuckFiresForTermination() },
-      { autoPause, probeReachability, probeCurrentExecution },
+      { autoPause, probeReachability, recoverCurrentExecution },
     );
 
-    expect(res).toMatchObject({ breach: false, reason: 'current-execution-unavailable' });
+    expect(res).toMatchObject({ breach: false, reason: 'current-execution-recovery-unavailable' });
     expect(autoPause).not.toHaveBeenCalled();
   });
 
   it('COMATOSE-HOST still pauses after a live host has no current native execution', async () => {
     const autoPause = vi.fn(async () => {});
     const probeReachability = vi.fn(async () => verdict(true));
-    const probeCurrentExecution = vi.fn(async () => ({ handled: false as const }));
+    const recoverCurrentExecution = vi.fn(async () => ({ handled: false as const }));
 
     const res = await checkUnreachableTerminalGuard(
       { ...input, circuitOpen: true, stuckFireCount: comatoseStuckFiresForTermination() },
-      { autoPause, probeReachability, probeCurrentExecution },
+      { autoPause, probeReachability, recoverCurrentExecution },
     );
 
     expect(res.breach).toBe(true);

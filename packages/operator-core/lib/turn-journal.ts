@@ -246,14 +246,34 @@ const TAIL_READ_BYTES = 256 * 1024;
 
 export type JournalSourceKind = 'claude' | 'omp' | 'codex';
 
-/** Read the LAST assistant text turn from a transcript file (bounded tail
- *  read; parses with the same adapter session-ingest indexes with). */
+/** Read the last assistant text turn eligible for journaling from a transcript
+ *  file (bounded tail read; parses with the same adapter session-ingest indexes
+ *  with). Codex requires its native delivered-turn boundary. */
 export async function readLastAssistantTurn(
   filePath: string,
   sourceKind: JournalSourceKind,
 ): Promise<ParsedTurn | null> {
   const adapter = FILE_ADAPTERS.find((a) => a.sourceKind === sourceKind);
   if (!adapter) return null;
+  if (sourceKind === 'codex') {
+    // Codex writes assistant commentary before a turn is complete, and a
+    // delayed Stop hook can run after commentary for a newer, still-active
+    // turn. Reuse the lifecycle-aware tail reader so only text tied to a
+    // native turn id with a delivered final boundary can be journaled.
+    const turns = await readVerbatimTail(filePath, sourceKind, Number.MAX_SAFE_INTEGER);
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+      const turn = turns[i];
+      if (turn.speaker !== 'assistant' || turn.responseDisposition !== 'delivered' || !turn.requestId) continue;
+      return {
+        ts: turn.ts,
+        speaker: 'assistant',
+        text: turn.text,
+        requestId: turn.requestId,
+        responseDisposition: turn.responseDisposition,
+      };
+    }
+    return null;
+  }
   const st = await stat(filePath);
   const start = Math.max(0, st.size - TAIL_READ_BYTES);
   const fh = await open(filePath, 'r');

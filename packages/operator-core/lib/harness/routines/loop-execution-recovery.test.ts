@@ -73,6 +73,37 @@ describe('expected loop execution recovery', () => {
     expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'protect', state: { reason, attempts: 0 } });
   });
 
+  it('marks a host-bound native turn that began after the loop fire as verified successor activity', () => {
+    const i = fixture();
+    i.inference.active = 1;
+    i.host.execution!.turnStartedAt = nowMs - 10_000;
+    i.host.execution!.receivedAtMs = nowMs - 10_000;
+    expect(decideLoopExecutionRecovery(i)).toMatchObject({
+      action: 'protect',
+      state: { reason: 'active-inference', verifiedSuccessorFireAt: i.firedAt },
+    });
+  });
+
+  it('does not treat mismatched host identity or a pre-fire turn as verified successor activity', () => {
+    const beforeFire = fixture();
+    beforeFire.inference.active = 1;
+    beforeFire.host.execution!.turnStartedAt = beforeFire.firedAt - 1;
+    expect(decideLoopExecutionRecovery(beforeFire)).toMatchObject({
+      action: 'protect', state: { reason: 'active-inference' },
+    });
+    expect(decideLoopExecutionRecovery(beforeFire).state.verifiedSuccessorFireAt).toBeUndefined();
+
+    const wrongHost = fixture();
+    wrongHost.inference.active = 1;
+    wrongHost.host.execution!.turnStartedAt = nowMs - 10_000;
+    wrongHost.host.execution!.receivedAtMs = nowMs - 10_000;
+    wrongHost.host.execution!.childPid = 99;
+    expect(decideLoopExecutionRecovery(wrongHost)).toMatchObject({
+      action: 'protect', state: { reason: 'active-inference' },
+    });
+    expect(decideLoopExecutionRecovery(wrongHost).state.verifiedSuccessorFireAt).toBeUndefined();
+  });
+
   it.each([
     ['absent execution', (i: ExecutionRecoveryInput) => { delete i.host.execution; }],
     ['different owner', (i: ExecutionRecoveryInput) => { i.host.execution!.ownerId = 'someone-else'; }],
