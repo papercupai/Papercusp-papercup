@@ -2,7 +2,7 @@
  * Tests for hybrid tool-find (lexical + semantic floored-union).
  * Run with: npx vitest run packages/operator-core/lib/cupboard/tool-find.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ToolDiscoveryEntry } from './tools-discovery';
 import { cosineSimilarity, decisiveToolForSymptom, findTools } from './tool-find';
 
@@ -218,14 +218,18 @@ describe('findTools', () => {
   });
 
   it('degrades to lexical when the query embedder exceeds its budget', async () => {
+    const outcome = vi.fn();
     const hits = await findTools(corpus, 'deploy a bot', {
       embedder: () => new Promise<number[]>(() => {}),
       embeddings,
       embedTimeoutMs: 5,
+      onQueryEmbeddingOutcome: outcome,
     });
     expect(hits.find((h) => h.tool === 'cup:spawn')).toBeUndefined();
     expect(hits.every((h) => h.via === 'lexical')).toBe(true);
     expect(hits.every((h) => h.cosine === null)).toBe(true);
+    expect(outcome).toHaveBeenCalledOnce();
+    expect(outcome).toHaveBeenCalledWith('timeout');
   });
 
   it('carries argSchema through to the hit (null when absent)', async () => {

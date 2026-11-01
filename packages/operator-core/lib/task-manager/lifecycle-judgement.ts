@@ -93,6 +93,8 @@ export interface ProcessLifecycleVerdict {
 export interface LifecycleCandidate {
   taskId: string;
   scopeUnit: string | null;
+  /** Last-known host PID values copied from task_ledger.detail for identity-based residue checks. */
+  observedPids: number[];
   workspaceId: string;
   harnessSlug: string | null;
   title: string;
@@ -219,6 +221,16 @@ function nonNegativeInteger(value: unknown): number {
 
 function object(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function observedPidsFromDetail(detail: Record<string, unknown> | null | undefined): number[] {
+  const raw = detail?.pids;
+  if (!Array.isArray(raw)) return [];
+  const pids = new Set<number>();
+  for (const value of raw) {
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) pids.add(value);
+  }
+  return [...pids].sort((a, b) => a - b);
 }
 
 export function processLifecycleProbeFromDetail(detail: Record<string, unknown>): ProcessLifecycleProbe | null {
@@ -704,6 +716,7 @@ export function evaluateLifecycleCandidates(input: {
     candidates.push({
       taskId: row.taskId,
       scopeUnit: row.scopeUnit ?? null,
+      observedPids: observedPidsFromDetail(row.detail),
       workspaceId: row.workspaceId,
       harnessSlug: row.harnessSlug ?? null,
       title: row.title,
@@ -768,6 +781,7 @@ const UNACCOUNTED_GONE_VERIFICATION_GUIDANCE = [
   'Select the same-kind control path by addressability, not by live.unaccountedGroups.length. A control is addressable only when the complete, self-consistent census contains at least one pc-*.scope entry with a non-empty scopeUnit; scopeUnit is the exact processes:list selector and cgroupPath is output metadata only.',
   'When an addressable control exists, require a known-present same-kind unaccounted control from the census, read it twice with processes:list { scopeUnit, live:true, includeEnded:true }, and confirm tasks[].ageSec advances by elapsed wall time. An unaccounted scope has no live owning ledger row, so the ageSec-bearing row is terminal and the default tasks[] filter would hide it. If that available control fails its two-read proof, leave the result unknown; do not use the cgroupfs path to work around a failed read.',
   'When no addressable control exists, the same-kind control prerequisite is structurally unavailable, not a failed read, even when live.unaccountedGroups is non-empty because every entry has null or empty scopeUnit or there is no pc-*.scope. Do not wait or retry for that unavailable control.',
+  'For a candidate with no scopeUnit, compare payload.processLifecycleCandidate.observedPids (the last-known host PID values from task_ledger.detail) against the complete census live.unaccountedGroups[].pids. Any matching PID is positive presence. A gone verdict requires state=stranded, no livePids in the exact task read, no saved PID in the complete healthy census, and the passing same-kind control above; a missing/empty observedPids list leaves the verdict unknown. Never substitute stored cgroupPath or metrics.pidsCurrent for PID identity.',
   'For an exact candidate scopeUnit, instead independently walk the complete, readable Papercusp slice subtree under /sys/fs/cgroup by exact scopeUnit. Require successful recursive directory enumeration and control-file reads throughout, exact candidate scopeUnit directory absence, and a populated peer pc-*.scope elsewhere in that subtree (pids.current > 0 or cgroup.events reports populated 1). The populated peer proves the cgroup instrument can see live Papercusp scopes; exact scopeUnit absence is affirmative scope-removal evidence.',
   'If the tree is unreadable or incomplete, scopeUnit is missing, or no populated peer is visible, leave the result unknown. Never use stored cgroupPath, /proc absence, detector reason, or empty filtered output for this proof. unaccounted with confined:false does not prove abandonment; a kill needs positive abandonment evidence such as a dead spawner and a stale rig. For launcher-ended and old-and-idle only, use processes:list { taskId, live:true } and judge current evidence.',
 ].join(' ');
@@ -783,7 +797,7 @@ export function lifecycleJudgeBrief(items: readonly OpenLifecycleCandidateItem[]
     TERMINAL_RESIDUE_VERIFICATION_GUIDANCE,
     'capability:bash may run in a separate PID namespace: a missing /proc/<host-pid> means the PID is not visible to that shell, not that it exited. When diagnosing a bash-side probe, report readlink /proc/self/ns/pid, the visible numeric /proc PID count, and $$ in that same call. If $$ is tiny or only a few PIDs are visible, discard every /proc absence from that call. cgroup.procs containing only 0 means at least one task is in the cgroup but hidden from that PID namespace; it is presence evidence, not an empty cgroup or PID 0. A non-zero pids.current and the number of cgroup.procs entries can corroborate cgroup presence, but the listed PID values are namespace-relative. pids.current counts kernel tasks (including threads), not task-manager process rows. capability:bash loopback is proxied; HTTP 502 is not ECONNREFUSED (curl exit 7) and proves neither that the target answered nor that it is absent. Treat these shell readings as unknown; use host-side processes:list or dev:listening_ports for current evidence.',
     SYSTEMD_DBUS_ABSENCE_GUIDANCE,
-    'For each item: read and claim the work item, then inspect its processLifecycleCandidate kinds and scopeUnit. If a named claim reports claim_conflict and the holder is dead or stale, retry that same claim with force:true and a concise reason; force is liveness-checked, audited, and compare-and-claim protected. If force is refused because the holder is live, coordinate instead of blind-retrying. For unaccounted-residue, a taskId-filtered processes:list result cannot prove absence: use processes:list { scopeUnit, live:true } and inspect only live.exactScopeUnitMatches entries with kind "unaccounted". An empty exact-scope result is not proof by itself. If scopeUnit is missing, use an unfiltered processes:list { live:true } census and inspect the complete live.unaccountedGroups array and listed PIDs. Read numeric totals as live.unaccountedCount ?? live.unaccounted and live.unaccountedPidCount ?? live.unaccountedPids for compatibility with older running builds. If live.unaccountedGroups is missing or is not an array, leave the result unknown; never coerce a missing group list to [].',
+    'For each item: read and claim the work item, then inspect its processLifecycleCandidate kinds, taskId, scopeUnit, and observedPids. If a named claim reports claim_conflict and the holder is dead or stale, retry that same claim with force:true and a concise reason; force is liveness-checked, audited, and compare-and-claim protected. If force is refused because the holder is live, coordinate instead of blind-retrying. For unaccounted-residue, a taskId-filtered processes:list result cannot prove absence: use processes:list { scopeUnit, live:true } and inspect only live.exactScopeUnitMatches entries with kind "unaccounted". An empty exact-scope result is not proof by itself. If scopeUnit is missing, use an unfiltered processes:list { live:true } census and compare payload.processLifecycleCandidate.observedPids with the complete live.unaccountedGroups[].pids set. Read numeric totals as live.unaccountedCount ?? live.unaccounted and live.unaccountedPidCount ?? live.unaccountedPids for compatibility with older running builds. If live.unaccountedGroups is missing or is not an array, leave the result unknown; never coerce a missing group list to [].',
     UNACCOUNTED_GONE_VERIFICATION_GUIDANCE,
     'Use processLifecycleCandidate.metrics.cpuActivity as cgroup cpu.stat evidence: active means usage_usec changed between its timestamps, idle means unchanged over that interval, and unknown means there is no valid comparison. Idle describes CPU use only; it does not prove the process is gone, and unknown must remain unknown.',
     'You produce evidence and a verdict only. NEVER signal a process: do not call processes:kill, shell, systemctl, or any pid/name/pattern kill. Trusted task-manager code enforces a completed kill verdict later through the exact task/scope identity.',
@@ -804,7 +818,7 @@ export function lifecycleCandidateSummary(candidate: LifecycleCandidate): string
     namespaceProbeCaveat +
     SYSTEMD_DBUS_ABSENCE_GUIDANCE + ' ' +
     TERMINAL_RESIDUE_VERIFICATION_GUIDANCE + ' ' +
-    'For unaccounted residue, a taskId-filtered read cannot prove absence. Read payload.processLifecycleCandidate.scopeUnit and use processes:list { scopeUnit, live:true }; inspect only live.exactScopeUnitMatches entries with kind "unaccounted". An empty result is not proof by itself. If scopeUnit is missing, use an unfiltered processes:list { live:true } and inspect the complete live.unaccountedGroups inventory and listed PIDs. Read numeric totals as live.unaccountedCount ?? live.unaccounted and live.unaccountedPidCount ?? live.unaccountedPids for compatibility with older running builds. If live.unaccountedGroups is missing or not an array, leave the result unknown; never coerce a missing group list to []. ' +
+    'For unaccounted residue, a taskId-filtered read cannot prove absence. Read payload.processLifecycleCandidate.scopeUnit and use processes:list { scopeUnit, live:true }; inspect only live.exactScopeUnitMatches entries with kind "unaccounted". An empty result is not proof by itself. If scopeUnit is missing, use an unfiltered processes:list { live:true } and compare payload.processLifecycleCandidate.observedPids against the complete live.unaccountedGroups[].pids set. Read numeric totals as live.unaccountedCount ?? live.unaccounted and live.unaccountedPidCount ?? live.unaccountedPids for compatibility with older running builds. If live.unaccountedGroups is missing or not an array, leave the result unknown; never coerce a missing group list to []. ' +
     'Read cgroup CPU evidence from payload.processLifecycleCandidate.metrics.cpuActivity; active means usage_usec changed between its timestamps, idle means unchanged, and unknown means there is no valid comparison. ' +
     UNACCOUNTED_GONE_VERIFICATION_GUIDANCE
   );
@@ -814,6 +828,7 @@ export function lifecycleCandidatePayload(candidate: LifecycleCandidate, observe
   return {
     taskId: candidate.taskId,
     scopeUnit: candidate.scopeUnit,
+    observedPids: candidate.observedPids,
     observedAt,
     taskClass: candidate.taskClass,
     state: candidate.state,

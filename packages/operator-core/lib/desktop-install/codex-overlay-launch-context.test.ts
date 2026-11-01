@@ -83,6 +83,10 @@ const CODEX_GUIDANCE = [
   'tools.mcp__papercusp_su__work_items_get({ id, harness })',
   'Use `tools:find` only for a capability that is\nnot in `ALL_TOOLS`',
   'on the `ptool` path it cannot',
+  // Shell ${...} syntax in an outer JS template literal fails before shell dispatch.
+  'Never put a shell command containing `${...}` inside a\nJavaScript template literal',
+  'V8 resolves it before `exec_command` starts',
+  'Keep that command in a normal JavaScript string',
   // EI-25176447697693688: stale direct wrappers require a current tools/list baseline.
   '`stale_tool_contract`',
   '`tools/list` baseline for the current serving generation.',

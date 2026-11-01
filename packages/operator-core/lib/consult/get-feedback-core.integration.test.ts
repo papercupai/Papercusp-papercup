@@ -1589,6 +1589,9 @@ describe('getFeedbackCore — routed', () => {
     const r = asOk(await getFeedbackCore({ ...baseReq, latencyContract: 'hard-blocked' }, deps));
     expect(r.park_key).toBe(`consult:reply:${r.conversation_id}`);
     expect(r.hint).toContain('events:await');
+    expect(r.hint).toContain('a subsequent reply wakes you');
+    expect(r.hint).toContain('a reply that arrives before registration is an earlier edge');
+    expect(r.hint).not.toContain('latched');
     const row = await stateRow(r.conversation_id);
     expect(row.latency_contract).toBe('hard-blocked');
     expect(new Date(row.expires_at as string).getTime()).toBe(NOW.getTime() + HARD_BLOCKED_EXPIRY_MS);

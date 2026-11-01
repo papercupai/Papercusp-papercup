@@ -17,6 +17,7 @@ import {
   cutBuildStage,
   cutOperationIdentityFromTask,
   discoverCutOperations,
+  releaseCutTerminalFromStatus,
   CUT_ARTIFACT_KIND,
   CUT_OPERATION_LAUNCHED_BY,
   type BeginCutOperationDeps,
@@ -178,23 +179,23 @@ describe('beginCutOperation', () => {
 
 describe('classifyCutOperation', () => {
   it('reports an active unit as running', () => {
-    const r = classifyCutOperation('op-1', status({ state: 'running', running: true, operation: marker('op-1') }));
+    const r = classifyCutOperation('task1', 'op-1', status({ state: 'running', running: true, operation: marker('op-1') }));
     expect(r).toMatchObject({ disposition: 'running', resumable: false });
   });
 
   it('reports a matching DONE:0 sentinel as complete', () => {
-    const r = classifyCutOperation('op-1', status({ state: 'done', exitCode: 0, operation: marker('op-1') }));
+    const r = classifyCutOperation('task1', 'op-1', status({ state: 'done', exitCode: 0, operation: marker('op-1') }));
     expect(r).toMatchObject({ disposition: 'complete', resumable: false });
   });
 
   it('reports a matching non-zero sentinel as failed, and names the exit code', () => {
-    const r = classifyCutOperation('op-1', status({ state: 'failed', exitCode: 3, operation: marker('op-1') }));
+    const r = classifyCutOperation('task1', 'op-1', status({ state: 'failed', exitCode: 3, operation: marker('op-1') }));
     expect(r.disposition).toBe('failed');
     expect(r.reason).toContain('3');
   });
 
   it('reports a started-but-abandoned cut as interrupted, and RESUMABLE — the P-001 case', () => {
-    const r = classifyCutOperation('op-1', status({ state: 'interrupted', operation: marker('op-1') }));
+    const r = classifyCutOperation('task1', 'op-1', status({ state: 'interrupted', operation: marker('op-1') }));
     expect(r).toMatchObject({ disposition: 'interrupted', resumable: true });
   });
 
@@ -203,6 +204,7 @@ describe('classifyCutOperation', () => {
     // shared, so without the id check this exact input reads as a clean `complete` for an
     // operation that never finished.
     const r = classifyCutOperation(
+      'task1',
       'op-1',
       status({ state: 'done', exitCode: 0, operation: marker('op-2') }),
     );
@@ -211,20 +213,46 @@ describe('classifyCutOperation', () => {
     expect(r.reason).toContain('op-2');
   });
 
+  it('rejects a matching operation marker that belongs to a different task', () => {
+    const r = classifyCutOperation(
+      'task1',
+      'op-1',
+      status({ state: 'done', exitCode: 0, operation: marker('op-1', 'task2') }),
+    );
+    expect(r).toMatchObject({ disposition: 'superseded', resumable: false });
+    expect(r.reason).toContain('task2');
+  });
+
   it('treats an unidentified marker (unmanaged / pre-P-001 launch) as unknown, never as its own', () => {
-    const r = classifyCutOperation('op-1', status({ state: 'done', exitCode: 0, operation: marker(null) }));
+    const r = classifyCutOperation('task1', 'op-1', status({ state: 'done', exitCode: 0, operation: marker(null) }));
+    expect(r).toMatchObject({ disposition: 'unknown', resumable: false });
+  });
+
+  it('treats a marker without a task id as unknown even when its operation id matches', () => {
+    const r = classifyCutOperation(
+      'task1',
+      'op-1',
+      status({ state: 'done', exitCode: 0, operation: marker('op-1', null) }),
+    );
     expect(r).toMatchObject({ disposition: 'unknown', resumable: false });
   });
 
   it('treats a missing marker as unknown rather than idle-and-therefore-fine', () => {
-    const r = classifyCutOperation('op-1', status({ state: 'idle', operation: null }));
+    const r = classifyCutOperation('task1', 'op-1', status({ state: 'idle', operation: null }));
     expect(r).toMatchObject({ disposition: 'unknown', resumable: false });
   });
 });
 
 describe('cutOperationIdentityFromTask', () => {
   function taskRow(detail: Record<string, unknown>): TaskRow {
-    return { taskId: 'task1', state: 'running', detail } as unknown as TaskRow;
+    return {
+      taskId: 'task1',
+      state: 'running',
+      class: 'deploy',
+      launchedBy: CUT_OPERATION_LAUNCHED_BY,
+      cwd: '/tmp/desktop',
+      detail,
+    } as unknown as TaskRow;
   }
 
   it('recovers the persisted identity after a restart, when only the ledger row survives', () => {
@@ -250,6 +278,23 @@ describe('cutOperationIdentityFromTask', () => {
     (seed.artifactIdentity as { platform: unknown }).platform = 'solaris';
     expect(cutOperationIdentityFromTask(taskRow({ release: seed }))?.identity.platform).toBeNull();
   });
+
+  it('recovers matching DONE as task evidence without committing a release artifact', () => {
+    const seed = buildCutJournalSeed('op-1', identity());
+    const task = taskRow({ release: seed });
+    const recovered = releaseCutTerminalFromStatus(
+      task,
+      status({ state: 'failed', exitCode: 1, operation: marker('op-1', 'task1') }),
+      '/tmp/desktop',
+    );
+    expect(recovered).toMatchObject({ taskId: 'task1', state: 'exited', exitCode: 1 });
+    expect(recovered?.reason).toContain('artifact commitment remains receipt-governed');
+    expect(recovered?.reason.length).toBeLessThanOrEqual(512);
+    expect(seed.receipts).toEqual([]);
+    expect(releaseCutTerminalFromStatus(task, status({
+      state: 'done', exitCode: 0, operation: marker('op-1', 'task1'),
+    }), '/tmp/other-desktop')).toBeNull();
+  });
 });
 
 describe('discoverCutOperations', () => {
@@ -259,15 +304,15 @@ describe('discoverCutOperations', () => {
     linuxSeed.currentStage = 'release.build.linux' as never;
 
     const listTasks = (async () => [
-      { taskId: 'tasklinux1234', state: 'running', detail: { release: linuxSeed } },
-      { taskId: 'taskmac1234', state: 'running', detail: { release: macSeed } },
+      { taskId: 'tasklinux1234', state: 'running', cwd: '/tmp/root-linux', detail: { release: linuxSeed } },
+      { taskId: 'taskmac1234', state: 'running', cwd: '/tmp/root-mac', detail: { release: macSeed } },
       // A non-cut row sharing the launcher must not be adopted.
       { taskId: 'task-other', state: 'running', detail: {} },
     ]) as unknown as DiscoverCutOperationsDeps['listTasks'];
 
-    const seen: Array<Platform | undefined> = [];
-    const readStatus = (platform: Platform | undefined) => {
-      seen.push(platform);
+    const seen: Array<[Platform | undefined, string]> = [];
+    const readStatus = (platform: Platform | undefined, root: string) => {
+      seen.push([platform, root]);
       return platform === 'linux'
         ? status({ state: 'interrupted', operation: marker('op-linux', 'tasklinux1234') })
         : status({ state: 'running', running: true, operation: marker('op-mac', 'taskmac1234') });
@@ -275,7 +320,7 @@ describe('discoverCutOperations', () => {
 
     const found = await discoverCutOperations({ listTasks, readStatus });
 
-    expect(seen).toEqual(['linux', 'mac']);
+    expect(seen).toEqual([['linux', '/tmp/root-linux'], ['mac', '/tmp/root-mac']]);
     expect(found).toHaveLength(2);
     expect(found[0]).toMatchObject({
       taskId: 'tasklinux1234',
@@ -303,5 +348,21 @@ describe('discoverCutOperations', () => {
       launchedBy: CUT_OPERATION_LAUNCHED_BY,
       classes: ['deploy'],
     });
+  });
+
+  it('does not fall back to host-wide markers when a managed row has no absolute root', async () => {
+    const seed = buildCutJournalSeed('op-rootless', identity());
+    const listTasks = (async () => [
+      { taskId: 'rootless', state: 'running', detail: { release: seed } },
+    ]) as unknown as DiscoverCutOperationsDeps['listTasks'];
+    let statusReads = 0;
+    const readStatus = () => {
+      statusReads += 1;
+      return status({ state: 'done', exitCode: 0, operation: marker('op-rootless', 'rootless') });
+    };
+    const found = await discoverCutOperations({ listTasks, readStatus });
+
+    expect(statusReads).toBe(0);
+    expect(found[0]?.reconciliation.disposition).toBe('unknown');
   });
 });

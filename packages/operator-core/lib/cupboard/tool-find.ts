@@ -73,6 +73,13 @@ export interface ToolFindHit {
   cosine: number | null;
 }
 
+export type ToolFindQueryEmbeddingOutcome =
+  | 'used'
+  | 'timeout'
+  | 'failed'
+  | 'invalid-vector'
+  | 'width-mismatch';
+
 export interface ToolFindOptions {
   /** Max results (default 10). */
   limit?: number;
@@ -90,6 +97,8 @@ export interface ToolFindOptions {
    * call for an explicit batch caller.
    */
   embedTimeoutMs?: number;
+  /** Reports the actual outcome of this call's semantic query leg. */
+  onQueryEmbeddingOutcome?: (outcome: ToolFindQueryEmbeddingOutcome) => void;
 }
 
 const DEFAULT_LIMIT = 10;
@@ -106,22 +115,30 @@ async function embedWithBudget(
   embedder: Embedder,
   query: string,
   budgetMs: number,
-): Promise<number[] | null> {
+): Promise<{ outcome: 'embedded'; vector: number[] } | { outcome: 'timeout' | 'failed' }> {
   const p = Promise.resolve().then(() => embedder(query));
-  if (!(budgetMs > 0)) return await p.catch(() => null);
-  return await new Promise<number[] | null>((resolve) => {
+  if (!(budgetMs > 0)) {
+    try {
+      return { outcome: 'embedded', vector: await p };
+    } catch {
+      return { outcome: 'failed' };
+    }
+  }
+  return await new Promise<
+    { outcome: 'embedded'; vector: number[] } | { outcome: 'timeout' | 'failed' }
+  >((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (value: number[] | null): void => {
+    const finish = (result: { outcome: 'embedded'; vector: number[] } | { outcome: 'timeout' | 'failed' }): void => {
       if (settled) return;
       settled = true;
       if (timer !== undefined) clearTimeout(timer);
-      resolve(value);
+      resolve(result);
     };
-    timer = setTimeout(() => finish(null), budgetMs);
+    timer = setTimeout(() => finish({ outcome: 'timeout' }), budgetMs);
     p.then(
-      (value) => finish(value),
-      () => finish(null),
+      (vector) => finish({ outcome: 'embedded', vector }),
+      () => finish({ outcome: 'failed' }),
     );
   });
 }
@@ -204,32 +221,37 @@ export async function findTools(
   // 2. Semantic leg — only when an embedder + corpus index are present.
   const cosByName = new Map<string, number>();
   if (opts.embedder && opts.embeddings && opts.embeddings.size > 0 && query.trim()) {
-    let qv: number[] | null = null;
-    try {
-      qv = await embedWithBudget(opts.embedder, query, embedTimeoutMs);
-    } catch {
-      qv = null; // embedder failure → lexical-only (graceful)
-    }
-    // WIDTH GUARD (P-019). The catalog index is built ONCE at boot with
-    // whatever `buildQueryEmbedder` resolved then; the query is embedded per
-    // call. Those are normally the same embedder — measured 2026-08-08, both
-    // are gemma@768, one space — but nothing STRUCTURALLY pins them together,
-    // so a settings change that swaps embedder width leaves a stale index in a
-    // different space from the live query.
-    //
-    // Skipping the leg outright (rather than letting every row score) is the
-    // load-bearing part: this tool's contract is that it "never silently
-    // pretends semantic ran", and it reports the leg as having run whenever it
-    // scores anything. Scoring a mismatched index would satisfy that reporting
-    // path with meaningless numbers. No cosine at all ⇒ lexical-only ⇒ the
-    // result says so, which is the documented degrade.
-    const indexWidth = opts.embeddings.values().next().value?.length ?? 0;
-    if (qv && qv.length > 0 && qv.length === indexWidth) {
-      const byName = new Map(corpus.map((e) => [e.tool, e]));
-      for (const [name, vec] of opts.embeddings) {
-        if (!byName.has(name)) continue;
-        const c = cosineSimilarity(qv, vec);
-        if (c >= minCosine) cosByName.set(name, c);
+    const embedded = await embedWithBudget(opts.embedder, query, embedTimeoutMs);
+    if (embedded.outcome !== 'embedded') {
+      opts.onQueryEmbeddingOutcome?.(embedded.outcome);
+    } else if (!Array.isArray(embedded.vector) || embedded.vector.length === 0) {
+      opts.onQueryEmbeddingOutcome?.('invalid-vector');
+    } else {
+      const qv = embedded.vector;
+      // WIDTH GUARD (P-019). The catalog index is built ONCE at boot with
+      // whatever `buildQueryEmbedder` resolved then; the query is embedded per
+      // call. Those are normally the same embedder — measured 2026-08-08, both
+      // are gemma@768, one space — but nothing STRUCTURALLY pins them together,
+      // so a settings change that swaps embedder width leaves a stale index in a
+      // different space from the live query.
+      //
+      // Skipping the leg outright (rather than letting every row score) is the
+      // load-bearing part: this tool's contract is that it "never silently
+      // pretends semantic ran", and it reports the leg as having run whenever it
+      // scores anything. Scoring a mismatched index would satisfy that reporting
+      // path with meaningless numbers. No cosine at all ⇒ lexical-only ⇒ the
+      // result says so, which is the documented degrade.
+      const indexWidth = opts.embeddings.values().next().value?.length ?? 0;
+      if (qv.length !== indexWidth) {
+        opts.onQueryEmbeddingOutcome?.('width-mismatch');
+      } else {
+        opts.onQueryEmbeddingOutcome?.('used');
+        const byName = new Map(corpus.map((e) => [e.tool, e]));
+        for (const [name, vec] of opts.embeddings) {
+          if (!byName.has(name)) continue;
+          const c = cosineSimilarity(qv, vec);
+          if (c >= minCosine) cosByName.set(name, c);
+        }
       }
     }
   }

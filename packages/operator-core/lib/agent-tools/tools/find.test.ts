@@ -76,6 +76,18 @@ import {
   RootCauseVerificationSchema,
 } from '../../coord-lifecycle/records';
 
+const toolFindMocks = vi.hoisted(() => ({
+  findTools: vi.fn<typeof import('../../cupboard/tool-find').findTools>(),
+  actualFindTools: null as unknown as typeof import('../../cupboard/tool-find').findTools,
+}));
+
+vi.mock('../../cupboard/tool-find', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../cupboard/tool-find')>();
+  toolFindMocks.actualFindTools = actual.findTools;
+  toolFindMocks.findTools.mockImplementation(actual.findTools);
+  return { ...actual, findTools: toolFindMocks.findTools };
+});
+
 // Force lexical-only: buildQueryEmbedder resolves to null (unconfigured embedder).
 vi.mock('../search/embedder', () => ({
   buildQueryEmbedder: vi.fn().mockResolvedValue(null),
@@ -139,6 +151,11 @@ async function callHandler(args: Record<string, unknown>, ctx: Record<string, un
     query: string;
     count: number;
     semantic: 'on' | 'warming' | 'lexical-only';
+    semanticWarning?:
+      | 'query-embedding-timeout'
+      | 'query-embedding-failed'
+      | 'query-embedding-invalid-vector'
+      | 'embedding-width-mismatch';
     registry: { source: string; revision: string };
     servingGeneration: string | null;
     hits: Array<{
@@ -165,6 +182,8 @@ function expectBehaviorClassInBothShapes(schema: string) {
 }
 
 beforeEach(() => {
+  toolFindMocks.findTools.mockReset();
+  toolFindMocks.findTools.mockImplementation(toolFindMocks.actualFindTools);
   hiveMocks.potHomeSlugForHarness.mockReset();
   hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
   pluginHostMocks.getPluginHost.mockReset();
@@ -1932,6 +1951,17 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
         }
       }
     }
+  });
+
+  it('reports query-embedding timeout when this request falls back to lexical results', async () => {
+    toolFindMocks.findTools.mockImplementationOnce(async (_corpus, _query, options) => {
+      options?.onQueryEmbeddingOutcome?.('timeout');
+      return [];
+    });
+
+    const out = await callHandler({ query: 'find tools by intent' });
+    expect(out.semantic).toBe('lexical-only');
+    expect(out.semanticWarning).toBe('query-embedding-timeout');
   });
 
   it('EI-22692063823365372: returned coord:send discovery keeps knowledge and uncertainty fields independent', async () => {

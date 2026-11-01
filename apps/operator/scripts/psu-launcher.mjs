@@ -810,8 +810,9 @@ export function resolveOperatorUrl(opts = {}) {
 // launcher/API use, never module evaluation: it can spawn curl/systemctl before
 // a packaged operator or proxy exists.
 let OPERATOR_TARGET;
-function launcherOperatorTarget() {
-  return (OPERATOR_TARGET ??= resolveOperatorTarget());
+function launcherOperatorTarget(env = process.env) {
+  if (env !== process.env) return resolveOperatorTarget({ env });
+  return (OPERATOR_TARGET ??= resolveOperatorTarget({ env }));
 }
 
 /**
@@ -6435,7 +6436,7 @@ export async function resolveOmpOperatorUrl(
   // A caller-supplied pin is authoritative; never silently route it elsewhere.
   if (operatorUrl) return operatorUrl;
   const { base: configuredBase, configuredPort } = runtimeOmpOperatorBase(
-    launcherOperatorTarget().url,
+    launcherOperatorTarget(env).url,
     env,
   );
   if (!configuredPort || !isLoopbackOperatorUrl(configuredBase))

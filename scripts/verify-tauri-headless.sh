@@ -353,6 +353,9 @@
 #   VERIFY_TAURI_SKIP_GL_CHECK  1 = skip the VirtualGL real-GPU sanity check
 #                                (screenshots will be blank white — DOM/eval
 #                                via the bridge still work; agent-e2e.mdx §15.4)
+#   VERIFY_TAURI_REQUIRE_GPU_GL 1 = require a real renderer; run a fast isolated
+#                                Xvfb probe before source/build preparation and
+#                                refuse if the actual verifier display later differs
 #   VERIFY_TAURI_PORT_LOCK_DIR  advisory-lock directory for concurrent verifier
 #                               launches (default: under the per-user runtime
 #                               directory, with a $HOME/.cache fallback)
@@ -1267,11 +1270,56 @@ preflight_verifier_pinned_inputs() {
 }
 verifier_run_step verifier-pinned-inputs-preflight preflight_verifier_pinned_inputs || exit $?
 
+# Screenshot-backed acceptance must not spend the full prepare/boot budget on
+# a software renderer. Probe the same VirtualGL route in a disposable Xvfb
+# before native Cargo, source export, SPA build, or database preparation; the
+# later check against the verifier's own display remains a race guard.
+preflight_required_gpu_gl() {
+  [ "${VERIFY_TAURI_REQUIRE_GPU_GL:-0}" = "1" ] || return 0
+  local output rc=0 renderer
+  output="$(xvfb-run -a -s '-screen 0 1280x800x24 -nolisten tcp' vglrun -d egl0 glxinfo 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "FATAL: screenshot-required GPU GL preflight failed (exit=$rc)" >&2
+    [ -z "$output" ] || tail -n 20 <<<"$output" >&2
+    return 1
+  fi
+  renderer="$(grep -i 'OpenGL renderer' <<<"$output" | head -n 1 || true)"
+  case "$renderer" in
+    *llvmpipe*|*swrast*|*softpipe*|"")
+      echo "FATAL: screenshot-required GPU GL preflight detected a software or unmeasured renderer: ${renderer:-<unmeasured>}" >&2
+      return 1
+      ;;
+  esac
+  log "GPU GL preflight passed before native preparation: $renderer"
+}
+
 # EI-27529057401533862: a live Xvfb alone cannot activate native windows.
 # Reject missing display tools before reserving Cargo or preparing snapshots.
 preflight_native_display_dependencies() {
+  local dependency missing=0 require_gpu_gl="${VERIFY_TAURI_REQUIRE_GPU_GL:-0}" skip_gl="${VERIFY_TAURI_SKIP_GL_CHECK:-0}"
+  case "$require_gpu_gl" in
+    0|1) ;;
+    *) echo "FATAL: VERIFY_TAURI_REQUIRE_GPU_GL must be 0 or 1 (got '$require_gpu_gl')" >&2; return 2 ;;
+  esac
+  case "$skip_gl" in
+    0|1) ;;
+    *) echo "FATAL: VERIFY_TAURI_SKIP_GL_CHECK must be 0 or 1 (got '$skip_gl')" >&2; return 2 ;;
+  esac
+  if [ "$require_gpu_gl" = "1" ]; then
+    if [ "$skip_gl" = "1" ]; then
+      echo 'FATAL: VERIFY_TAURI_REQUIRE_GPU_GL=1 conflicts with VERIFY_TAURI_SKIP_GL_CHECK=1' >&2
+      return 2
+    fi
+    for dependency in Xvfb xvfb-run vglrun glxinfo xauth; do
+      if ! command -v "$dependency" >/dev/null 2>&1; then
+        echo "FATAL: screenshot-required GPU GL dependency missing: $dependency" >&2
+        return 1
+      fi
+    done
+    preflight_required_gpu_gl || return $?
+  fi
   [ "$PREPARE_ONLY" != "1" ] || return 0
-  local dependency missing=0
+  missing=0
   for dependency in Xvfb openbox xdpyinfo xprop timeout; do
     if ! command -v "$dependency" >/dev/null 2>&1; then
       echo "FATAL: native display dependency missing: $dependency (install it before running the native verifier)" >&2
@@ -3960,11 +4008,19 @@ LAUNCH_PREFIX=()
 if [ "${VERIFY_TAURI_SKIP_GL_CHECK:-0}" != "1" ] && command -v vglrun >/dev/null 2>&1; then
   GL_RENDERER="$(DISPLAY=":$DISPLAY_NUM" vglrun -d egl0 glxinfo 2>/dev/null | grep -i 'OpenGL renderer' || true)"
   case "$GL_RENDERER" in
-    *llvmpipe*|*swrast*|"")
+    *llvmpipe*|*swrast*|*softpipe*|"")
+      if [ "${VERIFY_TAURI_REQUIRE_GPU_GL:-0}" = "1" ]; then
+        echo "FATAL: screenshot-required GL check lost the real GPU renderer on Xvfb :$DISPLAY_NUM ($GL_RENDERER)" >&2
+        exit 1
+      fi
       log "WARNING: no real GPU GL detected ($GL_RENDERER) — screenshots will be blank white (agent-e2e.mdx §15.4). DOM/eval via the bridge still work." ;;
     *) log "GPU GL confirmed: $GL_RENDERER"; LAUNCH_PREFIX=(vglrun -d egl0) ;;
   esac
 else
+  if [ "${VERIFY_TAURI_REQUIRE_GPU_GL:-0}" = "1" ]; then
+    echo 'FATAL: screenshot-required GL check needs VirtualGL and glxinfo; no real-GPU probe ran on the verifier display' >&2
+    exit 1
+  fi
   log "WARNING: vglrun unavailable or skipped — screenshots will be blank white (agent-e2e.mdx §15.4). DOM/eval via the bridge still work."
 fi
 

@@ -29,6 +29,7 @@ import { flushPendingTelemetry } from './projected-tool-deps';
 import { drainDetached } from './detached-imports';
 import { flushFallbackObservations } from './degradation/fallback-observations';
 import { activeWorkspaceId } from './workspace-registry';
+import { classifyOwnerNativeSession } from './adv-sessions';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 
 let authorityDb: Awaited<ReturnType<typeof sqlMiningFixture>> | undefined;
@@ -93,7 +94,7 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async original => ({
   prepareSuLaunch: (boot: BootstrapSuResult) => ({ env: { ...boot.envelopeEnv }, args: [], modelArgs: [], model: 'native-authority-fixture/proof' }),
 }));
 
-it('joins actual OMP root input and exact calls with PG possession, launching principal and changing resource ACL', async () => {
+it('joins actual OMP root input, built-in shell execution and exact MCP calls with PG possession and changing resource ACL', async () => {
   const binary = resolveAgentBinarySync('omp');
   expect(binary, 'installed OMP required; no protocol peer substitution').toBeTruthy();
   const root = mkdtempSync(join(tmpdir(), 'omp-engine-authority-')), agentDir = join(root, 'agent');
@@ -102,11 +103,14 @@ it('joins actual OMP root input and exact calls with PG possession, launching pr
   const workspaceId = 'sql-mining-test', harness = 'mining-test', owner = 'su-private-omp-authority';
   const canonical = 'reports:get', nativeName = 'mcp__papercusp_su_reports_get';
   const calls = ['native-authority-1', 'native-authority-2'];
+  const shellCall = 'native-authority-shell', sentinel = 'omp-native-shell-sentinel';
+  const shellArgs = { command: `printf '%s' '${sentinel}'` };
   const hash = (value: string) => createHash('sha256').update(value).digest('hex');
   const principal = { kind: 'system' as const, slug: 'system:superuser', workspaceId,
     authMethod: 'bearer-token' as const, trust: 'trusted' as const, capabilities: new Set(['*']) };
   const resolvePrincipal = vi.fn(async () => principal), readOwner = vi.fn(async () => localSuSessionHostOwner());
   const frames: RpcFrame[] = [], errors: string[] = [], results: unknown[] = [], handlers: unknown[] = [];
+  const shellSessions: Array<{ type: unknown; nativeId: string | null | undefined }> = [];
   const servers = new Set<McpServer>();
   let engine: SuRpcEngine | undefined, pg: DedicatedNativePg | undefined, nativeId = '', advSessionId = 0;
   let reportTool: ProjectedTool | undefined, originalFn: ProjectedTool['fn'] | undefined;
@@ -200,15 +204,17 @@ it('joins actual OMP root input and exact calls with PG possession, launching pr
         models: [{ id: 'proof', name: 'Local authority', reasoning: false, input: ['text'],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 }],
         streamSimple(model) {
-          if (++turn > 3) throw new Error('Unexpected inference');
+          if (++turn > 4) throw new Error('Unexpected inference');
           const content = turn <= 2 ? [{ type: 'toolCall', id: 'native-authority-' + turn,
-            name: ${JSON.stringify(nativeName)}, arguments: ${JSON.stringify({ id: report.reportId })} }] : [{ type: 'text', text: 'Complete' }];
+            name: ${JSON.stringify(nativeName)}, arguments: ${JSON.stringify({ id: report.reportId })} }]
+            : turn === 3 ? [{ type: 'toolCall', id: ${JSON.stringify(shellCall)}, name: 'bash',
+              arguments: ${JSON.stringify(shellArgs)} }] : [{ type: 'text', text: 'Complete' }];
           const message = { role: 'assistant', content, api: model.api, provider: model.provider, model: model.id,
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-            stopReason: turn <= 2 ? 'toolUse' : 'stop', timestamp: Date.now() };
+            stopReason: turn <= 3 ? 'toolUse' : 'stop', timestamp: Date.now() };
           return { async *[Symbol.asyncIterator]() { yield { type: 'start', partial: message };
-            if (turn <= 2) yield { type: 'toolcall_end', contentIndex: 0, toolCall: content[0], partial: message };
+            if (turn <= 3) yield { type: 'toolcall_end', contentIndex: 0, toolCall: content[0], partial: message };
             yield { type: 'done', reason: message.stopReason, message }; }, result: async () => message };
         },
       });
@@ -225,12 +231,36 @@ it('joins actual OMP root input and exact calls with PG possession, launching pr
       peerFactory: options => startSuStdioPeer({ ...options, binary: binary!,
         args: [...options.args, '--no-extensions', '--no-skills', '--no-rules', '--no-session', '--extension', join(root, 'native-extension.mjs'), '--extension', provider],
         env: { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', PI_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_SESSION_DIR: join(root, 'sessions') },
-        onMessage: frame => { frames.push(frame); options.onMessage(frame); },
+        onMessage: frame => {
+          if (frame.toolCallId === shellCall && ['tool_execution_start', 'tool_execution_end'].includes(String(frame.type))) {
+            const current = engine?.nativeSession();
+            shellSessions.push({ type: frame.type, nativeId: current?.backend === 'omp' ? current.ompThreadId : null });
+          }
+          frames.push(frame); options.onMessage(frame);
+        },
       }),
     });
     await engine.ready;
     const native = engine.nativeSession(); if (native.backend !== 'omp') throw new Error('Unexpected backend');
     nativeId = native.ompThreadId!;
+    // The engine links OMP through its own native column. A stale generic id
+    // or Codex launch alias must never lend authority to this OMP child.
+    const [linked] = await db.adminSql`SELECT session_id, omp_thread_id FROM harness_shared.adv_sessions WHERE id=${advSessionId}`;
+    expect(linked).toMatchObject({ session_id: null, omp_thread_id: nativeId });
+    const bindingInput = { workspaceId, ownerId: owner, sessionId: nativeId };
+    for (const explicit of [false, true]) {
+      const incarnation = explicit ? { advSessionId } : {};
+      await expect(classifyOwnerNativeSession({ ...bindingInput, ...incarnation }))
+        .resolves.toMatchObject({ binding: 'bound', advSessionId });
+      await db.adminSql`UPDATE harness_shared.adv_sessions SET session_id='unrelated-legacy-id', child_launch_session_id='unrelated-launch-id' WHERE id=${advSessionId}`;
+      for (const sessionId of ['unrelated-legacy-id', 'unrelated-launch-id']) {
+        await expect(classifyOwnerNativeSession({ ...bindingInput, ...incarnation, sessionId }))
+          .resolves.toMatchObject({ binding: 'foreign' });
+      }
+      await expect(classifyOwnerNativeSession({ ...bindingInput, ...incarnation }))
+        .resolves.toMatchObject({ binding: 'bound', advSessionId });
+      await db.adminSql`UPDATE harness_shared.adv_sessions SET session_id=NULL, child_launch_session_id=NULL WHERE id=${advSessionId}`;
+    }
     expect(issuedBearers).toHaveLength(1);
     const possession = { workspaceId, ownerId: owner, advSessionId, provider: 'omp' as const };
     expect(await verifyNativeRuntimeBearer(issuedBearers[0]!, possession)).toBe(true);
@@ -242,6 +272,30 @@ it('joins actual OMP root input and exact calls with PG possession, launching pr
       turnId: 'owner-omp-authority', content: 'Exercise private OMP authority twice.' }).terminal;
     await vi.waitFor(() => expect(frames.some(frame => frame.type === 'agent_end')).toBe(true), { timeout: 20_000 });
     expect(errors).toEqual([]); expect(results).toHaveLength(2); expect(handlers).toHaveLength(2);
+    // These are real built-in execution events from the installed process,
+    // not a canonical MCP dispatch or a protected capture/funding receipt.
+    expect(shellSessions).toEqual([{ type: 'tool_execution_start', nativeId }, { type: 'tool_execution_end', nativeId }]);
+    const shellStart = frames.findIndex(frame => frame.type === 'tool_execution_start' && frame.toolCallId === shellCall);
+    const shellEnd = frames.findIndex(frame => frame.type === 'tool_execution_end' && frame.toolCallId === shellCall);
+    const rootStart = frames.findIndex(frame => frame.type === 'message_start' && (frame.message as RpcFrame)?.role === 'user');
+    const agentStart = frames.findIndex(frame => frame.type === 'agent_start');
+    const agentEnd = frames.findIndex(frame => frame.type === 'agent_end');
+    const shellRequest = frames.findIndex(frame => frame.type === 'message_end' && (frame.message as RpcFrame)?.role === 'assistant'
+      && ((frame.message as RpcFrame).content as RpcFrame[]).some(block => block.id === shellCall));
+    expect(rootStart).toBeGreaterThanOrEqual(0); expect(agentStart).toBeGreaterThanOrEqual(0);
+    expect(shellRequest).toBeGreaterThan(Math.max(rootStart, agentStart));
+    expect(((frames[shellRequest]!.message as RpcFrame).content as RpcFrame[]).find(block => block.id === shellCall))
+      .toStrictEqual({ type: 'toolCall', id: shellCall, name: 'bash', arguments: shellArgs });
+    expect(shellStart).toBeGreaterThan(shellRequest); expect(shellEnd).toBeGreaterThan(shellStart);
+    expect(agentEnd).toBeGreaterThan(shellEnd);
+    expect(frames[shellStart]).toMatchObject({ toolName: 'bash', args: shellArgs });
+    expect(frames[shellEnd]).toMatchObject({ toolName: 'bash', isError: false });
+    const shellResult = frames[shellEnd]!.result as RpcFrame;
+    expect(shellResult.content).toEqual([{ type: 'text',
+      text: expect.stringMatching(new RegExp(`^${sentinel}\\n\\nWall time: \\d+(?:\\.\\d+)? seconds$`)) }]);
+    const shellMessage = frames.find(frame => frame.type === 'message_end' && (frame.message as RpcFrame)?.role === 'toolResult'
+      && (frame.message as RpcFrame).toolCallId === shellCall)?.message as RpcFrame | undefined;
+    expect(shellMessage).toMatchObject({ toolCallId: shellCall, toolName: 'bash', isError: false, content: shellResult.content });
     expect(readOwner).toHaveBeenCalledTimes(2); expect(resolvePrincipal.mock.calls.length).toBeGreaterThanOrEqual(4);
     expect(JSON.stringify({ frames, descriptor: host.descriptor(), config: readFileSync(join(agentDir, 'mcp.json'), 'utf8'), provider: readFileSync(provider, 'utf8') }))
       .not.toContain(issuedBearers[0]);
@@ -250,8 +304,9 @@ it('joins actual OMP root input and exact calls with PG possession, launching pr
       arguments: { id: report.reportId }, runtimeBearer: '' })).toBeNull();
   } catch (error) {
     const diagnostic = frames.filter(frame => ['message_end', 'tool_execution_end', 'notice', 'extension_ui_request', 'auto_compaction_end'].includes(String(frame.type)))
-      .slice(-12).map(frame => ({ type: frame.type, method: frame.method, message: frame.message,
-        result: frame.result, error: frame.error, isError: frame.isError }));
+      .slice(-12).map(frame => ({ type: frame.type, method: frame.method, toolCallId: frame.toolCallId,
+        toolName: frame.toolName, args: frame.args, message: JSON.stringify(frame.message)?.slice(0, 800),
+        result: JSON.stringify(frame.result)?.slice(0, 800), error: frame.error, isError: frame.isError }));
     throw new Error(`Private OMP authority failed at ${phase}; errors=${JSON.stringify(errors)}; results=${results.length}; native=${JSON.stringify(diagnostic).slice(-10000)}`, { cause: error });
   } finally {
     try {

@@ -55,7 +55,12 @@ import {
   unionConditionalHint,
   unionRequiredKeyHint,
 } from '../../cupboard/tools-discovery';
-import { findTools, type Embedder, type ToolFindHit } from '../../cupboard/tool-find';
+import {
+  findTools,
+  type Embedder,
+  type ToolFindHit,
+  type ToolFindQueryEmbeddingOutcome,
+} from '../../cupboard/tool-find';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -81,6 +86,13 @@ export const TOOLS_FIND_LIMIT_MAX = 25;
 const DISCOVERY_DESCRIPTION_MAX_CHARS = 320;
 const DISCOVERY_SCHEMA_MAX_CHARS = 2_200;
 const COMPACT_NESTED_DESCRIPTION_MAX_CHARS = 180;
+const SEMANTIC_WARNING_BY_OUTCOME = {
+  timeout: 'query-embedding-timeout',
+  failed: 'query-embedding-failed',
+  'invalid-vector': 'query-embedding-invalid-vector',
+  'width-mismatch': 'embedding-width-mismatch',
+} as const;
+type SemanticWarning = (typeof SEMANTIC_WARNING_BY_OUTCOME)[Exclude<ToolFindQueryEmbeddingOutcome, 'used'>];
 
 type JsonSchemaNode = {
   'x-papercusp-call-constraint'?: unknown;
@@ -1579,7 +1591,7 @@ export default defineTool({
       'means the server surface grew and requested a client refresh; it does not guarantee this client has ' +
       'materialized a direct-call wrapper yet. After a refresh/next turn, direct calls may work.',
     returns:
-      '{ query, count, semantic: "on"|"warming"|"lexical-only", registry: { source, revision }, servingGeneration (the exact operator generation that produced these schemas; the MCP transport checks its tools/list metadata independently—do not pass it as a tools:invoke argument), activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (registered output schema projection, otherwise authored fallback, otherwise null), returnsSource:"registered-output-schema"|"authored-tool-guidance"|null, via }], omittedTools? (explicit names missing from hits because of ranking/result limits), howToCall }. ' +
+      '{ query, count, semantic: "on"|"warming"|"lexical-only", semanticWarning?: "query-embedding-timeout"|"query-embedding-failed"|"query-embedding-invalid-vector"|"embedding-width-mismatch", registry: { source, revision }, servingGeneration (the exact operator generation that produced these schemas; the MCP transport checks its tools/list metadata independently—do not pass it as a tools:invoke argument), activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (registered output schemas outrank authored fallback), returnsSource:"registered-output-schema"|"authored-tool-guidance"|null, via }], omittedTools? (explicit names missing from hits because of ranking/result limits), howToCall }. ' +
       'Each hit carries that tool\'s ARG schema AND its resolved RESPONSE shape (registered output schemas outrank authored prose), so you can write a code:run batch over a tool without calling it once just to learn its field names. ' +
       'Exact colon-form tool names in a query are prioritized. If `omittedTools` is present, query each listed name individually. ALWAYS read `activated` + `howToCall` rather than assuming a direct call resolves.',
     seeAlso: [
@@ -1660,6 +1672,14 @@ export default defineTool({
       query: z.unknown().optional(),
       count: z.unknown().optional(),
       semantic: z.unknown().optional(),
+      semanticWarning: z
+        .enum([
+          'query-embedding-timeout',
+          'query-embedding-failed',
+          'query-embedding-invalid-vector',
+          'embedding-width-mismatch',
+        ])
+        .optional(),
       registry: z.unknown().optional(),
       activated: z.unknown().optional(),
       servingGeneration: z.string().nullable().optional(),
@@ -1715,6 +1735,9 @@ export default defineTool({
     // warms. Never score the current corpus with those stale vectors; report
     // `warming` and use the lexical leg until the matching revision is ready.
     const activeEmbeddings = indexedRevision === revision ? embIndex : null;
+    let semantic: 'on' | 'warming' | 'lexical-only' =
+      activeEmbeddings != null && activeEmbeddings.size > 0 ? 'on' : embedder ? 'warming' : 'lexical-only';
+    let semanticWarning: SemanticWarning | undefined;
 
     const exactNames = exactToolNamesInCorpus(exactToolNamesInQuery(args.query), corpus);
     const resultLimit = args.limit ?? TOOLS_FIND_DEFAULT_LIMIT;
@@ -1726,6 +1749,15 @@ export default defineTool({
       // OpenAI fetch without a client-side timeout); keep discovery responsive
       // by degrading this query to lexical-only at the interactive budget.
       embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
+      onQueryEmbeddingOutcome: (outcome) => {
+        if (outcome === 'used') {
+          semantic = 'on';
+          semanticWarning = undefined;
+        } else {
+          semantic = 'lexical-only';
+          semanticWarning = SEMANTIC_WARNING_BY_OUTCOME[outcome];
+        }
+      },
     });
     const hits = prioritizeExactToolHits(rankedHits, corpus, exactNames, resultLimit);
 
@@ -1739,12 +1771,9 @@ export default defineTool({
     const fullArgSchemaRequested =
       ctx.payloadTierOverride === 'full' && ctx.sourceMaterialization?.promotedToFull !== true;
 
-    // Honest mode marker (never silently pretend semantic ran):
-    //   on          — index ready, the semantic leg contributed;
-    //   warming      — embedder configured, index still building (lexical-only this call);
-    //   lexical-only — no embedder configured/available → graceful degrade.
-    const semantic: 'on' | 'warming' | 'lexical-only' =
-      activeEmbeddings != null && activeEmbeddings.size > 0 ? 'on' : embedder ? 'warming' : 'lexical-only';
+    // Report the query's actual semantic outcome, not only index readiness.
+    // A timed-out, failed, malformed, or width-mismatched query used lexical
+    // results only and carries a bounded reason for that degradation.
     const projectHit = (h: typeof hits[number], includeFullArgSchema: boolean): DiscoveryResultHit => ({
       tool: h.tool,
       description: boundedText(h.description, DISCOVERY_DESCRIPTION_MAX_CHARS),
@@ -1780,6 +1809,7 @@ export default defineTool({
     const activationBase = {
       query: args.query,
       semantic,
+      ...(semanticWarning ? { semanticWarning } : {}),
       registry,
       servingGeneration,
       activated: true,
@@ -1812,7 +1842,16 @@ export default defineTool({
           omittedTools: exactNames.filter((name) => !projectedHits.some((hit) => hit.tool.toLowerCase() === name)),
         }
       : boundDiscoveryHits(
-          { query: args.query, semantic, registry, servingGeneration, activated, howToCall, totalMatches: hits.length },
+          {
+            query: args.query,
+            semantic,
+            ...(semanticWarning ? { semanticWarning } : {}),
+            registry,
+            servingGeneration,
+            activated,
+            howToCall,
+            totalMatches: hits.length,
+          },
           projectedHits,
           exactNames,
         );
@@ -1831,6 +1870,7 @@ export default defineTool({
             totalMatches: hits.length,
             truncated: bounded.truncated || noHitFits,
             semantic,
+            ...(semanticWarning ? { semanticWarning } : {}),
             registry,
             servingGeneration,
             // P-002: which build's catalog these schemas came from ('staging' after

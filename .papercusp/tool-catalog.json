@@ -28555,7 +28555,7 @@
           "POST"
         ]
       },
-      "description": "Ledger-backed inventory of tasks this operator launched: provenance `ps` cannot give — launcher, work-item/plan, budget/deadline, log path, CPU/RSS/pid-count, and cgroup confinement. Also surfaces `unaccounted` rows — processes inside our slice with no registered chokepoint — and verifier-owned scopes in `live.verifierGroups`. `live.unaccountedGroups[].taskId` is the stable ledger identity, including when `scopeUnit` is null. Pass `live:true` to reconcile with the kernel (slower, authoritative).",
+      "description": "Ledger-backed inventory of tasks this operator launched: provenance `ps` cannot give — launcher, work-item/plan, budget/deadline, log path, CPU/RSS/pid-count, and cgroup confinement. Also surfaces `unaccounted` rows — processes inside our slice with no registered chokepoint — and verifier-owned scopes in `live.verifierGroups`. Pass `live:true` to reconcile with the kernel (slower, authoritative).",
       "capabilities": [
         "intel:read"
       ],

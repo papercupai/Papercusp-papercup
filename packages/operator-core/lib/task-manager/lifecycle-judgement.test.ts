@@ -420,6 +420,23 @@ describe('evaluateLifecycleCandidates', () => {
     });
   });
 
+  it('persists last-known PID identities for scope-less lifecycle candidates', () => {
+    const candidate = evaluate({
+      rows: [row({
+        taskId: 'scope-less-residue',
+        rootTaskId: 'scope-less-residue',
+        state: 'unaccounted',
+        scopeUnit: null,
+        detail: { pids: [42, 41, 42, 0, -3, 2.5, '43'] },
+      })],
+      residue: ['scope-less-residue'],
+    }).candidates[0]!;
+
+    expect(candidate.observedPids).toEqual([41, 42]);
+    expect(lifecycleCandidatePayload(candidate, new Date(NOW).toISOString()).observedPids).toEqual([41, 42]);
+    expect(lifecycleCandidateSummary(candidate)).toContain('payload.processLifecycleCandidate.observedPids');
+  });
+
   it('gives unaccounted residue a stable exact-scope verification recipe', () => {
     const candidate = evaluate({
       rows: [row({ taskId: 'unaccounted', state: 'unaccounted', scopeUnit: 'pc-unaccounted.scope' })],
@@ -436,6 +453,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).toContain('live.unaccountedPidCount ?? live.unaccountedPids');
     expect(summary).toContain('If live.unaccountedGroups is missing or not an array, leave the result unknown');
     expect(summary).toContain('never coerce a missing group list to []');
+    expect(summary).toContain('compare payload.processLifecycleCandidate.observedPids against the complete live.unaccountedGroups[].pids set');
     expect(summary).toContain('Select the same-kind control path by addressability, not by live.unaccountedGroups.length');
     expect(summary).toContain('pc-*.scope entry with a non-empty scopeUnit');
     expect(summary).not.toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control');
@@ -443,6 +461,8 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).toContain('the ageSec-bearing row is terminal and the default tasks[] filter would hide it');
     expect(summary).toContain('When no addressable control exists, the same-kind control prerequisite is structurally unavailable, not a failed read');
     expect(summary).toContain('even when live.unaccountedGroups is non-empty');
+    expect(summary).toContain('A gone verdict requires state=stranded');
+    expect(summary).toContain('a missing/empty observedPids list leaves the verdict unknown');
     expect(summary).toContain('do not use the cgroupfs path to work around a failed read');
     expect(summary).not.toContain('When live.unaccountedGroups is empty, the same-kind control prerequisite is structurally unavailable');
     expect(summary).toContain('independently walk the complete, readable Papercusp slice subtree under /sys/fs/cgroup by exact scopeUnit');
@@ -563,6 +583,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).toContain('Never use stored cgroupPath, /proc absence, detector reason, or empty filtered output');
     expect(brief).toContain('inspect only live.exactScopeUnitMatches entries with kind "unaccounted"');
     expect(brief).toContain('When an addressable control exists, require a known-present same-kind unaccounted control from the census, read it twice');
+    expect(brief).toContain('compare payload.processLifecycleCandidate.observedPids with the complete live.unaccountedGroups[].pids set');
     expect(brief).toContain('live.ownedTruncated=false');
     expect(brief).toContain('live.unaccountedCount ?? live.unaccounted matching live.unaccountedGroups.length');
     expect(brief).toContain('live.unaccountedPidCount ?? live.unaccountedPids matching the sum of the listed group PIDs');

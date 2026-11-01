@@ -192,6 +192,8 @@ describe('plan closure observations (D-032)', () => {
 
     await db.sql`DELETE FROM harness_shared.plan_closure_observations
       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
+    await db.sql`DELETE FROM harness_shared.plan_closure_observations_by_build
+      WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
     expect(await read()).toMatchObject({ status: 'absent', planStatus: 'superseded' });
   });
 

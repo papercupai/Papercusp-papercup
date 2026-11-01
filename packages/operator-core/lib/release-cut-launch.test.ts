@@ -596,6 +596,31 @@ describe('readCutStatus', () => {
     expect(s.logTail).toContain('line59');
     expect(s.logTail).not.toContain('line0\n'); // trimmed to the tail
   });
+  it('skips the build log when reconciling bounded terminal-marker evidence', () => {
+    const root = '/tmp/desktop-root';
+    const started = cutStartedFor('linux', root);
+    const done = cutDoneFor('linux', root);
+    const log = cutLogFor('linux', root);
+    const reads: string[] = [];
+    const s = readCutStatus({
+      root,
+      platform: 'linux',
+      includeLogTail: false,
+      isUnitActive: () => false,
+      existsSync: (p) => p === started || p === done || p === log,
+      readFileSync: (p) => {
+        reads.push(p);
+        if (p === started) return 'STARTED:1\nOPERATION:op-1\nTASK:task1\n';
+        if (p === done) return 'DONE:1';
+        return 'large build log';
+      },
+    });
+    expect(s.state).toBe('failed');
+    expect(s.operation).toMatchObject({ taskId: 'task1', operationId: 'op-1' });
+    expect(s.logTail).toBeNull();
+    expect(reads).toEqual([started, done]);
+    expect(reads).not.toContain(log);
+  });
 });
 
 describe('isReleaseArtifact', () => {

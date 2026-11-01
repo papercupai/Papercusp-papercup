@@ -51,6 +51,12 @@ import { ramTmpRoot } from '@papercusp/orchestrator';
 import { readProcessIdentity } from '../process-identity';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { activeWorkspaceId } from '../workspace-registry';
+import {
+  CUT_OPERATION_LAUNCHED_BY,
+  cutOperationIdentityFromTask,
+  releaseCutTerminalFromStatus,
+} from '../release-cut-operation';
+import { readCutStatusAsync, type CutStatus, type Platform } from '../release-cut-launch';
 
 /** One slow-pass warning, including the last awaited phase; normal passes stay quiet. */
 export function createReconcileStageReporter(
@@ -149,6 +155,8 @@ export interface ReconcileTickDeps {
   /** WI-10004208 — read the runner's durable JOB END from a row's log. Injected
    *  for tests; defaults to the real bounded tail read. */
   readJobLogTerminal?: (logPath: string) => JobLogTerminal | null;
+  /** Read root-scoped release markers without loading the potentially large build log. */
+  readReleaseCutStatus?: (platform: Platform | undefined, root: string) => Promise<CutStatus> | CutStatus;
 }
 
 export interface ReconcileTickResult {
@@ -189,6 +197,8 @@ export interface ReconcileTickResult {
    * payload's own exit survived in its log (WI-10004208).
    */
   recoveredFromJobLogCount: number;
+  /** Release-cut DONE markers are distinct from runner JOB END records. */
+  recoveredFromReleaseCutCount?: number;
   unaccountedPersisted: number;
   residueCleared: number;
   /**
@@ -295,6 +305,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       strandedCount: 0,
       endedUnobservedCount: 0,
       recoveredFromJobLogCount: 0,
+      recoveredFromReleaseCutCount: 0,
       unaccountedPersisted: 0,
       residueCleared: 0,
       confirmedUnaccounted: [],
@@ -364,6 +375,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
   let strandedCount = 0;
   let endedUnobservedCount = 0;
   let recoveredFromJobLogCount = 0;
+  let recoveredFromReleaseCutCount = 0;
   let unaccountedPersisted = 0;
   let residueCleared = 0;
   // Truncation makes an omitted process inconclusive, but does not invalidate
@@ -415,14 +427,41 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     // unit went away; read it before settling for `ended_unobserved`. A systemd
     // exit status, when present, stays authoritative and the log is not read.
     const readTerminal = deps.readJobLogTerminal ?? readJobLogTerminal;
+    const readReleaseStatus = deps.readReleaseCutStatus ?? ((platform, root) =>
+      readCutStatusAsync({ platform, root, includeLogTail: false }));
     const recovered: Parameters<typeof markRecoveredFromJobLog>[0][number][] = [];
+    const recoveredFromReleaseCut: Parameters<typeof markRecoveredFromJobLog>[0][number][] = [];
     const unobserved: typeof endedWithTerminal = [];
     for (const verdict of endedWithTerminal) {
       const terminalProvenance = 'terminalProvenance' in verdict ? verdict.terminalProvenance : null;
-      const logPath = byTaskId.get(verdict.taskId)?.logPath;
+      const row = byTaskId.get(verdict.taskId);
+      let releaseStatusReadFailure: string | null = null;
+      const releaseIdentity = row?.launchedBy === CUT_OPERATION_LAUNCHED_BY && row.class === 'deploy'
+        ? cutOperationIdentityFromTask(row)
+        : null;
+      if (terminalProvenance?.execMainStatus == null && row && releaseIdentity &&
+          typeof row.cwd === 'string' && isAbsolute(row.cwd)) {
+        try {
+          const releaseStatus = await readReleaseStatus(releaseIdentity.identity.platform ?? undefined, row.cwd);
+          const releaseTerminal = releaseCutTerminalFromStatus(row, releaseStatus, row.cwd);
+          if (releaseTerminal) {
+            recoveredFromReleaseCut.push({ ...releaseTerminal, terminalProvenance });
+            continue;
+          }
+        } catch (error) {
+          releaseStatusReadFailure = error instanceof Error ? error.message : String(error);
+        }
+      }
+      const logPath = row?.logPath;
       const marker = terminalProvenance?.execMainStatus == null && logPath ? readTerminal(logPath) : null;
       if (!marker) {
-        unobserved.push(verdict);
+        unobserved.push(releaseStatusReadFailure
+          ? {
+              ...verdict,
+              reason: (verdict.reason + '; root-scoped release markers unreadable: ' +
+                releaseStatusReadFailure.slice(0, 160)).slice(0, 512),
+            }
+          : verdict);
         continue;
       }
       recovered.push({
@@ -437,6 +476,12 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     }
     deps.stage?.('reconcile-mark-unobserved');
     endedUnobservedCount = await markEndedUnobserved(unobserved, undefined, effectsForTask);
+    deps.stage?.('reconcile-recover-release-cut');
+    recoveredFromReleaseCutCount = await markRecoveredFromJobLog(
+      recoveredFromReleaseCut,
+      undefined,
+      effectsForTask,
+    );
     deps.stage?.('reconcile-recover-log');
     recoveredFromJobLogCount = await markRecoveredFromJobLog(recovered, undefined, effectsForTask);
     // The failed unit was deliberately retained at spawn so its Result/exit
@@ -514,6 +559,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     strandedCount,
     endedUnobservedCount,
     recoveredFromJobLogCount,
+    recoveredFromReleaseCutCount,
     unaccountedPersisted,
     residueCleared,
     confirmedUnaccounted,

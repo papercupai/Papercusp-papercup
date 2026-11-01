@@ -172,17 +172,41 @@ async function readFingerprintRows(
                       SELECT r.rubric_id FROM rubric AS r WHERE r.subject_plan = s.plan_slug AND r.harness_slug = s.harness_slug))
              ) AS fingerprint
         FROM subject AS s
+    ), current_build_observation AS MATERIALIZED (
+      SELECT workspace_id, harness_slug, plan_slug, satisfied, code, skipped, message,
+             rubric_id, graded_by, fingerprint, observed_at, build_sha
+        FROM harness_shared.plan_closure_observations_by_build
+       WHERE workspace_id = ${workspaceId}
+         AND plan_slug = ANY(${slugs}::text[])
+         AND build_sha = ${evaluatorBuildSha}
+    ), legacy_observation_fallback AS (
+      SELECT legacy.workspace_id, legacy.harness_slug, legacy.plan_slug, legacy.satisfied, legacy.code,
+             legacy.skipped, legacy.message, legacy.rubric_id, legacy.graded_by,
+             legacy.fingerprint, legacy.observed_at, legacy.build_sha
+        FROM harness_shared.plan_closure_observations AS legacy
+       WHERE legacy.workspace_id = ${workspaceId}
+         AND legacy.plan_slug = ANY(${slugs}::text[])
+         AND NOT EXISTS (
+           SELECT 1
+             FROM current_build_observation AS current_build
+            WHERE current_build.workspace_id = legacy.workspace_id
+              AND current_build.harness_slug = legacy.harness_slug
+              AND current_build.plan_slug = legacy.plan_slug
+         )
+    ), observation AS (
+      SELECT * FROM current_build_observation
+      UNION ALL
+      SELECT * FROM legacy_observation_fallback
     )
     SELECT fp.plan_slug, fp.harness_slug, fp.plan_status, fp.matches, fp.fingerprint,
            (o.fingerprint = fp.fingerprint) AS fingerprint_matches,
            o.satisfied, o.code, o.skipped, o.message, o.rubric_id, o.graded_by,
            o.fingerprint AS observed_fingerprint, o.observed_at, o.build_sha
       FROM current_fp AS fp
-      LEFT JOIN harness_shared.plan_closure_observations_by_build AS o
+      LEFT JOIN observation AS o
         ON o.workspace_id = ${workspaceId}
        AND o.harness_slug = fp.harness_slug
-       AND o.plan_slug = fp.plan_slug
-       AND o.build_sha = ${evaluatorBuildSha}`;
+       AND o.plan_slug = fp.plan_slug`;
 }
 
 /** Fingerprint keys whose values differ, for a `stale` detail that names its cause. */
@@ -336,9 +360,15 @@ export async function beginPlanClosureObservation(planSlug: string): Promise<{
       const { workspaceId, sql, rows, evaluatorBuildSha } = target;
       const row = rows.find((r) => r.harness_slug === harnessSlug);
       if (!row) return;
+      const reportedBuildSha = verdict.buildProvenance?.sha?.trim().toLowerCase() ?? null;
+      const explicitProvenanceMatches = verdict.buildProvenance === undefined
+        || (!!reportedBuildSha && !!evaluatorBuildSha
+          && /^[a-f0-9]{7,64}$/.test(reportedBuildSha)
+          && (evaluatorBuildSha.startsWith(reportedBuildSha) || reportedBuildSha.startsWith(evaluatorBuildSha)));
       // Keep one cache row per evaluator build. Older release binaries still
       // UPSERT the legacy table below, so this cache must never share their key.
-      if (evaluatorBuildSha && /^[a-f0-9]{7,64}$/.test(evaluatorBuildSha)) {
+      // A verdict with explicit unknown or foreign provenance stays legacy-only.
+      if (evaluatorBuildSha && /^[a-f0-9]{7,64}$/.test(evaluatorBuildSha) && explicitProvenanceMatches) {
         try {
           await sql`
             INSERT INTO harness_shared.plan_closure_observations_by_build

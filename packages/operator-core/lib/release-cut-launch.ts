@@ -807,6 +807,8 @@ export interface ReadCutStatusDeps {
   platform?: Platform;
   /** Select one registered cut root's status files instead of the latest host-wide cut. */
   root?: string;
+  /** Skip the potentially large build log when only terminal marker evidence is needed. */
+  includeLogTail?: boolean;
 }
 
 /** Default: `systemctl --user is-active <unit>` → true only on exit 0 ("active"). */
@@ -863,7 +865,7 @@ function tailLines(text: string, n: number): string {
  */
 export function readCutStatus(deps: ReadCutStatusDeps = {}): CutStatus {
   const probe = cutStatusProbe(deps);
-  return cutStatusFrom(probe, (deps.isUnitActive ?? defaultIsUnitActive)(probe.unit));
+  return cutStatusFrom(probe, (deps.isUnitActive ?? defaultIsUnitActive)(probe.unit), deps.includeLogTail !== false);
 }
 
 export interface ReadCutStatusAsyncDeps extends Omit<ReadCutStatusDeps, 'isUnitActive'> {
@@ -879,7 +881,8 @@ export interface ReadCutStatusAsyncDeps extends Omit<ReadCutStatusDeps, 'isUnitA
  */
 export async function readCutStatusAsync(deps: ReadCutStatusAsyncDeps = {}): Promise<CutStatus> {
   const probe = cutStatusProbe(deps);
-  return cutStatusFrom(probe, await (deps.isUnitActiveAsync ?? defaultIsUnitActiveAsync)(probe.unit));
+  return cutStatusFrom(probe, await (deps.isUnitActiveAsync ?? defaultIsUnitActiveAsync)(probe.unit),
+    deps.includeLogTail !== false);
 }
 
 interface CutStatusProbe {
@@ -923,7 +926,7 @@ function cutStatusProbe(deps: Omit<ReadCutStatusDeps, 'isUnitActive'>): CutStatu
  * The rest of the status, read AFTER the unit probe answered, so a cut that ends
  * between the two reads lands as running-or-done, never as interrupted.
  */
-function cutStatusFrom(probe: CutStatusProbe, running: boolean): CutStatus {
+function cutStatusFrom(probe: CutStatusProbe, running: boolean, includeLogTail: boolean): CutStatus {
   const { exists, read, logPath, donePath, startedSeen, operation } = probe;
   let exitCode: number | null = null;
   let doneSeen = false;
@@ -936,7 +939,7 @@ function cutStatusFrom(probe: CutStatusProbe, running: boolean): CutStatus {
   }
   // A marker that exists but cannot be read is still evidence a cut STARTED, so the
   // state machine above keeps the interrupted/running decision and only identity degrades.
-  const logTail = exists(logPath) ? tailLines(read(logPath), 40) : null;
+  const logTail = includeLogTail && exists(logPath) ? tailLines(read(logPath), 40) : null;
 
   let state: CutStateKind;
   if (running) state = 'running';

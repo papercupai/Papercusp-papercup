@@ -430,8 +430,8 @@ describe('resolveDegenerateWake — WI-7129', () => {
   });
 });
 
-describe('degenerate-wake SQL readers', () => {
-  it('reads the trailing counters from one per-owner tagged query', async () => {
+describe('agent productivity SQL readers', () => {
+  it('reads per-owner invocation counters and falls back when there is no session activity', async () => {
     let statement = '';
     const sql = (async (strings: TemplateStringsArray) => {
       statement = strings.join('?');
@@ -461,6 +461,49 @@ describe('degenerate-wake SQL readers', () => {
     expect(statement).toContain('recent_telemetry_calls');
     expect(statement).toContain('work_items:%');
     expect(statement).toContain('make_interval');
+    expect(statement).toContain('harness_shared.agent_activity');
+    expect(statement).toContain("aa.phase IN ('pre', 'post')");
+    expect(statement).toContain("aa.workspace_id = ANY(ARRAY[s.workspace_id, '*'::text])");
+  });
+
+  it('uses worker session activity to suppress a false wedge when MCP rows are hook-only', async () => {
+    let statement = '';
+    const sql = (async (strings: TemplateStringsArray) => {
+      statement = strings.join('?');
+      return [
+        {
+          owner_id: 'judge',
+          agent_calls: '4',
+          any_calls: '8',
+          recent_calls: '3',
+          recent_telemetry_calls: '0',
+          recent_work_calls: '2',
+          recent_progress_calls: '3',
+        },
+      ];
+    }) as unknown as Sql;
+    const candidates = [candidate({ ownerId: 'judge' })];
+    const productivity = await makeReadAgentProductivity(sql)(candidates);
+    const { deps, escalated } = harness({
+      readCandidates: async () => candidates,
+      resolveLiveness: async (cs) => new Map(cs.map((c) => [c.ownerId, aliveVerdict(c.ownerId)])),
+      readProductivity: async () => productivity,
+    });
+
+    const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+
+    expect(productivity.get('judge')).toEqual({
+      agentOriginCalls: 4,
+      anyOriginCalls: 8,
+      recentCalls: 3,
+      recentTelemetryCalls: 0,
+      recentWorkCalls: 2,
+      recentProgressCalls: 3,
+    });
+    expect(out.wedged).toBe(0);
+    expect(escalated).toHaveLength(0);
+    expect(statement).toContain('GREATEST(i.agent_calls, a.activity_calls)');
+    expect(statement).toContain('CASE WHEN a.activity_calls > 0 THEN a.recent_calls');
   });
 
   it('reads non-terminal held claims and excludes observation-lane rows', async () => {

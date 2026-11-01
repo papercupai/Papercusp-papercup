@@ -1330,11 +1330,12 @@ prepare_destructive_scan() {
   local extension="${path##*.}"
   DESTRUCTIVE_SCAN_FILE="$path"
 
-  # For JS/TS source, blank lexical comments before the word scan. Keep every
-  # other byte (including strings that may hold shell commands) visible, and
-  # preserve newlines so refusal sites still point at the original line.
-  # If the repo-local TypeScript scanner is unavailable, retain the old raw
-  # scan: conservative refusal is safer than silently skipping this gate.
+  # For JS/TS source, blank TypeScript-recognized comment ranges before the
+  # word scan. Keep every other byte (including strings that may hold shell
+  # commands) visible, and preserve newlines so refusal sites still point at
+  # the original line. JSX expression comments need parser context: a raw JSX
+  # scanner reports them as text. If TypeScript is unavailable, retain the raw
+  # scan; conservative refusal is safer than silently skipping this gate.
   case "$extension" in
     js|jsx|mjs|cjs|ts|tsx|mts|cts)
       local source_script script_dir scanner_module masked
@@ -1356,18 +1357,40 @@ const source = bytes.toString('utf8');
 if (!Buffer.from(source, 'utf8').equals(bytes)) {
   throw new Error('source is not valid UTF-8');
 }
-const jsx = /\.(?:jsx|tsx)$/i.test(sourcePath);
-const scanner = ts.createScanner(
-  ts.ScriptTarget.Latest,
-  false,
-  jsx ? ts.LanguageVariant.JSX : ts.LanguageVariant.Standard,
-  source,
-);
 const chars = source.split('');
-for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
-  if (token !== ts.SyntaxKind.SingleLineCommentTrivia && token !== ts.SyntaxKind.MultiLineCommentTrivia) continue;
-  for (let i = scanner.getTokenPos(); i < scanner.getTextPos(); i += 1) {
-    if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = ' ';
+const jsx = /\.(?:jsx|tsx)$/i.test(sourcePath);
+if (jsx) {
+  // A raw JSX scanner does not enter the parser's embedded-expression state,
+  // so `// truncate` inside `style={{ ... }}` arrives as JSX text, not comment
+  // trivia. Walk parser-owned comment ranges instead; unclassified source stays
+  // visible to the conservative destructive-word scan.
+  const scriptKind = /\.tsx$/i.test(sourcePath) ? ts.ScriptKind.TSX : ts.ScriptKind.JSX;
+  const sourceFile = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, scriptKind);
+  // A parser diagnostic means the subject's structure is uncertain. Keep the
+  // raw text visible so unknown syntax cannot turn this optimization into a
+  // destructive-code blind spot.
+  if (sourceFile.parseDiagnostics.length === 0) {
+    const ranges = new Map();
+    const pending = [sourceFile];
+    while (pending.length) {
+      const node = pending.pop();
+      for (const range of ts.getLeadingCommentRanges(source, node.getFullStart()) || []) ranges.set(`${range.pos}:${range.end}`, range);
+      for (const range of ts.getTrailingCommentRanges(source, node.end) || []) ranges.set(`${range.pos}:${range.end}`, range);
+      ts.forEachChild(node, child => { pending.push(child); });
+    }
+    for (const range of ranges.values()) {
+      for (let i = range.pos; i < range.end; i += 1) {
+        if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = ' ';
+      }
+    }
+  }
+} else {
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, source);
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    if (token !== ts.SyntaxKind.SingleLineCommentTrivia && token !== ts.SyntaxKind.MultiLineCommentTrivia) continue;
+    for (let i = scanner.getTokenPos(); i < scanner.getTextPos(); i += 1) {
+      if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = ' ';
+    }
   }
 }
 fs.writeFileSync(outputPath, chars.join(''));

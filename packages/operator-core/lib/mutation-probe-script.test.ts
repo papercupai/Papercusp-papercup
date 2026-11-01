@@ -3324,6 +3324,55 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
     expect(readFileSync(typedSubject, 'utf8')).toBe(destructiveCall);
   });
 
+  it('ignores TSX expression comments but still refuses a destructive call', () => {
+    const tsxSubject = join(dir, 'subject.tsx');
+    const commentOnly = [
+      'export const component = () => <button style={{',
+      '  // shrink/truncate this style row under pressure.',
+      '  flexShrink: 0,',
+      '}}>{`beta`}</button>;',
+      '',
+    ].join('\n');
+    const args = [
+      '--file', tsxSubject,
+      '--mutate', 's/beta/BETA/',
+      '--test', 'grep -q beta {}',
+    ];
+
+    writeFileSync(tsxSubject, commentOnly);
+    const safe = runProbeIO(args);
+    expect(safe.code, safe.out).toBe(0);
+    expect(safe.out).toMatch(/MUTATION_PROBE_RESULT verdict=caught/);
+    expect(readFileSync(tsxSubject, 'utf8')).toBe(commentOnly);
+
+    const destructiveCall = [
+      ...commentOnly.split('\n').slice(0, -1),
+      'export function clean(path: string) { truncate(path); }',
+      '',
+    ].join('\n');
+    writeFileSync(tsxSubject, destructiveCall);
+    const refused = runProbeIO(args);
+    expect(refused.code).toBe(2);
+    expect(refused.out).toMatch(/current subject:.*truncate/);
+    expect(refused.out).toMatch(/5:\s*export function clean/);
+    expect(readFileSync(tsxSubject, 'utf8')).toBe(destructiveCall);
+
+    const uncertainSyntax = [
+      'export const component = () => <button style={{',
+      '  // truncate stays visible when the TSX parser reports an error',
+      '  flexShrink: 0,',
+      '}}>{`beta`}</button>;',
+      'export function malformed(path: string) {',
+      '',
+    ].join('\n');
+    writeFileSync(tsxSubject, uncertainSyntax);
+    const uncertain = runProbeIO(args);
+    expect(uncertain.code).toBe(2);
+    expect(uncertain.out).toMatch(/current subject:.*truncate/);
+    expect(uncertain.out).toMatch(/2:\s*\/\/ truncate stays visible/);
+    expect(readFileSync(tsxSubject, 'utf8')).toBe(uncertainSyntax);
+  });
+
   it('warns but allows an unmutated historical source containing rm', () => {
     const repo = join(dir, 'historical-destructive-repo');
     mkdirSync(repo);

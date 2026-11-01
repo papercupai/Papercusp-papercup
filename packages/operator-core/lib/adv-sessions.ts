@@ -2014,6 +2014,7 @@ export type NativeSessionVerificationPhase =
 
 export interface OwnerNativeSessionRow {
   id: number;
+  /** Backend-native identity projected by the verifier (OMP uses omp_thread_id). */
   session_id: string | null;
   /** Launch id of the row's current child after an in-place context reset (WI-6554700010030031). */
   child_launch_session_id?: string | null;
@@ -2169,7 +2170,9 @@ async function classifyOwnerNativeSessionUnshared(opts: {
       if (advSessionId != null) {
         phase = 'owner_row_lookup_by_id';
         rows = await traceNamedQueryStage('native-session-verifier-owner-row-lookup', () => sql<OwnerNativeSessionRow[]>`
-          SELECT id, session_id, child_launch_session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
+          SELECT id, CASE WHEN agent = 'omp' THEN omp_thread_id ELSE session_id END AS session_id,
+                 CASE WHEN agent = 'omp' THEN NULL ELSE child_launch_session_id END AS child_launch_session_id,
+                 (ended_at IS NULL AND ended_by IS NULL) AS active
             FROM harness_shared.adv_sessions
            WHERE id = ${advSessionId} AND coord_owner_id = ${opts.ownerId}
         `);
@@ -2179,7 +2182,9 @@ async function classifyOwnerNativeSessionUnshared(opts: {
       } else {
         phase = 'owner_candidate_rows_lookup';
         rows = await traceNamedQueryStage('native-session-verifier-owner-candidate-rows-lookup', () => sql<OwnerNativeSessionRow[]>`
-          SELECT id, session_id, child_launch_session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
+          SELECT id, CASE WHEN agent = 'omp' THEN omp_thread_id ELSE session_id END AS session_id,
+                 CASE WHEN agent = 'omp' THEN NULL ELSE child_launch_session_id END AS child_launch_session_id,
+                 (ended_at IS NULL AND ended_by IS NULL) AS active
             FROM harness_shared.adv_sessions
            WHERE coord_owner_id = ${opts.ownerId}
            ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, id DESC

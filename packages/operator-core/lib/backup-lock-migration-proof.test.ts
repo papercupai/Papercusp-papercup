@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import {
   describeConflicts,
@@ -77,6 +78,34 @@ describe('inspectBackupRendezvousForMigration', () => {
 // that must WAIT is pinned explicitly.
 describe('findBackupLockConflicts', () => {
   const pending = (sqlText: string) => [{ file: '1228-x.sql', sqlText }];
+
+  it('proves migration 1583 safe beside unrelated backup locks and still detects its new tables', () => {
+    const file = '1583-sql-intent-monitored-family-runs.sql';
+    const sqlText = readFileSync(
+      new URL('../../../libs/papercusp/libs/db/sql/1583-sql-intent-monitored-family-runs.sql', import.meta.url),
+      'utf8',
+    );
+    const migration = [{ file, sqlText }];
+
+    expect(findBackupLockConflicts(migration, ['session_archive_files'])).toEqual([]);
+    expect(findBackupLockConflicts(migration, ['sql_intent_runs'])).toEqual([
+      { file, subject: 'sql_intent_runs', reason: 'names-locked-relation' },
+    ]);
+  });
+
+  it('keeps an unexpected dynamic statement inside the RLS loop unprovable', () => {
+    const file = '1583-sql-intent-monitored-family-runs.sql';
+    const sqlText = readFileSync(
+      new URL('../../../libs/papercusp/libs/db/sql/1583-sql-intent-monitored-family-runs.sql', import.meta.url),
+      'utf8',
+    ).replace(
+      "EXECUTE format('GRANT SELECT,INSERT,UPDATE,DELETE ON harness_shared.%I TO harness_app',tab);",
+      "EXECUTE format('ALTER TABLE harness_shared.%I ADD COLUMN extra text',tab);",
+    );
+
+    expect(findBackupLockConflicts([{ file, sqlText }], []).map((conflict) => conflict.subject))
+      .toContain('EXECUTE (dynamic SQL)');
+  });
 
   it('is safe when the migration names no locked relation (the 2026-09-26 incident shape)', () => {
     expect(

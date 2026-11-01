@@ -222,6 +222,62 @@ describe('WI-6643 — a publish refusal reaches the broadcast surface named as a
   });
 });
 
+describe('EI-27020703015857716 — publication health advances its own sweep counters', () => {
+  async function sweep(routineRow: Record<string, unknown>) {
+    registries.byWorkspace.set('papercusp-workspace', [BRIDGED_ENTRY]);
+    gitModes.byPotHome.set('papercusp', 'bridged');
+    const { sql, writes } = makeSql({
+      workspaceIds: ['papercusp-workspace'],
+      bridgedPots: 1,
+      routineRow,
+    });
+    const check = await freshWatchdog();
+    const result = await check(sql, { workspaceId: 'papercusp-workspace' });
+    expect(result.checked).toBe(1);
+    return writes;
+  }
+
+  it('counts a publication refusal from zero even when origin has nothing to push', async () => {
+    const writes = await sweep({
+      of_origin_sha: null,
+      of_origin_since_ms: null,
+      of_alerted: false,
+      of_alerted_cause: null,
+      of_stall_sweeps: 0,
+      of_publish_refused_sweeps: 0,
+      publish_refused: 'secrets',
+      of_publish_backlog_sweeps: 0,
+      publish_backlog_remains: 'false',
+      egress_head: null,
+    });
+
+    expect(
+      writes.some((write) => write.includes("of_publish_refused_sweeps") && write.includes('[1,"papercusp"]')),
+    ).toBe(true);
+  });
+
+  it('counts an undrained publication backlog from zero when origin has no new tip', async () => {
+    const writes = await sweep({
+      of_origin_sha: null,
+      of_origin_since_ms: null,
+      of_alerted: false,
+      of_alerted_cause: null,
+      of_stall_sweeps: 0,
+      of_publish_refused_sweeps: 0,
+      publish_refused: null,
+      of_publish_backlog_sweeps: 0,
+      publish_backlog_remains: 'true',
+      publish_published_sha: null,
+      publish_head_sha: 'd'.repeat(40),
+      egress_head: null,
+    });
+
+    expect(
+      writes.some((write) => write.includes("of_publish_backlog_sweeps") && write.includes('[1,"papercusp"]')),
+    ).toBe(true);
+  });
+});
+
 describe('WI-5791 — coverage: the sweep must reach every workspace, not just the default', () => {
   it('checks a bridged pot living in a NON-default workspace (the five-day blind spot)', async () => {
     registries.byWorkspace.set('papercusp-workspace', [BRIDGED_ENTRY]);

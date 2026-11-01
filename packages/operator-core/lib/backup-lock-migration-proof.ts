@@ -117,6 +117,46 @@ function withoutStaticTriggerAction(text: string): string {
     .join(';\n');
 }
 
+const STATIC_RLS_POLICY_GRANT_LOOP =
+  /^do\s+\$([a-z_][a-z0-9_]*)\$\s+declare\s+([a-z_][a-z0-9_$]*)\s+text\s*;\s+begin\s+foreach\s+\2\s+in\s+array\s+array\s*\[\s*((?:'[a-z_][a-z0-9_$]*'\s*,\s*)*'[a-z_][a-z0-9_$]*')\s*\]\s+loop([\s\S]*?)end\s+loop\s*;\s+end\s+\$\1\$\s*;?$/;
+
+/**
+ * Recognize only the bounded RLS setup shape used by migrations: one explicit
+ * identifier array, one CREATE POLICY format string, and one GRANT format
+ * string, both targeting the loop variable. The relation-name proof still
+ * scans the original SQL, so a backup lock on any listed table remains a
+ * conflict. Any extra or different EXECUTE stays fail-closed.
+ */
+function isStaticRlsPolicyGrantLoop(statement: string): boolean {
+  const match = STATIC_RLS_POLICY_GRANT_LOOP.exec(statement);
+  if (!match) return false;
+  const [, , loopVariable, tableArray, body] = match;
+  const tableNames = [...tableArray.matchAll(/'([a-z_][a-z0-9_$]*)'/g)].map((entry) => entry[1]);
+  if (tableNames.length === 0 || new Set(tableNames).size !== tableNames.length) return false;
+
+  const calls = [...body.matchAll(/\bexecute\s+format\s*\(\s*'((?:''|[^'])*)'\s*,\s*([a-z_][a-z0-9_$]*)\s*\)/g)];
+  if (calls.length !== 2 || (body.match(/\bexecute\b/g) ?? []).length !== calls.length) return false;
+  const templates = calls.map((call) => call[1].replace(/\s+/g, ' ').trim());
+  if (calls.some((call) => call[2] !== loopVariable)) return false;
+
+  const policyTemplate =
+    /^create policy workspace_isolation on harness_shared\.%i using \(workspace_id=current_setting\(''app\.workspace_id'',true\)\) with check \(workspace_id=current_setting\(''app\.workspace_id'',true\)\)$/;
+  const grantTemplate =
+    /^grant select,insert,update,delete on harness_shared\.%i to harness_app$/;
+  return templates.filter((template) => policyTemplate.test(template)).length === 1 &&
+    templates.filter((template) => grantTemplate.test(template)).length === 1;
+}
+
+function withoutStaticRlsPolicyGrantExecutes(text: string): string {
+  return splitStatements(text)
+    .map((statement) =>
+      isStaticRlsPolicyGrantLoop(statement)
+        ? statement.replace(/\bexecute\b/g, 'bounded_dynamic_statement')
+        : statement,
+    )
+    .join(';\n');
+}
+
 /**
  * Pure verdict: which pending migrations touch a relation the backup holds, or
  * cannot be proven not to. An empty result means every pending file is safe to
@@ -134,7 +174,7 @@ export function findBackupLockConflicts(
   const conflicts: MigrationLockConflict[] = [];
   for (const { file, sqlText } of pending) {
     const text = withoutStaticTableAnnotation(normalizeMigrationSql(sqlText));
-    const statementText = withoutStaticTriggerAction(text);
+    const statementText = withoutStaticRlsPolicyGrantExecutes(withoutStaticTriggerAction(text));
     for (const { label, re } of UNPROVABLE_STATEMENTS) {
       if (re.test(statementText)) conflicts.push({ file, subject: label, reason: 'unprovable-statement' });
     }

@@ -1841,7 +1841,7 @@ export async function getFeedbackCore(
     : '';
   const hint = finalChosen
     ? latency === 'hard-blocked'
-      ? `Routed + ${wakeNote}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}${fallbackNote}${dispatchNote}${autoExcludedNoteText}`
+      ? `Routed + ${wakeNote}. Park on events:await { event: '${parkKey}' } and end your turn — a subsequent reply wakes you. This is a recurring event, so a reply that arrives before registration is an earlier edge; read the conversation before deciding whether to wait for another reply. Expires ${expiresAt}.${viaNote}${fallbackNote}${dispatchNote}${autoExcludedNoteText}`
       : `Routed + ${wakeNote}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and apply relevant advice to your project when it arrives. Declines/expiries advance the cascade SERVER-side (the next expert is dispatched with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${fallbackNote}${dispatchNote}${autoExcludedNoteText}`
     : retrievalOnly
       ? 'Retrieval-only: dispatch was disabled. No answering session was requested; do not park. Read remaining_candidates with sessions:read / sessions:search and decide from their transcript evidence.'

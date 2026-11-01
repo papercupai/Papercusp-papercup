@@ -63,41 +63,52 @@ it('rejects scratch symlink escapes and oversized evidence without reading an ar
   expect(await readers().readOutput(input)).toBeNull();
 });
 
-async function native(provider: 'claude' | 'codex' | 'omp' = 'codex') {
+const nativeCells = (['claude', 'codex', 'omp'] as const).flatMap(provider =>
+  (['shell', 'browser'] as const).map(kind => ({ provider, kind })));
+async function native(provider: 'claude' | 'codex' | 'omp' = 'codex', kind: 'shell' | 'browser' = 'shell') {
   const actor = 'su-reader-test', sessionId = randomUUID(), callId = 'call-exact';
+  const tool = kind === 'browser' ? 'browser_click'
+    : provider === 'claude' ? 'Bash' : provider === 'omp' ? 'bash' : 'exec_command';
+  const args = kind === 'browser' ? { selector: '#save' } : { command: 'rg private src' };
+  const body = kind === 'browser' ? { success: true } : { exit_code: 0 };
   const [adv] = await f.db.adminSql<{ id: string }[]>`INSERT INTO harness_shared.adv_sessions
-    (workspace_id,mode,coord_owner_id,agent,session_id) VALUES (${workspaceId},'console',${actor},${provider},${sessionId}) RETURNING id::text`;
+    (workspace_id,mode,coord_owner_id,agent,session_id,omp_thread_id)
+    VALUES (${workspaceId},'console',${actor},${provider},${provider === 'omp' ? null : sessionId},
+      ${provider === 'omp' ? sessionId : null}) RETURNING id::text`;
   const [activity] = await f.db.adminSql<{ id: string }[]>`INSERT INTO harness_shared.agent_activity
     (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,detail,status)
-    VALUES (${workspaceId},${harnessSlug},${actor},${provider},${sessionId},'tool','exec_command','pre',${callId},'{}','ok') RETURNING id::text`;
+    VALUES (${workspaceId},${harnessSlug},${actor},${provider},${sessionId},'tool',${tool},'pre',${callId},'{}','ok') RETURNING id::text`;
   const lines = provider === 'codex' ? [
-    { timestamp: '2026-10-24T12:00:00Z', type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: callId, arguments: '{"cmd":"rg private src"}' } },
-    { timestamp: '2026-10-24T12:00:01Z', type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: '{"exit_code":0}' } },
+    { timestamp: '2026-10-24T12:00:00Z', type: 'response_item', payload: { type: 'function_call', name: tool, call_id: callId, arguments: JSON.stringify(args) } },
+    { timestamp: '2026-10-24T12:00:01Z', type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: JSON.stringify(body) } },
   ] : provider === 'claude' ? [
-    { type: 'assistant', timestamp: '2026-10-24T12:00:00Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: callId, name: 'Bash', input: { command: 'rg private src' } }] } },
-    { type: 'user', timestamp: '2026-10-24T12:00:01Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: callId, content: '{"exit_code":0}' }] } },
+    { type: 'assistant', timestamp: '2026-10-24T12:00:00Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: callId, name: tool, input: args }] } },
+    { type: 'user', timestamp: '2026-10-24T12:00:01Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: callId, content: JSON.stringify(body) }] } },
   ] : [
-    { type: 'message', timestamp: '2026-10-24T12:00:00Z', message: { role: 'assistant', content: [{ type: 'toolCall', id: callId, name: 'bash', arguments: { command: 'rg private src' } }] } },
-    { type: 'message', timestamp: '2026-10-24T12:00:01Z', message: { role: 'toolResult', toolCallId: callId, content: [{ type: 'text', text: '{"exit_code":0}' }] } },
+    { type: 'message', timestamp: '2026-10-24T12:00:00Z', message: { role: 'assistant', content: [{ type: 'toolCall', id: callId, name: tool, arguments: args }] } },
+    { type: 'message', timestamp: '2026-10-24T12:00:01Z', message: { role: 'toolResult', toolCallId: callId, content: [{ type: 'text', text: JSON.stringify(body) }] } },
   ];
   const path = join(dir, `${sessionId}.jsonl`); await writeFile(path, lines.map(l => JSON.stringify(l)).join('\n') + '\n');
-  return { input: { id: activity!.id, actor, provider, sessionId, callId }, path, advId: adv!.id };
+  return { input: { id: activity!.id, actor, provider, sessionId, callId }, path, advId: adv!.id, tool, args, body };
 }
-it('pairs candidate request/result IDs from bounded transcripts for all three providers without granting authority', async () => {
-  for (const provider of ['claude', 'codex', 'omp'] as const) {
-    const { input, path } = await native(provider);
-    const result = await readers(async () => path).readTranscriptCandidate(input);
-    expect(result?.sources).toHaveLength(1);
-    expect(result?.sources[0]).toMatchObject({ callId: input.callId, provider, namespace: input.sessionId,
-      result: { callId: input.callId, provider, namespace: input.sessionId, complete: true, body: { exit_code: 0 } } });
-  }
+it.each(nativeCells)('pairs the $provider $kind candidate with its exact request and result', async ({ provider, kind }) => {
+  const { input, path, tool, args, body } = await native(provider, kind);
+  const result = await readers(async () => path).readTranscriptCandidate(input);
+  expect(result?.sources).toHaveLength(1);
+  expect(result?.sources[0]).toMatchObject({ callId: input.callId, provider, namespace: input.sessionId, tool, args,
+    result: { callId: input.callId, provider, namespace: input.sessionId, complete: true, body } });
 });
-it('D030 production hydration refuses index-only scope before native body IO', async () => {
-  const { input, path } = await native();
+it.each(nativeCells)('D030 $provider $kind candidate pairing never authorizes production hydration', async ({ provider, kind }) => {
+  const { input, path } = await native(provider, kind);
   let bodyReads = 0;
   const reader = readers(async () => { bodyReads++; return path; });
   expect(await reader.readTranscript(input)).toBeNull();
   expect(bodyReads).toBe(0);
+  expect((await reader.readTranscriptCandidate(input))?.sources).toHaveLength(1);
+  expect(bodyReads).toBe(1);
+  // A successful candidate read cannot cache or mint protected source authority.
+  expect(await reader.readTranscript(input)).toBeNull();
+  expect(bodyReads).toBe(1);
 });
 it('refuses source or session mismatches and rechecks authorization after transcript IO', async () => {
   const { input, path, advId } = await native();

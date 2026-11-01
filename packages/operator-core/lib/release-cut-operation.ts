@@ -33,6 +33,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { isAbsolute, resolve } from 'node:path';
 
 import {
   registerTask,
@@ -250,17 +251,35 @@ export interface CutOperationReconciliation {
 /**
  * PURE. Reconcile ONE operation's ledger identity against the host's sentinels.
  *
- * The marker's operation id is the whole mechanism: it is what distinguishes "my cut" from
- * "the cut that replaced mine on this platform's shared sentinels". When it does not
- * match, no state is claimed from the DONE sentinel at all.
+ * Both marker ids are required: the pair distinguishes "my cut" from an operation that
+ * reused the same root or platform's shared sentinels. A mismatch never claims DONE state.
  */
-export function classifyCutOperation(operationId: string, status: CutStatus): CutOperationReconciliation {
+export function classifyCutOperation(
+  taskId: string,
+  operationId: string,
+  status: CutStatus,
+): CutOperationReconciliation {
   const marker = status.operation;
   if (!marker) {
     return {
       disposition: 'unknown',
       resumable: false,
       reason: 'no started marker on the host — the cut never started, or /tmp was cleared',
+    };
+  }
+  if (marker.taskId === null) {
+    return {
+      disposition: 'unknown',
+      resumable: false,
+      reason: 'started marker carries no task id (unmanaged or pre-P-001 launch); its outcome cannot be attributed',
+    };
+  }
+  if (marker.taskId !== taskId) {
+    return {
+      disposition: 'superseded',
+      resumable: false,
+      reason: "the root's sentinels now belong to task " + marker.taskId +
+        '; task ' + taskId + ' cannot use their outcome',
     };
   }
   if (marker.operationId === null) {
@@ -338,10 +357,49 @@ export function cutOperationIdentityFromTask(
   };
 }
 
+export interface ReleaseCutTerminalEvidence {
+  taskId: string;
+  state: 'exited';
+  exitCode: number;
+  reason: string;
+}
+
+/** Convert only a root-scoped DONE marker matching both persisted identities into
+ * task-terminal evidence. The release journal remains the sole artifact-commit record. */
+export function releaseCutTerminalFromStatus(
+  task: TaskRow,
+  status: CutStatus,
+  root: string,
+): ReleaseCutTerminalEvidence | null {
+  if (task.class !== 'deploy' || task.launchedBy !== CUT_OPERATION_LAUNCHED_BY ||
+      !task.cwd || !isAbsolute(task.cwd) || !isAbsolute(root) || resolve(task.cwd) !== resolve(root)) {
+    return null;
+  }
+  const resolved = cutOperationIdentityFromTask(task);
+  if (!resolved) return null;
+  const reconciliation = classifyCutOperation(task.taskId, resolved.journal.operationId, status);
+  const exitCode = status.exitCode;
+  if ((reconciliation.disposition !== 'complete' && reconciliation.disposition !== 'failed') ||
+      typeof exitCode !== 'number' || !Number.isSafeInteger(exitCode)) {
+    return null;
+  }
+  return {
+    taskId: task.taskId,
+    state: 'exited',
+    exitCode,
+    reason: (
+      'release-cut DONE:' + exitCode +
+      ' matched task=' + task.taskId +
+      ' operation=' + resolved.journal.operationId +
+      '; task terminal evidence only; artifact commitment remains receipt-governed.'
+    ).slice(0, 512),
+  };
+}
+
 export interface DiscoverCutOperationsDeps {
   listTasks?: typeof listTasks;
-  /** Injected so discovery is testable without a host: one call per platform unit. */
-  readStatus?: (platform: Platform | undefined) => CutStatus;
+  /** Injected so discovery is testable without a host: one call per root/platform pair. */
+  readStatus?: (platform: Platform | undefined, root: string) => CutStatus;
   workspaceId?: string;
 }
 
@@ -358,7 +416,8 @@ export async function discoverCutOperations(
   deps: DiscoverCutOperationsDeps = {},
 ): Promise<DiscoveredCutOperation[]> {
   const list = deps.listTasks ?? listTasks;
-  const readStatus = deps.readStatus ?? ((platform: Platform | undefined) => readCutStatus({ platform }));
+  const readStatus = deps.readStatus ?? ((platform: Platform | undefined, root: string) =>
+    readCutStatus({ platform, root }));
   const tasks = await list({
     workspaceId: deps.workspaceId,
     launchedBy: CUT_OPERATION_LAUNCHED_BY,
@@ -370,7 +429,17 @@ export async function discoverCutOperations(
     const resolved = cutOperationIdentityFromTask(task);
     if (!resolved) continue;
     const { identity, journal } = resolved;
-    const status = readStatus(identity.platform ?? undefined);
+    const status = task.cwd && isAbsolute(task.cwd)
+      ? readStatus(identity.platform ?? undefined, task.cwd)
+      : {
+          state: 'idle',
+          running: false,
+          exitCode: null,
+          logTail: null,
+          logPath: '',
+          donePath: '',
+          operation: null,
+        } satisfies CutStatus;
     discovered.push({
       taskId: task.taskId,
       operationId: journal.operationId,
@@ -380,7 +449,7 @@ export async function discoverCutOperations(
       currentStage: journal.currentStage,
       receiptCount: journal.receipts.length,
       status,
-      reconciliation: classifyCutOperation(journal.operationId, status),
+      reconciliation: classifyCutOperation(task.taskId, journal.operationId, status),
     });
   }
   return discovered;

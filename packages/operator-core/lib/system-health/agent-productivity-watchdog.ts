@@ -437,17 +437,19 @@ export function makeReadCandidates(sql: Sql): AgentProductivitySweepDeps['readCa
 }
 
 /**
- * The measurement, from the invocation ledger.
+ * The measurement combines two existing ledgers with different coverage:
+ * `tool_invocations` is the per-call MCP ledger, while `agent_activity` is the
+ * worker CLI's per-session stream and includes native tools plus MCP wrapper
+ * calls. Session productivity must consult the latter: a Codex/Claude agent
+ * can do real work through its CLI bridge without producing an agent-origin
+ * `tool_invocations` row.
  *
- * ⚠ `call_origin IS DISTINCT FROM 'hook'`, NOT `<> 'hook'`. Excluding
- * hook-origin calls IS the signal — a session that boots and immediately fails
- * still emits hook-fired calls (`coord:glance`, `activity:report` on the
- * session-start hook), so a raw count is non-zero for an agent that never ran an
- * instruction of its own (measured: raw 2–5, agent-origin 0). But `<> 'hook'` is
- * FALSE for a NULL origin, which would silently drop those rows and undercount
- * toward a FALSE WEDGE — the one direction this must never err in.
- * `IS DISTINCT FROM` counts a NULL (and the `unknown`/`ui` origins the column
- * actually carries) as work, erring toward silence.
+ * Hook-origin invocations remain excluded from the MCP count. A session-start
+ * hook emits `coord:glance` / `activity:report` calls without the agent taking
+ * a turn. Activity `pre` rows count as evidence that a turn started (so an
+ * in-flight call is not called a wedge); recent mix metrics use completed
+ * `post` rows. When the activity stream has no rows for a candidate, retain
+ * the invocation-ledger metrics as a fallback for older / unbridged sessions.
  *
  * `since` travels PER ROW: an owner is answerable only for calls made after ITS
  * session started, so a floor shared across candidates would credit one session
@@ -479,34 +481,79 @@ export function makeReadAgentProductivity(
           ${workspaceIds}::text[],
           ${sinceIso}::timestamptz[]
         ) AS t(owner_id, workspace_id, since)
+      ), invocation_counts AS (
+        SELECT s.owner_id,
+               count(ti.id) FILTER (
+                 WHERE ti.call_origin IS DISTINCT FROM 'hook'
+               ) AS agent_calls,
+               count(ti.id) AS any_calls,
+               count(ti.id) FILTER (
+                 WHERE ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+               ) AS recent_calls,
+               count(ti.id) FILTER (
+                 WHERE ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+                   AND lower(ti.tool_name) = ANY(${[...TELEMETRY_TOOL_NAMES]}::text[])
+               ) AS recent_telemetry_calls,
+               count(ti.id) FILTER (
+                 WHERE ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+                   AND (lower(ti.tool_name) LIKE 'work_items:%' OR lower(ti.tool_name) LIKE 'scheduler:%')
+               ) AS recent_work_calls,
+               count(ti.id) FILTER (
+                 WHERE ti.call_origin IS DISTINCT FROM 'hook'
+                   AND ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+                   AND lower(ti.tool_name) <> ALL(${[...TELEMETRY_TOOL_NAMES]}::text[])
+               ) AS recent_progress_calls
+          FROM subjects s
+          LEFT JOIN harness_shared.tool_invocations ti
+                 ON ti.coord_owner_id = s.owner_id
+                AND ti.workspace_id   = s.workspace_id
+                AND ti.invoked_at    >= s.since
+         GROUP BY s.owner_id
+      ), activity_counts AS (
+        SELECT s.owner_id,
+               GREATEST(
+                 count(aa.id) FILTER (WHERE aa.phase = 'post'),
+                 CASE WHEN count(aa.id) FILTER (WHERE aa.phase = 'pre') > 0 THEN 1 ELSE 0 END
+               ) AS activity_calls,
+               count(aa.id) FILTER (
+                 WHERE aa.phase = 'post'
+                   AND aa.created_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+               ) AS recent_calls,
+               count(aa.id) FILTER (
+                 WHERE aa.phase = 'post'
+                   AND aa.created_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+                   AND lower(COALESCE(aa.detail->>'name', aa.tool_name, '')) = ANY(${[...TELEMETRY_TOOL_NAMES]}::text[])
+               ) AS recent_telemetry_calls,
+               count(aa.id) FILTER (
+                 WHERE aa.phase = 'post'
+                   AND aa.created_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+                   AND (lower(COALESCE(aa.detail->>'name', aa.tool_name, '')) LIKE 'work_items:%'
+                     OR lower(COALESCE(aa.detail->>'name', aa.tool_name, '')) LIKE 'scheduler:%')
+               ) AS recent_work_calls,
+               count(aa.id) FILTER (
+                 WHERE aa.phase = 'post'
+                   AND aa.created_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+                   AND lower(COALESCE(aa.detail->>'name', aa.tool_name, '')) <> ALL(${[...TELEMETRY_TOOL_NAMES]}::text[])
+               ) AS recent_progress_calls
+          FROM subjects s
+          LEFT JOIN harness_shared.agent_activity aa
+                 ON aa.owner_id = s.owner_id
+                AND aa.workspace_id = ANY(ARRAY[s.workspace_id, '*'::text])
+                AND aa.kind = 'tool'
+                AND aa.phase IN ('pre', 'post')
+                AND aa.created_at >= s.since
+         GROUP BY s.owner_id
       )
       SELECT s.owner_id,
-             count(ti.id) FILTER (
-               WHERE ti.call_origin IS DISTINCT FROM 'hook'
-             ) AS agent_calls,
-             count(ti.id) AS any_calls,
-            count(ti.id) FILTER (
-               WHERE ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
-             ) AS recent_calls,
-            count(ti.id) FILTER (
-               WHERE ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
-                 AND lower(ti.tool_name) = ANY(${[...TELEMETRY_TOOL_NAMES]}::text[])
-             ) AS recent_telemetry_calls,
-            count(ti.id) FILTER (
-               WHERE ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
-                 AND (lower(ti.tool_name) LIKE 'work_items:%' OR lower(ti.tool_name) LIKE 'scheduler:%')
-             ) AS recent_work_calls,
-             count(ti.id) FILTER (
-               WHERE ti.call_origin IS DISTINCT FROM 'hook'
-                 AND ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
-                 AND lower(ti.tool_name) <> ALL(${[...TELEMETRY_TOOL_NAMES]}::text[])
-             ) AS recent_progress_calls
+             GREATEST(i.agent_calls, a.activity_calls) AS agent_calls,
+             GREATEST(i.any_calls, a.activity_calls) AS any_calls,
+             CASE WHEN a.activity_calls > 0 THEN a.recent_calls ELSE i.recent_calls END AS recent_calls,
+             CASE WHEN a.activity_calls > 0 THEN a.recent_telemetry_calls ELSE i.recent_telemetry_calls END AS recent_telemetry_calls,
+             CASE WHEN a.activity_calls > 0 THEN a.recent_work_calls ELSE i.recent_work_calls END AS recent_work_calls,
+             CASE WHEN a.activity_calls > 0 THEN a.recent_progress_calls ELSE i.recent_progress_calls END AS recent_progress_calls
         FROM subjects s
-        LEFT JOIN harness_shared.tool_invocations ti
-               ON ti.coord_owner_id = s.owner_id
-              AND ti.workspace_id   = s.workspace_id
-              AND ti.invoked_at    >= s.since
-       GROUP BY 1`;
+        JOIN invocation_counts i USING (owner_id)
+        JOIN activity_counts a USING (owner_id)`;
 
     for (const r of rows) {
       // PostgreSQL count columns arrive as decimal strings. Coercing arbitrary

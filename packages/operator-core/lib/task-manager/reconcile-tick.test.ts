@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { TaskRow, TaskState } from './types';
 import type { ScanResult } from './scan';
 import type { ScannedProcess } from './reconcile';
+import { buildCutJournalSeed, CUT_OPERATION_LAUNCHED_BY } from '../release-cut-operation';
+import type { CutStatus } from '../release-cut-launch';
 import { existsSync } from 'node:fs';
 import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -20,6 +22,11 @@ const store = vi.hoisted(() => ({
 }));
 
 vi.mock('./store', () => ({
+  TASK_RELEASE_JOURNAL_SCHEMA_VERSION: 1,
+  taskReleaseJournalFromDetail: (detail: Record<string, unknown>) =>
+    detail && typeof detail === 'object' && detail.release && typeof detail.release === 'object'
+      ? detail.release
+      : null,
   recoverPendingTaskTerminalEvents: vi.fn(async () => 0),
   listLiveTasks: async () => [] as TaskRow[],
   listReconcileTasks: async () => [] as TaskRow[],
@@ -638,6 +645,111 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     memoryMaxBytes: null,
     peakMemoryBytes: null,
     peakMemorySource: 'unknown' as const,
+  });
+
+  function releaseDoneStatus(taskId: string, operationId: string, exitCode: number): CutStatus {
+    return {
+      state: exitCode === 0 ? 'done' : 'failed',
+      running: false,
+      exitCode,
+      logTail: null,
+      logPath: '/tmp/' + taskId + '.log',
+      donePath: '/tmp/' + taskId + '.done',
+      operation: { taskId, operationId, startedAtSec: 1_798_000_000 },
+    };
+  }
+
+  it.each([0, 1])('recovers a collected release task from its root-scoped matching DONE:%s', async (exitCode) => {
+    const taskId = 'cut' + exitCode + '123';
+    const operationId = 'operation-' + exitCode;
+    const journal = buildCutJournalSeed(operationId, {
+      version: '1.2.3-alpha',
+      channel: 'alpha',
+      platform: 'linux',
+      sourceSha: 'a'.repeat(40),
+      gitlinks: {},
+    });
+    const task = row({
+      taskId,
+      state: 'ended_unobserved',
+      exitCode: null,
+      endedAt: '2026-10-25T20:00:00.000Z',
+      class: 'deploy',
+      launchedBy: CUT_OPERATION_LAUNCHED_BY,
+      cwd: '/tmp/desktop-root',
+      scopeUnit: 'pc-' + taskId + '.service',
+      logPath: '/tmp/' + taskId + '.runner.log',
+      detail: { release: journal },
+    });
+    const readReleaseCutStatus = vi.fn(async (_platform: string | undefined, root: string) => {
+      expect(root).toBe('/tmp/desktop-root');
+      return releaseDoneStatus(taskId, operationId, exitCode);
+    });
+    const readJobLogTerminal = vi.fn(() => null);
+
+    const out = await reconcileTick({
+      listLive: async () => [task],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      checkScopesReleased: async (units) => new Set(units),
+      readReleaseCutStatus,
+      readJobLogTerminal,
+    });
+
+    expect(readReleaseCutStatus).toHaveBeenCalledWith('linux', '/tmp/desktop-root');
+    expect(readJobLogTerminal).not.toHaveBeenCalled();
+    expect(out.recoveredFromReleaseCutCount).toBe(1);
+    expect(out.recoveredFromJobLogCount).toBe(0);
+    expect(store.recovered).toEqual([expect.objectContaining({
+      taskId,
+      state: 'exited',
+      exitCode,
+      reason: expect.stringContaining('release-cut DONE:' + exitCode),
+    })]);
+    expect(store.endedUnobserved).toEqual([]);
+    expect(journal.receipts).toEqual([]);
+    expect(store.recovered[0]!.reason.length).toBeLessThanOrEqual(512);
+  });
+
+  it.each(['task', 'operation'] as const)('rejects a release DONE marker with a mismatched %s identity', async (mismatch) => {
+    const taskId = 'cutbad123';
+    const operationId = 'operation-current';
+    const journal = buildCutJournalSeed(operationId, {
+      version: '1.2.3-alpha',
+      channel: 'alpha',
+      platform: 'linux',
+      sourceSha: 'a'.repeat(40),
+      gitlinks: {},
+    });
+    const task = row({
+      taskId,
+      state: 'ended_unobserved',
+      exitCode: null,
+      endedAt: '2026-10-25T20:00:00.000Z',
+      class: 'deploy',
+      launchedBy: CUT_OPERATION_LAUNCHED_BY,
+      cwd: '/tmp/desktop-root',
+      scopeUnit: 'pc-' + taskId + '.service',
+      detail: { release: journal },
+    });
+    const status = releaseDoneStatus(
+      mismatch === 'task' ? 'cut-other123' : taskId,
+      mismatch === 'operation' ? 'operation-old' : operationId,
+      0,
+    );
+    const out = await reconcileTick({
+      listLive: async () => [task],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      checkScopesReleased: async (units) => new Set(units),
+      readReleaseCutStatus: async () => status,
+      readJobLogTerminal: () => null,
+    });
+
+    expect(out.recoveredFromReleaseCutCount).toBe(0);
+    expect(store.recovered).toEqual([]);
+    expect(store.endedUnobserved).toEqual([expect.objectContaining({ taskId })]);
+    expect(journal.receipts).toEqual([]);
   });
 
   it.each([false, true])('revisits an unobserved terminal row when a delayed marker appears (truncated=%s)', async (ownedTruncated) => {

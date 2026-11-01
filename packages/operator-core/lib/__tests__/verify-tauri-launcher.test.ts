@@ -273,6 +273,76 @@ describe('native desktop binary readiness', () => {
   });
 });
 
+describe('required screenshot GPU preflight', () => {
+  const gpuPreflight = source.match(/^preflight_required_gpu_gl\(\) \{[\s\S]*?^\}/m)?.[0];
+  const displayPreflight = source.match(/^preflight_native_display_dependencies\(\) \{[\s\S]*?^\}/m)?.[0];
+  if (!gpuPreflight || !displayPreflight) throw new Error('Maintained screenshot GPU preflight was not found');
+
+  function probe(renderer: string, options: { requireGpu?: string; skipGl?: string; probeStatus?: string } = {}) {
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-gpu-preflight-'));
+    const bin = resolve(dir, 'bin');
+    mkdirSync(bin);
+    const argsPath = resolve(dir, 'xvfb-run.args');
+    for (const name of ['Xvfb', 'openbox', 'xdpyinfo', 'xprop', 'timeout', 'vglrun', 'glxinfo', 'xauth']) {
+      writeFileSync(resolve(bin, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    }
+    writeFileSync(resolve(bin, 'xvfb-run'), [
+      '#!/bin/sh',
+      'printf "%s\\n" "$*" > "$FIXTURE_XVFB_ARGS"',
+      'printf "OpenGL renderer string: %s\\n" "$FIXTURE_GL_RENDERER"',
+      'exit "$FIXTURE_PROBE_STATUS"',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'log() { printf "%s\\n" "$*" >&2; }',
+        gpuPreflight,
+        displayPreflight,
+        'PREPARE_ONLY=0 preflight_native_display_dependencies',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: { ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        VERIFY_TAURI_REQUIRE_GPU_GL: options.requireGpu ?? '1',
+        VERIFY_TAURI_SKIP_GL_CHECK: options.skipGl ?? '0',
+        FIXTURE_XVFB_ARGS: argsPath, FIXTURE_GL_RENDERER: renderer,
+        FIXTURE_PROBE_STATUS: options.probeStatus ?? '0',
+      } });
+      return { ...result, xvfbArgs: existsSync(argsPath) ? readFileSync(argsPath, 'utf8').trim() : null };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('admits the real VirtualGL renderer before native preparation', () => {
+    const result = probe('Quadro P400/PCIe/SSE2');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('GPU GL preflight passed before native preparation');
+    expect(result.xvfbArgs).toContain('vglrun -d egl0 glxinfo');
+  });
+
+  it.each([
+    'llvmpipe (LLVM 20.1.2, 256 bits)',
+    'swrast',
+    'softpipe',
+  ])('fails fast on software renderer %s before source, Cargo, SPA, or database preparation', renderer => {
+    const result = probe(renderer);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('screenshot-required GPU GL preflight detected a software');
+    expect(result.stderr).toContain(renderer);
+  });
+
+  it('preserves DOM-only runs and refuses an explicit skip when screenshots are required', () => {
+    const domOnly = probe('llvmpipe (LLVM 20.1.2, 256 bits)', { requireGpu: '0' });
+    expect(domOnly.status, domOnly.stderr).toBe(0);
+    expect(domOnly.xvfbArgs).toBeNull();
+
+    const skipped = probe('Quadro P400/PCIe/SSE2', { skipGl: '1' });
+    expect(skipped.status).toBe(2);
+    expect(skipped.stderr).toContain('conflicts with VERIFY_TAURI_SKIP_GL_CHECK=1');
+    expect(skipped.xvfbArgs).toBeNull();
+  });
+});
+
 describe('native Playwright assertion source preflight', () => {
   function preflight(...args: string[]) {
     const dir = mkdtempSync(resolve(tmpdir(), 'tauri-assertion-source-'));

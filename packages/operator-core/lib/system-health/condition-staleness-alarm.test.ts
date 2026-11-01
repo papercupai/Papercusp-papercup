@@ -235,23 +235,33 @@ describe('verifiedGitSyncHealth', () => {
 });
 
 describe('gitSyncMissedIntervalsAlarmActive', () => {
-  it('matches the source alarm threshold and exclusions from writer-backed routine data', () => {
+  it('matches the inclusive source alarm threshold and in-flight exclusions from writer-backed routine data', () => {
     const routineFreshness = {
       missed_intervals: 4,
       scheduler: { stalled_behind_in_flight_fire: false },
       execution: { status: 'idle' },
     };
     expect(gitSyncMissedIntervalsAlarmActive(routineFreshness, 'nothing', null)).toBe(true);
-    expect(gitSyncMissedIntervalsAlarmActive({ ...routineFreshness, missed_intervals: 3 }, 'nothing', null)).toBe(false);
+    expect(gitSyncMissedIntervalsAlarmActive({ ...routineFreshness, missed_intervals: 3 }, 'nothing', null)).toBe(true);
+    expect(gitSyncMissedIntervalsAlarmActive({ ...routineFreshness, missed_intervals: 2 }, 'nothing', null)).toBe(false);
     expect(gitSyncMissedIntervalsAlarmActive(routineFreshness, 'error', null)).toBe(false);
     expect(gitSyncMissedIntervalsAlarmActive(routineFreshness, 'skipped', 'no_path')).toBe(false);
     expect(
       gitSyncMissedIntervalsAlarmActive({
         ...routineFreshness,
+        missed_intervals: 3,
         scheduler: { stalled_behind_in_flight_fire: true },
         execution: { status: 'in-flight' },
       }, 'nothing', null),
     ).toBe(false);
+    expect(
+      gitSyncMissedIntervalsAlarmActive({
+        ...routineFreshness,
+        missed_intervals: 3,
+        scheduler: { stalled_behind_in_flight_fire: true },
+        execution: { status: 'stuck' },
+      }, 'nothing', null),
+    ).toBe(true);
     expect(gitSyncMissedIntervalsAlarmActive({ missed_intervals: null }, 'nothing', null)).toBeUndefined();
   });
 });
@@ -907,7 +917,7 @@ describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors li
     expect(seenKeys).toEqual([[]]);
   });
 
-  it('does not false-clear a starved git-sync missed-interval condition from a healthy shared snapshot', async () => {
+  it('does not false-clear a git-sync missed-interval condition at the inclusive source threshold', async () => {
     const now = Date.parse('2026-10-08T09:00:00.000Z');
     const key = 'infra-liveness:git-sync-missed-intervals:papercusp';
     const recentlyObserved = new Date(now - 30_000).toISOString();
@@ -930,7 +940,7 @@ describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors li
         routineReads.push({ keys: [...keys], at });
         const alarmActive = gitSyncMissedIntervalsAlarmActive(
           {
-            missed_intervals: 4,
+            missed_intervals: 3,
             scheduler: { stalled_behind_in_flight_fire: false },
             execution: { status: 'idle' },
           },

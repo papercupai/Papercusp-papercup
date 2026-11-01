@@ -212,7 +212,7 @@ export function gitSyncMissedIntervalsAlarmActive(
   const progressingFireExplainsMissedIntervals =
     scheduler?.stalled_behind_in_flight_fire === true && execution?.status === 'in-flight';
   if (progressingFireExplainsMissedIntervals) return false;
-  return missedIntervals > GIT_SYNC_MISSED_INTERVALS_ALARM;
+  return missedIntervals >= GIT_SYNC_MISSED_INTERVALS_ALARM;
 }
 
 /**

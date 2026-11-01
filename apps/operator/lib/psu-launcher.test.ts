@@ -2900,7 +2900,10 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     const dir = await writeOmpSessionConfigDirAsync(
       "staging-port",
       {
-        env: { PAPERCUSP_HONO_PORT: "3170" },
+        env: {
+          PAPERCUSP_HONO_PORT: "3170",
+          PAPERCUSP_MCP_STAGING_PROXY: "0",
+        },
         probe: async (candidate: string) => {
           probed.push(candidate);
           return candidate === "http://127.0.0.1:3170/api/mcp";
@@ -2914,6 +2917,24 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     );
     expect(url.origin).toBe("http://127.0.0.1:3170");
     expect(probed).toEqual(["http://127.0.0.1:3170/api/mcp"]);
+  });
+
+  it("uses the caller environment's operator URL when no runtime port hint is present", async () => {
+    const probe = vi.fn(async () => false);
+    const dir = await writeOmpSessionConfigDirAsync(
+      "caller-env-portless",
+      {
+        env: { PAPERCUSP_OPERATOR_URL: "http://caller-env.invalid:9171" },
+        probe,
+      },
+      home,
+    );
+    const url = new URL(
+      JSON.parse(readFileSync(join(home, dir!, "agent", "mcp.json"), "utf8"))
+        .mcpServers["papercusp-su"].url,
+    );
+    expect(url.origin).toBe("http://caller-env.invalid:9171");
+    expect(probe).not.toHaveBeenCalled();
   });
 
   it("honors an explicit operator URL without probing or recovering it", async () => {
