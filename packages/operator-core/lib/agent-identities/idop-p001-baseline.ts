@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '../util/cli-entry';
 import { moduleRepoRoot } from '../module-repo-root';
 import { parse as parseYaml } from 'yaml';
 import { replayAgentSpecification, specificationPrompt } from '@papercusp/orchestrator/blueprint';
@@ -264,7 +264,7 @@ export function buildIdopP001Baseline(promptsDir: string) {
   };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   const promptsDir = process.argv[2];
   if (!promptsDir) throw new Error('usage: tsx idop-p001-baseline.ts <launched-codex-prompts-dir>');
   const target = join(root, IDOP_P001_BASELINE_REL);

@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import { PAYLOAD_TIER_HARD_CEILING_CHARS } from "@papercusp/agent-mcp";
 import { CHARS_PER_TOKEN_ESTIMATE } from "../../context-doors";
 import { RESULT_DOOR_TOKENS } from "../../result-door";
+import { applyResultProjection, parseProjection } from "../../result-projection";
 import { COMPLETION_EMITTED_AT_ROW, shapeWorkItemsGet } from "./get-shape";
 
 type Envelope = {
@@ -85,6 +86,62 @@ function operationalBrief(subject: string, text: string): Record<string, unknown
 }
 
 describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", () => {
+  it("keeps an explicitly projected nested payload leaf through a bulk work_items:get shape", () => {
+    const payloads = [
+      { source: "engineer", severity: "major" },
+      { source: "engineer", severity: "minor" },
+    ];
+    const rows = payloads.map((metadata, index) => {
+      const id = `WI-${index + 1}`;
+      return row({
+        workItem: {
+          id,
+          kind: "bug",
+          family: "issue",
+          harness: "papercusp",
+          state: "open",
+          title: `title for ${id}`,
+          severity: "major",
+          origin: "local",
+          assignee: "su-1",
+          payload: { _ei: metadata, unrelated: "must not survive the narrow projection" },
+        },
+      });
+    });
+    for (const payloadPath of ["results[].payload._ei", "results[].workItem.payload._ei"]) {
+      const pick = ["results[].id", "results[].state", "results[].title", payloadPath];
+      const sourceProjection = { pick };
+      const shaped = shapeWorkItemsGet(envelope(rows), "trimmed", sourceProjection) as Envelope;
+      expect(shaped.results.map((item) => (item.workItem as Record<string, unknown>).payload)).toEqual(
+        payloads.map((metadata) => ({ _ei: metadata })),
+      );
+      const parsed = parseProjection(sourceProjection);
+      if (!parsed.ok) throw new Error(`fixture projection rejected: ${parsed.error}`);
+
+      const projected = applyResultProjection(
+        { content: [{ type: "text", text: JSON.stringify(shaped) }] },
+        parsed.spec,
+        { toolName: "work_items:get" },
+      );
+      const projectedBody = projected.content.find(
+        (item) => item.type === "text" && item.text?.trimStart().startsWith("{"),
+      );
+      if (projectedBody?.type !== "text") throw new Error("projection did not return its JSON body");
+      const result = JSON.parse(projectedBody.text) as Envelope;
+
+      expect(result.results.map((item) => (item.workItem as Record<string, unknown>).payload)).toEqual(
+        payloads.map((metadata) => ({ _ei: metadata })),
+      );
+      if (payloadPath === "results[].payload._ei") {
+        expect(projected.content.some(
+          (item) => item.type === "text" && item.text?.includes(
+            "results[].payload._ei → results[].workItem.payload._ei",
+          ),
+        )).toBe(true);
+      }
+    }
+  });
+
   it('preserves a standalone bounded attachment byte page through both tiers', () => {
     const evidence = { sourceWorkItemId: 'EI-source', attachments: [], page: {
       id: 'attachment', encoding: 'base64', data: Buffer.alloc(2048, 1).toString('base64'),

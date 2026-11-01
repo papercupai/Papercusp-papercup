@@ -432,6 +432,60 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     });
   });
 
+  it('does not reuse a predecessor token_count before the carry successor writes its sample', async () => {
+    const nativeA = '01a16b18-5d7e-75a2-9648-1b466516b75a';
+    const nativeB = '01a16b18-5d7e-75a2-9648-1b466516b75b';
+    const generationStartedAtMs = Date.now() - 2_000;
+    const predecessorObservedAtMs = generationStartedAtMs - 60_000;
+    const successorObservedAtMs = generationStartedAtMs + 500;
+    const predecessorRollout = join(dir, `rollout-2026-10-28T13-00-00-${nativeA}.jsonl`);
+    const successorRollout = join(dir, `rollout-2026-10-28T13-01-00-${nativeB}.jsonl`);
+    const writeTokenCount = (path: string, tokens: number, observedAtMs: number) =>
+      writeFileSync(path, JSON.stringify({
+        type: 'event_msg',
+        timestamp: new Date(observedAtMs).toISOString(),
+        payload: {
+          type: 'token_count',
+          info: { last_token_usage: { total_tokens: tokens }, model_context_window: 258_400 },
+        },
+      }) + '\n');
+
+    writeTokenCount(predecessorRollout, 120_355, predecessorObservedAtMs);
+    const successorStartingRef = {
+      agent: 'codex',
+      sessionId: null,
+      sessionKey: 14795,
+      startedAtMs: generationStartedAtMs,
+    } as const;
+    const staleDeps = {
+      resolveRef: async () => successorStartingRef,
+      findCodexRollout: async () => predecessorRollout,
+    };
+
+    expect(await estimateContextTokens(successorStartingRef, 'owner-current', staleDeps)).toBeNull();
+    expect(await estimateContextWindowForOwner('owner-current', staleDeps)).toBeNull();
+    const beforeSuccessorSample = await currentContextUsageForOwner('owner-current', staleDeps);
+    expect(beforeSuccessorSample.reading).toBeNull();
+    expect(beforeSuccessorSample.unavailableReason).toBe(
+      'active Codex token_count sample predates this session generation',
+    );
+
+    writeTokenCount(successorRollout, 71_395, successorObservedAtMs);
+    const successorRef = { ...successorStartingRef, sessionId: nativeB };
+    const successorDeps = {
+      resolveRef: async () => successorRef,
+      findCodexRollout: async () => successorRollout,
+    };
+    expect(await estimateContextTokens(successorRef, 'owner-current', successorDeps)).toBe(71_395);
+    expect(await estimateContextWindowForOwner('owner-current', successorDeps)).toBe(258_400);
+    const afterSuccessorSample = await currentContextUsageForOwner('owner-current', successorDeps);
+    expect(afterSuccessorSample.reading).toMatchObject({
+      tokens: 71_395,
+      observedAtMs: successorObservedAtMs,
+      source: 'codex-last-token-usage',
+    });
+  });
+
   it('discloses a stale or mismatched Codex sample as unavailable', async () => {
     const currentId = '01a16b18-5d7e-75a2-9648-1b466516b75b';
     const stalePath = join(dir, `rollout-2026-10-28T13-01-00-${currentId}.jsonl`);

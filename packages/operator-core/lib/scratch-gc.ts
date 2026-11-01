@@ -44,7 +44,6 @@ import {
   rm as rmAsync,
   readFile as readFileAsync,
   writeFile as writeFileAsync,
-  rename as renameAsync,
   realpath as realpathAsync,
 } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -473,6 +472,7 @@ async function writeSharedScratchQuotaState(
   bytes: number,
   measuredAt: number,
   observeAwait?: ScratchWriteAwaitObserver,
+  currentState?: SharedScratchQuotaState | null,
 ): Promise<number> {
   const path = sharedScratchQuotaStatePath(workspaceId);
   const parent = dirname(path);
@@ -480,7 +480,12 @@ async function writeSharedScratchQuotaState(
     ? observeAwait('quota-state-publish', subphase, operation)
     : operation();
   await publishAwait('ensure-parent', () => mkdirAsync(parent, { recursive: true, mode: 0o700 }));
-  const existing = await readSharedScratchQuotaState(workspaceId, observeAwait);
+  // Reservation callers already read this state while holding the same workspace mutex.
+  // Reuse that validated snapshot instead of reading the shared file twice in one critical
+  // section. Other callers pass no snapshot and read the latest revision under the mutex.
+  const existing = currentState === undefined
+    ? await readSharedScratchQuotaState(workspaceId, observeAwait)
+    : currentState;
   const entry = usageState.byWorkspace.get(workspaceId);
   // updatedAt is also the shared-state revision fence. Advance it monotonically so two
   // writes in the same millisecond cannot make a remote mutation look like our own snapshot.
@@ -496,15 +501,13 @@ async function writeSharedScratchQuotaState(
     measuredAt,
     updatedAt,
   };
-  const temporary = path + '.' + process.pid + '.' + randomUUID() + '.tmp';
-  await publishAwait('write-temporary-file', () =>
-    writeFileAsync(temporary, JSON.stringify(record) + '\n', { mode: 0o600 }));
-  try {
-    await publishAwait('rename-temporary-file', () => renameAsync(temporary, path));
-  } catch (error) {
-    await publishAwait('remove-temporary-file', () => rmAsync(temporary, { force: true })).catch(() => {});
-    throw error;
-  }
+  // Every reservation read and ledger mutation is protected by the workspace quota mutex.
+  // The only unlocked read is refreshScratchUsage's optimistic snapshot; malformed or
+  // incomplete JSON is treated as absent and the refresh revalidates under the mutex before
+  // adopting anything. Write in place to keep temp-file creation and rename out of this
+  // high-churn critical section; a torn write fails closed and triggers a filesystem refresh.
+  await publishAwait('write-file', () =>
+    writeFileAsync(path, JSON.stringify(record) + '\n', { mode: 0o600 }));
   if (entry) entry.sharedUpdatedAt = updatedAt;
   return updatedAt;
 }
@@ -1720,7 +1723,7 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
           adoptedStableRunIndex = entry.runBytesValid && !entry.refreshDeferred;
           if (!adoptedStableRunIndex && measuredBytes > targetBytes) entry.refreshDeferred = true;
           if (measuredBytes <= targetBytes) {
-            await writeSharedScratchQuotaState(workspaceId, entry.bytes, entry.measuredAt);
+            await writeSharedScratchQuotaState(workspaceId, entry.bytes, entry.measuredAt, undefined, sharedNow);
           }
         }));
       if (measuredBytes > targetBytes && adoptedStableRunIndex) {
@@ -1794,11 +1797,6 @@ export async function _settleScratchMaintenanceForTests(timeoutMs = 5_000): Prom
     ]);
     if (timer) clearTimeout(timer);
   }
-}
-
-export function _scratchUsageRefreshDiagnosticsForTests(workspaceId: string) {
-  const diagnostics = usageState.byWorkspace.get(workspaceId)?.refreshDiagnostics;
-  return diagnostics ? snapshotScratchQuotaRecoveryDiagnostics(diagnostics) : null;
 }
 
 export function _resetScratchUsageForTests(): void {
@@ -2574,7 +2572,7 @@ export async function writeWithScratchQuota(
         pending.reserved = true;
         // Publish the reservation before touching the payload. A process crash can leave a
         // conservative over-count, but never an under-count that admits another process past quota.
-        await writeSharedScratchQuotaState(opts.workspaceId, entry.bytes, sharedMeasuredAt, observeAwait);
+        await writeSharedScratchQuotaState(opts.workspaceId, entry.bytes, sharedMeasuredAt, observeAwait, cachedState);
         reservedStatePersisted = true;
         return {
           sharedStateStale,

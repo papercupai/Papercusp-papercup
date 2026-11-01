@@ -207,10 +207,15 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     warn.mockRestore();
   });
 
-  it('skips both gauge-cache clears when the reanchor reports no owner (never throws)', async () => {
+  it('refuses confirmation when the reanchor cannot resolve an owner', async () => {
     reanchorMock.mockResolvedValue({ reanchored: true, owner: null });
     const res = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      ok: false,
+      reanchored: true,
+      error: 'native session binding is not established',
+    });
     expect(clearContextEstimateMock).not.toHaveBeenCalled();
     expect(clearContextUsageMock).not.toHaveBeenCalled();
     expect(clearContextAnchorMock).not.toHaveBeenCalled();
@@ -278,10 +283,17 @@ describe('owner-keyed fallback — the interactive/`psu --resume` cohort (no adv
       coordOwnerId: 'su-interactive-owner',
       sessionId: FRESH_ID,
     });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, reanchored: false });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      ok: false,
+      reanchored: false,
+      error: 'native session binding is not established',
+    });
     expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, { childLaunchSessionId: null });
     expect(reanchorByOwnerMock).not.toHaveBeenCalled();
+    expect(clearContextEstimateMock).not.toHaveBeenCalled();
+    expect(clearContextUsageMock).not.toHaveBeenCalled();
+    expect(clearContextAnchorMock).not.toHaveBeenCalled();
   });
 
   it('a no-op fallback keeps the adv path’s resolved owner for the gauge clears', async () => {

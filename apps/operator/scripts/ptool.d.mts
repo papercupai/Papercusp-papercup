@@ -119,8 +119,11 @@ export function canDispatchPtoolOnFallback(toolName: any, callArgs: any, tool: a
  * return a confident absence from a different database (EI-26993615074036891).
  * Keep retries on that proxy; direct packaged operator URLs may still follow
  * operator.json when the desktop process moves ports.
+ * @param {Record<string, any>} [args]
+ * @param {Record<string, string | undefined>} [env]
+ * @param {string | null} [selectedOperatorUrl]
  */
-export function shouldRediscoverOperatorUrl(args?: {}, env?: NodeJS.ProcessEnv, selectedOperatorUrl?: null): boolean;
+export function shouldRediscoverOperatorUrl(args?: Record<string, any>, env?: Record<string, string | undefined>, selectedOperatorUrl?: string | null): boolean;
 /**
  * Pinned operator URLs are caller-selected endpoints, not managed launcher
  * routes. Keep the selected host authoritative: a retry may reconnect to that

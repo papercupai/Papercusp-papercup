@@ -149,7 +149,7 @@ export interface CarryBrief {
   ownerId: string;
   /** Concrete workspace used for this carry read; absent on legacy literals. */
   workspaceId?: string | null;
-  /** Armed AUTO loop + its carry-note (verbatim) — null when no loop routine exists. */
+  /** Loop status + its carry-note (verbatim) — null when no loop routine exists. */
   loop: {
     harness: string;
     active: boolean;
@@ -1941,9 +1941,15 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
   }
   if (brief.loop) {
     const iv = brief.loop.intervalSec != null ? ` ${brief.loop.intervalSec}s` : '';
-    parts.push(
-      `armed loop @${brief.loop.harness}${iv} — its loop:checkpoint re-delivers on wake, pointer only`,
-    );
+    if (brief.loop.active) {
+      parts.push(
+        `armed loop @${brief.loop.harness}${iv} — active in this carry snapshot; its loop:checkpoint re-delivers on wake, pointer only`,
+      );
+    } else {
+      parts.push(
+        `inactive loop @${brief.loop.harness}${iv} — inactive in this carry snapshot; no engine-loop wake is guaranteed`,
+      );
+    }
   }
   if (brief.facts.length > 0) {
     parts.push(`standing facts (folded into every orient): ${brief.facts.map((f) => f.key).join(', ')}`);

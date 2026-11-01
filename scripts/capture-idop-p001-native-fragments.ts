@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { extractIdopP001NativeFragments, nativeFragmentHash } from '../packages/operator-core/lib/agent-identities/idop-p001-native-fragments';
 
 // This captures a new edition. It never rewrites the historical extraction or grants acceptance.
@@ -53,7 +53,7 @@ export function captureIdopNativeFragments(root: string, archiveRoot: string) {
   };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   const [archiveRoot, output] = process.argv.slice(2);
   if (!archiveRoot || !output || process.argv.length !== 4) throw new Error('Usage: tsx scripts/capture-idop-p001-native-fragments.ts <original-archive-root> <new-output.json>');
   const artifact = captureIdopNativeFragments(process.cwd(), resolve(archiveRoot));

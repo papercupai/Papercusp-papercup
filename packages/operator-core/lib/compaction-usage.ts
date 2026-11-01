@@ -451,10 +451,25 @@ async function codexSnapshotForRef(
   if (ref.agent !== 'codex' || ref.sessionKey == null) return null;
   try {
     const rollout = await resolveCodexRolloutPathForRef(ref, ownerId, deps);
-    return rollout ? await codexContextSnapshotFromRollout(rollout) : null;
+    const snapshot = rollout ? await codexContextSnapshotFromRollout(rollout) : null;
+    return snapshot && codexSnapshotBelongsToSessionGeneration(ref, snapshot) ? snapshot : null;
   } catch {
     return null;
   }
+}
+
+/** A Codex home survives carry-respawns, so its newest readable token_count can
+ * still belong to the predecessor while the successor has not written a sample.
+ * When adv_sessions supplies the current generation's start time, require the
+ * token_count event itself to be at or after that boundary. A missing timestamp
+ * cannot prove generation membership and therefore remains unknown. */
+function codexSnapshotBelongsToSessionGeneration(
+  ref: SessionRef,
+  snapshot: CodexContextSnapshot,
+): boolean {
+  const startedAtMs = ref.startedAtMs;
+  if (startedAtMs == null || !Number.isFinite(startedAtMs)) return true;
+  return snapshot.observedAtMs != null && snapshot.observedAtMs >= startedAtMs;
 }
 
 /** The raw JSONL key Claude writes on a compaction-summary entry. Text that
@@ -953,6 +968,14 @@ export async function currentContextUsageForOwner(
         nativeSessionId: rolloutSessionId,
         reading: null,
         unavailableReason: 'active Codex rollout has no timestamped token_count sample',
+      };
+    }
+    if (!codexSnapshotBelongsToSessionGeneration(ref, snapshot)) {
+      return {
+        ...base,
+        nativeSessionId: rolloutSessionId,
+        reading: null,
+        unavailableReason: 'active Codex token_count sample predates this session generation',
       };
     }
     const ageMs = Date.now() - snapshot.observedAtMs;

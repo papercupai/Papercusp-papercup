@@ -138,6 +138,15 @@ describe('fact absence detector — a worded absence gets its own advisory (EI-2
     expect(detectFactAbsenceClaims('The result was not emitted.')).not.toEqual([]);
   });
 
+  it('does not treat a negated evidence claim as an observed absence', () => {
+    const rules = [
+      'Emitter death or replacement alone is not proof that a degraded:* condition recovered.',
+      'This emitter event is not evidence that a result was emitted.',
+    ];
+    for (const rule of rules) expect(detectFactAbsenceClaims(rule), rule).toEqual([]);
+    expect(detectFactAbsenceClaims('The emitter did not fire.')).not.toEqual([]);
+  });
+
   it('does not mistake an imperative do-not instruction for an observed absence', () => {
     const rule =
       'Do not draft or send from that listing alone, while the original recipient probe recorded a historical CATCH_ALL result.';

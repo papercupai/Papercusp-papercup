@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { writeStdoutSync } from '../../../../scripts/lib/write-stdout-sync.mjs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isCliEntry } from '../util/cli-entry';
 import { zstdDecompressSync } from 'node:zlib';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -289,7 +290,7 @@ export async function main(argv = process.argv.slice(2)) {
   } finally { imports.deregister(); }
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   // Synchronous write: process.exit() would truncate a buffered console.log to a pipe.
   main().then(result => { writeStdoutSync(`${JSON.stringify(result)}\n`); process.exit(0); },
     error => { console.error(error.message); process.exit(1); });

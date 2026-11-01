@@ -27,7 +27,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, access: vi.fn(actual.access), readdir: vi.fn(actual.readdir), rm: vi.fn(actual.rm), stat: vi.fn(actual.stat), writeFile: vi.fn(actual.writeFile) };
+  return { ...actual, access: vi.fn(actual.access), readFile: vi.fn(actual.readFile), readdir: vi.fn(actual.readdir), rename: vi.fn(actual.rename), rm: vi.fn(actual.rm), stat: vi.fn(actual.stat), writeFile: vi.fn(actual.writeFile) };
 });
 import {
   constants as fsConstants,
@@ -46,7 +46,7 @@ import {
   realpathSync,
   truncateSync,
 } from 'node:fs';
-import { access as accessAsync, mkdir, readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
+import { access as accessAsync, mkdir, readFile as readFileAsync, readdir as readdirAsync, rename as renameAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
@@ -834,6 +834,88 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
       await Promise.allSettled([writer, ...(quotaProbe ? [quotaProbe] : []), ...(dataProbe ? [dataProbe] : [])]);
     }
     expect(readFileSync(filePath)).toHaveLength(16);
+  });
+
+  it('publishes quota state in place and reuses the reservation snapshot', async () => {
+    const workspaceId = 'ws-quota-ledger-in-place';
+    const runDir = ensureScratchRunDir({ workspaceId, toolName: 'result-door', runId: UUID(80) });
+    await refreshScratchUsage(workspaceId);
+
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const statePath = join(
+      dirname(scratchRoot()),
+      'scratch-quota-state',
+      createHash('sha256').update(workspaceRoot).digest('hex') + '.json',
+    );
+    const filePath = join(runDir, 'spill.bin');
+    const stateReads = vi.mocked(readFileAsync);
+    const stateWrites = vi.mocked(writeFile);
+    const stateRenames = vi.mocked(renameAsync);
+    stateReads.mockClear();
+    stateWrites.mockClear();
+    stateRenames.mockClear();
+
+    try {
+      await writeWithScratchQuota({ workspaceId, filePath, bytes: 16 }, async () => {
+        await writeFile(filePath, Buffer.alloc(16));
+      });
+
+      const reads = stateReads.mock.calls.filter(([path]) => String(path) === statePath);
+      const writes = stateWrites.mock.calls.filter(([path]) =>
+        String(path) === statePath || String(path).startsWith(statePath + '.'),
+      );
+      const renames = stateRenames.mock.calls.filter(([from, to]) =>
+        String(from).startsWith(statePath + '.') || String(to) === statePath,
+      );
+
+      // One locked read for reservation plus one for settlement. Reservation publication
+      // reuses its current-state read instead of repeating it; neither publication needs a
+      // temp-file rename because all authoritative ledger access is mutex-protected.
+      expect(reads).toHaveLength(2);
+      expect(writes).toHaveLength(2);
+      expect(writes.every(([path]) => String(path) === statePath)).toBe(true);
+      expect(renames).toHaveLength(0);
+
+      const state = JSON.parse(readFileSync(statePath, 'utf8')) as { bytes: number; updatedAt: number };
+      expect(state.bytes).toBe(markerBytes(workspaceId) + 16);
+      expect(state.bytes).toBe(scratchUsageBytes(workspaceId));
+      expect(Number.isSafeInteger(state.updatedAt)).toBe(true);
+    } finally {
+      stateReads.mockClear();
+      stateWrites.mockClear();
+      stateRenames.mockClear();
+    }
+  });
+
+  it('reconciles a torn shared quota ledger before the next reservation', async () => {
+    const workspaceId = 'ws-torn-quota-ledger';
+    const runDir = ensureScratchRunDir({ workspaceId, toolName: 'result-door', runId: UUID(81) });
+    await refreshScratchUsage(workspaceId);
+
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const statePath = join(
+      dirname(scratchRoot()),
+      'scratch-quota-state',
+      createHash('sha256').update(workspaceRoot).digest('hex') + '.json',
+    );
+    writeFileSync(statePath, '{"version":');
+
+    const filePath = join(runDir, 'spill.bin');
+    const timings: ScratchWriteTimings[] = [];
+    await writeWithScratchQuota({
+      workspaceId,
+      filePath,
+      bytes: 16,
+      onTiming: (row) => timings.push(row),
+    }, async () => {
+      await writeFile(filePath, Buffer.alloc(16));
+    });
+
+    expect(readFileSync(filePath)).toHaveLength(16);
+    const state = JSON.parse(readFileSync(statePath, 'utf8')) as { bytes: number };
+    expect(state.bytes).toBe(markerBytes(workspaceId) + 16);
+    expect(state.bytes).toBe(scratchUsageBytes(workspaceId));
+    expect(timings.find((row) => !row.progress)?.refreshWaitMs).toBeGreaterThan(0);
   });
 
   it('keeps each workspace walk sequential and caps filesystem work across concurrent workspaces', async () => {

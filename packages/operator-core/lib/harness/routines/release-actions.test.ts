@@ -15,7 +15,12 @@
 import { describe, it, expect, vi, beforeEach, beforeAll, afterEach, afterAll } from 'vitest';
 import { describeGateRedOwnership } from '../../release/gate-red-ownership';
 import { buildCandidateSnapshot } from '../../release/candidate-snapshot';
-import { resolveIntegrationRoot, integrationRootEvidence, CHECKPOINT_SCOPE_RUNTIME_MAX_SEC } from './release-actions';
+import {
+  resolveIntegrationRoot,
+  integrationRootEvidence,
+  CHECKPOINT_SCOPE_RUNTIME_MAX_SEC,
+  buildCommittedCheckpointToolingCommand,
+} from './release-actions';
 import { GREEN_CHECKPOINT_RESULT_MARKER } from '../../release/checkpoint-log-tags';
 import { pipelineName } from '../../release/pipeline-name';
 import { currentRepairLimbExecutor } from '../../release/repair-limb-executor';
@@ -31,7 +36,7 @@ import {
 import { auditDraw, formatTestReuseLine, formatTestReuseTotalLine } from '../../../../../scripts/lib/test-pass-reuse.mjs';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2270,6 +2275,102 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
   });
 
   describe('scheduled checkpoint evidence wrapper', () => {
+    it('executes the scheduled CLI from the committed host tree and preserves the subject root', () => {
+      const temp = mkdtempSync(join(tmpdir(), 'papercusp-committed-tooling-'));
+      const repoRoot = join(temp, 'source');
+      const cacheRoot = join(temp, 'cache');
+      const setupLog = join(temp, 'setup.log');
+      const setupPath = join(repoRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
+      const cliPath = join(repoRoot, 'apps/operator/lib/release/green-checkpoint.ts');
+      try {
+        mkdirSync(join(repoRoot, 'apps/operator/bin/release'), { recursive: true });
+        mkdirSync(join(repoRoot, 'apps/operator/lib/release'), { recursive: true });
+        writeFileSync(join(repoRoot, '.gitignore'), 'node_modules/\n');
+        const setupScript = [
+          '#!/usr/bin/env bash',
+          'set -euo pipefail',
+          'printf "committed-setup:%s\\n" "$*" >> "$CHECKPOINT_SETUP_TEST_LOG"',
+          'release_root=',
+          'dependencies_only=0',
+          'while [ "$#" -gt 0 ]; do',
+          '  case "$1" in',
+          '    --release) release_root="$2"; shift 2 ;;',
+          '    --dependencies-only) dependencies_only=1; shift ;;',
+          '    *) shift ;;',
+          '  esac',
+          'done',
+          'if [ "$dependencies_only" = "1" ]; then',
+          '  mkdir -p "$release_root/node_modules/.bin"',
+          "  cat > \"$release_root/node_modules/.bin/tsx\" <<'TSX'",
+          '#!/usr/bin/env bash',
+          'set -euo pipefail',
+          'printf "runtime-root=%s\\n" "$PWD"',
+          'printf "subject-root=%s\\n" "$PAPERCUSP_INTEGRATION_ROOT"',
+          'printf "script-content="',
+          'cat "$1"',
+          'shift',
+          'printf "args:"',
+          'printf " <%s>" "$@"',
+          'printf "\\n"',
+          'TSX',
+          '  chmod +x "$release_root/node_modules/.bin/tsx"',
+          'fi',
+        ].join('\n') + '\n';
+        writeFileSync(setupPath, setupScript);
+        writeFileSync(cliPath, 'committed-cli\n');
+        execFileSync('git', ['-C', repoRoot, 'init', '--initial-branch=main'], { encoding: 'utf8' });
+        execFileSync('git', ['-C', repoRoot, 'add', '.'], { encoding: 'utf8' });
+        execFileSync('git', [
+          '-C', repoRoot, '-c', 'user.name=Test Agent', '-c', 'user.email=test@example.com',
+          'commit', '-m', 'committed checkpoint tooling',
+        ], { encoding: 'utf8' });
+        const buildSha = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+        // The shared checkout changes after the host build identity was captured. The scheduled
+        // child must still load the committed source and the committed setup helper.
+        writeFileSync(setupPath, setupScript.replace('committed-setup', 'dirty-setup'));
+        writeFileSync(cliPath, 'dirty-cli\n');
+
+        const run = (runId: string) => execFileSync(
+          '/bin/bash',
+          ['-c', buildCommittedCheckpointToolingCommand(
+            repoRoot,
+            buildSha,
+            'apps/operator/lib/release/green-checkpoint.ts',
+            ['--candidate', 'abc123'],
+            runId,
+            cacheRoot,
+          )],
+          {
+            encoding: 'utf8',
+            env: {
+              ...process.env,
+              CHECKPOINT_SETUP_TEST_LOG: setupLog,
+              PAPERCUSP_INTEGRATION_ROOT: '/subject/harness',
+            },
+          },
+        );
+
+        const first = run('fire_test_1');
+        expect(first).toContain('committed-cli');
+        expect(first).not.toContain('dirty-cli');
+        expect(first).toContain('subject-root=/subject/harness');
+        expect(first).toContain('args: <--candidate> <abc123>');
+        const setupRows = readFileSync(setupLog, 'utf8').trim().split('\n');
+        expect(setupRows).toHaveLength(2);
+        expect(setupRows[0]).toContain('--source-only');
+        expect(setupRows[0]).toContain('--source-integrity object-sourced');
+        expect(setupRows[1]).toContain('--prepare-existing --dependencies-only');
+        expect(setupRows[1]).toContain('--node-modules force --node-modules-copy copy');
+
+        const second = run('fire_test_2');
+        expect(second).toContain('committed-cli');
+        expect(readFileSync(setupLog, 'utf8').trim().split('\n')).toHaveLength(2);
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    });
+
     it('writes normal stdout and an attributable terminal record after a successful child', () => {
       const dir = mkdtempSync(join(tmpdir(), 'papercusp-scheduled-checkpoint-'));
       const paths = checkpointRunLogPaths(dir, 'normal-run', new Date('2026-08-24T15:00:00.000Z'));
@@ -2648,6 +2749,13 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(args).toContain(`--unit=${reservedRunner.unit}`);
     expect(args.some((a) => /^--property=MemoryMax=\d+G$/.test(a))).toBe(true);
     expect(args.join(' ')).toContain('green-checkpoint.ts');
+    const scheduledPayload = args.at(-1) ?? '';
+    expect(scheduledPayload).toContain('--source-only');
+    expect(scheduledPayload).toContain('--source-integrity object-sourced');
+    expect(scheduledPayload).toContain('--prepare-existing --dependencies-only');
+    expect(scheduledPayload).toContain('--node-modules-copy copy');
+    expect(scheduledPayload).toContain('runtime_root/node_modules/.bin/tsx');
+    expect(scheduledPayload).not.toContain(REPO_ROOT + '/apps/operator/lib/release/green-checkpoint.ts');
     expect(args.at(-1)).toContain('trap _papercusp_write_checkpoint_terminal EXIT');
     const childEnv = spawnMock.mock.calls[0]![2] as { env?: Record<string, string> };
     const sharedRunId = childEnv.env?.PAPERCUSP_CHECKPOINT_SCHEDULED_RUN;

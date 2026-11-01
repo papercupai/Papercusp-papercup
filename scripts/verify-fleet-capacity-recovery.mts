@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { listSpecEvidence } from '../packages/operator-core/lib/agent-tools/plans/spec-evidence-store';
 import type { inspectCommittedOperationalEvidence } from '../packages/operator-core/lib/agent-tools/testing/record-run';
@@ -477,5 +478,5 @@ async function runCli(): Promise<void> {
   // process, including any idle database pool opened by the canonical reader.
   process.stdout.write(JSON.stringify(result) + '\n', () => process.exit(0));
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+if (isCliEntry(import.meta.url))
   void runCli().catch(error => { process.stderr.write(String(error) + '\n'); process.exitCode = 1; });

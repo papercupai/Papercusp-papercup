@@ -60,6 +60,7 @@
  */
 
 import { CHARS_PER_TOKEN_ESTIMATE } from "../../context-doors";
+import { applyPick, proposePickRepairs } from "../../result-projection/apply";
 import { RESULT_DOOR_TOKENS } from "../../result-door";
 import { ANY_FAMILY_TERMINAL_STATES } from "../../work-item-dispatch-states";
 import { CARRY_NOTE_MAX_CHECKS } from "../../carry-note";
@@ -388,13 +389,86 @@ function hasCompletionEvidence(value: unknown): boolean {
 /**
  * Keep the detector snapshot available on an exact lifecycle-candidate read
  * without bringing the duplicated claim-subject baseline (or other payload
- * envelopes) through the result door. Bulk reads still omit payload entirely.
+ * envelopes) through the result door. Bulk reads omit payload unless the caller
+ * selected a nested payload path; then only those leaves are carried through.
  */
 function projectLifecycleCandidatePayload(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const payload = raw as Row;
   if (!Object.prototype.hasOwnProperty.call(payload, "processLifecycleCandidate")) return undefined;
   return { processLifecycleCandidate: payload.processLifecycleCandidate };
+}
+
+function isPlainRow(value: unknown): value is Row {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Find payload leaves explicitly selected by a result projection. The dispatch
+ * layer repairs shorthand paths (for example `results[].payload._ei`) only
+ * after this shaper runs, so use its same verified repair logic here to keep the
+ * requested source leaf available until that final projection is applied.
+ */
+function selectedPayloadPathsByRow(
+  data: unknown,
+  sourceProjection: unknown,
+  rowCount: number,
+): string[][] {
+  const pathsByRow = Array.from({ length: rowCount }, () => [] as string[]);
+  if (!isPlainRow(sourceProjection) || !Array.isArray(sourceProjection.pick)) return pathsByRow;
+
+  const picks = sourceProjection.pick
+    .filter((pick): pick is string => typeof pick === "string")
+    .map((pick) => pick.trim())
+    .filter((pick) => pick.length > 0);
+  if (picks.length === 0) return pathsByRow;
+
+  const missed = picks.filter((pick) => applyPick(data, [pick]).unmatched.includes(pick));
+  const { repairs } = proposePickRepairs(data, missed, picks);
+  for (const pick of picks) {
+    const effective = repairs.get(pick) ?? pick;
+    const match = /^results(?:\[\]|\[(\d+)\])\.workItem\.payload\.(.+)$/.exec(effective);
+    if (!match) continue;
+    const payloadPath = match[2]!;
+    if (match[1] === undefined) {
+      for (const paths of pathsByRow) paths.push(payloadPath);
+      continue;
+    }
+    const index = Number(match[1]);
+    if (Number.isSafeInteger(index) && index >= 0 && index < rowCount) {
+      pathsByRow[index]!.push(payloadPath);
+    }
+  }
+  return pathsByRow;
+}
+
+function mergeProjectionObject(base: unknown, selected: Row): Row {
+  if (!isPlainRow(base)) return selected;
+  const merged: Row = { ...base };
+  for (const [key, value] of Object.entries(selected)) {
+    merged[key] = isPlainRow(merged[key]) && isPlainRow(value)
+      ? mergeProjectionObject(merged[key], value)
+      : value;
+  }
+  return merged;
+}
+
+function carrySelectedPayloadProjection(shapedRow: unknown, selectedPayload: Row | null): unknown {
+  if (!selectedPayload || !isPlainRow(shapedRow) || !isPlainRow(shapedRow.workItem)) return shapedRow;
+  return {
+    ...shapedRow,
+    workItem: {
+      ...shapedRow.workItem,
+      payload: mergeProjectionObject(shapedRow.workItem.payload, selectedPayload),
+    },
+  };
+}
+
+function projectSelectedPayload(rawPayload: unknown, paths: string[]): Row | null {
+  if (paths.length === 0) return null;
+  const projected = applyPick(rawPayload, paths);
+  if (projected.unmatched.length === paths.length || !isPlainRow(projected.picked)) return null;
+  return projected.picked;
 }
 
 /**
@@ -1586,6 +1660,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier, sourceP
   if (d.__checksOnly === true) return shapeChecksOnly(d, tier);
   const caps = FIELD_CAPS[tier];
   const rows = d.results.map((r) => (r && typeof r === "object" ? (r as Row) : ({} as Row)));
+  const selectedPayloadPaths = selectedPayloadPathsByRow(data, sourceProjection, rows.length);
   const selectedIdentityFields = compactIdentityProjection(sourceProjection);
   const ladder = DEGRADATION_LADDER[tier];
   const target = TIER_TARGET_CHARS[tier];
@@ -1718,6 +1793,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier, sourceP
     const singleItemFloor = rows.length === 1 && fullRows === 0;
     const stubCompletionEvidenceIds: unknown[] = [];
     const projected = rows.map((r, i) => {
+      let shapedRow: unknown;
       if (i < fullRows) {
         const shaped = projectRow(
           r,
@@ -1734,15 +1810,22 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier, sourceP
         if (compactIdentity && rows.length > 1 && !briefRequested) {
           const identity = shaped.workItem as Row | null | undefined;
           const hasCandidateLabel = typeof identity?.title === "string" && identity.title.trim().length > 0;
-          return hasCandidateLabel
+          shapedRow = hasCandidateLabel
             ? compactIdentityRow(r, shaped, dropped, selectedIdentityFields)
             : stubRow(r, dropped, stubCompletionEvidenceIds);
+        } else {
+          shapedRow = shaped;
         }
-        return shaped;
+      } else {
+        shapedRow = singleItemFloor
+          ? compactSingleRow(r, caps, tier, dropped)
+          : stubRow(r, dropped, stubCompletionEvidenceIds);
       }
-      return singleItemFloor
-        ? compactSingleRow(r, caps, tier, dropped)
-        : stubRow(r, dropped, stubCompletionEvidenceIds);
+      const rawWorkItem = isPlainRow(r.workItem) ? r.workItem : null;
+      return carrySelectedPayloadProjection(
+        shapedRow,
+        projectSelectedPayload(rawWorkItem?.payload, selectedPayloadPaths[i] ?? []),
+      );
     });
     const stubbedCount = singleItemFloor ? 0 : Math.max(0, rows.length - fullRows);
     if (stubbedCount > 0) dropped.add(`rows(${stubbedCount} stubbed)`);

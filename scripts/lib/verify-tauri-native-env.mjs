@@ -2,7 +2,7 @@ import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { promisify } from 'node:util';
 import { committedWorkRootDependencyDonor, OWNER_MARKER } from '../lint-as-committed.mjs';
 import { censusSpawnArgs, interpretRestrictedHoldPreflight } from './restricted-hold-preflight.mjs';
@@ -262,7 +262,7 @@ export async function withNativeVerifierTypeService(repoRoot, env, check) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   try {
     if (!process.argv[3]) throw new Error('Native verifier requires a repo root');
     if (process.argv[2] === '--candidate-spa') {

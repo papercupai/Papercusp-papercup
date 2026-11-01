@@ -4,7 +4,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '../../util/cli-entry';
 import { z } from 'zod';
 
 const requestSchema = z.object({
@@ -170,6 +170,6 @@ export async function runProseAdapterCapture(argv = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   runProseAdapterCapture().catch(error => { console.error(error); process.exitCode = 1; });
 }

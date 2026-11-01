@@ -4001,6 +4001,13 @@ const sessionRespawned = defineTool({
         reanchored = fallback.reanchored;
         owner = fallback.owner ?? owner;
       }
+      // The launcher treats HTTP success as authoritative confirmation before
+      // writing successor input. A 2xx with no resolved owner would acknowledge
+      // an unbound native id, leaving the old owner→native mapping in force.
+      // Fail closed and let the durable reporter retry if the row is not ready.
+      if (!owner) {
+        return jsonRes({ ok: false, reanchored, error: 'native session binding is not established' }, 503);
+      }
       // The host confirms the native binding before sending a fresh Codex
       // kickoff. An accepted worker also needs its launch-proven identity and
       // model evidence sink ready at that boundary, before any provider call.

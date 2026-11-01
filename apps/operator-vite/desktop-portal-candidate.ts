@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 /** Refuse overwrite and symlink traversal before spending a build or writing bytes. */
 export function candidateDirectory(root: string, directory: string,
@@ -138,6 +139,6 @@ export async function prepareCandidate(args = process.argv.slice(2)) {
     sourceFingerprint: receipt.sourceFingerprint, receipt: resolve(directory, 'candidate.json'), scope: receipt.scope }));
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   await prepareCandidate();
 }

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { gcsObjectStore, type ObjectStore } from '@papercusp/artifact-registry';
 import { archivePath, writeFile as archiveFile, writeManifest } from '../src/r2-archive.ts';
 import type { Env } from '../src/env.ts';
@@ -140,6 +140,6 @@ async function main() {
   process.exitCode = exitCode;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isCliEntry(import.meta.url)) {
   main().catch(() => { console.error('archive verification failed; inspect the retained journal and receipt'); process.exitCode = 1; });
 }

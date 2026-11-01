@@ -939,6 +939,19 @@ describe('renderCarryBriefFocus — the /compact focus line', () => {
     expect(focus).not.toContain('ship P-004');
   });
 
+  it('labels an inactive loop as inactive in the compact focus (EI-27075423225264146)', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        getLoopStatusFn: async () => ({ harnessSlug: 'papercusp', active: false, intervalSec: 900 }),
+      }),
+    );
+    const focus = renderCarryBriefFocus(brief);
+    expect(focus).toContain('inactive loop @papercusp 900s');
+    expect(focus).toContain('no engine-loop wake is guaranteed');
+    expect(focus).not.toContain('armed loop @papercusp');
+  });
+
   it('an empty brief renders exactly the standing preserve set', () => {
     const empty: CarryBrief = {
       ownerId: 'x',

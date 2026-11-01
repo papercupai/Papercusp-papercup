@@ -41,6 +41,7 @@ import {
   ROUTINE_FIRE_WORKFLOW_ID_ENV,
 } from '../../release/in-flight-candidate';
 import { emitAwaitedEvent } from '../../events/await/engine';
+import { getResolvedBuild } from '../../build-info';
 import { withInstallBoundaryBootWindow } from '../../install-boundary-lease';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
 import { pipelineName, pipelineRef, pipelineTag } from '../../release/pipeline-name';
@@ -762,6 +763,105 @@ function scheduledCheckpointLogDir(): string {
   return checkpointLogDirFromEnv();
 }
 
+/**
+ * Build a committed tooling checkout for the scheduled CLI. The checkout is keyed by the
+ * running host build identity, materialized only from Git objects, and shared by concurrent
+ * gate runs. The integration tree remains the subject via PAPERCUSP_INTEGRATION_ROOT.
+ */
+export function buildCommittedCheckpointToolingCommand(
+  sourceRoot: string,
+  buildSha: string,
+  relScript: string,
+  args: readonly string[],
+  runId: string,
+  cacheRoot = path.join(homedir(), '.papercusp', 'checkpoint-tooling-runtimes'),
+): string {
+  if (!/^[0-9a-f]{7,64}$/i.test(buildSha)) {
+    throw new Error('scheduled checkpoint tooling requires a committed build SHA');
+  }
+  if (!/^[a-zA-Z0-9_-]{1,120}$/.test(runId)) {
+    throw new Error('scheduled checkpoint tooling requires a safe run id');
+  }
+  if (path.isAbsolute(relScript) || relScript.split(/[\\/]/).includes('..')) {
+    throw new Error('scheduled checkpoint tooling requires a repository-relative script');
+  }
+
+  const cliArgv = [
+    '"$runtime_root/node_modules/.bin/tsx"',
+    '"$runtime_root/"' + shellQuote(relScript),
+    ...args.map(shellQuote),
+  ].join(' ');
+  const lines = [
+    'set -euo pipefail',
+    'source_root=' + shellQuote(sourceRoot),
+    'build_sha=' + shellQuote(buildSha),
+    'cache_root=' + shellQuote(cacheRoot),
+    'run_id=' + shellQuote(runId),
+    'tooling_sha="$(git -C "$source_root" rev-parse --verify "$build_sha^{commit}")"',
+    '[[ "$tooling_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid committed checkpoint tooling SHA" >&2; exit 1; }',
+    'runtime_root="$cache_root/runtimes/$tooling_sha"',
+    'ready_dir="$cache_root/ready"',
+    'lock_dir="$cache_root/locks"',
+    'used_dir="$cache_root/used"',
+    'mkdir -p -- "$cache_root/runtimes" "$ready_dir" "$lock_dir" "$used_dir"',
+    'ready="$ready_dir/$tooling_sha"',
+    'used="$used_dir/$tooling_sha"',
+    'exec 8>"$lock_dir/$tooling_sha.setup.lock"',
+    'flock -x 8',
+    'exec 9>"$lock_dir/$tooling_sha.runtime.lock"',
+    'runtime_head="$(git -C "$runtime_root" rev-parse --verify HEAD 2>/dev/null || true)"',
+    'runtime_status="$(git -C "$runtime_root" status --porcelain --untracked-files=normal 2>/dev/null || true)"',
+    'cache_valid=0',
+    'if [ "$(cat "$ready" 2>/dev/null || true)" = "$tooling_sha" ] && [ "$runtime_head" = "$tooling_sha" ] && [ -z "$runtime_status" ] && [ -x "$runtime_root/node_modules/.bin/tsx" ]; then cache_valid=1; fi',
+    'if [ "$cache_valid" != 1 ]; then',
+    '  flock -x 9',
+    '  runtime_status="$(git -C "$runtime_root" status --porcelain --untracked-files=normal 2>/dev/null || true)"',
+    '  if [ -n "$runtime_status" ]; then echo "refusing to replace a dirty checkpoint tooling snapshot" >&2; exit 1; fi',
+    '  if [ -L "$runtime_root" ]; then echo "refusing a symlinked checkpoint tooling snapshot" >&2; exit 1; fi',
+    '  if [ -e "$runtime_root/.git" ]; then',
+    '    git -C "$source_root" worktree remove --force "$runtime_root" >/dev/null 2>&1 || { echo "could not retire stale checkpoint tooling worktree" >&2; exit 1; }',
+    '  elif [ -e "$runtime_root" ]; then',
+    '    rm -rf -- "$runtime_root"',
+    '  fi',
+    '  rm -f -- "$ready"',
+    '  git -C "$source_root" worktree add --quiet --detach "$runtime_root" "$tooling_sha"',
+    '  setup_script="$runtime_root/apps/operator/bin/release/setup-release-checkout.sh"',
+    '  bash "$setup_script" --ref "$tooling_sha" --integration "$source_root" --release "$runtime_root" --source-only --source-integrity object-sourced',
+    '  bash "$setup_script" --ref "$tooling_sha" --integration "$source_root" --release "$runtime_root" --prepare-existing --dependencies-only --node-modules force --node-modules-copy copy',
+    '  runtime_head="$(git -C "$runtime_root" rev-parse --verify HEAD 2>/dev/null || true)"',
+    '  runtime_status="$(git -C "$runtime_root" status --porcelain --untracked-files=normal 2>/dev/null || true)"',
+    '  if [ "$runtime_head" != "$tooling_sha" ] || [ -n "$runtime_status" ] || [ ! -x "$runtime_root/node_modules/.bin/tsx" ]; then echo "committed checkpoint tooling snapshot failed its post-setup integrity check" >&2; exit 1; fi',
+    '  printf "%s\\n" "$tooling_sha" > "$ready.tmp.$$"',
+    '  mv -- "$ready.tmp.$$" "$ready"',
+    'fi',
+    'flock -s 9',
+    'flock -u 8',
+    'touch "$used"',
+    'cleanup_checkpoint_tooling_use() { touch "$used"; }',
+    'trap cleanup_checkpoint_tooling_use EXIT',
+    'for old_used in "$used_dir"/*; do',
+    '  [ -f "$old_used" ] || continue',
+    '  old_sha="$(basename "$old_used")"',
+    '  [ "$old_sha" != "$tooling_sha" ] || continue',
+    '  [[ "$old_sha" =~ ^[0-9a-f]{40}$ ]] || continue',
+    '  [ -n "$(find "$old_used" -maxdepth 0 -mmin +360 -print -quit 2>/dev/null)" ] || continue',
+    '  old_root="$cache_root/runtimes/$old_sha"',
+    '  (',
+    '    flock -n -x 8 || exit 0',
+    '    flock -n -x 9 || exit 0',
+    '    [ -n "$(find "$old_used" -maxdepth 0 -mmin +360 -print -quit 2>/dev/null)" ] || exit 0',
+    '    old_status="$(git -C "$old_root" status --porcelain --untracked-files=normal 2>/dev/null || true)"',
+    '    [ -z "$old_status" ] || exit 0',
+    '    git -C "$source_root" worktree remove --force "$old_root" >/dev/null 2>&1 || exit 0',
+    '    rm -f -- "$ready_dir/$old_sha" "$old_used"',
+    '  ) 8>"$lock_dir/$old_sha.setup.lock" 9>"$lock_dir/$old_sha.runtime.lock"',
+    'done',
+    'cd -- "$runtime_root"',
+    cliArgv,
+  ];
+  return lines.join('\n');
+}
+
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `\'"\'"\'`)}'`;
 }
@@ -1173,6 +1273,7 @@ function runScript(
    *  Record<string,string|undefined> — the latter would lean on Node silently dropping
    *  undefined env values, which is true but unstated. */
   clearEnv: string[] = [],
+  committedRuntime?: { buildSha: string; runId: string },
 ): Promise<RunResult> {
   // One clock includes boot admission and fallback launches. A retry cannot
   // grant the same caller another complete suite budget.
@@ -1182,10 +1283,12 @@ function runScript(
     Number.isSafeInteger(inheritedDeadline) && inheritedDeadline > 0 ? inheritedDeadline : Infinity);
   // Null = unbounded: neither a kill timer nor a deadline env is armed for the child.
   const callerDeadlineEpochMs: number | null = Number.isFinite(boundedDeadline) ? boundedDeadline : null;
-  const base = [tsxBin(root), path.join(root, relScript), ...args];
   // Isolation kill-switch: PAPERCUSP_CHECKPOINT_SCOPE=0 forces the pre-2026-07-01
   // direct spawn (ops escape hatch, peer of PAPERCUSP_GATEWAY_RPM_SMOOTH).
   const wantScope = !!isolate && process.env.PAPERCUSP_CHECKPOINT_SCOPE !== '0';
+  const base = committedRuntime && wantScope
+    ? ['/bin/bash', '-c', buildCommittedCheckpointToolingCommand(root, committedRuntime.buildSha, relScript, args, committedRuntime.runId)]
+    : [tsxBin(root), path.join(root, relScript), ...args];
   // The routine parent is not the durable owner of a scheduled run: it can be reaped while
   // the systemd scope keeps the suite alive. Put the log + EXIT terminal writer INSIDE that
   // scope, before the suite starts, so a completed or abnormal child exit leaves attributable
@@ -2832,6 +2935,22 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     });
     return;
   }
+  const executorBuild = getResolvedBuild();
+  const executorBuildSha = executorBuild.sha;
+  if (!executorBuildSha || !/^[0-9a-f]{7,64}$/i.test(executorBuildSha)) {
+    console.warn('[green-checkpoint] skip ' + ctx.installSlug + ': executor build identity is unavailable');
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      kind: 'green_checkpoint',
+      status: 'skipped-no-tooling',
+      detail: withGateFireId({
+        reason: 'executor-build-identity-unavailable',
+        executorShaSource: executorBuild.shaSource,
+      }),
+    });
+    return;
+  }
   // EI-21363817573800034: ADMISSION — the LAST gate before we spawn, and deliberately so.
   //
   // The run-lock is taken by the CHILD (green-checkpoint.ts), so returning here means no lock is
@@ -3204,6 +3323,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     // so the pot's suite resolves its OWN database. EMPTY for operator-home, whose gate legs
     // genuinely need that DSN — so papercusp's own pipeline is byte-identical (D-007).
     routing.clearEnv,
+    { buildSha: executorBuildSha, runId: gateFireId },
   );
   if (r.code !== 0) {
     console.warn(`${orchestratorStdoutTag()} exited ${r.code}: ${(r.stderr || r.stdout).slice(-500)}`);

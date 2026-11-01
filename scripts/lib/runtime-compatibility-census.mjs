@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream, promises as fs, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const require = createRequire(import.meta.url);
 const { collectImports } = require('../../papercusp-desktop/bin/lib/runtime-import-census.cjs');
@@ -477,7 +477,7 @@ export async function inventoryElfLibraryCandidates(files, { libraryCache = [], 
   return { ...result, fingerprint: hash(JSON.stringify(result)) };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   if (!process.argv[2]) throw new Error('usage: runtime-compatibility-census.mjs <repository> [revision]');
   process.stdout.write(JSON.stringify(inventorySources(readCommittedSources(process.argv[2], process.argv[3] ?? 'HEAD'))) + '\n');
 }

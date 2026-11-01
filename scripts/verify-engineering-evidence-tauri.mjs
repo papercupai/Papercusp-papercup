@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { readEngineeringJourneyConfig } from '../apps/operator/e2e/_engineering-evidence-journey-config.ts';
 import { assertPlanAuditReleaseHealth } from '../apps/operator/e2e/_plan-audit-release-config.ts';
 
@@ -190,7 +190,7 @@ export async function verifyEngineeringTauri(env = process.env) {
     manifestSha256: receipt.manifestSha256, nonce: receipt.nonce, receiptPath, receiptSha256: digest(bytes) }));
   return receipt;
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   // The verification-harness contract (contract-lint R-10): the run is recorded under the shared
   // evidence root. A failed assertion still fails the process instead of being absorbed.
   const { defaultEvidenceRoot, runHarness } = await import('@papercusp/verification-harness');

@@ -7,7 +7,8 @@
 import ts from 'typescript';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { listFilesIncludingUntracked } from './lib/tracked-files.mjs';
 import { fingerprint, judgeSites } from './lib/shrink-only-guard.mjs';
 
@@ -110,4 +111,4 @@ export function main(argv = process.argv.slice(2)) {
   if (!errors.length && !offenders.length) console.log(`client fetch-in-timer: PASS (${sites.length} measured sites)`);
   return errors.length || offenders.length ? 1 : 0;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exitCode = main();
+if (isCliEntry(import.meta.url)) process.exitCode = main();

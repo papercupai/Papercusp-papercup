@@ -50,6 +50,8 @@ it('spills and reads back a real 100-row scorecards:list result in a private iso
         env: {
           ...process.env,
           PC_ISOLATED_RUNTIME_PROOF: '1',
+          PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+          PAPERCUSP_TEST_RUN_WORKSPACE: 'papercusp-workspace',
           SCORECARDS_EXPECTED_SOURCE_HASHES: JSON.stringify(expectedSourceHashes),
         },
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],

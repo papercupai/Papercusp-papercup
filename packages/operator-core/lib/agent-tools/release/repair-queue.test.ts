@@ -2463,6 +2463,48 @@ describe('release:repair-queue', () => {
     expect(mocks.write).toHaveBeenCalled();
   });
 
+  it('allows the exact superuser-bearer fallback fixer through its parent live-peer hold', async () => {
+    mocks.gateOwnership.mockResolvedValue({
+      assessment: 'held-live', claimState: 'held', workItem: 'WI-parent-gate', takenBy: 'su-live-parent',
+      holderSessionState: 'live', unknown: null, duplicates: [],
+    });
+    mocks.admit.mockReturnValue(admissionOf(true));
+
+    const result = body(await tool.handler(
+      { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+      {
+        role: 'release-fixer',
+        isSuperuser: true,
+        spawnId: queue.fixerSpawnId,
+        sigVerifiedSpawn: false,
+      } as never,
+    ));
+
+    expect(result).toMatchObject({ ok: true, admitted: true, persisted: true });
+    expect(result.callerAuthorization).toMatchObject({ status: 'not-applicable', authorized: null });
+    expect(mocks.write).toHaveBeenCalled();
+  });
+
+  it('keeps the parent live-peer hold for a superuser-bearer fallback with a mismatched fixer id', async () => {
+    mocks.gateOwnership.mockResolvedValue({
+      assessment: 'held-live', claimState: 'held', workItem: 'WI-parent-gate', takenBy: 'su-live-parent',
+      holderSessionState: 'live', unknown: null, duplicates: [],
+    });
+
+    const result = body(await tool.handler(
+      { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+      {
+        role: 'release-fixer',
+        isSuperuser: true,
+        spawnId: 'fixer-other',
+        sigVerifiedSpawn: false,
+      } as never,
+    ));
+
+    expect(result).toMatchObject({ ok: false, refused: true, reason: 'gate_condition_claimed_by_live_peer' });
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+
   // Control for the test above: a non-superuser release-fixer that is NOT the
   // queue-delegated fixer must still be refused. This is what proves the fix bypasses
   // on isSuperuser specifically, rather than having widened the gate for every

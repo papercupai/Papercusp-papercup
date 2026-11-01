@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '../../util/cli-entry';
 import { adapterStudyFingerprint, evaluateAdapterBaseline, type FrozenAdapterStudy } from './adapter-baseline';
 
 /** Seal a declaration BEFORE retrieval. This is local structural validation,
@@ -74,7 +74,7 @@ export function runAdapterBaselineCli(argv: string[]): number {
   return exitCode;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   try { process.exitCode = runAdapterBaselineCli(process.argv.slice(2)); }
   catch (error) { console.error(String(error)); process.exitCode = 1; }
 }

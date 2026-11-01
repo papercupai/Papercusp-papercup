@@ -750,7 +750,9 @@ export const CompletionVerificationEvidenceSchema = z.object({
    * Optional for older callers; omission means unknown, never "introduced-change".
    * Evidence sufficiency (`completionAuthority`) is a separate dimension.
    */
-  workOutcome: CompletionWorkOutcomeSchema.optional(),
+  workOutcome: CompletionWorkOutcomeSchema.optional().describe(
+    'Caller-declared result. Pass it as `completion.verification.workOutcome` to `work_items:complete`; `work_items:completion_stats` counts declarations at this path.',
+  ),
   /** Whether this completion added or changed tests. */
   addedTests: z
     .boolean()

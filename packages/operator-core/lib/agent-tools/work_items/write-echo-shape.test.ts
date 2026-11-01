@@ -69,6 +69,7 @@ describe("shapeWorkItemWriteEcho (P-025)", () => {
           workItem: fullRow,
           completion,
           outputPayload: { huge: "h".repeat(2_000) },
+          outputPayloadReadPath: "work_items:get results[].workItem.payload.out",
         },
       ],
       counts: { ok: 1, failed: 0 },
@@ -77,6 +78,7 @@ describe("shapeWorkItemWriteEcho (P-025)", () => {
     const row = (trimmed.results as Record<string, unknown>[])[0];
     expect(row).not.toHaveProperty("completion");
     expect(row).not.toHaveProperty("outputPayload");
+    expect(row.outputPayloadReadPath).toBe("work_items:get results[].workItem.payload.out");
     expect(String(trimmed.echo_note)).toContain('payloadTier:"full"');
 
     // oversized-tool-results-reduction-2026-10-12 D-003: standard keeps a DIGEST, not the replay.
@@ -91,6 +93,7 @@ describe("shapeWorkItemWriteEcho (P-025)", () => {
     expect(digest.chars).toBe(JSON.stringify(completion).length);
     expect(digest).not.toHaveProperty("testResult");
     expect(stdRow.outputPayload).toEqual({ fields: ["huge"], chars: JSON.stringify(env.results[0].outputPayload).length });
+    expect(stdRow.outputPayloadReadPath).toBe("work_items:get results[].workItem.payload.out");
     expect(String(std.echo_note)).toContain('payloadTier:"full"');
     expect(String(std.echo_note)).toContain("standard");
     expect(JSON.stringify(stdRow).length).toBeLessThan(1_000); // the ~5.5KB authored echo is gone

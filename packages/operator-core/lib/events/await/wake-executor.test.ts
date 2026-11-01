@@ -38,6 +38,7 @@ import { CRASH_RESUME_ADVISORY_MARKER } from './crash-resume-advisory';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { getDoorConstantsSync } from '../../context-doors-config';
 import { wakeAccountRouteFromArgv } from '../../inference-gateway/spawn-env';
+import { LOOP_FIRE_PROVENANCE_TTL_MS } from '../../turn-provenance/turn-provenance';
 // EI-20489286325396940: `wakeSummaryHeadline` (with `payloadIsTimeout`) lives in
 // timeout-fallback.ts, not wake-executor.ts — it is imported BY wake-executor and
 // by engine.ts, so hosting it here would close a wake-executor↔engine import cycle.
@@ -6270,8 +6271,8 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
   // delivery channel's assertion can see exactly what was tagged, and captures
   // {sid, origin, nowMs} so the origin and ledger timestamp are verifiable.
   function spyTagger() {
-    const calls: { sid: string; origin: string; text: string; nowMs?: number }[] = [];
-    const tag = ((args: { sid: string; origin: string; text: string; nowMs?: number }) => {
+    const calls: { sid: string; origin: string; text: string; nowMs?: number; ttlMs?: number }[] = [];
+    const tag = ((args: { sid: string; origin: string; text: string; nowMs?: number; ttlMs?: number }) => {
       calls.push(args);
       return {
         taggedText: `⟦tagged:${args.origin}⟧\n${args.text}`,
@@ -6321,6 +6322,7 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     );
     expect(calls[0]).toMatchObject({ origin: 'loop-fire' });
     expect(calls[0]).toMatchObject({ loopFire: { routineId: 'routine-3', wakeCount: 3 } });
+    expect(calls[0]).toMatchObject({ ttlMs: LOOP_FIRE_PROVENANCE_TTL_MS });
   });
 
   it('an owner-Inbox-reply wake (inboxOwnerReply marker on the payload) tags origin coord-inject:owner (owner-inbox-single-pane-2026-07-17 D-006)', async () => {
@@ -6396,6 +6398,7 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     expect(msg.data).toContain('## Next action\nresume');
     const coldTagCall = calls.find((call) => call.text.includes('## Next action\nresume'));
     expect(coldTagCall).toBeDefined();
+    expect(coldTagCall).toMatchObject({ ttlMs: LOOP_FIRE_PROVENANCE_TTL_MS });
     expect(msg.provenanceIssuedAtMs).toBe(coldTagCall?.nowMs);
   });
 

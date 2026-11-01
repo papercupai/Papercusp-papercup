@@ -3905,7 +3905,11 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
   it('counts synchronous connection setup against the attempt deadline and closes a late client', async () => {
     let now = 100;
     const client = { close: vi.fn() };
-    const connectOnce = vi.fn(() => {
+    const connectOnce = vi.fn<(
+      url: string,
+      scope: object,
+      options?: { timeoutMs: number },
+    ) => Promise<typeof client>>(() => {
       now += 16;
       return Promise.resolve(client);
     });

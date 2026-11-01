@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { CloneIndex, CLONE_NORMALIZATION_VERSION, classifyClonePath } from '../packages/operator-core/lib/code-intelligence/clone-index';
 import { assertBaselineShrinks, familyCounts, findNewClones, parseCloneBaseline, ratchetFamilies,
   seedCloneBaseline, shrinkCloneBaseline } from '../packages/operator-core/lib/code-intelligence/clone-ratchet';
@@ -117,7 +118,7 @@ export function runCloneLint(args: string[]) {
   return { mode: 'warn-only', status: 'checked', files: filesScanned, warnings, incomplete };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   try {
     const report = runCloneLint(process.argv.slice(2));
     if (process.argv.includes('--json')) console.log(JSON.stringify(report));

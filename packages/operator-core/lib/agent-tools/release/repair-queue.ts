@@ -1309,8 +1309,20 @@ export default defineTool({
         effect,
       },
     });
+    // The superuser-bearer recovery path is deliberately `not-applicable` in the
+    // signed-spawn authorization helper. For admit only, the queue's exact fixer
+    // session id is the documented fallback proof of delegation; keep this separate
+    // from signed authorization and require the queue to still be awaiting that fixer.
+    const exactFallbackFixerAdmission =
+      args.op === 'admit' &&
+      ctx.isSuperuser === true &&
+      callerAuthorization.status === 'not-applicable' &&
+      callerAuthorization.callerSpawnId !== null &&
+      callerAuthorization.callerSpawnId === callerAuthorization.queueFixerSpawnId &&
+      inspected.queue?.phase === 'awaiting-fixer';
     stampActionEffect({ status: 'unknown', reason: 'no-settled-effect-receipt' });
     if (args.op !== 'record-edit' && callerAuthorization.status !== 'authorized-delegate' &&
+        !exactFallbackFixerAdmission &&
         ownership && shouldStandDownForLivePeer(ownership, callerOwnerId)) {
       stampActionEffect({ status: 'refused-live-peer' });
       return json({ ok: false, op: args.op, refused: true, verdict: 'refused',

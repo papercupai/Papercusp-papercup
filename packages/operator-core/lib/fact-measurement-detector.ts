@@ -141,6 +141,10 @@ const EXISTENCE_CONTEXT =
 const NORMATIVE_NEGATION_PREFIX =
   /(?:\b(?:must|should|shall|ought\s+to)\s+$|^\s*(?:please(?:,\s*|\s+))?do\s+$)/i;
 
+/** Evidence-sufficiency language negates proof, not the existence claim itself. */
+const EPISTEMIC_NEGATION_COMPLEMENT =
+  /^\s+(?:(?:a|an|the)\s+)?(?:proof|evidence|indication|sign|confirmation|demonstration|guarantee)\b/i;
+
 export interface FactAbsenceSignal {
   /** The negation token that triggered the advisory. */
   token: string;
@@ -193,7 +197,10 @@ export function detectFactAbsenceClaims(text: unknown): FactAbsenceSignal[] {
     }
     if (
       match[0].toLowerCase() === 'not' &&
-      NORMATIVE_NEGATION_PREFIX.test(haystack.slice(clauseStart, match.index))
+      (NORMATIVE_NEGATION_PREFIX.test(haystack.slice(clauseStart, match.index)) ||
+        EPISTEMIC_NEGATION_COMPLEMENT.test(
+          haystack.slice(match.index + match[0].length, clauseEnd),
+        ))
     ) continue;
     const contextMatch = EXISTENCE_CONTEXT.exec(haystack.slice(clauseStart, clauseEnd));
     if (!contextMatch) continue;

@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '../util/cli-entry';
 import { createHash } from 'node:crypto';
 import * as ts from 'typescript';
 import { extractCloneFile } from './clone-index';
@@ -135,5 +136,5 @@ async function main() {
   console.log(JSON.stringify({ output, selected: report.selected, residue: report.residue, ranking: report.ranking }, null, 2));
   if (!report.selected) process.exitCode = 1;
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+if (isCliEntry(import.meta.url))
   main().catch(error => { console.error(error); process.exitCode = 1; });

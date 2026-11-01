@@ -629,7 +629,6 @@ describe('sanitizeKey', () => {
   it('bounds length + tolerates empty/undefined', () => {
     expect(sanitizeKey('x'.repeat(500)).length).toBe(200);
     expect(sanitizeKey('')).toBe('unknown');
-    // @ts-expect-error exercising the undefined path
     expect(sanitizeKey(undefined)).toBe('unknown');
   });
 });
@@ -1711,7 +1710,6 @@ describe('contextClearCommandForAgent (RESET-CONTEXT clear command)', () => {
     expect(contextClearCommandForAgent('claude')).toBe('/clear');
     expect(contextClearCommandForAgent('omp')).toBe('/clear');
     expect(contextClearCommandForAgent('')).toBe('/clear');
-    // @ts-expect-error exercising the undefined path
     expect(contextClearCommandForAgent(undefined)).toBe('/clear');
   });
   it('Codex starts a fresh conversation with /new', () => {
