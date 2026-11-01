@@ -973,7 +973,7 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
     path: 'gate.ownerBrief.answer',
   },
   shape:
-    '{ gate: { ownerBrief: { answer, assessment: { code, meaning, safeAction }, mainGreen: { value, vintage }, promotion: { judgedSha, mainPin, mainContainsJudgedSha, vintage, staging: { headSha, bufferPresent, relation, vintage } }, whyNot: { failingLegs, measured, provenance, failingNonTestLegs, nonTestLegsMeasured, inconclusiveStatus, vintage } | null, ownership: { claimState, holder, workItem, assessmentCode, vintage }, remediation: { frozenCandidate, repairHead, phase, frozenSinceAtMs, admissions, admissionsMeasured, signature: [{ status }], signatureMeasured, legs: [{ status }], legsMeasured, blockedReason, blockedReasonMeasured, verdictProvenance, attempts, fixerSpawnId, fixerAlive, zeroAttemptStalled, queueAgeMs, vintage } | null, lastGreen: { atMs, ageMs }, vintageSpreadMs, attestations: { legs: [{ leg, observedAtMs, ageMs, source, stale }], spreadMs, verdict, staleLegs, oldestLeg, summary }, testProgress: { fullSuiteFailingCases, candidateFiles: { status, value, unit, candidateSha, repairHeadSha, filesJudged, detailsTruncated, readAtMs, observedAtMs, observationTimeReason, source, scope, reason }, trend, passReuse, lastAttempt }, unknownLegs } } }',
+    '{ gate: { ownerBrief: { answer, assessment: { code, meaning, safeAction }, mainGreen: { value, vintage }, promotion: { judgedSha, mainPin, mainContainsJudgedSha, vintage, staging: { headSha, bufferPresent, relation, vintage } }, whyNot: { failingLegs, measured, provenance, failingNonTestLegs, nonTestLegsMeasured, inconclusiveStatus, vintage } | null, ownership: { claimState, holder, workItem, assessmentCode, vintage }, remediation: { frozenCandidate, repairHead, phase, frozenSinceAtMs, admissions, admissionsMeasured, signature: [{ status }], signatureMeasured, legs: [{ status }], legsMeasured, blockedReason, blockedReasonMeasured, verdictProvenance, attempts, fixerSpawnId, fixerAlive, zeroAttemptStalled, queueAgeMs, vintage } | null, lastGreen: { atMs, ageMs }, vintageSpreadMs, attestations: { legs: [{ leg, observedAtMs, ageMs, source, stale }], spreadMs, verdict, staleLegs, oldestLeg, summary }, testProgress: { queueLegs: { phase, fixerAlive, fixed, failing, measurements }, lastSuite: { runGroupId, judgedSha, command, startedAtMs, completedAtMs, resume, reuse } | null, taskResume: { status, runGroupId, judgedSha, observedAtMs, summary, unit }, fullSuiteFailingCases, candidateFiles: { status, value, unit, candidateSha, repairHeadSha, filesJudged, detailsTruncated, readAtMs, observedAtMs, observationTimeReason, source, scope, reason }, trend, passReuse, lastAttempt }, unknownLegs } } }',
 };
 
 /**
@@ -2567,7 +2567,7 @@ export const GATE_FREEZE_DISPOSITION_CELL: CellSpec = {
         meaning:
           'A frozen candidate is being HELD: no verdict this tick, no queue mutation, re-measured next tick. Repairs are expected to land on it meanwhile.',
         safeAction:
-          'Read `holdUntilMs` for when the hold gives up, and `reason` for what it is waiting on. Land fixes ON TOP of the frozen candidate so they join the judged lineage; do not cut a fresh one.',
+          'Read `blockedBy` for a refused precondition and `queuePhase` for the frozen queue stage; `reason` gives its detail. Land fixes ON TOP of the frozen candidate so they join the judged lineage; do not cut a fresh one.',
       },
       retired: {
         meaning:
@@ -2586,6 +2586,8 @@ export const GATE_FREEZE_DISPOSITION_CELL: CellSpec = {
       'gate.freezeDisposition.unmeasured',
       'gate.freezeDisposition.reason',
       'gate.freezeDisposition.enabled',
+      'gate.freezeDisposition.queuePhase',
+      'gate.freezeDisposition.blockedBy',
       'gate.freezeDisposition.observedAtMs',
       'gate.freezeDisposition.stale',
     ],
@@ -2616,7 +2618,7 @@ export const GATE_FREEZE_DISPOSITION_CELL: CellSpec = {
     path: 'gate.freezeDisposition.state',
   },
   shape:
-    '{ gate: { freezeDisposition: { code, unmeasured, state, reason, enabled, candidate, holdUntilMs, capacityRetryAtMs, observedAtMs, ageMs, stale, summary } } }',
+    '{ gate: { freezeDisposition: { code, unmeasured, state, reason, enabled, candidate, queuePhase, blockedBy, holdUntilMs, capacityRetryAtMs, observedAtMs, ageMs, stale, summary } } }',
 };
 
 /**

@@ -23,6 +23,7 @@ import { SEARCH_SOURCES } from '../search/sources';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { escapeLikeLiteral } from '../search/session-turn-literal';
 import { searchFilterArgs, resolveSearchFilters } from '../search/filters';
+import { resolveOwnerIsolatedSessionByPrefix } from '../../search/self-session';
 import { resolveAgentIdentity } from '../coordination/identity';
 import {
   sessionSearchEnabled, disabledResult, hydrateWindow, parseTurnRef,
@@ -578,10 +579,10 @@ export default defineTool({
             // planner can BitmapOr the tool_use and tool_result owner indexes.
             const toolPartPattern = `%${escapeLikeLiteral(args.query)}%`;
             const probe = async (probeTx: typeof tx) => probeTx<Array<{
-              found: boolean; workspace_id: string; source_kind: string; session_id: string;
+              found: boolean; owner: string | null; workspace_id: string; source_kind: string; session_id: string;
               part_idx: number; part_kind: string; tool_name: string | null; stored_chars: number;
             }>>`
-                SELECT TRUE AS found, p.workspace_id, p.source_kind, p.session_id,
+                SELECT TRUE AS found, p.owner, p.workspace_id, p.source_kind, p.session_id,
                        p.part_idx, p.part_kind, p.tool_name, char_length(p.text) AS stored_chars
                   FROM harness_shared.session_turn_parts p
                  WHERE (p.workspace_id = ${workspaceId} OR p.workspace_id = 'default')
@@ -614,9 +615,22 @@ export default defineTool({
             }, requestCorrelationId);
 
             if (toolParts?.found) {
-              const matchingPath = resolvedSelfSession?.sourceKind === toolParts.source_kind &&
+              const partOwner = toolParts.owner;
+              let matchingPath = partOwner === callerOwnerId && pOwners.includes(partOwner) &&
+                resolvedSelfSession?.sourceKind === toolParts.source_kind &&
                 resolvedSelfSession.sessionId === toolParts.session_id
                 ? resolvedSelfSession.filePath : null;
+              if (!matchingPath && partOwner && pOwners.includes(partOwner)) {
+                try {
+                  const ownerSession = await resolveOwnerIsolatedSessionByPrefix(partOwner, toolParts.session_id);
+                  if (ownerSession?.sourceKind === toolParts.source_kind &&
+                    ownerSession.sessionId === toolParts.session_id) {
+                    matchingPath = ownerSession.filePath;
+                  }
+                } catch {
+                  // Native-path recovery is optional; a failed owner-scoped lookup stays unresolved.
+                }
+              }
               // A recovery path must be complete; never clip it into a different
               // filename or let an unusually long path exceed the response door.
               const nativePath = matchingPath && matchingPath.length <= 800 ? matchingPath : null;

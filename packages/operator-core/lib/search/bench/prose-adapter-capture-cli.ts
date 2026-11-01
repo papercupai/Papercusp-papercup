@@ -48,6 +48,66 @@ export function requireCaptureDatabase(env: NodeJS.ProcessEnv) {
   return dsn;
 }
 
+/** Observational evidence only: never populate the alarm's sample table or
+ * change the query gate. These are the runner's retained data tables; complete
+ * primary DDL also contains empty, unretained tables that must not look healthy. */
+export async function captureRetainedCoverage(
+  sql: { unsafe(query: string, params?: unknown[]): PromiseLike<unknown> },
+) {
+  const { coverageTargets, surfaceKey, buildCoverageQuery, toSurfaceCoverage } = await import('../embed-coverage');
+  const { SEARCH_SOURCE_SURFACES } = await import('../coverage-gate');
+  const retained = new Set(['harness_shared.work_items', 'harness_shared.text_chunks',
+    'harness_shared.session_turns', 'harness_shared.session_turn_chunks']);
+  const requested = new Set(['work_item', 'session_turn', 'plan'].flatMap(source => SEARCH_SOURCE_SURFACES[source]));
+  const readings = [];
+  for (const target of coverageTargets().filter(target => requested.has(surfaceKey(target)))) {
+    const surface = surfaceKey(target);
+    if (!retained.has(target.table)) {
+      readings.push({ surface, status: 'unknown', reason: 'table data not retained' });
+      continue;
+    }
+    const started = performance.now();
+    try {
+      const columns = await sql.unsafe(`SELECT column_name FROM information_schema.columns
+        WHERE table_schema = split_part($1, '.', 1) AND table_name = split_part($1, '.', 2)`,
+      [target.table]) as Array<{ column_name: string }>;
+      const names = new Set(columns.map(row => row.column_name));
+      const { modeColOf, recipeColOf } = await import('../embed-backfill');
+      if (!names.has(target.embedCol)) throw new Error('embedding column missing');
+      const query = buildCoverageQuery(target, names.has(modeColOf(target)), 'gemma', 24,
+        names.has(recipeColOf(target)));
+      const rows = await sql.unsafe(query.sql, query.params) as Array<Record<string, unknown>>;
+      const row = rows[0];
+      if (!row) throw new Error('coverage query returned no count row');
+      const count = (key: string) => {
+        const value = Number(row[key]);
+        if (row[key] == null || !Number.isSafeInteger(value) || value < 0)
+          throw new Error('invalid coverage count: ' + key);
+        return value;
+      };
+      const counts = { totalRows: count('total_rows'), eligibleRows: count('eligible_rows'),
+        embeddedRows: count('embedded_rows'),
+        recentEligible: query.hasRecent ? count('recent_eligible') : null,
+        recentEmbedded: query.hasRecent ? count('recent_embedded') : null };
+      if (counts.embeddedRows > counts.eligibleRows || counts.eligibleRows > counts.totalRows
+        || (counts.recentEligible !== null && (counts.recentEligible > counts.eligibleRows
+          || counts.recentEmbedded! > counts.recentEligible))) throw new Error('inconsistent coverage counts');
+      readings.push({ surface, status: 'measured', observedAt: new Date().toISOString(),
+        durationMs: performance.now() - started, reading: toSurfaceCoverage(target, counts) });
+    } catch {
+      // Preserve a missing measurement without serializing SQL errors/private data.
+      readings.push({ surface, status: 'unknown', reason: 'coverage measurement failed',
+        durationMs: performance.now() - started });
+    }
+  }
+  const measured = new Set(readings.map(row => row.surface));
+  for (const surface of requested) if (!measured.has(surface))
+    readings.push({ surface, status: 'unknown', reason: 'no registered coverage target' });
+  return { schemaVersion: 1, plane: 'isolated-retained-corpus', mode: 'gemma',
+    population: 'retained tables, table-wide production eligibility; not harness-filtered',
+    queryGateChanged: false, baselineAccepted: false, readings };
+}
+
 export async function runProseAdapterCapture(argv = process.argv.slice(2)) {
   process.umask(0o077);
   const argument = (name: string) => {
@@ -74,6 +134,9 @@ export async function runProseAdapterCapture(argv = process.argv.slice(2)) {
     if (database.name !== new URL(dsn).pathname.slice(1)
       || !path.basename(database.directory).startsWith('papercusp-test-pg-'))
       throw new Error('resolved database is not maintained disposable cluster');
+    const coverage = await captureRetainedCoverage(sql);
+    fs.writeFileSync(output + '.coverage.json', JSON.stringify({ database: database.name, ...coverage }, null, 2)
+      + '\n', { flag: 'wx', mode: 0o600 });
     for (const request of requests) {
       const logs: unknown[] = [], metadata: unknown[] = [];
       const ctx: Parameters<typeof fulltext.handler>[1] & { metadata: (value: Record<string, unknown>) => void } = {

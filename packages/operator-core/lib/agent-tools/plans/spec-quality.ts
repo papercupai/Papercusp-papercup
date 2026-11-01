@@ -5,6 +5,7 @@ import type { SpecClauseRevision } from './spec-clauses-store';
 import { isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import {
   computeSpecSetHash,
+  inspectPlanAcceptanceRef,
   normalizeSpecSemanticText,
   specBehaviorImplementationPresenceReason,
   specBehaviorNonAtomicReason,
@@ -679,6 +680,10 @@ export function evaluatePlanSpecQuality(input: {
     if (CONTRACT_STATUSES.has(clause.lifecycleStatus) && (!clause.acceptedBy || !clause.acceptanceRef)) {
       identityFailures.push(`${clause.specId}:missing-acceptance-provenance`);
     }
+    const acceptanceRefInspection = inspectPlanAcceptanceRef(clause.acceptanceRef, clause.planItemId);
+    if (acceptanceRefInspection.kind === 'invalid') {
+      identityFailures.push(`${clause.specId}:${acceptanceRefInspection.code}`);
+    }
   }
   const provenanceBearingClauses = currentSet.filter((clause) => CONTRACT_STATUSES.has(clause.lifecycleStatus));
   const draftClauses = currentSet.filter((clause) => clause.lifecycleStatus === 'draft');
@@ -700,7 +705,7 @@ export function evaluatePlanSpecQuality(input: {
   ratings['stable-revision-identity'] = identityFailures.length
     ? fail(
         `Revision/identity failures: ${identityFailures.join(', ')}.`,
-        'Repair duplicate identities, select only current revisions, and record acceptance provenance.',
+        'Repair duplicate identities, select only current revisions, and use valid acceptance provenance; structured plan refs must name a positive revision and matching plan item.',
       )
     : pass(provenanceEvidence);
 

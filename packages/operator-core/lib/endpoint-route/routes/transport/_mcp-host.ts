@@ -183,6 +183,7 @@ import {
   type NativeSessionVerificationPhase,
 } from '../../../adv-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { findLiveHost } from '../../../events/await/psu-pty-discovery';
 import { PLATFORM_POT_SLUG } from '../../../platform-pot-slug';
 import { isReservedHarnesslessRoutineHost } from '../../../harness/routines/routine-host';
 import {
@@ -1823,15 +1824,36 @@ async function tryBuildUnboundSpawnContext(
             nativeSessionFailure: nativeSessionFailure(binding.advSessionId),
           };
         }
+        // A native session can remain validly bound to the same stable owner
+        // after a carry/wake starts a successor. That is enough for attribution,
+        // but not enough to authorize writes: same-owner file locks are
+        // intentionally re-entrant. When this owner has a live psu host, its
+        // discovery record names the one current Codex child. Reject an older
+        // still-bound native session before any tool dispatch so both the
+        // native edit hook (locks:acquire) and capability:edit share this fence.
+        const liveHost = findLiveHost(suIdentity, undefined, {
+          workspaceId: headerWs || wsParam || undefined,
+        });
+        if (liveHost?.nativeSessionId && liveHost.nativeSessionId !== nativeSessionId) {
+          return {
+            kind: 'failed',
+            reason: 'superuser_foreign_native_session',
+            nativeSessionFailure: nativeSessionFailure(binding.advSessionId),
+          };
+        }
         const observation = nativeSessionFailure(binding.advSessionId);
         if (observation) {
           nativeSessionAudit = { ...observation, binding: binding.binding };
-          // Codex supplies callId alongside threadId in each MCP request.
-          // An inherited header or output cohort cannot identify a native
-          // call. Keep only the fingerprint; this observation grants no
-          // funding authority until the trusted host matches its exact call.
-          const nativeCallId = requestMeta?.callId;
-          if (binding.binding === 'bound' && nativeThread &&
+          // Codex/OMP supply callId alongside threadId. The installed Claude
+          // CLI supplies claudecode/toolUseId on both HTTP and SDK MCP calls;
+          // its verified native-session header retains a DIFFERENT carrier.
+          // This is diagnostic correlation only: inherited headers and caller
+          // metadata never replace the trusted host's exact call observation.
+          // The private Claude SDK host can retain an exact observed root-input
+          // principal. Input scope cannot qualify as a funded turn/receipt.
+          const nativeCallId = nativeThread ? requestMeta?.callId
+            : nativeSessionHeader ? requestMeta?.['claudecode/toolUseId'] : undefined;
+          if (binding.binding === 'bound' &&
               typeof nativeCallId === 'string' && /^[A-Za-z0-9._:-]{1,256}$/.test(nativeCallId)) {
             nativeSessionAudit.callIdFingerprint = createHash('sha256').update(nativeCallId, 'utf8').digest('hex');
           }
@@ -3913,7 +3935,8 @@ async function assertNativeOwnerServingGeneration(declared: unknown): Promise<vo
 
 function nativeMcpToolAddress(spawn: BuiltSpawnContext): SuNativeToolAddress | null {
   const native = spawn.requestOrigin?.nativeSession;
-  if (native?.carrier !== 'meta:threadId' || native.binding !== 'bound' || !native.callIdFingerprint) return null;
+  if (!native || !['meta:threadId', 'header:x-papercusp-native-session'].includes(native.carrier)
+    || native.binding !== 'bound' || !native.callIdFingerprint) return null;
   if (spawn.workspaceId === '*' || spawn.advSessionId !== native.candidateAdvSessionId ||
       !Number.isSafeInteger(spawn.advSessionId) || spawn.advSessionId! <= 0 ||
       !/^[a-f0-9]{64}$/.test(native.callIdFingerprint) ||
@@ -3936,7 +3959,7 @@ const NATIVE_TOOL_OWNER_UNSUPPORTED_CAPABILITY = 'native_tool_owner_unsupported_
 export async function retainNativeRequestPrincipalForDispatch(
   spawn: BuiltSpawnContext, toolName: string, args: unknown, runtimeBearer: string,
 ): Promise<BuiltSpawnContext> {
-  if (spawn.authenticatedPrincipal || !runtimeBearer) return spawn;
+  if (spawn.authenticatedPrincipal) return spawn;
   // Installed commerce admission has its own principal/funding binding. This
   // core capture lane cannot silently substitute a different payer principal.
   const target = resolveMcpName(toolName);
@@ -4570,7 +4593,7 @@ export function registerMcpHost(server: McpServer): void {
             let harnessWs: string | null = null;
             try {
               harnessWs = await transportScopePhases.track('harnessWorkspaceResolution',
-                () => resolveWorkspaceForHarnessSlugIn(spawnRes.ctx.workspaceId, ah));
+                () => resolveWorkspaceForHarnessSlugIn(spawnRes.ctx.workspaceId, ah, transportScopePhases));
             } catch {
               // Ambiguous cross-workspace collision (resolver throws) or an infra error:
               // fail OPEN — let the tool resolve/fail loud rather than block a same-name slug.

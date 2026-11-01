@@ -29,18 +29,36 @@ let sources: string[];
 // call a provider, or stand in for a successful user-job latency measurement.
 if (routine === 'external-trigger-dispatch') {
   const { runExternalTriggerDispatch } = await import('../lib/harness/routines/external-trigger-dispatch-action');
+  const { seedPackWorkspace } = await import('./_trigger-pack-fixtures');
+  // Reuse the integration fixture's real workspace/datatype setup. A migrated
+  // private database seeds the catalog in the platform workspace, not this one.
+  await seedPackWorkspace(sql, workspace, 'papercusp');
+  const plan = 'measurement-stale-trigger-plan';
+  await sql`INSERT INTO harness_shared.harness_plans
+    (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items)
+    VALUES (${workspace}, 'papercusp', ${plan}, 'Private stale-trigger control', 'active',
+      '# Private control', 'measurement-v1', '[]'::jsonb)`;
   const [source] = await sql`INSERT INTO harness_shared.data_sources (workspace_id, kind, status)
     VALUES (${workspace}, 'gmail', 'connected') RETURNING id`;
   const [binding] = await sql`INSERT INTO harness_shared.trigger_bindings
-    (workspace_id, source_id, event_pattern, event_filter, action, armed, storm_policy)
-    VALUES (${workspace}, ${source.id}, 'ext:gmail:message.*', '{}'::jsonb,
-      '{"type":"create-work-item"}'::jsonb, true, '{"maxAgeSeconds":1}'::jsonb) RETURNING id`;
+    (workspace_id, source_id, plan_harness_slug, plan_slug,
+      event_pattern, event_filter, action, armed, storm_policy)
+    VALUES (${workspace}, ${source.id}, 'papercusp', ${plan}, 'ext:gmail:message.*', '{}'::jsonb,
+      '{"type":"launch-plan"}'::jsonb, true, '{"maxAgeSeconds":1}'::jsonb) RETURNING id`;
+  const [configured] = await sql`SELECT binding.plan_slug, datatype.id AS datatype_id
+    FROM harness_shared.trigger_bindings binding
+    JOIN harness_shared.datatype_registry datatype
+      ON datatype.workspace_id = binding.workspace_id AND datatype.id = 'email-message'
+    WHERE binding.workspace_id = ${workspace} AND binding.id = ${binding.id}`;
+  assert.equal(configured?.plan_slug, plan, 'the control needs one valid persisted target');
+  assert.equal(configured?.datatype_id, 'email-message', 'the delivery datatype must exist in the private workspace');
   let runId = '';
   prepare = async (index) => {
     const [delivery] = await sql`INSERT INTO harness_shared.trigger_deliveries
       (workspace_id, source_id, dedupe_key, datatype_id, event_key, payload, sink_kind, sink_ref, outcome)
       VALUES (${workspace}, ${source.id}, ${`baseline-${index}`}, 'email-message',
-        'ext:gmail:message.received', '{}'::jsonb, 'event-bus', 'workspace', 'delivered') RETURNING id`;
+        'ext:gmail:message.received', ${JSON.stringify({ id: `baseline-${index}` })}::text::jsonb,
+        'event-bus', 'workspace', 'delivered') RETURNING id`;
     const [run] = await sql`INSERT INTO harness_shared.trigger_runs
       (workspace_id, binding_id, delivery_id, dedupe_key, status, args, triggered_at)
       VALUES (${workspace}, ${binding.id}, ${delivery.id}, ${`baseline-${index}`}, 'pending',
@@ -55,7 +73,8 @@ if (routine === 'external-trigger-dispatch') {
   observe = async () => JSON.stringify(await sql`SELECT id, status, attempts, error
     FROM harness_shared.trigger_runs WHERE workspace_id = ${workspace} ORDER BY id`);
   sources = ['packages/operator-core/lib/harness/routines/external-trigger-dispatch-action.ts',
-    'packages/operator-core/lib/external-triggers/binding-engine.ts'];
+    'packages/operator-core/lib/external-triggers/binding-engine.ts',
+    'packages/operator-core/test/_trigger-pack-fixtures.ts'];
 } else if (routine === 'fleet-headcount-governor') {
   const { FLAGS, flagEnvVarName } = await import('@papercusp/flags');
   const { getFlagAttestation } = await import('@papercusp/flags/server');

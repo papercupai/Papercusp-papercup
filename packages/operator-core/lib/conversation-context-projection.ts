@@ -489,7 +489,6 @@ interface ForeignProjectionAdvRow {
   role: string | null;
   feature: string | null;
   plan_slug: string | null;
-  harness_slug: string | null;
   started_at: string | Date;
   ended_at: string | Date | null;
 }
@@ -755,7 +754,7 @@ async function readForeignConversationContextProjection(
 ): Promise<ConversationContextProjection | null> {
   const [advRows, turnRows, toolRows] = await Promise.all([
     sql<ForeignProjectionAdvRow[]>`
-      SELECT coord_owner_id, role, feature, plan_slug, harness_slug, started_at, ended_at
+      SELECT coord_owner_id, role, feature, plan_slug, started_at, ended_at
         FROM harness_shared.adv_sessions
        WHERE workspace_id = ${args.workspaceId}
          AND (session_id = ${args.sessionId} OR omp_thread_id = ${args.sessionId})
@@ -799,8 +798,7 @@ async function readForeignConversationContextProjection(
     ?? newestTool?.coord_owner_id
     ?? nonEmptyString(newestToolArgs?.owner)
     ?? null;
-  const observedHarness = adv?.harness_slug
-    ?? newestTurn?.harness_slug
+  const observedHarness = newestTurn?.harness_slug
     ?? nonEmptyString(newestToolArgs?.harness_slug ?? newestToolArgs?.harnessSlug)
     ?? null;
   if (args.harness && observedHarness && args.harness !== observedHarness) return null;

@@ -410,9 +410,16 @@ export async function resolveWorkspaceForHarnessSlug(slug: string): Promise<stri
 export async function resolveWorkspaceForHarnessSlugIn(
   preferredWs: string,
   slug: string,
+  // Optional request-local recorder; phase names contain only fixed labels and fallback indexes.
+  phaseRecorder?: { addCompleted(phase: string, startedAt: number, durationMs: number): void },
 ): Promise<string | null> {
   const raw = slug?.trim();
   if (!raw) return null;
+  const recordPhase = (phase: string, startedAt: number, durationMs: number): void => {
+    try {
+      phaseRecorder?.addCompleted(phase, startedAt, durationMs);
+    } catch { /* request diagnostics must not change resolver behavior */ }
+  };
   // EI-19286551248996972: track whether either read GENUINELY FAILED (as opposed to
   // succeeding and legitimately finding nothing) — a failure here must never be
   // indistinguishable from a confirmed absence (see RegistryReadUnavailableError's
@@ -420,23 +427,71 @@ export async function resolveWorkspaceForHarnessSlugIn(
   let preferredReadFailed: unknown;
   let crossWsReadFailed: unknown;
   // 1. Preferred-workspace-first (confined by default).
+  const preferredReadStartedAt = Date.now();
   try {
     const reg = await loadHarnessRegistry(preferredWs);
-    if (reg.projects.some((p) => p.slug === raw)) return preferredWs;
+    const preferredHit = reg.projects.some((p) => p.slug === raw);
+    recordPhase(
+      'harnessWorkspacePreferredRegistryRead.' + (preferredHit ? 'hit' : 'miss'),
+      preferredReadStartedAt,
+      Date.now() - preferredReadStartedAt,
+    );
+    if (preferredHit) return preferredWs;
   } catch (e) {
+    recordPhase(
+      'harnessWorkspacePreferredRegistryRead.error',
+      preferredReadStartedAt,
+      Date.now() - preferredReadStartedAt,
+    );
     preferredReadFailed = e; // fall through to the cross-ws scan
   }
   // 2. Cross-workspace fallback — collision-aware.
   const carriers = new Set<string>();
+  let fallbackReadCount = 0;
   try {
-    for (const ws of readRegistry().workspaces) {
+    const enumerationStartedAt = Date.now();
+    let workspaces: ReturnType<typeof readRegistry>['workspaces'];
+    try {
+      workspaces = readRegistry().workspaces;
+      recordPhase(
+        'harnessWorkspaceFallbackWorkspaceEnumeration',
+        enumerationStartedAt,
+        Date.now() - enumerationStartedAt,
+      );
+    } catch (error) {
+      recordPhase(
+        'harnessWorkspaceFallbackWorkspaceEnumeration.error',
+        enumerationStartedAt,
+        Date.now() - enumerationStartedAt,
+      );
+      throw error;
+    }
+    for (const ws of workspaces) {
       if (ws.id === preferredWs) continue; // already checked in step 1
-      const reg = await loadHarnessRegistry(ws.id);
-      if (reg.projects.some((p) => p.slug === raw)) carriers.add(ws.id);
+      const fallbackIndex = ++fallbackReadCount;
+      const fallbackReadStartedAt = Date.now();
+      try {
+        const reg = await loadHarnessRegistry(ws.id);
+        const fallbackHit = reg.projects.some((p) => p.slug === raw);
+        recordPhase(
+          'harnessWorkspaceFallbackRegistryRead.' + fallbackIndex + '.' + (fallbackHit ? 'hit' : 'miss'),
+          fallbackReadStartedAt,
+          Date.now() - fallbackReadStartedAt,
+        );
+        if (fallbackHit) carriers.add(ws.id);
+      } catch (error) {
+        recordPhase(
+          'harnessWorkspaceFallbackRegistryRead.' + fallbackIndex + '.error',
+          fallbackReadStartedAt,
+          Date.now() - fallbackReadStartedAt,
+        );
+        throw error;
+      }
     }
   } catch (e) {
     crossWsReadFailed = e; // treat as no cross-ws carriers OBSERVED (not confirmed absent)
   }
+  recordPhase('harnessWorkspaceFallbackReadCount.' + fallbackReadCount, Date.now(), 0);
   if (carriers.size === 0) {
     // EI-19286551248996972: nothing was found — but if EITHER leg never actually
     // completed a read, "nothing was found" is not the same claim as "we looked

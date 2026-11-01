@@ -1434,6 +1434,8 @@ export interface PreflightDeps {
   runSmokeTargetPreflight?: (scriptPath: string, platform: 'mac' | 'windows') => SmokeTargetProbe;
   /** Run the selected product's read-only model-cache predicate before launching. */
   runModelCachePreflight?: (desktopRoot: string) => SmokeTargetProbe;
+  /** Check Windows resources/donors without hydrating the frozen checkout. */
+  runWindowsInputPreflight?: (scriptPath: string, desktopRoot: string) => SmokeTargetProbe;
   /** Run a mandatory source identity guard from the selected target workspace. */
   runSourceIdentityPreflight?: (scriptPath: string, workspace: string) => SmokeTargetProbe;
 }
@@ -1560,6 +1562,21 @@ exit 1
 
 export function smokeTargetProbeSpec(scriptPath: string, platform: 'mac' | 'windows'): ProbeSpec {
   return { command: 'bash', args: [scriptPath, '--platform', platform], timeoutMs: 60_000 };
+}
+
+function windowsInputScriptPath(orchestratorRoot?: string): string {
+  return path.join(orchestratorRoot ?? desktopRoot(), 'bin', 'lib', 'wsl-rootfs-preflight.sh');
+}
+
+function windowsInputProbeSpec(scriptPath: string, root: string): ProbeSpec {
+  return {
+    command: 'bash',
+    args: ['-c', 'set -euo pipefail\nsource "$1"\n' +
+      'declare -F _papercusp_wsl_rootfs_readiness >/dev/null || { echo "WSL preflight helper does not support read-only readiness" >&2; exit 1; }\n' +
+      'papercusp_wsl_rootfs_preflight "$2" --read-only',
+      'release-windows-input-preflight', scriptPath, root],
+    timeoutMs: 120_000,
+  };
 }
 
 /** The detector is release machinery, so it is read from the current orchestrator tree. */
@@ -1954,6 +1971,24 @@ export function preflightCut(
     });
   }
   if (legs.windows) {
+    let probe: SmokeTargetProbe;
+    try {
+      const scriptPath = windowsInputScriptPath(opts.orchestratorRoot);
+      probe = deps.runWindowsInputPreflight
+        ? deps.runWindowsInputPreflight(scriptPath, root)
+        : runProbeSpecSync(windowsInputProbeSpec(scriptPath, root));
+    } catch (error) {
+      probe = { exitCode: null, output: error instanceof Error ? error.message : String(error) };
+    }
+    // This is a build prerequisite, unlike the informational downstream smoke
+    // check. A frozen stamp with no Bun receipt cannot be repaired by donors.
+    checks.push({
+      name: 'windows-inputs',
+      ok: probe.exitCode === 0,
+      detail: (probe.exitCode === 0 ? 'Windows inputs ready: ' :
+        `Windows inputs not verified (exit ${probe.exitCode ?? 'unmeasured'}): `) +
+        (probe.output.trim().slice(0, 4_000) || 'no verifier result'),
+    });
     checks.push({
       name: 'leg:windows',
       ok: true,
@@ -2007,6 +2042,10 @@ export async function preflightCutAsync(
   if (!deps.runModelCachePreflight) {
     pending.set(probeKey('model', root), run(modelCacheProbeSpec(root)));
   }
+  const windowsInputScript = windowsInputScriptPath(opts.orchestratorRoot);
+  if (legs.windows && !deps.runWindowsInputPreflight) {
+    pending.set(probeKey('windows-inputs', windowsInputScript, root), run(windowsInputProbeSpec(windowsInputScript, root)));
+  }
   const smokeScript = smokeTargetScriptPath(opts.orchestratorRoot);
   if (!deps.runSmokeTargetPreflight && exists(smokeScript)) {
     for (const platform of ['mac', 'windows'] as const) {
@@ -2039,6 +2078,8 @@ export async function preflightCutAsync(
     runSourceIdentityPreflight:
       deps.runSourceIdentityPreflight ?? ((scriptPath, ws) => lookup(probeKey('identity', scriptPath, ws))),
     runModelCachePreflight: deps.runModelCachePreflight ?? ((r) => lookup(probeKey('model', r))),
+    runWindowsInputPreflight:
+      deps.runWindowsInputPreflight ?? ((scriptPath, r) => lookup(probeKey('windows-inputs', scriptPath, r))),
     runSmokeTargetPreflight:
       deps.runSmokeTargetPreflight ?? ((scriptPath, platform) => lookup(probeKey('smoke', scriptPath, platform))),
     remoteTagSha:

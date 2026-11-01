@@ -77,6 +77,36 @@ describe('cosineSimilarity', () => {
 });
 
 describe('findTools', () => {
+  it.each([
+    'find agents working before account limits and summarize what each was doing',
+    'recover interrupted work after credentials ran out',
+    'what were sessions doing when provider access stopped',
+  ])('admits semantic recovery for %s despite a page of keyword distractors', async query => {
+    const distractors = Array.from({ length: 20 }, (_, i) => entry(`noise:${i}`, query));
+    const recovery = entry('sessions:digest', 'Historical task and stop evidence');
+    const index = new Map([
+      ...distractors.map(e => [e.tool, [0, 1]] as [string, number[]]),
+      [recovery.tool, [1, 0]] as [string, number[]],
+    ]);
+    const hits = await findTools([...distractors, recovery], query, {
+      limit: 3, embedder: async () => [1, 0], embeddings: index,
+    });
+    expect(hits[0].tool).toBe('sessions:digest');
+    expect(hits[0].via).toBe('semantic');
+    const degraded = await findTools([...distractors, recovery], query, {
+      limit: 3, embedder: async () => { throw new Error('unavailable'); }, embeddings: index,
+    });
+    expect(degraded.every(hit => hit.via === 'lexical')).toBe(true);
+    expect(degraded).toHaveLength(3);
+    expect(degraded[0].tool).toBe('sessions:digest');
+  });
+
+  it('pins several explicit names ahead of a stronger semantic candidate', async () => {
+    const hits = await findTools(corpus, 'coord:glance flags:set recover work', {
+      limit: 3, embedder: async () => [0, 1, 0, 0], embeddings,
+    });
+    expect(hits.slice(0, 2).map(hit => hit.tool)).toEqual(['coord:glance', 'flags:set']);
+  });
   it.each(['parked agent audit', 'audit parked agents', 'parked-agent audit'])(
     'routes %s to the complete roster surface ahead of generic audit tools', async query => {
       const hits = await findTools(corpus, query, { limit: 3 });

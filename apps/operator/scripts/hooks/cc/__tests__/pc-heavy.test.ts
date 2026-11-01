@@ -3154,7 +3154,7 @@ describe('pc-heavy.sh — finite-cgroup typecheck admission (EI-2120677257850074
     writeFileSync(runner, `#!/usr/bin/env bash
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --user|--scope|--collect) shift ;;
+    --user|--scope|--collect|--unit=*) shift ;;
     *) break ;;
   esac
 done
@@ -3202,7 +3202,7 @@ PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE=0 \\
     writeFileSync(runner, `#!/usr/bin/env bash
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --user|--scope|--collect) shift ;;
+    --user|--scope|--collect|--unit=*) shift ;;
     *) break ;;
   esac
 done
@@ -3251,7 +3251,7 @@ exit 0
     writeFileSync(runner, `#!/usr/bin/env bash
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --user|--scope|--collect) shift ;;
+    --user|--scope|--collect|--unit=*) shift ;;
     *) break ;;
   esac
 done
@@ -3278,6 +3278,92 @@ PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE=0 \\
     expect(r.stdout).toBe('typecheck-ran');
     expect(r.stderr).toContain('detached user scope');
     expect(r.stderr).not.toContain('REFUSED typecheck');
+  });
+
+  it.each(['oom-kill', 'timeout'])('retains %s lifecycle evidence before resetting only the failed scope', (result) => {
+    const marker = typecheckFixture();
+    const runner = join(dir, 'systemd-run-lost-child');
+    const unitFile = join(dir, 'scope-unit');
+    const calls = join(dir, 'manager-calls');
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(runner, `#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    --collect) exit 99 ;;
+    --unit=*) printf '%s' "\${arg#--unit=}" > ${JSON.stringify(unitFile)} ;;
+  esac
+done
+exit 137
+`);
+    chmodSync(runner, 0o755);
+    const manager = join(bin, 'systemctl');
+    writeFileSync(manager, `#!/usr/bin/env bash
+[ "$1" = --user ] || exit 98
+[ "$3" = "$(cat ${JSON.stringify(unitFile)})" ] || exit 97
+printf '%s %s\\n' "$2" "$3" >> ${JSON.stringify(calls)}
+case "$2" in
+  show) printf '%s\\n' 'Result=${result}' 'InvocationID=${'a'.repeat(32)}' 'ActiveState=failed' 'SubState=failed' ;;
+  reset-failed) rm ${JSON.stringify(unitFile)} ;;
+  *) exit 96 ;;
+esac
+`);
+    chmodSync(manager, 0o755);
+    const r = runSync(['node', marker], {
+      PATH: `${bin}:${process.env.PATH ?? ''}`,
+      PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: '6144',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '768',
+      PC_HEAVY_SYSTEMD_RUN_BIN: runner,
+    });
+    expect(r.status, r.stderr).toBe(75);
+    expect(r.stdout).toBe('');
+    const unit = /PC_HEAVY_SCOPE_RESULT unit=(\S+)/.exec(r.stderr)?.[1];
+    expect(unit).toMatch(/^pc-heavy-typecheck-\d+-\d+\.scope$/);
+    expect(r.stderr).toContain(`runnerExit=137 result=${result} invocationId=${'a'.repeat(32)} activeState=failed`);
+    expect(r.stderr).toContain(`scope=${unit} scopeResult=${result} runnerExit=137`);
+    expect(readFileSync(calls, 'utf8')).toBe(`show ${unit}\nreset-failed ${unit}\n`);
+    expect(existsSync(unitFile)).toBe(false);
+    expect(r.stderr).not.toContain('it had not finished when the runner returned');
+  });
+
+  it('preserves an unknown cause when the manager cannot inspect a lost child', () => {
+    const runner = join(dir, 'systemd-run-unobserved');
+    writeFileSync(runner, '#!/usr/bin/env bash\nexit 137\n');
+    chmodSync(runner, 0o755);
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    const calls = join(dir, 'manager-calls');
+    writeFileSync(join(bin, 'systemctl'), `#!/usr/bin/env bash
+printf '%s\\n' "$2" >> ${JSON.stringify(calls)}
+exit 1
+`);
+    chmodSync(join(bin, 'systemctl'), 0o755);
+    const r = runSync(['node', typecheckFixture()], {
+      PATH: `${bin}:${process.env.PATH ?? ''}`,
+      PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: '6144',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '768',
+      PC_HEAVY_SYSTEMD_RUN_BIN: runner,
+    });
+    expect(r.status, r.stderr).toBe(75);
+    expect(r.stderr).toContain('runnerExit=137 result=unknown invocationId=unknown activeState=unknown');
+    expect(readFileSync(calls, 'utf8')).toBe('show\n');
+    expect(r.stderr).not.toContain('scopeResult=oom-kill');
+  });
+
+  it('refuses to launch when no child completion recorder can be allocated', () => {
+    const runner = join(dir, 'systemd-run-must-not-start');
+    const called = join(dir, 'runner-called');
+    writeFileSync(runner, `#!/usr/bin/env bash\ntouch ${JSON.stringify(called)}\nexit 0\n`);
+    chmodSync(runner, 0o755);
+    const r = runSync(['node', typecheckFixture()], {
+      TMPDIR: unwritablePath(dir),
+      PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: '6144',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '768',
+      PC_HEAVY_SYSTEMD_RUN_BIN: runner,
+    });
+    expect(r.status, r.stderr).toBe(75);
+    expect(r.stderr).toContain('reason=detached-scope-recorder-unavailable exit=75');
+    expect(existsSync(called)).toBe(false);
   });
 
   it('refuses without recursion when detached scope re-exec is already active', () => {

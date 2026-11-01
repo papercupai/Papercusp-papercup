@@ -23,6 +23,26 @@
  */
 import type { GateVerdictTarget } from './gate-verdict-target';
 import type { Sql } from 'postgres';
+import { parseGateSuiteMeasurement } from './test-pass-reuse-report';
+
+/** Preserve the latest actual suite independently of verdict replays or late status writes. */
+export async function mergeGateSuiteMeasurement(
+  target: GateVerdictTarget, value: unknown, transaction?: Pick<Sql, 'unsafe'>,
+): Promise<void> {
+  const measurement = parseGateSuiteMeasurement(value);
+  if (!measurement) return;
+  const field = measurement.kind === 'targeted-gate' ? 'lastTargetedSuiteMeasurement' : 'lastSuiteMeasurement';
+  const sql = transaction ?? (await import('@papercusp/db-org')).getOrgPg().sql;
+  await sql.unsafe(
+    `UPDATE harness_shared.routines SET metadata = jsonb_set(
+       COALESCE(metadata, '{}'::jsonb), '{gate_health}',
+       COALESCE(metadata->'gate_health', '{}'::jsonb) || jsonb_build_object('${field}', $3::jsonb), true)
+     WHERE install_slug = $1 AND workspace_id = $2 AND target_role = 'system:green-checkpoint'
+       AND (CASE WHEN jsonb_typeof(metadata #> '{gate_health,${field},completedAtMs}') = 'number'
+         THEN (metadata #>> '{gate_health,${field},completedAtMs}')::numeric ELSE -1 END) <= $4`,
+    [target.installSlug, target.workspaceId, JSON.stringify(measurement), measurement.completedAtMs],
+  );
+}
 
 /**
  * Shallow-merge `patch` into `metadata.gate_health` for exactly one routine row.

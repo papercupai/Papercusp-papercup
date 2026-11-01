@@ -21,6 +21,7 @@
  * error's message deliberately does not contain).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPhaseTracker } from '@papercusp/tooldef';
 import type { HarnessRegistry, ProjectEntry } from './harness-registry';
 
 // In-memory per-workspace registries the mocked loadHarnessRegistry reads from,
@@ -161,8 +162,28 @@ describe('resolveWorkspaceForHarnessSlugIn (EI-19286551248996972 — a read FAIL
     await expect(resolveWorkspaceForHarnessSlugIn('default', 'sheets')).resolves.toBe('default');
   });
 
+  it('records the preferred registry read outcome and skips fallback on a hit', async () => {
+    const phases = createPhaseTracker();
+    await expect(resolveWorkspaceForHarnessSlugIn('default', 'sheets', phases)).resolves.toBe('default');
+    expect(phases.intervals().map(({ phase }) => phase)).toEqual([
+      'harnessWorkspacePreferredRegistryRead.hit',
+    ]);
+  });
+
   it('unchanged fast path: found via the cross-workspace fallback', async () => {
     await expect(resolveWorkspaceForHarnessSlugIn('default', 'papercup')).resolves.toBe('papercusp-workspace');
+  });
+
+  it('records fallback enumeration and each indexed read outcome', async () => {
+    const phases = createPhaseTracker();
+    await expect(resolveWorkspaceForHarnessSlugIn('default', 'papercup', phases)).resolves.toBe('papercusp-workspace');
+    expect(phases.intervals().map(({ phase }) => phase)).toEqual([
+      'harnessWorkspacePreferredRegistryRead.miss',
+      'harnessWorkspaceFallbackWorkspaceEnumeration',
+      'harnessWorkspaceFallbackRegistryRead.1.hit',
+      'harnessWorkspaceFallbackRegistryRead.2.miss',
+      'harnessWorkspaceFallbackReadCount.2',
+    ]);
   });
 
   it('unchanged: BOTH reads succeed and genuinely find nothing → null (a real absence, not a fault)', async () => {

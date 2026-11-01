@@ -923,6 +923,28 @@ describe('P-005 compact pushes ranked by follow-through', () => {
     expect(formatPushFact(fact, snapshot())).toBe(`## Code intelligence (first-touch) @aaaaaaaaaaaa\n${fact.text}`);
   });
 
+  it('keeps long importer examples off the protected first line so a useful first-touch push fits', async () => {
+    const target = 'lib/target.ts';
+    const firstConsumer = `lib/${'nested-consumer/'.repeat(24)}first.ts`;
+    const secondConsumer = `lib/${'another-consumer/'.repeat(24)}second.ts`;
+    const current = parsePushSnapshot(JSON.stringify({ ...raw(), edges: [
+      { importer: firstConsumer, imported: target, importerSha256: 'd'.repeat(64) },
+      { importer: secondConsumer, imported: target, importerSha256: 'e'.repeat(64) },
+      { importer: 'lib/target.test.ts', imported: target, importerSha256: 'f'.repeat(64) },
+    ] }), now)!;
+    const d = deps();
+    d.snapshot = vi.fn(async () => current);
+    d.legs = () => new Map([['first-touch', snapshotFirstTouchLeg]]);
+
+    await codeIntelPushText({ ...input, calls: [{ tool: 'Read', toolInput: { file_path: target } }] }, d);
+
+    const [, , delivered, , , dropped] = vi.mocked(d.commit).mock.calls[0];
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].text.split('\n')[0]).toBe(`${target}: 3 static file importers in this snapshot.`);
+    expect(formatPushFact(delivered[0], current).length).toBeLessThanOrEqual(CODE_INTEL_PUSH_MAX_CHARS);
+    expect(dropped).toEqual([]);
+  });
+
   it('ranks by trusted follow-through, gives thinly measured legs the trusted mean, and keeps ties stable', () => {
     const f = (leg: PushLegId, subject: string): PushFact => ({ ...fact, leg, subject });
     const facts = [f('first-touch', 'a'), f('resume', 'b'), f('grep', 'c'), f('interface', 'd')];

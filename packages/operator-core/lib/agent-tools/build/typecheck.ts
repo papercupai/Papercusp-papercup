@@ -1345,9 +1345,7 @@ export default defineTool({
               errorsInRequestedFiles: scopedPartition.requested.length,
               totalErrorCount: errors.length,
               otherErrorCount: otherErrors.length,
-              otherErrors: otherErrorsShown,
               otherErrorsTruncated: otherErrors.length > otherErrorsShown.length,
-              otherByFile: otherByFileShown,
               otherByFileTruncated: otherByFile.length > otherByFileShown.length,
               otherFilesWithErrors: otherByFile.length,
               unattributedErrorCount: scopedPartition.unattributed.length,
@@ -1391,6 +1389,14 @@ export default defineTool({
         // adjacent to the counts and add the human caveat only on the unsafe branch, so
         // `2 errors` can never again be compared with a later `615 errors` as like units.
         semanticCheckIncomplete: syntaxBroken.length > 0,
+        // Keep requested-file diagnostics in the serialized prefix. Tool transports may clip
+        // the response before an agent can use it, so large import-graph arrays follow them.
+        ...(scoped && scopedPartition
+          ? {
+              otherErrors: otherErrorsShown,
+              otherByFile: otherByFileShown,
+            }
+          : {}),
         ...(syntaxBroken.length > 0
           ? {
               countCaveat:

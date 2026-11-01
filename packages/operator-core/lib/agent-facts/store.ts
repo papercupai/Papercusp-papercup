@@ -2671,6 +2671,36 @@ export async function retractFact(
 
 export type FactKeyState = 'live' | 'already-retracted' | 'already-superseded' | 'not-found';
 
+/** Reserved workspace fact: claim.displayName is the human's chosen address. */
+export const WORKSPACE_OWNER_IDENTITY_KEY = 'owner-identity';
+export type WorkspaceOwnerIdentity = {
+  status: 'known' | 'unknown';
+  displayName: string | null;
+  sourceRef: string | null;
+  reason?: 'not-recorded' | 'invalid-record' | 'conflicting-records' | 'resolver-failed';
+};
+
+/** Exact identity read, independent of fact recency, audience folds and page budgets. */
+export async function readWorkspaceOwnerIdentity(workspaceId: string, inject?: Sql): Promise<WorkspaceOwnerIdentity> {
+  const sql = sqlOf(inject);
+  const rows = await sql<{ id: string | number; claim: Record<string, unknown> | null }[]>`
+    SELECT id, claim FROM harness_shared.agent_facts
+     WHERE workspace_id = ${workspaceId} AND scope = 'workspace'
+       AND key = ${WORKSPACE_OWNER_IDENTITY_KEY} AND source_hive IS NULL
+       AND superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()
+     ORDER BY id DESC LIMIT 2`;
+  if (!rows.length) return { status: 'unknown', displayName: null, sourceRef: null, reason: 'not-recorded' };
+  const names = rows.map((row) => row.claim?.displayName);
+  if (names.some((name) => typeof name !== 'string' || !name.trim() || name.length > 120 || /[\r\n\x00-\x1f<>]/.test(name))) {
+    return { status: 'unknown', displayName: null, sourceRef: null, reason: 'invalid-record' };
+  }
+  const displayName = (names[0] as string).trim();
+  if (names.some((name) => (name as string).trim() !== displayName)) {
+    return { status: 'unknown', displayName: null, sourceRef: null, reason: 'conflicting-records' };
+  }
+  return { status: 'known', displayName, sourceRef: factCitationRef({ scope: 'workspace', scopeRef: null, key: WORKSPACE_OWNER_IDENTITY_KEY, id: Number(rows[0]!.id) }) };
+}
+
 /** Read the newest local row for an exact fact identity after a retract miss. */
 export async function findFactKeyState(
   args: { scope: FactScope; scopeRef?: string | null; key: string; workspaceId?: string },

@@ -61,7 +61,6 @@ import { inspectRetentionTrees, RetentionAllocationCounter } from './storage/dis
 import { resolveOperatorAppRootFromModuleDir } from './operator-app-root';
 import { PAPERCUSP_TMPDIR_CANDIDATES } from '@papercusp/test-config/tmpdir-guard';
 import { defaultVerifyScanRoots, type VerifyScanRootEnv } from './harness/routines/gc-verify-instances';
-// @ts-expect-error The maintained CLI policy is JavaScript without declarations.
 import { sweepStaleWorkRoots, OWNER_MARKER } from '../../../scripts/lint-as-committed.mjs';
 
 let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;

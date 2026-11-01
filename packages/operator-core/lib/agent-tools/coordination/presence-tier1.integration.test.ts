@@ -7,19 +7,29 @@
  * Isolated on the shared table by a unique owner id + self-cleanup (the
  * presence-conformance pattern). Soft-skips if PG is unreachable.
  */
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { getOrgPg } from '@papercusp/db-org';
+import type { OrgTestDb } from '../../../test/_org-test-db';
 import { fetchPresenceTier1 } from './presence-tier1';
 import { getDefaultWakeMode, setWakeMode } from './wake-mode';
 import { planItemRef } from '../../issue-blocks-merge';
 import { openAwaitsByOwner } from '../../adv-roster';
 
+const h = vi.hoisted(() => ({ sql: null as unknown }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: h.sql }),
+}));
+const { createOrgTestDb } = await import('../../../test/_org-test-db');
+
 const OWNER = `tier1-it-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const WS = 'default';
 
-let ready = true;
+let ready = false;
+let db: OrgTestDb | undefined;
 
 async function cleanup(): Promise<void> {
+  if (!db) return;
   const { sql } = getOrgPg();
   await sql`DELETE FROM harness_shared.plan_item_claims WHERE owner = ${OWNER}`.catch(() => {});
   await sql`DELETE FROM harness_shared.work_items WHERE taken_by = ${OWNER}`.catch(() => {});
@@ -31,11 +41,12 @@ async function cleanup(): Promise<void> {
 
 describe('fetchPresenceTier1 (live PG)', () => {
   beforeAll(async () => {
-    try {
-      await getOrgPg().sql`SELECT 1`;
-    } catch {
-      ready = false;
-    }
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+    ready = true;
+  }, 120_000);
+  afterAll(async () => {
+    await db?.cleanup();
   });
   afterEach(cleanup);
 
@@ -80,6 +91,26 @@ describe('fetchPresenceTier1 (live PG)', () => {
       INSERT INTO harness_shared.event_awaits
         (workspace_id, subscriber_id, event_key, policy, note)
       VALUES (${WS}, ${OWNER}, 'presence-test:source-ship', 'announce', 'Declaration only')
+    `;
+
+    expect((await fetchPresenceTier1([OWNER])).get(OWNER)).toMatchObject({
+      awaitingEvent: false,
+      awaitingEventKey: null,
+      awaitingNote: null,
+    });
+    expect((await openAwaitsByOwner([OWNER])).has(OWNER)).toBe(false);
+  });
+
+  it('does not report a superseded event await as a live waiter', async (ctx) => {
+    if (!ready) {
+      ctx.skip();
+      return;
+    }
+    const { sql } = getOrgPg();
+    await sql`
+      INSERT INTO harness_shared.event_awaits
+        (workspace_id, subscriber_id, event_key, policy, note, superseded_at)
+      VALUES (${WS}, ${OWNER}, 'presence-test:superseded-wait', 'wake', 'Replaced wait', now())
     `;
 
     expect((await fetchPresenceTier1([OWNER])).get(OWNER)).toMatchObject({

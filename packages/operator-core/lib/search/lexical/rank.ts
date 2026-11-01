@@ -35,7 +35,7 @@ import { FLAGS } from '@papercusp/flags';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { observeFallback as recordFallback } from '../../degradation/fallback-observations';
 import { RRF_K_DEFAULT, rrfCombine } from '@papercusp/rrf';
-import { BM25_CORPORA, bm25Corpus, renderBm25TextExpr, type Bm25Corpus, type Bm25CorpusTable } from './corpora';
+import { BM25_CORPORA, bm25Corpus, renderBm25TextExpr, type Bm25Corpus, type Bm25CorpusTable, type Bm25TextConfig } from './corpora';
 
 /** A postgres.js SQL fragment, spliced with `${fragment}` into a tagged template. */
 export type SqlFragment = PendingQuery<Row[]>;
@@ -69,6 +69,12 @@ export interface LegacyLexicalRank {
   match: SqlFragment;
 }
 
+export interface StoredTsvectorLexicalOptions {
+  textConfig: Bm25TextConfig;
+  querySyntax: 'plain' | 'websearch';
+  rankFunction: 'ts_rank' | 'ts_rank_cd';
+}
+
 export interface LexicalLegRequest {
   table: Bm25CorpusTable;
   query: string;
@@ -97,6 +103,28 @@ export function materializedTextLexicalLeg(sql: Sql, documentText: SqlFragment, 
   const tsquery = sql`websearch_to_tsquery('english', ${query})`;
   const score = sql`ts_rank_cd(${vector}, ${tsquery})`;
   const match = sql`${vector} @@ ${tsquery}`;
+  return { engine: 'legacy', score, match, order: sql`${score} DESC` };
+}
+
+/**
+ * Legacy lexical ranking over a stored tsvector that is not a registered BM25 corpus.
+ * Keep the parser/config/rank choice explicit so a call site can preserve its existing
+ * indexed query semantics while using the shared lexical seam.
+ */
+export function storedTsvectorLexicalLeg(
+  sql: Sql,
+  searchVector: SqlFragment,
+  query: string,
+  options: StoredTsvectorLexicalOptions,
+): LexicalLeg {
+  const config = sql`${options.textConfig}::regconfig`;
+  const tsquery = options.querySyntax === 'plain'
+    ? sql`plainto_tsquery(${config}, ${query})`
+    : sql`websearch_to_tsquery(${config}, ${query})`;
+  const score = options.rankFunction === 'ts_rank'
+    ? sql`ts_rank(${searchVector}, ${tsquery})`
+    : sql`ts_rank_cd(${searchVector}, ${tsquery})`;
+  const match = sql`${searchVector} @@ ${tsquery}`;
   return { engine: 'legacy', score, match, order: sql`${score} DESC` };
 }
 
@@ -599,6 +627,14 @@ export const BM25_LATENCY_CANARY_QUERIES = [
   'migration index', 'release gate', 'memory recall', 'work item',
 ] as const;
 
+/**
+ * Timed samples per fixed canary. With eight queries and one sample each, nearest-rank p95
+ * is the maximum, so a single transient outlier determines the health verdict for the
+ * five-minute cache window. Forty repeated warm samples can tolerate one isolated slow query
+ * while still detecting a persistently slow canary.
+ */
+export const BM25_LATENCY_REPETITIONS_PER_QUERY = 5;
+
 export interface Bm25Latency {
   corpusIndex: string;
   samplesMs: number[];
@@ -622,14 +658,17 @@ export async function measureWarmBm25QueryLatencies(
   queries: readonly string[],
   run: (query: string) => unknown,
   now: () => number = () => performance.now(),
+  repetitionsPerQuery = 1,
 ): Promise<number[]> {
   for (const query of queries) await run(query);
 
   const samplesMs: number[] = [];
-  for (const query of queries) {
-    const started = now();
-    await run(query);
-    samplesMs.push(now() - started);
+  for (let repetition = 0; repetition < repetitionsPerQuery; repetition += 1) {
+    for (const query of queries) {
+      const started = now();
+      await run(query);
+      samplesMs.push(now() - started);
+    }
   }
   return samplesMs;
 }
@@ -669,7 +708,12 @@ export async function measureBm25Latency(
       () => false,
     );
   };
-  const samplesMs = await measureWarmBm25QueryLatencies(queries, run);
+  const samplesMs = await measureWarmBm25QueryLatencies(
+    queries,
+    run,
+    undefined,
+    BM25_LATENCY_REPETITIONS_PER_QUERY,
+  );
   return {
     corpusIndex: corpus.indexName,
     samplesMs,

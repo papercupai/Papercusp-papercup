@@ -703,6 +703,49 @@ describe('mintBlindGapReviewer', () => {
     expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
   });
 
+  it.each([
+    { isError: true, data: { error: 'confinement_mismatch',
+      launchFailure: { stage: 'pre-spawn', processesOpened: 0 } },
+      content: [{ type: 'text', text: 'less specific fallback' }] },
+    { isError: true, structuredContent: { error: 'confinement_mismatch',
+      launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } },
+    { isError: true, data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } },
+      content: [null, { type: 'image', text: 'ignore image' }, { type: 'text', text: ' ' },
+        { type: 'text', text: 'confinement_mismatch' }] },
+  ])('preserves the launcher refusal and proven pre-spawn result, releasing the lease', async launch => {
+    const d = deps();
+    d.handler.mockResolvedValueOnce(launch);
+    const result = await resumeBlindGapReviewer({
+      slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+      ctx: { workspaceId: 'ws-1', ownerId: 'su-author' },
+    }, d.deps);
+    expect(result).toMatchObject({ ok: false, code: 'resume_failed',
+      message: expect.stringContaining('confinement_mismatch') });
+    if (result.ok) return;
+    expect(result.message).toContain('Launcher receipt proves no process started.');
+    expect(result.message).not.toContain('less specific fallback');
+    expect(result.message).not.toContain('ignore image');
+    expect(d.handler).toHaveBeenCalledTimes(1);
+    expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
+  });
+
+  it.each([undefined, 'x'.repeat(4000)])('bounds refusal text without inferring no spawn from isError', async detail => {
+    const d = deps();
+    d.handler.mockResolvedValueOnce({ isError: true,
+      ...(detail ? { content: [{ type: 'text', text: detail }] } : {}) });
+    const result = await resumeBlindGapReviewer({
+      slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+      ctx: { workspaceId: 'ws-1', ownerId: 'su-author' },
+    }, d.deps);
+    expect(result).toMatchObject({ ok: false, code: 'resume_failed' });
+    if (result.ok) return;
+    expect(result.message).toContain('does not prove whether a process started; reconcile before retrying.');
+    expect(result.message.length).toBeLessThan(2300);
+    if (detail) expect(result.message).toContain('x'.repeat(2000));
+    expect(d.handler).toHaveBeenCalledTimes(1);
+    expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
+  });
+
   it('attaches a fresh scratch-plan boundary before launch and names its prefix in the kickoff (D-050)', async () => {
     const d = deps();
     const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);

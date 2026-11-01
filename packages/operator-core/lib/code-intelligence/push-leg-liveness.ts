@@ -287,9 +287,24 @@ export function pgLivenessReaders(sql: Sql, implementerOwners: readonly string[]
         WHERE workspace_id = $1 AND tool_name = 'coord:declare-intent' AND invoked_at >= $2 AND invoked_at < $3
           AND jsonb_typeof(args_json->'current_files') = 'array' AND jsonb_array_length(args_json->'current_files') > 0`,
       [w.workspaceId, iso(w.start), iso(w.end)])).n) }),
+    clone: async w => {
+      const r = await one(sql, `WITH edits AS (
+          SELECT signal_eligibility->'interface'->'addedExportedFunctions' AS added
+          FROM harness_shared.edit_attribution_ledger
+          WHERE workspace_id = $1 AND ts >= $2 AND ts < $3 AND file ~ '${CODE_FILE}')
+        SELECT count(*) AS tracked,
+          count(*) FILTER (WHERE jsonb_typeof(added) = 'array') AS observed,
+          count(*) FILTER (WHERE CASE WHEN jsonb_typeof(added) = 'array'
+            THEN jsonb_array_length(added) > 0 ELSE false END) AS eligible FROM edits`,
+      [w.workspaceId, iso(w.start), iso(w.end)]);
+      // A partial population cannot prove how many triggers occurred. Older
+      // writers and unknown parses stay loud until their rows age out; neither
+      // the push ledger nor a retrospective parse may fill that historical gap.
+      const observed = Number(r.observed ?? 0);
+      return { eligible: observed > 0 && observed === Number(r.tracked) ? num(r.eligible) : null };
+    },
     // No independent ledger records these triggers yet: unmeasured (cannot-observe), never zero.
     incident: async () => ({ eligible: null }),
-    clone: async () => ({ eligible: null }),
     notes: async () => ({ eligible: null }),
   };
   return {
@@ -298,10 +313,14 @@ export function pgLivenessReaders(sql: Sql, implementerOwners: readonly string[]
       return { eligible: e.eligible ?? null, ...o, eligibleMutations: e.eligibleMutations, allTrackedMutations: e.allTrackedMutations };
     },
     measureOp: async (op: LivenessOp, w: MeasureWindow): Promise<SignalCounts> => {
+      // Schema/role refusals never reach the handler and cannot produce a code-intel
+      // result. Keep attempted unknowns, errors, cancellations and timeouts eligible:
+      // those are real demand that the liveness check must still detect as unserved.
       const r = await one(sql, `SELECT count(*) AS calls,
             count(*) FILTER (WHERE metadata_json->'codeIntelResult'->>'status' = 'measured') AS measured,
             count(*) FILTER (WHERE metadata_json->'codeIntelResult'->>'status' = 'measured' AND coord_owner_id <> ALL($5::text[])) AS outside
           FROM harness_shared.tool_invocations WHERE workspace_id = $1 AND tool_name = $2 AND invoked_at >= $3 AND invoked_at < $4
+            AND status NOT IN ('role-not-allowed', 'invalid-input')
             AND coord_owner_id IS DISTINCT FROM '${CANARY_OWNER}'`,
         [w.workspaceId, op, iso(w.start), iso(w.end), impl]);
       return { eligible: num(r.calls), outputs: num(r.measured), outsideLineageOutputs: num(r.outside) };

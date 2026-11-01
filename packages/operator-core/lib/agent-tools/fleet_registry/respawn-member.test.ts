@@ -27,6 +27,8 @@ const getFleet = vi.fn();
 const setFleetLaunchTransaction = vi.fn();
 const findLiveHost = vi.fn();
 const resolveGoalLaunch = vi.fn();
+const getClaimSpecRecord = vi.fn();
+const setClaimSpec = vi.fn();
 
 const LEADER = 'su-leader';
 const MEMBER = 'su-member-abc';
@@ -86,6 +88,10 @@ vi.mock('../../events/await/psu-pty-discovery', () => ({
 vi.mock('../../goal-launch-settings', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   resolveGoalLaunch: (...a: unknown[]) => resolveGoalLaunch(...a),
+}));
+vi.mock('../../scheduler/claim-spec-store', () => ({
+  getClaimSpecRecord: (...a: unknown[]) => getClaimSpecRecord(...a),
+  setClaimSpec: (...a: unknown[]) => setClaimSpec(...a),
 }));
 // P-009: the recovery IO the two REFUSAL paths now perform. These are mocked so the call site
 // can be ASSERTED rather than merely not-throwing: without them the real store/control modules
@@ -221,6 +227,16 @@ beforeEach(() => {
   // EI-24909345582884838: no goal ceiling binds by default (an agent outside any goal / under its
   // ceilings resolves with no refusal). Individual tests override this to exercise the refusal.
   resolveGoalLaunch.mockReset().mockResolvedValue({ refusal: null });
+  getClaimSpecRecord.mockResolvedValue({
+    source: 'fleet',
+    spec: { specId: 'fleet-lane', revision: 1, view: { filter: { field: 'kind', op: 'eq', value: 'feature' } } },
+    revision: 1,
+    updatedBy: null,
+    updatedAt: null,
+    harnessSlug: 'papercusp',
+    fleetSlug: SLUG,
+  });
+  setClaimSpec.mockResolvedValue({ ok: true, errors: [], revision: 2 });
   // P-009: an EMPTY enrolled-task list is the honest default for a member with no tracked
   // processes. The containment tests below override it with real rows.
   listTasks.mockResolvedValue([]);
@@ -492,6 +508,92 @@ describe('fleet:respawn-member (P-008)', () => {
     );
     expect(p.launched).toContain('Launched su-new');
     expect(p.newMember).toBe(p.replacementOwner);
+    expect(p.claimSpec).toEqual({ source: 'fleet', copied: false });
+    expect(setClaimSpec).not.toHaveBeenCalled();
+  });
+
+  it('copies the exact explicit per-member claim spec and scope before the replacement can pull', async () => {
+    const exactSpec = {
+      specId: 'old-cup-lane',
+      revision: 17,
+      view: { filter: { field: 'plan', op: 'eq', value: 'narrow-plan' } },
+      rank: { field: 'priority', direction: 'desc' },
+      maxConcurrentClaims: 1,
+      states: ['open'],
+    };
+    getClaimSpecRecord.mockResolvedValueOnce({
+      source: 'cup',
+      spec: exactSpec,
+      revision: 17,
+      updatedBy: 'prior-leader',
+      updatedAt: '2026-10-30T00:00:00.000Z',
+      harnessSlug: 'papercusp',
+    });
+    setClaimSpec.mockResolvedValueOnce({ ok: true, errors: [], revision: 18 });
+
+    const p = parse(await tool.handler({ member: MEMBER, model: 'opus[1m]' } as never, {} as never));
+    const launchCall = launchHandler.mock.invocationCallOrder[0]!;
+
+    expect(getClaimSpecRecord).toHaveBeenCalledWith({ cupId: MEMBER, workspaceId: 'ws' });
+    expect(setClaimSpec).toHaveBeenCalledWith({
+      cupId: p.replacementOwner,
+      workspaceId: 'ws',
+      spec: exactSpec,
+      updatedBy: LEADER,
+      potSlug: 'papercusp',
+    });
+    expect(setClaimSpec.mock.invocationCallOrder[0]).toBeLessThan(launchCall);
+    expect(p).toMatchObject({
+      ok: true,
+      claimSpec: { source: 'cup', copied: true, revision: 18 },
+    });
+  });
+
+  it('keeps default claim behavior without creating a replacement cup spec', async () => {
+    getClaimSpecRecord.mockResolvedValueOnce({
+      source: 'default',
+      spec: { specId: 'default-lane', revision: 1, view: { filter: { field: 'kind', op: 'eq', value: 'feature' } } },
+      revision: null,
+      updatedBy: null,
+      updatedAt: null,
+    });
+
+    const p = parse(await tool.handler({ member: MEMBER, model: 'opus[1m]' } as never, {} as never));
+
+    expect(p).toMatchObject({ ok: true, claimSpec: { source: 'default', copied: false } });
+    expect(setClaimSpec).not.toHaveBeenCalled();
+  });
+
+  it('refuses to drain when the existing claim spec cannot be read', async () => {
+    getClaimSpecRecord.mockRejectedValueOnce(new Error('claim-spec store unavailable'));
+
+    const p = parse(await tool.handler({ member: MEMBER, model: 'opus[1m]' } as never, {} as never));
+
+    expect(p).toMatchObject({ ok: false, error: 'claim_spec_preflight_failed', killed: false, launched: false });
+    expect(killHandler).not.toHaveBeenCalled();
+    expect(launchHandler).not.toHaveBeenCalled();
+  });
+
+  it('does not launch when copying an explicit per-member claim spec fails', async () => {
+    getClaimSpecRecord.mockResolvedValueOnce({
+      source: 'cup',
+      spec: { specId: 'old-cup-lane', revision: 17, view: { filter: { field: 'plan', op: 'eq', value: 'narrow-plan' } } },
+      revision: 17,
+      updatedBy: 'prior-leader',
+      updatedAt: '2026-10-30T00:00:00.000Z',
+      harnessSlug: 'papercusp',
+    });
+    setClaimSpec.mockResolvedValueOnce({ ok: false, errors: ['scope refused'] });
+
+    const p = parse(await tool.handler({ member: MEMBER, model: 'opus[1m]' } as never, {} as never));
+
+    expect(p).toMatchObject({
+      ok: false,
+      error: 'replacement_claim_spec_copy_failed',
+      launched: false,
+      claimSpec: { source: 'cup', copied: false },
+    });
+    expect(launchHandler).not.toHaveBeenCalled();
   });
 
   it('overrides the saved carry mode and forwards it through the audited replacement launch', async () => {

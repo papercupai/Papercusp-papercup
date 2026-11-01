@@ -66,6 +66,32 @@ it('R13-CONTRACT', async () => {
   expect(JSON.stringify(children)).not.toMatch(/private-one|su-private-actor|SELECT id FROM jobs/);
 });
 
+it.each(['continuity-before', 'window', 'continuity-after'] as const)(
+  'native source failures retain the %s boundary and independently observed continuity', async failure => {
+    let nativeContinuityCalls = 0, readingWindow = false;
+    const timeout = () => { throw new Error('sql_mining_time_budget'); };
+    const opts = f.opts({ authorize: async () => readingWindow ? timeout() : true });
+    const run = await runMonitoredCensus(opts,
+      async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0, reason: 'sql_mining_source_missing' }), {
+        readContinuity: async ({ family }) => {
+          if (family !== 'native-operation') return 'unknown';
+          nativeContinuityCalls++;
+          if (failure === 'continuity-before' || failure === 'continuity-after' && nativeContinuityCalls === 2)
+            return timeout();
+          if (failure === 'window') readingWindow = true;
+          return 'unknown';
+        },
+      });
+    const expected = { stage: 'source', phase: failure, reason: 'sql_mining_time_budget', reviewEligible: false,
+      continuity: { before: failure === 'continuity-before' ? null : 'unknown', after: null } };
+    const native = run.families.find(row => row.family === 'native-operation');
+    expect(native).toMatchObject({ coverage: 'UNKNOWN', diagnostics: expected });
+    const [saved] = await f.db.adminSql`SELECT coverage,diagnostics FROM harness_shared.sql_intent_family_runs
+      WHERE workspace_id=${opts.workspaceId} AND run_id=${run.runId}::uuid AND family='native-operation'`;
+    expect(saved).toMatchObject({ coverage: 'UNKNOWN', diagnostics: expected });
+    expect(saved!.diagnostics.candidates).toEqual([]);
+  });
+
 it('R18-UNKNOWN', async () => {
   await f.seed(); await mineSqlCandidateSlice(f.opts());
   const [before] = await f.db.adminSql`SELECT cursor_id::text FROM harness_shared.sql_intent_progress`;

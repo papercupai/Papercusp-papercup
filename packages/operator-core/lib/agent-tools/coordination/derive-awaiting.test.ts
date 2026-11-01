@@ -64,6 +64,30 @@ describe('deriveAwaiting — dependency-edge leg (WI-10005020, D-008 §4a)', () 
     h.sql = async () => answers[call++] ?? [];
   }
 
+  it('includes a bounded own-inbox wake await but excludes the standing keepalive', async () => {
+    const ownerId = 'su-awaiting-owner';
+    const inboxKey = `coord:inbox-wake:${ownerId}`;
+    const at = new Date('2026-10-31T20:00:00.000Z');
+    const queryTexts: string[] = [];
+    const answers = [[
+      { event_key: inboxKey, created_at: at, expires_ts: new Date('2026-10-31T21:00:00.000Z'), timeout_behavior: 'wake', once: true, note: null },
+      { event_key: inboxKey, created_at: new Date('2026-10-31T19:00:00.000Z'), expires_ts: null, timeout_behavior: 'expire', once: false, note: null },
+    ], []];
+    let call = 0;
+    h.sql = async (strings) => {
+      queryTexts.push(strings.join('?'));
+      return answers[call++] ?? [];
+    };
+
+    const out = await deriveAwaiting({ ownerId, workspaceId: 'ws' });
+
+    expect(out).toEqual([{ kind: 'event-await', ref: inboxKey, since: at.toISOString() }]);
+    const eventQuery = queryTexts.find((query) => query.includes('FROM harness_shared.event_awaits')) ?? '';
+    expect(eventQuery).toContain('expires_ts IS NOT NULL');
+    expect(eventQuery).toContain("policy = 'wake'");
+    expect(eventQuery).toContain("timeout_behavior = 'wake'");
+  });
+
   it('a held item whose work-item blocker was migrated to an edge still surfaces as awaiting', async () => {
     // After R-15 the external row is CLEARED (inactive) — leg 2 yields nothing for it.
     stubSql([], [

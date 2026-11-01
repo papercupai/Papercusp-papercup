@@ -43,6 +43,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
 import { acquireWithContentionRetry, isWorkspaceContended } from '../../agent-tools/locks/contention-retry';
+import { readGitSyncRestartBarrierQueue } from './restart-barrier-read';
 import {
   clearResourceExclusiveQueue,
   clearResourceWaiter,
@@ -4424,11 +4425,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     }
     const shouldYield = holdsRestartBarrier && !yieldCapped
       ? async (): Promise<string | null> => {
-          // This is a read-only inspection of the lock store. The org pool points at
-          // another database; inWorkspaceTxn takes the exclusive workspace advisory
-          // lock and can time out behind unrelated mutations, disabling yield again.
-          // Acquiring the barrier above already bootstrapped this maintained pool.
-          const { holders } = await readResourceQueue(getTxPool(), {
+          // The dedicated SU pool avoids the workspace advisory lock. Bound relation
+          // lock waits locally and retry only PG 55P03: slow statements and pool
+          // failures still follow runGitSync's fail-open path immediately.
+          const { holders } = await readGitSyncRestartBarrierQueue(getTxPool(), {
             coordinationDomain: cd,
             resource: GIT_SYNC_RESTART_BARRIER_RESOURCE,
           });

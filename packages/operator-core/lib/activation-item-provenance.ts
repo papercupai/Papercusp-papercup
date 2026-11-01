@@ -40,6 +40,7 @@ import {
   type HitTurnOriginVerdict,
 } from './agent-tools/sessions/turn-origin';
 import { parseTurnRef } from './agent-tools/sessions/_shared';
+import type { DiscoverySourcePin } from './blind-review-discovery-source';
 
 /** The turn-origin verdicts that ARE owner speech (see turn-provenance/turn-ref). */
 export const OWNER_TURN_VERDICTS: ReadonlySet<HitTurnOriginVerdict> = new Set<HitTurnOriginVerdict>([
@@ -77,6 +78,8 @@ export type ItemProvenanceDeclaration =
       itemId: string;
       kind: 'agent-added';
       reason: string;
+      /** Original pre-plan capture records for blind review; never owner speech. */
+      discoverySources?: DiscoverySourcePin[];
     };
 
 export interface ProvenanceMappingInput {

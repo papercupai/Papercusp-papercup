@@ -12,7 +12,18 @@ import {
 } from '@papercusp/coordination/core';
 
 const readCoordFeed = vi.hoisted(() =>
-  vi.fn(async (): Promise<{
+  vi.fn(async (
+    _opts?: unknown,
+    _observePhase?: (phase: {
+      name: string;
+      round: number;
+      status: 'running' | 'fulfilled' | 'rejected';
+      startedAt: string;
+      elapsedMs: number | null;
+      returnedRows?: number;
+      exhausted?: boolean;
+    }) => void,
+  ): Promise<{
     rows: never[];
     nextCursor: string | null;
     nextCursorMsgId: string | null;
@@ -48,18 +59,18 @@ describe('coord:feed — since compatibility', () => {
 
   it('maps preferred `since` to the existing readCoordFeed since_ts seam', async () => {
     await tool.handler({ since: '2026-08-12T00:00:00.000Z' } as never, {} as never);
-    expect(readCoordFeed).toHaveBeenCalledWith(expect.objectContaining({ since_ts: '2026-08-12T00:00:00.000Z' }));
+    expect(readCoordFeed.mock.calls[0]?.[0]).toMatchObject({ since_ts: '2026-08-12T00:00:00.000Z' });
   });
 
   it('keeps legacy `since_ts` working and prefers `since` when both are supplied', async () => {
     await tool.handler({ since_ts: '2026-08-11T00:00:00.000Z' } as never, {} as never);
-    expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({ since_ts: '2026-08-11T00:00:00.000Z' }));
+    expect(readCoordFeed.mock.calls.at(-1)?.[0]).toMatchObject({ since_ts: '2026-08-11T00:00:00.000Z' });
 
     await tool.handler(
       { since: '2026-08-12T00:00:00.000Z', since_ts: '2026-08-11T00:00:00.000Z' } as never,
       {} as never,
     );
-    expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({ since_ts: '2026-08-12T00:00:00.000Z' }));
+    expect(readCoordFeed.mock.calls.at(-1)?.[0]).toMatchObject({ since_ts: '2026-08-12T00:00:00.000Z' });
   });
 });
 
@@ -90,7 +101,7 @@ describe('coord:feed — fleet compatibility alias', () => {
 
   it('normalizes a fleet slug or human name to the audience filter', async () => {
     await tool.handler({ fleet: 'Backend Team' } as never, {} as never);
-    expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({ audience: '@fleet:backend-team' }));
+    expect(readCoordFeed.mock.calls.at(-1)?.[0]).toMatchObject({ audience: '@fleet:backend-team' });
   });
 
   it('prefers the canonical audience when both filters are supplied', async () => {
@@ -98,7 +109,7 @@ describe('coord:feed — fleet compatibility alias', () => {
       { fleet: 'ignored-fleet', audience: '@topic:coordination' } as never,
       {} as never,
     );
-    expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({ audience: '@topic:coordination' }));
+    expect(readCoordFeed.mock.calls.at(-1)?.[0]).toMatchObject({ audience: '@topic:coordination' });
   });
 });
 
@@ -200,12 +211,59 @@ describe('coord:feed — lossless composite pagination cursor', () => {
       {} as never,
     )) as { content: { text: string }[] };
 
-    expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(readCoordFeed.mock.calls.at(-1)?.[0]).toMatchObject({
       before_ts: '2026-08-26T12:00:00.000Z',
       before_msg_id: 'm-boundary',
-    }));
+    });
     const payload = JSON.parse(result.content[0]!.text);
     expect(payload.next_cursor).toBe('2026-08-26T12:00:00.000Z');
     expect(payload.next_cursor_msg_id).toBe('m-boundary');
+  });
+});
+
+describe('coord:feed — read-phase metadata', () => {
+  it('persists per-surface timing phases through the invocation metadata context', async () => {
+    readCoordFeed.mockImplementationOnce(async (_opts, observePhase) => {
+      observePhase?.({
+        name: 'surface-read:messages',
+        round: 1,
+        status: 'fulfilled',
+        startedAt: '2026-10-31T00:00:00.000Z',
+        elapsedMs: 12,
+        returnedRows: 0,
+        exhausted: true,
+      });
+      return {
+        rows: [],
+        nextCursor: null,
+        nextCursorMsgId: null,
+        total: 0,
+        byKind: {},
+        tokens: 0,
+      };
+    });
+
+    const metadata = vi.fn();
+    await tool.handler({ limit: 15 } as never, { metadata } as never);
+
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      coordFeedRead: expect.objectContaining({
+        schemaVersion: 'coord-feed-read-phases-v1',
+        unit: 'ms',
+        timing: 'awaited-helper-wall-time',
+        resultState: 'fulfilled',
+        request: expect.objectContaining({ limit: 15 }),
+        readElapsedMs: expect.any(Number),
+        phases: [expect.objectContaining({
+          name: 'surface-read:messages',
+          round: 1,
+          status: 'fulfilled',
+          elapsedMs: 12,
+          returnedRows: 0,
+          exhausted: true,
+        })],
+      }),
+    }));
   });
 });

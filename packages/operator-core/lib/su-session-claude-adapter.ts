@@ -430,6 +430,8 @@ interface ClaudeTextStream {
 export class ClaudeSuSessionAdapter {
   readonly host: SuSessionHost<'claude'>;
   private runtimeValue: ClaudeSuRuntimeBinding;
+  private runtimeGeneration: number;
+  private disposed = false;
   private parser: TimelineLineParser = createAgentTimelineParser();
   private currentTurnId: string | null = null;
   private turnSerial = 0;
@@ -478,6 +480,7 @@ export class ClaudeSuSessionAdapter {
     };
     this.host = options.host ?? new SuSessionHost(hostOptions);
     if (options.host) this.host.attachRuntime(hostOptions);
+    this.runtimeGeneration = hostOptions.descriptor.runtimeGeneration;
     void bindSuSessionToAdvSession({
       advSessionId: binding.advSessionId,
       agentChatId: options.agentChatId,
@@ -492,15 +495,22 @@ export class ClaudeSuSessionAdapter {
     return this.runtimeValue;
   }
 
+  /** An older adapter may finish cleanup after its shared host was reused. */
+  private ownsRuntime(generation = this.runtimeGeneration): boolean {
+    return !this.disposed && generation === this.host.descriptor().runtimeGeneration;
+  }
+
   /** Refresh gateway serving-account provenance after a known native turn. */
   async refreshAccountServed(): Promise<void> {
+    const generation = this.runtimeGeneration;
+    if (!this.ownsRuntime(generation)) return;
     let account: string | null;
     try {
       account = await this.servedAccountReader(this.host.descriptor().identity.ownerId);
     } catch {
       return;
     }
-    this.host.updateAccountServed(account);
+    if (this.ownsRuntime(generation)) this.host.updateAccountServed(account);
   }
 
   /** The structured transport calls this when a queued owner turn is sent. */
@@ -634,6 +644,7 @@ export class ClaudeSuSessionAdapter {
   /** Consume one complete Claude JSONL record. The source retains a partial
    * trailing record until its newline arrives. */
   ingestNativeLine(line: string, { preserveLifecycle = false, replay = false }: { preserveLifecycle?: boolean; replay?: boolean } = {}): void {
+    if (!this.ownsRuntime()) return;
     let record: Record<string, unknown>;
     try {
       record = JSON.parse(line) as Record<string, unknown>;
@@ -789,8 +800,10 @@ export class ClaudeSuSessionAdapter {
   /** P-004 calls this after exact Claude resume/carry replacement attaches. The
    * durable SU identity remains unchanged while runtimeGeneration advances. */
   replaceRuntime(runtime: ClaudeSuRuntimeBinding, reason = 'Claude runtime replaced'): void {
+    if (!this.ownsRuntime()) return;
     const generation = this.host.descriptor().runtimeGeneration + 1;
     this.host.transition('resuming', reason, generation);
+    this.runtimeGeneration = generation;
     this.runtimeValue = runtime;
     this.parser = createAgentTimelineParser();
     this.finishPartialText();
@@ -815,6 +828,7 @@ export class ClaudeSuSessionAdapter {
     exitCode?: number | null;
     signal?: string | null;
   }): void {
+    if (!this.ownsRuntime()) return;
     this.finishPartialText();
     this.host.reconcileRuntimeExit(input);
   }
@@ -878,6 +892,9 @@ export class ClaudeSuSessionAdapter {
   }
 
   dispose(): void {
+    const ownsRuntime = this.ownsRuntime();
+    this.disposed = true;
+    if (!ownsRuntime) return;
     if (this.unregister) this.unregister();
     else this.host.dispose('Claude adapter disposed');
   }

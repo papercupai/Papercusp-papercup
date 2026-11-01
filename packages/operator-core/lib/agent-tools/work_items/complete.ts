@@ -135,7 +135,7 @@ export const WORK_ITEMS_COMPLETE_TIMEOUT_SEC = 120;
  * contract that can drift from runtime.
  */
 export const WORK_ITEMS_COMPLETION_CONTRACT = {
-  version: 'work-items-completion-v6',
+  version: 'work-items-completion-v7',
   requirements: [
     { key: 'assumptions', description: 'Terminal closes declare assumptions or explicitly declare none.' },
     { key: 'root-cause-verification', description: 'Successful defect closes carry complete causal evidence v2.' },
@@ -4084,6 +4084,7 @@ async function completeOneTracked(
   };
   const completionContractRequirements = WORK_ITEMS_COMPLETION_CONTRACT.requirements.map((requirement) => ({
     ...requirement,
+    evaluated: false,
     applicable: false,
     satisfied: null as boolean | null,
     details: undefined as ConformanceContractDetails | undefined,
@@ -4096,6 +4097,7 @@ async function completeOneTracked(
   ): void => {
     const requirement = completionContractRequirements.find((candidate) => candidate.key === key);
     if (!requirement) return;
+    requirement.evaluated = true;
     requirement.applicable = applicable;
     requirement.satisfied = applicable ? !error : null;
     if (details) requirement.details = details;
@@ -4765,8 +4767,10 @@ async function completeOneTracked(
     }
     const error =
       `REJECTED — ${gateRefusals.length} completion requirements for ${it.id} are unmet. This is the ` +
-      'COMPLETE set as evaluated on this call, not just the first failure: fix all of them and re-send ' +
-      'once. No completion record or state transition was written.\n\n' +
+      'COMPLETE set as evaluated on this call, not just the first failure. It does not include later ' +
+      'checks that were not reached: completionContract requirements with evaluated:false remain ' +
+      'unassessed and may still need repair. Fix all unmet and unassessed requirements before retrying. ' +
+      'No completion record or state transition was written.\n\n' +
       gateRefusals.map((r, i) => `(${i + 1}/${gateRefusals.length}) ${r.error}`).join('\n\n');
     return {
       ok: false,

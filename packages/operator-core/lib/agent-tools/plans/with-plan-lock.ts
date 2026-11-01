@@ -24,7 +24,6 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import {
   mutateWorkItemDependenciesInTransaction,
   withWorkItemDependencyAdmissionTransaction,
-  type WorkItemDependencyMutation,
 } from '../../dbos/work-item-deps-store';
 import type { Sql, TransactionSql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
@@ -54,6 +53,8 @@ import {
   type PlanCandidateDependencyDiagnostic,
 } from './plan-candidate-dependencies';
 import { writePlanIndexRows } from './plan-index-rows';
+import { readPlanLineNodes, writePlanLineNodes } from './plan-line-graph';
+import { renderPlanLines } from './plan-line-render';
 import {
   noteFromContentWrite,
   parseNowNote,
@@ -92,7 +93,6 @@ import {
   VALID_PLAN_SLUG,
 } from './source';
 
-import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 /** System author of the EI-14579 resurrection marker revision. */
 export const TEMPLATE_DATA_LOSS_GUARD_AUTHOR = 'with-plan-lock:template-data-loss-guard';
 /** System author of a revision recorded for a plan write whose caller wired no revision
@@ -101,88 +101,6 @@ export const REVISION_SPINE_GUARD_AUTHOR = 'with-plan-lock:revision-spine-guard'
 
 class PromotedDependencyTransactionRequired extends Error {}
 
-/** Apply this edit's dependency delta; explicit backfill owns pre-existing drift. */
-async function promotedDependencyMutations(
-  tx: Sql,
-  scope: { workspaceId: string; harnessSlug: string; slug: string },
-  before: ReturnType<typeof parsePlan> | null,
-  after: ReturnType<typeof parsePlan>,
-): Promise<WorkItemDependencyMutation[]> {
-  const signature = (plan: ReturnType<typeof parsePlan> | null) => JSON.stringify(
-    plan?.items.map((item) => [item.id, [...item.blockedBy].sort(), item.storedStatus]) ?? [],
-  );
-  if (!before || signature(before) === signature(after)) return [];
-  const rows = await tx<{
-    feature_id: string; item_kind: string; item_id: string;
-  }[]>`
-    SELECT feature_id, item_kind, payload->'plan_item'->>'item_id' AS item_id
-      FROM harness_shared.work_items
-     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
-       AND payload->'plan_item' IS NOT NULL
-       AND payload->'plan_item'->>'plan_slug' = ${scope.slug}
-     ORDER BY CASE WHEN status IN ('done', 'dropped', 'resolved', 'closed', 'superseded') THEN 1 ELSE 0 END,
-              updated_ts DESC NULLS LAST, feature_id`;
-  const endpoints = new Map<string, { kind: string; ref: string }>();
-  for (const row of rows) {
-    if (endpoints.has(row.item_id)) continue;
-    endpoints.set(row.item_id, (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(row.item_kind)
-      ? { kind: 'issue', ref: row.feature_id }
-      : { kind: 'feature', ref: `${scope.harnessSlug}#${row.feature_id}` });
-  }
-  const priorItems = new Map(before.items.map((item) => [item.id, item]));
-  const nextItems = new Map(after.items.map((item) => [item.id, item]));
-  const planAuthor = `plan-dependency:${scope.harnessSlug}/${scope.slug}`;
-  const existing = await tx<{
-    blocked_kind: string; blocked_ref: string; blocker_kind: string; blocker_ref: string;
-    created_by: string | null;
-  }[]>`
-    SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref, created_by
-      FROM harness_shared.work_item_deps
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND dep_type = 'blocks'
-       AND blocked_ref = ANY(${[...endpoints.values()].map((endpoint) => endpoint.ref)}::text[])`;
-  const edgeKey = (blocked: { kind: string; ref: string }, blocker: { kind: string; ref: string }) =>
-    JSON.stringify([blocked.kind, blocked.ref, blocker.kind, blocker.ref]);
-  const existingByKey = new Map(existing.map((edge) => [
-    edgeKey({ kind: edge.blocked_kind, ref: edge.blocked_ref },
-      { kind: edge.blocker_kind, ref: edge.blocker_ref }), edge,
-  ]));
-  const mutations: WorkItemDependencyMutation[] = [];
-  const unresolved = (ids: readonly string[], items: typeof priorItems) => new Set(ids.filter((id) => {
-    const item = items.get(id);
-    return item && !['done', 'dropped', 'superseded'].includes(item.storedStatus);
-  }));
-  for (const itemId of new Set([...priorItems.keys(), ...nextItems.keys()])) {
-    const blocked = endpoints.get(itemId);
-    if (!blocked) continue;
-    const prior = priorItems.get(itemId)?.blockedBy ?? [];
-    const next = nextItems.get(itemId)?.blockedBy ?? [];
-    const priorRequired = unresolved(prior, priorItems);
-    const desired = unresolved(next, nextItems);
-    for (const id of priorRequired) {
-      const blocker = endpoints.get(id);
-      if (!blocker || desired.has(id)) continue;
-      const edge = existingByKey.get(edgeKey(blocked, blocker));
-      // Promotion historically wrote null authors. A separately authored gate
-      // on even the SAME pair remains that author's gate after the plan changes.
-      if (edge && (edge.created_by === null || edge.created_by === planAuthor)) {
-        mutations.push({ op: 'remove', blocked, blocker });
-      }
-    }
-    for (const id of desired) {
-      // A status-only edit must not repair an older missing edge behind active
-      // work elsewhere in the plan. New declarations and reopened prerequisites
-      // still pass through the canonical dependency admission guard below.
-      if (priorRequired.has(id)) continue;
-      const blocker = endpoints.get(id);
-      if (!blocker) throw new Error(`promoted_plan_blocker_unresolved: ${scope.slug}#${itemId} requires ${id}; promote the blocker before changing this dependency`);
-      // Idempotent add keeps existing authorship and SUCCESS satisfaction.
-      mutations.push({ op: 'add', blocked, blocker,
-        ...(existingByKey.has(edgeKey(blocked, blocker)) ? {} : { createdBy: planAuthor }),
-      });
-    }
-  }
-  return mutations;
-}
 
 /**
  * Append a SYSTEM-attributed plan_revisions row inside the plan write's own transaction.
@@ -658,6 +576,8 @@ export async function withPlanLock<T>(
          AND plan_slug = ${slug}
     `;
     const cur = rows[0] ?? null;
+    const lineNodes = await readPlanLineNodes(tx, { workspaceId, harnessSlug, slug });
+    if (cur) cur.content = renderPlanLines(cur.content, lineNodes);
     const curVersion = cur ? Number(cur.version) : 0;
     // WI-10004529: opt-in read of the revision-spine head, under the SAME lock as `cur`.
     let latestRevision: { seq: number; body: string } | null = null;
@@ -1073,10 +993,8 @@ export async function withPlanLock<T>(
         idx,
       );
 
-      const dependencyMutations = await promotedDependencyMutations(
-        tx, { workspaceId, harnessSlug, slug },
-        cur ? parsePlan(cur.content, { filePath }) : null,
-        parsePlan(newBody, { filePath }),
+      const dependencyMutations = await writePlanLineNodes(
+        tx, { workspaceId, harnessSlug, slug }, lineNodes, idx.items,
       );
       if (dependencyMutations.length > 0) {
         // A coupled graph write needs the canonical isolation boundary. Abort

@@ -7,6 +7,67 @@
  * callers must never infer behavior classes, acceptance, or exemptions.
  */
 import { createHash } from 'node:crypto';
+
+export type PlanAcceptanceRefInspection =
+  | { kind: 'unstructured' }
+  | { kind: 'structured'; planSlug: string; revision: number; planItemId: string }
+  | { kind: 'invalid'; code: string; reason: string };
+
+/**
+ * Interpret the structured plan-revision reference form while preserving the
+ * older free-form acceptance references (for example decision IDs and BAR refs).
+ */
+export function inspectPlanAcceptanceRef(
+  value: string | null | undefined,
+  expectedPlanItemId: string,
+): PlanAcceptanceRefInspection {
+  const ref = value?.trim();
+  if (!ref?.startsWith('plan:')) return { kind: 'unstructured' };
+
+  const match = /^plan:([^@\s#]+)@(\d+)#(P-\d{3,})$/.exec(ref);
+  if (!match) {
+    return {
+      kind: 'invalid',
+      code: 'malformed-plan-acceptance-ref',
+      reason: 'Use plan:<slug>@<positive-revision>#<planItemId> for structured plan acceptance references.',
+    };
+  }
+  const revision = Number(match[2]);
+  if (!Number.isSafeInteger(revision) || revision <= 0) {
+    return {
+      kind: 'invalid',
+      code: 'invalid-plan-acceptance-ref-revision',
+      reason: 'The plan acceptance reference revision must be a positive safe integer.',
+    };
+  }
+  if (match[3] !== expectedPlanItemId) {
+    return {
+      kind: 'invalid',
+      code: 'plan-acceptance-ref-item-mismatch',
+      reason: `The plan acceptance reference names ${match[3]}, but this clause belongs to ${expectedPlanItemId}.`,
+    };
+  }
+  return { kind: 'structured', planSlug: match[1], revision, planItemId: match[3] };
+}
+
+/** Validate the structured reference and resolve its immutable plan revision. */
+export async function verifyPlanAcceptanceRef(
+  value: string | null | undefined,
+  expectedPlanItemId: string,
+  revisionExists: (planSlug: string, revision: number) => Promise<boolean>,
+): Promise<{ ok: true } | { ok: false; code: string; reason: string }> {
+  const inspected = inspectPlanAcceptanceRef(value, expectedPlanItemId);
+  if (inspected.kind === 'invalid') return { ok: false, code: inspected.code, reason: inspected.reason };
+  if (inspected.kind === 'unstructured') return { ok: true };
+  if (!(await revisionExists(inspected.planSlug, inspected.revision))) {
+    return {
+      ok: false,
+      code: 'plan-acceptance-ref-revision-not-found',
+      reason: `Plan revision ${inspected.planSlug}@${inspected.revision} does not exist in this harness.`,
+    };
+  }
+  return { ok: true };
+}
 import type { SpecBehaviorClass, SpecClauseFalsifier, SpecLifecycleStatus } from './spec-clauses-store';
 import { extractAssertionCandidates, type PlanAssertionCandidate } from './val-assertions';
 

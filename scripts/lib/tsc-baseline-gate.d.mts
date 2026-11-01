@@ -1106,6 +1106,10 @@ export function scopedFilesArg(files: string[], { maxInlineChars, tmpRoot }?: {
  * Run the planned consumer legs as child gate processes, at most `concurrency` at once: each one
  * builds a full program (3-23 s and 1-2 GB, measured 2026-10-12). A child is RED only when it
  * exits 1 with a `status=regressed` marker; any other outcome is UNDETERMINED, never clean.
+ * `childTimeoutMs` bounds silence between compiler progress records, not total wall time: a
+ * service queue wait followed by a slow but advancing diagnostics phase must not lose its result
+ * merely because the sum exceeds one fixed deadline. A separate ten-minute ceiling still bounds
+ * a child that continually reports progress without finishing.
  * A clean child whose marker says `members=0` compiled NONE of the named files, so it checked
  * nothing: it goes to `notMember`, never `clean` (WI-6554700010009515). A vacuous clean would
  * read as "verified in this leg". A marker with no `members=` field stays clean.

@@ -73,19 +73,19 @@ describe('streaming retention census evidence', () => {
       expect(wire.text().split('\0').length / 9).toBeLessThan(compact.inspectedNodes / 4);
       expect(compact.entries.find(entry => entry.path === tree)?.hardlinks?.[0]?.paths).toHaveLength(2);
       expect(compact.entries.find(entry => entry.path === tree)?.buildDirs).toContainEqual(expect.objectContaining({ path: modules }));
-      expect(compact.retained).toContainEqual(expect.objectContaining({ path: protectedTree, reason: 'symlink boundary' }));
+      expect(compact.entries).toContainEqual(expect.objectContaining({ path: protectedTree, buildDirs: [] }));
+      expect(compact.retained).not.toContainEqual(expect.objectContaining({ path: protectedTree, reason: 'symlink boundary' }));
       if (!includeRecent) expect(producerWire.text().split('\0').length / 9).toBeLessThan(expected.inspectedNodes / 4);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it.each(['symlink', 'special', 'policy'])('stops an uncapped candidate at its first conclusive %s boundary in one native walk', async (boundary) => {
+  it.each(['special', 'policy'])('stops an uncapped candidate at its first conclusive %s boundary in one native walk', async (boundary) => {
     const root = mkdtempSync(join(tmpdir(), 'retention-early-protection-'));
     try {
       const tree = join(root, 'tree'); await fsp.mkdir(tree);
       const paths = Array.from({ length: 64 }, (_, index) => join(tree, `boundary-${index}`));
       for (const path of paths) {
-        if (boundary === 'symlink') await fsp.symlink('/never-follow-this-retention-target', path);
-        else if (boundary === 'policy') await fsp.writeFile(path, 'protected');
+        if (boundary === 'policy') await fsp.writeFile(path, 'protected');
       }
       if (boundary === 'special') execFileSync('mkfifo', ['--', ...paths]);
       const sibling = join(root, 'eligible'); await fsp.writeFile(sibling, 'old');
@@ -94,8 +94,7 @@ describe('streaming retention census evidence', () => {
         ...(boundary === 'policy' ? { excludedPaths: paths } : {}) });
       expect(census.error).toBeUndefined();
       expect(census.entries).toEqual([expect.objectContaining({ path: sibling })]);
-      expect(census.retained).toEqual([{ path: tree, reason: boundary === 'symlink' ? 'symlink boundary'
-        : boundary === 'special' ? 'special filesystem entry' : 'protected policy root' }]);
+      expect(census.retained).toEqual([{ path: tree, reason: boundary === 'special' ? 'special filesystem entry' : 'protected policy root' }]);
       expect(census.inspectedNodes).toBe(3);
       expect(spawn).toHaveBeenCalledTimes(1);
       expect(await fsp.readdir(tree)).toHaveLength(64);
@@ -105,6 +104,33 @@ describe('streaming retention census evidence', () => {
       expect(full.error).toBeUndefined(); expect(full.inspectedNodes).toBe(66);
       expect(full.retained[0]?.entry?.bytes).toBeGreaterThanOrEqual((await fsp.stat(tree)).blocks * 512);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('counts symlink children as removable metadata without following their targets', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-symlink-child-'));
+    const target = mkdtempSync(join(tmpdir(), 'retention-symlink-target-'));
+    try {
+      const tree = join(root, 'tree'); await fsp.mkdir(tree);
+      await fsp.mkdir(join(tree, 'node_modules'));
+      const targetFile = join(target, 'owner-data'); await fsp.writeFile(targetFile, 'preserve');
+      await fsp.symlink(target, join(tree, 'directory-link'));
+      await fsp.symlink(join(target, 'missing'), join(tree, 'broken-link'));
+      const sibling = join(root, 'eligible'); await fsp.writeFile(sibling, 'expired');
+      const census = await inspectRetentionTrees(root, { retainAfterMs: 2_000_000_000_000 });
+      expect(census.error).toBeUndefined();
+      expect(census.entries).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: tree }), expect.objectContaining({ path: sibling }),
+      ]));
+      expect(census.retained).toEqual([]);
+      // tree + node_modules + two links + sibling; link targets are outside the scan.
+      expect(census.inspectedNodes).toBe(5);
+      const buildCensus = await inspectRetentionTrees(root, { retainAfterMs: 2_000_000_000_000, collectBuildDirs: true });
+      expect(buildCensus.error).toBeUndefined();
+      expect(buildCensus.entries).toContainEqual(expect.objectContaining({ path: tree, buildDirs: [] }));
+      expect(buildCensus.retained).toEqual([]);
+      expect(buildCensus.inspectedNodes).toBe(5);
+      expect(await fsp.readFile(targetFile, 'utf8')).toBe('preserve');
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(target, { recursive: true, force: true }); }
   });
 
   it('stops an uncapped recent tree before reading its children', async () => {

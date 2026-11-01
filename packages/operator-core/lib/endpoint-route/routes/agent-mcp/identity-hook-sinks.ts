@@ -25,6 +25,7 @@
 
 import { defineTool } from '@papercusp/agent-mcp';
 import { tagTurnForInjection } from '../../../turn-provenance/turn-provenance';
+import { checkPlanExecutionGuard } from '../../../agent-tools/plans/plan-execution-guard';
 import {
   evaluateHookContextSink,
   evaluateToolGuard,
@@ -102,6 +103,9 @@ export async function toolGuardText(
   input: { ownerId: string; workspaceId: string; call: PendingToolCall },
   readWornRules: (ownerId: string, workspaceId: string) => Promise<WornSyncRules | null> = readAppliedWornRules,
 ): Promise<string> {
+  const refused = await checkPlanExecutionGuard({ ownerId: input.ownerId, workspaceId: input.workspaceId,
+    toolName: input.call.tool, args: input.call.input });
+  if (refused) return `${refused.code}: ${refused.reason}`;
   return guardRefusalText(await evaluateToolGuard(input.call, () => readWornRules(input.ownerId, input.workspaceId)));
 }
 

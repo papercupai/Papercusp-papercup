@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { getWorkItem, type WorkItem } from './work-items';
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 import { bodyRefWorkItemResolver } from './agent-tools/coordination/ref-hydrate-resolve';
 import {
   buildCarryBrief,
@@ -66,6 +67,26 @@ vi.mock('./work-item-checkpoint', async (importOriginal) => {
 });
 const mockedGetWorkItem = vi.mocked(getWorkItem);
 
+const RAW_SQL_FRAGMENT = Symbol('raw SQL fragment');
+type RawSqlFragment = { readonly [RAW_SQL_FRAGMENT]: string };
+
+function captureSqlTemplate(strings: TemplateStringsArray, values: readonly unknown[]) {
+  let text = '';
+  const params: unknown[] = [];
+  for (let i = 0; i < strings.length; i += 1) {
+    text += strings[i]!;
+    if (i >= values.length) continue;
+    const value = values[i];
+    if (typeof value === 'object' && value !== null && RAW_SQL_FRAGMENT in value) {
+      text += (value as RawSqlFragment)[RAW_SQL_FRAGMENT];
+    } else {
+      text += '¶';
+      params.push(value);
+    }
+  }
+  return { text, params };
+}
+
 /** Minimal tagged-template `sql` stub returning fixed `engineer_issues` rows. */
 function fakeIssuesSql(
   rows: Array<{
@@ -78,7 +99,11 @@ function fakeIssuesSql(
     last_progress_at?: string | number | Date | null;
   }>,
 ) {
-  return ((_strings: TemplateStringsArray, ..._vals: unknown[]) => Promise.resolve(rows)) as unknown as never;
+  const sql = ((_strings: TemplateStringsArray, ..._vals: unknown[]) => Promise.resolve(rows)) as unknown as {
+    unsafe: (value: string) => RawSqlFragment;
+  };
+  sql.unsafe = (value) => ({ [RAW_SQL_FRAGMENT]: value });
+  return sql as unknown as never;
 }
 
 function fullOpts(overrides: Partial<BuildCarryBriefOpts> = {}): BuildCarryBriefOpts {
@@ -101,8 +126,8 @@ function fullOpts(overrides: Partial<BuildCarryBriefOpts> = {}): BuildCarryBrief
     ],
     listOwnerFactsFn: async () => [{ key: 'zombie-pids-wall', body: '3 zombie PIDs await owner OK to kill' }],
     listActiveAwaitsFn: async () => [
-      { eventKey: 'coord:inbox-wake:su-abc', note: 'always-armed inbox-wake' },
-      { eventKey: 'deploy:done:release-77', note: 'waiting on the green deploy' },
+      { awaitId: 11, eventKey: 'coord:inbox-wake:su-abc', note: 'always-armed inbox-wake' },
+      { awaitId: 12, eventKey: 'deploy:done:release-77', note: 'waiting on the green deploy' },
     ],
     getFleetFn: async () => ({ slug: 'bug-drain', role: 'leader' }),
     listOpenDirectivesFn: async () => ({ rows: [], totalOpen: 0 }),
@@ -153,7 +178,7 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
   it('filters infra inbox-wake awaits and keeps real ones', async () => {
     const brief = await buildCarryBrief('su-abc', fullOpts());
     expect(brief.awaits).toEqual([
-      { eventKey: 'deploy:done:release-77', note: 'waiting on the green deploy' },
+      { awaitId: 12, eventKey: 'deploy:done:release-77', note: 'waiting on the green deploy' },
     ]);
   });
 
@@ -164,7 +189,7 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
         listOwnerFactsFn: async () =>
           Array.from({ length: 30 }, (_, i) => ({ key: `k${i}`, body: `b${i}` })),
         listActiveAwaitsFn: async () =>
-          Array.from({ length: 30 }, (_, i) => ({ eventKey: `ev:${i}`, note: null })),
+          Array.from({ length: 30 }, (_, i) => ({ awaitId: i + 1, eventKey: `ev:${i}`, note: null })),
       }),
     );
     expect(brief.facts.length).toBe(CARRY_BRIEF_MAX_FACTS);
@@ -2386,10 +2411,14 @@ describe('readHeldWorkItems — EI-9013 (feature-family coverage + workspace can
   function capturingSql(rows: Array<{ issue_id: string; title: string | null; body: string | null; scope: string }>) {
     const calls: Array<{ text: string; params: unknown[] }> = [];
     const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
-      calls.push({ text: strings.join('¶'), params: vals });
+      calls.push(captureSqlTemplate(strings, vals));
       return Promise.resolve(rows);
-    }) as unknown as never;
-    return { sql, calls };
+    }) as unknown as {
+      (strings: TemplateStringsArray, ...vals: unknown[]): Promise<typeof rows>;
+      unsafe: (value: string) => RawSqlFragment;
+    };
+    sql.unsafe = (value) => ({ [RAW_SQL_FRAGMENT]: value });
+    return { sql: sql as unknown as never, calls };
   }
 
   it('queries work_items DIRECTLY, covering the feature/chunk family the engineer_issues view excludes', async () => {
@@ -2411,7 +2440,7 @@ describe('readHeldWorkItems — EI-9013 (feature-family coverage + workspace can
     expect(calls[0]!.text).toContain('harness_shared.work_items');
     expect(calls[0]!.text).not.toContain('engineer_issues');
     expect(calls[0]!.text).toContain("item_kind IN ('feature', 'chunk')");
-    expect(calls[0]!.text).toContain("item_kind IN ('bug', 'change', 'task')");
+    expect(calls[0]!.text).toContain(`item_kind IN (${ISSUE_FAMILY_KINDS_SQL_LIST})`);
     expect(calls[0]!.text).toContain('last_progress_at');
   });
 
@@ -2500,8 +2529,8 @@ describe('readHeldWorkItems — EI-9013 (feature-family coverage + workspace can
     };
     const calls: Array<{ text: string; params: unknown[] }> = [];
     const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
-      const text = strings.join('¶');
-      calls.push({ text, params: vals });
+      const { text, params } = captureSqlTemplate(strings, vals);
+      calls.push({ text, params });
       // Model the row discriminator the production SQL must enforce. The
       // receipt intentionally has a non-terminal outer shape; only the
       // reserved payload marker distinguishes it from real held work.
@@ -2510,10 +2539,14 @@ describe('readHeldWorkItems — EI-9013 (feature-family coverage + workspace can
           ? [realWork]
           : [receipt, realWork],
       );
-    }) as unknown as never;
+    }) as unknown as {
+      (strings: TemplateStringsArray, ...vals: unknown[]): Promise<typeof receipt[]>;
+      unsafe: (value: string) => RawSqlFragment;
+    };
+    sql.unsafe = (value) => ({ [RAW_SQL_FRAGMENT]: value });
 
     const held = await readHeldWorkItems('su-abc', 'ws-test', {
-      sql,
+      sql: sql as unknown as never,
       getWorkItemCheckpointFn: async () => 'checkpoint',
     });
 
@@ -2536,10 +2569,14 @@ describe('readDeferredWorkItems — session-authored/commented unheld work', () 
   function capturingSql(rows: Row[] | Error) {
     const calls: Array<{ text: string; params: unknown[] }> = [];
     const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
-      calls.push({ text: strings.join('¶'), params: vals });
+      calls.push(captureSqlTemplate(strings, vals));
       return rows instanceof Error ? Promise.reject(rows) : Promise.resolve(rows);
-    }) as unknown as never;
-    return { sql, calls };
+    }) as unknown as {
+      (strings: TemplateStringsArray, ...vals: unknown[]): Promise<Row[]>;
+      unsafe: (value: string) => RawSqlFragment;
+    };
+    sql.unsafe = (value) => ({ [RAW_SQL_FRAGMENT]: value });
+    return { sql: sql as unknown as never, calls };
   }
 
   it('reads and normalizes the latest unended session boundary', async () => {
@@ -2647,7 +2684,7 @@ describe('readDeferredWorkItems — session-authored/commented unheld work', () 
     expect(calls[0]!.text).toContain('bool_or(created_this_session)');
     expect(calls[0]!.text).toContain('bool_or(commented_this_session)');
     expect(calls[0]!.text).not.toContain('EXISTS (');
-    expect(calls[0]!.text).toContain("item_kind IN ('bug', 'change', 'task')");
+    expect(calls[0]!.text).toContain(`item_kind IN (${ISSUE_FAMILY_KINDS_SQL_LIST})`);
     expect(calls[0]!.text).toContain("item_kind IN ('feature', 'chunk')");
     expect(calls[0]!.text).toContain('wi.taken_by IS NULL');
     expect(calls[0]!.text).toContain('wi.status IS NULL OR wi.status <> ALL');
@@ -2800,6 +2837,36 @@ describe('deriveCarryQueryHandles — pull-precise handles, no recall (P-026 leg
       { kind: 'topic', ref: 'work-item:claimable', query: ['lane drained, waiting for new work'] },
       { kind: 'topic', ref: 'deploy:done', query: ['deploy:done'] },
     ]);
+  });
+
+  it('keeps conversation await ids paired with their event keys when two notes cross', async () => {
+    const awaits = [
+      {
+        awaitId: 101,
+        eventKey: 'conversation:answered:conv-a',
+        note: 'waiting for the answer in conv-b',
+      },
+      {
+        awaitId: 202,
+        eventKey: 'conversation:answered:conv-b',
+        note: 'waiting for the answer in conv-a',
+      },
+    ];
+    const brief = await buildCarryBrief('su-abc', fullOpts({ listActiveAwaitsFn: async () => awaits }));
+
+    expect(brief.awaits).toEqual(awaits);
+    expect(
+      deriveCarryQueryHandles({ heldItems: [], awaits: brief.awaits, facts: [] }),
+    ).toEqual([
+      { kind: 'topic', ref: 'conversation:answered:conv-a', query: ['conversation:answered:conv-a'] },
+      { kind: 'topic', ref: 'conversation:answered:conv-b', query: ['conversation:answered:conv-b'] },
+    ]);
+
+    const cold = renderCarryBriefColdExtras(brief);
+    expect(cold).toContain('await 101 → conversation:answered:conv-a');
+    expect(cold).toContain('await 202 → conversation:answered:conv-b');
+    expect(cold).not.toContain('waiting for the answer in conv-a');
+    expect(cold).not.toContain('waiting for the answer in conv-b');
   });
 
   it('emits a fact handle ONLY for dead-end-keyed facts (dead-end:%), skipping ordinary standing facts', () => {

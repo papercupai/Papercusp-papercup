@@ -12,6 +12,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
+import type { PsuPtyHost } from '../../events/await/psu-pty-discovery';
 import { LOOP_TURN_START_MARKER, SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import {
   materializeLoop,
@@ -66,6 +67,223 @@ afterAll(async () => {
 beforeEach(async () => {
   await sql`TRUNCATE harness_shared.routines, harness_shared.carry_notes`;
   await sql`TRUNCATE harness_shared.event_awaits, harness_shared.predicate_watches`;
+});
+
+describe('managed self-compaction continuation keeps loop status from reporting false fire-starvation', () => {
+  let seq = 0;
+
+  function currentFireHost(
+    ownerId: string,
+    firedAtMs: number,
+    overrides: {
+      host?: Partial<PsuPtyHost>;
+      execution?: Partial<NonNullable<PsuPtyHost['execution']>>;
+    } = {},
+  ): PsuPtyHost {
+    const now = Date.now();
+    const execution: NonNullable<PsuPtyHost['execution']> = {
+      phase: 'running',
+      turnStartedAt: firedAtMs + 1_000,
+      lastProgressAt: now - 500,
+      pendingTools: 1,
+      observedAt: now,
+      ownerId,
+      hostPid: 41001,
+      childPid: 41002,
+      childGeneration: 7,
+      receivedAtMs: firedAtMs + 500,
+    };
+    const host: PsuPtyHost = {
+      ownerId,
+      advSessionId: null,
+      pid: 41001,
+      ptyPid: 41002,
+      childGeneration: 7,
+      // The host must predate its receipt of this fire; tests may model an
+      // active operation that began several minutes ago.
+      startedAt: Math.min(now - 30_000, firedAtMs),
+      sock: '/tmp/loop-status-test.sock',
+      command: 'codex',
+      nativeSessionId: 'native-session-current-fire',
+      execution,
+    };
+    return {
+      ...host,
+      ...overrides.host,
+      execution: { ...execution, ...overrides.execution },
+    };
+  }
+
+  async function continuationStatus(input: {
+    activitySource?: 'agent_activity' | 'tool_invocations';
+    activityBeforePrompt?: boolean;
+    promptAgeMinutes?: number;
+    endedAfterActivity?: boolean;
+    newerUnrelatedPrompt?: boolean;
+    includeContinuationPrompt?: boolean;
+    directLoopFire?: boolean;
+    findHost?: (ownerId: string, firedAtMs: number) => PsuPtyHost | null;
+  } = {}) {
+    const owner = `${OWNER}-managed-continuation-${++seq}`;
+    const sessionId = `managed-continuation-session-${seq}`;
+    const now = Date.now();
+    const armedAt = new Date(now - 20 * 60_000);
+    // The loop-turn start marker is itself stored in agent_activity. Age negative
+    // prompts past the live-turn window so their fixture marker cannot masquerade
+    // as activity that began after the prompt.
+    const promptAt = new Date(now - (input.promptAgeMinutes ?? 5) * 60_000);
+    const fireCount = input.directLoopFire ? 3 : 0;
+    const lastFiredAt = input.directLoopFire
+      ? new Date(promptAt.getTime() - 1_000)
+      : new Date(armedAt.getTime() - 60_000);
+    const activityAt = input.activityBeforePrompt
+      ? new Date(promptAt.getTime() - 60_000)
+      : new Date(now - 60_000);
+
+    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: owner,
+      intervalSec: 60, kickoff: 'continue managed work', sql });
+    await sql`
+      UPDATE harness_shared.routines
+         SET last_fired_at = ${lastFiredAt.toISOString()}::timestamptz,
+             next_fire_at = 'infinity'::timestamptz,
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+               'fire_count', ${fireCount}::int,
+               'fire_count_at_arm', 0,
+               'armed_at', ${armedAt.toISOString()}::text
+             )
+       WHERE name = ${loopRoutineName(owner)}
+    `;
+
+    if (input.includeContinuationPrompt !== false) {
+      await sql`
+        INSERT INTO harness_shared.session_turns
+          (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug,
+           speaker, text, turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+        VALUES (${WS}, 'codex', ${sessionId}, 0, ${promptAt.toISOString()}::timestamptz,
+                ${owner}, ${HARNESS}, 'user', 'managed continuation prompt',
+                ${input.directLoopFire ? 'loop-fire' : 'self-compaction'}, 'agent-injected', 1)
+      `;
+      await sql`
+        INSERT INTO harness_shared.agent_activity
+          (workspace_id, owner_id, session_id, kind, summary, detail, created_at)
+        SELECT ${WS}, ${owner}, ${sessionId}, 'lifecycle', ${LOOP_TURN_START_MARKER},
+               jsonb_build_object(
+                 'source', 'session-ingest',
+                 'loopFire', jsonb_build_object('routineId', id::text, 'wakeCount', ${fireCount}::int),
+                 'indexedTurn', jsonb_build_object(
+                   'workspaceId', ${WS}::text, 'sourceKind', 'codex',
+                   'sessionId', ${sessionId}::text, 'turnIdx', 0
+                 )
+               ), ${new Date(promptAt.getTime() + 500).toISOString()}::timestamptz
+          FROM harness_shared.routines
+         WHERE name = ${loopRoutineName(owner)}
+      `;
+    }
+
+    if (input.newerUnrelatedPrompt) {
+      await sql`
+        INSERT INTO harness_shared.session_turns
+          (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug,
+           speaker, text, turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+        VALUES (${WS}, 'codex', ${sessionId}, 1, ${new Date(now - 30_000).toISOString()}::timestamptz,
+                ${owner}, ${HARNESS}, 'user', 'unrelated newer request', NULL, 'owner-typed', 1)
+      `;
+    }
+
+    if (input.activitySource === 'tool_invocations') {
+      await sql`
+        INSERT INTO harness_shared.tool_invocations
+          (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id,
+           window_key, status, coord_owner_id, invoked_at)
+        VALUES (${WS}, ${HARNESS}, 'fixture', 'fixture:tool', 'operator', ${`spawn-${seq}`},
+                ${`window-${seq}`}, 'ok', ${owner}, ${activityAt.toISOString()}::timestamptz)
+      `;
+    } else {
+      await sql`
+        INSERT INTO harness_shared.agent_activity
+          (workspace_id, owner_id, session_id, kind, tool_name, phase, summary, created_at)
+        VALUES (${WS}, ${owner}, ${sessionId}, 'tool', 'Bash', 'post', '▶ active tool call',
+                ${activityAt.toISOString()}::timestamptz)
+      `;
+    }
+
+    if (input.endedAfterActivity) {
+      await sql`
+        INSERT INTO harness_shared.agent_activity
+          (workspace_id, owner_id, session_id, kind, summary, created_at)
+        VALUES (${WS}, ${owner}, ${sessionId}, 'lifecycle', ${SESSION_END_MARKER},
+                ${new Date(activityAt.getTime() + 1_000).toISOString()}::timestamptz)
+      `;
+    }
+
+    return getLoopStatus(owner, {
+      sql,
+      ...(input.findHost
+        ? { findHost: async requestedOwner => input.findHost!(requestedOwner, lastFiredAt.getTime()) }
+        : {}),
+    });
+  }
+
+  it.each(['agent_activity', 'tool_invocations'] as const)(
+    'uses recent %s activity after a typed managed continuation prompt as current execution evidence',
+    async activitySource => {
+      const status = await continuationStatus({ activitySource });
+      expect(status).toMatchObject({ firesSinceArm: 0, parked: true, fireStarved: false, turnsStalled: false });
+      expect(classifyLoopNextWake(status!)).toEqual({ guaranteed: true, reason: null });
+    },
+  );
+
+  it('uses exact routine/fire start proof plus recent activity for a direct loop-fire turn', async () => {
+    const status = await continuationStatus({ directLoopFire: true });
+    expect(status).toMatchObject({ firesSinceArm: 3, parked: true, fireStarved: false, turnsStalled: false });
+  });
+
+  it('clears a turns-stalled direct fire when the live host proves its current native execution', async () => {
+    const status = await continuationStatus({
+      directLoopFire: true,
+      includeContinuationPrompt: false,
+      findHost: currentFireHost,
+    });
+    expect(status).toMatchObject({ firesSinceArm: 3, parked: true, fireStarved: false, turnsStalled: false });
+  });
+
+  it.each([
+    ['stale host observation', { execution: { observedAt: Date.now() - 60_000 } }],
+    ['receipt predating this fire', { execution: { receivedAtMs: 1 } }],
+    ['turn start predating this fire', { execution: { turnStartedAt: 1 } }],
+    ['wrong host owner', { host: { ownerId: 'another-owner' } }],
+    ['wrong execution host pid', { execution: { hostPid: 42001 } }],
+    ['wrong child pid', { execution: { childPid: 42002 } }],
+    ['wrong child generation', { execution: { childGeneration: 8 } }],
+    ['parked host', { host: { parked: true } }],
+  ] as const)('keeps direct-fire status turns-stalled with %s host evidence', async (_label, overrides) => {
+    const status = await continuationStatus({
+      directLoopFire: true,
+      includeContinuationPrompt: false,
+      findHost: (ownerId, firedAtMs) => currentFireHost(ownerId, firedAtMs, overrides),
+    });
+    expect(status).toMatchObject({ firesSinceArm: 3, parked: true, turnsStalled: true });
+  });
+
+  it.each([
+    ['activity before the continuation prompt', { activityBeforePrompt: true, promptAgeMinutes: 15 }],
+    ['a trailing session-end marker', { endedAfterActivity: true }],
+    ['a newer unrelated user prompt', { newerUnrelatedPrompt: true }],
+    ['no managed continuation prompt', { includeContinuationPrompt: false }],
+  ] as const)('keeps genuine fire-starvation visible with %s', async (_label, input) => {
+    const status = await continuationStatus(input);
+    expect(status?.fireStarved).toBe(true);
+    expect(classifyLoopNextWake(status!)).toEqual({ guaranteed: false, reason: 'fire-starved' });
+  });
+
+  it('keeps a direct loop fire turns-stalled when its activity predates the prompt', async () => {
+    const status = await continuationStatus({
+      directLoopFire: true,
+      activityBeforePrompt: true,
+      promptAgeMinutes: 15,
+    });
+    expect(status).toMatchObject({ firesSinceArm: 3, fireStarved: false, turnsStalled: true });
+  });
 });
 
 /** Typed transcript origin alone is insufficient: the dispatcher also enrolls

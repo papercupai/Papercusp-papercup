@@ -49,4 +49,36 @@ describe('independent edit-time interface eligibility', () => {
     const source = readFileSync(new URL('./interface-eligibility.ts', import.meta.url), 'utf8');
     expect(source).not.toMatch(/(?:from\s*|import\s*\()\s*['"][^'"]*(?:push-channel|peer-edit-impact|check-required-field-strands)/);
   });
+
+  it('independently records added exported functions before consulting peer availability', () => {
+    const before = 'export function existing(x: number) { return x; }';
+    const after = `${before}\nexport function added() {}\nexport const arrow = () => 1;\nexport const expression = function() {};`;
+    expect(capture(before, after, { status: 'unknown', peers: [] }))
+      .toMatchObject({ verdict: 'unknown', addedExportedFunctions: ['added', 'arrow', 'expression'] });
+    expect(capture('', 'export default function() {}'))
+      .toMatchObject({ addedExportedFunctions: ['default'] });
+  });
+
+  it('does not count body/signature edits or non-callable exports as added functions', () => {
+    expect(capture('export function existing(x: string) {}',
+      'export function existing(x: number) {}\nexport class A {}\nexport type T = string;\nexport const value: number = 1;'))
+      .toMatchObject({ addedExportedFunctions: [] });
+    expect(capture(null, 'export function added() {}')).toMatchObject({ addedExportedFunctions: null });
+    expect(capture('', 'export function broken( {')).toMatchObject({ addedExportedFunctions: null });
+  });
+
+  it('counts local export aliases and default callables, while unresolved value re-exports stay unknown', () => {
+    expect(capture('', 'function local() {}\nexport { local as named };'))
+      .toMatchObject({ addedExportedFunctions: ['named'] });
+    expect(capture('', 'const local = () => 1;\nexport default local;'))
+      .toMatchObject({ addedExportedFunctions: ['default'] });
+    expect(capture('', 'export default () => 1;')).toMatchObject({ addedExportedFunctions: ['default'] });
+    expect(capture('', 'export { remote } from "./other";')).toMatchObject({ addedExportedFunctions: null });
+    expect(capture('', 'export const inferred = factory();')).toMatchObject({ addedExportedFunctions: null });
+    expect(capture('', 'declare const source: any;\nexport const inferred: any = source;'))
+      .toMatchObject({ addedExportedFunctions: null });
+    expect(capture('', 'declare const source: { (): void };\nexport const inferred: { (): void } = source;'))
+      .toMatchObject({ addedExportedFunctions: null });
+    expect(capture('', 'export type { T } from "./other";')).toMatchObject({ addedExportedFunctions: [] });
+  });
 });

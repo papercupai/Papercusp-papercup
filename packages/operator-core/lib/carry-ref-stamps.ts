@@ -30,9 +30,16 @@
  */
 
 import { createHash } from 'node:crypto';
+import { isAbsolute, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import type { DepStamp } from './freshness/index';
-import { resolveCurrentTokens, splitDep, type FreshnessResolverCtx } from './freshness/resolvers';
+import {
+  resolveCurrentTokens,
+  resolveFileTokensWithProvenance,
+  splitDep,
+  type FreshnessFileRootSource,
+  type FreshnessResolverCtx,
+} from './freshness/resolvers';
 
 /** At most this many references are stamped per checkpoint (first appearance wins). */
 export const CARRY_REF_MAX = 24;
@@ -42,6 +49,23 @@ export const CARRY_REF_DELIVERY_MAX = 48;
 export const CARRY_REF_DELIVERY_TIMEOUT_MS = 4_000;
 /** Bound on write-time stamping, which sits on the checkpoint write path. */
 export const CARRY_REF_STAMP_TIMEOUT_MS = 2_000;
+
+/** A carried file stamp keeps the checkout that supplied its baseline hash. */
+export interface CarryRefStamp extends DepStamp {
+  sourceRoot?: string;
+  sourceRootKind?: FreshnessFileRootSource;
+}
+
+export interface CarryRefFileRoot {
+  root: string | null;
+  rootSource: FreshnessFileRootSource | null;
+}
+
+export interface CarryRefResolution {
+  tokens: Map<string, string | null>;
+  /** Keyed by the full file dependency tag, e.g. file:packages/x.ts. */
+  fileRoots: Map<string, CarryRefFileRoot>;
+}
 
 const WORK_ITEM_REF = /\b(?:WI|EI)-\d{4,}\b/g;
 const DECISION_REF = /\b(?:plan:)?([a-z0-9][a-z0-9-]*[a-z0-9])#(D-\d{3,})\b/gi;
@@ -202,12 +226,20 @@ export type CarryRefResolver = (
  * Resolve `kind:ref` tags of the four carry-reference kinds to current tokens, batched
  * per kind. Never throws; an unresolvable tag maps to null.
  */
-export const resolveCarryRefTokens: CarryRefResolver = async (deps, ctx) => {
+export async function resolveCarryRefTokensWithProvenance(
+  deps: readonly string[],
+  ctx: FreshnessResolverCtx,
+): Promise<CarryRefResolution> {
   const out = new Map<string, string | null>();
+  const fileRefs: string[] = [];
   const declarable: string[] = [];
   const byLocal = new Map<'decision' | 'fact', string[]>();
   for (const dep of deps) {
     const parts = splitDep(dep);
+    if (parts?.kind === 'file') {
+      fileRefs.push(parts.ref);
+      continue;
+    }
     if (parts && (parts.kind === 'decision' || parts.kind === 'fact')) {
       const list = byLocal.get(parts.kind) ?? [];
       list.push(parts.ref);
@@ -216,16 +248,32 @@ export const resolveCarryRefTokens: CarryRefResolver = async (deps, ctx) => {
       declarable.push(dep);
     }
   }
-  const [base, decisions, facts] = await Promise.all([
+  const [base, decisions, facts, files] = await Promise.all([
     declarable.length > 0 ? resolveCurrentTokens(declarable, ctx).catch(() => allNull(declarable)) : new Map<string, string | null>(),
     resolveDecisionTokens(byLocal.get('decision') ?? [], ctx),
     resolveFactTokens(byLocal.get('fact') ?? [], ctx),
+    fileRefs.length > 0
+      ? resolveFileTokensWithProvenance(fileRefs, ctx).catch(() => ({
+          tokens: allNull(fileRefs),
+          root: null,
+          rootSource: null,
+        }))
+      : Promise.resolve({ tokens: new Map<string, string | null>(), root: null, rootSource: null }),
   ]);
   for (const dep of declarable) out.set(dep, base.get(dep) ?? null);
   for (const [ref, token] of decisions) out.set(`decision:${ref}`, token);
   for (const [ref, token] of facts) out.set(`fact:${ref}`, token);
-  return out;
-};
+  const fileRoots = new Map<string, CarryRefFileRoot>();
+  for (const ref of fileRefs) {
+    const dep = `file:${ref}`;
+    out.set(dep, files.tokens.get(ref) ?? null);
+    fileRoots.set(dep, { root: files.root, rootSource: files.rootSource });
+  }
+  return { tokens: out, fileRoots };
+}
+
+export const resolveCarryRefTokens: CarryRefResolver = async (deps, ctx) =>
+  (await resolveCarryRefTokensWithProvenance(deps, ctx)).tokens;
 
 /**
  * WRITE side: stamp every reference the checkpoint text cites that resolves right now.
@@ -241,26 +289,37 @@ export async function stampCarryRefs(input: {
   resolve?: CarryRefResolver;
   /** Bound on the resolution; a write never waits longer than this (→ `[]`). */
   timeoutMs?: number;
-}): Promise<DepStamp[]> {
+}): Promise<CarryRefStamp[]> {
   if (!input.workspaceId) return [];
   const deps = extractCarryRefDeps(input.text, { exclude: input.exclude });
   if (deps.length === 0) return [];
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const tokens = await Promise.race([
-      (input.resolve ?? resolveCarryRefTokens)(deps, {
-        workspaceId: input.workspaceId,
-        harness: input.harness,
-      }),
-      new Promise<Map<string, string | null>>((resolve) => {
-        timer = setTimeout(() => resolve(new Map()), input.timeoutMs ?? CARRY_REF_STAMP_TIMEOUT_MS);
+    const ctx = { workspaceId: input.workspaceId, harness: input.harness };
+    const resolution = await Promise.race([
+      input.resolve
+        ? input.resolve(deps, ctx).then((tokens) => ({ tokens, fileRoots: new Map<string, CarryRefFileRoot>() }))
+        : resolveCarryRefTokensWithProvenance(deps, ctx),
+      new Promise<CarryRefResolution>((resolveResult) => {
+        timer = setTimeout(
+          () => resolveResult({ tokens: new Map(), fileRoots: new Map() }),
+          input.timeoutMs ?? CARRY_REF_STAMP_TIMEOUT_MS,
+        );
       }),
     ]);
     const at = input.now ?? Date.now();
-    const stamps: DepStamp[] = [];
+    const stamps: CarryRefStamp[] = [];
     for (const dep of deps) {
-      const token = tokens.get(dep);
-      if (typeof token === 'string' && token.length > 0) stamps.push({ dep, token, at });
+      const token = resolution.tokens.get(dep);
+      if (typeof token !== 'string' || token.length === 0) continue;
+      const fileRoot = resolution.fileRoots.get(dep);
+      stamps.push({
+        dep,
+        token,
+        at,
+        ...(fileRoot?.root ? { sourceRoot: fileRoot.root } : {}),
+        ...(fileRoot?.rootSource ? { sourceRootKind: fileRoot.rootSource } : {}),
+      });
     }
     return stamps;
   } catch {
@@ -279,11 +338,11 @@ export async function stampCarryRefs(input: {
  */
 export function reconcileCarryRefStamps(
   storedNote: string | null,
-  fresh: readonly DepStamp[] | undefined,
+  fresh: readonly CarryRefStamp[] | undefined,
   priorDeps: unknown,
-): DepStamp[] {
+): CarryRefStamp[] {
   if (!storedNote) return [];
-  const out = [...(fresh ?? [])];
+  const out: CarryRefStamp[] = [...(fresh ?? [])];
   const have = new Set(out.map((s) => s.dep));
   const cited = new Set(extractCarryRefDeps(storedNote, { max: Number.MAX_SAFE_INTEGER }));
   for (const prior of parseCarryRefStamps(priorDeps)) {
@@ -295,16 +354,30 @@ export function reconcileCarryRefStamps(
 }
 
 /** Read the `refs` stamps out of a raw `carry_notes.deps` payload. Malformed → `[]`. */
-export function parseCarryRefStamps(rawDeps: unknown): DepStamp[] {
+export function parseCarryRefStamps(rawDeps: unknown): CarryRefStamp[] {
   if (!rawDeps || typeof rawDeps !== 'object') return [];
   const refs = (rawDeps as { refs?: unknown }).refs;
   if (!Array.isArray(refs)) return [];
-  const out: DepStamp[] = [];
+  const out: CarryRefStamp[] = [];
   for (const s of refs) {
     if (!s || typeof s !== 'object') continue;
-    const { dep, token, at } = s as Partial<DepStamp>;
+    const { dep, token, at, sourceRoot, sourceRootKind } = s as Partial<CarryRefStamp>;
     if (typeof dep !== 'string' || dep.length === 0 || typeof token !== 'string') continue;
-    out.push({ dep, token, at: typeof at === 'number' && Number.isFinite(at) ? at : 0 });
+    const root =
+      typeof sourceRoot === 'string' && sourceRoot.length <= 2_048 && isAbsolute(sourceRoot)
+        ? sourceRoot
+        : undefined;
+    const rootKind =
+      sourceRootKind === 'harness-root' || sourceRootKind === 'canonical-repo' || sourceRootKind === 'explicit-root'
+        ? sourceRootKind
+        : undefined;
+    out.push({
+      dep,
+      token,
+      at: typeof at === 'number' && Number.isFinite(at) ? at : 0,
+      ...(root ? { sourceRoot: root } : {}),
+      ...(rootKind ? { sourceRootKind: rootKind } : {}),
+    });
   }
   return out;
 }
@@ -317,7 +390,7 @@ export function parseCarryRefStamps(rawDeps: unknown): DepStamp[] {
  */
 export function mergeCarryRefStampsIntoDeps(
   depsCol: unknown,
-  refStamps: readonly DepStamp[] | undefined,
+  refStamps: readonly CarryRefStamp[] | undefined,
   priorDeps: unknown,
 ): unknown {
   const refs = refStamps === undefined ? parseCarryRefStamps(priorDeps) : [...refStamps];
@@ -332,25 +405,56 @@ export function mergeCarryRefStampsIntoDeps(
 
 export interface CarryRefChange {
   dep: string;
-  kind: 'changed' | 'unverified';
+  kind: 'changed' | 'unverified' | 'source-shift';
   was: string;
   now: string | null;
   /** Which checkpoint carried the reference (e.g. "loop note", "WI-1 checkpoint"). */
   source: string;
+  stampedAt: number;
+  stampedRoot: string | null;
+  stampedRootKind: FreshnessFileRootSource | null;
+  currentRoot: string | null;
+  currentRootKind: FreshnessFileRootSource | null;
+  rootChanged: boolean;
 }
 
 /** Compare stamps with current tokens. Unchanged references yield nothing. */
 export function diffCarryRefStamps(
-  stamps: readonly DepStamp[],
+  stamps: readonly CarryRefStamp[],
   current: ReadonlyMap<string, string | null>,
   source: string,
+  currentFileRoots: ReadonlyMap<string, CarryRefFileRoot> = new Map(),
 ): CarryRefChange[] {
   const out: CarryRefChange[] = [];
   for (const stamp of stamps) {
     if (!current.has(stamp.dep)) continue; // not re-resolved this pass (over the cap)
     const now = current.get(stamp.dep) ?? null;
-    if (now === null) out.push({ dep: stamp.dep, kind: 'unverified', was: stamp.token, now: null, source });
-    else if (now !== stamp.token) out.push({ dep: stamp.dep, kind: 'changed', was: stamp.token, now, source });
+    const currentRoot = currentFileRoots.get(stamp.dep) ?? null;
+    const rootChanged = Boolean(
+      stamp.sourceRoot &&
+      currentRoot?.root &&
+      resolve(stamp.sourceRoot) !== resolve(currentRoot.root),
+    );
+    const provenance = {
+      stampedAt: stamp.at,
+      stampedRoot: stamp.sourceRoot ?? null,
+      stampedRootKind: stamp.sourceRootKind ?? null,
+      currentRoot: currentRoot?.root ?? null,
+      currentRootKind: currentRoot?.rootSource ?? null,
+      rootChanged,
+    };
+    if (now === null) {
+      out.push({ dep: stamp.dep, kind: 'unverified', was: stamp.token, now: null, source, ...provenance });
+    } else if (now !== stamp.token || rootChanged) {
+      out.push({
+        dep: stamp.dep,
+        kind: rootChanged ? 'source-shift' : 'changed',
+        was: stamp.token,
+        now,
+        source,
+        ...provenance,
+      });
+    }
   }
   return out;
 }
@@ -361,6 +465,29 @@ function clipToken(token: string): string {
 
 function describeChange(change: CarryRefChange): string {
   const parts = splitDep(change.dep);
+  if (parts?.kind === 'file') {
+    const stampedAt = change.stampedAt > 0 ? new Date(change.stampedAt).toISOString() : 'unknown';
+    const stampedRoot = change.stampedRoot
+      ? (change.stampedRootKind ?? 'source') + ' ' + change.stampedRoot
+      : 'unknown (legacy stamp)';
+    const currentRoot = change.currentRoot
+      ? (change.currentRootKind ?? 'source') + ' ' + change.currentRoot
+      : 'unavailable';
+    const evidence =
+      'stamped=' + stampedAt +
+      '; baseline-root=' + stampedRoot +
+      '; current-root=' + currentRoot;
+    if (change.kind === 'unverified') {
+      return `  ⚠ UNVERIFIED — ${change.dep} [${change.source}]: stamped ${clipToken(change.was)}; ${evidence}. The current source could not be resolved. It may be missing, moved, or temporarily unreadable; this is not evidence of deletion.`;
+    }
+    if (change.kind === 'source-shift') {
+      const content = change.now === change.was
+        ? 'content hash is unchanged'
+        : `content hash differs (${clipToken(change.was)} → ${clipToken(change.now ?? '')})`;
+      return `  ⚠ SOURCE ROOT CHANGED — ${change.dep} [${change.source}]: ${content}; ${evidence}.`;
+    }
+    return `  ↻ CHANGED — ${change.dep} [${change.source}]: ${clipToken(change.was)} → ${clipToken(change.now ?? '')} (${evidence})`;
+  }
   if (change.kind === 'unverified') {
     return `  ⚠ UNVERIFIED — ${change.dep} [${change.source}]: stamped ${clipToken(change.was)}; the current source could not be resolved. It may be missing, moved, or temporarily unreadable; this is not evidence of deletion.`;
   }
@@ -393,7 +520,7 @@ export function renderCarryRefChanges(
 export interface CarryRefSource {
   /** Shown on each line, e.g. "loop note" or "WI-1 checkpoint". */
   label: string;
-  stamps: readonly DepStamp[];
+  stamps: readonly CarryRefStamp[];
   /** Harness owning these references; omitted sources inherit the caller's harness. */
   harness?: string | null;
 }
@@ -432,14 +559,16 @@ export async function carryRefChangesBlock(
   const resolutionBatches = [...batches.entries()].filter(([, batch]) => batch.deps.length > 0);
   const workspaceId = opts.workspaceId;
   if (dependencyCount === 0 || !workspaceId) return null;
-  const resolve = opts.resolve ?? resolveCarryRefTokens;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const resolved = await Promise.race([
-      Promise.all(resolutionBatches.map(async ([harness, batch]) => [
-        harness,
-        await resolve(batch.deps, { workspaceId, harness }),
-      ] as const)),
+      Promise.all(resolutionBatches.map(async ([harness, batch]) => {
+        const ctx = { workspaceId, harness };
+        const resolution = opts.resolve
+          ? { tokens: await opts.resolve(batch.deps, ctx), fileRoots: new Map<string, CarryRefFileRoot>() }
+          : await resolveCarryRefTokensWithProvenance(batch.deps, ctx);
+        return [harness, resolution] as const;
+      })),
       new Promise<'timeout'>((resolve) => {
         timer = setTimeout(() => resolve('timeout'), opts.timeoutMs ?? CARRY_REF_DELIVERY_TIMEOUT_MS);
       }),
@@ -454,7 +583,9 @@ export async function carryRefChangesBlock(
     const changes = sources.flatMap((source) => {
       const harness = source.harness === undefined ? opts.harness : source.harness;
       const current = currentBySourceHarness.get(harness);
-      return current ? diffCarryRefStamps(source.stamps, current, source.label) : [];
+      return current
+        ? diffCarryRefStamps(source.stamps, current.tokens, source.label, current.fileRoots)
+        : [];
     });
     return renderCarryRefChanges(changes, { where: opts.where, readAtIso: opts.readAtIso });
   } catch (err) {

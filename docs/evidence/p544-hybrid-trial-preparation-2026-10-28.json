@@ -6,14 +6,20 @@
   "status": "preparation-only-awaiting-migration-and-admission",
   "scope": "Source inspection and execution-input preparation for the maintained qualification path. No provider experiment, model request, build, publication, billing observation, qualification or shipment was performed.",
   "authority": {
-    "decisions": ["D-086", "D-090", "D-091"],
+    "decisions": ["D-082", "D-086", "D-090", "D-091"],
     "decisionPlanRevisionRead": 245,
     "decisionPlanContentHashRead": "b1622c668a930e70921d504385ab281f8371c6da584a7288de993f7bc40436c3",
     "approach": "Existing hybrid pool plus swap; a standalone VM or swap benchmark does not qualify the integrated trial.",
     "ordering": "Complete R2-to-GCS migration and acceptance before new P544 cloud qualification or experiments. Independent cost and source preparation can continue.",
     "migrationPlan": "r2-to-gcs-storage-migration-2026-10-23",
     "migrationAcceptanceVerified": false,
-    "sourceExceptionGrantedByThisPreparation": false
+    "sourceExceptionGrantedByThisPreparation": false,
+    "programmeBudget": {
+      "authority": "D-082, re-read on 2026-10-31",
+      "ceilingUsd": null,
+      "retiredCeilingUsd": 200,
+      "meaning": "Avi removed the experiment programme ceiling. Preserve finite per-run reservations, complete cost accounting, provider deletion deadlines and verified teardown. The strict under-$20/month product acceptance outcome remains unchanged. Historical reservations are not billed spend or admission for a new run."
+    }
   },
   "candidate": {
     "sourceSha": null,
@@ -31,7 +37,11 @@
     "scripts/agent-capacity/vm/swap-tier.py": "571de870f07edac826021bac7b4eb13cbfe19694e13d0787f0c4b7d796a0f708",
     "scripts/agent-capacity/vm/swap-tier-bootstrap.sh": "f921a6cf14d3d48eb885d8df9621059d03f60cb7e2af24f3cefe848640891e19",
     "scripts/agent-capacity/vm/stage-driver.sh": "303cbcfd8d73c5e85a40ca06d6a099f454f055d544c296d17e03541758282673",
-    "scripts/agent-capacity/vm/p544-current.markers": "2391e09e10a9a84c91fccac464427c37dd55bbcc7f8b6990ba93f9b0924d3b69"
+    "scripts/agent-capacity/vm/p544-current.markers": "2391e09e10a9a84c91fccac464427c37dd55bbcc7f8b6990ba93f9b0924d3b69",
+    "packages/operator-core/test/hosted-pool-qualification-preflight.ts": "97d1f1c1b37cfceebb2f05fb312fdcd79138488117068c64cbfa1e70aad9a9f0",
+    "packages/operator-core/test/hosted-pool-qualification-preflight.test.ts": "ee1ed6f3da29137e982e0224c706a0b8da719cf06f0485394a593e74024a54fa",
+    "packages/operator-core/test/hosted-pool-qualification.ts": "0996c0159d2de5a3b38d6727551246fe5c00d3a720245a68c6f4b68f5b8b3414",
+    "packages/operator-core/test/hosted-serving-artifact.fixture.ts": "1569e3812cfe83cfef1dfd14d2f22f7c50b53351e839736b83d790ffb8091422"
   },
   "providerAdmission": {
     "projectOrAccount": null,
@@ -40,11 +50,63 @@
     "reservedSpend": null,
     "providerEnforcedDeleteDeadline": null,
     "requiredBeforeMutation": [
-      "Refresh credentials, runtime route, provider inventory and total-programme budget headroom",
+      "Refresh credentials, runtime route, provider inventory and explicit finite per-run reservation; D-082 removed the former programme ceiling without admitting a new run",
       "Use maintained finite provider admission and teardown controls; old October 16 admissions and deadlines do not authorize a new run",
       "Start at the accepted economical minimum-resource profile, preserving the declared fallback order and small 4/8/16 GiB DB growth ladder",
       "Keep lifecycle changes under the existing single writer and preserve signed artifact trust"
     ]
+  },
+  "hybridPoolQualificationPreparation": {
+    "reconciledOnUtc": "2026-10-31",
+    "workItem": "WI-6554700010016277",
+    "status": "configuration-incomplete-not-admitted",
+    "reuse": "Extend the existing hosted serving fixture, hosted-pool qualification preflight, real provisioning workflow, native swap-tier driver and economics detector. No second scheduler or qualification system is introduced.",
+    "configurationInput": "HOSTED_SERVING_TEST_POOL_CONFIGURATION, parsed as HostedPoolQualificationConfiguration by packages/operator-core/test/hosted-serving-artifact.fixture.ts",
+    "executionRoute": {
+      "testClass": "background-federation",
+      "commandShape": "node scripts/with-test-pg.mjs --isolated-runtime -- <current-build background assertion>",
+      "readiness": "requires-prerequisites",
+      "isolation": "Disposable migrated database, HOME/device keychain, workspace and ports; runtime credentials stripped. An API-only staging process is not this worker.",
+      "sourceRequirement": "Immutable detached controller source equal to the independently admitted candidate; exact controller bundle and runtime bundle identities.",
+      "providerOrder": "The maintained positive worker admits GCP first. AWS requires its independent provider deadline rail before equivalent qualification."
+    },
+    "preflightRequirements": [
+      "Private test-runtime workspace, loopback PostgreSQL port other than 5432, matching application/admin/DBOS database identity and discovery disabled",
+      "Real DBOS with background worker enabled and run-bound DBOS application version; substituted executor forbidden",
+      "Exact controller source revision, local bundle hash and runtime bootstrap release hash",
+      "Canary labels, connection and desired spec bound to the isolated workspace and one run",
+      "Approved current provider contract, finite maxSpendCents, budget evidence and independent pre-run zero baseline",
+      "Future workload deadline plus complete teardown budget within the fixed provider deadline; enclosing task extends at least 180 seconds beyond teardown"
+    ],
+    "savedPreflightGuard": {
+      "testRunId": 22814776,
+      "status": "pass",
+      "passed": 15,
+      "failed": 0,
+      "skipped": 0,
+      "sourceCommit": "89f964f40703991a3ce21acbec67973f825df182",
+      "sourceAndTestBytesUnchanged": true,
+      "verification": "Read the exact canonical row on the current staging reader; compared current source/test bytes with HEAD and the recorded commit. Reused saved proof without rerunning the suite.",
+      "scope": "Admission guard tests only; neither a provider launch nor integrated trial qualification."
+    },
+    "missingInputsBeforeExecution": [
+      "Verified D090 full migration acceptance: P003 qualified release, P005 source-retention/cutover proof and P006 independent migration acceptance",
+      "Eligible admitted candidate source, signed artifact/provenance and exact controller/runtime bundle hashes",
+      "Fresh finite provider reservation, current complete inventory and approved provider contract",
+      "Actual private runtime, desired spec/connection, run identity and non-expired workload/provider/task deadlines",
+      "Native lifecycle and swap observations plus all six observed cost categories for GCP and AWS monthly comparisons"
+    ],
+    "knownExternalReferences": {
+      "sourceAccess": "WI-6554700010022667",
+      "sourceRecoveryException": "WI-6554700010025592",
+      "release": "WI-6554700010025562",
+      "migrationCutover": "WI-6554700010025564",
+      "migrationAcceptance": "WI-6554700010025565"
+    },
+    "actualPreflightInvoked": false,
+    "providerOrModelWorkloadStarted": false,
+    "sourceRetentionVerified": false,
+    "note": "Current authoritative source-access item remains needs-human. Its unanswered request and the owned inaccessible-data boundary do not prove retention. Current P003 has a separate source-choice hold under its existing owner. Neither is bypassed by this preparation."
   },
   "nativeQualification": {
     "driver": "scripts/agent-capacity/vm/swap-tier.py",

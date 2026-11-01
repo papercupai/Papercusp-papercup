@@ -16,6 +16,10 @@ const NO_SHARED_PG_TESTS = new Set([
   '../lib/storage/retention-census-walk.integration.test.ts',
   // Installed Codex processes use an isolated home and local provider/MCP server; no SQL.
   '../lib/codex-managed-tools.native.integration.test.ts',
+  // Installed Claude + private API; authority case owns a migrated native PG.
+  '../lib/su-session-claude-mcp.integration.test.ts',
+  // Actual OMP engine owns a private migrated native PG and offline provider.
+  '../lib/su-session-omp-authority.integration.test.ts',
   '../lib/agent-tools/capability/vm-copy-authority-bridge.integration.test.ts',
   // Isolated repository fixtures and the provisioned syntax parser; no SQL or PG runtime.
   '../lib/agent-tools/plans/plan-native-declarations.integration.test.ts',

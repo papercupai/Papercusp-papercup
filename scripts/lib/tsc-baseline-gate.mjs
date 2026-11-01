@@ -2507,6 +2507,10 @@ export function scopedFilesArg(files, { maxInlineChars = INLINE_FILES_ARG_MAX_CH
  * Run the planned consumer legs as child gate processes, at most `concurrency` at once: each one
  * builds a full program (3-23 s and 1-2 GB, measured 2026-10-12). A child is RED only when it
  * exits 1 with a `status=regressed` marker; any other outcome is UNDETERMINED, never clean.
+ * `childTimeoutMs` bounds silence between compiler progress records, not total wall time: a
+ * service queue wait followed by a slow but advancing diagnostics phase must not lose its result
+ * merely because the sum exceeds one fixed deadline. A separate ten-minute ceiling still bounds
+ * a child that continually reports progress without finishing.
  * A clean child whose marker says `members=0` compiled NONE of the named files, so it checked
  * nothing: it goes to `notMember`, never `clean` (WI-6554700010009515). A vacuous clean would
  * read as "verified in this leg". A marker with no `members=` field stays clean.
@@ -2515,6 +2519,8 @@ export function scopedFilesArg(files, { maxInlineChars = INLINE_FILES_ARG_MAX_CH
  * @returns {Promise<{clean: string[], notMember: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[]}>}
  */
 export async function runCrossLegChecks({ root, plans, concurrency = 2, childTimeoutMs = 120_000, spawnChild }) {
+  const idleTimeoutMs = Math.max(1, childTimeoutMs);
+  const hardTimeoutMs = Math.max(10 * 60_000, idleTimeoutMs);
   const spawnOne =
     spawnChild ??
     ((plan) =>
@@ -2525,12 +2531,48 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, childTim
         // arrives after SIGTERM (for example a child stuck in filesystem wait).
         let stdoutTail = '';
         let stderrTail = '';
+        let stdoutProgressBuffer = '';
+        let stderrProgressBuffer = '';
+        const startedAt = Date.now();
+        let idleTimer;
+        let hardTimer;
         const finish = (outcome) => {
           if (settled) return;
           settled = true;
-          clearTimeout(timer);
+          clearTimeout(idleTimer);
+          clearTimeout(hardTimer);
           filesArg.cleanup();
           done(outcome);
+        };
+        const expire = (kind) => {
+          const elapsedMs = Date.now() - startedAt;
+          child.kill('SIGTERM');
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          finish({ status: null, stdout: stdoutTail, stderr: stderrTail, timedOut: true, timeoutKind: kind, elapsedMs });
+        };
+        const refreshIdleTimer = () => {
+          clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => expire('idle'), idleTimeoutMs);
+          idleTimer.unref();
+        };
+        const captureOutput = (stream, chunk) => {
+          const text = String(chunk);
+          if (stream === 'stdout') {
+            stdoutTail = (stdoutTail + text).slice(-4096);
+          } else {
+            stderrTail = (stderrTail + text).slice(-4096);
+          }
+          const prior = stream === 'stdout' ? stdoutProgressBuffer : stderrProgressBuffer;
+          const lines = (prior + text).split(/\r?\n/);
+          const partial = lines.pop() ?? '';
+          const progress = [...lines, partial].some((line) =>
+            line.startsWith('LINT_TSC_CROSS_LEG_PROGRESS ') || line.startsWith('TSC_SERVICE state='),
+          );
+          if (stream === 'stdout') stdoutProgressBuffer = partial.slice(-512);
+          else stderrProgressBuffer = partial.slice(-512);
+          if (progress) refreshIdleTimer();
         };
         const child = execFile(
           process.execPath,
@@ -2546,23 +2588,18 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, childTim
             finish({ status: error ? (Number.isInteger(code) ? code : null) : 0, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
           },
         );
-        child.stdout?.on('data', (chunk) => { stdoutTail = (stdoutTail + String(chunk)).slice(-4096); });
-        child.stderr?.on('data', (chunk) => { stderrTail = (stderrTail + String(chunk)).slice(-4096); });
+        child.stdout?.on('data', (chunk) => captureOutput('stdout', chunk));
+        child.stderr?.on('data', (chunk) => captureOutput('stderr', chunk));
         // EI-26062308784379661 — a cross-leg child can enter uninterruptible filesystem wait.
         // Waiting for execFile's callback in that state blocks the owning-leg verdict forever:
         // SIGTERM remains pending until the kernel wait clears. Bound OUR wait independently,
         // detach the stuck child from this gate, and report that leg as UNDETERMINED. The child
         // is still signalled and its pipes are destroyed so it cannot retain this process.
-        const timer = setTimeout(() => {
-          child.kill('SIGTERM');
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          child.unref();
-          finish({ status: null, stdout: stdoutTail, stderr: stderrTail, timedOut: true });
-        }, Math.max(1, childTimeoutMs));
-        timer.unref();
+        refreshIdleTimer();
+        hardTimer = setTimeout(() => expire('hard'), hardTimeoutMs);
+        hardTimer.unref();
       }));
-  /** @type {{status: number | null, stdout: string, stderr: string, timedOut?: boolean}[]} */
+  /** @type {{status: number | null, stdout: string, stderr: string, timedOut?: boolean, timeoutKind?: 'idle' | 'hard', elapsedMs?: number}[]} */
   const outcomes = new Array(plans.length);
   let next = 0;
   const worker = async () => {
@@ -2576,11 +2613,14 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, childTim
 
   const report = { clean: [], notMember: [], red: [], undetermined: [] };
   plans.forEach((plan, index) => {
-    const { status, stdout, stderr, timedOut } = outcomes[index];
+    const { status, stdout, stderr, timedOut, timeoutKind, elapsedMs } = outcomes[index];
     if (timedOut) {
       const progress = stdout.split(/\r?\n/).filter((line) => line.startsWith('LINT_TSC_CROSS_LEG_PROGRESS ')).at(-1);
       const diagnostic = stderr.trim().slice(-1000);
-      report.undetermined.push({ npmScript: plan.npmScript, reason: `timed out after ${childTimeoutMs}ms` +
+      const timeoutReason = timeoutKind === 'hard'
+        ? `reached the ${hardTimeoutMs}ms hard runtime ceiling (elapsed ${elapsedMs ?? hardTimeoutMs}ms)`
+        : `made no compiler progress for ${idleTimeoutMs}ms (elapsed ${elapsedMs ?? idleTimeoutMs}ms)`;
+      report.undetermined.push({ npmScript: plan.npmScript, reason: timeoutReason +
         (progress ? `; last progress: ${progress.slice(0, 1000)}` : '') +
         (diagnostic ? `; stderr: ${diagnostic}` : '') });
       return;

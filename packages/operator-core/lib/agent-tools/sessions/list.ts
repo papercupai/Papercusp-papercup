@@ -129,12 +129,13 @@ async function readHistoricalCensusRows(
   tx: Sql,
   options: HistoricalCensusOptions,
 ): Promise<HistoricalSessionListRow[]> {
-  // `ctx.tx` is a shared-pool transaction for cross-workspace tools. SET LOCAL
-  // scopes the deadline to this transaction and is reset when it settles; a
-  // timed-out statement aborts the read and releases its snapshot promptly.
-  await tx.unsafe(`SET LOCAL statement_timeout = ${HISTORICAL_CENSUS_STATEMENT_TIMEOUT_MS}`);
-  const activityScopes = [...new Set([options.workspaceId, '*'])];
-  return tx<HistoricalSessionListRow[]>`
+  // Cross-workspace dispatch supplies the shared admin pool, not an ambient
+  // transaction. Keep SET LOCAL and the census query on one explicit transaction
+  // so the deadline applies to the scan and its snapshot is released on timeout.
+  return tx.begin(async (censusTx) => {
+    await censusTx.unsafe(`SET LOCAL statement_timeout = ${HISTORICAL_CENSUS_STATEMENT_TIMEOUT_MS}`);
+    const activityScopes = [...new Set([options.workspaceId, '*'])];
+    return censusTx<HistoricalSessionListRow[]>`
     WITH raw_events AS (
       SELECT owner AS owner_id, session_id, source_kind, harness_slug, cwd,
              ts AS event_at, 'session_turns'::text AS event_source
@@ -288,7 +289,8 @@ async function readHistoricalCensusRows(
          ORDER BY id DESC LIMIT 1
       ) m ON true
      ORDER BY e.last_event_at DESC NULLS LAST, e.owner, e.session_id NULLS LAST
-  `;
+    `;
+  });
 }
 
 async function readHistoricalCensus(

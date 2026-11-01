@@ -21,6 +21,7 @@ import { humanize } from '../shared.js';
 import { raceWithAbort, renderMdxToMarkdown, throwIfAborted } from '../render-mdx.js';
 import { forEachBoundedBatch } from './file-batches.js';
 import type { DocContentOptions, DocListPagesOptions, DocPage, DocSource, SectionMeta } from '../types.js';
+import { extractHeadings } from './generic-fs';
 
 export interface HarnessFsAdapterOptions {
   /** Stable identifier for telemetry + cache namespacing. */
@@ -69,20 +70,6 @@ function slugFromRelPath(rel: string): string {
   return noExt;
 }
 
-function extractHeadings(content: string): DocPage['toc'] {
-  const out: DocPage['toc'] = [];
-  for (const line of content.split('\n')) {
-    const m = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
-    if (!m) continue;
-    const text = m[2].trim();
-    if (!text) continue;
-    // Anchor convention matches Vditor: non-alphanumerics → '-'
-    const id = text.replace(/[^A-Za-z0-9]/g, '-');
-    out.push({ id, text, depth: m[1].length });
-    if (out.length >= 100) break;
-  }
-  return out;
-}
 
 function extractTitle(content: string, fallback: string): string {
   // First h1 wins; else first heading; else humanized filename

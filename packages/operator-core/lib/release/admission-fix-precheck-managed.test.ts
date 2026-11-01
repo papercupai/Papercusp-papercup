@@ -233,6 +233,43 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     expect(persisted.admissionPrecheck?.completedCount).toBe(41);
   });
 
+  it('retains removed-test proof in the durable measurement identity and runs no deleted path', async () => {
+    let persisted = queue(operation({
+      files: ['lib/still-red.test.ts'],
+      removedTestFiles: ['apps/operator/lib/deleted.test.ts', 'lib/deleted.test.ts'],
+      totalCount: 1,
+    }));
+    persisted.signature = [{
+      kind: 'test-file',
+      id: 'lib/deleted.test.ts',
+      recipe: 'test:file',
+      admittedRound: 1,
+      measuredHead: 'b'.repeat(40),
+    }];
+    const seen: string[][] = [];
+    const outcome = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running', confined: true }),
+      readQueue: async () => ({ status: 'value', queue: persisted }),
+      transition: async (_target, update) => { persisted = jsonbRoundTrip(update(persisted)); },
+      now: () => 30,
+      createRunner: () => async run => {
+        seen.push([...run.files]);
+        const results = run.files.map(path => ({ path, status: 'pass' as const }));
+        for (const result of results) await run.onFileResult?.(result);
+        return { ran: true, commit: run.commit, results };
+      },
+    });
+    expect(seen).toEqual([['lib/still-red.test.ts']]);
+    expect(outcome).toMatchObject({
+      status: 'settled',
+      verdict: { ok: true, fixes: ['lib/deleted.test.ts'] },
+    });
+    expect(persisted.admissionPrecheck?.removedTestFiles).toEqual([
+      'apps/operator/lib/deleted.test.ts',
+      'lib/deleted.test.ts',
+    ]);
+  });
+
   it('refuses changed native results after a JSONB round trip', async () => {
     let persisted = jsonbRoundTrip(wide(41));
     const outcome = await runAdmissionPrecheckWorker(input, {

@@ -889,6 +889,7 @@ describe('complete agenda recovery through coord:orient', () => {
       await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND goal_id = ${GOAL}`;
       await fx.admin`DELETE FROM harness_shared.plan_items WHERE workspace_id = ${WS} AND plan_slug = ANY(${slugs})`;
       await fx.admin`DELETE FROM harness_shared.plan_closure_observations WHERE workspace_id = ${WS} AND plan_slug = ANY(${slugs})`;
+      await fx.admin`DELETE FROM harness_shared.plan_closure_observations_by_build WHERE workspace_id = ${WS} AND plan_slug = ANY(${slugs})`;
       for (const slug of slugs) await fx.admin`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND harness_slug = 'papercusp' AND plan_slug = ${slug}`;
       resetOperatorCacheForTests();
       __setCachedReadEnabledForTests(false);

@@ -73,11 +73,17 @@ export interface FreezeAndConvergeDisposition {
   reason: string;
   /** The frozen candidate this disposition is about, when there is one. */
   candidate?: string | null;
+  /** Persisted repair-queue phase; optional only for legacy records. */
+  queuePhase?: FrozenRepairLatencySource['phase'] | null;
+  /** Typed precondition that refused this tick while leaving the queue intact. */
+  blockedBy?: FreezeDispositionBlocker | null;
   /** `held` only: the epoch ms at which the hold gives up and retires anyway. */
   holdUntilMs?: number | null;
   /** `held` only: when the measured provider wall is expected to lift. */
   capacityRetryAtMs?: number | null;
 }
+
+export type FreezeDispositionBlocker = 'disk-headroom' | 'copy-lock';
 
 export interface FrozenRepairProgress {
   phase: FrozenRepairLatencySource['phase'];
@@ -99,6 +105,10 @@ export interface FreezeAndConvergeGateHealth {
     state: FreezeAndConvergeState;
     reason: string;
     candidate: string | null;
+    /** Optional in legacy rows, always written by current builds. */
+    queuePhase?: FrozenRepairLatencySource['phase'] | null;
+    /** Optional in legacy rows, always written by current builds. */
+    blockedBy?: FreezeDispositionBlocker | null;
     holdUntilMs: number | null;
     capacityRetryAtMs: number | null;
     /**
@@ -192,6 +202,8 @@ export function buildFreezeAndConvergeGateHealth(
       state: disposition.state,
       reason: disposition.reason,
       candidate: disposition.candidate ?? null,
+      queuePhase: disposition.queuePhase ?? null,
+      blockedBy: disposition.blockedBy ?? null,
       holdUntilMs: disposition.holdUntilMs ?? null,
       capacityRetryAtMs: disposition.capacityRetryAtMs ?? null,
       observedAtMs: nowMs,
@@ -216,6 +228,8 @@ export interface TickFreezeObservation {
   repairQueueRead?: FrozenCandidateRepairQueueRead;
   /** The run's own one-line summary — the honest reason when no branch recorded a richer one. */
   summary?: string | null;
+  /** Typed precondition that refused this tick before a suite verdict. */
+  blockedBy?: FreezeDispositionBlocker | null;
   /** Did the tick reach a green verdict? */
   green?: boolean | null;
   /** P-007: the clock the latency projection reads; defaults to `Date.now()`. */
@@ -328,6 +342,8 @@ function deriveTickFreezeDispositionCore(
         'FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT is OFF (owner-set): this tick did not ' +
         'freeze anything, and the next tick re-cuts at tip',
       candidate,
+      queuePhase: observation.repairQueue?.phase ?? null,
+      blockedBy: observation.blockedBy ?? null,
     };
   }
   if (observation.repairQueueRead?.status === 'unreadable') {
@@ -339,17 +355,21 @@ function deriveTickFreezeDispositionCore(
         `${describeUnreadableFrozenCandidateRepairQueue(read)}; ` +
         'refusing to conclude that no candidate is frozen or to cut a moving candidate',
       candidate: null,
+      queuePhase: null,
+      blockedBy: observation.blockedBy ?? null,
     };
   }
   if (candidate) {
     return {
       enabled: true,
-      state: 'converging',
+      state: observation.blockedBy ? 'held' : 'converging',
       reason:
         observation.summary?.trim() ||
         `frozen candidate ${candidate.slice(0, 12)} is live and being repaired; the tick ` +
           `ended without a branch-recorded disposition`,
       candidate,
+      queuePhase: observation.repairQueue?.phase ?? null,
+      blockedBy: observation.blockedBy ?? null,
     };
   }
   return {
@@ -361,6 +381,8 @@ function deriveTickFreezeDispositionCore(
         : observation.summary?.trim() ||
           'freeze-and-converge is on and no candidate is frozen this tick',
     candidate: null,
+    queuePhase: null,
+    blockedBy: observation.blockedBy ?? null,
   };
 }
 
@@ -410,6 +432,14 @@ export function readFreezeAndConverge(
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const state = r['state'];
+  const queuePhases = [
+    'ready-to-test',
+    'awaiting-fixer',
+    'ready-to-verify',
+    'ready-to-promote',
+    'blocked',
+  ] as const;
+  const blockedByValues = ['disk-headroom', 'copy-lock'] as const;
   const validState =
     state === 'off' ||
     state === 'none' ||
@@ -420,6 +450,8 @@ export function readFreezeAndConverge(
   if (!validState) return null;
   if (typeof r['enabled'] !== 'boolean') return null;
   if (typeof r['reason'] !== 'string' || r['reason'] === '') return null;
+  if (r['queuePhase'] != null && !queuePhases.includes(r['queuePhase'] as typeof queuePhases[number])) return null;
+  if (r['blockedBy'] != null && !blockedByValues.includes(r['blockedBy'] as typeof blockedByValues[number])) return null;
   if (typeof r['observedAtMs'] !== 'number' || !Number.isFinite(r['observedAtMs'])) {
     return null;
   }
@@ -430,6 +462,12 @@ export function readFreezeAndConverge(
     state,
     reason: r['reason'],
     candidate: typeof r['candidate'] === 'string' ? r['candidate'] : null,
+    queuePhase: queuePhases.includes(r['queuePhase'] as typeof queuePhases[number])
+      ? r['queuePhase'] as FrozenRepairLatencySource['phase']
+      : null,
+    blockedBy: blockedByValues.includes(r['blockedBy'] as typeof blockedByValues[number])
+      ? r['blockedBy'] as FreezeDispositionBlocker
+      : null,
     holdUntilMs: num(r['holdUntilMs']),
     repairLatency: readRepairLatency(r['repairLatency']),
     capacityRetryAtMs: num(r['capacityRetryAtMs']),
@@ -499,6 +537,8 @@ export interface FreezeDispositionCellProjection {
   /** False ONLY for a measured `off`; null when unmeasured. Never coerced to a boolean. */
   enabled: boolean | null;
   candidate: string | null;
+  queuePhase: FrozenRepairLatencySource['phase'] | null;
+  blockedBy: FreezeDispositionBlocker | null;
   holdUntilMs: number | null;
   capacityRetryAtMs: number | null;
   observedAtMs: number | null;
@@ -535,6 +575,8 @@ export function projectFreezeDispositionCell(
       reason: null,
       enabled: null,
       candidate: null,
+      queuePhase: null,
+      blockedBy: null,
       holdUntilMs: null,
       capacityRetryAtMs: null,
       observedAtMs: null,
@@ -551,6 +593,8 @@ export function projectFreezeDispositionCell(
     reason: record.reason,
     enabled: record.enabled,
     candidate: record.candidate,
+    queuePhase: record.queuePhase ?? null,
+    blockedBy: record.blockedBy ?? null,
     holdUntilMs: record.holdUntilMs,
     capacityRetryAtMs: record.capacityRetryAtMs,
     observedAtMs: record.observedAtMs,

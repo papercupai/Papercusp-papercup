@@ -1,0 +1,89 @@
+{
+  "status": "native-failed-repeated-shortcut-after-focus-loss",
+  "currentDiagnosis20261101": {
+    "authority": "This diagnosis and native-v14-terminal.json supersede every running/await field below. Actual source/task/group are unchanged.",
+    "terminal": "Both whole harnesses FAIL; file-backed service sink exit1 at00:13:12.061Z. TestRun22831246 FAIL/clean1ec. Base ledger row still running/exitnull; live reader projects ended_unobserved. No duplicate or accepted verdict.",
+    "failure": "Native spec178 expected hidden/false after second real OS shortcut, receivedtrue. First entry and visible precondition passed. Different from v12 hidden BEFORE second key and v13 missing Openbox.",
+    "diagnostics": "Saved trace SHA256c985df631b34a18bf3d31b2dff675bd8973e1415e2ac228eb83e4d8579638b30 and popup samples. Native log: focused=false dismiss=true BEFORE toggle sees is_visible=false, then popup focusedtrue again. Same popup active/visible/focused in samples; no JS errors.",
+    "controlledProbe": "Private X11 GTK3.24/libX11 XGrabKey real shortcut produced FocusOut NotifyGrab without an outside click, with GTK focus-out/focus-in. Explicit GDK_BACKEND=x11 is necessary. This supports transient-grab dismissal diagnosis; no product source fix yet.",
+    "next": "Fix native click-away/shortcut interaction on EI272871 using existing x11rb/gtk surfaces; preserve hide-not-destroy and real click-away. Add registered framework guard, qualify new containing pin and audit actual current fingerprints before any next full native. Final1ec native is ineligible."
+  },
+  "currentContinuation20261031T2317Z": {
+    "authority": "This section supersedes all historical c999/publication fields below. Same A/self/AUTO, manual locks, no LIVE_GATE_OPS.",
+    "pin": "1ec67623111706cc98d4a7bb124df64b1a4cd696",
+    "root": "/tmp/pcv/papercusp-lint-as-committed-1ec6762311-AyrijC",
+    "retainedBy": ".papercusp/evidence/quick-access-20261026/successor-final-native.json",
+    "materializer": { "task": "0mvx0k4r11sjctiaqds", "log": ".papercusp/scratch/bash-d69edded-5c3.log", "exitCode": 0 },
+    "sourceProof": "verifyCommittedWorkRoot verified exact HEAD, marker, required verifier/native/dependency-generation paths and artifact retention hold.",
+    "dependency": "Normal npm reader acquired after current held:false observation; no writer barrier bypass. Prior timeout remains historical failure log:54252f51c9d4. Audit1210519 covers all three current fingerprints.",
+    "qualification": {
+      "task": "0mvx0mwto1xqfja11dt",
+      "log": ".papercusp/scratch/bash-a70e0f52-92f.log",
+      "exitCode": 0,
+      "filesPassed": 8,
+      "testsPassed": 184,
+      "testsSkipped": 0,
+      "nativeCollection": "Exactly 1 Chromium Quick Access native case in 1 file; collection terminal0 in same successful task."
+    },
+    "confinement": "Both fresh tasks limited via processes:limit to16384MiB and read back confined/outsideoperator; FINITE_CGROUP_READY actual17179869184 precedes heavy payload in each log.",
+    "native": {
+      "task": "0mvx0wttt19w2mzb1ag",
+      "bash": "ba37605f-dd2",
+      "log": ".papercusp/scratch/bash-ba37605f-dd2.log",
+      "runGroup": "operator-e2e-isolated-20261031T231934Z-qa-v14",
+      "deadline": "2026-11-01T01:19:38.068Z",
+      "innerEvidence": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261031T231955Z-805741",
+      "state": "running; pinned-inputs and native-display dependencies passed; operator-source-snapshot preparation observed",
+      "memory": "16384MiB, confined, outside operator cgroup; actual17179869184 verified before heavy payload",
+      "settings": "exact1ec retained root; privateHOME/isolatedDB/readyseed/real shortcut; copy frozen dependencies; dependency-generation.sh in explicit inputs; snapshot needle Quick Access launcher",
+      "terminalAwait": 389726,
+      "awaitDeadline": "2026-10-31T23:31:47.781Z",
+      "launchCorrection": "Prior task0mvx0up3u1k6fh25syx received literal-c and exited127 before npm/native. Recorded1210522; no native assertion ran in that shell.",
+      "verdict": "No native pass or ship claim. Require exact task terminal0 and both outer/inner PASS."
+    },
+    "next": "ONE full native, then new combined acceptance amendment from the preserved methods in ineligible amend-v13-draft.json, canonical outside review, current evidence bindings/adequacy/activation audit and independent acceptance."
+  },
+  "pinStatus": "The top currentContinuation names qualified1ec. The c999 pin/root below are historical failed qualification and remain ineligible.",
+  "publicationAwait": { "id": 389261, "event": "resource:released:git-sync:papercusp", "harness": "papercusp", "timeoutSec": 300, "onTimeout": "wake" },
+  "publicationFire": { "execSession": 16659, "route": "ptool git-sync:run explicit3271", "status": "completed-skipped-exclusive_pending", "cause": "Temporary global git-sync barrier held by system:dev-restart at call time; later live read confirmed barrier cleared and scheduled papercusp sync acquired shared global lease21:27. No fire session remains running; do not drain/retry16659." },
+  "codexLocks": { "mode": "manual", "reason": "Latest automatic post-edit release failed at21:28. Exact own orphan1c22e9ed released explicitly. Use manual until a fresh orient verifies automatic again." },
+  "nextAudit": "WI9574 is marked grinding/distinct-failures. Before any next slow attempt read the current verification-attempt fingerprints and post the canonical [attempt-audit] note naming every fingerprint, failure class, repair and recurrence proof. Source: packages/operator-core/lib/verification-attempts/loop-gate.ts and plan-iteration-metrics.ts.",
+  "nativeSnapshotNeedle": "Quick Access launcher",
+  "currentFixtureRepair": {
+    "issue": "EI-27530973613249380",
+    "source": "apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts",
+    "changes": "Isolate pinned preflight extraction; accept both configured timeout124 and hard-kill137 outcomes while preserving bounded failure and retained evidence assertions.",
+    "passed": 116, "skipped": 0, "exitCode": 0,
+    "finishedAt": "2026-10-31T21:16:30.794Z",
+    "proofScope": "Local dirty fixture at8cd08107; publication and clean qualification still required.",
+    "actualProbe": "Identical budget1 production probes returned124/1027ms and137/2216ms, both shell1/process-failed/START only; budget3 control passed1569ms. Production timeouts unchanged."
+  },
+  "workItem": "WI-6554700010029574",
+  "harnessRepair": "EI-27529057401533862",
+  "originalPopupIssue": "EI-27287192561301343",
+  "pin": "c999b378e82113689f9b73dbdc0c8b06947e44b3",
+  "desktopPin": "f0e107bc3275816d50be2fd59af66ea260a71d16",
+  "root": "/tmp/pcv/papercusp-lint-as-committed-c999b378e8-H4pp0Q",
+  "retainedBy": ".papercusp/evidence/quick-access-20261026/successor-final-native.json",
+  "qualification": {
+    "task": "0mvww1gxe978mnznvzr",
+    "testObservation": "Source-snapshot pinned-input fixture failed because its extraction ran the new display preflight with PREPARE_ONLY unset. The clean candidate is ineligible. Corrected fixture on canonical staging to isolate its own preflight invocation. Exact task terminal exit still requires authoritative receipt; live task read returned ended_unobserved/null exitCode. Native and collection did not run because qualification was first in an && chain.",
+    "bash": "5ae571d4-347",
+    "log": ".papercusp/scratch/bash-5ae571d4-347.log",
+    "deadline": "2026-10-31T21:33:16.526Z",
+    "memoryMaxMb": 16384,
+    "confined": true,
+    "insideOperatorCgroup": false,
+    "scopeUnit": "pc-0mvww1gxe978mnznvzr.service",
+    "procedure": "Eight maintained diagnostic, cleanup, source-seal, display, GTK and boot/ownership test files, then collection of exactly one native Quick Access case. Require terminal exit0 and zero skips before launching native."
+  },
+  "localRepairChecks": {
+    "correctedDisplayTests": { "passed": 13, "skipped": 0, "exitCode": 0, "scope": "local dirty source; clean qualification required" },
+    "companionTests": { "passed": 26, "skipped": 0, "exitCode": 0 },
+    "bashSyntax": "pass",
+    "diffCheck": "pass",
+    "actualProductionProbe": "start_display_server with private real Xvfb and Openbox exited0 and advertised reciprocal EWMH activation readiness. xprop supported-atoms uses '=', corrected before this pass."
+  },
+  "audit": "V13 failed before first shortcut because Openbox was absent and unchecked. Early dependencies now reject missing tools before Cargo/snapshot; bounded live-PID and reciprocal-EWMH activation probes prevent false boot success. Existing failure-class guards for generated cleanup census, frozen dependency/CLI closure, source-loader seal and passive popup diagnostics are included in clean qualification. Original R1 visibility assertion and deadlines are unchanged. Do not rerun failed8fed0b/46f; next full run must use this qualified clean pin and a new task/group. No native pass/acceptance/ship claim.",
+  "next": "Finish canonical fingerprint audit before any slow attempt. On await389261 release/timeout verify six selected files match HEAD, materialize a NEW containing pin, qualify cleanly and collect one native case before ONE confined native. Set VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='Quick Access launcher'. Do not launch native from c999 or failed8fed0b/46f. Saved v13 amendment remains ineligible."
+}

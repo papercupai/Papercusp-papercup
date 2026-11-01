@@ -300,6 +300,42 @@ describe('scopeToFiles requested-file verdict (EI-19367920569086881)', () => {
     expect((raw.data.errors as TscDiagnostic[]).map((error) => error.file)).toEqual(['src/target.ts']);
   });
 
+  it('keeps requested errors in the serialized prefix ahead of crowded graph diagnostics', async () => {
+    const longOtherMessage = 'unrelated import-graph diagnostic '.repeat(60);
+    const unrelated = Array.from({ length: 12 }, (_, index) =>
+      'src/graph-' + index + '.ts(1,1): error TS2322: ' + longOtherMessage);
+    const raw = await runScoped(
+      [
+        ...unrelated,
+        'src/target.ts(2,3): error TS2345: Requested target diagnostic A.',
+        'src/target.ts(4,5): error TS2322: Requested target diagnostic B.',
+      ],
+      10,
+    );
+
+    expect(raw.data).toMatchObject({
+      ok: false,
+      scopedVerdict: 'requested-files-error',
+      errorsInRequestedFiles: 2,
+      totalErrorCount: 14,
+      otherErrorCount: 12,
+      otherErrorsTruncated: true,
+    });
+    expect((raw.data.errors as TscDiagnostic[]).map((error) => error.file)).toEqual([
+      'src/target.ts',
+      'src/target.ts',
+    ]);
+    expect((raw.data.otherErrors as TscDiagnostic[])).toHaveLength(8);
+
+    const serialized = JSON.stringify(raw.data);
+    const modelVisiblePrefix = serialized.slice(0, 5_000);
+    expect(modelVisiblePrefix).toContain('"scopedVerdict":"requested-files-error"');
+    expect(modelVisiblePrefix).toContain('"errors":[');
+    expect(modelVisiblePrefix).toContain('Requested target diagnostic A.');
+    expect(modelVisiblePrefix).toContain('Requested target diagnostic B.');
+    expect(serialized.indexOf('"errors":')).toBeLessThan(serialized.indexOf('"otherErrors":'));
+  });
+
   it('does not report clean when a global diagnostic makes requested-file coverage indeterminate', async () => {
     const raw = await runScoped(["error TS5023: Unknown compiler option '--synthetic'."]);
 

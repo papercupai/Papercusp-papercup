@@ -1,7 +1,0 @@
-{"filePath":"packages/operator-core/lib/content-summary.test.ts","status":"pass","outcome":"inserted","id":"20932876"}
-{"filePath":"packages/operator-core/lib/content-intake.test.ts","status":"pass","outcome":"inserted","id":"20932877"}
-{"filePath":"packages/operator-core/lib/source-preview-export.test.ts","status":"pass","outcome":"inserted","id":"20932878"}
-{"filePath":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-voice-io.test.ts","status":"pass","outcome":"inserted","id":"20932879"}
-{"filePath":"packages/operator-core/lib/agent-tools/documents/read.integration.test.ts","status":"pass","outcome":"inserted","id":"20932882"}
-{"filePath":"apps/operator/app/_components/voice/voice-mode.test.ts","status":"pass","outcome":"inserted","id":"20932887"}
-{"filePath":"apps/operator/app/_components/voice/VoiceAppBridge.test.tsx","status":"pass","outcome":"inserted","id":"20932888"}

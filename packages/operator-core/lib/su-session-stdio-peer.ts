@@ -210,7 +210,11 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
     rejectPending(new Error('Structured engine closed before acknowledgement'));
     child.stdin!.end();
     closing = (async () => {
-      if (await waitForExit(5_000)) return;
+      // The direct client exiting does not prove its task scope is empty: a
+      // native client may leave a descendant writing into its home. Reap the
+      // terminal scope on both the graceful and timeout paths before callers
+      // remove native state.
+      const exitedBeforeReap = await waitForExit(5_000);
       const result = await killTask(taskId, { signal: 'SIGKILL', includeSubtree: true, reapTerminalResidue: true });
       // `incomplete` after an explicit SIGKILL means the signal WAS delivered
       // but a process of the scope (typically one blocked in uninterruptible
@@ -220,10 +224,12 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
       // exits, so wait for that instead of failing (WI-10004247: a loaded
       // release host left one D-state process and failed exact resume).
       const pending = !result.ok && result.error === 'incomplete';
-      if (!result.ok && result.error !== 'already_gone' && !pending) {
+      const emptyScope = !result.ok && result.error === 'not_live'
+        && result.detail?.includes('holds no live process right now; nothing to reap');
+      if (!result.ok && result.error !== 'already_gone' && !emptyScope && !pending) {
         throw nativeFailure(`Structured engine teardown failed: ${result.error}${result.detail ? `: ${result.detail}` : ''}`);
       }
-      if (!(await waitForExit(pending ? 30_000 : 5_000))) {
+      if (!exitedBeforeReap && !(await waitForExit(pending ? 30_000 : 5_000))) {
         throw nativeFailure(`Structured engine did not exit after tracked teardown${pending && result.detail ? `: ${result.detail}` : ''}`);
       }
     })();

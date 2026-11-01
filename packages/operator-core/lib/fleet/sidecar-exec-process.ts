@@ -41,6 +41,7 @@ import {
   admissionContextFromEnvironment,
   beginGovernedExecution,
   governedExecutionRuntime,
+  settleGovernedExecutionInBackground,
   type GovernedExecutionAdmissionPhaseEvent,
   type GovernedExecution,
 } from '../resource-governor/execution';
@@ -181,7 +182,7 @@ interface ReceiptHandle {
   readonly childEnv: Record<string, string>;
   /** Call right after spawn: starts the lazy mint timer (no-op when eager). */
   armAfterSpawn(): void;
-  finish(demand: ResourceDemand): Promise<void>;
+  finish(demand: ResourceDemand, onSettled?: () => void): Promise<void>;
   cancel(reason: string): Promise<void>;
 }
 
@@ -190,7 +191,10 @@ function eagerReceipt(execution: GovernedExecution): ReceiptHandle {
     childEnv: { PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(execution.context) },
     armAfterSpawn: () => {},
     // Eager settlement failures propagate: the caller reports them in stderr.
-    finish: async (demand) => { await execution.finish(demand); },
+    finish: async (demand, onSettled) => {
+      await execution.finish(demand);
+      onSettled?.();
+    },
     cancel: async (reason) => { await execution.cancel(reason); },
   };
 }
@@ -203,16 +207,46 @@ function lazyReceipt(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let minting: Promise<void> | null = null;
   let execution: GovernedExecution | null = null;
-  const settle = async (op: (e: GovernedExecution) => Promise<unknown>): Promise<void> => {
+  let admissionStarted = false;
+  let settlementScheduled = false;
+  type PendingSettlement =
+    | { kind: 'finish'; demand: ResourceDemand; onSettled?: () => void }
+    | { kind: 'cancel'; reason: string };
+  let pendingSettlement: PendingSettlement | null = null;
+  const applyPendingSettlement = (): void => {
+    if (!pendingSettlement || settlementScheduled) return;
+    if (!execution) {
+      if (minting) return;
+      settlementScheduled = true;
+      // No receipt exists (the read finished before admission or best-effort
+      // admission failed), so terminal handling is complete without a write.
+      if (pendingSettlement.kind === 'finish') {
+        try { pendingSettlement.onSettled?.(); } catch { /* observers cannot own the read result */ }
+      }
+      return;
+    }
+
+    settlementScheduled = true;
+    if (pendingSettlement.kind === 'finish') {
+      settleGovernedExecutionInBackground(
+        execution,
+        { kind: 'release', actualDemand: pendingSettlement.demand },
+        pendingSettlement.onSettled,
+      );
+    } else {
+      settleGovernedExecutionInBackground(execution, { kind: 'cancel', reason: pendingSettlement.reason });
+    }
+  };
+  const requestSettlement = (settlement: PendingSettlement): Promise<void> => {
     if (timer) {
       clearTimeout(timer);
       timer = null;
     }
-    if (minting) await minting;
-    if (!execution) return; // finished before the delay: no receipt was ever minted
-    // Evidence only: a late receipt is bookkeeping for a read that already
-    // succeeded, so its settlement failure must not turn that result into an error.
-    await op(execution).catch(() => undefined);
+    // First terminal outcome wins. If admission is still minting, retain the
+    // release/cancel decision and apply it when the durable receipt arrives.
+    pendingSettlement ??= settlement;
+    applyPendingSettlement();
+    return Promise.resolve();
   };
   return {
     // The child inherits the caller-supplied parent lineage; there is no receipt of its own yet.
@@ -222,15 +256,19 @@ function lazyReceipt(
     armAfterSpawn: () => {
       timer = setTimeout(() => {
         timer = null;
-        minting = begin(params).then(
+        admissionStarted = true;
+        minting = Promise.resolve().then(() => begin(params)).then(
           (e) => { execution = e; },
-          () => undefined, // best-effort: never disturbs a running read
-        );
+          () => undefined, // admission failure never disturbs the completed read
+        ).finally(() => {
+          minting = null;
+          applyPendingSettlement();
+        });
       }, delayMs);
       timer.unref?.();
     },
-    finish: (demand) => settle((e) => e.finish(demand)),
-    cancel: (reason) => settle((e) => e.cancel(reason)),
+    finish: (demand, onSettled) => requestSettlement({ kind: 'finish', demand, onSettled }),
+    cancel: (reason) => requestSettlement({ kind: 'cancel', reason }),
   };
 }
 
@@ -599,8 +637,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
           stopGuards();
           if (!spawnFailed) {
             reportStage('settlement-start');
-            await execution.finish({ cpuWeight: 1 });
-            reportStage('settlement-complete');
+            await execution.finish({ cpuWeight: 1 }, () => reportStage('settlement-complete'));
           }
           finish(code ?? -1);
         } catch (settlementError) {

@@ -1258,10 +1258,20 @@ export function boundDiscoveryHits(
     return Buffer.byteLength(JSON.stringify(projected), 'utf8') <= DISCOVERY_RESULT_MAX_BYTES;
   };
 
+  // Reserve identities before spending the door budget on long schemas.
+  // An ellipsis means schema withheld, never a no-argument contract (null).
   for (const hit of hits) {
-    const candidate = [...kept, hit];
+    const identity = { ...hit, description: null, returns: null, returnsSource: null,
+      argSchema: hit.argSchema == null ? null : '…' };
+    if (!fits([...kept, identity], true)) break;
+    kept.push(identity);
+  }
+  for (let index = 0; index < kept.length; index += 1) {
+    const hit = hits[index]!;
+    const replace = (value: DiscoveryResultHit) => kept.map((prior, i) => i === index ? value : prior);
+    const candidate = replace(hit);
     if (fits(candidate)) {
-      kept.push(hit);
+      kept[index] = hit;
       continue;
     }
 
@@ -1276,24 +1286,24 @@ export function boundDiscoveryHits(
       returns: null,
       returnsSource: null,
     };
-    let fittedHit = fits([...kept, compactedHit], true) ? compactedHit : null;
+    let fittedHit = fits(replace(compactedHit), true) ? compactedHit : null;
     if (!fittedHit) {
       const withoutDescription = { ...compactedHit, description: null };
-      if (fits([...kept, withoutDescription], true)) fittedHit = withoutDescription;
+      if (fits(replace(withoutDescription), true)) fittedHit = withoutDescription;
 
       if (!fittedHit && typeof hit.argSchema === 'string') {
         for (const schemaPrefix of compactSchemaPrefixes(hit.argSchema)) {
           const candidateHit = { ...withoutDescription, argSchema: schemaPrefix };
-          if (!fits([...kept, candidateHit], true)) break;
+          if (!fits(replace(candidateHit), true)) break;
           fittedHit = candidateHit;
         }
       }
     }
     if (!fittedHit) {
-      if (kept.length > 0) break;
-      break;
+      fieldsTruncated = true;
+      continue;
     }
-    kept.push(fittedHit);
+    kept[index] = fittedHit;
     fieldsTruncated = true;
   }
   const omittedTools = omittedFor(kept);
@@ -1749,9 +1759,9 @@ export default defineTool({
     let projectedHits = hits.map((h) => projectHit(h, fullArgSchemaRequested));
 
     const hasToolsInvokeHit = projectedHits.some((hit) => hit.tool === 'tools:invoke');
-    const exactNameRecoveryNote = exactNames.length > 0
+    const exactNameRecoveryNote = ' A schema containing … is incomplete; query that exact tool name before invoking it.' + (exactNames.length > 0
       ? ' Exact names are prioritized; if `omittedTools` is present, query each listed name individually.'
-      : '';
+      : '');
     const generationBindingInstruction = servingGeneration
       ? ' This result includes `servingGeneration` for explicit callers that support it; do not pass it as a `tools:invoke` argument because legacy callable schemas may reject it. The MCP transport independently checks the `papercusp/servingGeneration` metadata attached to tools/list entries before dispatch.'
       : ' The server generation is unknown; do not send this schema through a different operator. Refresh tools/list or use a direct call on the same connection.';

@@ -71,7 +71,7 @@ native_preflight_args=("$@")
 has_explicit_spec=0
 for arg in "$@"; do
   case "$arg" in
-    *.spec.*|*.test.*) has_explicit_spec=1 ;;
+    *.spec.*|*.test.*|*.live.*) has_explicit_spec=1 ;;
   esac
 done
 if [ "$has_explicit_spec" -eq 0 ]; then
@@ -213,7 +213,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 const repoRoot = resolve(process.argv[2]);
 const operatorRoot = resolve(repoRoot, 'apps/operator');
 const inputs = new Set(['apps/operator/playwright.config.mts', 'apps/operator/playwright.config.ts']);
-const specPath = /\.(?:spec|test)\.[cm]?[jt]sx?$/i;
+const specPath = /\.(?:spec|test|live)\.[cm]?[jt]sx?$/i;
 const valueOptions = new Set([
   '--grep', '-g', '--grep-invert', '--project', '-p', '--workers', '-j',
   '--timeout', '--global-timeout', '--retries', '--repeat-each', '--output', '-o',
@@ -311,15 +311,17 @@ fi
 # valid anchored title can select nothing. Collection never runs fixtures and
 # uses its own JSON reporter; execution keeps the config's ledger reporters.
 selection_report="$VH_PHASE_DIR/selection.json"
+selection_stdout="$VH_PHASE_DIR/selection.stdout.log"
 selection_errors="$VH_PHASE_DIR/selection.stderr.log"
 (
   cd "$ROOT/apps/operator" || exit 2
-  timeout --signal=TERM --kill-after=5s 60s bash -c \
+  PLAYWRIGHT_JSON_OUTPUT_FILE="$selection_report" timeout --signal=TERM --kill-after=5s 60s bash -c \
     'exec $OPERATOR_E2E_PLAYWRIGHT "$@" --list --reporter=json' -- "$@"
-) >"$selection_report" 2>"$selection_errors"
+) >"$selection_stdout" 2>"$selection_errors"
 selection_status=$?
 if [ "$selection_status" -ne 0 ]; then
   vh_fail selection-collection-failed
+  tail -n 20 "$selection_stdout" >&2
   tail -n 20 "$selection_errors" >&2
   echo "run-operator-e2e-isolated: selection collection failed (rc=$selection_status); refusing native rig; evidence=$selection_report" >&2
   exit 2

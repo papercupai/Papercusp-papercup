@@ -20,7 +20,7 @@ import {
   isEphemeralMcpCallIdentity,
   type AgentIdentity,
 } from '../coordination/identity';
-import { COORD_ROLES } from '../coordination/roles';
+import { WORK_ITEM_LIFECYCLE_ROLES } from '../coordination/roles';
 import {
   bindWorkItemDirectiveRef,
   claimWorkItem,
@@ -115,6 +115,34 @@ interface ClaimItem {
   /** P-005: the owner directive this claim is taking the item on in order to
    *  carry out. Bound AFTER the claim lands — see the bind below. */
   directiveRef?: number;
+}
+
+const JUDGE_REVIEW_CONSULT_KINDS = new Set([
+  'rubric-vetting',
+  'acceptance-grading',
+  'grading-integrity',
+]);
+
+function isPullableReviewConsultItem(item: { kind?: unknown; payload?: unknown } | null): boolean {
+  if (!item || item.kind !== 'task' || !item.payload || typeof item.payload !== 'object' || Array.isArray(item.payload)) {
+    return false;
+  }
+  const reviewConsult = (item.payload as Record<string, unknown>).reviewConsult;
+  if (!reviewConsult || typeof reviewConsult !== 'object' || Array.isArray(reviewConsult)) return false;
+  const review = reviewConsult as Record<string, unknown>;
+  return typeof review.conversationId === 'string' && review.conversationId.trim().length > 0 &&
+    typeof review.kind === 'string' && JUDGE_REVIEW_CONSULT_KINDS.has(review.kind);
+}
+
+function judgeReviewClaimRefusal(id: string): BulkItemResult {
+  return {
+    ok: false,
+    id,
+    error: 'judge_review_claim_only',
+    hint:
+      'The judge role may self-claim one pullable review-consult task only (rubric-vetting, acceptance-grading, or grading-integrity), ' +
+      'with changeKinds:["no-code-change"]. Generic, batch, delegated, forced, and code-change claims remain unavailable to judges.',
+  };
 }
 
 /** Best-effort claim receipt guidance; a diagnostic failure must never undo a landed claim. */
@@ -340,6 +368,8 @@ async function claimOne(
   reader: CellReader | null,
   verifiedCallerAlias: string | null,
   declaredById: ReadonlyMap<string, DeclaredChangeKinds>,
+  callerRole: string | undefined,
+  judgeRequestIsSingleSelfClaim: boolean,
   reuse?: import('../../code-intelligence/task-brief').ClaimBriefReuseIdentity,
 ): Promise<BulkItemResult> {
   const claimerDefault = identity.ownerId;
@@ -350,6 +380,12 @@ async function claimOne(
   // the claim under an unmatchable literal "self" ownerId (previously stored verbatim —
   // WI-3881).
   const it: ClaimItem = { ...itRaw, assignee: itRaw.assignee === 'self' ? undefined : itRaw.assignee };
+  if (
+    callerRole === 'judge' &&
+    (!judgeRequestIsSingleSelfClaim || (it.assignee !== undefined && it.assignee !== claimerDefault) || it.force || it.pilotRole || it.directiveRef)
+  ) {
+    return judgeReviewClaimRefusal(it.id);
+  }
   if (!it.assignee && claimerDefault === SUPERUSER_FALLBACK_CLIENT_ID) {
     return {
       ok: false,
@@ -422,6 +458,9 @@ async function claimOne(
       ...terminalRefusal,
       workItem: preClaimItem,
     };
+  }
+  if (callerRole === 'judge' && preClaimItem && !isPullableReviewConsultItem(preClaimItem)) {
+    return judgeReviewClaimRefusal(it.id);
   }
   // EI-19313376980892266: start the concurrency read as soon as the claimer and a
   // non-terminal target are known, then await it only in the success branch. This
@@ -1336,7 +1375,7 @@ export default defineTool({
   //     use (Bash/Read/vitest, zero platform calls) inside a >10–15min claim (EI-6772); call
   //     work_items:checkpoint partway, which is both a progress note and a liveness pulse.
   description:
-    'Claim one or many work-items for yourself or an assignee. Single: { id, assignee? }; many: ids:[…] or items:[{ id, assignee?, harness? }]. Results are independent. Fleet members receive only items matching their claim spec. Named claims override readiness floors, not terminal state, fleet scope or born-pending admission/trust; server-derived dispatch/force may bypass pending rows. Reopen terminal work first with work_items:set_state { force:true, reason }. `force:true` here is an audited, liveness-checked holder takeover.',
+    'Claim one or many work-items for yourself or an assignee. Single: { id, assignee? }; many: ids:[…] or items:[{ id, assignee?, harness? }]. Results are independent. Fleet members receive only items matching their claim spec. Evidence judges may self-claim only one task with a supported payload.reviewConsult and changeKinds:["no-code-change"]. Named claims override readiness floors, not terminal state, fleet scope or born-pending admission/trust; server-derived dispatch/force may bypass pending rows. Reopen terminal work first with work_items:set_state { force:true, reason }. `force:true` here is an audited, liveness-checked holder takeover.',
   guidance: {
     when: 'Before editing: claim to prevent duplicate work, and declare `changeKinds` here so the close knows which proof it owes. Use ids:[…] for a swath.',
     notWhen:
@@ -1362,7 +1401,10 @@ export default defineTool({
   requirePrincipal: false,
   // Admit the research task's claim door without adding researcher to the
   // general coordination/placement role set.
-  agentRoles: [...COORD_ROLES, 'researcher'],
+  // Judge is admitted here only because it shares the narrowly scoped lifecycle role set.
+  // claimOne restricts it to one self-claimed pullable reviewConsult task; this does not grant
+  // the evidence-only role generic queue or implementation claims.
+  agentRoles: [...WORK_ITEM_LIFECYCLE_ROLES, 'researcher'],
   args: z
     .object({
       id: z.string().min(1).optional().describe('single-claim shorthand: the work-item id'),
@@ -1441,6 +1483,17 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    const callerRole = typeof ctx.role === 'string' ? ctx.role : undefined;
+    const judgeRequestIsSingleSelfClaim = callerRole !== 'judge' || (
+      typeof args.id === 'string' &&
+      args.ids === undefined &&
+      args.items === undefined &&
+      args.force !== true &&
+      args.pilotRole === undefined &&
+      args.directiveRef === undefined &&
+      (args.assignee === undefined || args.assignee === 'self' || args.assignee === ident.ownerId) &&
+      args.changeKinds?.length === 1 && args.changeKinds[0] === 'no-code-change'
+    );
     const reuse = createReuseBriefIdentity(ident.ownerId, ctx.dispatchCallId,
       outcomes => ctx.metadata?.({ reuseBriefProviders: outcomes }));
     // P-027: resolved ONCE for the whole batch — the advisory is reader-relative,
@@ -1491,7 +1544,9 @@ export default defineTool({
           }))
         : list.map((it) => ({ id: it.id, changeKinds: args.changeKinds, changeKindReason: args.changeKindReason })),
     );
-    const claimed = await runBulk(list, (it) => claimOne(it, ident, reader, verifiedCallerAlias, declaredById, reuse), {
+    const claimed = await runBulk(list, (it) => claimOne(
+      it, ident, reader, verifiedCallerAlias, declaredById, callerRole, judgeRequestIsSingleSelfClaim, reuse,
+    ), {
       keyOf: (it) => ({ id: it.id }),
     });
     const env = declaredById.size

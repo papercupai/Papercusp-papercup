@@ -469,17 +469,57 @@ export function canDispatchPtoolOnFallback(
 // caller pin: a wake-respawn must be allowed to rediscover operator.json when
 // the desktop operator has moved to a new port. The launcher stamps this value
 // only on managed exports; a bare PAPERCUSP_OPERATOR_URL remains authoritative.
+function isLocalPtoolProxyUrl(operatorUrl, env) {
+  try {
+    const url = new URL(operatorUrl);
+    const localHost = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname.toLowerCase());
+    if (url.protocol !== 'http:' || !localHost) return false;
+
+    const proxyBase = typeof env.PAPERCUSP_MCP_PROXY_BASE === 'string'
+      ? env.PAPERCUSP_MCP_PROXY_BASE.trim()
+      : '';
+    if (proxyBase) {
+      try {
+        if (new URL(proxyBase).origin === url.origin) return true;
+      } catch {
+        // An invalid optional proxy base cannot identify a route.
+      }
+    }
+
+    const port = url.port || '80';
+    const resilientProxyPort = validLocalPort(env.PAPERCUSP_MCP_PROXY_PORT) ?? '9071';
+    const stagingProxyPort = validLocalPort(env.PAPERCUSP_MCP_STAGING_PROXY_PORT) ??
+      DEFAULT_MCP_STAGING_PROXY_PORT;
+    return port === resilientProxyPort || port === stagingProxyPort;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Whether the operator URL came from implicit local discovery and may follow a
  * packaged operator that restarts onto a different port. Explicit CLI/env
  * URLs are pins: changing them behind the caller's back would violate the
  * caller's transport choice (and could route a request to the wrong host).
+ * Once the selected endpoint is a proxy, its upstream routing is authoritative:
+ * rebasing the CLI to operator.json can cross into another local operator and
+ * return a confident absence from a different database (EI-26993615074036891).
+ * Keep retries on that proxy; direct packaged operator URLs may still follow
+ * operator.json when the desktop process moves ports.
  */
-export function shouldRediscoverOperatorUrl(args = {}, env = process.env) {
-  return !args.url && (
+export function shouldRediscoverOperatorUrl(args = {}, env = process.env, selectedOperatorUrl = null) {
+  if (args.url) return false;
+  const managedHandoff = (
     !env.PAPERCUSP_OPERATOR_URL ||
     env[OPERATOR_URL_PROVENANCE_ENV] === LAUNCHER_OPERATOR_URL_PROVENANCE
   );
+  if (!managedHandoff) return false;
+  const selected = typeof selectedOperatorUrl === 'string' && selectedOperatorUrl.trim()
+    ? selectedOperatorUrl.trim()
+    : typeof env.PAPERCUSP_OPERATOR_URL === 'string'
+      ? env.PAPERCUSP_OPERATOR_URL.trim()
+      : '';
+  return !selected || !isLocalPtoolProxyUrl(selected, env);
 }
 
 /**
@@ -588,22 +628,28 @@ export async function withPtoolConnectionPhaseTrace(
   phase,
   route,
   operation,
-  { traceFastOutcome = false, completionFields } = {},
+  { traceFastOutcome = false, completionFields, now = ptoolMonotonicNowMs } = {},
 ) {
-  const startedAtMs = Date.now();
-  const phaseStartedAt = new Date(startedAtMs).toISOString();
+  const startedAtMs = now();
+  const phaseStartedAt = new Date().toISOString();
   let pending = false;
-  const timer = setTimeout(() => {
+  const elapsedMs = () => Math.max(0, Math.round(now() - startedAtMs));
+  const markPending = () => {
+    if (pending) return;
     pending = true;
     emitPtoolConnectionTrace(trace, 'phase-pending', {
       stage: phase,
       route,
       phaseStartedAt,
-      elapsedMs: Date.now() - startedAtMs,
+      elapsedMs: elapsedMs(),
     });
-  }, PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS);
+  };
+  const timer = setTimeout(markPending, PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS);
   try {
     const result = await operation();
+    const durationMs = elapsedMs();
+    // A blocked event loop can delay the timer until after the operation settles.
+    if (durationMs >= PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS) markPending();
     if (pending || traceFastOutcome) {
       // Catalog recovery returns { client, tools, error } so the caller can
       // retain the active transport for its scripted fallback. Resolving that
@@ -620,25 +666,42 @@ export async function withPtoolConnectionPhaseTrace(
         stage: phase,
         route,
         phaseStartedAt,
-        elapsedMs: Date.now() - startedAtMs,
+        elapsedMs: durationMs,
         ...(catalogError ? { failureKind: classifyConnectFailure(catalogError) } : {}),
         ...resultFields,
       });
     }
     return result;
   } catch (error) {
+    const durationMs = elapsedMs();
+    if (durationMs >= PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS) markPending();
     if (pending || traceFastOutcome) {
       emitPtoolConnectionTrace(trace, 'phase-attempt-failed', {
         stage: phase,
         route,
         phaseStartedAt,
-        elapsedMs: Date.now() - startedAtMs,
+        elapsedMs: durationMs,
         failureKind: classifyConnectFailure(error),
       });
     }
     throw error;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+function ptoolMonotonicNowMs() {
+  return Number(process.hrtime.bigint()) / 1_000_000;
+}
+
+function closeLatePtoolConnection(connection) {
+  try {
+    const closing = connection?.close?.();
+    if (closing && typeof closing.then === 'function') {
+      void Promise.resolve(closing).catch(() => {});
+    }
+  } catch {
+    // A late connection is already unusable; cleanup must not replace timeout evidence.
   }
 }
 
@@ -3520,7 +3583,7 @@ export async function dispatchScriptedToolWithoutCatalogWithTokenFallback(
  * @param {{maxAttempts?: number, retryDelayMs?: number, attemptTimeoutMs?: number,
  * totalTimeoutMs?: number, sleep?: (ms: number) => Promise<void>, rand?: () => number,
  * retryJitterMs?: number, rediscover?: (() => string | null) | null,
- * onRebase?: ((url: string) => void) | null}} [options]
+ * onRebase?: ((url: string) => void) | null, now?: () => number}} [options]
  */
 export async function connectWithLocalRetry(
   connectOnce,
@@ -3536,12 +3599,13 @@ export async function connectWithLocalRetry(
     retryJitterMs = PTOOL_RETRY_JITTER_MS,
     rediscover = null,
     onRebase = null,
+    now = ptoolMonotonicNowMs,
   } = {},
 ) {
   let liveOperatorUrl = operatorUrl;
   const hostname = new URL(liveOperatorUrl).hostname;
   const local = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
-  const startedAt = Date.now();
+  const startedAt = now();
   let lastError;
   // EI-21504867146958629: intermediate failures used to be discarded (only
   // lastError survived), so a budget burned down by dozens of fast proxy-shed
@@ -3554,26 +3618,47 @@ export async function connectWithLocalRetry(
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let timeout;
     try {
+      const attemptStartedAt = now();
       const remainingTotalMs = totalTimeoutMs > 0
-        ? Math.max(1, totalTimeoutMs - (Date.now() - startedAt))
+        ? Math.max(1, totalTimeoutMs - (attemptStartedAt - startedAt))
         : null;
       const configuredAttemptTimeoutMs =
         attemptTimeoutMs ?? ptoolConnectAttemptTimeoutMs(liveOperatorUrl);
       const effectiveAttemptTimeoutMs = configuredAttemptTimeoutMs > 0
         ? Math.min(configuredAttemptTimeoutMs, remainingTotalMs ?? configuredAttemptTimeoutMs)
         : remainingTotalMs;
+      let timedOut = false;
+      const attemptDeadlineAt = local && effectiveAttemptTimeoutMs
+        ? attemptStartedAt + effectiveAttemptTimeoutMs
+        : null;
+      const attemptTimeoutError = attemptDeadlineAt === null
+        ? null
+        : new Error(`local operator connection attempt timed out after ${effectiveAttemptTimeoutMs}ms`);
+      let connected;
+      if (attemptTimeoutError) {
+        connected = Promise.withResolvers();
+        // Arm before connectOnce: its synchronous setup belongs to this attempt.
+        timeout = setTimeout(() => {
+          timedOut = true;
+          connected.reject(attemptTimeoutError);
+        }, effectiveAttemptTimeoutMs);
+      }
       const connection = connectOnce(
         liveOperatorUrl,
         scope,
         local && effectiveAttemptTimeoutMs ? { timeoutMs: effectiveAttemptTimeoutMs } : undefined,
       );
       if (!local || !effectiveAttemptTimeoutMs) return await connection;
-      const connected = Promise.withResolvers();
-      timeout = setTimeout(
-        () => connected.reject(new Error(`local operator connection attempt timed out after ${effectiveAttemptTimeoutMs}ms`)),
-        effectiveAttemptTimeoutMs,
-      );
-      Promise.resolve(connection).then(connected.resolve, connected.reject);
+      Promise.resolve(connection).then((value) => {
+        // Timers cannot fire while JS is blocked; don't accept a late success.
+        if (timedOut || now() >= attemptDeadlineAt) {
+          timedOut = true;
+          closeLatePtoolConnection(value);
+          connected.reject(attemptTimeoutError);
+          return;
+        }
+        connected.resolve(value);
+      }, connected.reject);
       return await connected.promise;
     } catch (error) {
       lastError = error;
@@ -3581,7 +3666,7 @@ export async function connectWithLocalRetry(
       attemptKinds.push(failureKind);
       if (failureKind === 'proxy-upstream-502') proxyUpstreamErrorAttempts += 1;
       const remainingTotalMs = totalTimeoutMs > 0
-        ? totalTimeoutMs - (Date.now() - startedAt)
+        ? totalTimeoutMs - (now() - startedAt)
         : null;
       if (
         !local ||
@@ -3629,7 +3714,7 @@ export async function connectWithLocalRetry(
       clearTimeout(timeout);
     }
   }
-  throw appendConnectAttemptHistory(lastError, attemptKinds, Date.now() - startedAt);
+  throw appendConnectAttemptHistory(lastError, attemptKinds, now() - startedAt);
 }
 
 /**
@@ -4827,7 +4912,7 @@ async function main() {
   const tokenPaths = resolveTokenPaths({ tokenFile: args.tokenFile });
   let activeTokenFile = null;
   const retryOptions = ptoolConnectionRetryOptions(args, process.env);
-  const rediscover = shouldRediscoverOperatorUrl(args, process.env) &&
+  const rediscover = shouldRediscoverOperatorUrl(args, process.env, operatorUrl) &&
     Object.keys(retryOptions).length === 0
     ? discoverOperatorUrl
     : null;

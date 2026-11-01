@@ -2202,10 +2202,11 @@ describe('retention on a real fixture tree', () => {
       expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
       expect(receipt.entries).toEqual(expect.arrayContaining([
         expect.objectContaining({ path: protectedPath, status: 'protected', reason: 'protected policy root' }),
-        expect.objectContaining({ path: tree, status: 'protected', reason: 'symlink boundary' }),
+        expect.objectContaining({ path: tree, status: 'removed' }),
         expect.objectContaining({ path: expired, status: 'removed' }),
       ]));
       expect(await stat(join(owner, 'data'))).toBeTruthy();
+      await expect(stat(tree)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { await chmod(protectedPath, 0o700); }
   });
   it.each([false, true])('persists protected census summaries without private allocation metadata (partial=%s)', async (partial) => {
@@ -2276,27 +2277,29 @@ describe('retention on a real fixture tree', () => {
       expect((await stat(fifo)).isFIFO()).toBe(true);
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
-  it('never follows a symlink into owner data', async () => {
+  it.each([undefined, inspectRetentionTrees])('never follows a symlink into owner data (%s)', async (inspectTrees) => {
     const { root, options } = await setup(); const owner = join(fixture!, 'owner'); await mkdir(owner); await writeFile(join(owner, 'data'), 'keep');
     await symlink(owner, join(root, 'link'));
-    const receipt = await runDiskReclaimOnce(options);
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees });
     expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
     expect(receipt.entries).toEqual([expect.objectContaining({ path: join(root, 'link'), status: 'protected', reason: 'symlink boundary' })]);
     expect(await stat(join(owner, 'data'))).toBeTruthy();
   });
-  it('retains an entire tree containing a symlink while draining an independent expired entry', async () => {
+  it('removes an eligible expired tree containing a symlink without following its target', async () => {
     const { root, options } = await setup();
     const tree = join(root, 'tree'); await mkdir(tree);
+    await writeFile(join(tree, 'expired-data'), 'remove');
     const owner = join(fixture!, 'owner'); await mkdir(owner); await writeFile(join(owner, 'data'), 'keep');
     await symlink(owner, join(tree, 'link'));
     const expired = join(root, 'expired'); await writeFile(expired, 'remove');
-    const receipt = await runDiskReclaimOnce(options);
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees: inspectRetentionTrees });
     expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
     expect(receipt.entries).toEqual(expect.arrayContaining([
-      expect.objectContaining({ path: tree, status: 'protected', reason: 'symlink boundary' }),
+      expect.objectContaining({ path: tree, status: 'removed' }),
       expect.objectContaining({ path: expired, status: 'removed' }),
     ]));
     expect(await stat(join(owner, 'data'))).toBeTruthy();
+    await expect(stat(tree)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(expired)).rejects.toMatchObject({ code: 'ENOENT' });
   });
   it('records nested protected policy trees without reading them and refuses unknown permissions', async () => {

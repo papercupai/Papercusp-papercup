@@ -563,5 +563,8 @@
     "winston": "^3.19.0",
     "winston-transport": "^4.9.0",
     "wrangler": "^4.85.0"
+  },
+  "allowScripts": {
+    "better-sqlite3": true
   }
 }

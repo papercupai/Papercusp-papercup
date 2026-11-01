@@ -233,13 +233,17 @@ describe('unanswered-directed roster statement (P-005)', () => {
     expect([...(current[0]!.newest_ids as string[])].sort()).toEqual(['ask-r0-a1-new', 'ask-r0-a2-old']);
   });
 
-  it('counts a resolved @file question on both sides, excludes wildcard/other selector audiences, then clears it on reply', async () => {
+  it('counts resolved @file and @fleet-leader questions, excludes other audiences, then clears replies', async () => {
     const fileAskId = 'ask-r0-file-selector';
+    const fleetLeaderAskId = 'ask-r0-fleet-leader-selector';
     const topicAskId = 'ask-r0-topic-selector';
     const broadcastAskId = 'ask-r0-wildcard';
     const extraMessages = [
       ask(fileAskId, 'su-p005-a7', R0, 0.01, {
         audience: ['@file:packages/operator-core/lib/storage/disk-reclaim.ts'],
+      }),
+      ask(fleetLeaderAskId, 'su-p005-a10', R0, 0.01, {
+        audience: ['@fleet-leader:nonp2p-bug-drain-luna-max-0930'],
       }),
       ask(topicAskId, 'su-p005-a8', R0, 0.01, { audience: ['@topic:storage'] }),
       msg(broadcastAskId, 'su-p005-a9', ROSTER, 0.01, {
@@ -265,23 +269,34 @@ describe('unanswered-directed roster statement (P-005)', () => {
         endedSendersFn: async () => new Set(),
       });
       const recipientSummary = recipientBefore.get(R0);
-      expect(recipientSummary?.count).toBe(3);
+      expect(recipientSummary?.count).toBe(4);
       expect(recipientSummary?.newest.map((entry) => entry.msgId)).toContain(fileAskId);
+      expect(recipientSummary?.newest.map((entry) => entry.msgId)).toContain(fleetLeaderAskId);
       expect(recipientSummary?.newest.map((entry) => entry.msgId)).not.toContain(topicAskId);
       expect(recipientSummary?.newest.map((entry) => entry.msgId)).not.toContain(broadcastAskId);
 
-      const sendersBefore = await fetchOpenAsks(['su-p005-a7', 'su-p005-a8', 'su-p005-a9'], {
+      const sendersBefore = await fetchOpenAsks(
+        ['su-p005-a7', 'su-p005-a8', 'su-p005-a9', 'su-p005-a10'],
+        {
         nowMs,
         recipientStatesFn: async () => new Map<string, null>(),
-      });
+        },
+      );
       expect(sendersBefore.get('su-p005-a7')?.count).toBe(1);
       expect(sendersBefore.get('su-p005-a7')?.newest.map((entry) => entry.msgId)).toContain(fileAskId);
+      expect(sendersBefore.get('su-p005-a10')?.count).toBe(1);
+      expect(sendersBefore.get('su-p005-a10')?.newest.map((entry) => entry.msgId)).toContain(
+        fleetLeaderAskId,
+      );
       expect(sendersBefore.has('su-p005-a8')).toBe(false);
       expect(sendersBefore.has('su-p005-a9')).toBe(false);
 
       await insertMessages([
         msg('reply-r0-file-selector', R0, ['su-p005-a7'], 0.005, {
           related_msg_id: fileAskId,
+        }),
+        msg('reply-r0-fleet-leader-selector', R0, ['su-p005-a10'], 0.005, {
+          related_msg_id: fleetLeaderAskId,
         }),
       ]);
 
@@ -292,16 +307,34 @@ describe('unanswered-directed roster statement (P-005)', () => {
       });
       expect(recipientAfter.get(R0)?.count).toBe(2);
       expect(recipientAfter.get(R0)?.newest.map((entry) => entry.msgId)).not.toContain(fileAskId);
+      expect(recipientAfter.get(R0)?.newest.map((entry) => entry.msgId)).not.toContain(
+        fleetLeaderAskId,
+      );
 
       const sendersAfter = await fetchOpenAsks(['su-p005-a7'], {
         nowMs,
         recipientStatesFn: async () => new Map<string, null>(),
       });
       expect(sendersAfter.has('su-p005-a7')).toBe(false);
+      const fleetLeaderSenderAfter = await fetchOpenAsks(['su-p005-a10'], {
+        nowMs,
+        recipientStatesFn: async () => new Map<string, null>(),
+      });
+      expect(fleetLeaderSenderAfter.has('su-p005-a10')).toBe(false);
     } finally {
       await db.sql.unsafe(
         'DELETE FROM harness_shared.coord_event_log WHERE workspace_id = $1 AND msg_id = ANY($2::text[])',
-        [WS, [fileAskId, topicAskId, broadcastAskId, 'reply-r0-file-selector']],
+        [
+          WS,
+          [
+            fileAskId,
+            fleetLeaderAskId,
+            topicAskId,
+            broadcastAskId,
+            'reply-r0-file-selector',
+            'reply-r0-fleet-leader-selector',
+          ],
+        ],
       );
     }
   });

@@ -32,6 +32,7 @@
  *     `fork:false` instead requires an in-place resume and refuses a live source.
  */
 import { randomUUID } from 'node:crypto';
+import { isBlindReviewerBackendAgent } from '../../blind-reviewer-backends';
 import { SCOPED_INFERENCE_GATEWAY_ENV, snapshotScopedInferenceGateway, type ScopedInferenceGateway } from '@papercusp/orchestrator/codex-gateway-config';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { join } from 'node:path';
@@ -97,9 +98,10 @@ import {
 import { declareCoupling } from '../../coord/couplings';
 import { nativeSessionHandleForAdvSession, type NativeSessionHandle } from '../../native-session-handles';
 import {
+  BLIND_GAP_REVIEW_ACTOR,
   inspectBlindReviewResumeTarget,
   INTERNAL_BLIND_REVIEW_RESUME,
-  verifyBlindReviewSessionBinding,
+  verifyBlindReviewSessionResumeBinding,
   type BlindReviewResumePermit,
 } from '../../blind-review-session-bindings';
 // WI-37920 / P-002: check the backend in the env the WINDOW gets, not ours.
@@ -962,10 +964,13 @@ export default defineTool({
         backendBinOverrideEnv[backendBinOverrideEnvKey(agentName)] = binPath;
       }
     }
-    // A launch-declared confinement binds a NEW identity before its process opens. A
-    // resumed, successor or forked identity already ran turns unconfined, so it is refused
-    // rather than confined after the fact (WI-6554700010008492).
-    if (privateConfinement && (args.resume || args.successor || args.fork)) {
+    const blindResumePermit = (ctx as unknown as Record<PropertyKey, unknown>)[INTERNAL_BLIND_REVIEW_RESUME] as BlindReviewResumePermit | undefined;
+    // Only the system recruiter may propose reusing an existing declaration. Its
+    // exact native identity, lease and unchanged ceiling are checked below before
+    // the declaration is renewed. Ordinary recovery cannot add a ceiling later.
+    const recruiterResume = ctx.principal?.kind === 'system' && ctx.principal.slug === BLIND_GAP_REVIEW_ACTOR &&
+      !!blindResumePermit && !!args.resume && !args.successor && args.fork === false;
+    if (privateConfinement && (args.resume || args.successor || args.fork) && !recruiterResume) {
       return err('A launch-declared session tool confinement requires a fresh launch.');
     }
     // Internal direct-handler seam used only by fleet:respawn-member after the
@@ -1267,16 +1272,18 @@ export default defineTool({
         } catch (error) {
           return err(`blind_review_binding_unreadable: could not classify this exact source session (${error instanceof Error ? error.message : String(error)}). No process was opened.`);
         }
-        const permit = (ctx as unknown as Record<PropertyKey, unknown>)[INTERNAL_BLIND_REVIEW_RESUME] as BlindReviewResumePermit | undefined;
+        const permit = blindResumePermit;
         if (blindSource.binding || blindSource.recruiterLaunch || permit) {
           const binding = blindSource.binding;
-          const exactRecruiterResume = !!binding && isResume && !isSuccessor && args.fork === false &&
+          const exactRecruiterResume = recruiterResume && callerOwnerId === BLIND_GAP_REVIEW_ACTOR &&
+            !!binding && isResume && !isSuccessor && args.fork === false &&
             args.resume?.agentId === undefined && args.resume?.sessionId === binding.nativeSessionId &&
             target.sessionId === binding.nativeSessionId && binding.status === 'resuming' &&
+            !!binding.resumeLeaseExpiresAt && Date.parse(binding.resumeLeaseExpiresAt) > Date.now() &&
             target.live === false && target.ownerId === binding.reviewerOwnerId &&
             target.advSessionId === binding.advSessionId && target.binding?.coordOwnerId === binding.reviewerOwnerId &&
             target.binding?.sessionId === binding.nativeSessionId && !!target.binding?.startedAt &&
-            target.agent === 'codex' && target.account === binding.accountRoute && target.headless === true &&
+            isBlindReviewerBackendAgent(target.agent) && target.account === binding.accountRoute && target.headless === true &&
             slug === binding.harnessSlug && args.headless === true && args.agent === undefined &&
             args.account === undefined && args.model === undefined && args.originalRouting === undefined &&
             !!permit && permit.bindingId === binding.id && permit.leaseId === binding.resumeLeaseId &&
@@ -1286,10 +1293,19 @@ export default defineTool({
           if (!exactRecruiterResume) {
             return err('blind_review_recovery_recruiter_only: a bound blind reviewer may be recovered only by the recruiter using its exact native sessionId with fork:false. No process was opened.');
           }
-          const verified = await verifyBlindReviewSessionBinding(binding);
+          // The internal ceiling must be the saved declaration, never an omitted
+          // or broader policy supplied beside an otherwise valid resume permit.
+          const { isDeepStrictEqual } = await import('node:util');
+          if (!isDeepStrictEqual(privateConfinement, binding.confinementSnapshot)) {
+            return err('blind_review_session_binding_invalid: confinement_mismatch. No process was opened.');
+          }
+          const verified = await verifyBlindReviewSessionResumeBinding(binding);
           if (!verified.ok) return err(`blind_review_session_binding_invalid: ${verified.code}: ${verified.message}. No process was opened.`);
           blindReviewResumeAuthorized = true;
         }
+      }
+      if (privateConfinement && !blindReviewResumeAuthorized) {
+        return err('blind_review_recovery_recruiter_only: the exact bound reviewer could not be verified. No process was opened.');
       }
       if (expectedSuccessorBinding) {
         const expected = expectedSuccessorBinding;

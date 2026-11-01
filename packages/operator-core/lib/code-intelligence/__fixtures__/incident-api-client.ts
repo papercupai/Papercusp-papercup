@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { channel } from 'node:diagnostics_channel';
 import { mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
 import { readFileSync, writeSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -9,8 +10,9 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { moduleRepoRoot } from '../../module-repo-root.ts';
 import { createAdaptorServer } from '@hono/node-server';
-import { nativeCliPlan, nativeCliResult } from '../native-cli.fixture.ts';
+import { nativeCliPlan, nativeCliResult, preparePrivateNativeCallerSnapshot } from '../native-cli.fixture.ts';
 import { createTextCollector } from '../../child-output.js';
+import type { TaskBriefCaptureTiming } from '../task-brief.ts';
 
 // The plain-Node bootstrap supplies this callback from outside tsx's namespace.
 // The maintained handler is already compiled; routing it through tsx again
@@ -95,6 +97,11 @@ async function call(name: string, args: Record<string, unknown>) {
   console.log(`NATIVE_INCIDENT_API_STAGE=cli-finished:${name}`);
   return decoded;
 }
+const captureTimings: TaskBriefCaptureTiming[] = [];
+const captureDiagnostics = channel('papercusp.code-intelligence.task-brief.capture');
+const observeCapture = (message: unknown) => {
+  if (captureTimings.length < 8) captureTimings.push(message as TaskBriefCaptureTiming);
+};
 try {
   const identity = await call('coord:whoami', {}); assert.equal(identity.workspaceId, workspace);
   const root = (await loadHarnessRegistry(workspace)).projects.find(p => p.slug === workspace)?.path;
@@ -242,10 +249,11 @@ try {
     sourceBeforeSha256: createHash('sha256').update(beforeTarget).digest('hex'), sourceAfterSha256: sha('a-target.ts'),
     observationProducer: 'maintained collector and delivery ledger with controlled before image',
     scope: 'private current-source installed dispatcher replay; automatic symbol collection and edit/open-WI lookup; synthetic snapshot commit and controlled source-history seam; no live Codex model session' };
+  captureDiagnostics.subscribe(observeCapture);
   const claimed = await call('work_items:claim', { row: `${id},self,${workspace}`,
     projection: { pick: ['results[].taskBrief'] } });
   const brief = claimed.results?.[0]?.taskBrief;
-  assert.equal(brief?.status, 'current', JSON.stringify(claimed));
+  assert.equal(brief?.status, 'current', JSON.stringify({ claimed, captureTimings }));
   assert.equal(brief.incident.status, 'measured');
   assert.equal(brief.incident.cause, 'unknown'); assert.equal(brief.incident.runtimeExecution, 'unmeasured');
   assert.deepEqual(brief.incident.failures.map((row: any) => [row.testRunId, row.path, row.logSha256]),
@@ -263,11 +271,16 @@ try {
   assert.equal(repaired.results[0].resume.taskBrief.status, 'current');
   assert.deepEqual(repaired.results[0].resume.taskBrief.incident.failures, []);
   assert.deepEqual(repaired.results[0].resume.taskBrief.incident.candidates, []);
+  const captures = captureTimings.filter(row => row.workItem === id);
+  assert.equal(captures.length, 3, JSON.stringify(captureTimings));
+  assert(captures.every(row => row.status === 'current'
+    && row.phases.some(phase => phase.phase === 'safe-pack:execution')), JSON.stringify(captures));
   console.log('NATIVE_INCIDENT_API_PROOF=' + JSON.stringify({ workspace, transport: 'real-cli-http',
     failure: 'actual-node-assertion', staticCandidate: true, cause: 'unknown', runtimeExecution: 'unmeasured',
-    resume: 'current', repaired: true, push: pushProof }));
+    resume: 'current', repaired: true, push: pushProof, captureTimings: captures }));
   }
 } finally {
+  captureDiagnostics.unsubscribe(observeCapture);
   if ('closeAllConnections' in server) server.closeAllConnections();
   await new Promise<void>(done => server.close(() => done()));
   await getOrgPg().sql.end({ timeout: 2 });
@@ -489,10 +502,8 @@ async function runNativeTaskBriefJourney({ call, workspace, root, owner }: {
   // current-source proof this private fixture claims to exercise, after the
   // target edit so its per-file hash cannot be stale by construction.
   const sha = (path: string) => createHash('sha256').update(readFileSync(join(root, path))).digest('hex');
-  const snapshotPath = join(homedir(), '.papercusp/graph-snapshot', workspace, 'dependency-snapshot.json');
-  await mkdir(resolve(snapshotPath, '..'), { recursive: true });
   const sources = paths.map(path => ({ path, sha256: sha(path) }));
-  await writeFile(snapshotPath, JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
+  await preparePrivateNativeCallerSnapshot(workspace, JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
     index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) },
     edges: paths.slice(1).map(importer => ({ imported: paths[0], importer, importerSha256: sha(importer) })),
     symbols: { schema: 'code-intel-symbol-snapshot-v1', knowledge: 'syntax-bound', symbols: [{

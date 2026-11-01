@@ -8,6 +8,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { describeStoreIdentityMismatch, storeIdentityViolation } from '@papercusp/db-org';
+import { getServingBuild } from '../../serving-build';
+import { readServingGeneration } from '../../serving-generation';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { getLoopStatus } from '../../harness/routines/loop';
@@ -86,6 +88,7 @@ export default defineTool({
   guidance: {
     when: "Check whether your loop is still armed + when it next fires, or inspect another agent's loop. Pass `ownerId` for another session; this owner-scoped read ignores `harness` if passed.",
     returns:
+      'Each response includes servingBuild (main or staging) and servingGeneration (loaded build SHA, migration frontier, and tool-registry revision, or an explicit unknown reason) so you can identify the runtime that produced its loop verdict.\n\n' +
       '`cadenceDrift` (EI-21276782387845111) is true only when sustained slow-cadence evidence is corroborated by a scheduled fire several intervals overdue. It stays false for a parked turn (the configured interval begins after turn settlement), missing cadence history, or a fire that is not demonstrably late; combine it with the raw cadence fields rather than treating false as proof of normal cadence.\n\n' +
       "ROOT ENVELOPE: `{ ok, ownerId, loop, lastTransition, carryNote, reachability, pendingAwaits, storeIdentityWarning? }` — the loop RECORD is NESTED under `loop`: `{ active, intervalSec, parked, nextFireAt, lastFiredAt, fireCount, firesSinceArm, cost-cap, … }`, or null when no loop exists for the owner. `lastTransition` is null when no loop exists; otherwise it is a tri-state diagnostic read (`found`/`none`/`unknown`). A found transition preserves the scheduling cause — for example `actor:'await-suppression'` plus `detail.drivingEventKey` explains why a 60s loop was deliberately re-armed to an await deadline instead of firing each minute. A found transition also carries `cycle`: `parked` means the member's own TURN is in flight (next_fire_at is infinity), NOT a re-arm delay — read `cycle.lastTurn.turnSec` (parked→rearmed) and `postSettleDelaySec` (rearmed→next parked, ~intervalSec + <=30s tick) separately, because `loop.cadenceRatio`/`effectiveIntervalSec` include the turn by construction. `carryNote` is the routine-scoped read-back `{ note, contentHash, updatedAtMs }`, or null when no loop exists; use its hash to reconcile an uncertain `loop:checkpoint` transport result. jq / code:run reducers must descend through `.loop`; assuming root-level active/interval fields iterates null (EI-21197839138727609).\n\n" +
       "`rewake` uses the same loop/delivery classifier as loop:checkpoint, with the current owner wake-reachability probe included on both surfaces. `rewakeGuaranteed:false` on an ACTIVE loop names why the next turn is not guaranteed: `last-fire-parked` (the newest wake dispatched in the current arm epoch parked undelivered; failures dispatched before `armedAt` are historical), `last-fire-no-loop-turn` (the latest delivered fire has no loop-origin completion proof after `lastFiredAt`), `fire-starved`, `wake-unreachable` (the live probe found no owner wake route), or an exhausted maxFires/maxDurationSec bound. A later loop:arm does not clear `last-fire-no-loop-turn`; a delayed loop turn clears it only when `lastFailedFireLoopTurnCompletedAt` is strictly later than `lastFiredAt`. Do not settle a turn on an active loop whose rewake is false; inspect and repair the named failure before settling. Null when no loop exists.\n\n" +
@@ -151,6 +154,8 @@ export default defineTool({
     .object({
       ok: z.unknown().optional(),
       ownerId: z.unknown().optional(),
+      servingBuild: z.enum(['main', 'staging']).optional(),
+      servingGeneration: z.unknown().optional(),
       // Keep the stable fields used by continuation recipes in the published
       // result contract; passthrough preserves the rest of LoopStatus.
       loop: z
@@ -187,7 +192,7 @@ export default defineTool({
       resolveSelfLiteral(args.ownerId, identity.ownerId) ?? identity.ownerId;
     const status = await getLoopStatus(ownerId);
 
-    // EI-21869094231635430: these four probes are each independent of the OTHERS
+    // EI-21869094231635430: these five probes are each independent of the OTHERS
     // (only lastTransition/carryNote depend on `status`, already resolved above) —
     // they used to run as five SEQUENTIAL awaits, so their wall-clock cost SUMMED.
     // Under DB pool contention (this box runs a large concurrent fleet), summing
@@ -201,7 +206,7 @@ export default defineTool({
     // connection is held open under contention. Each retains its exact original
     // fail-soft behavior (see the per-branch comments below) — only the scheduling
     // changed, never the semantics.
-    const [lastTransition, carryNote, reachability, pendingAwaitsResult] = await Promise.all([
+    const [lastTransition, carryNote, reachability, pendingAwaitsResult, servingGeneration] = await Promise.all([
       status
         ? readLatestLoopTransition({
             workspaceId: identity.workspaceId,
@@ -248,6 +253,7 @@ export default defineTool({
               : { status: 'none' },
         )
         .catch((): LivePushChannels => ({ status: 'unknown' })),
+      readServingGeneration(),
     ]);
 
     const reachabilityOut = reachability
@@ -305,6 +311,8 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             ownerId,
+            servingBuild: getServingBuild(),
+            servingGeneration,
             loop: status,
             // P-013 / EI-24023838400909760: an active loop is not a re-wake guarantee
             // when its last fire parked (or a dead-man bound is spent). One classifier,

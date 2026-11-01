@@ -434,6 +434,36 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
   });
 
+  it('does not mislabel a positive-control-verified empty dev:pg_query result as transport degradation', () => {
+    const body = {
+      mode: 'query',
+      rowCount: 0,
+      truncated: false,
+      fields: [],
+      elapsedMs: 31,
+      rows: [],
+      positiveControl: {
+        rows: [{ known_positive: 1 }],
+        rowCount: 1,
+        truncated: false,
+        fields: ['known_positive'],
+        status: 'passed',
+      },
+      absence: { status: 'verified', code: 'positive-control-passed' },
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-31T23:07:40.067Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+  });
+
   it('does not warn for a populated fleet:assignments agents result', () => {
     const body = {
       ok: true,

@@ -380,7 +380,7 @@ export function nativeRefactorFactsResolver(scope: { root: string; workspaceId: 
           SELECT payload FROM harness_shared.work_items
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harness}
              AND condition_key = ${finding.conditionKey}
-           ORDER BY updated_at DESC LIMIT 1`;
+           ORDER BY updated_ts DESC LIMIT 1`;
         return rows[0] ? filedGuardFindingFromPayload(rows[0].payload, finding) : null;
       }
       const rows =
@@ -389,12 +389,12 @@ export function nativeRefactorFactsResolver(scope: { root: string; workspaceId: 
               SELECT payload->'cloneArea' AS clone_area FROM harness_shared.work_items
                WHERE workspace_id = ${workspaceId} AND harness_slug = ${harness}
                  AND condition_key = ${`clone-area:${finding.area}`}
-               ORDER BY updated_at DESC LIMIT 1`
+               ORDER BY updated_ts DESC LIMIT 1`
           : await db<{ clone_area: unknown }[]>`
               SELECT payload->'cloneArea' AS clone_area FROM harness_shared.work_items
                WHERE workspace_id = ${workspaceId} AND harness_slug = ${harness}
                  AND payload->'cloneArea'->'families' @> ${JSON.stringify([{ id: finding.familyId }])}::jsonb
-               ORDER BY updated_at DESC LIMIT 1`;
+               ORDER BY updated_ts DESC LIMIT 1`;
       return rows[0] ? filedFindingFromPayload(rows[0].clone_area, finding) : null;
     },
     async guardReachabilityCensus() {

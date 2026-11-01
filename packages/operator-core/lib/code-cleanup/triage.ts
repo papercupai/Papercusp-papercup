@@ -86,7 +86,7 @@ export interface DivergedHold {
   extra: string[]; guard: boolean;
   bug: 'missing' | 'open'; bugId: string | null;
 }
-export interface TriageLocation { path: string; line: number; symbol: string }
+export interface TriageLocation { path: string; line: number; symbol: string; endLine?: number }
 export interface TriagedFamily {
   id: string; score: number; churn: number; redundantMass: number; packageDistance: number;
   /** The weakest co-change link that still connects every member file ('file') or, when file
@@ -99,7 +99,8 @@ export interface TriagedFamily {
 export interface TriageBatch { area: string; index: number; score: number; redundantMass: number; families: TriagedFamily[] }
 export interface TriageResult { batches: TriageBatch[]; excluded: TriageExclusion[]; diverged: DivergedHold[] }
 
-const location = (m: TriageMember): TriageLocation => ({ path: m.path, line: m.line, symbol: m.symbol });
+const location = (m: TriageMember): TriageLocation => ({ path: m.path, line: m.line, symbol: m.symbol,
+  ...(m.endLine !== undefined ? { endLine: m.endLine } : {}) });
 const locKey = (m: TriageLocation) => `${m.path}#${m.symbol}`;
 
 /** Condition key of the bug filed for a diverged pair: order-independent, so the

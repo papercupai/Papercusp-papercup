@@ -18,6 +18,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
 import { getAcceptanceRubricsForPlan } from './rubrics';
 import { readAndEvaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
+import { readAcceptanceBarContractSnapshot, type AcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
 import { listSpecClauses, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import {
   getEffectiveItemAudits,
@@ -62,6 +63,7 @@ vi.mock('./rubrics', () => ({
 }));
 vi.mock('./scorecards', () => ({ listScorecards: vi.fn() }));
 vi.mock('./acceptance-bar-lifecycle-evaluator', () => ({ readAndEvaluateAcceptanceBarLifecycle: vi.fn() }));
+vi.mock('./acceptance-bar-contract-snapshot', () => ({ readAcceptanceBarContractSnapshot: vi.fn() }));
 // These later doors have their own suites; a positive harness identity below
 // must not make this code-truth regression depend on an unrelated review record.
 vi.mock('./blind-review-gate', () => ({ evaluateBlindReviewGate: vi.fn(async () => ({
@@ -87,6 +89,7 @@ vi.mock('./plan-audits', async (importOriginal) => {
 
 const mockFlag = vi.mocked(getFlag);
 const mockPg = vi.mocked(getOrgPg);
+const mockReadBarSnapshot = vi.mocked(readAcceptanceBarContractSnapshot);
 const mockRubric = vi.mocked(getAcceptanceRubricsForPlan);
 const mockLatestAudit = vi.mocked(getLatestPlanAudit);
 const mockEffectiveAudits = vi.mocked(getEffectiveItemAudits);
@@ -95,6 +98,38 @@ const mockCitationContext = vi.mocked(repoCitationContextForHarness);
 const mockActivationAudit = vi.mocked(getLatestActivationAudit);
 
 const PLAN = 'some-plan-2026-08-13';
+const BAR_SNAPSHOT: AcceptanceBarContractSnapshot = {
+  schemaVersion: 1,
+  contentHash: 'snapshot-under-test',
+  planSlug: PLAN,
+  applicable: false,
+  plan: null,
+  rubric: null,
+  sourceRevisions: { subjectPlan: null, rubricPlan: null, clauses: [], workContracts: [], scorecardIds: [] },
+  bounded: {
+    plans: { rowsRead: 0, limit: 1, truncated: false },
+    rubrics: { rowsRead: 0, limit: 1, truncated: false },
+    planItems: { rowsRead: 0, limit: 1, truncated: false },
+    clauses: { rowsRead: 0, limit: 1, truncated: false },
+    workContracts: { rowsRead: 0, limit: 1, truncated: false },
+    evidence: { rowsRead: 0, limit: 1, truncated: false },
+    scorecards: { rowsRead: 0, limit: 1, truncated: false },
+    vetting: { rowsRead: 0, limit: 1, truncated: false },
+    lineage: { rowsRead: 0, limit: 1, truncated: false },
+  },
+  completeness: { complete: true, truncated: false, problems: [] },
+  lineage: { identities: [], parties: [], complete: true },
+  grading: {
+    authoritativeScorecardId: null,
+    gradedBy: null,
+    selectedVia: null,
+    rubricRevision: null,
+    vetting: { state: 'missing', scorecardId: null, rubricRevision: null },
+    authorVerdict: { state: 'missing', scorecardId: null, verdict: null },
+  },
+  bars: [],
+  readiness: { state: 'not-applicable', codes: [], nextRepair: null },
+};
 let files: Map<string, string>;
 
 const sqlReturning = (rows: unknown[]) => {
@@ -143,6 +178,7 @@ const effective = (input: {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockReadBarSnapshot.mockResolvedValue(BAR_SNAPSHOT);
   files = new Map([
     ['src/p_001.ts', 'export const P_001 = true;\n'],
     ['src/p_002.ts', 'export const P_002 = true;\n'],
@@ -670,10 +706,12 @@ describe('requirement_unrealized (the activation↔completion join)', () => {
     mockRubric.mockResolvedValue([]);
     const verdict = await evaluatePlanAcceptanceGate(PLAN, { current });
     expect(verdict.code).toBe('acceptance_rubric_missing');
+    expect(mockReadBarSnapshot).toHaveBeenCalledTimes(1);
+    const snapshotPromise = mockReadBarSnapshot.mock.results[0]!.value;
     // EI-26619271533407778: the gate now hands the lifecycle evaluator one shared
     // contract snapshot so both lifecycle phases judge the same observation.
     expect(readAndEvaluateAcceptanceBarLifecycle).toHaveBeenCalledWith(PLAN, 'ship', {
-      expectedApplicable: false, current, snapshot: expect.anything(),
+      expectedApplicable: false, current, snapshot: snapshotPromise,
     });
     expect(entry.entry.citations[0]!.kind).toBe('doc');
   });

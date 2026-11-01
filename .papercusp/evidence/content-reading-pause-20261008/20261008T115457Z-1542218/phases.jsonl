@@ -1,3 +1,0 @@
-{"phase":"prepare","status":"passed","startedAt":"2026-10-08T11:54:59.938Z","endedAt":"2026-10-08T12:01:25.492Z","elapsedMs":385560}
-{"phase":"boot","status":"passed","step":"launch-attempt-1","startedAt":"2026-10-08T12:01:25.526Z","endedAt":"2026-10-08T12:04:55.048Z","elapsedMs":209536}
-{"phase":"assert","status":"passed","startedAt":"2026-10-08T12:04:55.112Z","endedAt":"2026-10-08T12:09:00.692Z","elapsedMs":245607}

@@ -59,6 +59,21 @@ function receiptRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+function resumeLaunchRefusal(launch: unknown): string {
+  const receipt = receiptRecord(launch);
+  const data = receiptRecord(receipt?.data) ?? receiptRecord(receipt?.structuredContent);
+  const content = Array.isArray(receipt?.content) ? receipt.content : [];
+  const detail = typeof data?.error === 'string' && data.error.trim()
+    ? data.error.trim()
+    : content.map(receiptRecord).find(block => block?.type === 'text'
+      && typeof block.text === 'string' && block.text.trim())?.text;
+  const reason = typeof detail === 'string' ? ` ${detail.trim().slice(0, 2000)}` : '';
+  const processEvidence = launchProvablyNotStarted(launch)
+    ? ' Launcher receipt proves no process started.'
+    : ' Launcher receipt does not prove whether a process started; reconcile before retrying.';
+  return `The exact in-place recruiter resume was refused by capability:launch-agent.${reason}${processEvidence}`;
+}
+
 /**
  * Does a launch-agent receipt PROVE no process started? `isError` alone never does: a
  * launcher can fail after spawning. Only an explicit pre-spawn failure with zero processes
@@ -156,8 +171,8 @@ export function blindReviewerConfinement(slug: string, productReads?: ProductRea
     denyAmbientContext: true as const,
     imposedBy: BLIND_GAP_REVIEW_ACTOR,
     reason:
-      `you are the blind gap reviewer for ${slug}: judge the product against the owner's ` +
-      `words only, without reading the plan, its rubric or its evidence (D-006)`,
+      `you are the blind gap reviewer for ${slug}: judge the product against its original ` +
+      `sources only, without reading the plan, its rubric or its evidence (D-006)`,
   });
 }
 
@@ -199,14 +214,19 @@ export async function defaultKnownToolNames(): Promise<ReadonlySet<string>> {
 
 export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: string | null, productReads?: ProductReadBoundary,
   scratchPlans?: ScratchPlanBoundary): string {
+  const hasDiscoveries = (brief.agentDiscoveries?.length ?? 0) > 0;
   const run = howToRun?.trim()
     ? howToRun.trim()
     : 'Find the running build yourself (dev:service_health), then exercise it with capability:bash.';
   return [
     `# Blind gap review: ${brief.planSlug}`,
     '',
-    'You review a finished feature WITHOUT seeing its plan. Below are the owner\'s own words.',
-    'Run the product, then list every place where what the owner asked for is missing,',
+    hasDiscoveries
+      ? 'You review a finished feature WITHOUT seeing its plan. Below are original sources, with agent discoveries explicitly attributed.'
+      : 'You review a finished feature WITHOUT seeing its plan. Below are the owner\'s own words.',
+    hasDiscoveries
+      ? 'Run the product, then list every place where the original problem remains unresolved,'
+      : 'Run the product, then list every place where what the owner asked for is missing,',
     'wrong, or only partly there. This plan, its rubric and its evidence are refused for this',
     'session on purpose; a refusal is expected, not an obstacle to route around.',
     '',
@@ -233,12 +253,12 @@ export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: st
       'Your scratch plans are archived when you post your gaps.',
     ] : []),
     '',
-    '## The owner\'s words',
+    hasDiscoveries ? '## Original sources' : '## The owner\'s words',
     brief.text,
     '',
     '## Report',
     `Call ${BLIND_REVIEW_TOOL} { op: 'post', slug: '${brief.planSlug}', activationAuditSeq: ${brief.activationAuditSeq}, outcome: 'conclusive', gaps: [...] }`,
-    'Use conclusive only after completing the product interaction against the owner\'s words; gaps: [] means you found none.',
+    'Use conclusive only after completing the product interaction against the original sources; gaps: [] means you found none.',
     'If product access or verification is incomplete, post outcome: \'inconclusive\' with a summary explaining what could not be verified. Empty gaps alone do not complete a review.',
     'After posting your review, call session:end with a short reason to finish your own session. It preserves the posted review and applies the existing agent-launched and human-attended guards.',
   ].join('\n');
@@ -449,7 +469,7 @@ export async function resumeBlindGapReviewer(
       brief: buildBlindReviewerKickoff(brief),
     }, systemCtx as never);
     result = (launch as { isError?: unknown } | null)?.isError === true
-      ? { ok: false, code: 'resume_failed', message: 'The exact in-place recruiter resume was refused by capability:launch-agent.' }
+      ? { ok: false, code: 'resume_failed', message: resumeLaunchRefusal(launch) }
       : { ok: true, launch, activationAuditSeq: brief.activationAuditSeq,
           reviewerOwnerId: acquired.binding.reviewerOwnerId, leaseReleased: false, bindingId: acquired.binding.id };
   } catch (error) {

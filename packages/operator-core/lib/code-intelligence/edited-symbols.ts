@@ -139,37 +139,57 @@ export async function gitHeadText(absPath: string): Promise<string | null> {
   }
 }
 
-export async function captureEditedSymbols(repoRoot: string, file: string,
-  deps: EditedSymbolDeps = {}): Promise<string[] | null> {
-  if (!SOURCE_PATH.test(file)) return null;
-  try {
-    const abs = resolve(repoRoot, file);
-    const [after, before] = await Promise.all([
-      (deps.readText ?? (p => readFile(p, 'utf8')))(abs),
-      (deps.headText ?? gitHeadText)(abs),
-    ]);
-    return before === null ? null : editedSymbols(file, before, after);
-  } catch {
-    return null;
-  }
+export type SymbolCaptureObservation = {
+  version: 1; status: 'measured'; reason: null; symbols: string[];
+} | {
+  version: 1; status: 'unknown'; symbols: null;
+  reason: 'unsupported-path' | 'source-unreadable' | 'head-unavailable' | 'parse-diagnostics';
+};
+
+/** Keep failure classes beside the independent edit ledger, rather than making
+ * every failed read/parse indistinguishable from an uninstrumented writer. */
+export async function observeEditedSymbols(repoRoot: string, file: string,
+  deps: EditedSymbolDeps = {}): Promise<SymbolCaptureObservation> {
+  const unknown = (reason: Extract<SymbolCaptureObservation, { status: 'unknown' }>['reason']): SymbolCaptureObservation =>
+    ({ version: 1, status: 'unknown', reason, symbols: null });
+  if (!SOURCE_PATH.test(file)) return unknown('unsupported-path');
+  const abs = resolve(repoRoot, file);
+  const [after, before] = await Promise.allSettled([
+    Promise.resolve().then(() => (deps.readText ?? (p => readFile(p, 'utf8')))(abs)),
+    Promise.resolve().then(() => (deps.headText ?? gitHeadText)(abs)),
+  ]);
+  if (after.status === 'rejected') return unknown('source-unreadable');
+  if (before.status === 'rejected' || before.value === null) return unknown('head-unavailable');
+  const symbols = editedSymbols(file, before.value, after.value);
+  return symbols === null ? unknown('parse-diagnostics') : { version: 1, status: 'measured', reason: null, symbols };
 }
 
-/** Fill `symbols` on just-inserted ledger rows. First capture wins; never throws. */
+export async function captureEditedSymbols(repoRoot: string, file: string,
+  deps: EditedSymbolDeps = {}): Promise<string[] | null> {
+  return (await observeEditedSymbols(repoRoot, file, deps)).symbols;
+}
+
+/** The workspace journal's first observation wins, including unknown: a later
+ * source rewrite cannot repair history. Rows without workspace identity retain
+ * legacy symbols-only capture. Reuse signal_eligibility; no separate error store. */
 export async function fillEditedSymbols(rows: readonly { id: string; file: string }[], repoRoot: string,
   sql: Sql, deps: EditedSymbolDeps = {}): Promise<number> {
   let filled = 0;
   for (const row of rows) {
     try {
       if (!/^[1-9][0-9]*$/.test(row.id)) continue;
-      const symbols = await captureEditedSymbols(repoRoot, row.file, deps);
-      if (symbols === null) continue;
+      const { symbols, ...observation } = await observeEditedSymbols(repoRoot, row.file, deps);
       const updated = await sql<{ id: string }[]>`
         UPDATE harness_shared.edit_attribution_ledger
-           SET symbols = ${symbols}::text[]
+           SET symbols = ${symbols}::text[],
+               signal_eligibility = CASE WHEN workspace_id IS NULL THEN signal_eligibility
+                 ELSE jsonb_set(COALESCE(signal_eligibility, '{}'::jsonb),
+                   '{symbol-capture}', ${JSON.stringify(observation)}::text::jsonb) END
          WHERE id = ${row.id}::bigint AND repo_root = ${repoRoot} AND file = ${row.file}
            AND symbols IS NULL
+           AND NOT (COALESCE(signal_eligibility, '{}'::jsonb) ? 'symbol-capture')
          RETURNING id::text`;
-      filled += updated.length;
+      if (symbols !== null) filled += updated.length;
     } catch {
       // best-effort: an unmeasured row stays NULL (unknown), never wrong.
     }

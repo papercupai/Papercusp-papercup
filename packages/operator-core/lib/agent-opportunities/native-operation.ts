@@ -3,6 +3,7 @@
 import { createHmac } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { summariseActivity } from '@papercusp/activity-bridge';
+import { normalizeMcpName } from '@papercusp/tooldef/tool-projection';
 import { atomizePipeline } from '../bash-substitution/atomize';
 import type { SqlIntentScope } from '../bash-substitution/sql-intent-fingerprint';
 import { isSensitiveValueKey, redactSensitiveText, redactStructuredSensitiveValue } from '../sensitive-text';
@@ -29,6 +30,17 @@ const providers = new Set<string>(NATIVE_PROVIDERS);
 const shellTools = new Set(['bash', 'shell', 'run', 'exec', 'execute', 'exec_command', 'functions.exec_command', 'capability:bash', 'capability:terminal']);
 const browserTools = new Set(['browser', 'browser_navigate', 'browser_click', 'browser_type', 'navigate', 'click', 'type', 'browser.navigate', 'browser.click', 'browser.type']);
 const browserActions = new Set(['navigate', 'click', 'type', 'fill', 'select', 'press', 'hover', 'scroll', 'snapshot', 'screenshot', 'evaluate']);
+/** Replacement capability tools retain their meaning under the clients' MCP
+ * advertisement names. Restrict the fold to our server and known capabilities:
+ * a foreign server's same-named tool or wrapper program is not this operation.
+ * This is semantic parsing only; it grants no source or dispatch authority. */
+function operationToolName(tool: string): string {
+  const original = tool.toLowerCase();
+  const name = original.startsWith('functions.mcp__') ? original.slice('functions.'.length) : original;
+  if (name.startsWith('mcp__') && !/^mcp__papercusp(?:[-_]su)?__/.test(name)) return original;
+  const normalized = normalizeMcpName(name);
+  return normalized === 'capability:bash' || normalized === 'capability:terminal' ? normalized : original;
+}
 const hash = (scope: SqlIntentScope, domain: string, values: unknown[]) => createHmac('sha256', scope.key)
   .update(JSON.stringify(['native-operation-v1', scope.workspaceId, scope.sourceBoundary, scope.epoch, domain, values])).digest('hex');
 function clean(value: unknown, scope: SqlIntentScope): unknown {
@@ -80,7 +92,7 @@ function scrubBrowser(args: Obj): Obj {
   return result;
 }
 function semantics(tool: string, input: unknown, scope: SqlIntentScope): { kind: NativeKind; value: unknown } | null {
-  const args = object(clean(input, scope)), name = tool.toLowerCase();
+  const args = object(clean(input, scope)), name = operationToolName(tool);
   if (shellTools.has(name)) {
     const command = scrubCommand(text(args.command) || text(args.cmd));
     if (!command || command.length > 64_000) return null;
@@ -301,8 +313,9 @@ export async function fetchNativeOperations(opts: NativeCorpusOptions) {
       at: row.at, copyRef: `agent-activity:${row.id}`, tool: record.tool_name, args: detail,
       callId: record.tool_use_id, identityAuthority: record.tool_use_id ? 'provider' : 'unknown', sourceComplete: complete, result: null };
     const observed = observeNativeOperation(source, opts.scope);
-    const kindHint: NativeKind | null = shellTools.has(record.tool_name.toLowerCase()) ? 'shell'
-      : browserTools.has(record.tool_name.toLowerCase()) ? 'browser' : null;
+    const toolName = operationToolName(record.tool_name);
+    const kindHint: NativeKind | null = shellTools.has(toolName) ? 'shell'
+      : browserTools.has(toolName) ? 'browser' : null;
     if (observed) { observations.push(observed); mark(provider, 'activity', observed.kind ?? kindHint, !complete ? 'truncated' : observed.kind ? 'measured' : 'unsupported'); }
     let completeCopy = !!observed && observed.evidenceGaps.length === 0;
     if (!opts.readTranscript) { if (kindHint && !completeCopy) incomplete++; continue; }

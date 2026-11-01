@@ -658,6 +658,28 @@ it('consumes the row-bound receipt only for its independent canonical source and
   expect(await reconcileNativeCapture({ ...s.opts, since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' })).toBe('unknown');
 });
 
+it('D030 MCP advertisement preserves the Codex functions namespace at exact-call receipt consumption', async () => {
+  const s = await authorizedFixture();
+  await writeFile(s.path, s.records.map((record, index) => JSON.stringify(index === 1
+    ? { ...record, payload: { ...record.payload, namespace: 'functions' } } : record)).join('\n') + '\n');
+  const result = await productionOpportunityReaders(s.opts).readTranscript(s.input);
+  expect(result?.sources).toHaveLength(1);
+  const source = result!.sources[0]!;
+  expect(source.tool).toBe('functions.mcp__papercusp_su__native_proof_inspect');
+  expect(await readAuthorizedNativeDispatch({ ...s.input, source }, s.opts)).not.toBeNull();
+  expect(await inspectNativeDispatchCandidate(source, s.binding, s.opts))
+    .toMatchObject({ authority: 'unknown', correlation: 'exact' });
+  expect(await readAuthorizedNativeDispatch({ ...s.input, source }, { ...s.opts, authorize: async () => false })).toBeNull();
+});
+
+it.each(['mcp__foreign__native_proof_inspect', 'functions.mcp__foreign__native_proof_inspect',
+  'mcp__papercusp-foreign__native_proof_inspect'])(
+  'D030 MCP advertisement from foreign server %s cannot borrow a signed Papercusp attempt', async tool => {
+    const s = await authorizedFixture(), source = { ...s.source, tool };
+    expect(await readAuthorizedNativeDispatch({ ...s.input, source }, s.opts)).toBeNull();
+    expect(await inspectNativeDispatchCandidate(source, s.binding, s.opts)).toEqual(unknown);
+  });
+
 it.each(['arguments', 'tool', 'provider', 'owner', 'scope', 'call', 'session', 'incomplete'])(
   'rejects a canonical-source %s mismatch despite a valid signature', async mismatch => {
     const s = await authorizedFixture();

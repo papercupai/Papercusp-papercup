@@ -9,13 +9,20 @@ import {
   type PushSnapshot, type SnapshotSymbol, type PushProofSource,
 } from '../code-intelligence/push-snapshot';
 
+export const anchorChangeSchema = z.object({
+  action: z.enum(['modify', 'create', 'delete', 'reuse', 'test', 'investigate']),
+  summary: z.string().trim().min(1).max(2000),
+  reason: z.string().trim().min(1).max(2000),
+  unknowns: z.string().trim().min(1).max(2000).optional(),
+}).strict();
+const targetPath = z.string().trim().min(1).max(4096).refine(safeSnapshotPath, 'Use a repository-relative source path.');
 export const anchorInputSchema = z.union([
-  z.object({ symbol: z.string().trim().min(1).max(300) }).strict(),
-  z.object({ path: z.string().trim().min(1).max(4096) }).strict(),
+  z.object({ symbol: z.string().trim().min(1).max(300), path: targetPath.optional(), change: anchorChangeSchema.optional() }).strict(),
+  z.object({ path: targetPath, change: anchorChangeSchema.optional() }).strict(),
 ]);
 export const anchorsInputSchema = z.array(anchorInputSchema).max(32);
 export type AnchorInput = z.infer<typeof anchorInputSchema>;
-export type AnchorUnknownReason = 'timeout' | 'not-found' | 'ambiguous' | 'no-snapshot';
+export type AnchorUnknownReason = 'timeout' | 'not-found' | 'ambiguous' | 'no-snapshot' | 'planned' | 'investigation';
 export interface PlanItemAnchor {
   id?: string;
   anchorKind: 'symbol' | 'path';
@@ -35,6 +42,7 @@ export interface PlanItemAnchor {
   freshness: 'fresh' | 'stale' | 'missing';
   resolvedCommit: string | null;
   staleNoticeId?: string | null;
+  change?: z.infer<typeof anchorChangeSchema> | null;
 }
 export const ANCHOR_RESOLUTION_BUDGET_MS = 250;
 const hash = (text: string | Buffer) => createHash('sha256').update(text).digest('hex');
@@ -44,9 +52,10 @@ export function unknownAnchor(input: AnchorInput, reason: AnchorUnknownReason): 
     anchorKind: 'symbol' in input ? 'symbol' : 'path',
     requested: 'symbol' in input ? input.symbol : input.path,
     symbolId: null, symbolName: 'symbol' in input ? input.symbol : null,
-    path: 'path' in input ? input.path : null, line: null, signature: null, contentHash: null,
+    path: 'path' in input ? input.path ?? null : null, line: null, signature: null, contentHash: null,
     consumers: [], consumersTotal: 0, tests: [], resolution: 'unknown', unknownReason: reason,
     freshness: 'missing', resolvedCommit: null,
+    ...(input.change ? { change: input.change } : {}),
   };
 }
 
@@ -153,13 +162,16 @@ export async function resolvePlanItemAnchors(inputs: AnchorInput[], options: Anc
       : options.snapshot ?? null;
     return Promise.all(inputs.map(async input => {
       const empty = unknownAnchor(input, 'not-found');
-      if ('path' in input) {
+      if (input.change?.action === 'investigate') return unknownAnchor(input, 'investigation');
+      if (input.change?.action === 'create') return unknownAnchor(input, 'planned');
+      if (!('symbol' in input)) {
         const bytes = await readAnchorSource(options.root, input.path, signal);
         return bytes ? { ...empty, contentHash: hash(bytes), resolution: 'resolved' as const,
           unknownReason: null, freshness: 'fresh' as const } : empty;
       }
       if (!snapshot) return unknownAnchor(input, 'no-snapshot');
-      const candidates = [...new Map((snapshot.symbols?.get(input.symbol) ?? []).map(s => [s.id, s])).values()];
+      const candidates = [...new Map((snapshot.symbols?.get(input.symbol) ?? [])
+        .filter(s => !input.path || s.path === input.path).map(s => [s.id, s])).values()];
       if (candidates.length !== 1) return unknownAnchor(input, candidates.length ? 'ambiguous' : 'not-found');
       const symbol = candidates[0]!;
       const bytes = await readAnchorSource(options.root, symbol.path, signal);
@@ -201,8 +213,9 @@ export async function resolveHarnessAnchors(workspaceId: string, harnessSlug: st
 
 export function renderAnchorLine(anchor: PlanItemAnchor): string {
   const label = anchor.symbolName ?? anchor.requested;
+  const change = anchor.change ? ` · ${anchor.change.action}: ${JSON.stringify(anchor.change.summary)} (why: ${JSON.stringify(anchor.change.reason)})${anchor.change.unknowns ? ` · unknown: ${JSON.stringify(anchor.change.unknowns)}` : ''}` : '';
   return `  ↳ code: ${JSON.stringify(label)} ${anchor.path ?? ''} · ${anchor.resolution === 'unknown'
-    ? `unknown (${anchor.unknownReason})` : `${anchor.freshness} · ${anchor.consumers.length} observed callers · ${anchor.tests.length} reaching tests`}`;
+    ? `unknown (${anchor.unknownReason})` : `${anchor.freshness} · ${anchor.consumers.length} observed callers · ${anchor.tests.length} reaching tests`}${change}`;
 }
 
 export function stripRenderedAnchorLines(body: string): string {

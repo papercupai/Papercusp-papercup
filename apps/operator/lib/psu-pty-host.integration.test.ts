@@ -4310,6 +4310,7 @@ describe('carry-drill busy-gate metric correlation (WI-6554700010012191)', () =>
       });
       expect(typeof hostMetric.observedMaxQuietMs).toBe('number');
       expect(typeof hostMetric.verifier).toBe('string');
+      expect(typeof hostMetric.nativeBusy).toBe('boolean');
       expect(sharedMetric).toMatchObject({
         kind: 'busy-gate-expired',
         ownerId,
@@ -4320,6 +4321,7 @@ describe('carry-drill busy-gate metric correlation (WI-6554700010012191)', () =>
         observedMaxQuietMs: hostMetric.observedMaxQuietMs,
         quietMs: 1000,
         verifier: hostMetric.verifier,
+        nativeBusy: hostMetric.nativeBusy,
       });
       expect(Number.isFinite(Date.parse(String(sharedMetric?.ts)))).toBe(true);
 

@@ -359,6 +359,8 @@ describe('R16 repeatable existing-ledger reads', () => {
       expect(collected.population.callCensusComplete).toBe(oracle.callCensusComplete);
       expect(collected.population.calls).toEqual([expect.objectContaining({ from: 'b.ts', to: 'a.ts', resolved: true })]);
       expect(collected.sourceRefs).toEqual(expect.arrayContaining([`git:${base}`, `git:${end}`]));
+      expect(collected.population.workItems).toMatchObject([{ id: 'WI-binary-assignment', complete: true,
+        firstWriteAt: '2026-10-01T00:02:00.000Z', successfulSearchAt: '2026-10-01T00:01:00.000Z' }]);
       expect(await measureRecordedReuseMetric(fx.admin, scope, 'redundancy')).toMatchObject({ verdict: 'unknown' });
       expect(await measureRecordedReuseMetric(fx.admin, scope, 'crossFileCalls')).toMatchObject({ verdict: 'pass', value: 100 });
       expect(await measureRecordedReuseMetric(fx.admin, scope, 'searchBeforeWrite')).toMatchObject({ verdict: 'pass', value: 100 });

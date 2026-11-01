@@ -1,0 +1,178 @@
+[
+  {
+    "name": "Quick Access popup first-os-entry",
+    "body": {
+      "stage": "first-os-entry",
+      "x11Before": {
+        "startedAt": "2026-11-01T00:10:15.655Z",
+        "endedAt": "2026-11-01T00:10:15.768Z",
+        "value": {
+          "focus": "2097791",
+          "active": "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x20027f",
+          "windows": [
+            {
+              "id": "2097791",
+              "state": "\nxwininfo: Window id: 0x20027f \"Quick Access\"\n\n  Absolute upper-left X:  461\n  Absolute upper-left Y:  229\n  Relative upper-left X:  1\n  Relative upper-left Y:  22\n  Width: 1000\n  Height: 665\n  Depth: 24\n  Visual: 0x1cf\n  Visual Class: TrueColor\n  Border width: 0\n  Class: InputOutput\n  Colormap: 0x200002 (installed)\n  Bit Gravity State: NorthWestGravity\n  Window Gravity State: NorthWestGravity\n  Backing Store State: NotUseful\n  Save Under State: no\n  Map State: IsViewable\n  Override Redirect State: no\n  Corners:  +461+229  -459+229  -459-186  +461-186\n  -geometry 1000x665+460+207\n\n"
+            }
+          ]
+        }
+      },
+      "native": {
+        "startedAt": "2026-11-01T00:10:15.768Z",
+        "endedAt": "2026-11-01T00:10:18.387Z",
+        "value": {
+          "visible": true,
+          "documentFocused": true,
+          "url": "http://127.0.0.1:33701/quick-panel",
+          "errors": []
+        }
+      },
+      "x11After": {
+        "startedAt": "2026-11-01T00:10:18.387Z",
+        "endedAt": "2026-11-01T00:10:18.491Z",
+        "value": {
+          "focus": "2097791",
+          "active": "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x20027f",
+          "windows": [
+            {
+              "id": "2097791",
+              "state": "\nxwininfo: Window id: 0x20027f \"Quick Access\"\n\n  Absolute upper-left X:  461\n  Absolute upper-left Y:  229\n  Relative upper-left X:  1\n  Relative upper-left Y:  22\n  Width: 1000\n  Height: 665\n  Depth: 24\n  Visual: 0x1cf\n  Visual Class: TrueColor\n  Border width: 0\n  Class: InputOutput\n  Colormap: 0x200002 (installed)\n  Bit Gravity State: NorthWestGravity\n  Window Gravity State: NorthWestGravity\n  Backing Store State: NotUseful\n  Save Under State: no\n  Map State: IsViewable\n  Override Redirect State: no\n  Corners:  +461+229  -459+229  -459-186  +461-186\n  -geometry 1000x665+460+207\n\n"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "Quick Access popup after-ready",
+    "body": {
+      "stage": "after-ready",
+      "x11Before": {
+        "startedAt": "2026-11-01T00:10:20.599Z",
+        "endedAt": "2026-11-01T00:10:20.685Z",
+        "value": {
+          "focus": "2097791",
+          "active": "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x20027f",
+          "windows": [
+            {
+              "id": "2097791",
+              "state": "\nxwininfo: Window id: 0x20027f \"Quick Access\"\n\n  Absolute upper-left X:  461\n  Absolute upper-left Y:  229\n  Relative upper-left X:  1\n  Relative upper-left Y:  22\n  Width: 1000\n  Height: 665\n  Depth: 24\n  Visual: 0x1cf\n  Visual Class: TrueColor\n  Border width: 0\n  Class: InputOutput\n  Colormap: 0x200002 (installed)\n  Bit Gravity State: NorthWestGravity\n  Window Gravity State: NorthWestGravity\n  Backing Store State: NotUseful\n  Save Under State: no\n  Map State: IsViewable\n  Override Redirect State: no\n  Corners:  +461+229  -459+229  -459-186  +461-186\n  -geometry 1000x665+460+207\n\n"
+            }
+          ]
+        }
+      },
+      "native": {
+        "startedAt": "2026-11-01T00:10:20.685Z",
+        "endedAt": "2026-11-01T00:10:21.704Z",
+        "value": {
+          "visible": true,
+          "documentFocused": true,
+          "url": "http://127.0.0.1:33701/quick-panel",
+          "errors": []
+        }
+      },
+      "x11After": {
+        "startedAt": "2026-11-01T00:10:21.704Z",
+        "endedAt": "2026-11-01T00:10:21.784Z",
+        "value": {
+          "focus": "2097791",
+          "active": "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x20027f",
+          "windows": [
+            {
+              "id": "2097791",
+              "state": "\nxwininfo: Window id: 0x20027f \"Quick Access\"\n\n  Absolute upper-left X:  461\n  Absolute upper-left Y:  229\n  Relative upper-left X:  1\n  Relative upper-left Y:  22\n  Width: 1000\n  Height: 665\n  Depth: 24\n  Visual: 0x1cf\n  Visual Class: TrueColor\n  Border width: 0\n  Class: InputOutput\n  Colormap: 0x200002 (installed)\n  Bit Gravity State: NorthWestGravity\n  Window Gravity State: NorthWestGravity\n  Backing Store State: NotUseful\n  Save Under State: no\n  Map State: IsViewable\n  Override Redirect State: no\n  Corners:  +461+229  -459+229  -459-186  +461-186\n  -geometry 1000x665+460+207\n\n"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "Quick Access popup after-default-tabs",
+    "body": {
+      "stage": "after-default-tabs",
+      "x11Before": {
+        "startedAt": "2026-11-01T00:10:22.977Z",
+        "endedAt": "2026-11-01T00:10:23.085Z",
+        "value": {
+          "focus": "2097791",
+          "active": "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x20027f",
+          "windows": [
+            {
+              "id": "2097791",
+              "state": "\nxwininfo: Window id: 0x20027f \"Quick Access\"\n\n  Absolute upper-left X:  461\n  Absolute upper-left Y:  229\n  Relative upper-left X:  1\n  Relative upper-left Y:  22\n  Width: 1000\n  Height: 665\n  Depth: 24\n  Visual: 0x1cf\n  Visual Class: TrueColor\n  Border width: 0\n  Class: InputOutput\n  Colormap: 0x200002 (installed)\n  Bit Gravity State: NorthWestGravity\n  Window Gravity State: NorthWestGravity\n  Backing Store State: NotUseful\n  Save Under State: no\n  Map State: IsViewable\n  Override Redirect State: no\n  Corners:  +461+229  -459+229  -459-186  +461-186\n  -geometry 1000x665+460+207\n\n"
+            }
+          ]
+        }
+      },
+      "native": {
+        "startedAt": "2026-11-01T00:10:23.085Z",
+        "endedAt": "2026-11-01T00:10:24.332Z",
+        "value": {
+          "visible": true,
+          "documentFocused": true,
+          "url": "http://127.0.0.1:33701/quick-panel",
+          "errors": []
+        }
+      },
+      "x11After": {
+        "startedAt": "2026-11-01T00:10:24.332Z",
+        "endedAt": "2026-11-01T00:10:24.460Z",
+        "value": {
+          "focus": "2097791",
+          "active": "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x20027f",
+          "windows": [
+            {
+              "id": "2097791",
+              "state": "\nxwininfo: Window id: 0x20027f \"Quick Access\"\n\n  Absolute upper-left X:  461\n  Absolute upper-left Y:  229\n  Relative upper-left X:  1\n  Relative upper-left Y:  22\n  Width: 1000\n  Height: 665\n  Depth: 24\n  Visual: 0x1cf\n  Visual Class: TrueColor\n  Border width: 0\n  Class: InputOutput\n  Colormap: 0x200002 (installed)\n  Bit Gravity State: NorthWestGravity\n  Window Gravity State: NorthWestGravity\n  Backing Store State: NotUseful\n  Save Under State: no\n  Map State: IsViewable\n  Override Redirect State: no\n  Corners:  +461+229  -459+229  -459-186  +461-186\n  -geometry 1000x665+460+207\n\n"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "Quick Access popup R-1-failure",
+    "body": {
+      "stage": "R-1-failure",
+      "x11Before": {
+        "startedAt": "2026-11-01T00:10:30.731Z",
+        "endedAt": "2026-11-01T00:10:30.830Z",
+        "value": {
+          "focus": "2097791",
+          "active": "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x20027f",
+          "windows": [
+            {
+              "id": "2097791",
+              "state": "\nxwininfo: Window id: 0x20027f \"Quick Access\"\n\n  Absolute upper-left X:  461\n  Absolute upper-left Y:  229\n  Relative upper-left X:  1\n  Relative upper-left Y:  22\n  Width: 1000\n  Height: 665\n  Depth: 24\n  Visual: 0x1cf\n  Visual Class: TrueColor\n  Border width: 0\n  Class: InputOutput\n  Colormap: 0x200002 (installed)\n  Bit Gravity State: NorthWestGravity\n  Window Gravity State: NorthWestGravity\n  Backing Store State: NotUseful\n  Save Under State: no\n  Map State: IsViewable\n  Override Redirect State: no\n  Corners:  +461+229  -459+229  -459-186  +461-186\n  -geometry 1000x665+460+207\n\n"
+            }
+          ]
+        }
+      },
+      "native": {
+        "startedAt": "2026-11-01T00:10:30.830Z",
+        "endedAt": "2026-11-01T00:10:32.083Z",
+        "value": {
+          "visible": true,
+          "documentFocused": true,
+          "url": "http://127.0.0.1:33701/quick-panel",
+          "errors": []
+        }
+      },
+      "x11After": {
+        "startedAt": "2026-11-01T00:10:32.083Z",
+        "endedAt": "2026-11-01T00:10:32.181Z",
+        "value": {
+          "focus": "2097791",
+          "active": "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x20027f",
+          "windows": [
+            {
+              "id": "2097791",
+              "state": "\nxwininfo: Window id: 0x20027f \"Quick Access\"\n\n  Absolute upper-left X:  461\n  Absolute upper-left Y:  229\n  Relative upper-left X:  1\n  Relative upper-left Y:  22\n  Width: 1000\n  Height: 665\n  Depth: 24\n  Visual: 0x1cf\n  Visual Class: TrueColor\n  Border width: 0\n  Class: InputOutput\n  Colormap: 0x200002 (installed)\n  Bit Gravity State: NorthWestGravity\n  Window Gravity State: NorthWestGravity\n  Backing Store State: NotUseful\n  Save Under State: no\n  Map State: IsViewable\n  Override Redirect State: no\n  Corners:  +461+229  -459+229  -459-186  +461-186\n  -geometry 1000x665+460+207\n\n"
+            }
+          ]
+        }
+      }
+    }
+  }
+]

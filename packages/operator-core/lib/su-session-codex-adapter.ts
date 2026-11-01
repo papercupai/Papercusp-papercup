@@ -462,6 +462,8 @@ function descriptorFor(
 export class CodexSuSessionAdapter {
   readonly host: SuSessionHost<'codex'>;
   private runtimeValue: CodexSuRuntimeBinding;
+  private runtimeGeneration: number;
+  private disposed = false;
   private parser: TimelineLineParser = createCodexTimelineParser();
   private currentTurnId: string | null = null;
   private turnSerial = 0;
@@ -497,6 +499,7 @@ export class CodexSuSessionAdapter {
     };
     this.host = options.host ?? new SuSessionHost(hostOptions);
     if (options.host) this.host.attachRuntime(hostOptions);
+    this.runtimeGeneration = hostOptions.descriptor.runtimeGeneration;
     // The deferred PUI create writes the adv row before the native pane boots.
     // Bind the chat id once the native adapter exists; the unique index makes
     // a duplicate adapter converge without creating a second identity.
@@ -514,15 +517,22 @@ export class CodexSuSessionAdapter {
     return this.runtimeValue;
   }
 
+  /** An older adapter may finish cleanup after its shared host was reused. */
+  private ownsRuntime(generation = this.runtimeGeneration): boolean {
+    return !this.disposed && generation === this.host.descriptor().runtimeGeneration;
+  }
+
   /** Refresh gateway serving-account provenance after a known native turn. */
   async refreshAccountServed(): Promise<void> {
+    const generation = this.runtimeGeneration;
+    if (!this.ownsRuntime(generation)) return;
     let account: string | null;
     try {
       account = await this.servedAccountReader(this.host.descriptor().identity.ownerId);
     } catch {
       return;
     }
-    this.host.updateAccountServed(account);
+    if (this.ownsRuntime(generation)) this.host.updateAccountServed(account);
   }
 
   async materializeRuntime(runtime: CodexSuRuntimeBinding): Promise<void> {
@@ -593,6 +603,7 @@ export class CodexSuSessionAdapter {
   /** Consume one complete native JSONL record. Partial trailing records must be
    * retained by the source until their newline arrives. */
   ingestNativeLine(line: string, { preserveLifecycle = false, replay = false }: { preserveLifecycle?: boolean; replay?: boolean } = {}): void {
+    if (!this.ownsRuntime()) return;
     let record: Record<string, unknown>;
     try {
       record = JSON.parse(line) as Record<string, unknown>;
@@ -810,8 +821,10 @@ export class CodexSuSessionAdapter {
   /** P-004 calls this after an exact resume/carry replacement attaches. The
    * durable SU identity remains unchanged while runtimeGeneration advances. */
   replaceRuntime(runtime: CodexSuRuntimeBinding, reason = 'Codex runtime replaced'): void {
+    if (!this.ownsRuntime()) return;
     const generation = this.host.descriptor().runtimeGeneration + 1;
     this.host.transition('resuming', reason, generation);
+    this.runtimeGeneration = generation;
     this.runtimeValue = runtime;
     this.parser = createCodexTimelineParser();
     this.currentTurnId = null;
@@ -833,6 +846,7 @@ export class CodexSuSessionAdapter {
     exitCode?: number | null;
     signal?: string | null;
   }): void {
+    if (!this.ownsRuntime()) return;
     this.host.reconcileRuntimeExit(input);
   }
 
@@ -911,6 +925,9 @@ export class CodexSuSessionAdapter {
   }
 
   dispose(): void {
+    const ownsRuntime = this.ownsRuntime();
+    this.disposed = true;
+    if (!ownsRuntime) return;
     if (this.unregister) this.unregister();
     else this.host.dispose('Codex adapter disposed');
   }

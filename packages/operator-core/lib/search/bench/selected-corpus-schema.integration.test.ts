@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolveNativePgBinDir, startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
+import { captureRetainedCoverage } from './prose-adapter-capture-cli';
 
 const run = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv; timeout?: number } = {}) =>
   promisify(execFile)(command, args, options);
@@ -86,6 +87,32 @@ describe('selected corpus native schema preparation', () => {
     await pg?.stop();
     if (scratch) await rm(scratch, { recursive: true, force: true });
   });
+
+  it('measures retained vectors with real mode/recipe SQL while absent and unretained surfaces stay unknown', async () => {
+    const target = await database();
+    try {
+      await target.sql.unsafe(`CREATE SCHEMA harness_shared;
+        CREATE TABLE harness_shared.work_items (title text, summary text, harness_slug text,
+          feature_id text, embedding text, embedding_mode text, embedding_recipe integer,
+          created_ts bigint DEFAULT (extract(epoch from now()) * 1000)::bigint,
+          updated_ts bigint DEFAULT (extract(epoch from now()) * 1000)::bigint);
+        INSERT INTO harness_shared.work_items (title, embedding, embedding_mode, embedding_recipe)
+        VALUES ('current', 'vector', 'gemma', 2), ('wrong space', 'vector', 'openai', 2),
+          ('old recipe', 'vector', 'gemma', 1), ('missing', NULL, 'gemma', 2)`);
+      const before = await target.sql.unsafe('SELECT * FROM harness_shared.work_items ORDER BY title');
+      const result = await captureRetainedCoverage(target.sql);
+      expect(result.readings.find(row => row.surface === 'harness_shared.work_items.embedding'))
+        .toMatchObject({ status: 'measured', reading: { totalRows: 4, eligibleRows: 4,
+          embeddedRows: 1, backlog: 3, eligibleCoverage: 0.25 } });
+      expect(result.readings.find(row => row.surface === 'harness_shared.harness_plans.embedding'))
+        .toMatchObject({ status: 'unknown', reason: 'table data not retained' });
+      expect(result.readings.find(row => row.surface === 'harness_shared.session_turns.text_embedding'))
+        .toMatchObject({ status: 'unknown' });
+      expect(await target.sql.unsafe('SELECT * FROM harness_shared.work_items ORDER BY title')).toEqual(before);
+      expect(await target.sql.unsafe("SELECT to_regclass('harness_shared.embed_coverage_samples') AS name"))
+        .toEqual([{ name: null }]);
+    } finally { await target.sql.end({ timeout: 5 }); }
+  }, 120_000);
 
   it('retains the archived UDF despite table-only data ownership and gates data behind native DDL', async () => {
     const full = await archive({ functionPresent: true });

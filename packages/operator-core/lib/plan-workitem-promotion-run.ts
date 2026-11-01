@@ -649,7 +649,14 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     opts.harnessSlug,
     openItems.map((i) => i.id),
   );
-  const alreadyIds = openItems.map((i) => i.id).filter((id) => coveredRefs.has(planItemRef(opts.planSlug, id)));
+  // A line IS its node. Starting a plan must reuse that identity rather than
+  // minting a second work-item because an old implements stamp is absent.
+  const nodeByItem = new Map(read.row.items.flatMap((item) => {
+    const node = item as typeof item & { featureId?: string };
+    return typeof node.featureId === 'string' ? [[node.id, node] as const] : [];
+  }));
+  const alreadyIds = openItems.map((i) => i.id).filter((id) =>
+    nodeByItem.has(id) || coveredRefs.has(planItemRef(opts.planSlug, id)));
 
   let reservationsRebound = 0;
   for (const itemId of alreadyIds) {
@@ -912,6 +919,12 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   const workItemByPlanItem = new Map(mintedByPlanItem);
   for (const item of openItems) {
     if (workItemByPlanItem.has(item.id)) continue;
+    const node = nodeByItem.get(item.id);
+    if (node) {
+      workItemByPlanItem.set(item.id, node.featureId!);
+      promotionHarnessByPlanItem.set(item.id, opts.harnessSlug);
+      continue;
+    }
     const existing = await findConvertedWorkItemByStamp(opts.planSlug, item.id, opts.harnessSlug);
     if (existing?.id) {
       workItemByPlanItem.set(item.id, existing.id);

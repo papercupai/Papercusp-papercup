@@ -16,6 +16,7 @@ import {
   BASH_TEST_MEMORY_MAX_BYTES,
   BASH_TEST_TASKS_MAX,
   capturePreflightAttributionSnapshot,
+  classifyBackgroundCloseStatus,
   classifyDeadlineReason,
   DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
@@ -1692,34 +1693,63 @@ describe('background job deadlines (WI-6677)', () => {
   async function expireDeadlineAfterOutput(command: string, marker: string) {
     // These cases test deadline classification, whose precondition is an
     // observed landmark. Hold ONLY that deadline callback until real shell
-    // output arrives; separate tests above still exercise real wall clocks.
-    // Deliberately delayed output in the callers guards the former 400ms race.
-    const realSetTimeout = globalThis.setTimeout;
-    let expire: (() => void) | undefined;
-    let heldTimer: ReturnType<typeof setTimeout> | undefined;
-    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback, delay, ...args) => {
-      if (delay !== 400) return realSetTimeout(callback, delay, ...args);
-      expire = () => callback(...args);
-      heldTimer = realSetTimeout(() => {}, 30_000);
-      return heldTimer;
+    // output arrives; use an unconfined enrollment so systemd's rounded
+    // RuntimeMaxSec cannot preempt this deliberately held 400ms local timer.
+    // Real confined deadlines are covered by the SIGTERM cleanup test below.
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'deadline-classification-test', enrolled: true, confined: false,
+      unconfinedReason: 'no-scope-support', unitKind: 'scope', scopeUnit: null,
+      registrationReady: null, wrap: (binary: string, argv: string[]) => ({ binary, argv }),
+      releaseEnvironmentTransport: () => {},
     });
-    let job: ReturnType<typeof startBackground>;
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
     try {
-      job = startBackground({ command, cwd: STATE, stateDir: STATE }, 400);
+      const realSetTimeout = globalThis.setTimeout;
+      let expire: (() => void) | undefined;
+      let heldTimer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback, delay, ...args) => {
+        if (delay !== 400) return realSetTimeout(callback, delay, ...args);
+        expire = () => callback(...args);
+        heldTimer = realSetTimeout(() => {}, 30_000);
+        return heldTimer;
+      });
+      let job: ReturnType<typeof startBackground>;
+      try {
+        job = startBackground({ command, cwd: STATE, stateDir: STATE }, 400);
+      } finally {
+        timeoutSpy.mockRestore();
+      }
+      try {
+        const diagnostic = () => JSON.stringify({
+          status: job.status,
+          exitCode: job.exitCode,
+          scopeUnit: job.scopeUnit,
+          startedAt: job.startedAt,
+          deadlineAt: job.deadlineAt,
+          endedAt: job.endedAt,
+          output: job.buffer,
+          phaseTiming: job.phaseTiming,
+        });
+        expect(await waitForOutput(job.id, marker), `shell never emitted ${marker}: ${diagnostic()}`).toBe(true);
+        expect(job.scopeUnit, diagnostic()).toBeNull();
+        expect(job.status, diagnostic()).toBe('running');
+        expect(expire, `startBackground did not arm its deadline: ${diagnostic()}`).toBeDefined();
+        clearTimeout(heldTimer);
+        expire!();
+        await waitForEnd(job.id);
+        return job;
+      } finally {
+        clearTimeout(heldTimer);
+        if (job.status === 'running') {
+          killJob(job);
+          await waitForEnd(job.id, 5_000);
+        }
+      }
     } finally {
-      timeoutSpy.mockRestore();
-    }
-    try {
-      expect(await waitForOutput(job.id, marker), `shell never emitted ${marker}`).toBe(true);
-      expect(job.status).toBe('running');
-      expect(expire, 'startBackground did not arm its deadline').toBeDefined();
-      clearTimeout(heldTimer);
-      expire!();
-      await waitForEnd(job.id);
-      return job;
-    } finally {
-      clearTimeout(heldTimer);
-      if (job.status === 'running') killJob(job);
+      begin.mockRestore();
+      complete.mockRestore();
+      finish.mockRestore();
     }
   }
 
@@ -1738,8 +1768,15 @@ describe('background job deadlines (WI-6677)', () => {
   it('records the effective deadline on the job so the caller can be told it up front', () => {
     const job = startBackground({ command: 'sleep 60', cwd: STATE, stateDir: STATE }, 45_000);
     expect(job.timeoutMs).toBe(45_000);
-    expect(job.deadlineAt).toBeGreaterThanOrEqual(job.startedAt + 45_000 - 50);
+    expect(job.deadlineAt).toBe(job.startedAt + 45_000);
     killJob(job);
+  });
+
+  it('classifies a systemd close after the deadline even when its timer callback has not run', () => {
+    expect(classifyBackgroundCloseStatus('running', 2_000, 2_000)).toBe('timed_out');
+    expect(classifyBackgroundCloseStatus('running', 2_000, 1_999)).toBe('running');
+    expect(classifyBackgroundCloseStatus('timed_out', 2_000, 2_102)).toBe('timed_out');
+    expect(classifyBackgroundCloseStatus('completed', 2_000, 2_102)).toBe('completed');
   });
 
   it('classifies deadline phase only from an explicit pc-heavy marker', () => {
@@ -1898,6 +1935,30 @@ describe('background job deadlines (WI-6677)', () => {
     expect(isBackgroundTestCommand('printf "npx vitest run"')).toBe(false);
   });
 
+  it('peels supported timeout wrappers before classifying the actual test or verifier command', () => {
+    for (const command of [
+      'timeout --signal=TERM --kill-after=60s 2700s scripts/verify-tauri-headless.sh -- true',
+      'env PAPERCUSP_TEST_RUN_HARNESS=papercusp timeout --signal TERM --kill-after 60s 2700s bash -- ./scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
+      'timeout -sTERM -k60s 2700s npx vitest run',
+      'timeout 10s npm run test:file -- example.test.ts',
+      'rtk test -- timeout 2700s scripts/verify-tauri-headless.sh',
+    ]) expect(isBackgroundTestCommand(command), command).toBe(true);
+
+    for (const command of [
+      'rg -n "timeout 2700s scripts/verify-tauri-headless.sh" .',
+      'timeout 2700s printf "scripts/verify-tauri-headless.sh"',
+      'timeout 2700s node -e "scripts/verify-tauri-headless.sh"',
+      'timeout --unknown 2700s scripts/verify-tauri-headless.sh',
+      'timeout --kill-after=invalid 2700s scripts/verify-tauri-headless.sh',
+    ]) expect(isBackgroundTestCommand(command), command).toBe(false);
+
+    const longNearMiss = 'timeout --unknown=' + 'X'.repeat(10_000) + ' 2700s scripts/verify-tauri-headless.sh';
+    expect(runInNewContext('classify(command)', {
+      classify: isBackgroundTestCommand,
+      command: longNearMiss,
+    }, { timeout: 1_000 })).toBe(false);
+  });
+
   it('applies the finite test budget to an explicitly RTK-wrapped test command', () => {
     const originalCommand = 'rtk test -- npm run test:e2e:isolated -- e2e/content-reading.spec.ts';
     expect(isBackgroundTestCommand(originalCommand)).toBe(true);
@@ -2030,6 +2091,7 @@ describe('background job deadlines (WI-6677)', () => {
   it.each([
     "env PAPERCUSP_TEST_RUN_HARNESS=papercusp bash scripts/run-operator-e2e-isolated.sh e2e/ongoing-work-ui.spec.ts --grep 'ongoing work stays visible|mobile strip preserves' --workers=1",
     'bash scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
+    'timeout --signal=TERM --kill-after=60s 2700s scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
     'VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS="completion kindEvidence" scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
     "env -- LABEL='with spaces' bash -- scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime",
   ])('budgets a maintained verifier before preparation: %s', (command) => {
@@ -2091,7 +2153,17 @@ describe('background job deadlines (WI-6677)', () => {
       'the job never reached its own `echo working`, so its TERM trap was never installed: this run cannot distinguish SIGTERM from SIGKILL (startup race — WI-1046842) and is NOT evidence of a cleanup regression',
     ).toBe(true);
     await waitForEnd(job.id);
-    expect(job.status).toBe('timed_out');
+    expect(
+      job.status,
+      JSON.stringify({
+        exitCode: job.exitCode,
+        scopeUnit: job.scopeUnit,
+        startedAt: job.startedAt,
+        deadlineAt: job.deadlineAt,
+        endedAt: job.endedAt,
+        phaseTiming: job.phaseTiming,
+      }),
+    ).toBe('timed_out');
     // The whole point: a SIGKILLed job cannot leave this behind.
     //
     // WI-1046842 / WI-1064487 — carry the job's EXIT CODE into the failure message. But

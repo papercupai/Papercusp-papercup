@@ -552,6 +552,51 @@ describe("EI-210512: green-checkpoint disk-headroom preflight", () => {
     expect(calls).not.toContain("advance");
   });
 
+  it("preserves a ready-to-test frozen queue and its disk-headroom blocker in the freeze disposition", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const now = Date.now();
+    const queue: FrozenCandidateRepairQueue = {
+      schemaVersion: 3,
+      phase: "ready-to-test",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      attempts: 1,
+      openedAtMs: now - 60_000,
+      updatedAtMs: now - 30_000,
+      fixerSpawnId: null,
+      failingTests: ["lib/broken.test.ts"],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(true);
+    const observations: unknown[] = [];
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.checkDiskHeadroom = async () => ({
+      ok: false,
+      summary: "/tmp 5.7 GiB free; low-bytes breaches the gate floor",
+    });
+    deps.recordDerivedFreezeDisposition = async (value) => {
+      observations.push(value);
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      green: null,
+      reason: "disk-headroom",
+      repairQueue: { phase: "ready-to-test", candidate: frozen },
+      preconditionBlocker: "disk-headroom",
+    });
+    expect(observations).toHaveLength(1);
+    expect(observations[0]).toMatchObject({
+      repairQueue: { phase: "ready-to-test", candidate: frozen },
+      blockedBy: "disk-headroom",
+    });
+    expect(calls).not.toContain("runGreen");
+  });
+
   it("continues normally when the same preflight reports safe headroom", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
@@ -10201,6 +10246,9 @@ describe("runGreenCheckpoint", () => {
       recorder: null,
       headline: "per-file reuse: 7 of 10 candidate file(s) reused",
     };
+    const suiteMeasurement = { schemaVersion: 1 as const, kind: 'candidate-suite' as const, judgedSha: reuse.judgedSha,
+      command: 'npm run test:affected', runGroupId: 'measured-suite', startedAtMs: 100, completedAtMs: 200,
+      resume: null, reuse: null };
 
     it("carries it onto an ADVANCE verdict", async () => {
       const c1 = await commit("a", "1", "c1");
@@ -10209,11 +10257,12 @@ describe("runGreenCheckpoint", () => {
       const { deps, calls } = stubDeps(true);
       deps.runGreen = async () => {
         calls.push("runGreen");
-        return { green: true, summary: "all pass", testPassReuse: reuse };
+        return { green: true, summary: "all pass", testPassReuse: reuse, suiteMeasurement };
       };
       const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
       expect(r).toMatchObject({ advanced: true, green: true });
       expect(r.testPassReuse).toEqual(reuse);
+      expect(r.suiteMeasurement).toEqual(suiteMeasurement);
       // The round's phase breakdown is built once, against the whole pass: the candidate suite
       // is stamped, the parts add up to the total, and the internal carrier never leaks out.
       expect(r.roundPhases?.phases.map((p) => p.phase)).toContain("candidate-suite");
@@ -10233,11 +10282,13 @@ describe("runGreenCheckpoint", () => {
           summary: "1 failing",
           failingTests: ["lib/x.test.ts"],
           testPassReuse: reuse,
+          suiteMeasurement,
         };
       };
       const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
       expect(r.green).toBe(false);
       expect(r.testPassReuse).toEqual(reuse);
+      expect(r.suiteMeasurement).toEqual(suiteMeasurement);
       expect(r.roundPhases?.phases.map((p) => p.phase)).toContain("candidate-suite");
       expect("roundPhaseStamps" in r).toBe(false);
     });
@@ -10251,12 +10302,13 @@ describe("runGreenCheckpoint", () => {
       const { deps, calls } = stubDeps(true);
       deps.runGreen = async () => {
         calls.push("runGreen");
-        return { green: true, summary: "all pass", testPassReuse: reuse };
+        return { green: true, summary: "all pass", testPassReuse: reuse, suiteMeasurement };
       };
       deps.perfGate = async () => ({ action: "block", summary: "perf BLOCK" });
       const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
       expect(r).toMatchObject({ green: true, advanced: false, reason: "perf-held" });
       expect(r.testPassReuse).toEqual(reuse);
+      expect(r.suiteMeasurement).toEqual(suiteMeasurement);
       expect(r.roundPhases?.phases.map((p) => p.phase)).toContain("candidate-suite");
       expect("roundPhaseStamps" in r).toBe(false);
     });
@@ -10269,6 +10321,7 @@ describe("runGreenCheckpoint", () => {
       const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
       expect(r.green).toBe(true);
       expect("testPassReuse" in r).toBe(false);
+      expect("suiteMeasurement" in r).toBe(false);
     });
   });
 

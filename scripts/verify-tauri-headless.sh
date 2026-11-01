@@ -93,7 +93,7 @@
 # USAGE
 #   scripts/verify-tauri-headless.sh -- <assertion-command...>
 #     Boots the instance, runs <assertion-command...> with
-#     VERIFY_TAURI_PID / VERIFY_TAURI_PORT / VERIFY_TAURI_DEV_URL /
+#     VERIFY_TAURI_PID / VERIFY_TAURI_PORT / VERIFY_TAURI_PTY_PORT / VERIFY_TAURI_DEV_URL /
 #     VERIFY_TAURI_DISPLAY exported (VERIFY_TAURI_DEV_URL is the plain
 #     selected loopback host:$VERIFY_TAURI_PORT origin — use it instead of
 #     reconstructing the URL or parsing `tauri-agent-tools eval
@@ -332,8 +332,8 @@
 #                               seconds between DOM assertion attempts (default 1)
 #   VERIFY_TAURI_SETTLE_TIMEOUT seconds VERIFY_TAURI_SETTLE waits for the page to
 #                               go idle before giving up (default: the guarded
-#                               VERIFY_TAURI_DOM_TIMEOUT, otherwise 20; an
-#                               explicit settle timeout still wins)
+#                               VERIFY_TAURI_DOM_TIMEOUT, resolved to 30 by this
+#                               wrapper when unset; explicit settle timeout wins)
 #   VERIFY_TAURI_SETTLE_QUIET_MS
 #                               ms the DOM must stay unchanged, with the sync gate
 #                               idle, before the page counts as settled (default 400)
@@ -405,6 +405,11 @@
 #                                anchor that distinguishes an agent rig from the
 #                                owner's live desktop.
 set -uo pipefail
+
+# Resolve the DOM budget once in the parent environment so the generated poll
+# helper and settle-probe receive the same default when the caller leaves it unset.
+VERIFY_TAURI_DOM_TIMEOUT="${VERIFY_TAURI_DOM_TIMEOUT:-30}"
+export VERIFY_TAURI_DOM_TIMEOUT
 
 verify_tauri_dev_host() {
   local candidate="${VERIFY_TAURI_DEV_HOST:-127.0.0.1}"
@@ -1261,6 +1266,21 @@ preflight_verifier_pinned_inputs() {
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" "${input_args[@]}"
 }
 verifier_run_step verifier-pinned-inputs-preflight preflight_verifier_pinned_inputs || exit $?
+
+# EI-27529057401533862: a live Xvfb alone cannot activate native windows.
+# Reject missing display tools before reserving Cargo or preparing snapshots.
+preflight_native_display_dependencies() {
+  [ "$PREPARE_ONLY" != "1" ] || return 0
+  local dependency missing=0
+  for dependency in Xvfb openbox xdpyinfo xprop timeout; do
+    if ! command -v "$dependency" >/dev/null 2>&1; then
+      echo "FATAL: native display dependency missing: $dependency (install it before running the native verifier)" >&2
+      missing=1
+    fi
+  done
+  [ "$missing" -eq 0 ]
+}
+verifier_run_step native-display-dependencies preflight_native_display_dependencies || exit $?
 
 # EI-25558788631579977: claim the actual native slot and reject its known
 # capacity shortage before source/dependency/SPA/database preparation. Keep the
@@ -2133,6 +2153,37 @@ snapshot_verifier_pinned_deps() {
     else
       local snapshot_support_status=$?
       [ "$snapshot_support_status" -eq 1 ] || return "$snapshot_support_status"
+    fi
+    # A generation snapshot only selects an already-published immutable tree.
+    # Ensure the exact source inputs first so a cold selector fails or builds
+    # here, before the verifier spends time on native setup and acceptance.
+    # Keep prewarm and materialization in one admitted heavy operation.
+    if [ "$snapshot_command" = "snapshot-generation-locked" ]; then
+      local generation_script="$snapshot_root/apps/operator/bin/release/dependency-generation.sh"
+      [ -f "$generation_script" ] || {
+        echo "FATAL: frozen verifier source is missing dependency-generation.sh: $generation_script" >&2
+        return 74
+      }
+      local generation_source_ref="${VERIFY_TAURI_SOURCE_REF:-}"
+      local generation_copy_command='
+        set -euo pipefail
+        generation_script="$1"
+        donor="$2"
+        source_ref="$3"
+        pinned_deps="$4"
+        snapshot_root="$5"
+        mode="$6"
+        if [ -n "$source_ref" ]; then
+          bash "$generation_script" --integration "$donor" --ensure-ref "$source_ref"
+        else
+          bash "$generation_script" --integration "$donor"
+        fi
+        bash "$pinned_deps" snapshot-generation-locked "$donor" "$snapshot_root" "$mode"
+      '
+      bash "$snapshot_root/scripts/pc-heavy.sh" -- bash -c "$generation_copy_command" \
+        _ "$generation_script" "$REPO_DIR" "$generation_source_ref" \
+        "$pinned_deps_copy" "$snapshot_root" "$mode"
+      return $?
     fi
     # The existing heavy-command wrapper admits the copy's memory reserve;
     # pinned-deps owns the selected route's copy/selector leases and mutexes.
@@ -3308,6 +3359,7 @@ write_boot_only_env_script() {
     {
       printf 'VERIFY_TAURI_PID=%q\n' "$VERIFY_TAURI_PID"
       printf 'VERIFY_TAURI_PORT=%q\n' "$VERIFY_TAURI_PORT"
+      printf 'VERIFY_TAURI_PTY_PORT=%q\n' "$VERIFY_TAURI_PTY_PORT"
       printf 'VERIFY_TAURI_DEV_URL=%q\n' "$(verify_tauri_dev_url "$VERIFY_TAURI_PORT")"
       printf 'VERIFY_TAURI_DISPLAY=%q\n' "$VERIFY_TAURI_DISPLAY"
       printf 'VERIFY_TAURI_OWNER_SID=%q\n' "$VERIFY_TAURI_OWNER_SID"
@@ -3381,6 +3433,7 @@ verify_tauri_assert_owned() {
   target_environ="$(tr '\0' '\n' < "/proc/$VERIFY_TAURI_PID/environ" 2>/dev/null || true)"
   if ! grep -qxF "DISPLAY=$VERIFY_TAURI_DISPLAY" <<<"$target_environ" \
     || ! grep -qxF "OPERATOR_DEV_PORT=$VERIFY_TAURI_PORT" <<<"$target_environ" \
+    || ! grep -qxF "OPERATOR_DEV_PTY_PORT=$VERIFY_TAURI_PTY_PORT" <<<"$target_environ" \
     || ! grep -qxF "PAPERCUSP_SID=$VERIFY_TAURI_OWNER_SID" <<<"$target_environ" \
     || ! grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$VERIFY_TAURI_LAUNCH_PROVENANCE" <<<"$target_environ"; then
     echo "FATAL: VERIFY_TAURI_ENV_FILE points at a verifier owned by another session or a process with changed launch provenance." >&2
@@ -3416,7 +3469,7 @@ DISPLAY="$VERIFY_TAURI_DISPLAY"
 export DISPLAY
 export PATH VERIFY_TAURI_AGENT_TOOLS_BIN VERIFY_TAURI_AGENT_TOOLS_BIN_DIR
 export VERIFY_TAURI_CARGO_BIN VERIFY_TAURI_CARGO_BIN_DIR
-export VERIFY_TAURI_PID VERIFY_TAURI_PORT VERIFY_TAURI_DEV_URL VERIFY_TAURI_DISPLAY
+export VERIFY_TAURI_PID VERIFY_TAURI_PORT VERIFY_TAURI_PTY_PORT VERIFY_TAURI_DEV_URL VERIFY_TAURI_DISPLAY
 export VERIFY_TAURI_OWNER_SID VERIFY_TAURI_LAUNCH_PROVENANCE VERIFY_TAURI_LOG
 export VERIFY_TAURI_POLL VERIFY_TAURI_SETTLE VERIFY_TAURI_STOP VERIFY_TAURI_FRESHNESS_CHECK
 export VERIFY_TAURI_SPA_DIST VERIFY_TAURI_LIVENESS_CHECK
@@ -3845,6 +3898,44 @@ start_display_server() {
   fi
   start_verify_process "${VERIFY_SCOPE_BASE}-openbox" "$WORK/openbox.log" env DISPLAY=":$DISPLAY_NUM" openbox
   OPENBOX_PID="$VERIFY_STARTED_PROCESS_PID"
+  # Starting the process is not readiness: a missing/exited WM used to surface
+  # only after a full desktop build as xdotool's _NET_ACTIVE_WINDOW error.
+  # EWMH requires a root supporting-window pointer and its reciprocal pointer.
+  # Also require activation support, with bounded probes and both PIDs alive.
+  local wm_started=$SECONDS wm_deadline=$((SECONDS + 15)) wm_failure wm_window
+  while :; do
+    if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+      wm_failure="Xvfb exited before window-manager readiness"
+      break
+    fi
+    if ! kill -0 "$OPENBOX_PID" 2>/dev/null; then
+      wm_failure="Openbox exited before readiness"
+      break
+    fi
+    if timeout --signal=TERM --kill-after=1s 2s env DISPLAY=":$DISPLAY_NUM" \
+      xprop -root _NET_SUPPORTING_WM_CHECK _NET_SUPPORTED >"$WORK/ewmh-root.log" 2>&1; then
+      wm_window="$(sed -n 's/^_NET_SUPPORTING_WM_CHECK(WINDOW): window id # \(0x[[:xdigit:]]*\)$/\1/p' "$WORK/ewmh-root.log")"
+      if [ -n "$wm_window" ] && ! [[ "$wm_window" =~ ^0x0+$ ]] && \
+        grep -Eq '^_NET_SUPPORTED\(ATOM\) =.*[ ,]_NET_ACTIVE_WINDOW(,|$)' "$WORK/ewmh-root.log" && \
+        timeout --signal=TERM --kill-after=1s 2s env DISPLAY=":$DISPLAY_NUM" \
+          xprop -id "$wm_window" _NET_SUPPORTING_WM_CHECK >"$WORK/ewmh-wm.log" 2>&1 && \
+        grep -Fxq "_NET_SUPPORTING_WM_CHECK(WINDOW): window id # $wm_window" "$WORK/ewmh-wm.log" && \
+        kill -0 "$OPENBOX_PID" 2>/dev/null && kill -0 "$XVFB_PID" 2>/dev/null; then
+        log "Openbox :$DISPLAY_NUM EWMH ready after $((SECONDS - wm_started))s (pid=$OPENBOX_PID, window=$wm_window)"
+        break
+      fi
+    fi
+    if [ "$SECONDS" -ge "$wm_deadline" ]; then
+      wm_failure="EWMH readiness deadline exceeded (requires _NET_SUPPORTING_WM_CHECK and _NET_ACTIVE_WINDOW)"
+      break
+    fi
+    sleep 0.2
+  done
+  if [ -n "${wm_failure:-}" ]; then
+    echo "FATAL: window manager :$DISPLAY_NUM $wm_failure — see $WORK/openbox.log and $WORK/ewmh-*.log" >&2
+    tail -n 40 "$WORK/openbox.log" "$WORK/xvfb.log" "$WORK/ewmh-root.log" "$WORK/ewmh-wm.log" >&2 2>/dev/null || true
+    exit 1
+  fi
 }
 # Arm the EXIT/signal traps BEFORE the first start_display_server call (not
 # after, as a naive factor-out would do) — teardown()/handle_signal() check
@@ -4911,6 +5002,7 @@ log "bridge provenance verified: owner=$TAURI_LAUNCH_PROVENANCE pid=$BRIDGE_PID 
 
 export VERIFY_TAURI_PID="$BRIDGE_PID"
 export VERIFY_TAURI_PORT="$DEV_PORT"
+export VERIFY_TAURI_PTY_PORT="$PTY_PORT"
 export VERIFY_TAURI_DEV_URL="$(verify_tauri_dev_url "$DEV_PORT")"
 export VERIFY_TAURI_DISPLAY=":$DISPLAY_NUM"
 export DISPLAY="$VERIFY_TAURI_DISPLAY"
@@ -5326,10 +5418,12 @@ verify_isolated_storage_sentinel() {
   local evidence_dir="${VH_RUN_DIR:-$WORK}/phases/boot/isolated-storage" probe_status=0
   mkdir -p -- "$evidence_dir" || return 1
   ISOLATED_STORAGE_SENTINEL_KEY='papercusp.verify-tauri-headless.isolated-sentinel.v1'
-  # A failed evaluation is unmeasured storage, not an empty sentinel result.
+  # Use the JSON envelope so an empty eval result remains observable. The
+  # default CLI formatter prints an empty string as a blank line, which shell
+  # command substitution strips and confuses with a missing response.
   # Keep both streams and the real status before teardown destroys the WebView.
   timeout --signal=TERM --kill-after=1 "${HEALTH_PROBE_TIMEOUT}s" \
-    "$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
+    "$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" --json "
     (function () {
       var key = '$ISOLATED_STORAGE_SENTINEL_KEY';
       var value = 'verify-tauri-headless-isolated-v1';
@@ -5341,10 +5435,35 @@ verify_isolated_storage_sentinel() {
     })()
   " >"$evidence_dir/probe.stdout" 2>"$evidence_dir/probe.stderr" || probe_status=$?
   printf '%s\n' "$probe_status" >"$evidence_dir/probe.status" || return 1
-  ISOLATED_STORAGE_SENTINEL_JSON="$(cat "$evidence_dir/probe.stdout")" || return 1
   if [ "$probe_status" -ne 0 ]; then
     echo "FATAL: isolated WebView storage evaluation did not complete (exit=$probe_status); storage isolation is unmeasured. Evidence: $evidence_dir" >&2
     cat "$evidence_dir/probe.stdout" "$evidence_dir/probe.stderr" >&2
+    return 1
+  fi
+  if [ ! -s "$evidence_dir/probe.stdout" ]; then
+    echo "FATAL: isolated WebView storage evaluation returned no JSON envelope (exit=0); storage isolation is unmeasured. Evidence: $evidence_dir" >&2
+    cat "$evidence_dir/probe.stderr" >&2
+    return 1
+  fi
+  if ! ISOLATED_STORAGE_SENTINEL_JSON="$(
+    node -e '
+      const fs = require("node:fs");
+      const envelope = JSON.parse(fs.readFileSync(0, "utf8"));
+      if (!envelope || typeof envelope !== "object" ||
+          !Object.prototype.hasOwnProperty.call(envelope, "result")) {
+        throw new Error("missing result field");
+      }
+      if (typeof envelope.result !== "string") throw new Error("result must be a string");
+      process.stdout.write(envelope.result);
+    ' < "$evidence_dir/probe.stdout" 2>"$evidence_dir/probe.parse.stderr"
+  )"; then
+    echo "FATAL: isolated WebView storage evaluation returned an invalid JSON envelope; storage isolation is unmeasured. Evidence: $evidence_dir" >&2
+    cat "$evidence_dir/probe.parse.stderr" "$evidence_dir/probe.stderr" >&2
+    return 1
+  fi
+  if [ -z "$ISOLATED_STORAGE_SENTINEL_JSON" ]; then
+    echo "FATAL: isolated WebView storage evaluation returned an empty result (exit=0); storage isolation is unmeasured. Evidence: $evidence_dir" >&2
+    cat "$evidence_dir/probe.stderr" >&2
     return 1
   fi
   if ! grep -Eq '"before"[[:space:]]*:[[:space:]]*null' <<<"$ISOLATED_STORAGE_SENTINEL_JSON" \

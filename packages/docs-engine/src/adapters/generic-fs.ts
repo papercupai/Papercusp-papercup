@@ -46,7 +46,7 @@ interface FsPage extends DocPage {
   absolutePath: string;
 }
 
-function extractHeadings(content: string): DocPage['toc'] {
+export function extractHeadings(content: string): DocPage['toc'] {
   const out: DocPage['toc'] = [];
   for (const line of content.split('\n')) {
     const m = /^(#{1,6})\s+(.+?)\s*$/.exec(line);

@@ -26,6 +26,8 @@ import { evaluatePlanStartReadiness, type PlanStartReadiness } from './plan-inpu
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 import { reconcileStaleAcceptanceBarSubjectPin } from '../../acceptance-bar-pin-reconcile';
 import { checkPlanAdmission, type PlanAdmissionRefusal } from './plan-admission-gate';
+import { initialChangeScopeProblems } from './initial-change-scope';
+import { readPlanItemAnchors } from '../../plan-items/anchor-store';
 import type { PlanAdmissionDoor } from './plan-admission-enforcement';
 
 /**
@@ -59,7 +61,7 @@ export const PLAN_START_GATE_ENTRYPOINTS = [
  *  re-derive anything: what is missing, why, and what to do about it. */
 export interface PlanStartRefusal {
   error: 'plan_inputs_not_ready';
-  code: Exclude<PlanStartReadiness, { ready: true }>['code'] | 'acceptance_bar_contract_not_ready';
+  code: Exclude<PlanStartReadiness, { ready: true }>['code'] | 'acceptance_bar_contract_not_ready' | 'initial_change_scope_missing';
   slug: string;
   /** Declared-required fields that were not supplied. */
   missing: string[];
@@ -125,6 +127,19 @@ export async function checkPlanStartable(
   if (!row) return { ok: true, row: null, inputs: overrides ?? null };
   const verdict = startVerdictForRow(row, slug, overrides);
   if (!verdict.ok) return verdict;
+  // Authoring remains incremental; running plans are not sent back through initial scoping.
+  if (door === 'start' && (row.status === 'draft' || row.status === 'ready')) {
+    const needsScope = initialChangeScopeProblems({ content: row.content,
+      verificationProfile: row.verificationProfile, anchors: {} }).length > 0;
+    const problems = initialChangeScopeProblems({ content: row.content,
+      verificationProfile: row.verificationProfile,
+      anchors: needsScope ? await readPlanItemAnchors({ workspaceId: row.workspaceId, harnessSlug: row.harnessSlug, planSlug: slug }) : {} });
+    if (problems.length) return { ok: false, kind: 'inputs', row, refusal: {
+      error: 'plan_inputs_not_ready', code: 'initial_change_scope_missing', slug,
+      missing: problems, issues: problems, source: 'plan-item-code-anchors',
+      hint: 'Use plans:edit { slug, itemId, anchors:[{symbol or path, change:{action,summary,reason,unknowns?}}] }. New code uses action:create; uncertain scope uses investigate. Update initial scope with rationale as implementation evolves.',
+    } };
+  }
 
   // P-003: every start/promotion door funnels through this function. A post-epoch
   // BAR contract may be METHOD-empty, but its identity/falsifier/provenance,

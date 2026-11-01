@@ -11,11 +11,13 @@
  *
  * Definitions:
  *   - "directed": kind='message' (or unset, the default), addressed via
- *     explicit ownerId(s) or a resolved `@file` selector. Selector expansion
- *     stores concrete ownerIds in `to` and the original selector in `audience`.
- *     Wildcard broadcasts and other selector audiences remain excluded until
- *     their group-reply semantics are defined. Sender != recipient (never
- *     counts a message against its own author, e.g. a fanout that lists the sender).
+ *     explicit ownerId(s), a resolved `@file` selector, or a resolved
+ *     `@fleet-leader` selector (which names one concrete recipient). Selector
+ *     expansion stores concrete ownerIds in `to` and the original selector in
+ *     `audience`. Wildcard broadcasts and multi-recipient selector audiences
+ *     remain excluded until their group-reply semantics are defined. Sender !=
+ *     recipient (never counts a message against its own author, e.g. a fanout
+ *     that lists the sender).
  *   - "expects reply": the sender explicitly sets `expectsReply:true`, or
  *     uses the coord:send ergonomic `wake:'required'` + `replyDeadlineSec`
  *     combination (which stamps the same field). FYI/status reports are
@@ -532,6 +534,7 @@ export async function fetchUnansweredDirected(
                   END
                 ) AS audience_selector(value)
                WHERE audience_selector.value LIKE '@file:%'
+                  OR audience_selector.value LIKE '@fleet-leader:%'
             )
             AND NOT ((eb.b->'audience') ? '*')
           )
@@ -649,6 +652,11 @@ export async function fetchUnansweredDirected(
                ELSE c.b->>'from'
              END = ar.recipient
          AND NOT (c.b ? 'related_msg_id')
+         -- A new message that itself requests a reply is not evidence that the
+         -- recipient answered an older ask. Keep legacy envelopes with no
+         -- "expects" field, but explicit ack/answer/action asks stay open.
+         AND ((c.b->>'expects') IS NULL OR c.b->>'expects' = 'none')
+         AND c.b->>'lifecycle' IS DISTINCT FROM 'release_request'
          AND (c.b->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
     ),
     loose_replies AS MATERIALIZED (
@@ -1125,6 +1133,7 @@ export async function fetchOpenAsks(
                    END
                  ) AS audience_selector(value)
                 WHERE audience_selector.value LIKE '@file:%'
+                   OR audience_selector.value LIKE '@fleet-leader:%'
              )
              AND NOT ((e.body->'audience') ? '*')
            )
@@ -1146,6 +1155,8 @@ export async function fetchOpenAsks(
              ra.body->'why'->>'goalRef'    AS goal_ref,
              ra.body ? 'related_msg_id'    AS has_related,
              ra.body->'to'                 AS to_arr,
+             ra.body->>'expects'          AS expects,
+             ra.body->>'lifecycle'         AS lifecycle,
              (ra.body->>'ts')::timestamptz AS ts,
              (extract(epoch FROM (ra.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms
         FROM harness_shared.coord_event_log ra
@@ -1160,6 +1171,10 @@ export async function fetchOpenAsks(
         CROSS JOIN LATERAL jsonb_array_elements_text(ra.to_arr) AS rt
        WHERE NOT ra.has_related
          AND jsonb_typeof(ra.to_arr) = 'array'
+         -- Keep this mirror aligned with fetchUnansweredDirected: an explicit
+         -- reply expectation is a new ask, not a loose reply to the old one.
+         AND (ra.expects IS NULL OR ra.expects = 'none')
+         AND ra.lifecycle IS DISTINCT FROM 'release_request'
          AND ra.ts >= to_timestamp(${sinceMs}::double precision / 1000)
     ),
     -- WI-4537(c) mirrored: a message WE sent that is itself a reply to

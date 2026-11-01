@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,7 @@ import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootst
 import type { PuiSuSessionBinding } from './launch-agent';
 import { SuStdioRequestRefusal, type RpcFrame, type SuStdioPeerOptions } from './su-session-stdio-peer';
 import { prepareSuLaunch } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { nativeInstalledPerUseTurns } from './agent-tools/per-use-chokepoint';
 
 const mocks = vi.hoisted(() => ({
   link: vi.fn(async () => 'linked'), persist: vi.fn(async () => true),
@@ -20,6 +21,10 @@ const mocks = vi.hoisted(() => ({
   nativeFunding: vi.fn(async (_input: unknown): Promise<{ ok: true } | { ok: false; code: string; message: string; retryable: false }> => ({ ok: true })),
   installedProvenance: vi.fn(async (_input: unknown): Promise<import('./cupboard/types').InstalledPluginProvenance | null> => null),
   installedFunding: vi.fn(async (_input: unknown): Promise<import('./agent-tools/per-use-chokepoint').AttachedInstalledToolFunding | undefined> => undefined),
+  issue: vi.fn<typeof import('@papercusp/agent-mcp/provisioning').provisionNativeRuntimeBearer>(),
+}));
+vi.mock('@papercusp/agent-mcp/provisioning', async original => ({
+  ...await original<typeof import('@papercusp/agent-mcp/provisioning')>(), provisionNativeRuntimeBearer: mocks.issue,
 }));
 vi.mock('./cupboard/install-io', async original => ({
   ...(await original<typeof import('./cupboard/install-io')>()), readInstalledPluginCommerceProvenance: mocks.installedProvenance,
@@ -78,7 +83,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   nativeId?: string; tools?: boolean; model?: string; contextWindow?: number;
   bootstrapModel?: string; compactionLimit?: number;
   servedAccountReader?: (ownerId: string) => Promise<string | null>;
-  request?: (frame: RpcFrame) => Promise<RpcFrame | undefined>;
+  request?: (frame: RpcFrame) => Promise<RpcFrame | undefined> | RpcFrame | undefined;
   resume?: boolean;
   legacyFork?: boolean;
   paginatedFork?: boolean;
@@ -86,11 +91,13 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   missingTranscript?: boolean;
   deliveryTimeoutMs?: number;
   beforeReady?: () => Promise<void>;
+  onExit?: () => Promise<void>;
   toolApproval?: 'prompt';
   identity?: 'su' | 'coding-assistant';
   turnLifecycle?: SuCodexTurnLifecycle;
   stage?: (name: string) => void;
   env?: Record<string, string>;
+  resolveRequestPrincipal?: import('./auth/require-principal').HostRequestPrincipalResolver;
 } = {}) {
   let nativePath = `/configured/${backend}/session.jsonl`;
   if (overrides.resume) {
@@ -146,9 +153,11 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     deliveryTimeoutMs: overrides.deliveryTimeoutMs,
     servedAccountReader: overrides.servedAccountReader,
     beforeReady: overrides.beforeReady,
+    onExit: overrides.onExit,
     toolApproval: overrides.toolApproval,
     identity: overrides.identity,
     turnLifecycle: overrides.turnLifecycle,
+    resolveRequestPrincipal: overrides.resolveRequestPrincipal,
     stage: overrides.stage,
     accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
     ...(overrides.resume ? { nativeSession } : {}),
@@ -165,11 +174,121 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
   return type === 'owner_turn' ? { ...base, type, turnId: `owner-${id}`, content: 'Hello from PUI' } : { ...base, type };
 }
 
+describe('OMP host-owned accepted-input authority', () => {
+  const principal = { kind: 'system' as const, slug: 'system:superuser', workspaceId: 'workspace',
+    capabilities: new Set(['*']), trust: 'trusted' as const, authMethod: 'bearer-token' as const };
+  type Scope = ReturnType<typeof nativeInstalledPerUseTurns.registerNativeInput>;
+  let register: ReturnType<typeof vi.spyOn>;
+  let observe: ReturnType<typeof vi.fn<Scope['observeToolCall']>>;
+  let withdraw: ReturnType<typeof vi.fn<Scope['withdraw']>>;
+  beforeEach(() => {
+    for (const name of ['read', 'a-b', 'a_b', 'a:b']) registerProjectedTool({ pluginName: 'omp-authority-fixture',
+      description: 'authority fixture', capabilities: [], inputSchema: { type: 'object' },
+      expose: { mcp: { name: `omp-authority-fixture.${name}` } }, fn: vi.fn() });
+    mocks.issue.mockResolvedValue({ bearer: 'private-host-credential', binding: { provider: 'omp',
+      workspaceId: 'workspace', ownerId: 'su-rpc-fixture', advSessionId: 71 } } as Awaited<ReturnType<typeof mocks.issue>>);
+    observe = vi.fn(async () => undefined); withdraw = vi.fn(async () => undefined);
+    register = vi.spyOn(nativeInstalledPerUseTurns, 'registerNativeInput').mockReturnValue({ observeToolCall: observe, withdraw });
+  });
+  afterEach(() => { register.mockRestore(); mocks.issue.mockReset(); unregisterProjectedToolsForPlugin('omp-authority-fixture'); });
+  const root = (text = 'Hello from PUI') => ({ type: 'message_start', message: {
+    role: 'user', content: [{ type: 'text', text }] } });
+  const call = { type: 'message_end', message: { role: 'assistant', content: [
+    { type: 'toolCall', id: 'exact-call', name: 'mcp__papercusp_su_omp_authority_fixture_read', arguments: { id: 'exact-report' } },
+  ] } };
+  async function active() {
+    const f = fixture('omp', { resolveRequestPrincipal: async () => principal });
+    await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    return f;
+  }
+  it('requires the exact root input and agent start, with a host-only credential and exact call', async () => {
+    const f = await active();
+    f.emit(call); f.emit(root('another input')); f.emit({ type: 'agent_start' });
+    expect(register).not.toHaveBeenCalled(); expect(observe).not.toHaveBeenCalled();
+    f.emit(root());
+    expect(register).toHaveBeenCalledOnce();
+    const input = register.mock.calls[0]![0];
+    expect(input).toMatchObject({ provider: 'omp', nativeSessionId: 'native-omp', ownerTurnId: 'owner-owner_turn',
+      principalId: principal.slug, nativeTools: { mcp__papercusp_su_omp_authority_fixture_read: 'omp-authority-fixture.read' } });
+    expect(input.nativeTools).not.toHaveProperty('mcp__papercusp_su_omp_authority_fixture_a_b');
+    expect(input).not.toHaveProperty('admissions');
+    await expect(input.resolveRuntimeBearer()).resolves.toBe('private-host-credential');
+    f.emit(call);
+    expect(observe).toHaveBeenCalledWith({ nativeSessionId: 'native-omp', nativeInputId: input.nativeInputId,
+      server: 'papercusp-su', callId: 'exact-call', tool: 'mcp__papercusp_su_omp_authority_fixture_read', arguments: { id: 'exact-report' } });
+    expect(JSON.stringify({ env: f.transport().env, sent: f.sent, descriptor: f.engine.adapter.host.descriptor() }))
+      .not.toContain('private-host-credential');
+  });
+  it.each(['end', 'interrupt', 'close', 'exit'] as const)('withdraws on %s and ignores late calls', async end => {
+    const f = await active(); f.emit(root()); f.emit({ type: 'agent_start' });
+    expect(register).toHaveBeenCalledOnce();
+    if (end === 'end') f.emit({ type: 'agent_end' });
+    if (end === 'interrupt') f.engine.adapter.host.startCommand(command(f.engine, 'interrupt'));
+    if (end === 'close') void f.engine.close();
+    if (end === 'exit') f.failExit(new Error('fixture exit'));
+    await vi.waitFor(() => expect(withdraw).toHaveBeenCalledOnce());
+    f.emit(call); f.emit(root()); f.emit({ type: 'agent_start' });
+    expect(observe).not.toHaveBeenCalled(); expect(register).toHaveBeenCalledOnce();
+  });
+  it('never grants an input scope after the launching principal is revoked', async () => {
+    const resolver = vi.fn(async (): Promise<typeof principal | null> => principal);
+    const f = fixture('omp', { resolveRequestPrincipal: resolver }); await f.engine.ready;
+    resolver.mockResolvedValue(null);
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    f.emit(root()); f.emit({ type: 'agent_start' }); f.emit(call);
+    expect(register).not.toHaveBeenCalled(); expect(observe).not.toHaveBeenCalled();
+  });
+});
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(yes => { resolve = yes; });
   return { promise, resolve };
 }
+
+it.each((['codex', 'omp'] as const).flatMap(backend =>
+  (['frame', 'models', 'startup', 'exit'] as const).map(action => ({ backend, action })),
+))('P-009: replaced $backend engine fences delayed $action callbacks', async ({ backend, action }) => {
+  const gate = deferred<void>(), catalog = deferred<RpcFrame>();
+  const beforeReady = vi.fn(async () => { if (action === 'startup') await gate.promise; });
+  const onExit = vi.fn(async () => undefined);
+  const f = fixture(backend, { beforeReady, onExit, request: frame => {
+    if (action === 'models' && (frame.method === 'model/list' || frame.type === 'get_available_models')) return catalog.promise;
+    return undefined;
+  } });
+  const readiness = f.engine.ready.catch(error => error);
+  try {
+    await vi.waitFor(() => expect(beforeReady).toHaveBeenCalledOnce());
+    if (action !== 'startup') await f.engine.ready;
+    // This shared replacement check erases only the backend-specific card
+    // extension; both concrete hosts implement the same attach contract.
+    const host = f.engine.adapter.host as unknown as import('./su-session-host').SuSessionHost;
+    f.engine.adapter.reconcileRuntimeExit({ expected: false, exitCode: 137 });
+    host.attachRuntime({
+      descriptor: { ...host.descriptor(), lifecycle: 'ready', runtimeGeneration: 1 },
+      executeCommand: async () => ({ status: 'completed' }), runtimeReady: () => true,
+    });
+    const snapshot = host.snapshot(), events = [...host.recent];
+    if (action === 'frame') f.emit(backend === 'codex'
+      ? { method: 'thread/tokenUsage/updated', params: { threadId: 'native-codex', tokenUsage: { last: { totalTokens: 123 } } } }
+      : { type: 'agent_start' });
+    if (action === 'models') {
+      catalog.resolve({ data: [{ id: 'late-model', model: 'late-model', displayName: 'Late model' }],
+        models: [{ provider: 'openai', id: 'late-model', name: 'Late model' }] });
+      await vi.waitFor(() => expect(f.request).toHaveResolved());
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    if (action === 'startup') gate.resolve();
+    if (action === 'exit') await f.engine.close();
+    const result = await readiness;
+    if (action === 'startup') expect(result).toBeInstanceOf(Error);
+    if (action === 'startup') await f.engine.close();
+    expect(host.snapshot()).toEqual(snapshot);
+    expect(host.recent).toEqual(events);
+    expect(onExit).not.toHaveBeenCalled();
+  } finally { gate.resolve(); catalog.resolve({}); await f.engine.close(); }
+});
 
 it('attaches the exact registered Codex child without creating a second fork', async () => {
   const f = fixture('codex', { resume: true }); await f.engine.ready;

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
-import { readSessionConfinement } from './capability-envelope/session-confinement-store';
+import { readDeclaredSessionConfinement, readSessionConfinement } from './capability-envelope/session-confinement-store';
 import type { SessionToolConfinement } from './capability-envelope/session-confinement';
 import { isBlindReviewerBackendAgent } from './blind-reviewer-backends';
 
@@ -287,7 +287,8 @@ export async function createBlindReviewSessionBinding(input: {
   }
 }
 
-export async function verifyBlindReviewSessionBinding(binding: BlindReviewSessionBinding, deps: { sql?: Sql } = {}):
+async function verifyBindingConfinement(binding: BlindReviewSessionBinding,
+  readConfinement: (ownerId: string, workspaceId: string) => Promise<SessionToolConfinement | null>, deps: { sql?: Sql }):
   Promise<{ ok: true } | { ok: false; code: 'adv_session_mismatch' | 'launch_profile_mismatch' | 'confinement_mismatch' | 'binding_unavailable'; message: string }> {
   try {
     const sql = deps.sql ?? getOrgPg().sql;
@@ -296,7 +297,7 @@ export async function verifyBlindReviewSessionBinding(binding: BlindReviewSessio
     if (profile.accountRoute !== binding.accountRoute || profile.modelSpec !== binding.modelSpec) {
       return { ok: false, code: 'launch_profile_mismatch', message: 'The saved ADV launch profile changed.' };
     }
-    const current = await readSessionConfinement(binding.reviewerOwnerId, binding.workspaceId);
+    const current = await readConfinement(binding.reviewerOwnerId, binding.workspaceId);
     if (!current || stable(current) !== stable(binding.confinementSnapshot)) {
       return { ok: false, code: 'confinement_mismatch', message: 'The authoritative reviewer confinement changed.' };
     }
@@ -304,6 +305,17 @@ export async function verifyBlindReviewSessionBinding(binding: BlindReviewSessio
   } catch (error) {
     return { ok: false, code: 'binding_unavailable', message: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/** Posting requires a currently effective ceiling, including its expiry denial. */
+export function verifyBlindReviewSessionBinding(binding: BlindReviewSessionBinding, deps: { sql?: Sql } = {}) {
+  return verifyBindingConfinement(binding, readSessionConfinement, deps);
+}
+
+/** Only the external recruiter recovery path compares the original declaration.
+ * This grants no tool authority; the exact leased launcher renews it before spawn. */
+export function verifyBlindReviewSessionResumeBinding(binding: BlindReviewSessionBinding, deps: { sql?: Sql } = {}) {
+  return verifyBindingConfinement(binding, readDeclaredSessionConfinement, deps);
 }
 
 export async function acquireBlindReviewSessionResume(input: {
@@ -334,7 +346,7 @@ export async function acquireBlindReviewSessionResume(input: {
         ? { ok: false, code: 'resume_busy', message: 'A recruiter resume is active or this review is no longer resumable.' }
         : { ok: false, code: 'binding_not_found', message: 'No reviewer session is bound to this plan activation.' };
     }
-    const verified = await verifyBlindReviewSessionBinding(binding, { sql });
+    const verified = await verifyBlindReviewSessionResumeBinding(binding, { sql });
     if (!verified.ok) {
       await releaseBlindReviewSessionResume(binding.id, leaseId, { sql });
       return verified;

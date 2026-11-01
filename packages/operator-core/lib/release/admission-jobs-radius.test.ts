@@ -445,6 +445,27 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
 });
 
 describe('immutablePrecheckPopulation with an ordinary admission (P-007)', () => {
+  it('proves an admitted deleted test and its workspace-relative signature alias without routing either', async () => {
+    const result = await executeAdmissionJob({ kind: 'precheck-population', input: {
+      root,
+      commit,
+      signature: [{ kind: 'test-file', id: 'lib/deleted.test.ts' }],
+      admittedPaths: ['pkg-a/lib/deleted.test.ts'],
+    } });
+    if (!result.ok) throw new Error(result.detail);
+    expect(result.population.removedTestFiles).toEqual([
+      'pkg-a/lib/deleted.test.ts',
+      'lib/deleted.test.ts',
+    ]);
+    expect(result.population.files).not.toContain('pkg-a/lib/deleted.test.ts');
+    expect(result.population.files).not.toContain('lib/deleted.test.ts');
+    expect(evaluateFixPrecheck(result.population, {
+      ran: true,
+      commit,
+      results: result.population.files.map(path => ({ path, status: 'fail' as const })),
+    })).toMatchObject({ ok: true, fixes: ['lib/deleted.test.ts'] });
+  });
+
   it('adds the measured radius to the R6 population and refuses a newly red guarded file by leg', async () => {
     const result = await executeAdmissionJob({ kind: 'precheck-population', input: {
       root, commit, signature: [{ kind: 'test-file', id: 'pkg-b/src/util.test.ts' }], admittedPaths: ['pkg-a/lib/core.ts'],

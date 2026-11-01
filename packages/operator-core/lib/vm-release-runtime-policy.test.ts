@@ -82,30 +82,48 @@ const vmEnv = {
   PAPERCUSP_PROVISION_ENV_OPERATORS: '0',
 };
 
-function runPackagedRuntime(options: { foreignNode?: boolean; gitHead?: string; corruptNode?: boolean } = {}) {
-  const root = fixture({ gitHead: options.gitHead ?? 'a'.repeat(40) });
+function runPackagedRuntime(options: { foreignNode?: boolean; gitHead?: string; corruptNode?: boolean;
+  bun?: string; accepted?: boolean; missingReader?: boolean; mutateManifest?: boolean; corruptBun?: boolean } = {}) {
+  const root = fixture({ gitHead: options.gitHead ?? 'a'.repeat(40), ...(options.bun ? {
+    applicationRuntime: { name: 'bun', acceptanceRef: 'docs/evidence/candidate.json', harnessSlug: 'papercusp' },
+  } : {}) });
   const nodePath = join(root, 'bin/node');
   copyFileSync(process.execPath, nodePath);
   const manifestPath = join(root, 'build-provenance.json');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   manifest.artifacts.find((artifact: { name: string }) => artifact.name === 'bin/node').sha256 =
     createHash('sha256').update(readFileSync(nodePath)).digest('hex');
+  if (options.bun) {
+    copyFileSync(options.bun, join(root, 'bin/bun'));
+    manifest.artifacts.push({ name: 'bin/bun', sha256: createHash('sha256')
+      .update(readFileSync(join(root, 'bin/bun'))).digest('hex') });
+  }
   writeFileSync(manifestPath, JSON.stringify(manifest));
   if (options.corruptNode) writeFileSync(nodePath, 'changed runtime bytes');
+  if (options.corruptBun) writeFileSync(join(root, 'bin/bun'), 'changed Bun bytes');
   const subject = fileURLToPath(new URL('./vm-release-runtime-policy.ts', import.meta.url));
   const runner = join(root, 'check-host.mjs');
   buildSync({ stdin: { resolveDir: root, loader: 'ts', contents: `
 import { assertVmReleaseApplicationRuntime } from ${JSON.stringify(subject)};
 try {
   const launch = await assertVmReleaseApplicationRuntime({ sidecarDir: process.argv[2],
-    hostname: '127.0.0.1', port: 45821 });
+    hostname: '127.0.0.1', port: 45821,
+    ${options.missingReader ? '' : `verifyApplicationRuntimeAcceptance: async ({ candidate, evidenceRef, role }) => {
+      ${options.mutateManifest ? `const fs = await import('node:fs'); fs.appendFileSync(process.argv[2] + '/build-provenance.json', ' ');` : ''}
+      return ${options.accepted ? `{ verdict: 'accepted', evidenceRef, role,
+        candidateSha256: candidate.candidateSha256, sourceSha: candidate.sourceSha,
+        binarySha256: candidate.bun.binarySha256, nodeBinarySha256: candidate.node.binarySha256,
+        entrypointSha256: candidate.entrypointSha256, validUntil: Date.now() + 60000 }` : 'null'};
+    },`}
+  });
   process.stdout.write(JSON.stringify({ runtime: launch.runtime, role: launch.role,
     source: launch.candidateSha256, env: launch.env }));
 } catch (error) { console.error(error.message); process.exitCode = 42; }
 ` }, outfile: runner, bundle: true, platform: 'node', format: 'esm', logLevel: 'silent' });
   // Run the verifier under the actual package path, or a byte-identical foreign
   // Node for the negative control. No database or host service is started.
-  const executable = options.foreignNode || options.corruptNode ? process.execPath : nodePath;
+  const executable = options.foreignNode || options.corruptNode || options.corruptBun ? process.execPath
+    : options.bun ? join(root, 'bin/bun') : nodePath;
   return { root, nodePath, result: spawnSync(executable, [runner, root], {
     env: { ...vmEnv }, encoding: 'utf8', timeout: 20_000,
   }) };
@@ -142,6 +160,26 @@ describe('ordinary package host runtime selection', () => {
     const { result } = runPackagedRuntime({ corruptNode: true });
     expect(result.status, result.stderr).toBe(42);
     expect(result.stderr).toContain('artifact bin/node hash mismatch');
+  }, 30_000);
+
+  // The native Bun matrix supplies a pinned interpreter explicitly. Source-only
+  // runs still cover declaration/reader refusal; no PATH executable is substituted.
+  const nativeBun = process.env.PAPERCUSP_RUNTIME_TEST_BUN;
+  it.skipIf(!nativeBun)('qualifies the real package-pinned Bun with retained Node and canonical callback', () => {
+    const { result } = runPackagedRuntime({ bun: nativeBun, accepted: true });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ role: 'host', runtime: { name: 'bun' } });
+  }, 30_000);
+  it.skipIf(!nativeBun).each([
+    ['unaccepted candidate', { accepted: false }, 'Matching current candidate acceptance'],
+    ['missing authority', { missingReader: true }, 'canonical Bun acceptance reader'],
+    ['foreign interpreter', { foreignNode: true, accepted: true }, 'package-pinned Bun'],
+    ['mutated manifest', { mutateManifest: true, accepted: true }, 'build provenance changed'],
+    ['corrupted Bun', { corruptBun: true }, 'artifact bin/bun hash mismatch'],
+  ] as const)('rejects real packaged Bun %s', (_label, options, message) => {
+    const { result } = runPackagedRuntime({ bun: nativeBun, ...options });
+    expect(result.status, result.stderr).toBe(42);
+    expect(result.stderr).toContain(message);
   }, 30_000);
 });
 

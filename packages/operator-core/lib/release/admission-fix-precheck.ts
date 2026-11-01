@@ -90,6 +90,8 @@ export interface FixPrecheckPopulation {
   signatureTestFiles: string[];
   /** Admitted paths that are test files and NOT in the signature — a fresh red here is an import. */
   admittedTestFiles: string[];
+  /** Explicitly admitted test-file deletions, including signature router aliases they remove. */
+  removedTestFiles?: string[];
   /** Signature kinds other than `test-file` present (each defeats the does-not-fix proof). */
   nonTestKinds: RepairSignatureKind[];
   /** True only when the signature is non-empty and consists solely of `test-file` entries. */
@@ -109,6 +111,8 @@ export function precheckPopulation(input: {
   admittedPaths: readonly string[];
   /** Dependency-selected files from the immutable admission, outside the signature. */
   affectedTestFiles?: readonly string[];
+  /** Test paths proved absent from the immutable built admission commit. */
+  removedTestFiles?: readonly string[];
   /**
    * P-007: the ordinary admission's radius. Its files never count as admitted, even when they
    * also appear in `admittedPaths` (the managed worker rebuilds from the persisted `files`).
@@ -137,6 +141,7 @@ export function precheckPopulation(input: {
     if (signatureTestFiles.includes(p) || admittedTestFiles.includes(p)) continue;
     admittedTestFiles.push(p);
   }
+  const removedTestFiles = [...new Set((input.removedTestFiles ?? []).map(normalize).filter(Boolean))];
   let radius: AdmissionRadius | undefined;
   if (input.radius) {
     const taken = new Set([...signatureTestFiles, ...admittedTestFiles]);
@@ -169,6 +174,7 @@ export function precheckPopulation(input: {
   return {
     signatureTestFiles,
     admittedTestFiles,
+    removedTestFiles,
     nonTestKinds: [...nonTestKinds],
     canProveDoesNotFix: signatureTestFiles.length > 0 && nonTestKinds.size === 0,
     ...(radius ? { radius } : {}),
@@ -177,7 +183,8 @@ export function precheckPopulation(input: {
     // and on a red workspace-task leg they are the whole workspace (measured: 6,602 files, days of
     // serial runs). The queue's verify round on the new repairHead measures them. They stay on
     // `radius.reportOnly` and the verdict reports them as `reportOnlyDeferred`.
-    files: [...signatureTestFiles, ...admittedTestFiles, ...(radius?.guarded ?? [])],
+    files: [...signatureTestFiles, ...admittedTestFiles, ...(radius?.guarded ?? [])]
+      .filter((file) => !removedTestFiles.includes(file)),
   };
 }
 
@@ -423,7 +430,12 @@ export function evaluateFixPrecheck(
     confirmation?: FixPrecheckConfirmation;
   } = {},
 ): FixPrecheckVerdict {
-  if (population.files.length === 0) return { ok: true, ran: false, reason: 'nothing-to-run', population };
+  if (
+    population.files.length === 0 &&
+    !population.signatureTestFiles.some((file) => (population.removedTestFiles ?? []).includes(file))
+  ) {
+    return { ok: true, ran: false, reason: 'nothing-to-run', population };
+  }
   if (!run.ran) {
     return run.reason === 'runner-failed'
       ? {
@@ -445,7 +457,9 @@ export function evaluateFixPrecheck(
   const passing = results.filter((r) => r.status === 'pass').map((r) => r.path);
   const failing = results.filter((r) => r.status === 'fail').map((r) => r.path);
   const unmeasured = results.filter((r) => r.status === 'unmeasured').map((r) => r.path);
-  const fixes = population.signatureTestFiles.filter((p) => passing.includes(p));
+  const fixes = population.signatureTestFiles.filter(
+    (p) => passing.includes(p) || (population.removedTestFiles ?? []).includes(p),
+  );
   // P-007: a guarded radius file that fails imports a red exactly like an admitted test file —
   // but only when it was green at the previous head. Report-only radius files sit in a leg the
   // signature already names red. green-main-ratchet-convergence-2026-10-17 P-006: the ADMISSION

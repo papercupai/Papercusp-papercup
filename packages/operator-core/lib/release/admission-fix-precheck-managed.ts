@@ -244,14 +244,19 @@ const defaultWorkerDeps: AdmissionPrecheckWorkerDeps = {
  * pre-check fail its own identity check on confirm and silently relaunch.
  */
 export function admissionPrecheckMeasurementIdentity(operation: FrozenRepairAdmissionPrecheck, signature: readonly RepairSignatureEntry[]): string {
-  const population = precheckPopulation({ signature, admittedPaths: operation.files });
+  const population = precheckPopulation({
+    signature,
+    admittedPaths: operation.files,
+    removedTestFiles: operation.removedTestFiles,
+  });
   const classification = {
     signatureTestFiles: [...population.signatureTestFiles].sort(),
     nonTestKinds: [...population.nonTestKinds].sort(),
   };
   return createHash('sha256').update(canonicalJson({ operationId: operation.operationId, candidate: operation.candidate,
     repairHead: operation.repairHead, builtCommit: operation.builtCommit, builtTree: operation.builtTree,
-    sourceCommit: operation.sourceCommit, files: operation.files, radius: operation.radius, classification,
+    sourceCommit: operation.sourceCommit, files: operation.files, removedTestFiles: operation.removedTestFiles,
+    radius: operation.radius, classification,
     testEnvironment: operation.testEnvironment })).digest('hex');
 }
 
@@ -387,7 +392,8 @@ async function runBoundedAdmissionPrecheck(
   };
   const unavailable = async (detail: string): Promise<AdmissionPrecheckWorkerOutcome> => {
     await finalize();
-    const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files, ...(operation.radius ? { radius: operation.radius } : {}) });
+    const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files,
+      removedTestFiles: operation.removedTestFiles, ...(operation.radius ? { radius: operation.radius } : {}) });
     const verdict = evaluateFixPrecheck(population, { ran: false, reason: 'runner-failed', detail });
     await deps.transition(input.queueTarget, fresh => {
       assertFresh(fresh);
@@ -418,7 +424,8 @@ async function runBoundedAdmissionPrecheck(
   const deferred = async (run: Extract<FixPrecheckRunResult, { reason: 'checkpoint-tree-busy' }>): Promise<AdmissionPrecheckWorkerOutcome> => {
     try {
       await finalize();
-      const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files, ...(operation.radius ? { radius: operation.radius } : {}) });
+      const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files,
+        removedTestFiles: operation.removedTestFiles, ...(operation.radius ? { radius: operation.radius } : {}) });
       const verdict = evaluateFixPrecheck(population, run);
       await deps.transition(input.queueTarget, fresh => {
         assertFresh(fresh);
@@ -491,7 +498,8 @@ async function runBoundedAdmissionPrecheck(
     }
     if (now() >= operation.expiresAtMs) return unavailable('bounded pre-check deadline expired before settlement');
     validateAdmissionPrecheckResults(operation.files, completed, true);
-    const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files, ...(operation.radius ? { radius: operation.radius } : {}) });
+    const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files,
+      removedTestFiles: operation.removedTestFiles, ...(operation.radius ? { radius: operation.radius } : {}) });
     const ordered = operation.files.map(file => completed.find(result => result.path === file)!);
     // D-004 ruling 1: pair every guarded red with a MEASURED previous-head verdict while the
     // operation's own test environment is still running, and persist it beside the aggregate.
@@ -583,6 +591,7 @@ export async function runAdmissionPrecheckWorker(
   const population = precheckPopulation({
     signature: queue.signature as readonly RepairSignatureEntry[],
     admittedPaths: operation.files,
+    removedTestFiles: operation.removedTestFiles,
     // P-007 (#D-037): without the persisted partition every radius file would count as admitted.
     ...(operation.radius ? { radius: operation.radius } : {}),
   });

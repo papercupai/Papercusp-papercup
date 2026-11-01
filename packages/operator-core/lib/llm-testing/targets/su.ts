@@ -683,6 +683,8 @@ class SuSession implements ChatSession {
   private readonly deltaViews = new Map<string, DeltaViewState>();
   private sawCompactionSummary = false;
   private readonly usedTools = new Set<string>();
+  private readonly activeTurns = new Set<AbortController>();
+  private closed = false;
 
   /** Both provider loops consume this exact snapshot before each request.
    * rawSseTape is already persisted losslessly as transcript_raw_zstd.
@@ -716,14 +718,31 @@ class SuSession implements ChatSession {
   }
 
   async close(): Promise<void> {
-    /* nothing to tear down — fully in-process */
+    this.closed = true;
+    // The scenario deadline can expire before this target's per-turn deadline.
+    // Abandon the provider work when the runner closes that scenario, rather
+    // than letting it overlap the next matrix arm.
+    for (const controller of this.activeTurns) {
+      controller.abort(new Error('su session closed'));
+    }
   }
 
   async send(input: TurnInput): Promise<TurnResult> {
+    if (this.closed) return errorTurn('su session closed', 0);
+    const controller = new AbortController();
+    this.activeTurns.add(controller);
+    try {
+      return await this.sendTurn(input, controller);
+    } finally {
+      this.activeTurns.delete(controller);
+    }
+  }
+
+  private async sendTurn(input: TurnInput, ctrl: AbortController): Promise<TurnResult> {
     const startMs = performance.now();
     const model = this.state.modelOverride ?? sutModel();
     if (isCodexResponsesModel(model)) {
-      return this.sendViaCodex(input, model, startMs);
+      return this.sendViaCodex(input, model, startMs, ctrl);
     }
     const result: TurnResult = {
       assistantText: '',
@@ -807,7 +826,6 @@ class SuSession implements ChatSession {
         .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     );
 
-    const ctrl = new AbortController();
     const TURN_CAP_MS = 240_000;
     const deadline = performance.now() + TURN_CAP_MS;
     const killer = setTimeout(() => ctrl.abort(), TURN_CAP_MS);
@@ -896,7 +914,7 @@ class SuSession implements ChatSession {
    * replayed before the next function result, including encrypted reasoning
    * requested by the transport helper; no Chat Completions request is used.
    */
-  private async sendViaCodex(input: TurnInput, model: string, startMs: number): Promise<TurnResult> {
+  private async sendViaCodex(input: TurnInput, model: string, startMs: number, ctrl: AbortController): Promise<TurnResult> {
     const result: TurnResult = {
       assistantText: '',
       toolCalls: [],
@@ -912,7 +930,6 @@ class SuSession implements ChatSession {
       .filter((part): part is string => Boolean(part))
       .join('\n\n');
     const replay: ResponsesInputItem[] = messagesToResponsesInput(input.messages);
-    const ctrl = new AbortController();
     const turnCapMs = 240_000;
     const deadline = performance.now() + turnCapMs;
     const killer = setTimeout(() => ctrl.abort(new Error(`su Codex turn timed out after ${turnCapMs}ms`)), turnCapMs);

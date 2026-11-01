@@ -1,0 +1,106 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
+
+const connection = vi.hoisted(() => ({ sql: null as unknown }));
+vi.mock('@papercusp/db-org', async original => ({
+  ...(await original<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: connection.sql }),
+}));
+// Activation prerequisites have their own real-PG suite. This suite controls only that
+// verdict so the production revision comparison can be falsified against real rows.
+vi.mock('./plan-activation-gate', () => ({ evaluateConversationActivationGate: async () => ({ satisfied: true, auditSeq: 1 }) }));
+
+import { checkExecutionPlan, checkPlanExecutionGuard, readExecutionPlanBindings } from './plan-execution-guard';
+import { toolGuardText } from '../../endpoint-route/routes/agent-mcp/identity-hook-sinks';
+import { controlAnchorKernelResolver } from '../../projected-tool-deps';
+
+const WS = 'private-plan-execution';
+const OWNER = 'su-private-builder';
+const binding = { planSlug: 'draft-feature', harnessSlug: 'project' };
+let db: FreshPgDb;
+
+beforeAll(async () => {
+  db = await createFreshPgDb('planexec');
+  connection.sql = db.sql;
+  // Narrow read projections of existing relations; all rows belong to this private DB.
+  await db.sql.unsafe(`
+    CREATE TABLE harness_shared.session_briefs (owner_id text, workspace_id text,
+      current_plan_slug text, harness_slug text, control_state jsonb, control_generation bigint);
+    CREATE TABLE harness_shared.adv_sessions (id bigint, coord_owner_id text, workspace_id text,
+      plan_slug text, launch_spec jsonb, started_at timestamptz, ended_at timestamptz, ended_by text);
+    CREATE TABLE harness_shared.plan_item_claims (owner text, workspace_id text, harness_slug text,
+      plan_slug text, expires_ts timestamptz);
+    CREATE TABLE harness_shared.work_items (taken_by text, workspace_id text, harness_slug text,
+      source_plan_slug text, status text);
+    CREATE TABLE harness_shared.harness_plans (workspace_id text, harness_slug text, plan_slug text,
+      content text, content_hash text, op_status text);
+    CREATE TABLE harness_shared.plan_audits (workspace_id text, harness_slug text, plan_slug text,
+      audit_kind text, audit_seq bigint, audited_plan_content_hash text, audited_plan_revision_id bigint);
+    CREATE TABLE harness_shared.plan_revisions (id bigint, workspace_id text, harness_slug text,
+      plan_slug text, content_snapshot text);
+  `);
+}, 120_000);
+afterAll(async () => { connection.sql = null; await db?.cleanup(); });
+beforeEach(async () => {
+  await db.sql.unsafe('TRUNCATE harness_shared.session_briefs, harness_shared.adv_sessions, harness_shared.plan_item_claims, harness_shared.work_items, harness_shared.harness_plans, harness_shared.plan_audits, harness_shared.plan_revisions');
+  await db.sql`INSERT INTO harness_shared.harness_plans VALUES (${WS}, 'project', 'draft-feature',
+    ${'---\ntitle: Draft\nstatus: draft\n---\n# Draft\n'}, 'draft-hash', NULL)`;
+});
+
+describe('real write-boundary bypass regression', () => {
+  it('denies native patches and shell writes despite an unrelated held WI and no worn identity', async () => {
+    await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${OWNER}, ${WS}, 'draft-feature', 'project',
+      ${db.sql.json({ scope: { plan: 'draft-feature', harness: 'project' } })}, 1)`;
+    await db.sql`INSERT INTO harness_shared.work_items VALUES (${OWNER}, ${WS}, 'project', NULL, 'wip')`;
+    for (const tool of ['apply_patch', 'exec_command']) {
+      const text = await toolGuardText({ ownerId: OWNER, workspaceId: WS,
+        call: { tool, input: { cmd: 'touch implementation.ts' }, client: 'codex' } }, async () => null);
+      expect(text).toContain('plan_execution_not_ready');
+      expect(text).toContain('plan_status:draft');
+    }
+    expect(await toolGuardText({ ownerId: OWNER, workspaceId: WS,
+      call: { tool: 'exec_command', input: { cmd: 'rg -n scope source.ts' }, client: 'codex' } }, async () => null)).toBe('');
+  });
+  it('refuses platform dispatch before the implementation handler executes', async () => {
+    // No session anchor: the linked work-item is independently authoritative.
+    await db.sql`INSERT INTO harness_shared.work_items VALUES (${OWNER}, ${WS}, 'project', 'draft-feature', 'wip')`;
+    const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'wrote source' }] }));
+    const tool: ProjectedTool = {
+      pluginName: 'fixture', description: 'private write', inputSchema: { type: 'object' }, capabilities: [],
+      expose: { mcp: { name: 'capability:write' } }, fn: handler,
+    } as ProjectedTool;
+    const result = await dispatchProjectedTool(tool, 'capability:write', {},
+      { workspaceId: WS, isSuperuser: true, uiClientId: OWNER, signal: new AbortController().signal,
+        log: () => {}, progress: () => {}, emit: () => {} }, { kernelEnforcement: controlAnchorKernelResolver });
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).toContain('plan_execution_not_ready');
+    expect(handler).not.toHaveBeenCalled();
+  });
+  it('retains launch and expired-but-held plan claims, scoped to the owner and workspace', async () => {
+    await db.sql`INSERT INTO harness_shared.adv_sessions VALUES (1,${OWNER},${WS},'draft-feature',NULL,now(),NULL,NULL)`;
+    await db.sql`INSERT INTO harness_shared.plan_item_claims VALUES (${OWNER},${WS},'project','claim-plan',now()-interval '1 day')`;
+    await db.sql`INSERT INTO harness_shared.plan_item_claims VALUES (${OWNER},'other-workspace','project','foreign-plan',now())`;
+    expect(await readExecutionPlanBindings(OWNER, WS)).toEqual(expect.arrayContaining([
+      { planSlug: 'draft-feature', harnessSlug: null }, { planSlug: 'claim-plan', harnessSlug: 'project' },
+    ]));
+    expect((await readExecutionPlanBindings(OWNER, WS)).some(row => row.planSlug === 'foreign-plan')).toBe(false);
+  });
+  it('allows genuinely unbound work, but never interprets an unreadable binding store as unbound', async () => {
+    const input = { ownerId: OWNER, workspaceId: WS, toolName: 'apply_patch', args: {} };
+    expect(await checkPlanExecutionGuard(input)).toBeNull();
+    await db.sql.unsafe('ALTER TABLE harness_shared.work_items RENAME TO unavailable_work_items');
+    try { expect(await checkPlanExecutionGuard(input)).toMatchObject({ blockers: ['plan_authority_unavailable'] }); }
+    finally { await db.sql.unsafe('ALTER TABLE harness_shared.unavailable_work_items RENAME TO work_items'); }
+  });
+  it('refuses materially changed scope against the immutable audited revision', async () => {
+    const before = '---\ntitle: Feature\nstatus: ready\n---\n# Feature\n## Requirements\nPreserve findings.\n';
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${before.replace('ready', 'active').replace('Preserve', 'Discard')}, content_hash='new', op_status='started'`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions VALUES (1,${WS},'project','draft-feature',${before})`;
+    await db.sql`INSERT INTO harness_shared.plan_audits VALUES (${WS},'project','draft-feature','activation',1,'old',1)`;
+    expect(await checkExecutionPlan(binding, WS)).toEqual(['activation_audit_stale']);
+  });
+  it('does not treat ready status as completion of the standard start process', async () => {
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${'---\ntitle: Draft\nstatus: ready\n---\n# Draft\n'}`;
+    expect(await checkExecutionPlan(binding, WS)).toEqual(['plan_not_started']);
+  });
+});

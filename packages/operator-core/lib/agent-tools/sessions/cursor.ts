@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export type SessionCursorTool = 'sessions:list' | 'sessions:search' | 'sessions:timeline';
+export type SessionCursorTool = 'sessions:list' | 'sessions:search' | 'sessions:timeline' | 'sessions:digest';
 
 const CURSOR_VERSION = 2;
 const MAX_CURSOR_OFFSET = 500;
@@ -8,6 +8,7 @@ const MAX_CURSOR_OFFSET = 500;
 export interface SessionCursorBounds {
   since?: string;
   until?: string;
+  snapshotAt?: string;
 }
 
 export interface SessionCursorAuthority {
@@ -124,8 +125,8 @@ export function decodeSessionCursor(
       bounds &&
       typeof bounds === 'object' &&
       !Array.isArray(bounds) &&
-      Object.keys(bounds).every((key) => key === 'since' || key === 'until') &&
-      [bounds.since, bounds.until].every((value) => value === undefined || (
+      Object.keys(bounds).every((key) => key === 'since' || key === 'until' || key === 'snapshotAt') &&
+      [bounds.since, bounds.until, bounds.snapshotAt].every((value) => value === undefined || (
         typeof value === 'string' && Number.isFinite(Date.parse(value))
       ));
     if (

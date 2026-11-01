@@ -105,7 +105,12 @@ interface FingerprintRow {
  * The writer and the reader share this one query, so the two sides cannot compute
  * the fingerprint differently.
  */
-async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: readonly string[]): Promise<FingerprintRow[]> {
+async function readFingerprintRows(
+  sql: Sql,
+  workspaceId: string,
+  planSlugs: readonly string[],
+  evaluatorBuildSha: string | null,
+): Promise<FingerprintRow[]> {
   const slugs = [...new Set(planSlugs)];
   if (slugs.length === 0) return [];
   return sql<FingerprintRow[]>`
@@ -173,10 +178,11 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
            o.satisfied, o.code, o.skipped, o.message, o.rubric_id, o.graded_by,
            o.fingerprint AS observed_fingerprint, o.observed_at, o.build_sha
       FROM current_fp AS fp
-      LEFT JOIN harness_shared.plan_closure_observations AS o
+      LEFT JOIN harness_shared.plan_closure_observations_by_build AS o
         ON o.workspace_id = ${workspaceId}
        AND o.harness_slug = fp.harness_slug
-       AND o.plan_slug = fp.plan_slug`;
+       AND o.plan_slug = fp.plan_slug
+       AND o.build_sha = ${evaluatorBuildSha}`;
 }
 
 /** Fingerprint keys whose values differ, for a `stale` detail that names its cause. */
@@ -279,10 +285,10 @@ export async function readPlanClosureObservations(args: {
   now?: Date;
 }): Promise<Map<string, PlanClosureObservationRead>> {
   const sql = args.sql ?? getOrgPg().sql;
+  const evaluatorBuildSha = getBuildInfo().sha?.trim().toLowerCase() ?? null;
   const rows = await readFingerprintRows(sql, args.workspaceId,
-    [...args.planSlugs, ...(args.planRefs ?? []).map((ref) => ref.planSlug)]);
+    [...args.planSlugs, ...(args.planRefs ?? []).map((ref) => ref.planSlug)], evaluatorBuildSha);
   const now = args.now ?? new Date();
-  const evaluatorBuildSha = getBuildInfo().sha;
   const out = new Map<string, PlanClosureObservationRead>();
   for (const planSlug of new Set(args.planSlugs)) {
     out.set(planSlug, judgePlanClosureObservation(planSlug, rows.filter((row) => row.plan_slug === planSlug), now,
@@ -310,21 +316,54 @@ export async function beginPlanClosureObservation(planSlug: string): Promise<{
   record(harnessSlug: string | undefined, verdict: PlanClosureGateFields & { buildProvenance?: { sha: string | null } }): Promise<void>;
 }> {
   const observedAt = new Date();
-  let target: { workspaceId: string; sql: Sql; rows: FingerprintRow[] } | null = null;
+  let target: { workspaceId: string; sql: Sql; rows: FingerprintRow[]; evaluatorBuildSha: string | null } | null = null;
   try {
     const workspaceId = activeWorkspaceId();
     const { sql } = getOrgPg();
-    target = { workspaceId, sql, rows: await readFingerprintRows(sql, workspaceId, [planSlug]) };
+    const evaluatorBuildSha = getBuildInfo().sha?.trim().toLowerCase() ?? null;
+    target = {
+      workspaceId,
+      sql,
+      evaluatorBuildSha,
+      rows: await readFingerprintRows(sql, workspaceId, [planSlug], evaluatorBuildSha),
+    };
   } catch {
     target = null;
   }
   return {
     async record(harnessSlug, verdict) {
       if (!harnessSlug || !target) return;
-      const { workspaceId, sql, rows } = target;
+      const { workspaceId, sql, rows, evaluatorBuildSha } = target;
+      const row = rows.find((r) => r.harness_slug === harnessSlug);
+      if (!row) return;
+      // Keep one cache row per evaluator build. Older release binaries still
+      // UPSERT the legacy table below, so this cache must never share their key.
+      if (evaluatorBuildSha && /^[a-f0-9]{7,64}$/.test(evaluatorBuildSha)) {
+        try {
+          await sql`
+            INSERT INTO harness_shared.plan_closure_observations_by_build
+              (workspace_id, harness_slug, plan_slug, build_sha, satisfied, code, skipped, message,
+               rubric_id, graded_by, fingerprint, observed_at)
+            VALUES (${workspaceId}, ${harnessSlug}, ${planSlug}, ${evaluatorBuildSha}, ${verdict.satisfied},
+                    ${verdict.code ?? null}, ${verdict.skipped ?? null}, ${verdict.message ?? null},
+                    ${verdict.rubricId ?? null}, ${verdict.gradedBy ?? null},
+                    ${sql.json(row.fingerprint as never)}, ${observedAt})
+            ON CONFLICT (workspace_id, harness_slug, plan_slug, build_sha) DO UPDATE SET
+              satisfied = EXCLUDED.satisfied,
+              code = EXCLUDED.code,
+              skipped = EXCLUDED.skipped,
+              message = EXCLUDED.message,
+              rubric_id = EXCLUDED.rubric_id,
+              graded_by = EXCLUDED.graded_by,
+              fingerprint = EXCLUDED.fingerprint,
+              observed_at = EXCLUDED.observed_at
+            WHERE harness_shared.plan_closure_observations_by_build.observed_at <= EXCLUDED.observed_at`;
+        } catch {
+          // A failed build-specific cache write leaves the legacy mirror intact;
+          // the current evaluator will treat a missing row as unreadable and retry.
+        }
+      }
       try {
-        const row = rows.find((r) => r.harness_slug === harnessSlug);
-        if (!row) return;
         await sql`
           INSERT INTO harness_shared.plan_closure_observations
             (workspace_id, harness_slug, plan_slug, satisfied, code, skipped, message, rubric_id, graded_by,

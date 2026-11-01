@@ -239,6 +239,67 @@ describe('runProjectHistoryRefreshAction health bookkeeping', () => {
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]).toMatchObject({ success: true, code: 0, output: '/repo/history.ts' });
   });
+
+  it('surfaces a generator rejection and records its first causal error', async () => {
+    const outcomes: ProjectHistoryHealthOutcome[] = [];
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(runProjectHistoryRefreshAction(ctx(validConfig), {
+        env: { PATH: '/empty' },
+        exists: () => true,
+        resolveCliBin: () => '/cli',
+        resolvePtool: () => '/ptool',
+        runGenerate: async () => { throw new Error('first causal failure'); },
+        recordHealth: async (_ctx, outcome) => { outcomes.push(outcome); },
+      })).resolves.toBeUndefined();
+
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('first causal failure'));
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toMatchObject({
+        success: false,
+        timedOut: false,
+        code: 1,
+        output: '/repo/history.ts',
+        reason: expect.stringContaining('first causal failure'),
+        stderr: expect.stringContaining('first causal failure'),
+      });
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('retains the first causal generator error instead of a trailing wrapper message', async () => {
+    const outcomes: ProjectHistoryHealthOutcome[] = [];
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runProjectHistoryRefreshAction(ctx(validConfig), {
+        env: { PATH: '/empty' },
+        exists: () => true,
+        resolveCliBin: () => '/cli',
+        resolvePtool: () => '/ptool',
+        runGenerate: async () => ({
+          code: 1,
+          stdout: '',
+          stderr: 'Error: first causal failure\ntrace detail\nSee target tool JSON arguments or create a new invocation.',
+          timedOut: false,
+        }),
+        recordHealth: async (_ctx, outcome) => { outcomes.push(outcome); },
+      });
+
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toMatchObject({
+        success: false,
+        reason: 'exited 1: Error: first causal failure',
+      });
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining('first failure detail: exited 1: Error: first causal failure'),
+      );
+      expect(warning).not.toHaveBeenCalledWith(expect.stringContaining('target tool JSON arguments'));
+    } finally {
+      warning.mockRestore();
+    }
+  });
 });
 
 describe('decideProjectHistoryHealthUpdate', () => {
@@ -249,6 +310,16 @@ describe('decideProjectHistoryHealthUpdate', () => {
     const u = decideProjectHistoryHealthUpdate(PROJECT_HISTORY_HEALTH_DEFAULT, false, T, at);
     expect(u.next.consecutiveFailures).toBe(1);
     expect(u.shouldAlert).toBe(false);
+  });
+
+  it('retains the first failure cause in health state across later successes', () => {
+    const failed = decideProjectHistoryHealthUpdate(
+      PROJECT_HISTORY_HEALTH_DEFAULT, false, T, at, 'exited 1: Error: original cause',
+    );
+    expect(failed.next.lastFailureReason).toBe('exited 1: Error: original cause');
+    const recovered = decideProjectHistoryHealthUpdate(failed.next, true, T, at + 1);
+    expect(recovered.next.consecutiveFailures).toBe(0);
+    expect(recovered.next.lastFailureReason).toBe('exited 1: Error: original cause');
   });
 
   it('alerts once the streak reaches the threshold', () => {

@@ -16,6 +16,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
+vi.mock('../../serving-build', () => ({ getServingBuild: vi.fn() }));
+vi.mock('../../serving-generation', () => ({ readServingGeneration: vi.fn() }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({
     ownerId: 'su-caller-own-id',
@@ -51,6 +53,8 @@ vi.mock('../../carry-note', () => ({
 }));
 
 import { _resetStoreIdentityForTests, pinOrVerifyStoreIdentity } from '@papercusp/db-org';
+import { getServingBuild } from '../../serving-build';
+import { readServingGeneration } from '../../serving-generation';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { readLatestLoopTransition } from '../../harness/routines/loop-transition-log';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
@@ -63,6 +67,15 @@ const readLatestLoopTransitionMock = readLatestLoopTransition as unknown as Retu
 const getLoopCarryNoteWithMetaMock = getLoopCarryNoteWithMeta as unknown as ReturnType<typeof vi.fn>;
 const listWakeAwaitsMock = listWakeAwaitsForSubscriber as unknown as ReturnType<typeof vi.fn>;
 const probeWakeReachabilityMock = probeWakeReachability as unknown as ReturnType<typeof vi.fn>;
+const getServingBuildMock = getServingBuild as unknown as ReturnType<typeof vi.fn>;
+const readServingGenerationMock = readServingGeneration as unknown as ReturnType<typeof vi.fn>;
+const SERVING_GENERATION = {
+  state: 'known',
+  revision: 'serving-generation-v1:test',
+  buildSha: 'abcdef123456',
+  appliedMigrationDigest: 'migration-digest-test',
+  toolRegistryRevision: 'tool-registry-test',
+};
 
 const OURS = { systemIdentifier: '7635091775813704249', database: 'papercusp' };
 const IMPOSTOR = { systemIdentifier: '7111222333444555666', database: 'papercusp' };
@@ -97,7 +110,7 @@ describe('loop:status MCP effect metadata', () => {
 });
 
 describe('loop:status concurrency (EI-21869094231635430)', () => {
-  it('runs the four independent probes concurrently, not as a sequential sum of round-trips', async () => {
+  it('runs the five independent probes concurrently, not as a sequential sum of round-trips', async () => {
     getLoopStatusMock.mockResolvedValue({
       name: 'loop-su-caller-own-id',
       active: true,
@@ -141,19 +154,23 @@ describe('loop:status concurrency (EI-21869094231635430)', () => {
       started.push('pendingAwaits');
       return awaitsD.promise;
     });
+    readServingGenerationMock.mockImplementation(() => {
+      started.push('servingGeneration');
+      return Promise.resolve(SERVING_GENERATION);
+    });
 
     const resultPromise = run();
 
     // Flush microtasks so the handler advances past `await getLoopStatus(...)` and
     // evaluates the Promise.all argument array — which synchronously INVOKES all
-    // four dependent functions before any of them settles. A sequential-await
+    // five dependent functions before any of them settles. A sequential-await
     // version (the pre-fix shape) would only have invoked the FIRST of these at
     // this checkpoint, since the second call site is gated behind `await`ing the
     // first's promise.
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(started.sort()).toEqual(['carryNote', 'pendingAwaits', 'reachability', 'transition']);
+    expect(started.sort()).toEqual(['carryNote', 'pendingAwaits', 'reachability', 'servingGeneration', 'transition']);
 
     transitionD.resolve({ status: 'none' });
     carryNoteD.resolve({ note: null, updatedAtMs: null });
@@ -304,6 +321,10 @@ beforeEach(() => {
   listWakeAwaitsMock.mockResolvedValue({ totalCount: 0, sample: [] });
   readLatestLoopTransitionMock.mockReset();
   readLatestLoopTransitionMock.mockResolvedValue({ status: 'none' });
+  getServingBuildMock.mockReset();
+  getServingBuildMock.mockReturnValue('main');
+  readServingGenerationMock.mockReset();
+  readServingGenerationMock.mockResolvedValue(SERVING_GENERATION);
 });
 
 /**
@@ -408,6 +429,30 @@ describe('loop:status rewake verdict (P-013)', () => {
     expect(out.rewake).toEqual({ rewakeGuaranteed: false, reason: 'last-fire-no-loop-turn' });
   });
 
+  it('identifies the serving runtime and rejects an inbox-only wake without a loop turn', async () => {
+    getServingBuildMock.mockReturnValue('staging');
+    readServingGenerationMock.mockResolvedValue(SERVING_GENERATION);
+    getLoopStatusMock.mockResolvedValue({
+      ...armed,
+      lastFiredAt: '2026-10-31T23:16:53.416Z',
+      lastWakeStatus: 'delivered',
+      lastWakeChannel: 'inbox',
+      lastWakeCreatedAt: '2026-10-31T23:17:42.977Z',
+      lastWakeAt: '2026-10-31T23:25:59.136Z',
+      lastLoopTurnAt: null,
+      lastSuppressedWakeLoopTurnAt: null,
+      lastDeliveryOutcome: 'loop-delivered-wake-no-loop-turn',
+      fireStarved: false,
+      turnsStalled: false,
+    });
+
+    const out = await run();
+
+    expect(out.servingBuild).toBe('staging');
+    expect(out.servingGeneration).toEqual(SERVING_GENERATION);
+    expect(out.rewake).toEqual({ rewakeGuaranteed: false, reason: 'last-fire-no-loop-turn' });
+  });
+
   it('restores the re-wake guarantee when a delayed loop turn completes after that fire', async () => {
     getLoopStatusMock.mockResolvedValue({
       ...armed,
@@ -445,6 +490,8 @@ describe('loop:status rewake verdict (P-013)', () => {
   it('documents the field in the tool returns guidance', () => {
     const returns = (statusTool as unknown as { guidance?: { returns?: string } }).guidance?.returns ?? '';
     expect(returns).toContain('rewakeGuaranteed');
+    expect(returns).toContain('servingBuild');
+    expect(returns).toContain('servingGeneration');
     expect(returns).toContain('last-fire-parked');
     expect(returns).toContain('wake-unreachable');
     expect(returns).toContain('lastFailedFireLoopTurnCompletedAt');

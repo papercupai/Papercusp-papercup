@@ -21,6 +21,8 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import { parsePlan, type ParsedPlan, type PlanItem } from './parser';
 import type { PlanIndexItem, PlanIndexDecision } from './derive-index';
+import { readPlanLineNodes } from './plan-line-graph';
+import { renderPlanLines } from './plan-line-render';
 import { hashPlanContent } from './content-hash';
 import { VALID_PLAN_SLUG } from './run-instance-slug';
 import { summarizeForcedPast, type ForcedPastSummary } from './forced-past-stamp';
@@ -730,6 +732,11 @@ export async function getPlanRow(
            AND plan_slug = ${slug}
       `;
       mark('query');
+      if (rows[0]) {
+        const nodes = await readPlanLineNodes(tx, { workspaceId, harnessSlug, slug });
+        rows[0].items = nodes;
+        rows[0].content = renderPlanLines(rows[0].content, nodes);
+      }
       return rows;
     }, timings ? { onAcquisitionPhase: (phase) => {
       const now = performance.now();
@@ -810,23 +817,20 @@ export async function getPlanItemRow(
   if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   const rows = await withWorkspace(workspaceId, async (tx) => {
-    return tx<Array<{
+    const rows = await tx<Array<{
       plan_slug: string;
       archived: boolean;
       is_legacy: boolean;
       items: unknown;
       content: string | null;
     }>>`
-      SELECT plan_slug, archived, is_legacy, items,
-             CASE WHEN is_legacy THEN ''
-                  WHEN jsonb_typeof(items) = 'array' THEN
-                    CASE WHEN jsonb_array_length(items) > 0 THEN '' ELSE content END
-                  ELSE content
-             END AS content
+      SELECT plan_slug, archived, is_legacy, '[]'::jsonb AS items, '' AS content
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          AND plan_slug = ${slug}
     `;
+    if (rows[0]) rows[0].items = await readPlanLineNodes(tx, { workspaceId, harnessSlug, slug });
+    return rows;
   });
   const row = rows[0];
   if (!row) return null;
@@ -1194,11 +1198,11 @@ export async function listPlanIndexRows(
       // includeItems:false yields an empty array rather than NULL so `row.items.length`
       // stays safe; the heavy fragment emits typed NULLs so the row shape — and therefore
       // rowFromDb — is identical whether or not the caller opted in.
-      const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
+      const itemsCol = tx`'[]'::jsonb AS items`;
       const heavyCols = opts.heavyFields
         ? tx`now_state, now_note, template_data, input_schema,`
         : tx`NULL::text AS now_state, NULL::jsonb AS now_note, NULL::jsonb AS template_data, NULL::jsonb AS input_schema,`;
-      return tx<Array<Omit<PlanDbRow, 'content'>>>`
+      const plans = await tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
@@ -1236,6 +1240,17 @@ export async function listPlanIndexRows(
          ${orderClause}
          LIMIT ${filters.limit}
       `;
+      if (opts.includeItems !== false && plans.length > 0) {
+        const nodes = await readPlanLineNodes(tx, { workspaceId, harnessSlug, slug: plans.map((p) => p.plan_slug) });
+        const byPlan = new Map<string, PlanIndexItem[]>();
+        for (const node of nodes) {
+          const items = byPlan.get(node.planSlug) ?? [];
+          items.push(node);
+          byPlan.set(node.planSlug, items);
+        }
+        for (const plan of plans) plan.items = byPlan.get(plan.plan_slug) ?? [];
+      }
+      return plans;
     });
     return rows.map((r) => {
       const { content: _content, ...rest } = rowFromDb({ ...r, content: '' } as PlanDbRow);
@@ -1683,8 +1698,7 @@ export {
  * lane validation must all agree (EI-356).
  */
 export function planItemsForRow(row: Pick<PlanRow, 'items' | 'content'>): PlanItem[] {
-  if (row.items.length > 0) {
-    return row.items.map((i) => ({
+  return row.items.map((i) => ({
       id: i.id,
       text: i.text,
       storedStatus: i.status as PlanItem['storedStatus'],
@@ -1694,7 +1708,5 @@ export function planItemsForRow(row: Pick<PlanRow, 'items' | 'content'>): PlanIt
       phase: i.phase,
       lineNumber: 0,
       rawLine: '',
-    }));
-  }
-  return parsePlan(row.content).items;
+  }));
 }

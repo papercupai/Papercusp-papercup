@@ -103,6 +103,8 @@ import {
   classifySpecEvidenceCurrentness,
   evidenceMeasurementSchema,
   listSpecEvidence,
+  readCurrentOperationalArtifacts,
+  readCurrentOperationalArtifactDisclosures,
   type ListSpecEvidenceDiagnostics,
   measureAndPinEvidenceForScope,
   measureAndPinRepoFilesEvidenceAtRoot,
@@ -119,6 +121,46 @@ import {
   supersedeSpecEvidenceAtRevisionBatch,
   testRunEnvironmentUnprovenWarning,
 } from './spec-evidence-store';
+
+describe('current operational artifact byte fence', () => {
+  let root: string;
+  let commit: string;
+  const content = JSON.stringify({ kind: 'operational-test-evidence', disclosures: ['installed matrix remains open'] });
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), 'operational-artifact-'));
+    await writeFile(join(root, 'candidate.json'), content);
+    execFileSync('git', ['init', '-q', root]);
+    execFileSync('git', ['-C', root, 'add', 'candidate.json']);
+    execFileSync('git', ['-C', root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      '-c', 'commit.gpgsign=false', 'commit', '-qm', 'candidate']);
+    commit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  });
+  beforeEach(async () => { h.measurementRoot = root; h.fixtureMeasurementRoot = '';
+    await writeFile(join(root, 'candidate.json'), content); });
+  afterAll(async () => { await rm(root, { recursive: true, force: true }); });
+  const row = () => ({ id: 1, evidenceKind: 'operational' as const, evidenceRef: 'candidate.json',
+    details: { currentMeasurement: { kind: 'repo-files', sourcePaths: ['candidate.json'] } },
+    currentness: { overall: 'current' }, serverMeasurement: { status: 'measured', measuredAtCommit: commit } });
+  it('reads bytes matching the measured commit and preserves disclosure delivery', async () => {
+    expect((await readCurrentOperationalArtifacts('workspace-test', 'papercusp', [row()])).get(1))
+      .toMatchObject({ artifact: JSON.parse(content), measuredAtCommit: commit });
+    expect((await readCurrentOperationalArtifactDisclosures('workspace-test', 'papercusp', [row()])).get(1))
+      .toEqual(['Artifact disclosures: installed matrix remains open']);
+  });
+  it('rejects a working-tree replacement despite a current measurement row', async () => {
+    await writeFile(join(root, 'candidate.json'), JSON.stringify({ accepted: true }));
+    expect((await readCurrentOperationalArtifacts('workspace-test', 'papercusp', [row()])).get(1))
+      .toMatchObject({ error: expect.stringContaining('server-measured committed bytes') });
+  });
+  it('excludes stale, opaque and unmeasured evidence', async () => {
+    const stale = row(); stale.currentness.overall = 'stale';
+    const opaque = row(); opaque.details.currentMeasurement.sourcePaths = ['different.json'];
+    const unmeasured = row(); unmeasured.serverMeasurement.status = 'unknown';
+    for (const value of [stale, opaque, unmeasured]) {
+      expect(await readCurrentOperationalArtifacts('workspace-test', 'papercusp', [value])).toEqual(new Map());
+    }
+  });
+});
 
 describe('test-run environment-unproven bind warning (EI-27081440896857039)', () => {
   const base = {

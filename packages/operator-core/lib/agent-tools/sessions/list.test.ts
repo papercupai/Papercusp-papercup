@@ -66,26 +66,50 @@ interface ParsedResult {
   }>;
 }
 
-/** A stand-in for ctx.tx — each tagged-template call returns the next queued
- *  result set. The handler calls it once for the main owner-filtered query and,
- *  when the fallback fires, once more for the owner-independent aggregate. */
+/** Pool/transaction stand-ins for ctx.tx — each tagged-template call returns
+ *  the next queued result set and records which connection scope executed it. */
 function makeTx(results: unknown[][]) {
   let i = 0;
+  let queryCallCount = 0;
   const queries: string[] = [];
+  const queryScopes: string[] = [];
   const unsafeQueries: string[] = [];
-  const tx = vi.fn(async (strings: unknown) => {
-    if (Array.isArray(strings)) queries.push(strings.join(' '));
-    const r = results[i] ?? [];
-    i += 1;
-    return r;
-  });
-  Object.assign(tx, {
-    unsafe: vi.fn(async (query: string) => {
-      unsafeQueries.push(query);
-      return [];
-    }),
-  });
-  return { tx, calledTimes: () => tx.mock.calls.length, queries, unsafeQueries };
+  const poolUnsafeQueries: string[] = [];
+  const transactionUnsafeQueries: string[] = [];
+  const executor = (scope: 'pool' | 'transaction') => {
+    const tx = vi.fn(async (strings: unknown) => {
+      queryCallCount += 1;
+      if (Array.isArray(strings)) {
+        queries.push(strings.join(' '));
+        queryScopes.push(scope);
+      }
+      const r = results[i] ?? [];
+      i += 1;
+      return r;
+    });
+    Object.assign(tx, {
+      unsafe: vi.fn(async (query: string) => {
+        unsafeQueries.push(query);
+        (scope === 'pool' ? poolUnsafeQueries : transactionUnsafeQueries).push(query);
+        return [];
+      }),
+    });
+    return tx;
+  };
+  const transactionTx = executor('transaction');
+  const tx = executor('pool');
+  const begin = vi.fn(async (callback: (transaction: typeof transactionTx) => unknown) => callback(transactionTx));
+  Object.assign(tx, { begin });
+  return {
+    tx,
+    calledTimes: () => queryCallCount,
+    queries,
+    queryScopes,
+    unsafeQueries,
+    poolUnsafeQueries,
+    transactionUnsafeQueries,
+    beginCalls: () => begin.mock.calls.length,
+  };
 }
 
 function callTool(args: Record<string, unknown>, tx: unknown) {
@@ -97,13 +121,17 @@ function callTool(args: Record<string, unknown>, tx: unknown) {
 }
 
 async function run(args: Record<string, unknown>, results: unknown[][]) {
-  const { tx, calledTimes, queries, unsafeQueries } = makeTx(results);
+  const { tx, calledTimes, queries, queryScopes, unsafeQueries, poolUnsafeQueries, transactionUnsafeQueries, beginCalls } = makeTx(results);
   const res = await callTool(args, tx);
   return {
     parsed: JSON.parse(res.content[0].text) as ParsedResult,
     txCalls: calledTimes(),
+    beginCalls: beginCalls(),
     queries,
+    queryScopes,
     unsafeQueries,
+    poolUnsafeQueries,
+    transactionUnsafeQueries,
   };
 }
 
@@ -280,7 +308,7 @@ describe('sessions:list EI-11403 active-session fallback', () => {
 
 describe('sessions:list historical bounded census', () => {
   it('sets a transaction-local statement deadline before the cross-workspace scan', async () => {
-    const { parsed, txCalls, unsafeQueries } = await run(
+    const { parsed, txCalls, beginCalls, unsafeQueries, poolUnsafeQueries, transactionUnsafeQueries, queryScopes } = await run(
       {
         mode: 'historical',
         since: '2026-07-13T13:30:00Z',
@@ -291,9 +319,13 @@ describe('sessions:list historical bounded census', () => {
 
     expect(parsed.ok).toBe(true);
     expect(txCalls).toBe(1);
+    expect(beginCalls).toBe(1);
     expect(unsafeQueries).toEqual([
       `SET LOCAL statement_timeout = ${HISTORICAL_CENSUS_STATEMENT_TIMEOUT_MS}`,
     ]);
+    expect(poolUnsafeQueries).toEqual([]);
+    expect(transactionUnsafeQueries).toEqual(unsafeQueries);
+    expect(queryScopes).toEqual(['transaction']);
   });
 
   it('requires an explicit finite [since, until) window', async () => {

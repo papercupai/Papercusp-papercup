@@ -344,13 +344,15 @@ function validNativeToolAddress(value: unknown): value is SuNativeToolAddress {
     typeof a.nativeSessionIdFingerprint === 'string' && /^[a-f0-9]{64}$/.test(a.nativeSessionIdFingerprint);
 }
 
-/** No descriptor-only rehydration: the process-local admitted turn belongs to
- * this exact live Codex runtime, never another incarnation of its chat. */
+/** No descriptor-only rehydration: dispatch belongs to this exact live runtime,
+ * never another incarnation of its chat. Accepted-input principals are
+ * host-local too; transport ownership does not grant a funded turn or receipt. */
 function hasLocalNativeToolHost(address: SuNativeToolAddress): boolean {
   const host = getRegisteredSuSessionHost({ workspaceId: address.workspaceId, advSessionId: address.advSessionId });
   if (!host?.hasRuntime()) return false;
   const descriptor = host.descriptor(), identity = descriptor.identity;
-  return !TERMINAL_STATES.has(descriptor.lifecycle) && identity.backend === 'codex' &&
+  return !TERMINAL_STATES.has(descriptor.lifecycle) &&
+    (identity.backend === 'codex' || identity.backend === 'claude' || identity.backend === 'omp') &&
     identity.workspaceId === address.workspaceId && identity.advSessionId === address.advSessionId &&
     identity.ownerId === address.ownerId &&
     createHash('sha256').update(identity.nativeSessionId, 'utf8').digest('hex') === address.nativeSessionIdFingerprint;

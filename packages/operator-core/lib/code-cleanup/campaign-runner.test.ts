@@ -6,12 +6,13 @@
  * unplannable batches never start, and a throttled campaign starts nothing.
  */
 import { describe, expect, it } from 'vitest';
+import { coverageHash } from '@papercusp/test-config/test-coverage-map';
 import type { HistoryCommit } from '../code-intelligence/change-history';
 import type { AdmissionDeps } from './admission';
 import { cleanupBatchRecord, linesRemovedFromNumstat, planCampaignRound, type CampaignRoundDeps, type CampaignRoundInput } from './campaign-runner';
-import type { CoverageView, ExecutorMember } from './executor';
+import { coverageViewFromScope, executorBatchFromTriage, nextExecutorStep, type CoverageView, type ExecutorMember } from './executor';
 import { initialThrottleState, type CampaignThrottleState, type GateRed, type LandedBatch } from './throttle';
-import type { DivergenceBug, TriageFamily } from './triage';
+import { triageCloneFamilies, type DivergenceBug, type TriageFamily } from './triage';
 
 const END = '2026-10-01T00:00:00.000Z';
 const NOW = new Date(END);
@@ -113,6 +114,36 @@ const input = (over: Partial<CampaignRoundInput> = {}): CampaignRoundInput => ({
 });
 
 describe('planCampaignRound (P-009, R-8)', () => {
+  it.each([
+    { name: 'body hits without declaration hits', hits: [4, 5], admitted: true },
+    { name: 'hits outside the function only', hits: [1, 1], admitted: false },
+  ])('uses function ranges for source-bound coverage: $name', async ({ hits, admitted }) => {
+    const testFile = 'src/sum.test.ts', testHash = coverageHash('sum characterization test');
+    const paths = [A1, A2];
+    const currentHashes = new Map([[testFile, testHash], ...paths.map(path => [path, coverageHash(FILES[path]!)] as const)]);
+    const measured = await coverageViewFromScope('/repo', {
+      currentHashes, population: [testFile],
+      snapshots: [{ schemaVersion: 1, root: '/repo', scopeRoot: '/repo', testFile,
+        testSha256: testHash, observedAt: new Date().toISOString(), populationComplete: false,
+        population: [{ path: testFile, sha256: testHash }],
+        sources: paths.map((path, i) => ({ path, sha256: currentHashes.get(path)!,
+          executable: [hits[i]!], covered: [hits[i]!] })),
+      }],
+    });
+    const family: TriageFamily = { ...sumFamily,
+      members: sumFamily.members.map((m, i) => ({ ...m, endLine: i === 0 ? 7 : 8 })),
+    };
+    const { deps } = harness();
+    const triaged = await triageCloneFamilies({ families: [family], history: history(), divergenceBug: deps.divergenceBug });
+    const step = await nextExecutorStep({ batch: executorBatchFromTriage(triaged.batches[0]!),
+      aggressiveness: 'safe', coverage: measured }, deps.executor);
+    expect(step.kind).toBe(admitted ? 'refactor' : 'exclude');
+    const result = await planCampaignRound(input({ families: [family], coverage: measured }), deps);
+    expect(result.started).toHaveLength(admitted ? 1 : 0);
+    expect(result.withheldUnits).toHaveLength(admitted ? 0 : 1);
+    if (!admitted) expect(result.withheldUnits[0]?.reason).toBe('uncovered-under-safe');
+  });
+
   it('files the diverged pair before locking, then starts the covered batch with its edits', async () => {
     const { deps, log } = harness();
     const r = await planCampaignRound(input(), deps);

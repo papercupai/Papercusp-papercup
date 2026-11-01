@@ -2200,9 +2200,9 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
     expect(JSON.parse(JSON.stringify(payload))).toEqual(payload);
     expect(bounded.truncated).toBe(true);
-    expect(bounded.hits.length).toBeLessThan(hits.length);
+    expect(bounded.hits.map(hit => hit.tool)).toEqual(hits.map(hit => hit.tool));
     expect(bounded.omittedTools).toEqual(exactNames.filter((name) => !bounded.hits.some((hit) => hit.tool === name)));
-    expect(bounded.omittedTools.length).toBeGreaterThan(0);
+    expect(bounded.omittedTools).toEqual([]);
   });
 
   it('does not return a single hit that exceeds the discovery result budget', () => {
@@ -2226,7 +2226,8 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
 
     expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
     expect(JSON.parse(JSON.stringify(payload))).toEqual(payload);
-    expect(bounded.hits).toEqual([]);
+    expect(bounded.hits).toHaveLength(1);
+    expect(bounded.hits[0]).toMatchObject({ tool: 'tool:large', argSchema: '…' });
     expect(bounded.truncated).toBe(true);
   });
 
@@ -2323,7 +2324,7 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
 
     expect(requested).toEqual(names.slice(0, 5));
     expect(ranked).toHaveLength(2);
-    expect(ranked.some((hit) => hit.tool === 'work_items:link')).toBe(false);
+    expect(ranked.some((hit) => hit.tool === 'scheduler:get_next')).toBe(false);
     expect(selected.slice(0, requested.length).map((hit) => hit.tool)).toEqual(requested);
   });
 

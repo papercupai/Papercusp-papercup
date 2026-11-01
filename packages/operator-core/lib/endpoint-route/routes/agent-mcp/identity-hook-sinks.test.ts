@@ -9,6 +9,8 @@
  * The guard predicate is the real `evaluatePreToolGuards`; only the reads are seams.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+const planExecutionGuard = vi.hoisted(() => vi.fn());
+vi.mock('../../../agent-tools/plans/plan-execution-guard', () => ({ checkPlanExecutionGuard: planExecutionGuard }));
 
 const {
   evaluateHookContextSinkMock, readAppliedWornRulesMock, turnsExistMock, turnEndHeldWorkMock, turnReadMock, turnChargeMock,
@@ -71,6 +73,7 @@ const noRmRules = (): WornSyncRules => wornSyncRules({
 const call = (command: string) => ({ tool: 'Bash', input: { command }, client: 'claude' });
 
 beforeEach(() => {
+  planExecutionGuard.mockReset().mockResolvedValue(null);
   evaluateHookContextSinkMock.mockReset().mockResolvedValue({ text: '', result: null });
   readAppliedWornRulesMock.mockReset().mockResolvedValue(null);
   turnsExistMock.mockReset().mockResolvedValue(false);
@@ -144,6 +147,15 @@ describe('compactionSinkDue (D-024 §3)', () => {
 });
 
 describe('POST /agent-mcp/tool-guard', () => {
+  it('refuses a native edit or shell write when durable plan readiness refuses, even without worn rules', async () => {
+    planExecutionGuard.mockResolvedValue({ code: 'plan_execution_not_ready', reason: 'Bound plan is draft' });
+    for (const tool of ['apply_patch', 'Write', 'exec_command']) {
+      expect(await post('/agent-mcp/tool-guard', { owner: 'builder', workspace: 'ws', tool, input: { cmd: 'touch x' } }))
+        .toEqual({ ok: true, text: 'plan_execution_not_ready: Bound plan is draft' });
+      expect(planExecutionGuard).toHaveBeenLastCalledWith({ ownerId: 'builder', workspaceId: 'ws', toolName: tool, args: { cmd: 'touch x' } });
+    }
+    expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
+  });
   it('reads nothing for a request without an owner or a tool', async () => {
     expect(await post('/agent-mcp/tool-guard', { tool: 'Bash' })).toEqual({ ok: true, text: '' });
     expect(await post('/agent-mcp/tool-guard', { owner: 'o' })).toEqual({ ok: true, text: '' });

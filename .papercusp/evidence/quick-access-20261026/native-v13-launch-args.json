@@ -1,0 +1,18 @@
+{
+  "status": "template-not-launched",
+  "prerequisiteTask": "0mvwuf9hq165at1s14r",
+  "prerequisite": "Require exact qualification exit0, all selected files pass with no skip, and collection of one native case. Check no newer native exists before launch.",
+  "replaceBeforeLaunch": [
+    "__RUN_GROUP__ must be a new operator-e2e-isolated timestamp/qa-v13 group. Record actual launch lowerbound and task receipt."
+  ],
+  "argsTemplate": {
+    "command": "PAPERCUSP_TEST_RUN_GROUP=__RUN_GROUP__ PAPERCUSP_REPO_DIR=/home/marsh-office/papercupai-workspace/papercusp TMPDIR=/mnt/data/tmp RTK_DISABLED=1 VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ISOLATED_SHORTCUT=CmdOrCtrl+Shift+K VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE=copy VERIFY_TAURI_SOURCE_REF=8fed0b7563c10a688c5533501aa9824a879cab54 VERIFY_TAURI_SOURCE_INPUTS=apps/operator/app/quick-panel/QuickAccessLauncher.tsx,apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx,apps/operator/app/quick-panel/quick-access-model.ts,apps/operator/app/quick-panel/quick-access.css,apps/operator/app/quick-panel/page.tsx,apps/operator-vite/src/routes/quick-panel.tsx,apps/operator/e2e/quick-access.native.spec.mts,apps/operator/e2e/_native-popup-diagnostics.ts,apps/operator/e2e/_native-popup-diagnostics.test.ts,papercusp-desktop/src-tauri/src/docs_search.rs,scripts/verify-tauri-headless.sh,apps/operator/lib/verify-tauri-headless-ready-seed.test.ts PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:e2e:isolated -- e2e/quick-access.native.spec.mts --workers=1",
+    "cwd": "/tmp/pcv/papercusp-lint-as-committed-8fed0b7563-TxpYcW/apps/operator",
+    "description": "Diagnose committed Quick Access native popup visibility",
+    "run_in_background": true,
+    "timeout": 7200000,
+    "work_item_id": "WI-6554700010029574",
+    "require_task_confinement": true
+  },
+  "audit": "Preserves unchanged failing R1 visibility precondition and original product assertions; passive X11/native bracketing plus Rust focus/dismiss logs address absent diagnostic evidence. Prior cleanup/dependency/CLI/source-loader failure-class audit is in WI-6554700010029574 Oct31 20:08Z. No v12 native pass or root cause inferred."
+}

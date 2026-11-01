@@ -1440,6 +1440,8 @@ function boundedTypecheckPreflight(
 }
 
 import { parseGateSuiteVerdictReplay, type GateSuiteVerdictReplay } from '../../release/gate-hygiene-split';
+import { parseGateSuiteMeasurement, type GateSuiteMeasurement } from '../../release/test-pass-reuse-report';
+import { mergeGateSuiteMeasurement } from '../../release/gate-health-merge';
 import { withBoundedTimeout } from '../../bounded-timeout';
 
 /** P-014: reuse append-only verdict detail; never read a mutable live verdict as history. */
@@ -1496,6 +1498,8 @@ export interface CheckpointVerdict {
    *  this verdict. Re-validated with parseTestPassReuseHealth before it is stored, because the
    *  version-skew fallback reads it back out of JSON. ABSENT ⇒ not reported this round. */
   testPassReuse?: TestPassReuseHealth;
+  suiteMeasurement?: GateSuiteMeasurement;
+  suiteMeasurements?: GateSuiteMeasurement[];
   /** green-main-ratchet-convergence-2026-10-17 P-004 (R-3): structural mirror of
    *  CheckpointResult.promotionRatchet — blocking-failure and downgraded-failing counts.
    *  Re-validated with parsePromotionRatchetHealth before it is stored. */
@@ -2101,6 +2105,10 @@ function checkpointFailureSample(entries: readonly string[] | undefined): {
  *  routine run's — the /admin/git timeline must not be able to tell who launched the suite. */
 export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?: string): Record<string, unknown> {
   const detail: Record<string, unknown> = { green: v.green ?? null };
+  const suiteMeasurement = parseGateSuiteMeasurement(v.suiteMeasurement);
+  if (suiteMeasurement) detail.suiteMeasurement = suiteMeasurement;
+  if (Array.isArray(v.suiteMeasurements)) detail.suiteMeasurements = v.suiteMeasurements
+    .map(parseGateSuiteMeasurement).filter((m) => m !== null);
   if (v.suiteVerdictReplay) detail.suiteVerdictReplay = parseGateSuiteVerdictReplay(v.suiteVerdictReplay)
     ?? { invalid: true, error: 'malformed measured-suite replay' };
   if (v.suiteReplayCanary) detail.suiteReplayCanary = v.suiteReplayCanary;
@@ -2593,6 +2601,8 @@ export async function recordCheckpointVerdict(
       postSuiteMeasured: verdict.postSuiteMeasured,
       postSuiteLegs: verdict.postSuiteLegs,
       testPassReuse: verdict.testPassReuse,
+      suiteMeasurement: verdict.suiteMeasurement,
+      suiteMeasurements: verdict.suiteMeasurements,
       promotionRatchet: verdict.promotionRatchet,
       verdictFlipQuarantine: verdict.verdictFlipQuarantine,
       ratchetShadow: verdict.ratchetShadow,
@@ -2679,6 +2689,8 @@ export async function recordPendingCheckpointVerdict(
       postSuiteMeasured: verdict.postSuiteMeasured,
       postSuiteLegs: verdict.postSuiteLegs,
       testPassReuse: verdict.testPassReuse,
+      suiteMeasurement: verdict.suiteMeasurement,
+      suiteMeasurements: verdict.suiteMeasurements,
       promotionRatchet: verdict.promotionRatchet,
       verdictFlipQuarantine: verdict.verdictFlipQuarantine,
       ratchetShadow: verdict.ratchetShadow,
@@ -3365,6 +3377,8 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
         postSuiteMeasured: parsed?.postSuiteMeasured,
         postSuiteLegs: parsed?.postSuiteLegs,
         testPassReuse: parsed?.testPassReuse,
+        suiteMeasurement: parsed?.suiteMeasurement,
+        suiteMeasurements: parsed?.suiteMeasurements,
         promotionRatchet: parsed?.promotionRatchet,
         verdictFlipQuarantine: parsed?.verdictFlipQuarantine,
         ratchetShadow: parsed?.ratchetShadow,
@@ -4610,6 +4624,8 @@ export async function trackGateStall(
     /** P-013: the verdict's per-file reuse record. `unknown` on purpose — it is shape-checked
      *  here, so a malformed or pre-emitter value is dropped instead of stored. */
     testPassReuse?: unknown;
+    suiteMeasurement?: unknown;
+    suiteMeasurements?: unknown[];
     /** P-004: the round's promotion-ratchet counts; shape-checked here like testPassReuse. */
     promotionRatchet?: unknown;
     /** P-008 (R-7): the round's verdict-flip quarantine record; shape-checked like testPassReuse. */
@@ -4622,6 +4638,13 @@ export async function trackGateStall(
   } = {},
 ): Promise<void> {
   if (isPinnedCheckpointVerdict(options)) return;
+  // Record even a measured suite whose promotion was held. No-suite/replay ticks cannot
+  // advance this field; an older terminal observation cannot replace a newer measurement.
+  const suiteMeasurement = parseGateSuiteMeasurement(options.suiteMeasurement);
+  if (suiteMeasurement) {
+    await mergeGateSuiteMeasurement(ctx, suiteMeasurement);
+  }
+  for (const measurement of options.suiteMeasurements ?? []) await mergeGateSuiteMeasurement(ctx, measurement);
   // P-016 (D-010): a partial advance ('advanced-prefix') MOVED `main` (the longest green
   // prefix is deployable), so it resets the "main hasn't advanced" stall streak just like
   // a full advance — the red tip is tracked separately via the release-fixer dispatch.
@@ -5897,6 +5920,10 @@ export async function trackGateStall(
   // SQL below repeats the rule against the row's live value so a concurrent peer merge
   // between the SELECT above and this UPDATE cannot be clobbered either.
   next = carryForeignGateHealthKeys(gh as Record<string, unknown> | null, mergeGateHealthMonotonic(gh, next));
+  // The monotonic measurement writer above owns this field. Carry it from the LIVE SQL row,
+  // never the SELECT snapshot, which can predate a concurrent suite's completed measurement.
+  delete next.lastSuiteMeasurement;
+  delete next.lastTargetedSuiteMeasurement;
   await sql.unsafe(
     `UPDATE harness_shared.routines
         SET metadata = jsonb_set(

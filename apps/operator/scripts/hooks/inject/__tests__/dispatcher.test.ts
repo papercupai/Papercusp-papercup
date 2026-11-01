@@ -308,6 +308,23 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     expect(op.received).toHaveLength(1);
   });
 
+  it('pre-tool: unreachable execution authority refuses native writes but leaves reads available', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const fetchImpl = (async () => { throw new Error('connection refused'); }) as typeof fetch;
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      for (const tool of ['apply_patch', 'Write', 'exec_command']) {
+        const output = await runInjection({ adapter, nativeEvent,
+          event: { tool_name: tool, tool_input: { cmd: 'touch source.ts' } },
+          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl });
+        expect(JSON.parse(output!).hookSpecificOutput).toMatchObject({
+          permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
+        });
+      }
+      expect(await runInjection({ adapter, nativeEvent, event: { tool_name: 'Read', tool_input: { file_path: 'source.ts' } },
+        env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl })).toBeNull();
+    }
+  });
+
   it('stop and compaction reach their endpoints and render per client', async () => {
     const op = fakeOperator({ text: 'IDENTITY CONTEXT' });
     const base = await op.start();

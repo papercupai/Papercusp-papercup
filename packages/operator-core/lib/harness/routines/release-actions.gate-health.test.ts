@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { buildGateSuiteMeasurement } from '../../release/test-pass-reuse-report';
 
 // EI-19329732364513693: trackGateStall now measures candidate staleness via git whenever a
 // candidate is passed. Keep this file HERMETIC — without this mock, every existing test that
@@ -100,10 +101,18 @@ const fakeSql = {
       return Promise.resolve([{ streak: prev + 1, alerted: seededGh?.noVerdictAlerted === true }]);
     }
     if (/UPDATE\s+harness_shared\.routines/i.test(query) && /\{gate_health\}/.test(query)) {
+      if (query.includes("jsonb_build_object('lastSuiteMeasurement'")) {
+        const measurement = JSON.parse(String(params[2]));
+        const prior = seededGh?.lastSuiteMeasurement as { completedAtMs: number } | undefined;
+        if (!prior || prior.completedAtMs <= measurement.completedAtMs) {
+          seededGh = { ...seededGh, lastSuiteMeasurement: measurement };
+          latestHeadlineHealth = { ...latestHeadlineHealth, lastSuiteMeasurement: measurement };
+        }
+      }
       const raw = typeof params[1] === 'string' ? params[1] : '';
       if (raw.startsWith('{')) {
         const payload = JSON.parse(raw) as { gate_health?: Record<string, unknown> };
-        if (payload.gate_health) latestHeadlineHealth = payload.gate_health;
+        if (payload.gate_health) latestHeadlineHealth = { ...seededGh, ...latestHeadlineHealth, ...payload.gate_health };
         const workspace = String(params.at(-1) ?? '');
         if (payload.gate_health && updatedGateHealthByWorkspace) {
           updatedGateHealthByWorkspace.set(workspace, payload.gate_health);
@@ -2543,6 +2552,36 @@ describe('trackGateStall carries keys it does not own (C4, EI-22270968007901491)
 });
 
 describe('P-013 (gate-file-level-test-reuse-2026-09-27): gate_health.testPassReuse', () => {
+  const measurement = (runGroupId = 'suite-A', completedAtMs = 200) => buildGateSuiteMeasurement(
+    'AFFECTED_TASK_CACHE_SUMMARY hits=2 misses=1 proofIdentity=current-run group=missing scope=missing reasons={"passing":2,"noProof":1}',
+    'a'.repeat(40), { command: 'npm run test:affected', runGroupId, startedAtMs: 100, completedAtMs })!;
+
+  it.each(['advanced', 'not-green', 'perf-held'])('persists actual measurement on %s and archives its exact identity', async (status) => {
+    const m = measurement();
+    await trackGateStall(ctx, status, undefined, undefined, null, undefined, null, undefined, { suiteMeasurement: m });
+    expect(latestHeadlineHealth?.lastSuiteMeasurement).toEqual(m);
+    expect(buildCheckpointDetail({ reason: status, suiteMeasurement: m }).suiteMeasurement).toEqual(m);
+    expect(buildCheckpointDetail({ reason: status, suiteMeasurements: [m] }).suiteMeasurements).toEqual([m]);
+    const write = calls.find((c) => c.query.includes("jsonb_build_object('lastSuiteMeasurement'"))!;
+    expect(write.params).toEqual([ctx.installSlug, ctx.workspaceId, JSON.stringify(m), 200]);
+    expect(write.query).toContain("target_role = 'system:green-checkpoint'");
+    expect(write.query).toContain('<= $4');
+  });
+
+  it('does not advance last actual suite on a replay, hold, malformed record or late older write', async () => {
+    const prior = measurement('suite-B', 500);
+    seededGh = { consecutiveReds: 0, lastGreenAt: Date.now(), lastSuiteMeasurement: prior };
+    await trackGateStall(ctx, 'advanced', undefined, undefined, null, undefined, null, undefined, {});
+    expect(latestHeadlineHealth?.lastSuiteMeasurement).toEqual(prior);
+    await trackGateStall(ctx, 'skipped-locked');
+    expect(latestHeadlineHealth?.lastSuiteMeasurement).toEqual(prior);
+    await trackGateStall(ctx, 'advanced', undefined, undefined, null, undefined, null, undefined, { suiteMeasurement: measurement() });
+    expect(latestHeadlineHealth?.lastSuiteMeasurement).toEqual(prior);
+    expect(buildCheckpointDetail({ reason: 'advanced', suiteMeasurement: { ...prior, judgedSha: 'bad' } }).suiteMeasurement).toBeUndefined();
+    // The status UPDATE must merge the live value, not copy a stale SELECT over it.
+    expect(lastGateHealthWrite()).not.toHaveProperty('lastSuiteMeasurement');
+  });
+
   const reuse = (over: Record<string, unknown> = {}) => ({
     judgedSha: 'c58655490ce1a3be734de61df08aa7f8159122d4',
     recordedAtMs: 1_790_530_000_000,

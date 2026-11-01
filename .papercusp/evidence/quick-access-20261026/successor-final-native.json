@@ -1,4 +1,37 @@
 {
+  "currentDiagnosis20261101": {
+    "authority": "Supersedes running/await fields in every historical section below. Actual v14 failed; no native remains live.",
+    "terminalEvidence": ".papercusp/evidence/quick-access-20261026/native-v14-terminal.json",
+    "trace": ".papercusp/evidence/quick-access-20261026/native-v14-trace.zip",
+    "diagnostics": ".papercusp/evidence/quick-access-20261026/native-v14-popup-diagnostics.json",
+    "task": "0mvx0wttt19w2mzb1ag",
+    "testRun": 22831246,
+    "pin": "1ec67623111706cc98d4a7bb124df64b1a4cd696",
+    "verdict": "Inner+outer FAIL; file sink exit1. Ledger exit remains unobserved; do not turn that into a running payload or accepted result.",
+    "causeEvidence": "Repeat shortcut: native blur handler hides before shortcut handler sees is_visible=false and reopens. Trace same popup focused+mapped before/after. Independent private X11/GTK/libX11 passive-grab probe produces NotifyGrab focus-out without an outside click. Product fix pending.",
+    "next": "On EI272871 fix transient shortcut-grab dismissal in existing native window code; reuse x11rb/gtk/native_terminal active-window logic. Update changeKinds before product edit if test-only declaration remains. Add maintained tests; no blind full native retry. After verified new native rebuild v14 amendment from preserved v13 methods and complete independent acceptance."
+  },
+  "currentContinuation20261031T2320Z": {
+    "authority": "This section supersedes every historical continuation and next action below. Same A/self/AUTO; manual locks; no LIVE_GATE_OPS.",
+    "pin": "1ec67623111706cc98d4a7bb124df64b1a4cd696",
+    "root": "/tmp/pcv/papercusp-lint-as-committed-1ec6762311-AyrijC",
+    "materializerTask": "0mvx0k4r11sjctiaqds",
+    "materializerExit": 0,
+    "qualificationTask": "0mvx0mwto1xqfja11dt",
+    "qualificationExit": 0,
+    "qualification": "184 tests / 8 files PASS, zero skips; native collection exactly1case; log .papercusp/scratch/bash-a70e0f52-92f.log",
+    "nativeTask": "0mvx0wttt19w2mzb1ag",
+    "nativeBash": "ba37605f-dd2",
+    "nativeLog": ".papercusp/scratch/bash-ba37605f-dd2.log",
+    "nativeRunGroup": "operator-e2e-isolated-20261031T231934Z-qa-v14",
+    "nativeDeadline": "2026-11-01T01:19:38.068Z",
+    "innerEvidence": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261031T231955Z-805741",
+    "state": "RUNNING; no native pass/ship claim; do not duplicate",
+    "details": "native-v14-state.json top currentContinuation holds exact controls, source/retention proof and await389726. Both fresh tasks have actual16384MiB memory cap verified before payload. Actual native preserves privateHOME/isolatedDB/real shortcut and snapshot needle Quick Access launcher.",
+    "launchCorrection": "0mvx0up3u1k6fh25syx terminal127 was my argv-index error before npm/native; corrected and recorded1210522.",
+    "next": "Observe exact own native task to terminal0/outer+innerPASS and latestclean-local1ec/group row. Then rebuild v14 acceptance amendment from preserved v13 methods; canonical outside vetting; rebind current clause evidence and completed-runtime receipts; independent adequacy/activation/acceptance; closure and report. Native verdict is required before using this pin as accepted evidence.",
+    "toolRoute": "Use ptool explicit --url=http://127.0.0.1:3170 for rubric/evidence/amendment tools. Main d740 server reports rubric projection unavailable; staging read confirms rubric8 active."
+  },
   "updatedAt": "2026-10-28T19:54:15.581Z",
   "currentContinuation20261028T2035Z": {
     "authority": "Supersedes publication and qualification state in currentContinuation20261028T2023Z; AUTO/self P-003 remains unchanged.",

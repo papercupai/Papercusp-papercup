@@ -7628,6 +7628,12 @@ export function identityAssumeResponseFromRows(rows, { agent, request, sinceMs, 
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
  *  a legacy idle-gated turn; an unsupported explicit envelope is never input.
  *  Pure — exported for tests. */
+export function controlSocketProbeOutcome(msg, ownerId) {
+  if (msg?.mode !== 'probe') return null;
+  if (msg.ownerId !== ownerId) return { ok: false, reason: 'ownerId-mismatch' };
+  return { ok: true, reason: 'control-socket-live' };
+}
+
 export function decodeControl(payload) {
   const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
   try {
@@ -7636,6 +7642,7 @@ export function decodeControl(payload) {
       o &&
       o.v === 1 &&
       (o.mode === 'turn' ||
+        o.mode === 'probe' ||
         o.mode === 'delivery-cancel' ||
         o.mode === 'raw' ||
         o.mode === 'osc' ||
@@ -7677,6 +7684,8 @@ export function decodeControl(payload) {
           ...decodeOwnerIdentity(o),
           ...decodeDeliveryId(o),
         };
+      if (o.mode === 'probe')
+        return { mode: 'probe', data: '', gated: false, ...decodeOwnerIdentity(o) };
       if (o.mode === 'identity-assume') return {
         mode: 'identity-assume', data: '', gated: false,
         ownerId: o.ownerId, action: o.action, request: o.request,
@@ -10952,7 +10961,8 @@ export const SESSION_COMPACTED_EMIT_ENTRY = join(HOST_SCRIPT_DIR, 'emit-session-
  * @param {{nativeId?: string | null, readNativeId?: () => string | null,
  * report?: (id: string, options: {onConfirmed: (id?: string) => void}) => any,
  * isCurrent?: () => boolean, timeoutMs?: number, pollMs?: number,
- * alreadyConfirmed?: boolean, discoveryTimeoutMs?: number}} options
+ * alreadyConfirmed?: boolean, discoveryTimeoutMs?: number,
+ * onConfirmed?: (binding: {ok: true, nativeId: string, reason: string}) => void}} options
  * `discoveryTimeoutMs` (P-005 / D-003) bounds only the search for a missing
  * native id. Once the id is known, the operator report keeps `timeoutMs`: a late
  * id found at the edge of the window must still be able to confirm.
@@ -10961,6 +10971,7 @@ export async function waitForRespawnBinding({
   nativeId = null, readNativeId = () => null, report = () => false,
   isCurrent = () => true, timeoutMs = 2_000, pollMs = 50, alreadyConfirmed = false,
   discoveryTimeoutMs = Infinity,
+  onConfirmed: notifyConfirmed = () => {},
 }) {
   const startedAt = Date.now();
   const deadline = startedAt + timeoutMs;
@@ -10975,7 +10986,12 @@ export async function waitForRespawnBinding({
       reporting = true;
       const expectedId = nativeId;
       const onConfirmed = (id = expectedId) => {
-        if (id === expectedId && isCurrent()) confirmed = true;
+        if (id !== expectedId || !isCurrent() || confirmed) return;
+        confirmed = true;
+        // The launcher's durable report can confirm AFTER this bounded wait
+        // returned. Keep that authoritative edge available to the carry owner.
+        try { notifyConfirmed({ ok: true, nativeId: expectedId, reason: 'successor-reanchor-confirmed' }); }
+        catch { /* a notification cannot invalidate the accepted mapping */ }
       };
       void Promise.resolve().then(() => isCurrent() ? report(expectedId, { onConfirmed }) : false)
         .then((ok) => { if (ok === true) onConfirmed(); }, () => {});
@@ -12218,7 +12234,7 @@ export function hostThroughPty(o) {
     // name its native session id. The fence identity requires it, and only codex wires
     // resolveRespawnNativeId; a Claude host that advertised the cap refused every
     // nonce-bound carry-respawn (session:request-compaction) as 'stale-carry-target'.
-    caps: ['carry-respawn', ...(resolveRespawnNativeId ? ['pending-carry-fence-v1'] : []), 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+    caps: ['carry-respawn', 'control-socket-probe-v1', ...(resolveRespawnNativeId ? ['pending-carry-fence-v1'] : []), 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
       ...(env.PAPERCUSP_AGENT === 'codex' ? ['codex-hooks-observe-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume', 'quota-recovery-reroute'] : [])],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
@@ -13563,7 +13579,7 @@ export function hostThroughPty(o) {
   const currentChildPastUnboundWindow = () =>
     childStartedAtMs > 0 && Date.now() - childStartedAtMs >= unboundWindowMs;
   let stuckSnapshotChild = null;
-  const prepareCarryBinding = async (nativeId, deadline, alreadyConfirmed = false) => {
+  const prepareCarryBinding = async (nativeId, deadline, alreadyConfirmed = false, onConfirmed = () => {}) => {
     const target = child;
     const targetStartedAtMs = childStartedAtMs;
     if (carryBindingChild !== target) carryBindingNativeId = nativeId;
@@ -13575,6 +13591,11 @@ export function hostThroughPty(o) {
       report: onRespawn,
       isCurrent: () => child === target && !hostCleanedUp && !shuttingDown,
       alreadyConfirmed: alreadyConfirmed || (confirmedCarryChild === target && confirmedCarryNativeId === nativeId),
+      onConfirmed: (binding) => {
+        confirmedCarryChild = target;
+        confirmedCarryNativeId = binding.nativeId;
+        onConfirmed(binding);
+      },
       timeoutMs: Math.max(0, deadline - Date.now()),
       discoveryTimeoutMs: targetStartedAtMs > 0
         ? Math.max(0, targetStartedAtMs + unboundWindowMs - Date.now())
@@ -15432,6 +15453,8 @@ export function hostThroughPty(o) {
         }
         return { ok: false, reason: 'ownerId-mismatch' };
       }
+      const controlSocketProbe = controlSocketProbeOutcome(msg, ownerId);
+      if (controlSocketProbe) return controlSocketProbe;
       const continuationRefusal = continuationIdentityRefusal(msg, ownerId);
       if (continuationRefusal) {
         appendHostEvent(ownerId, 'control-payload-rejected', { ...continuationRefusal, mode: msg.mode });
@@ -16027,6 +16050,12 @@ export function hostThroughPty(o) {
       // line. Ungated raw/osc bypass it — a force-interrupt byte must land
       // immediately (mid-turn), and osc writes the display, not the input line.
       const releaseInject = msg.gated ? await injectMutex.acquire() : null;
+      // A late binding recovery can commit this delivery while an accepted
+      // retry waits for the mutex. Recheck at the serialized write boundary.
+      if (msg.deliveryId && deliveryDedup.state(msg.deliveryId) === 'completed') {
+        releaseInject?.();
+        return { ok: true, reason: 'duplicate-delivery-id' };
+      }
       if (identityAssumeFence?.blocksInput()) {
         releaseInject?.();
         return { ok: false, reason: 'assume-caller-paused' };
@@ -16152,6 +16181,9 @@ export function hostThroughPty(o) {
               capMs: turnInjectBusyCapMs,
               observedMaxQuietMs: Number.isFinite(atPrompt?.maxQuietForMs) ? atPrompt.maxQuietForMs : null,
               quietMs: Number.isFinite(atPrompt?.quietMs) ? atPrompt.quietMs : null,
+              // EI-27011834448959237: preserve the native veto sampled by the
+              // busy gate on its final pass; the retry/stall record may arrive later.
+              nativeBusy: atPrompt?.nativeBusy ?? null,
               // P-003: whether a NATIVE boundary proof was even available for
               // this defer. Without it, a defer on a repainting claude TUI is
               // indistinguishable from one on a genuinely busy agent, which is
@@ -18637,8 +18669,54 @@ export function hostThroughPty(o) {
       if (needsNativeReanchor && !nativeId) {
         nativeId = currentNativeSessionId(child.pid, resolveRespawnNativeId);
       }
+      // WI-6554700010029911: only an unsubmitted carry may recover from a late
+      // identity report. Reuse this child and the normal delivery/proof path;
+      // replaying the lifecycle envelope would cut a second successor.
+      const bindingCarryChild = child;
+      const bindingCarryEpoch = lastRespawnAtMs;
+      const bindingCarryOwnerGeneration = ownerInputGeneration;
+      let confirmedRecoveryBinding = null;
+      let recoverCarry = null;
+      let bindingRecoveryScheduled = false;
+      const bindingRecoveryRejection = () => {
+        if (hostCleanedUp || shuttingDown || cleaned) return 'host-ended';
+        if (child !== bindingCarryChild || lastRespawnAtMs !== bindingCarryEpoch) return 'superseded';
+        if (ownerInputGeneration !== bindingCarryOwnerGeneration) return 'fresh-child-owner-input';
+        if (carryRequest?.deliveryId &&
+            ['completed', 'cancelled', 'superseded'].includes(deliveryDedup.state(carryRequest.deliveryId))) {
+          return 'delivery-already-settled';
+        }
+        return null;
+      };
+      const tryBindingRecovery = () => {
+        if (!recoverCarry || !confirmedRecoveryBinding || bindingRecoveryScheduled) return;
+        bindingRecoveryScheduled = true;
+        const redeliver = recoverCarry;
+        recoverCarry = null;
+        void (async () => {
+          const release = await injectMutex.acquire();
+          try {
+            const reason = bindingRecoveryRejection();
+            if (reason) {
+              appendHostEvent(ownerId, 'respawn-carry-binding-recovery-cancelled', { nativeId, reason });
+              return;
+            }
+            appendHostEvent(ownerId, 'respawn-carry-binding-recovery-started', { nativeId });
+            await redeliver(confirmedRecoveryBinding);
+          } catch (error) {
+            appendHostEvent(ownerId, 'respawn-carry-binding-recovery-failed', {
+              nativeId, detail: String(error?.message ?? error).slice(0, 200),
+            });
+          } finally {
+            release();
+          }
+        })();
+      };
       const respawnBinding = needsNativeReanchor && (nativeId || resolveRespawnNativeId)
-        ? prepareCarryBinding(nativeId, Date.now() + recycleCarryInjectBudgetMs, respawnReported)
+        ? prepareCarryBinding(nativeId, Date.now() + recycleCarryInjectBudgetMs, respawnReported, (binding) => {
+            confirmedRecoveryBinding = binding;
+            tryBindingRecovery();
+          })
         : null;
       let carryBindingFailure = null;
       void respawnBinding?.then((binding) => {
@@ -18673,6 +18751,7 @@ export function hostThroughPty(o) {
       // leaving the session booted-but-idle with no trace until its next
       // scheduled wake). The carry also stays in the inbox as the last-resort
       // next-turn resume, so a drop is observable, not lossy.
+      const deliverCarry = async (deliveryBinding = respawnBinding, recovering = false) => {
       const recordCarryDrop = () => {
         baseMeta.lastCarryDropAt = Date.now();
         baseMeta.carryDropCount = (baseMeta.carryDropCount || 0) + 1;
@@ -18689,12 +18768,13 @@ export function hostThroughPty(o) {
       let carryNativeSubmission = null;
       let carryResult = await injectTurnAtPrompt({
         text: carryText,
-        abortSubmission: () => carryBindingFailure,
+        abortSubmission: () => carryBindingFailure || (recovering ? bindingRecoveryRejection() : null),
+        validateBeforeWrite: recovering ? bindingRecoveryRejection : null,
         label: drillId ? `carry-drill ${drillId} first prompt` : 'recycle carry-note',
         // A fresh child can be output-quiet before its input handler exists.
         // Apply the same backend-aware boot proof as a scripted resume/port.
         requireInitialOutput: true,
-        freshChildOwnerInputGeneration,
+        freshChildOwnerInputGeneration: recovering ? bindingCarryOwnerGeneration : freshChildOwnerInputGeneration,
         // WI-10005106: a child stuck at the Codex `Starting` footer is replaced
         // early while a fresh-epoch retry remains; the LAST attempt holds for the
         // frame instead (the WI-10004943 (d) launch-kickoff behaviour), because
@@ -18725,13 +18805,13 @@ export function hostThroughPty(o) {
         // until the closed-loop reconnect check proves papercusp-su ready.
         prepareBeforeWrite: async ({ deadline }) => {
           if (carryBindingFailure) return { ok: false, reason: carryBindingFailure };
-          if (respawnBinding && launchKickoffRequiresPreSubmissionNativeBinding({
+          if (deliveryBinding && launchKickoffRequiresPreSubmissionNativeBinding({
             agent: env.PAPERCUSP_AGENT,
             isResume: resumeQuotaConversation,
             hasResolver: Boolean(nativeId || resolveRespawnNativeId),
             nativeId: nativeId || currentNativeSessionId(child.pid, resolveRespawnNativeId),
           })) {
-            const binding = await respawnBinding;
+            const binding = await deliveryBinding;
             if (!binding.ok) return binding;
             nativeId = binding.nativeId;
             respawnReported = true;
@@ -18810,6 +18890,10 @@ export function hostThroughPty(o) {
         const { reason: _deferredReason, ...submittedCarry } = carryResult;
         carryResult = { ...submittedCarry, delivered: true };
       }
+      if (recovering && carryResult.delivered && carryRequest?.deliveryId) {
+        deliveryDedup.markCompleted(carryRequest.deliveryId);
+        nativeStartPending.delete(carryRequest.deliveryId);
+      }
       if (!carryResult.delivered) {
         const retry = retryOnFreshEpoch(carryResult.reason);
         if (retry) return retry;
@@ -18880,8 +18964,8 @@ export function hostThroughPty(o) {
           }
         }
       }
-      if (carryResult.delivered && turnStartProof?.persisted && respawnBinding) {
-        const binding = await respawnBinding;
+      if (carryResult.delivered && turnStartProof?.persisted && deliveryBinding) {
+        const binding = await deliveryBinding;
         if (binding.nativeId) nativeId = binding.nativeId;
         respawnReported = binding.ok;
       }
@@ -18890,7 +18974,7 @@ export function hostThroughPty(o) {
         const announcement = await announceVerifiedCarryRespawn({
           ownerId, agent: env.PAPERCUSP_AGENT, nativeId, proof: turnStartProof,
           alreadyReported: respawnReported,
-          report: respawnBinding ? () => false : onRespawn, emit: emitCompacted,
+          report: deliveryBinding ? () => false : onRespawn, emit: emitCompacted,
           timeoutMs: respawnReportTimeoutMs,
           isCurrent: () => child === carryChild && !recycling && !shuttingDown && !cleaned,
         });
@@ -18901,7 +18985,15 @@ export function hostThroughPty(o) {
           });
         }
       }
-      if (!carryResult.delivered) recordCarryDrop();
+      if (!carryResult.delivered) {
+        recordCarryDrop();
+        if (!recovering && respawnMode === 'carry-respawn' && !drillId &&
+            carryResult.reason === 'successor-reanchor-unconfirmed' && !carryNativeSubmission) {
+          recoverCarry = (binding) => deliverCarry(Promise.resolve(binding), true);
+          appendHostEvent(ownerId, 'respawn-carry-binding-recovery-pending', { nativeId });
+          tryBindingRecovery();
+        }
+      }
       if (drillId) {
         // EI-12655 (drill-1 instrumentation, leader-concurred): a never-settled
         // drop was previously indistinguishable from a never-booted child.
@@ -18972,6 +19064,8 @@ export function hostThroughPty(o) {
           attempts: carryResult.attempts,
         },
       );
+      };
+      return deliverCarry();
     };
 
     // A visible auto-routed Codex TUI does not need a fleet wake to recover.

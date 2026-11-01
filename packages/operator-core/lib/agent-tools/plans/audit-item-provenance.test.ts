@@ -280,6 +280,15 @@ describe('plans:audit activation — first audit is enforced (R-2)', () => {
     expect(storedActivation()?.itemProvenanceCheck.items).toEqual({ 'P-001': 'owner', 'P-002': 'agent-added' });
   });
 
+  it('persists explicit discovery pins without converting agent additions to owner provenance', async () => {
+    const declaration = { itemId: 'P-002', kind: 'agent-added', reason: 'Resolve the original discovery.',
+      discoverySources: [{ ref: 'issue-occurrence:17', sha256: 'a'.repeat(64) }] };
+    expect(await run(activationArgs({ itemProvenance: [declaration] })))
+      .toMatchObject({ ok: true });
+    expect(storedActivation()?.itemProvenance).toEqual([declaration]);
+    expect(storedActivation()?.itemProvenanceCheck.items['P-002']).toBe('agent-added');
+  });
+
   it('refuses item_provenance_invalid for a declaration naming an item the plan does not have', async () => {
     const result = await run(activationArgs({
       itemProvenance: [

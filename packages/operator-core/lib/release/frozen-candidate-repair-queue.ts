@@ -531,6 +531,8 @@ export interface FrozenRepairAdmissionPrecheck {
   /** Versioned fixture policy; legacy shared-PG measurements cannot resume under a new policy. */
   testEnvironment?: string;
   files: string[];
+  /** Test paths proved deleted in builtTree; excluded from execution but retained as fix evidence. */
+  removedTestFiles?: string[];
   actor: string;
   /** Process that owns the in-memory runner; absent on legacy R6 markers. */
   runnerPid?: number;

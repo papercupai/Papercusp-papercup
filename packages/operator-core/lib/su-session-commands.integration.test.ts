@@ -88,6 +88,74 @@ async function storedTurns() {
 }
 
 describe('SU command acceptance through real PostgreSQL', () => {
+  it.each((['claude', 'codex'] as const).flatMap(backend =>
+    (['pty', 'programmatic'] as const).map(executionKind => ({ backend, executionKind })),
+  ))(
+    'SU-EXEC R-8 acceptance contract: $backend $executionKind replacement fences durable admission and replay', async ({ backend, executionKind }) => {
+      await sql`UPDATE harness_shared.adv_sessions SET agent = ${backend} WHERE id = ${advSessionId}`;
+      const snapshot = { ...descriptor(), executionKind,
+        identity: { ...descriptor().identity, backend },
+        backendExtension: backend === 'claude' ? descriptor().backendExtension : { backend, codexHome: null },
+      } as SuSessionDescriptor;
+      expect(await persistSuSessionDescriptor(advSessionId, snapshot, workspaceId)).toBe(true);
+      const original = vi.fn(async () => ({ status: 'completed' as const }));
+      const replacement = vi.fn(async () => ({ status: 'completed' as const }));
+      const host = new SuSessionHost({ descriptor: snapshot, executeCommand: original });
+      const durable = pgSuSessionCommandStore({ sql });
+      let committed!: () => void, release!: () => void;
+      const reserved = new Promise<void>((resolve) => { committed = resolve; });
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      const store = {
+        reserve: async (...args: Parameters<typeof durable.reserve>) => {
+          const result = await durable.reserve(...args);
+          committed();
+          await released;
+          return result;
+        },
+        finish: durable.finish,
+      };
+      const command = { ...ownerTurn(`${backend}-${executionKind}-reserved-before-replacement`), target: snapshot.identity };
+      let restored: InstanceType<typeof SuSessionHost> | undefined;
+      try {
+        const pending = host.acceptCommand(command, store);
+        await reserved;
+        expect(original).not.toHaveBeenCalled();
+        expect(host.recent.some(({ event }) => event.type === 'command_result')).toBe(false);
+        host.reconcileRuntimeExit({ expected: false, exitCode: 1 });
+        const next = { ...snapshot, runtimeGeneration: 2 };
+        host.attachRuntime({ descriptor: next, executeCommand: replacement, runtimeReady: () => true });
+        expect(await persistSuSessionDescriptor(advSessionId, next, workspaceId)).toBe(true);
+        release();
+        const dispatch = await pending;
+        expect(dispatch.accepted).toBeNull();
+        expect(await dispatch.terminal).toMatchObject({
+          status: 'refused', refusal: { code: 'runtime_generation_mismatch', retryable: false },
+        });
+        expect(original).not.toHaveBeenCalled();
+        expect(replacement).not.toHaveBeenCalled();
+        expect(await storedTurns()).toMatchObject([{
+          su_command: { command, outcome: { status: 'refused', refusal: { code: 'runtime_generation_mismatch' } } },
+        }]);
+
+        host.dispose();
+        const record = await readDurableSuSession({ advSessionId, workspaceId });
+        expect(record?.runtimeGeneration).toBe(2);
+        expect(record?.descriptor?.executionKind).toBe(executionKind);
+        restored = new SuSessionHost({ descriptor: record!.descriptor!, executeCommand: replacement });
+        const replay = await restored.acceptCommand(command, durable);
+        expect(replay.replayed).toBe(true);
+        expect(await replay.terminal).toMatchObject({ refusal: { code: 'runtime_generation_mismatch' } });
+        expect(replacement).not.toHaveBeenCalled();
+        const fresh = await restored.acceptCommand({
+          ...ownerTurn(`${backend}-current-generation`), target: snapshot.identity, expectedRuntimeGeneration: 2,
+        }, durable);
+        expect((await fresh.terminal).status).toBe('completed');
+        expect(replacement).toHaveBeenCalledOnce();
+        expect(await storedTurns()).toHaveLength(2);
+      } finally { release(); host.dispose(); restored?.dispose(); }
+    },
+  );
+
   it('SU-EXEC R-6 acceptance contract: preserves usable image bytes through durable command storage and reconnect for both providers', async () => {
     const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9YkAAAAASUVORK5CYII=';
     for (const backend of ['claude', 'codex'] as const) {

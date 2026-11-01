@@ -6,6 +6,7 @@ vi.mock('../../work-items', async (importOriginal) => ({
 }));
 
 import { emptyLegs } from '@papercusp/search';
+import type { SourceCoverageAssessment } from '../../search/coverage-gate';
 import { getWorkItem, searchWorkItems } from '../../work-items';
 import { mockResolvedOnceTyped } from '../../testing/typed-mock';
 import search, { projectWorkItemSearchMatch, shapeWorkItemsSearch } from './search';
@@ -36,6 +37,16 @@ const workItem = (overrides: Record<string, unknown> = {}) =>
     updatedAt: '2026-08-12T00:00:00.000Z',
     ...overrides,
   }) as never;
+
+const coverageAssessment = (verdict: 'degraded' | 'unknown'): SourceCoverageAssessment => ({
+  source: 'work_items:search',
+  verdict,
+  coverage: verdict === 'degraded' ? 0.6 : null,
+  recentCoverage: null,
+  surfaces: [],
+  unknownSurfaces: verdict === 'unknown' ? ['harness_shared.work_items.embedding'] : [],
+  note: verdict === 'degraded' ? 'semantic matches may be missing' : 'no fresh coverage sample',
+});
 
 describe('work_items:search transaction scope', () => {
   it('preserves work-items exports used by neighboring modules', () => {
@@ -147,6 +158,30 @@ describe('work_items:search bounded result projection', () => {
     };
     expect(result.data).toMatchObject({ ok: true, count: 0, items: [], retryable: true });
   });
+
+  it.each(['degraded', 'unknown'] as const)(
+    'surfaces %s corpus coverage and marks empty results as unverified',
+    async (verdict) => {
+      const coverage = coverageAssessment(verdict);
+      mockResolvedOnceTyped(searchMock, {
+        items: [],
+        legs: emptyLegs(),
+        applied: { minScore: null, recency: false, policyRegistered: false },
+        coverage,
+      });
+
+      const result = (await search.handler({ query: 'blender observation-consumption', semantic: true } as never, {} as never)) as {
+        data: {
+          count: number;
+          items: Array<Record<string, unknown>>;
+          retryable: boolean;
+          coverage?: SourceCoverageAssessment;
+        };
+      };
+
+      expect(result.data).toMatchObject({ count: 0, items: [], retryable: true, coverage });
+    },
+  );
 
   it('preserves the stable warmup retry receipt for degraded dedup searches', async () => {
     mockResolvedOnceTyped(searchMock, {

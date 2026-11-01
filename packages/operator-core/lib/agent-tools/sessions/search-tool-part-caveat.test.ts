@@ -15,7 +15,7 @@
  * (`session_turn_parts`, 14-day retention, DOES keep tool_use/tool_result
  * payloads) for the same literal substring restricted to those part kinds. A
  * Return its exact indexed coordinate and native transcript path when the
- * already-resolved session matches. Indexed tool text can be truncated, and
+ * exact indexed owner/source/session maps to a managed transcript. Indexed tool text can be truncated, and
  * sessions:read only reads conversational text. A hit is POSITIVE existence
  * proof and must lead ahead of the generic
  * "retry with a different fragment" advice, which can never succeed against
@@ -39,8 +39,10 @@ vi.mock('./_shared', async (importOriginal) => ({
 }));
 
 const resolveSelfSession = vi.fn();
+const resolveOwnerIsolatedSessionByPrefix = vi.fn();
 vi.mock('../../search/self-session', () => ({
   resolveSelfSession: (...a: unknown[]) => resolveSelfSession(...a),
+  resolveOwnerIsolatedSessionByPrefix: (...a: unknown[]) => resolveOwnerIsolatedSessionByPrefix(...a),
 }));
 
 vi.mock('../../search/session-ingest', () => ({
@@ -101,8 +103,15 @@ const SELF = {
   filePath: '/home/x/.papercusp/session-claude/su-self/projects/repo/sess-current.jsonl',
 };
 
+const PREDECESSOR = {
+  sourceKind: 'codex',
+  sessionId: '019f4fa9-4a09-78c0-8a35-d7e3382d1f8f',
+  filePath: '/home/x/.papercusp/su-codex-homes/session-11801/sessions/2026/08/25/rollout-019f4fa9-4a09-78c0-8a35-d7e3382d1f8f.jsonl',
+};
+
 const TOOL_PART = {
   found: true,
+  owner: 'su-self',
   workspace_id: 'default',
   source_kind: SELF.sourceKind,
   session_id: SELF.sessionId,
@@ -116,6 +125,7 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
   beforeEach(() => {
     vi.clearAllMocks();
     resolveSelfSession.mockResolvedValue(SELF);
+    resolveOwnerIsolatedSessionByPrefix.mockResolvedValue(null);
     refreshLiveSessionsBeforeRead.mockResolvedValue({ attempted: 1, refreshed: 1 }); // fully fresh — no staleIndexCaveat noise
   });
 
@@ -156,18 +166,51 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
     expect(parsed.zeroHitCaveat).not.toMatch(/UNVERIFIABLE, NOT ABSENT/); // refresh was fresh
   });
 
-  it('does not substitute the current transcript for a matching predecessor tool part', async () => {
+  it('resolves a predecessor tool part from the indexed owner’s isolated Codex home', async () => {
+    resolveOwnerIsolatedSessionByPrefix.mockResolvedValue(PREDECESSOR);
     const { parsed } = await run(
       { session: 'self', mode: 'verbatim', query: 'older receipt' },
       [[], [{ session_count: '1', earliest: null }],
         [{ tool_use_ready: true, tool_result_ready: true }],
-        [{ ...TOOL_PART, session_id: 'predecessor', part_kind: 'tool_use' }]],
+        [{ ...TOOL_PART, source_kind: PREDECESSOR.sourceKind, session_id: PREDECESSOR.sessionId, part_kind: 'tool_use' }]],
     );
     expect(parsed.toolPartMatch?.indexedLocator).toMatchObject({
-      session_id: 'predecessor', part_idx: 42, part_kind: 'tool_use',
+      session_id: PREDECESSOR.sessionId, part_idx: 42, part_kind: 'tool_use',
     });
+    expect(parsed.toolPartMatch?.nativeTranscript).toEqual({
+      path: PREDECESSOR.filePath, status: 'path-resolved-content-unverified',
+    });
+    expect(resolveOwnerIsolatedSessionByPrefix).toHaveBeenCalledWith('su-self', PREDECESSOR.sessionId);
+    expect(parsed.zeroHitCaveat).toMatch(/returned path is unverified/);
+  });
+
+  it('keeps a predecessor unresolved when its exact owner home has no transcript file', async () => {
+    resolveOwnerIsolatedSessionByPrefix.mockResolvedValue(null);
+    const { parsed } = await run(
+      { session: 'self', mode: 'verbatim', query: 'older receipt' },
+      [[], [{ session_count: '1', earliest: null }],
+        [{ tool_use_ready: true, tool_result_ready: true }],
+        [{ ...TOOL_PART, source_kind: PREDECESSOR.sourceKind, session_id: PREDECESSOR.sessionId, part_kind: 'tool_use' }]],
+    );
     expect(parsed.toolPartMatch?.nativeTranscript).toEqual({ path: null, status: 'unresolved' });
     expect(parsed.zeroHitCaveat).not.toContain(SELF.filePath);
+  });
+
+  it('rejects an owner-scoped resolution unless source kind and session id exactly match', async () => {
+    const mismatches = [
+      { ...PREDECESSOR, sourceKind: 'claude' },
+      { ...PREDECESSOR, sessionId: `${PREDECESSOR.sessionId}00` },
+    ];
+    for (const resolution of mismatches) {
+      resolveOwnerIsolatedSessionByPrefix.mockResolvedValue(resolution);
+      const { parsed } = await run(
+        { session: 'self', mode: 'verbatim', query: 'older receipt' },
+        [[], [{ session_count: '1', earliest: null }],
+          [{ tool_use_ready: true, tool_result_ready: true }],
+          [{ ...TOOL_PART, source_kind: PREDECESSOR.sourceKind, session_id: PREDECESSOR.sessionId, part_kind: 'tool_use' }]],
+      );
+      expect(parsed.toolPartMatch?.nativeTranscript).toEqual({ path: null, status: 'unresolved' });
+    }
   });
 
   it('does not attach a native path when only the source kind differs', async () => {

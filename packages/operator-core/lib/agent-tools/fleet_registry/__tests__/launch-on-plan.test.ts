@@ -3843,7 +3843,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     );
   });
 
-  it('keeps opening the pre-pinned cohort when the canary remains unconfirmed', async () => {
+  it('holds the remaining cohort until the canary takes a verified first turn', async () => {
     // EI-20437060078324174: an UNCONFIRMED first probe now earns ONE bounded
     // re-probe before the gate decision (a slow boot verifies there instead of
     // being stamped a false 502) — so the mock must stay unconfirmed TWICE for
@@ -3856,26 +3856,50 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       {} as never,
     );
     const payload = parseHandlerPayload(res);
-    // An unconfirmed canary is not a positive failure. The remainder still opens so a
-    // slow backend (notably codex xhigh) cannot turn one late first turn into a four-member
-    // deficit; the canary remains in the recovery set for later liveness reconciliation.
-    expect(spawnConsoleMock).toHaveBeenCalledTimes(5);
-    expect(payload.ok).toBe(true);
+    // An unconfirmed canary is neither success nor a provider failure, but it must not
+    // authorize opening the rest of the cohort before the first-turn signal arrives.
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(payload.ok).toBe(false);
     expect(payload.launchTransaction.state).toBe('partial');
-    expect(payload.launchTransaction.verifiedMemberIds).toHaveLength(4);
-    // Both initial probes target only the canary; then the remaining pre-pinned waves open.
-    expect(launchTransaction.verify).toHaveBeenCalledTimes(4);
+    expect(payload.launchTransaction.verifiedMemberIds).toHaveLength(0);
+    // Both bounded probes target the canary; no later wave opens on an unknown verdict.
+    expect(launchTransaction.verify).toHaveBeenCalledTimes(2);
     expect(launchTransaction.verify.mock.calls.map(
       (call) => (call[0] as { expectedOwnerIds: string[] }).expectedOwnerIds.length,
-    )).toEqual([1, 1, 3, 1]);
+    )).toEqual([1, 1]);
     // The unconfirmed canary is the THIRD state — reported as unverified, never
     // absorbed into failed[] as a 502 (that false refusal is the measured bug).
     expect(payload.launchTransaction.failed).toEqual([]);
     expect(payload.unverifiedMembers).toHaveLength(1);
     expect(payload.unverifiedMembers[0].ownerId).toBe(payload.launchTransaction.openedMemberIds[0]);
     expect(payload.launchTransaction.unconfirmedMemberIds).toEqual([payload.launchTransaction.openedMemberIds[0]]);
-    expect(payload.launchTransaction.openedMemberIds).toHaveLength(5);
-    expect(payload.launchTransaction.recovery.retryOwnerIds).toEqual([payload.launchTransaction.openedMemberIds[0]]);
+    expect(payload.launchTransaction.openedMemberIds).toHaveLength(1);
+    expect(payload.launchTransaction.recovery.retryOwnerIds).toEqual(payload.launchTransaction.requestedMemberIds);
+  });
+
+  it('does not open later waves when the canary is quota-blocked before its first call', async () => {
+    launchTransaction.verify.mockResolvedValueOnce({
+      agentStarted: false,
+      waitedMs: 1,
+      sessions: [],
+      note: '✗ QUOTA BLOCKED — first member is deferring every turn.',
+    });
+    const res = await invokeLaunchHandler(
+      { name: 'Quota-Blocked Canary Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
+      {} as never,
+    );
+    const payload = parseHandlerPayload(res);
+    const canaryId = payload.launchTransaction.requestedMemberIds[0];
+
+    expect(launchTransaction.verify).toHaveBeenCalledTimes(1);
+    expect(launchTransaction.verify.mock.calls[0][0]).toMatchObject({ expectedOwnerIds: [canaryId] });
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(payload.launchTransaction.openedMemberIds).toEqual([canaryId]);
+    expect(payload.launchTransaction.failed).toEqual([
+      expect.objectContaining({ ownerId: canaryId, phase: 'verification', reason: expect.stringContaining('QUOTA BLOCKED') }),
+    ]);
+    expect(payload.launchTransaction.state).toBe('partial');
+    expect(payload.launchTransaction.recovery.retryOwnerIds).toEqual(payload.launchTransaction.requestedMemberIds);
   });
 
   it('returns a durable pending handle before a slow verifier settles, then persists the detached result', async () => {

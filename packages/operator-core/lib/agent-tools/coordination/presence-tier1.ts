@@ -399,7 +399,9 @@ export async function fetchPresenceTier1(
         FROM harness_shared.event_awaits
        WHERE subscriber_id = ANY(${ownerIds}::text[])
          AND policy <> 'announce'
-         AND fired_at IS NULL AND cancelled_at IS NULL
+         AND fired_at IS NULL
+         AND cancelled_at IS NULL
+         AND superseded_at IS NULL
          AND (expires_ts IS NULL OR expires_ts > now())
        ORDER BY subscriber_id, created_at DESC`,
     // Owner-scoped like its siblings (WI-10005228): a PK probe for this roster's

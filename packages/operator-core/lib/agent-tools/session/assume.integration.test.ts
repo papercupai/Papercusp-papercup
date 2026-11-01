@@ -12,6 +12,7 @@ import { createAssumeReceiptStore } from '../../session-assume-store';
 import { createAssumeCustodyAdapters } from '../../session-assume-custody';
 import { readAssumeCheckpoint, readAssumeCheckpointBody, readAssumeTarget } from '../../session-assume-preparation';
 import { loopScope, setCarryNote } from '../../carry-note';
+import { PG_READ_TXN_DEFAULT_TIMEOUT_MS } from '../../pg-read-query';
 import { checkpointAssumeCaller, completeAssumeCallerReturn, createAssumeCallerAdapters,
   readAssumeCallerCheckpoint, readAssumeCallerReturnSource } from '../../session-assume-caller';
 import { readProcessIdentity } from '../../process-identity';
@@ -353,7 +354,142 @@ describe('session:assume production receipt adapter (real PG)', () => {
   it('R-5 caller return reference resumes exactly once and rejects stale replay', async () => {
     const f = await exactReturnFixture();
     const deps = { readCaller: async () => f.caller };
-    expect(await completeAssumeCallerReturn(f.returning, deps)).toBe(true);
+    const waitSamples: Array<{
+      pid: number;
+      state: string;
+      waitEventType: string | null;
+      waitEvent: string | null;
+      firstQueryAgeMs: number;
+      lastQueryAgeMs: number;
+      sampleCount: number;
+      signature: string;
+    }> = [];
+    const latestSample = new Map<number, (typeof waitSamples)[number]>();
+    const sampleErrors: string[] = [];
+    let resolveLockWait!: () => void;
+    const lockWaitSeen = new Promise<void>(resolve => { resolveLockWait = resolve; });
+    let sampling = true;
+    const poll = (async () => {
+      while (sampling) {
+        try {
+          const rows = await fixture.admin.unsafe<Array<{
+            pid: number;
+            state: string;
+            wait_event_type: string | null;
+            wait_event: string | null;
+            query_age_ms: number;
+          }>>(
+            "SELECT pid, state, wait_event_type, wait_event, " +
+              "EXTRACT(EPOCH FROM (clock_timestamp() - query_start)) * 1000 AS query_age_ms " +
+              "FROM pg_stat_activity WHERE datname = current_database() " +
+              "AND pid <> pg_backend_pid() AND state = 'active' " +
+              "AND query ILIKE '%FROM harness_shared.carry_notes%'",
+          );
+          for (const row of rows) {
+            if (row.wait_event_type === 'Lock') resolveLockWait();
+            const signature = [row.state, row.wait_event_type ?? 'none', row.wait_event ?? 'none'].join('/');
+            const ageMs = Number(row.query_age_ms);
+            const previous = latestSample.get(row.pid);
+            if (previous?.signature === signature && ageMs >= previous.lastQueryAgeMs) {
+              previous.sampleCount += 1;
+              previous.lastQueryAgeMs = ageMs;
+            } else {
+              const sample = {
+                pid: row.pid,
+                state: row.state,
+                waitEventType: row.wait_event_type,
+                waitEvent: row.wait_event,
+                firstQueryAgeMs: ageMs,
+                lastQueryAgeMs: ageMs,
+                sampleCount: 1,
+                signature,
+              };
+              waitSamples.push(sample);
+              latestSample.set(row.pid, sample);
+            }
+          }
+        } catch (error) {
+          if (sampleErrors.length < 3) sampleErrors.push(String(error));
+        }
+        if (sampling) await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    })();
+    let releaseTableLock!: () => void;
+    const tableLockRelease = new Promise<void>(resolve => { releaseTableLock = resolve; });
+    let markTableLockHeld!: () => void;
+    const tableLockReady = new Promise<void>(resolve => { markTableLockHeld = resolve; });
+    let tableLockError: unknown = null;
+    const tableLockHolder = database.adminSql.begin(async tx => {
+      await tx.unsafe("SET LOCAL lock_timeout = '1500ms'");
+      await tx.unsafe('LOCK TABLE harness_shared.carry_notes IN ACCESS EXCLUSIVE MODE');
+      markTableLockHeld();
+      await tableLockRelease;
+    }).catch(error => {
+      tableLockError = error;
+      markTableLockHeld();
+    });
+    await tableLockReady;
+    if (tableLockError) {
+      sampling = false;
+      await poll;
+      throw tableLockError;
+    }
+    const startedAt = process.hrtime.bigint();
+    let returned = false;
+    let callError: string | null = null;
+    let lockWaitObserved = false;
+    let returningCall: Promise<void> = Promise.resolve();
+    try {
+      returningCall = completeAssumeCallerReturn(f.returning, deps).then(value => {
+        returned = value;
+      }, error => {
+        callError = String(error);
+      });
+      lockWaitObserved = await Promise.race([
+        lockWaitSeen.then(() => true),
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), 2_000)),
+      ]);
+    } finally {
+      releaseTableLock();
+      await tableLockHolder;
+      await returningCall;
+      sampling = false;
+      await poll;
+    }
+    const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    const checkpointPrefix = 'carry-note:';
+    const carryScope = f.recovery.checkpointRef.startsWith(checkpointPrefix)
+      ? f.recovery.checkpointRef.slice(checkpointPrefix.length)
+      : null;
+    let queryPlan: unknown = null;
+    let explainError: string | null = null;
+    if (carryScope) {
+      try {
+        const [planRow] = await database.appSql.begin(async tx => {
+          await tx.unsafe("SELECT set_config('app.workspace_id', $1, true)", [f.original.caller.workspaceId]);
+          await tx.unsafe("SELECT set_config('statement_timeout', $1, true)", [
+            String(PG_READ_TXN_DEFAULT_TIMEOUT_MS) + 'ms',
+          ]);
+          return tx.unsafe<Array<{ 'QUERY PLAN': unknown }>>(
+            "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " +
+              "SELECT note FROM harness_shared.carry_notes " +
+              "WHERE workspace_id = $1 AND scope = $2 LIMIT 1",
+            [f.original.caller.workspaceId, carryScope],
+          );
+        });
+        queryPlan = planRow?.['QUERY PLAN'] ?? null;
+      } catch (error) {
+        explainError = String(error);
+      }
+    } else {
+      explainError = 'recovery checkpoint ref is not a carry-note scope';
+    }
+    console.info('[R-5 getCarryNote diagnostic]', JSON.stringify({
+      returned, elapsedMs, lockWaitObserved, waitSamples, sampleErrors, queryPlan, explainError, callError,
+    }));
+    expect(lockWaitObserved).toBe(true);
+    expect(waitSamples.some(sample => sample.waitEventType === 'Lock')).toBe(true);
+    expect(returned).toBe(true);
     expect(await readAssumeCallerPause(f.caller.ownerId)).toBeNull();
     expect((await f.originStore.load())?.callerReturn).toMatchObject({ transitionKey: f.key,
       caller: f.caller, nativeProcessStart: f.caller.nativeProcessStart });

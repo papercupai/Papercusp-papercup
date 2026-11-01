@@ -338,6 +338,23 @@ describe('work_items:release — prior completion assertion warning (EI-20744001
     expect(b.results[0].completionAssertionWarning).toBeUndefined();
   });
 
+  it('does not attribute a completed ledger check to a later work-item reference', async () => {
+    const releasedItem = 'WI-10008236';
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'mvob1pt2-0000-530d07575482423aa1518c5bf28dc31d',
+        ts: '2026-10-25T20:53:26.630Z',
+        from: 'me',
+        summary: '💬 su · su-a26de messaged you re WI-10008236',
+        body:
+          'Thanks for confirming the holds. After your stated current-ledger/decision check is complete, please reply in this thread with (1) the exact served Portal build/runtime identity and route for WI-10008236 if verified, and (2) whether D-215/D-223 still hold EI-25744454665452865. If neither changes, say no change. I will keep both items unchanged until that reply.',
+      } as never,
+    ]);
+
+    const b = await body({ id: releasedItem });
+    expect(b.results[0].completionAssertionWarning).toBeUndefined();
+  });
+
   it('does not attribute a closed continuation gate to a later held item reference', async () => {
     const heldItem = 'EI-25808080765499113';
     const messageBody =

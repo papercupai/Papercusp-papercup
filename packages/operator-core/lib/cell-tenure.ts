@@ -27,13 +27,13 @@
  *     them, because a cell that was never read leaves no first-seen row to date it
  *     from — which is why {@link CellSpec.registeredOn} has to be DECLARED.
  *
- *  2. OBSERVABILITY. `tool_invocations` is pruned to 14 days
- *     (`DEFAULT_RETENTION_TARGETS` in telemetry-retention-action.ts). A window that
- *     reaches past retention reads absent history as absent demand. Note the
- *     admission rule's own doc says "0 calls in 30 days" AND "retention is about 30
- *     days"; that parenthetical was measured 2026-07-27 and is now STALE, so a
- *     tenure rule that inherited the literal 30 would query 16 days of guaranteed
- *     emptiness and count it as evidence.
+ *  2. OBSERVABILITY. The scheduled `telemetry-retention` routine's default for
+ *     `tool_invocations` is 30 days (`DEFAULT_RETENTION_TARGETS`, sourced from
+ *     `storage/table-retention.ts`). Explicit `storage:prune` calls can use shorter
+ *     windows, so this default does not guarantee rows remain after a manual trim.
+ *     A window that reaches past the actual retained horizon reads deleted history
+ *     as absent demand. The admission rule's nominal "0 calls in 30 days" window is
+ *     observable only when the full window remains retained.
  *
  *  3. DELIVERY PATH. `state:read` is not the only way a cell's value reaches an
  *     agent. `dev:pipeline_position` returns a `plane` block of ready re-read

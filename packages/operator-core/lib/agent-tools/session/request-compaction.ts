@@ -433,6 +433,29 @@ export default defineTool({
     // host that predates the carry-respawn capability. Fresh launches always
     // carry it; a stale host rides until the hard wall, where the improvements
     // watchdog's death detector ("Prompt is too long") recovers the session.
+    if (
+      availability.reason === 'host_socket_probe_unsupported' ||
+      availability.reason === 'host_socket_unavailable'
+    ) {
+      const probeUnsupported = availability.reason === 'host_socket_probe_unsupported';
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            requested: false,
+            respawn: false,
+            error: availability.reason,
+            hostSock: availability.host?.sock ?? null,
+            hostPid: availability.host?.pid ?? null,
+            note: probeUnsupported
+              ? 'This psu-pty host advertises carry-respawn but lacks the control-socket probe capability, so its listener cannot be confirmed. No carry-respawn was sent. Relaunch through a current managed psu host before relying on self-compaction.'
+              : 'The psu-pty host metadata exists, but its control-socket probe did not receive an acknowledgement. No carry-respawn was sent. Verify or relaunch the managed psu host before relying on self-compaction.',
+          }),
+        }],
+        isError: true,
+      };
+    }
     if (!availability.available) {
       return {
         content: [
@@ -959,6 +982,9 @@ export default defineTool({
                   hostSock: host.sock,
                   hostPid: host.pid,
                   hostConfirmation: injectResult.confirmation,
+                  ...(injectResult.transportErrorCode
+                    ? { hostTransportErrorCode: injectResult.transportErrorCode }
+                    : {}),
                   ...(hostRefusalReason ? { hostRefusalReason } : {}),
                 }
               : {}),
@@ -975,12 +1001,18 @@ export default defineTool({
                   // so the next diagnosis doesn't have to reverse-engineer it from `ps`
                   // + `find` (this filing's own investigation cost ~6 tool calls on that
                   // alone). `identity.ownerId` is already on the caller's side to compare.
-                  `Failed to reach the session TUI host socket (${host.sock}, host pid ${host.pid}) ` +
-                  `even after waiting up to ${CARRY_RESPAWN_SOCKET_TIMEOUT_MS}ms; try again. If this ` +
-                  'recurs, the host process may predate the ack-early carry-respawn fix (WI-5872 ' +
-                  'follow-up #2) — it never restarts on its own (only its child CLI does via ' +
-                  'carry-respawn), so a genuinely stale host requires ending this session and ' +
-                  'relaunching to pick up a current one.'
+                  (injectResult.confirmation === 'error'
+                    ? 'The connection to the session TUI host socket (' + host.sock +
+                      ', host pid ' + host.pid + ') failed before a host acknowledgement' +
+                      (injectResult.transportErrorCode ? ' (' + injectResult.transportErrorCode + ')' : '') +
+                      '. Verify or relaunch the managed psu host before retrying.'
+                    : injectResult.confirmation === 'timeout'
+                      ? 'No acknowledgement arrived from the session TUI host socket (' + host.sock +
+                        ', host pid ' + host.pid + ') within ' + CARRY_RESPAWN_SOCKET_TIMEOUT_MS +
+                        'ms. The host may have accepted the request without its acknowledgement; ' +
+                        'check the host event log before retrying.'
+                      : 'The session TUI host did not acknowledge the carry-respawn. Check the host ' +
+                        'event log before retrying.')
                 : // EI-19326331501849713: state the QUEUE, never the outcome. The old
                   // wording ("the host cuts this process ... it resumes automatically")
                   // described a cut that had not happened yet as though it had, and

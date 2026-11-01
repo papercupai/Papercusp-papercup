@@ -127,6 +127,57 @@ it('R26-PROVIDERS', () => {
   }
 });
 
+it.each(['claude', 'codex', 'omp'] as const)('recognizes replacement MCP shell calls in the %s provider transcript', provider => {
+  const context = { workspaceId: scope.workspaceId, harnessSlug: 'native', authorizationScope: scope.sourceBoundary,
+    actor: 'su-native', verifiedAgent: true, origin: 'agent' as const, provider, sessionId: 'session-1', complete: true };
+  const lines = ['one', 'two'].flatMap(id => {
+    const records: unknown[] = wire(provider, id);
+    if (provider === 'codex') {
+      records[0] = { timestamp: '2026-10-24T12:00:00Z', type: 'response_item', payload: {
+        type: 'function_call', namespace: 'functions', name: 'mcp__papercusp_su__capability_bash',
+        call_id: id, arguments: JSON.stringify({ command: 'rg private' }),
+      } };
+      records[1] = { timestamp: '2026-10-24T12:00:00Z', type: 'response_item', payload: {
+        type: 'function_call_output', call_id: id, output: '{"exit_code":0}',
+      } };
+    } else if (provider === 'claude') {
+      const block = (records[0] as { message: { content: { name: string }[] } }).message.content[0]!;
+      block.name = 'mcp__papercusp-su__capability_bash';
+    } else {
+      const block = (records[0] as { message: { content: { name: string }[] } }).message.content[0]!;
+      block.name = 'mcp__papercusp_su__capability_bash';
+    }
+    return records.map(record => JSON.stringify(record));
+  });
+  const calls = nativeTranscriptSources(lines, context);
+  expect(calls).toHaveLength(2);
+  expect(groupNativeOperations(calls.map(call => observe(call))).chains).toMatchObject([
+    { kind: 'shell', logicalDemand: 2, successCount: 2 },
+  ]);
+  expect(nativeTranscriptSources(lines, { ...context, complete: false }).map(call => observe(call)))
+    .toEqual([expect.objectContaining({ fingerprint: null, outcome: 'UNKNOWN' }),
+      expect.objectContaining({ fingerprint: null, outcome: 'UNKNOWN' })]);
+});
+
+it('keeps replacement names distinct from foreign servers, wrapper fanout and missing results', () => {
+  const original = source('replacement', { tool: 'capability:bash', args: { command: 'rg private' } });
+  const expected = observe(original);
+  for (const tool of ['capability_bash', 'capability.bash', 'mcp__papercusp__capability_bash',
+    'mcp__papercusp-su__capability_bash', 'functions.mcp__papercusp_su__capability_bash']) {
+    const call = { ...original, tool };
+    expect(observe(call)).toMatchObject({ kind: 'shell', fingerprint: expected.fingerprint, outcome: 'success' });
+    expect(observe({ ...call, result: null }).outcome).toBe('UNKNOWN');
+    expect(observe({ ...call, result: { ...call.result!, callId: 'other' } }).outcome).toBe('UNKNOWN');
+    expect(observe({ ...call, args: { command: 'rg private --hidden' } }).fingerprint).not.toBe(expected.fingerprint);
+  }
+  for (const tool of ['mcp__foreign__capability_bash', 'functions.mcp__foreign__capability_bash',
+    'mcp__papercusp-foreign__capability_bash', 'tools:invoke', 'functions.exec', 'capability:read']) {
+    expect(observe({ ...original, tool })).toMatchObject({ kind: null, fingerprint: null, outcome: 'UNKNOWN' });
+  }
+  expect(observe({ ...original, tool: 'mcp__papercusp_su__capability_terminal',
+    result: { ...original.result!, body: { opened: 1 } } })).toMatchObject({ kind: 'shell', outcome: 'UNKNOWN' });
+});
+
 it('R15-CURRENT-ACL R23-DERIVED-ACL', async () => {
   const rows = [source('one'), source('two')].map(s => observe(s));
   let allowed = true;

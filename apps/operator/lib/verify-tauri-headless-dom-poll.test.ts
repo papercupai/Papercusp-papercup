@@ -21,6 +21,15 @@ const src = readFileSync(SCRIPT, 'utf8');
 const helper = src.match(/cat > "\$POLL" <<'POLL_SCRIPT'\n([\s\S]*?)\nPOLL_SCRIPT/)?.[1];
 
 describe('EI-10822 — verify-tauri-headless DOM polling', () => {
+  it('shares the 30s default DOM timeout with the settle helper when unset', () => {
+    const sharedDefault = 'VERIFY_TAURI_DOM_TIMEOUT="${VERIFY_TAURI_DOM_TIMEOUT:-30}"';
+    const settleHelper = src.indexOf('cat > "$SETTLE" <<SETTLE_SCRIPT');
+    expect(src).toContain(sharedDefault);
+    expect(src).toContain('export VERIFY_TAURI_DOM_TIMEOUT');
+    expect(src.indexOf(sharedDefault)).toBeLessThan(settleHelper);
+    expect(helper).toContain('timeout="${VERIFY_TAURI_DOM_TIMEOUT:-30}"');
+  });
+
   it('exports the per-run helper to assertion commands and boot-only sessions', () => {
     expect(src).toContain('export VERIFY_TAURI_POLL="$POLL"');
     // EI-20226754912676562 re-pointed this half of the guard. --boot-only used

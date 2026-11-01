@@ -5,6 +5,7 @@
   "status": "preparation-only",
   "migrationAccepted": false,
   "preparedThroughUtc": "2026-10-29T03:53:55.291525Z",
+  "preparationUpdateUtc": "2026-10-31T23:05:13Z",
   "sourceInventory": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/inventory.json",
   "observationDateUtc": "2026-10-29",
   "destinationCensus": {
@@ -89,7 +90,91 @@
       "papercusp-marketplace-tarballs: publish archives"
     ],
     "disposition": "Precisely bounded owned inaccessible-data exceptions. Ownership does not mean recovery; unknown keys, counts and migration-window deltas remain unknown.",
-    "accountActionReference": "WI-6554700010022667"
+    "accountActionReference": "WI-6554700010022667",
+    "ownershipReadback": {
+      "observedAtUtc": "2026-10-31T23:05:13Z",
+      "method": "Ordinary work_items:claim followed by authoritative work_items:get; no provider request",
+      "workItem": "WI-6554700010025592",
+      "assignee": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea",
+      "state": "open"
+    },
+    "integrationExceptions": [
+      {
+        "integration": "cupboard-workspace-host",
+        "sourceBucket": "papercusp-marketplace-tarballs",
+        "knownNamespace": "artifacts/workspace-host/sha256/",
+        "scope": "Unreconciled original workspace-host objects and original multipart state beyond saved identities",
+        "exceptionWorkItem": "WI-6554700010025592",
+        "sourceObjectCount": null,
+        "sourceHighWaterMark": null,
+        "migrationWindowDeltas": null,
+        "continuousSourceRetentionVerified": false
+      },
+      {
+        "integration": "cupboard-self-describing",
+        "sourceBucket": "papercusp-marketplace-tarballs",
+        "knownNamespace": "artifacts/cupboard/sha256/",
+        "scope": "Unreconciled original self-describing public artifacts",
+        "exceptionWorkItem": "WI-6554700010025592",
+        "sourceObjectCount": null,
+        "sourceHighWaterMark": null,
+        "migrationWindowDeltas": null,
+        "continuousSourceRetentionVerified": false
+      },
+      {
+        "integration": "cupboard-private-creator",
+        "sourceBucket": "papercusp-marketplace-tarballs",
+        "knownNamespace": "artifacts/cupboard/sha256/",
+        "scope": "Unreconciled private creator objects; shared bytes do not imply public visibility",
+        "exceptionWorkItem": "WI-6554700010025592",
+        "sourceObjectCount": null,
+        "sourceHighWaterMark": null,
+        "migrationWindowDeltas": null,
+        "continuousSourceRetentionVerified": false
+      },
+      {
+        "integration": "cupboard-public-mirror",
+        "sourceBucket": "papercusp-marketplace-tarballs",
+        "knownNamespace": null,
+        "scope": "Unreconciled original public mirror population; the pinned inventory does not specify a namespace",
+        "exceptionWorkItem": "WI-6554700010025592",
+        "sourceObjectCount": null,
+        "sourceHighWaterMark": null,
+        "migrationWindowDeltas": null,
+        "continuousSourceRetentionVerified": false
+      },
+      {
+        "integration": "publish-archive",
+        "sourceBucket": "papercusp-marketplace-tarballs",
+        "knownNamespace": "publish/<tenant>/<deployment>/",
+        "scope": "Unreconciled original archive manifests and files; absence of a Worker in one account does not establish absent source data",
+        "exceptionWorkItem": "WI-6554700010025592",
+        "sourceObjectCount": null,
+        "sourceHighWaterMark": null,
+        "migrationWindowDeltas": null,
+        "continuousSourceRetentionVerified": false
+      },
+      {
+        "integration": "release-producers",
+        "sourceBucket": "papercusp-releases",
+        "knownNamespace": null,
+        "scope": "Unreconciled desktop/mobile/TUI payloads, updater manifests, history and instructions",
+        "exceptionWorkItem": "WI-6554700010025592",
+        "sourceObjectCount": null,
+        "sourceHighWaterMark": null,
+        "migrationWindowDeltas": null,
+        "continuousSourceRetentionVerified": false
+      }
+    ],
+    "coverageRule": "Rows map every integration with a sourceBucket in the pinned inventory. Shared namespaces can overlap: rows are integration responsibilities, not disjoint object populations or a complete source listing. Ownership resolves through this exception's authoritative work-item, not a copied assignee string.",
+    "recoveryPrerequisites": {
+      "sourceAccessConversation": "conv-mvkxyaso-0000-73d49fff8b9c4893930607df2d23052a",
+      "conversationReadback": { "state": "open", "accepted_answer": null },
+      "retentionRequired": "Authoritative exact-bucket evidence spanning the cutover interval; restored current access alone does not prove historical continuous retention",
+      "reconciliationRequired": "Exact source census and high-water mark plus cutover-window deltas or a verified writer fence",
+      "unknownMultipart": "Preserve the original journal and unknown outcome; no retry/reset/rebuild",
+      "acceptance": "incomplete; owned exceptions do not waive RETAIN or R5"
+    }
   },
   "retention": {
     "sourceDeletionPerformedThisTurn": false,

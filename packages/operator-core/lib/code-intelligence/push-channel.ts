@@ -382,7 +382,8 @@ export function firstTouchFact(input: PushInput, snapshot: PushSnapshot, path: s
       + (symbol.callers.some(site => site.workspace) ? ` [${[...new Set(symbol.callers.map(site => site.workspace ?? 'workspace unknown'))].slice(0, 2).join(', ')}]` : ' [workspace unknown]'));
     const links = (values: readonly string[] | null | undefined) => values?.length ? values.slice(0, 2).join(', ') : 'unknown';
     return { leg: 'first-touch', subject: path, citedPaths: [path, ...consumers.slice(0, 2), ...tests.slice(0, 2)], suggestedCall,
-      text: `${path}: ${consumers.length} static file importers in this snapshot; examples: ${consumers.slice(0, 2).join(', ') || 'unknown'}.`
+      text: `${path}: ${consumers.length} static file importer${consumers.length === 1 ? '' : 's'} in this snapshot.`
+        + `\nImporter examples: ${consumers.slice(0, 2).join(', ') || 'unknown'}.`
         + `\nExports (up to 3): ${exports.join('; ') || 'unknown'}.`
         + `\nTests with static import reach${queue.length ? ' (bounded search)' : ''}: ${reachedTestsText(tests)}.`
         + `\nAnchored docs: ${links(sourceLinks?.docs)}. Spec evidence links: ${links(sourceLinks?.specs)} (currentness unknown).`

@@ -462,9 +462,29 @@ describe('runCrossLegChecks', () => {
     expect(Date.now() - startedAt).toBeLessThan(2_000);
     expect(report.clean).toEqual([]);
     expect(report.red).toEqual([]);
-    expect(report.undetermined).toEqual([
-      { npmScript: 'lint:tsc:stuck', reason: 'timed out after 50ms' },
-    ]);
+    expect(report.undetermined).toHaveLength(1);
+    expect(report.undetermined[0]?.npmScript).toBe('lint:tsc:stuck');
+    expect(report.undetermined[0]?.reason).toMatch(/^made no compiler progress for 50ms \(elapsed \d+ms\)$/);
+  });
+
+  it('keeps a queued-service cross-leg alive through its progressing fallback', async () => {
+    const marker = `${CROSS_LEG_MARKER} leg=slow status=clean members=1 nonMembers=0 regressed=0`;
+    writeFileSync(join(root, 'progressing-leg.mjs'),
+      "let n=0;\n" +
+      "console.error('TSC_SERVICE state=queued requestId=service-1 resultOrigin=pending');\n" +
+      "setTimeout(()=>{\n" +
+      "  console.log('LINT_TSC_CROSS_LEG_PROGRESS leg=slow phase=diagnostics-start elapsedMs=1500');\n" +
+      "  const timer=setInterval(()=>{\n" +
+      "    n+=1;\n" +
+      "    console.log('LINT_TSC_CROSS_LEG_PROGRESS leg=slow phase=diagnostics-running elapsedMs='+(1500+n*300));\n" +
+      `    if(n===5){clearInterval(timer);console.log(${JSON.stringify(marker)});}\n` +
+      "  },300);\n" +
+      "},1500);\n");
+    const report = await runCrossLegChecks({ root, childTimeoutMs: 2000,
+      plans: [{ npmScript: 'lint:tsc:slow', scriptPath: 'progressing-leg.mjs', files: ['a/src/f.ts'] }] });
+    expect(report.clean).toEqual(['lint:tsc:slow']);
+    expect(report.red).toEqual([]);
+    expect(report.undetermined).toEqual([]);
   });
 
   it('retains the last compiler phase and diagnostic when the consumer times out', async () => {

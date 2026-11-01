@@ -8,7 +8,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { deriveSelfWake, isStrandedMember } from './presence-selfwake';
+import type { Sql } from 'postgres';
+import { deriveSelfWake, fetchSelfWake, isStrandedMember } from './presence-selfwake';
 import { deriveVerdict } from './liveness-oracle';
 
 describe('deriveSelfWake', () => {
@@ -59,6 +60,58 @@ describe('isStrandedMember', () => {
     // A degraded fetch must never manufacture an escalation-worthy claim.
     expect(isStrandedMember({ sessionState: 'parked', selfWake: undefined })).toBe(false);
     expect(isStrandedMember({ sessionState: 'parked', selfWake: null })).toBe(false);
+  });
+});
+
+describe('fetchSelfWake — own inbox await classification', () => {
+  it('counts a bounded wake-on-timeout await on the own inbox key', async () => {
+    const ownerId = 'su-inbox-waiter';
+    const queryTexts: string[] = [];
+    const sql = (async (strings: TemplateStringsArray) => {
+      const query = strings.join('?');
+      queryTexts.push(query);
+      if (query.includes('FROM harness_shared.routines')) return [];
+      if (query.includes('FROM harness_shared.event_awaits')) {
+        return query.includes('expires_ts IS NOT NULL') && query.includes("timeout_behavior = 'wake'")
+          ? [{ subscriber_id: ownerId }]
+          : [];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const result = await fetchSelfWake([ownerId], sql);
+
+    expect(result.get(ownerId)).toMatchObject({
+      loopArmed: false,
+      standingEventAwait: true,
+      selfWake: 'event',
+    });
+    const awaitQuery = queryTexts.find((query) => query.includes('FROM harness_shared.event_awaits')) ?? '';
+    expect(awaitQuery).toContain('expires_ts IS NOT NULL');
+    expect(awaitQuery).toContain("timeout_behavior = 'wake'");
+    expect(awaitQuery).toContain('note LIKE');
+  });
+
+  it('does not count the always-armed unbounded inbox keepalive', async () => {
+    const ownerId = 'su-inbox-keepalive';
+    const sql = (async (strings: TemplateStringsArray) => {
+      const query = strings.join('?');
+      if (query.includes('FROM harness_shared.routines')) return [];
+      if (query.includes('FROM harness_shared.event_awaits')) {
+        return query.includes('expires_ts IS NOT NULL') && query.includes("timeout_behavior = 'wake'")
+          ? []
+          : [{ subscriber_id: ownerId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const result = await fetchSelfWake([ownerId], sql);
+
+    expect(result.get(ownerId)).toMatchObject({
+      loopArmed: false,
+      standingEventAwait: false,
+      selfWake: 'none',
+    });
   });
 });
 

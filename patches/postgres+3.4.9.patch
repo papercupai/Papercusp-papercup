@@ -114,7 +114,7 @@ index 8e79170..9afca0c 100644
    }
  
    function connected() {
-@@ -423,15 +477,25 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -423,14 +477,24 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
  
    function terminate() {
      terminated = true
@@ -140,8 +140,7 @@ index 8e79170..9afca0c 100644
      }
      ended && (ended(), ending = ended = null)
    }
- 
-@@ -439,7 +498,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -439,7 +503,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      incoming = Buffer.alloc(0)
      remaining = 0
      incomings = null
@@ -156,7 +155,7 @@ index 8e79170..9afca0c 100644
      socket.removeListener('data', data)
      socket.removeListener('connect', connected)
      idleTimer.cancel()
-@@ -497,6 +563,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -497,6 +568,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      let column
      let value
  
@@ -168,7 +167,7 @@ index 8e79170..9afca0c 100644
      const row = query.isRaw ? new Array(query.statement.columns.length) : {}
      for (let i = 0; i < query.statement.columns.length; i++) {
        column = query.statement.columns[i]
-@@ -534,15 +605,46 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -534,15 +610,47 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      }
    }
  
@@ -194,6 +193,7 @@ index 8e79170..9afca0c 100644
 +        errorClass: error && typeof error.name === 'string' ? error.name
 +          : error && error.constructor && typeof error.constructor.name === 'string' ? error.constructor.name : null,
 +        serverRoutine: error && typeof error.routine === 'string' ? error.routine : null,
++        queryOrigin: query.origin,
 +        context: diagnostic.context,
 +        result: error ? undefined : (results || result)
 +      })
@@ -333,6 +333,59 @@ index ffbe7ae..929b6a8 100644
      }
    }
  
+@@ -370,4 +406,7 @@ function Postgres(a, b) {
+-    await 1
+-    let timer
+-    return ending = Promise.race([
+-      new Promise(r => timeout !== null && (timer = setTimeout(destroy, timeout * 1000, r))),
++    const endCaller = timeout !== null && typeof options.onresult === 'function'
++      ? new Error().stack
++      : null
++    await 1
++    let timer
++    return ending = Promise.race([
++      new Promise(r => timeout !== null && (timer = setTimeout(() => destroy(r, endCaller), timeout * 1000))),
+@@ -385,6 +421,37 @@ function Postgres(a, b) {
+-  async function destroy(resolve) {
++  async function destroy(resolve, endCaller) {
+     await Promise.all(connections.map(c => c.terminate()))
+-    while (queries.length)
+-      queries.shift().reject(Errors.connection('CONNECTION_DESTROYED', options))
++    while (queries.length) {
++      const query = queries.shift()
++      const error = Errors.connection('CONNECTION_DESTROYED', options)
++      if (query instanceof Query && typeof options.onresult === 'function') {
++        try {
++          const diagnostic = query.resultDiagnostic
++          const startedAt = diagnostic && diagnostic.startedAt || query.diagnosticHandleStartedAt
++          options.onresult({
++            connectionId: 0,
++            queryId: diagnostic ? diagnostic.queryId : 0,
++            backendPid: query.state && typeof query.state.pid === 'number' ? query.state.pid : null,
++            query: diagnostic && diagnostic.query || '',
++            command: null,
++            rowCount: diagnostic ? diagnostic.rowCount : 0,
++            wireBytes: diagnostic ? diagnostic.wireBytes : 0,
++            elapsedMs: Number.isFinite(startedAt) ? Math.max(0, performance.now() - startedAt) : null,
++            preBuildMs: diagnostic && diagnostic.preBuildMs != null ? diagnostic.preBuildMs : null,
++            status: 'error',
++            errorCode: error && typeof error.code === 'string' ? error.code : null,
++            errorClass: error && typeof error.name === 'string' ? error.name
++              : error && error.constructor && typeof error.constructor.name === 'string' ? error.constructor.name : null,
++            serverRoutine: null,
++            context: diagnostic ? diagnostic.context : query.diagnosticContext,
++            queryOrigin: query.origin,
++            endCaller,
++            result: undefined
++          })
++        } catch (_) {
++          // Diagnostics must never alter the queued query's rejection.
++        }
++      }
++      query.reject(error)
++    }
+     resolve()
+   }
 @@ -421,6 +454,7 @@ function Postgres(a, b) {
  
    function onclose(c, e) {
@@ -485,7 +538,7 @@ index 07f6716..c6bf17d 100644
    }
  
    function connected() {
-@@ -421,15 +475,25 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -421,14 +475,24 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
  
    function terminate() {
      terminated = true
@@ -511,8 +564,7 @@ index 07f6716..c6bf17d 100644
      }
      ended && (ended(), ending = ended = null)
    }
- 
-@@ -437,7 +496,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -437,7 +501,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      incoming = Buffer.alloc(0)
      remaining = 0
      incomings = null
@@ -527,7 +579,7 @@ index 07f6716..c6bf17d 100644
      socket.removeListener('data', data)
      socket.removeListener('connect', connected)
      idleTimer.cancel()
-@@ -495,6 +561,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -495,6 +566,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      let column
      let value
  
@@ -539,7 +591,7 @@ index 07f6716..c6bf17d 100644
      const row = query.isRaw ? new Array(query.statement.columns.length) : {}
      for (let i = 0; i < query.statement.columns.length; i++) {
        column = query.statement.columns[i]
-@@ -532,15 +603,46 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -532,15 +608,47 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      }
    }
  
@@ -565,6 +617,7 @@ index 07f6716..c6bf17d 100644
 +        errorClass: error && typeof error.name === 'string' ? error.name
 +          : error && error.constructor && typeof error.constructor.name === 'string' ? error.constructor.name : null,
 +        serverRoutine: error && typeof error.routine === 'string' ? error.routine : null,
++        queryOrigin: query.origin,
 +        context: diagnostic.context,
 +        result: error ? undefined : (results || result)
 +      })
@@ -704,6 +757,59 @@ index f09c61c..a874fff 100644
      }
    }
  
+@@ -369,4 +405,7 @@ function Postgres(a, b) {
+-    await 1
+-    let timer
+-    return ending = Promise.race([
+-      new Promise(r => timeout !== null && (timer = setTimeout(destroy, timeout * 1000, r))),
++    const endCaller = timeout !== null && typeof options.onresult === 'function'
++      ? new Error().stack
++      : null
++    await 1
++    let timer
++    return ending = Promise.race([
++      new Promise(r => timeout !== null && (timer = setTimeout(() => destroy(r, endCaller), timeout * 1000))),
+@@ -384,6 +420,37 @@ function Postgres(a, b) {
+-  async function destroy(resolve) {
++  async function destroy(resolve, endCaller) {
+     await Promise.all(connections.map(c => c.terminate()))
+-    while (queries.length)
+-      queries.shift().reject(Errors.connection('CONNECTION_DESTROYED', options))
++    while (queries.length) {
++      const query = queries.shift()
++      const error = Errors.connection('CONNECTION_DESTROYED', options)
++      if (query instanceof Query && typeof options.onresult === 'function') {
++        try {
++          const diagnostic = query.resultDiagnostic
++          const startedAt = diagnostic && diagnostic.startedAt || query.diagnosticHandleStartedAt
++          options.onresult({
++            connectionId: 0,
++            queryId: diagnostic ? diagnostic.queryId : 0,
++            backendPid: query.state && typeof query.state.pid === 'number' ? query.state.pid : null,
++            query: diagnostic && diagnostic.query || '',
++            command: null,
++            rowCount: diagnostic ? diagnostic.rowCount : 0,
++            wireBytes: diagnostic ? diagnostic.wireBytes : 0,
++            elapsedMs: Number.isFinite(startedAt) ? Math.max(0, performance.now() - startedAt) : null,
++            preBuildMs: diagnostic && diagnostic.preBuildMs != null ? diagnostic.preBuildMs : null,
++            status: 'error',
++            errorCode: error && typeof error.code === 'string' ? error.code : null,
++            errorClass: error && typeof error.name === 'string' ? error.name
++              : error && error.constructor && typeof error.constructor.name === 'string' ? error.constructor.name : null,
++            serverRoutine: null,
++            context: diagnostic ? diagnostic.context : query.diagnosticContext,
++            queryOrigin: query.origin,
++            endCaller,
++            result: undefined
++          })
++        } catch (_) {
++          // Diagnostics must never alter the queued query's rejection.
++        }
++      }
++      query.reject(error)
++    }
+     resolve()
+   }
 @@ -420,6 +453,7 @@ function Postgres(a, b) {
  
    function onclose(c, e) {
@@ -856,7 +962,7 @@ index 1b1cccd..feb611e 100644
    }
  
    function connected() {
-@@ -421,15 +475,25 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -421,14 +475,24 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
  
    function terminate() {
      terminated = true
@@ -882,8 +988,7 @@ index 1b1cccd..feb611e 100644
      }
      ended && (ended(), ending = ended = null)
    }
- 
-@@ -437,7 +496,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -437,7 +501,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      incoming = Buffer.alloc(0)
      remaining = 0
      incomings = null
@@ -898,7 +1003,7 @@ index 1b1cccd..feb611e 100644
      socket.removeListener('data', data)
      socket.removeListener('connect', connected)
      idleTimer.cancel()
-@@ -495,6 +561,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -495,6 +566,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      let column
      let value
  
@@ -910,7 +1015,7 @@ index 1b1cccd..feb611e 100644
      const row = query.isRaw ? new Array(query.statement.columns.length) : {}
      for (let i = 0; i < query.statement.columns.length; i++) {
        column = query.statement.columns[i]
-@@ -532,15 +603,46 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -532,15 +608,47 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      }
    }
  
@@ -936,6 +1041,7 @@ index 1b1cccd..feb611e 100644
 +        errorClass: error && typeof error.name === 'string' ? error.name
 +          : error && error.constructor && typeof error.constructor.name === 'string' ? error.constructor.name : null,
 +        serverRoutine: error && typeof error.routine === 'string' ? error.routine : null,
++        queryOrigin: query.origin,
 +        context: diagnostic.context,
 +        result: error ? undefined : (results || result)
 +      })
@@ -1075,6 +1181,59 @@ index c7fba3d..32fae94 100644
      }
    }
  
+@@ -369,4 +405,7 @@ function Postgres(a, b) {
+-    await 1
+-    let timer
+-    return ending = Promise.race([
+-      new Promise(r => timeout !== null && (timer = setTimeout(destroy, timeout * 1000, r))),
++    const endCaller = timeout !== null && typeof options.onresult === 'function'
++      ? new Error().stack
++      : null
++    await 1
++    let timer
++    return ending = Promise.race([
++      new Promise(r => timeout !== null && (timer = setTimeout(() => destroy(r, endCaller), timeout * 1000))),
+@@ -384,6 +420,37 @@ function Postgres(a, b) {
+-  async function destroy(resolve) {
++  async function destroy(resolve, endCaller) {
+     await Promise.all(connections.map(c => c.terminate()))
+-    while (queries.length)
+-      queries.shift().reject(Errors.connection('CONNECTION_DESTROYED', options))
++    while (queries.length) {
++      const query = queries.shift()
++      const error = Errors.connection('CONNECTION_DESTROYED', options)
++      if (query instanceof Query && typeof options.onresult === 'function') {
++        try {
++          const diagnostic = query.resultDiagnostic
++          const startedAt = diagnostic && diagnostic.startedAt || query.diagnosticHandleStartedAt
++          options.onresult({
++            connectionId: 0,
++            queryId: diagnostic ? diagnostic.queryId : 0,
++            backendPid: query.state && typeof query.state.pid === 'number' ? query.state.pid : null,
++            query: diagnostic && diagnostic.query || '',
++            command: null,
++            rowCount: diagnostic ? diagnostic.rowCount : 0,
++            wireBytes: diagnostic ? diagnostic.wireBytes : 0,
++            elapsedMs: Number.isFinite(startedAt) ? Math.max(0, performance.now() - startedAt) : null,
++            preBuildMs: diagnostic && diagnostic.preBuildMs != null ? diagnostic.preBuildMs : null,
++            status: 'error',
++            errorCode: error && typeof error.code === 'string' ? error.code : null,
++            errorClass: error && typeof error.name === 'string' ? error.name
++              : error && error.constructor && typeof error.constructor.name === 'string' ? error.constructor.name : null,
++            serverRoutine: null,
++            context: diagnostic ? diagnostic.context : query.diagnosticContext,
++            queryOrigin: query.origin,
++            endCaller,
++            result: undefined
++          })
++        } catch (_) {
++          // Diagnostics must never alter the queued query's rejection.
++        }
++      }
++      query.reject(error)
++    }
+     resolve()
+   }
 @@ -420,6 +453,7 @@ function Postgres(a, b) {
  
    function onclose(c, e) {
@@ -1141,7 +1300,7 @@ index 13c3432..ef2a2fb 100644
    /** Transform hooks */
    transform: {
      /** Transforms outcoming undefined values */
-@@ -198,6 +213,26 @@ type Return<T, K extends readonly any[]> =
+@@ -198,6 +213,28 @@ type Return<T, K extends readonly any[]> =
    postgres.Helper<T, K>
  
  declare namespace postgres {
@@ -1160,6 +1319,8 @@ index 13c3432..ef2a2fb 100644
 +    errorCode: string | null;
 +    errorClass: string | null;
 +    serverRoutine: string | null;
++    queryOrigin?: string | null;
++    endCaller?: string | null;
 +    context?: unknown;
 +    /** Exact fulfilled object, only for a local synchronous weak-reference observer. */
 +    result?: object;

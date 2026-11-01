@@ -18,6 +18,8 @@ import {
   listSpecClauses,
   setSpecClause,
 } from './spec-clauses-store';
+import { verifyPlanAcceptanceRef } from './spec-clause-compiler';
+import { getPlanRevisionSnapshot } from './revisions';
 
 const proofObligationIds = z
   .array(z.string().trim().min(1).max(200).regex(SPEC_PROOF_OBLIGATION_ID_RE))
@@ -266,6 +268,23 @@ export default defineTool({
             reason:
               `${spec.specId} behavior is projected from rubric ${current.sourceBar.rubricSlug} BAR ${current.sourceBar.barKey}. ` +
               'Amend the canonical criterion.model/acceptance condition with rubrics:amend; plans:set-specs cannot persist edits to projected behavior.',
+          };
+        }
+        const acceptanceRefCheck = await verifyPlanAcceptanceRef(
+          spec.acceptanceRef,
+          spec.planItemId,
+          async (planSlug, revision) =>
+            (await getPlanRevisionSnapshot(planSlug, revision, { harnessSlug })) !== null,
+        );
+        if (!acceptanceRefCheck.ok) {
+          return {
+            ok: false as const,
+            slug: reportedSlug,
+            error: acceptanceRefCheck.code,
+            specId: spec.specId,
+            reason: acceptanceRefCheck.reason,
+            repairHint:
+              'Use an existing positive plan revision and make the #P-NNN suffix exactly match planItemId.',
           };
         }
         const result = await setSpecClause({

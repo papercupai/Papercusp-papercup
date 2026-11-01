@@ -534,15 +534,14 @@ async function liveLaunchMemberIdsForSizing(args: {
 }
 
 /**
- * Open every planned wave before waiting on any wave's boot verification.
+ * Verify the one-member canary before opening any later wave.
  *
- * A launch wave's verifier intentionally has a bounded wait, but that wait is still
- * long enough to consume the whole launch call on a slow first member. Keeping the
- * phase boundary explicit prevents a slow verifier from serialising later spawns.
- * Positive spawn failures still stop new waves; already-opened waves are verified in
- * the second phase so the transaction reports every observation it can.
+ * A quota-blocked account can leave a fresh CLI open without any agent-chosen call.
+ * Waiting for the canary's first-turn verdict before opening the cohort prevents one
+ * account wall from stranding every planned member. Once the canary verifies, later
+ * waves still open before their bounded verification, keeping normal launches efficient.
  */
-export async function runLaunchWavesBeforeVerification<T>(
+export async function runLaunchWavesCanaryFirst<T>(
   waveIndices: readonly (readonly number[])[],
   requestedMemberIds: readonly string[],
   spawnWave: (
@@ -555,7 +554,7 @@ export async function runLaunchWavesBeforeVerification<T>(
     indices: readonly number[];
     ownerIds: readonly string[];
     payload: T;
-  }) => Promise<void>,
+  }) => Promise<boolean>,
 ): Promise<void> {
   const records: Array<{
     waveIndex: number;
@@ -569,10 +568,14 @@ export async function runLaunchWavesBeforeVerification<T>(
     const ownerIds = indices.map((i) => requestedMemberIds[i]);
     const spawned = await spawnWave(waveIndex, indices, ownerIds);
     records.push({ waveIndex, indices, ownerIds, payload: spawned.payload });
+    if (waveIndex === 0) {
+      const canaryVerified = await verifyWave(records[0]);
+      if (!canaryVerified || spawned.stopAfterSpawn) return;
+    }
     if (spawned.stopAfterSpawn) break;
   }
 
-  for (const record of records) {
+  for (const record of records.slice(1)) {
     await verifyWave(record);
   }
 }
@@ -5359,20 +5362,20 @@ export default defineTool({
 
     const waveIndices: number[][] = [];
     // EI-20437060078324174: members whose verification window expired WITHOUT an
-    // observation either way. Not failures — no 502, no failed[] entry. They are
-    // re-probed once after the last wave and reported honestly as unverified.
+    // observation either way. Not failures — no 502, no failed[] entry. The canary
+    // gets one bounded re-probe before later waves open; subsequent waves get the
+    // same re-probe before their result is reported as unverified.
     const unconfirmed: Array<{ ownerId: string; note: string }> = [];
     if (openCount > 0) waveIndices.push([0]);
     for (let start = 1; start < openCount; start += 3) {
       waveIndices.push(Array.from({ length: Math.min(3, openCount - start) }, (_v, offset) => start + offset));
     }
-    // Spawn and verification are deliberately separate phases. A slow first-member
-    // verifier must not consume the call budget before later bounded waves have even
-    // been opened (WI-39368). A positive spawn failure still stops NEW waves, while
-    // every wave that did open is verified below and reported in the transaction.
+    // The one-member canary must take a real first turn before any later wave opens.
+    // After that positive signal, later bounded waves still open before their own
+    // verification so a slow member does not serialize the whole launch.
     const completeLaunch = async (): Promise<string | null> => {
       try {
-        await runLaunchWavesBeforeVerification(
+        await runLaunchWavesCanaryFirst(
           waveIndices,
           requestedMemberIds,
           async (waveIndex, indices, ownerIds) => {
@@ -5551,13 +5554,15 @@ export default defineTool({
 
             // A positive spawn failure still leaves the wave partial; an unconfirmed or
             // failed verification is likewise reported without being mistaken for a
-            // successful wave. Later waves have already been spawned by this point.
+            // successful wave. If this is the canary, the helper stops before opening
+            // later waves; subsequent waves have already opened before their check.
             if (waveVerified && !spawnFailed && openedThisWave.length === wave.ownerIds.length) {
               wave.state = 'verified';
             } else {
               wave.state = 'partial';
             }
             await persistLaunchTransaction();
+            return waveVerified && !spawnFailed;
           },
         );
         // P-003 worker attestation is a stricter readiness contract than the

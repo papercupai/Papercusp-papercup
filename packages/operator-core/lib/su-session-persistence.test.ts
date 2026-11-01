@@ -34,6 +34,30 @@ function record(over: Partial<DurableSuSessionRecord> = {}): DurableSuSessionRec
 }
 
 describe('P-004 durable SU-session persistence', () => {
+  it.each((['claude', 'codex'] as const).flatMap(backend =>
+    (['pty', 'programmatic'] as const).map(executionKind => ({ backend, executionKind })),
+  ))('SU-EXEC R-8 acceptance contract: $backend $executionKind reconciles lost runtimes without a duplicate launch', ({ backend, executionKind }) => {
+    const snapshot = {
+      identity: { agentChatId: 'chat-1', advSessionId: 41, backend, nativeSessionId: 'native-1',
+        ownerId: 'su-owner', workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+      lifecycle: 'ready', runtimeGeneration: 1, executionKind, role: 'su', backendExtension: { backend },
+    };
+    expect(isPersistedSuSessionDescriptor(snapshot)).toBe(true);
+    if (!isPersistedSuSessionDescriptor(snapshot)) throw new Error('Invalid fixture');
+    const saved = record({ backend, descriptor: snapshot });
+    expect(suppressDuplicateSuLaunch(saved, { advSessionId: 41 })).toBe(true);
+    expect(classifySuSessionRuntime(saved, () => true)).toMatchObject({ action: 'reattach', reason: 'live_pid' });
+    expect(classifySuSessionRuntime(saved, () => false)).toEqual({ action: 'reattach', reason: 'runtime_replacement', stalePid: true });
+    expect(classifySuSessionRuntime({ ...saved, pid: null }, () => false)).toEqual({ action: 'reattach', reason: 'native_identity', stalePid: false });
+    const lostIdentity = { ...saved, nativeSessionId: null };
+    expect(classifySuSessionRuntime(lostIdentity, () => false)).toEqual({ action: 'relaunch', reason: 'stale_pid_without_native_identity', stalePid: true });
+    expect(classifySuSessionRuntime({ ...lostIdentity, pid: null }, () => false)).toEqual({ action: 'wait', reason: 'pid_unknown', stalePid: false });
+    const ended = { ...saved, endedAt: '2026-11-01T00:00:00Z' };
+    expect(classifySuSessionRuntime(ended, () => false)).toMatchObject({ action: 'rematerialize', reason: 'ended_archived' });
+    expect(suppressDuplicateSuLaunch(ended, { advSessionId: 41 })).toBe(false);
+    expect(snapshot.executionKind).toBe(executionKind);
+  });
+
   it('adds binding, descriptor, lifecycle and generation state to adv_sessions with a unique chat index', () => {
     expect(MIGRATION).toContain('ADD COLUMN IF NOT EXISTS su_agent_chat_id text');
     expect(MIGRATION).toContain('ADD COLUMN IF NOT EXISTS su_session_descriptor jsonb');

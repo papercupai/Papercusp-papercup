@@ -2055,6 +2055,23 @@ export async function publishDependencyGeneration({
       childPid: () => publisherResult?.pid ?? null,
       log,
     }, async () => {
+      // A scoped install can skip the root postinstall, and a generation cache
+      // hit only proves the copied trees match their donor. Validate the donor's
+      // tracked patches before either a cache hit or a fresh publication can
+      // advertise success. Keep this inside the same install-reader boundary.
+      if (existsSync(join(repoRoot, "patches"))) {
+        try {
+          const { checkInstalledPatchPostimages } = await import("./check-installed-patch-postimages.mjs");
+          const patches = checkInstalledPatchPostimages({ repoRoot });
+          if (!patches.ok) throw new Error(patches.errors.join("\n"));
+        } catch (error) {
+          log("NPM_INSTALL_SAFE_FATAL: installed patch postimages are unverified; " +
+            "refusing dependency generation publication. Repair through the root postinstall " +
+            "under the install writer before retrying. " +
+            (error instanceof Error ? error.message : String(error)));
+          return { status: 1 };
+        }
+      }
       publisherResult = runPublisher(
         "bash",
         [DEPENDENCY_GENERATION_SCRIPT, "--integration", repoRoot],

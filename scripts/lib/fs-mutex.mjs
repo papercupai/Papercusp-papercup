@@ -571,7 +571,8 @@ function ticketId(startedAtMs) {
 // only, key- and length-capped, and anything unrepresentable is DROPPED rather than
 // coerced: a missing field reads as "not declared", which is honest, whereas a coerced
 // "[object Object]" reads as data.
-const INTENT_MAX_KEYS = 12;
+// Leave room for the runner's caller/source fingerprint and optional discardability.
+const INTENT_MAX_KEYS = 16;
 const INTENT_MAX_STRING_CHARS = 200;
 
 function sanitizeIntent(intent) {
@@ -848,6 +849,10 @@ export async function withFsMutex(name, fn, opts = {}) {
     host: hostname(),
     startedAt: new Date(startedAt).toISOString(),
     name,
+    ...sanitizeIntent({
+      ownerId: process.env.PAPERCUSP_SID,
+      taskId: process.env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID,
+    }),
     ...(intent ? { intent } : {}),
   };
 

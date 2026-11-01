@@ -2689,9 +2689,13 @@ export function prepareSuLaunch(boot, {
         // CODEX_HOME is the executable child route and is supplied by the
         // authenticated bootstrap envelope. Older operator builds can omit the
         // duplicate top-level codexHome field while still materializing this
-        // exact managed home; requiring both representations made that rolling
-        // deployment shape fail after the route had already been proven.
+        // exact managed home; when both are present they must still identify
+        // the same home before its managed config can prove the route.
         if (!childHome) throw new Error("child Codex home is missing");
+        if (boot.codexHome != null
+          && (typeof boot.codexHome !== "string" || boot.codexHome.trim() !== childHome)) {
+          throw new Error("server and child Codex homes differ");
+        }
         const text = readFileSync(join(childHome, "config.toml"), "utf8");
         const completeManagedBlocks = [
           ["# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT", "# END PAPERCUSP_CODEX_GATEWAY_ROOT"],

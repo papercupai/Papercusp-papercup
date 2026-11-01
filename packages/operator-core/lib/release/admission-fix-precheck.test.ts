@@ -93,6 +93,26 @@ describe('precheckPopulation (P-006 / R6)', () => {
       expect(isTestFilePath(p), p).toBe(false);
     }
   });
+
+  it('treats an explicitly deleted signature test and its repo-root alias as a proved fix', () => {
+    const pop = precheckPopulation({
+      signature: [sig('lib/release/obsolete.test.ts'), sig('lib/still-red.test.ts')],
+      admittedPaths: ['apps/operator/lib/release/obsolete.test.ts'],
+      removedTestFiles: [
+        'apps/operator/lib/release/obsolete.test.ts',
+        'lib/release/obsolete.test.ts',
+      ],
+    });
+    expect(pop.files).toEqual(['lib/still-red.test.ts']);
+    expect(pop.removedTestFiles).toEqual([
+      'apps/operator/lib/release/obsolete.test.ts',
+      'lib/release/obsolete.test.ts',
+    ]);
+    expect(evaluateFixPrecheck(pop, ran([['lib/still-red.test.ts', 'fail']]))).toMatchObject({
+      ok: true,
+      fixes: ['lib/release/obsolete.test.ts'],
+    });
+  });
 });
 
 describe('evaluateFixPrecheck (P-006 / R6)', () => {

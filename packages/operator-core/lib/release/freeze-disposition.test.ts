@@ -47,6 +47,22 @@ describe('deriveTickFreezeDisposition — P-008 per-tick backstop', () => {
     expect(d.reason).toContain('went green');
   });
 
+  it('reports a disk-headroom hold separately from the frozen queue phase', () => {
+    const d = deriveTickFreezeDisposition({
+      flagEnabled: true,
+      repairQueue: { candidate: 'abc123def456789', phase: 'ready-to-test' },
+      summary: '/tmp 5.7 GiB free; low-bytes breaches the gate floor',
+      blockedBy: 'disk-headroom',
+      green: null,
+    });
+    expect(d).toMatchObject({
+      state: 'held',
+      candidate: 'abc123def456789',
+      queuePhase: 'ready-to-test',
+      blockedBy: 'disk-headroom',
+    });
+  });
+
   it('P-025: derives `unreadable` instead of `none` for a present newer-schema queue', () => {
     const d = deriveTickFreezeDisposition({
       flagEnabled: true,
@@ -117,6 +133,8 @@ describe('buildFreezeAndConvergeGateHealth', () => {
       state: 'retired',
       reason: 'provider wall, attempts=0',
       candidate: null,
+      queuePhase: null,
+      blockedBy: null,
       holdUntilMs: null,
       capacityRetryAtMs: null,
       observedAtMs: T0,
@@ -131,6 +149,8 @@ describe('buildFreezeAndConvergeGateHealth', () => {
         state: 'held',
         reason: 'wall outlasts the stall window',
         candidate: 'a'.repeat(40),
+        queuePhase: 'ready-to-test',
+        blockedBy: 'disk-headroom',
         holdUntilMs: T0 + 3 * 60 * 60 * 1_000,
         capacityRetryAtMs: T0 + 6 * 24 * 60 * 60 * 1_000,
       },
@@ -139,6 +159,8 @@ describe('buildFreezeAndConvergeGateHealth', () => {
     expect(readFreezeAndConverge(fragment)).toMatchObject({
       state: 'held',
       candidate: 'a'.repeat(40),
+      queuePhase: 'ready-to-test',
+      blockedBy: 'disk-headroom',
       holdUntilMs: T0 + 3 * 60 * 60 * 1_000,
     });
   });
@@ -171,6 +193,12 @@ describe('readFreezeAndConverge fails CLOSED', () => {
     ).toBeNull();
     expect(
       readFreezeAndConverge({ freezeAndConverge: { ...base, observedAtMs: 'now' } }),
+    ).toBeNull();
+    expect(
+      readFreezeAndConverge({ freezeAndConverge: { ...base, queuePhase: 'unknown' } }),
+    ).toBeNull();
+    expect(
+      readFreezeAndConverge({ freezeAndConverge: { ...base, blockedBy: 'other' } }),
     ).toBeNull();
   });
 

@@ -27,6 +27,9 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 /** Repo-relative path prefixes worth extracting (mirrors `codeSmellsLikeCode`'s net). */
 const REPO_PATH_PATTERN = /\b(?:packages|libs|apps|src|scripts|sql)\/[\w./-]+/g;
 
+/** Absolute URLs are references to another location; their path segments are not local repo paths. */
+const ABSOLUTE_HTTP_URL_PATTERN = /\bhttps?:\/\/[^\s<>"']+/gi;
+
 /** Trailing prose punctuation a path mention commonly picks up ("...in foo/bar.ts.", "(foo/bar.ts)"). */
 const TRAILING_PUNCT_RE = /[.,;:'"`)\]]+$/;
 
@@ -170,7 +173,12 @@ export function deriveRepoPathsFromText(text: string, opts: DeriveRepoPathsOptio
   if (!text) return [];
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const m of text.matchAll(REPO_PATH_PATTERN)) {
+  // Remove whole URL tokens before looking for repo prefixes. A URL such as
+  // https://raw.githubusercontent.com/.../src/backend/file.c otherwise leaks
+  // its `src/...` component into local-path checks. Replacing with whitespace
+  // keeps independently mentioned paths on either side intact.
+  const proseWithoutUrls = text.replace(ABSOLUTE_HTTP_URL_PATTERN, ' ');
+  for (const m of proseWithoutUrls.matchAll(REPO_PATH_PATTERN)) {
     const p = m[0].replace(TRAILING_PUNCT_RE, '').replace(/\/+$/, '');
     // Require at least one path separator beyond the prefix dir itself.
     if (!p.includes('/') || p.split('/').some((seg) => seg.length === 0)) continue;

@@ -2,7 +2,9 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { decideWatchdogExpiry } from '../../../../scripts/lib/batch-watchdog.mjs';
 import { moduleRepoRoot } from '../module-repo-root';
@@ -13,6 +15,28 @@ import { PTOOL_CONNECT_TIMEOUT_MS, PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS,
 
 const repoRoot = moduleRepoRoot(import.meta.url);
 const processHeadroomMs = PTOOL_LIST_TOOLS_TIMEOUT_MS;
+
+/** Completion's home-repository reader uses the papercusp serving key even
+ * inside a private operator. Publish there and observe the cooperative load;
+ * writing a harness-specific clone snapshot alone does not ready that reader. */
+export async function preparePrivateNativeCallerSnapshot(workspace: string, contents: string): Promise<void> {
+  if (!workspace.startsWith('test-runtime-')) throw new Error('Caller snapshot preparation requires a private native workspace');
+  const { dependencySnapshotPath } = await import('./dependency-snapshot-path.ts');
+  const { parsePushSnapshot, peekPushSnapshot, pushSnapshotMissReason } = await import('./push-snapshot.ts');
+  const expected = parsePushSnapshot(contents);
+  if (!expected?.symbols?.size) throw new Error('Private caller snapshot must contain validated symbols');
+  const path = dependencySnapshotPath('papercusp');
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, contents);
+  const deadline = Date.now() + 5_000;
+  do {
+    const loaded = peekPushSnapshot('papercusp');
+    if (loaded?.generatedAt === expected.generatedAt
+      && [...expected.symbols.keys()].every(name => loaded.symbols?.has(name))) return;
+    await delay(25);
+  } while (Date.now() < deadline);
+  throw new Error(`Private caller snapshot did not load: ${pushSnapshotMissReason('papercusp') ?? 'different generation'}`);
+}
 
 /**
  * First line of a child failure: a JS `…Error:`, or a LINE-LEADING shell `ERROR:` / esbuild

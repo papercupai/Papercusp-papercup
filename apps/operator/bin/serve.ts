@@ -1515,6 +1515,11 @@ async function main(): Promise<void> {
     sidecarDir: dirname(fileURLToPath(import.meta.url)),
     hostname,
     port: honoPortHint,
+    verifyApplicationRuntimeAcceptance: async (request) => {
+      const { readApplicationRuntimeAcceptance } =
+        await import("@papercusp/operator-core/lib/application-runtime-acceptance");
+      return readApplicationRuntimeAcceptance(request);
+    },
   });
 
   // --ensure: reuse a healthy running operator and exit 0 — UNLESS it's a

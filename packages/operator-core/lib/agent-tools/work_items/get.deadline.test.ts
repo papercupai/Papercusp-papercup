@@ -20,6 +20,7 @@ const getWorkItemDetail = vi.fn();
 const getWorkItemThreadWindow = vi.fn();
 const getWorkItemCheckpointWithMeta = vi.fn();
 const getWorkItemCheckpointFreshness = vi.fn();
+const readChangeKinds = vi.fn();
 const listSpecEvidence = vi.fn();
 const getClaimTimePriorWorkHint = vi.fn();
 const planItemLaneBlockReason = vi.fn();
@@ -38,6 +39,10 @@ vi.mock('../../work-items', () => ({
 vi.mock('../../work-item-checkpoint', () => ({
   getWorkItemCheckpointWithMeta: (...args: unknown[]) => getWorkItemCheckpointWithMeta(...args),
   getWorkItemCheckpointFreshness: (...args: unknown[]) => getWorkItemCheckpointFreshness(...args),
+}));
+
+vi.mock('../../work-item-change-kinds', () => ({
+  readChangeKinds: (...args: unknown[]) => readChangeKinds(...args),
 }));
 
 vi.mock('../../work-item-prior-work', async (importOriginal) => ({
@@ -93,6 +98,7 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       subjectFingerprint: undefined,
       readFailed: false,
     });
+    readChangeKinds.mockResolvedValue(new Map());
     getClaimTimePriorWorkHint.mockResolvedValue(null);
     planItemLaneBlockReason.mockResolvedValue(null);
     planItemClaimCollision.mockResolvedValue(null);
@@ -303,6 +309,44 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
         elapsedMs: expect.any(Number),
       }),
     ]));
+
+    warnSpy.mockRestore();
+  });
+
+  it('bounds the post-read change-kind lookup within the shared work_items:get budget', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-change-kinds-timeout',
+      kind: 'bug',
+      family: 'issue',
+      harness: 'papercusp',
+      state: 'open',
+      title: 'change-kind lookup timeout',
+    });
+    readChangeKinds.mockImplementation(() => new Promise(() => {}));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const metadata = vi.fn();
+
+    const pending = get.handler(
+      { id: 'WI-change-kinds-timeout' } as never,
+      {
+        ...ctx,
+        metadata,
+        sourceProjection: { pick: ['results[].id', 'results[].workItem.state', 'read'] },
+      } as never,
+    ) as Promise<Out & { data: { read: Record<string, unknown> } }>;
+    await vi.advanceTimersByTimeAsync(WORK_ITEMS_GET_BUDGET_MS + 100);
+
+    const out = await pending;
+    expect(out.data.results[0]).toMatchObject({
+      ok: true,
+      id: 'WI-change-kinds-timeout',
+      availability: 'available',
+      changeKinds: { current: null, history: [], readFailed: true },
+    });
+    expect(out.data.read.changeKindsReadMs).toBeGreaterThan(0);
+    expect(out.data.read.elapsedMs).toBeLessThanOrEqual(WORK_ITEMS_GET_BUDGET_MS + 100);
+    expect(metadata).toHaveBeenCalledWith({ workItemsGet: out.data.read });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('work_items:get:changeKinds exceeded'));
 
     warnSpy.mockRestore();
   });

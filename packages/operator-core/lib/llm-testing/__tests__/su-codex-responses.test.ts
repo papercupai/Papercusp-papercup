@@ -7,11 +7,15 @@ import { SuTarget } from '../targets/su';
 
 type OutputDelivery = 'snapshot' | 'streamed-only' | 'both';
 
-const anthropicMock = vi.hoisted(() => ({ responses: [] as unknown[] }));
+const anthropicMock = vi.hoisted(() => ({
+  responses: [] as unknown[],
+  pendingCreate: null as null | ((signal?: AbortSignal) => Promise<unknown>),
+}));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class MockAnthropic {
     messages = {
-      create: vi.fn(async () => {
+      create: vi.fn(async (_body: unknown, options?: { signal?: AbortSignal }) => {
+        if (anthropicMock.pendingCreate) return anthropicMock.pendingCreate(options?.signal);
         const response = anthropicMock.responses.shift();
         if (!response) throw new Error('unexpected Anthropic call');
         return response;
@@ -38,6 +42,48 @@ function completed(output: unknown[], delivery: OutputDelivery): Response {
 }
 
 describe('SuTarget Codex Responses tool loop', () => {
+  it.each(['codex', 'anthropic'] as const)('%s close cancels an in-flight provider request and prevents another send', async (transport) => {
+    const previousApiKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'test-only-anthropic-key';
+    let signal: AbortSignal | undefined;
+    let entered!: () => void;
+    const requestStarted = new Promise<void>(resolve => { entered = resolve; });
+    const waitForAbort = (requestSignal?: AbortSignal) => new Promise<Response>((_resolve, reject) => {
+      signal = requestSignal;
+      requestSignal?.addEventListener('abort', () => reject(new Error('provider request cancelled')), { once: true });
+      entered();
+    });
+    const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => waitForAbort(init?.signal ?? undefined));
+    anthropicMock.pendingCreate = waitForAbort;
+    const session = await new SuTarget({
+      catalog: buildCatalog([]),
+      loadSystemPrompt: () => 'Reply briefly.',
+      codexFetch: fetchImpl as unknown as typeof fetch,
+    }).open({
+      runId: `cancel-on-close-${transport}`,
+      sutModel: transport === 'codex' ? LEARNING_MODEL_SPEC : 'claude-sonnet-4-6',
+      workspaceMode: 'isolated', transport: 'in-process',
+    });
+    const input = { trigger: 'user_message' as const, messages: [{ role: 'user' as const, content: 'Hello.' }] };
+    const pending = session.send(input);
+    try {
+      await requestStarted;
+      await session.close();
+      expect(signal?.aborted).toBe(true);
+      expect((await pending).finishReason).toBe('error');
+      expect((await session.send(input)).finishReason).toBe('error');
+      expect(fetchImpl).toHaveBeenCalledTimes(transport === 'codex' ? 1 : 0);
+    } finally {
+      // Release the fake provider even when the regression fails on an old target.
+      signal?.dispatchEvent(new Event('abort'));
+      await pending;
+      await session.close();
+      anthropicMock.pendingCreate = null;
+      if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousApiKey;
+    }
+  });
+
   it.each(['codex', 'anthropic'] as const)('%s reaches a final response after more than six tool rounds', async (transport) => {
     const previousApiKey = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'test-only-anthropic-key';

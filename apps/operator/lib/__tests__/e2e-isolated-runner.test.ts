@@ -114,10 +114,11 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
       '  if [ "$arg" = "--list" ]; then',
       '    case "${E2E_FIXTURE_SELECTION:-pass}" in',
       '      error) echo "fixture collection failed" >&2; exit 63 ;;',
-      '      zero) echo \'{"suites":[]}\'; exit 0 ;;',
-      '      malformed) echo "invalid collection JSON"; exit 0 ;;',
+      '      zero) printf \'%s\' \'{"suites":[]}\' > "$PLAYWRIGHT_JSON_OUTPUT_FILE"; exit 0 ;;',
+      '      malformed) printf \'%s\' \'invalid collection JSON\' > "$PLAYWRIGHT_JSON_OUTPUT_FILE"; exit 0 ;;',
+      '      stdout-prefix) echo "CHROMIUM_NETLOG /tmp/fixture-netlog.json" ;;',
       '    esac',
-      '    node -e \'const fs=require("node:fs");fs.writeFileSync(process.env.E2E_FIXTURE_VITE_CWD+".selection.json",JSON.stringify({argv:process.argv.slice(1),cwd:process.cwd()}));process.stdout.write(JSON.stringify({suites:[{title:"fixture.spec.ts",specs:[{title:"fixture selected",tests:[{projectName:"chromium"}]}]}]}))\' -- "$@"',
+      '    node -e \'const fs=require("node:fs");fs.writeFileSync(process.env.E2E_FIXTURE_VITE_CWD+".selection.json",JSON.stringify({argv:process.argv.slice(1),cwd:process.cwd()}));if(!process.env.PLAYWRIGHT_JSON_OUTPUT_FILE)throw new Error("missing JSON output file");fs.writeFileSync(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE,JSON.stringify({suites:[{title:"fixture.spec.ts",specs:[{title:"fixture selected",tests:[{projectName:"chromium"}]}]}]}))\' -- "$@"',
       '    exit 0',
       '  fi',
       'done',
@@ -209,7 +210,7 @@ function run(
       OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
       VH_TSX: f.harnessTsx,
       PATH: `${f.dir}:${base.PATH ?? ''}`,
-      ...(!args.some(arg => /\.(?:spec|test)\./.test(arg)) ? {
+      ...(!args.some(arg => /\.(?:spec|test|live)\./.test(arg)) ? {
         VERIFY_TAURI_ISOLATED_SEED: 'ready',
         PAPERCUSP_DEV_BACKGROUND_WORKERS: '1',
         PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: join(f.dir, 'full-suite-acceptance.json'),
@@ -255,6 +256,22 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(selected.cwd).toBe(join(REPO_ROOT, 'apps/operator'));
     expect(selected.argv).toEqual([...args, '--list', '--reporter=json']);
     expect(result.out).toContain('OPERATOR_E2E_SELECTION count=1');
+    expect(result.recorded.argv).toEqual(args);
+  });
+
+  it('keeps Playwright selection valid when instrumentation writes to stdout', () => {
+    const f = fixture(0);
+    const result = run(f, ['e2e/chat-streaming.spec.ts'], { E2E_FIXTURE_SELECTION: 'stdout-prefix' });
+    expect(result.status, result.out).toBe(0);
+    expect(result.out).toContain('OPERATOR_E2E_SELECTION count=1');
+    expect(result.recorded).not.toBeNull();
+  });
+
+  it('treats an explicit .live.ts profile as a filtered run before native preflight', () => {
+    const f = fixture(0);
+    const args = ['--config', 'playwright.engineering-evidence.config.ts', 'e2e/engineering-evidence-controls.live.ts'];
+    const result = run(f, args, { PAPERCUSP_ENGINEERING_CONTROLS_LIVE: '1' });
+    expect(result.status, result.out).toBe(0);
     expect(result.recorded.argv).toEqual(args);
   });
   it('admits its maintained assertion through the real native preflight', () => {
@@ -363,6 +380,17 @@ describe('run-operator-e2e-isolated.sh', () => {
     const explicitHead = exercise(join(f.dir, 'explicit-head'), 'HEAD');
     expect(explicitHead.result.status, explicitHead.result.stderr).toBe(0);
     expect(readFileSync(explicitHead.refFile, 'utf8')).toBe(head.stdout.trim());
+
+    const explicitLive = exercise(join(f.dir, 'explicit-live'), 'HEAD', [
+      '--config', 'playwright.engineering-evidence.config.ts', 'e2e/engineering-evidence-controls.live.ts',
+    ]);
+    expect(explicitLive.result.status, explicitLive.result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(readFileSync(explicitLive.inputsPathFile, 'utf8'), 'utf8'))).toEqual([
+      'apps/operator/e2e/engineering-evidence-controls.live.ts',
+      'apps/operator/playwright.config.mts',
+      'apps/operator/playwright.config.ts',
+      'apps/operator/playwright.engineering-evidence.config.ts',
+    ]);
 
     for (const [index, args] of [[], ['--workers=1'], ['--workers', '1']].entries()) {
     const fullSuite = exercise(join(f.dir, 'full-suite-' + index), undefined, args);

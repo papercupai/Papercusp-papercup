@@ -524,10 +524,10 @@ function observeReaderCorpus(entry: string, inventory: string[], sources?: Recor
 
 // Exact-source reviews from WI12281 concern the default CLI's DIRECT text consumer.
 // They do not classify arbitrary exported helpers, CLI input paths or child builds.
-const REVIEWED_READER_CORPUS: Record<string, { sha256: string; reason: string }> = {
+const REVIEWED_READER_CORPUS: Record<string, { sha256: string | readonly string[]; reason: string }> = {
   'check-docs-mirror.mjs': { sha256: '8018f05a09ac6e3e8208e086957e55b2cee30ea5b3688864deed5df39116b5b8', reason: 'Default .md/.mdx byte fingerprints and git path/time metadata; exported extension arrays are outside this invocation.' },
   'check-fleet-auth.mjs': { sha256: '1eb35e6bdbcfa86039834757fa4bc865dc8a517ab38f9befd8327e1d9ffa40a2', reason: 'Host /proc, fixed .env and credential JSON plus auth diagnostics; no real credentials or auth probes are executed here.' },
-  'check-installed-patch-postimages.mjs': { sha256: 'b9a16e60051949a3d9c4154098ae99df55b86e02b53fc3d3bf770453866ece0d', reason: 'Patch header metadata and git byte hashes of installed targets, not JS/TS token matching.' },
+  'check-installed-patch-postimages.mjs': { sha256: ['b9a16e60051949a3d9c4154098ae99df55b86e02b53fc3d3bf770453866ece0d', 'd46721e35da98c893fba953d474fa59e35ff5588ac663aa07e4321eec7852502'], reason: 'Patch header metadata and git byte hashes of installed targets, not JS/TS token matching. The second reviewed version also validates patch syntax via git apply --numstat; it adds no direct source-token consumer.' },
   'check-mac-bash-portability.mjs': { sha256: '6bd7ca888080d8affba90c95c7e8742997f012adffcfcf97550d776ac5b4bfd1', reason: 'Shell entry points and a .sh-only invocation closure; shell analysis is outside this JS/TS census.' },
   'check-mdx.mjs': { sha256: 'd9802964aae5a84e47c4514630b50084f7161a12b86367e8927455ab31e7d611', reason: 'Default git inventory restricted to .mdx documentation, asynchronously compiled as MDX.' },
   'check-peer-dep-conflicts.mjs': { sha256: '85339c2018f8247451cdf4f10ff719dcf36b3b269ff491f3d672e007e0f7a3af', reason: 'Workspace globs select package.json manifests, lock JSON and dependency package.json metadata.' },
@@ -554,7 +554,7 @@ const REVIEWED_TEST_READER_CORPUS: Record<string, { sha256: string | readonly st
   'apps/operator/app/_components/vditor-cdn.test.ts': { sha256: 'f302eb4a6012012d5fa492b77d1593ce4c648afd501de061dc725e02eccd5652', status: 'source', reason: 'Reads MarkdownEditor.tsx and enumerated live TypeScript constructors, plus fixed JavaScript bundles.' },
   'apps/operator/lib/chat-actions/ctx-wiring.test.ts': { sha256: '3e260183930b03b2453e8195dccb0d4e165378e214bf3ce4c6b6b7f36f1622ac', status: 'source', reason: 'actionModules reads sibling .ts action files; CTX_SITE reads SessionChatModal.tsx for supplied keys.' },
   'apps/operator/scripts/__tests__/backup-tier-split.test.ts': { sha256: ['d86d3c6ec7bd334ac6b24335958ecaac01f6b6a15809514fb3d05a1343ae487b', '44158090bbf15a40756eb23ee90f9bd4c8aee211c0883f0fda1390167486db3b'], status: 'non-source', reason: 'Default direct reads are .sh backup scripts (incl. kopia-cache-bootstrap.sh since 6878d407a4) and temp archive fixture bytes. Env override paths and child shell execution are outside this review.' },
-  'packages/operator-core/lib/__tests__/affected-tests-passing-verdict-cache.test.ts': { sha256: ['aa56e01f22082d49168585df1d79c6c6840893307f51bb03c9d25611d2ce35ad', '07105649a749de82a0aa555afd41c2737f92c15bb2daadc535f17329ada03813'], status: 'source', reason: 'Directly reads affected-tests.mjs, green-checkpoint.ts, cache/scheduler/launcher sources and capability TypeScript, plus binary/package-lock bytes it only hashes.' },
+  'packages/operator-core/lib/__tests__/affected-tests-passing-verdict-cache.test.ts': { sha256: ['aa56e01f22082d49168585df1d79c6c6840893307f51bb03c9d25611d2ce35ad', '07105649a749de82a0aa555afd41c2737f92c15bb2daadc535f17329ada03813', '1303df01fd475013f17801fbfd025e9324c255c7402fc64f8a8310a15e13b86a'], status: 'source', reason: 'Directly reads affected-tests.mjs, green-checkpoint.ts, cache/scheduler/launcher sources and capability TypeScript, plus binary/package-lock bytes it only hashes. The third reviewed version adds temporary workspace-launcher fixture reads and hashes; its existing source-reader classification is unchanged.' },
   'packages/operator-core/lib/agent-tools/coordination/dispatch-intervention-reachable.test.ts': { sha256: 'f51d25a475aa5c9f609ed595180790b0eb58cde392f5953bcf474705b5663e34', status: 'source', reason: 'INVOKE_TS is a fixed orchestrator invoke.ts path; describe callback reads it to parse seed lists.' },
   'packages/operator-core/lib/chat-protocol-nodenext-export-extensions.test.ts': { sha256: 'f60b1c861e7c5e0752aaca5f1112c04ec5e321ab44a9109cd79c76f85d7c528b', status: 'source', reason: 'publishedSourceFiles enumerates chat-protocol/src .ts files and tests read each selected file.' },
   'packages/operator-core/lib/coord/holder-context.test.ts': { sha256: '8a0c2079118b67c04a920990f1255dc9bc4e52bab6d4a5367b66a728eee839d5', status: 'source', reason: 'readRepoFile selects fixed holder-context/lock/tool TypeScript; parity traversal reads selected .ts/.tsx sources.' },
@@ -594,7 +594,7 @@ const REVIEWED_TEST_READER_CORPUS: Record<string, { sha256: string | readonly st
   'packages/operator-core/lib/workspace-reg-current-guard.test.ts': { sha256: '8539d2134408051ba9af7c27761e0251307099c03a77f6b4f90e16ed231b936d', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
 };
 
-/** True when `hex` is one of the reviewed blob pins for a REVIEWED_TEST_READER_CORPUS entry. */
+/** True when `hex` is one of the reviewed blob pins for a script or test consumer. */
 function isReviewedBlob(pins: string | readonly string[], hex: string): boolean {
   return (typeof pins === 'string' ? [pins] : pins).includes(hex);
 }
@@ -607,7 +607,7 @@ beforeAll(() => {
   const sha = (abs: string) => crypto.createHash('sha256').update(readFileSync(abs, 'utf8')).digest('hex');
   const drifted = [
     ...Object.entries(REVIEWED_READER_CORPUS)
-      .filter(([file, review]) => sha(join(SCRIPTS_DIR, file)) !== review.sha256)
+      .filter(([file, review]) => !isReviewedBlob(review.sha256, sha(join(SCRIPTS_DIR, file))))
       .map(([file]) => `scripts/${file}: reviewed source drifted`),
     ...Object.entries(REVIEWED_TEST_READER_CORPUS)
       .filter(([file, review]) => !isReviewedBlob(review.sha256, sha(join(SCRIPTS_DIR, '..', file))))
@@ -618,7 +618,7 @@ beforeAll(() => {
 
 function reviewedReaderCorpus(entry: string, result: ReturnType<typeof observeReaderCorpus>, source: string, argv: string[] = []) {
   const review = REVIEWED_READER_CORPUS[path.basename(entry)];
-  if (!review || argv.length || crypto.createHash('sha256').update(source).digest('hex') !== review.sha256) {
+  if (!review || argv.length || !isReviewedBlob(review.sha256, crypto.createHash('sha256').update(source).digest('hex'))) {
     return { ...result, review: undefined };
   }
   return {
@@ -1525,7 +1525,7 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
 
   it('default-consumer reviews remain bound to the exact reviewed script bytes', () => {
     for (const [file, review] of Object.entries(REVIEWED_READER_CORPUS)) {
-      expect(crypto.createHash('sha256').update(readFileSync(join(SCRIPTS_DIR, file), 'utf8')).digest('hex'), file + ': review source changed; reclassify its direct consumer').toBe(review.sha256);
+      expect(isReviewedBlob(review.sha256, crypto.createHash('sha256').update(readFileSync(join(SCRIPTS_DIR, file), 'utf8')).digest('hex')), file + ': review source changed; reclassify its direct consumer').toBe(true);
     }
   });
 

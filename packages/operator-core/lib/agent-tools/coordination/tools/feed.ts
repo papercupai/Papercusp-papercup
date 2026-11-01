@@ -21,6 +21,7 @@ import {
   readCoordFeed,
   ALL_COORD_KINDS,
   MAX_FEED_LIMIT,
+  type CoordFeedReadPhase,
 } from '../feed';
 import { fleetSlugFromName } from '../../../agent-fleets-store';
 import { boundRowField } from '../../_bound-output';
@@ -37,6 +38,7 @@ const FEED_BODY_CAP = 200;
 const FEED_BODY_BUDGET = 8_000;
 const FEED_SUMMARY_CAP = 400;
 const FEED_SUMMARY_BUDGET = 10_000;
+const FEED_READ_TRACE_PHASE_CAP = 48;
 const ISO_TIMESTAMP = z.string().datetime({ offset: true });
 
 export default defineTool({
@@ -150,52 +152,111 @@ export default defineTool({
       .optional()
       .describe('Also show messages withdrawn via coord:retract (default false — retracted messages are suppressed from the feed; the retraction notice itself is always visible). The forensic/audit escape hatch; coord:thread shows both without a flag.'),
   }),
-  async handler(args) {
-    const { rows, nextCursor, nextCursorMsgId, total, byKind, tokens } = await readCoordFeed({
-      kinds: args.kinds,
-      owner: args.owner,
-      from: args.from,
-      plan_slug: args.plan_slug,
-      audience: args.audience ?? (args.fleet ? `@fleet:${fleetSlugFromName(args.fleet)}` : undefined),
-      q: args.q,
-      // Keep the historical snake_case field wire-compatible while making the
-      // surrounding coordination API's `since` convention available to callers.
-      since_ts: args.since ?? args.since_ts,
-      before_ts: args.before_ts,
-      before_msg_id: args.before_msg_id,
-      limit: args.limit ?? AGENT_FEED_DEFAULT,
-      token_budget: args.token_budget,
-      includeRetracted: args.include_retracted,
-    });
-    // EI-1597: excerpt the big per-row text fields so the firehose can't overflow the
-    // agent result cap. The q-filter already ran (over full bodies) inside readCoordFeed,
-    // so bounding here is display-only; full envelopes via the UI feed or a narrower query.
-    let boundedRows = boundRowField(rows, 'body', FEED_BODY_CAP, FEED_BODY_BUDGET);
-    boundedRows = boundRowField(boundedRows, 'summary', FEED_SUMMARY_CAP, FEED_SUMMARY_BUDGET);
-    // P-033 (e): mark which rows carry AUTHORED structure (premises / forYouBecause /
-    // youMayNotKnow / couldNotDetermine / clarify). The compact marker, not the full
-    // projection — this is the firehose, whose rows are already excerpted precisely
-    // because a full envelope per row threatens the result cap. `coord:read <msg_id>`
-    // shows the structure in full. Absent on a row that authored nothing.
-    boundedRows = boundedRows.map((row) => {
-      const authored = authoredFieldsMarker(row);
-      return authored ? { ...row, authored } : row;
-    });
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            count: boundedRows.length,
-            total,
-            tokens,
-            by_kind: byKind,
-            next_cursor: nextCursor,
-            next_cursor_msg_id: nextCursorMsgId,
-            rows: boundedRows,
-          }),
-        },
-      ],
-    };
+  async handler(args, ctx) {
+    const traceStartedAt = performance.now();
+    const readPhases: CoordFeedReadPhase[] = [];
+    let omittedReadPhases = 0;
+    let readElapsedMs: number | null = null;
+    let totalVisibleRows: number | null = null;
+    let outputRows: number | null = null;
+    let resultState: 'fulfilled' | 'rejected' = 'rejected';
+    try {
+      const readStartedAt = performance.now();
+      const { rows, nextCursor, nextCursorMsgId, total, byKind, tokens } =
+        await readCoordFeed({
+          kinds: args.kinds,
+          owner: args.owner,
+          from: args.from,
+          plan_slug: args.plan_slug,
+          audience: args.audience ?? (args.fleet ? `@fleet:${fleetSlugFromName(args.fleet)}` : undefined),
+          q: args.q,
+          // Keep the historical snake_case field wire-compatible while making the
+          // surrounding coordination API's `since` convention available to callers.
+          since_ts: args.since ?? args.since_ts,
+          before_ts: args.before_ts,
+          before_msg_id: args.before_msg_id,
+          limit: args.limit ?? AGENT_FEED_DEFAULT,
+          token_budget: args.token_budget,
+          includeRetracted: args.include_retracted,
+        }, (phase) => {
+          if (readPhases.length < FEED_READ_TRACE_PHASE_CAP) readPhases.push(phase);
+          else omittedReadPhases += 1;
+        });
+      readElapsedMs = Math.max(0, Math.round(performance.now() - readStartedAt));
+      totalVisibleRows = total;
+      // EI-1597: excerpt the big per-row text fields so the firehose can't overflow the
+      // agent result cap. The q-filter already ran (over full bodies) inside readCoordFeed,
+      // so bounding here is display-only; full envelopes via the UI feed or a narrower query.
+      let boundedRows = boundRowField(rows, 'body', FEED_BODY_CAP, FEED_BODY_BUDGET);
+      boundedRows = boundRowField(boundedRows, 'summary', FEED_SUMMARY_CAP, FEED_SUMMARY_BUDGET);
+      // P-033 (e): mark which rows carry AUTHORED structure (premises / forYouBecause /
+      // youMayNotKnow / couldNotDetermine / clarify). The compact marker, not the full
+      // projection — this is the firehose, whose rows are already excerpted precisely
+      // because a full envelope per row threatens the result cap. `coord:read <msg_id>`
+      // shows the structure in full. Absent on a row that authored nothing.
+      boundedRows = boundedRows.map((row) => {
+        const authored = authoredFieldsMarker(row);
+        return authored ? { ...row, authored } : row;
+      });
+      outputRows = boundedRows.length;
+      const result = {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              count: boundedRows.length,
+              total,
+              tokens,
+              by_kind: byKind,
+              next_cursor: nextCursor,
+              next_cursor_msg_id: nextCursorMsgId,
+              rows: boundedRows,
+            }),
+          },
+        ],
+      };
+      resultState = 'fulfilled';
+      return result;
+    } finally {
+      const metadata = (ctx as {
+        metadata?: (value: Record<string, unknown>) => void;
+      } | undefined)?.metadata;
+      try {
+        metadata?.({
+          coordFeedRead: {
+            schemaVersion: 'coord-feed-read-phases-v1',
+            unit: 'ms',
+            timing: 'awaited-helper-wall-time',
+            resultState,
+            elapsedMs: Math.max(0, Math.round(performance.now() - traceStartedAt)),
+            readElapsedMs,
+            request: {
+              hasKinds: Boolean(args.kinds?.length),
+              hasOwner: Boolean(args.owner),
+              hasFrom: Boolean(args.from),
+              hasAudience: Boolean(args.audience || args.fleet),
+              hasQuery: Boolean(args.q?.trim()),
+              hasSince: Boolean(args.since || args.since_ts),
+              hasBefore: Boolean(args.before_ts),
+              limit: args.limit ?? AGENT_FEED_DEFAULT,
+            },
+            totalVisibleRows,
+            outputRows,
+            rawRowsFetched: readPhases.reduce(
+              (sum, phase) => sum + (phase.returnedRows ?? 0),
+              0,
+            ),
+            fetchRounds: readPhases.reduce((max, phase) => Math.max(max, phase.round), 0),
+            activePhases: readPhases
+              .filter((phase) => phase.status === 'running')
+              .map((phase) => phase.name + ':round-' + phase.round),
+            phases: readPhases.map((phase) => ({ ...phase })),
+            omittedPhases: omittedReadPhases,
+          },
+        });
+      } catch {
+        // Diagnostic delivery must never replace the feed result or error.
+      }
+    }
   },
 });

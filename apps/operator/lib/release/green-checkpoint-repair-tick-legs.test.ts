@@ -586,8 +586,20 @@ describe("augmentWithRepairTickLegs", () => {
     const run = source.slice(source.indexOf("export async function runGreenCheckpoint"));
     const augment = run.indexOf("finalResult = await augmentWithRepairTickLegs(finalResult, deps);");
     const route = run.indexOf("deps.routeFrozenRepairLegsToAgents &&");
+    const repairMeasurementPhase = run.lastIndexOf(
+      'deps.reportProgress?.("phase:suite");',
+      augment,
+    );
+    const boundedTailPhase = run.indexOf(
+      'deps.reportProgress?.("phase:finalizing");',
+      augment,
+    );
     expect(augment).toBeGreaterThanOrEqual(0);
+    expect(repairMeasurementPhase).toBeGreaterThanOrEqual(0);
+    expect(repairMeasurementPhase).toBeLessThan(augment);
+    expect(boundedTailPhase).toBeGreaterThan(augment);
     expect(route).toBeGreaterThan(augment);
+    expect(route).toBeGreaterThan(boundedTailPhase);
   });
 
   it("attaches the measurement on an awaiting-fixer repair hold, asking for the full registry at repairHead", async () => {

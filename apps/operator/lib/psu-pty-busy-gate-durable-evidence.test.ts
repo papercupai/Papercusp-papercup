@@ -132,6 +132,16 @@ describe('psu-pty busy-gate defer leaves durable evidence for EVERY mode (WI-214
     }
   });
 
+  it('records the native veto sampled by the busy-gate at expiry', () => {
+    const block = busyGateDeferBlock();
+    const payloadStart = block.indexOf('const busyGateEvent = {');
+    const emitIdx = block.indexOf(EMIT_CALL);
+    expect(payloadStart).toBeGreaterThan(-1);
+    expect(emitIdx).toBeGreaterThan(payloadStart);
+    const payload = block.slice(payloadStart, emitIdx);
+    expect(payload).toContain('nativeBusy: atPrompt?.nativeBusy ?? null');
+  });
+
   it('writes exactly ONE row per defer', () => {
     const block = busyGateDeferBlock();
     const emissions = block.split("appendHostEvent(ownerId, 'busy-gate-expired'").length - 1;

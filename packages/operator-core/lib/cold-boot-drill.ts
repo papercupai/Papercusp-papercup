@@ -80,6 +80,10 @@ export interface RecoveryLookup {
   kind: RecoveryKind;
   /** Which carry slot the lookup was recovering, if the extraction could classify it. */
   targetClass?: CarryClass | null;
+  /** Work-item identities returned by a `work_items:get` recovery lookup. */
+  targetRefs?: string[];
+  /** Stable response path for the state the lookup retrieves. */
+  targetPath?: string;
   /** True when the recovered content was ALREADY present in the carry document — the
    *  successor searched anyway (a SURFACING gap: carried but not salient), vs a hard
    *  gap where the carry lacked it entirely. */
@@ -195,6 +199,22 @@ function lookupFor(
   };
 }
 
+/** Preserve the concrete item and response field for a work-item state reread. */
+function workItemStateTarget(lookupText: string): Pick<RecoveryLookup, 'targetRefs' | 'targetPath'> {
+  const args = parsedArgs(lookupText);
+  const refs = new Set<string>();
+  if (typeof args?.id === 'string' && args.id.trim()) refs.add(args.id.trim());
+  if (Array.isArray(args?.ids)) {
+    for (const id of args.ids) {
+      if (typeof id === 'string' && id.trim()) refs.add(id.trim());
+    }
+  }
+  return {
+    ...(refs.size > 0 ? { targetRefs: [...refs] } : {}),
+    targetPath: 'results[].workItem.state',
+  };
+}
+
 /** Extract cosine-like scores from the result immediately following a post-cold
  * `coord:orient`. The result shape has evolved, so this is deliberately tolerant:
  * it recognizes JSON-ish `similarity` / `score` fields without requiring a schema. */
@@ -238,7 +258,14 @@ export function extractRecoveryLookups(turns: readonly ReplayTurn[], carryText: 
       lookups.push({ kind: 'mem0-search', targetClass: inferRecoveryCarryClass(text) });
       continue;
     }
-    if (key.endsWith('workitemsget') || key.endsWith('workitemslist')) {
+    if (key.endsWith('workitemsget')) {
+      lookups.push({
+        ...lookupFor('reread-state', 'held-wi', text, carryText),
+        ...workItemStateTarget(text),
+      });
+      continue;
+    }
+    if (key.endsWith('workitemslist')) {
       lookups.push(lookupFor('reread-state', 'held-wi', text, carryText));
       continue;
     }

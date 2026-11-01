@@ -84,12 +84,14 @@ export const HOT_SNAPSHOT_EXCLUDED_TABLE_DATA: readonly string[] = [
   'harness_shared.tool_invocations',
   'harness_shared.harness_run_output',
   'harness_shared.test_runs',
-  // Transcript stores are excluded from the workspace hot snapshot. The host
-  // producer writes them to the papercusp-transcript tier only when the
-  // configured minimum artifact age is reached (9000 seconds by default).
-  // That tier is local-only and is never enrolled in Kopia, so it has no Kopia
-  // snapshot coverage. Keeping these rows out of the hot snapshot prevents a
-  // faithful-parts COPY from holding an AccessShareLock across the dump.
+  // Transcript stores are excluded from the workspace hot snapshot. By default,
+  // the host producer writes papercusp-transcript under
+  // /mnt/cold-a/Backup/db-dumps/pg only when its existing artifact is at least
+  // 9000 seconds old (PAPERCUSP_HOST_PG_DUMP_DIR overrides the root, and
+  // PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC overrides the age). This local-only tier
+  // is never enrolled in Kopia, so it has no Kopia snapshot coverage. Keeping
+  // these rows out of the hot snapshot prevents a faithful-parts COPY from
+  // holding an AccessShareLock across the dump.
   'harness_shared.session_turns',
   'harness_shared.session_turn_chunks',
   'harness_shared.session_turn_parts',

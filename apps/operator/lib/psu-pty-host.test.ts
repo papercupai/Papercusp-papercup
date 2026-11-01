@@ -2388,6 +2388,42 @@ describe('fireSessionCompactedEvent (event-await P-103 — the detached emit bri
 });
 
 describe('carry binding before first-turn work (EI-24961854655864836)', () => {
+  it('notifies the carry owner once when the exact binding confirms after timeout', async () => {
+    let confirm!: (id?: string) => void;
+    const onConfirmed = vi.fn();
+    expect(await waitForRespawnBinding({
+      nativeId: 'successor', timeoutMs: 5, pollMs: 1, onConfirmed,
+      report: (_id: string, options: { onConfirmed: (id?: string) => void }) => {
+        confirm = options.onConfirmed;
+        return false;
+      },
+    })).toMatchObject({ ok: false, reason: 'successor-reanchor-unconfirmed' });
+    expect(onConfirmed).not.toHaveBeenCalled();
+    confirm('foreign-successor');
+    expect(onConfirmed).not.toHaveBeenCalled();
+    confirm('successor');
+    confirm('successor');
+    expect(onConfirmed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      ok: true, nativeId: 'successor',
+    }));
+  });
+
+  it('does not notify a timed-out carry after its child is superseded', async () => {
+    let current = true;
+    let confirm!: () => void;
+    const onConfirmed = vi.fn();
+    await waitForRespawnBinding({
+      nativeId: 'successor', timeoutMs: 5, pollMs: 1, onConfirmed, isCurrent: () => current,
+      report: (_id: string, options: { onConfirmed: () => void }) => {
+        confirm = options.onConfirmed;
+        return false;
+      },
+    });
+    current = false;
+    confirm();
+    expect(onConfirmed).not.toHaveBeenCalled();
+  });
+
   it('waits for a late id and a delayed durable confirmation without reporting twice', async () => {
     let nativeId: string | null = null;
     let confirm!: (id?: string) => void;

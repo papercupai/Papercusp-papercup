@@ -8,7 +8,7 @@
  * parseable no-ops and prove this behavioral guard fails, without ever making
  * the tracked host script dirty in the git-sync shared tree.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   existsSync,
   mkdirSync,
@@ -45,8 +45,10 @@ const sleep = (ms: number) => new Promise((resolveSleep) => setTimeout(resolveSl
 
 function fakeIo() {
   let output = '';
+  let input: ((data: Buffer) => void) | undefined;
   return {
     captured: () => output,
+    typeInput: (text: string) => input?.(Buffer.from(text)),
     io: {
       stdout: {
         columns: 80,
@@ -59,7 +61,9 @@ function fakeIo() {
       },
       stdin: {
         isTTY: false,
-        on() {},
+        on(event: string, listener: (data: Buffer) => void) {
+          if (event === 'data') input = listener;
+        },
         off() {},
         resume() {},
         pause() {},
@@ -156,6 +160,87 @@ describe('managed-host live-turn provenance', () => {
 });
 
 describe('carry-respawn native-turn delivery authority', () => {
+  it.each([false, true])('recovers a late binding once unless owner input intervened (%s)', async (interrupted) => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-late-carry-binding-'));
+    const claudeConfig = join(root, 'claude');
+    const nativeId = '12345678-1234-4234-8234-123456789abc';
+    const transcript = join(claudeConfig, 'projects', '-tmp', `${nativeId}.jsonl`);
+    mkdirSync(join(claudeConfig, 'projects', '-tmp'), { recursive: true });
+    const ownerId = `su-late-binding-${process.pid}-${Math.floor(performance.now())}`;
+    const socketPath = socketPathFor(ownerId);
+    const eventLog = eventLogPathForOwner(ownerId);
+    const marker = '⟦turn-origin:self-compaction nonce:0011223344556677⟧';
+    const text = `${marker}\nContinue the exact saved work`;
+    const deliveryId = `late-binding-${ownerId}`;
+    const { captured, typeInput, io } = fakeIo();
+    const emitCompacted = vi.fn();
+    let confirm: ((id?: string) => void) | undefined;
+    const childCode = "const fs=require('node:fs');process.stdin.setRawMode(true);" +
+      "process.stdin.setEncoding('utf8');process.stdout.write('BOOT:'+process.pid+'\\n');let b='';" +
+      "process.stdin.on('data',d=>{if(d.includes('QUIT'))process.exit(0);b+=d;" +
+      "if(b.includes('Continue the exact saved work')&&b.includes('\\r')){" +
+      `fs.appendFileSync(${JSON.stringify(transcript)},JSON.stringify({type:'user',timestamp:new Date().toISOString(),` +
+      `message:{role:'user',content:${JSON.stringify(text)}}})+'\\n');b='';process.stdout.write('SAVED\\n');}});` +
+      'setTimeout(()=>process.exit(0),8000);';
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: '/tmp', ownerId, io, bridgeTty: false,
+      env: hermeticEnv({
+        PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude', PAPERCUSP_ROLE: 'worker',
+        CLAUDE_CONFIG_DIR: claudeConfig, TERM: 'xterm-256color',
+        PAPERCUSP_PSU_PTY_RESPAWN_REPORT_TIMEOUT_MS: '20',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '250',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '10',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '10',
+      }),
+      mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId, launchContextPath: '/tmp/carry.md' }),
+      onRespawn: (_id: string, options?: { onConfirmed?: (id?: string) => void }) => {
+        if (options?.onConfirmed) confirm = options.onConfirmed;
+        return false;
+      },
+      emitCompacted, nativePersistenceTimeoutMs: 200, onExit: () => {},
+    });
+    const events = () => existsSync(eventLog)
+      ? readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+      : [];
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 2000 });
+      const carry = { mode: 'carry-respawn', deliveryId, data: text, systemPromptAddendum: 'carry fixture' };
+      await injectEnvelope(socketPath, carry);
+      await vi.waitFor(() => expect(events()).toContainEqual(expect.objectContaining({
+        kind: 'respawn-carry-dropped', reason: 'successor-reanchor-unconfirmed',
+      })), { timeout: 3000 });
+      expect(confirm).toBeTypeOf('function');
+      expect(existsSync(transcript)).toBe(false);
+      if (interrupted) typeInput('owner has new instructions');
+      confirm?.('foreign-successor');
+      confirm?.(nativeId);
+      confirm?.(nativeId);
+      await vi.waitFor(() => expect(events()).toContainEqual(expect.objectContaining({
+        kind: interrupted ? 'respawn-carry-binding-recovery-cancelled' : 'respawn-carry-delivered',
+      })), { timeout: 3000 });
+      expect(events().filter((event) => event.kind === 'pty-spawned')).toHaveLength(2);
+      if (interrupted) {
+        expect(existsSync(transcript)).toBe(false);
+        expect(emitCompacted).not.toHaveBeenCalled();
+      } else {
+        expect(readFileSync(transcript, 'utf8').trim().split('\n')).toHaveLength(1);
+        expect(events().filter((event) => event.kind === 'respawn-carry-delivered')).toHaveLength(1);
+        expect(emitCompacted).toHaveBeenCalledOnce();
+        expect(await injectEnvelope(socketPath, carry)).toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
+        expect(events().filter((event) => event.kind === 'pty-spawned')).toHaveLength(2);
+      }
+    } finally {
+      if (existsSync(socketPath)) await injectRaw(socketPath, 'QUIT');
+      await done;
+      if (existsSync(eventLog)) unlinkSync(eventLog);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it.each([
     ['bare', '⟦turn-origin:self-compaction nonce:0011223344556677⟧\n' +
       'ADDRESSED TO su-foreign — continuation\nResume foreign work'],
@@ -714,7 +799,9 @@ describe('carry-respawn native-turn delivery authority', () => {
           kind: 'respawn-carry-delivered',
         }));
         expect(existsSync(socketPath)).toBe(true);
-        expect(JSON.parse(readFileSync(metaPath, 'utf8')).carryDropCount).toBe(1);
+        // The event log is synchronous; discovery metadata uses an async
+        // atomic writer and can still contain the preceding snapshot here.
+        await vi.waitFor(() => expect(JSON.parse(readFileSync(metaPath, 'utf8')).carryDropCount).toBe(1));
         await injectRaw(socketPath, 'QUIT\n');
         expect(await done).toBe(0);
         expect(exitCode).toBe(0);

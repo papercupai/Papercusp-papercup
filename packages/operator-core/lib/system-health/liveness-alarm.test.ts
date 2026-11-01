@@ -149,19 +149,19 @@ describe('hosted control-plane alarm through the existing liveness engine', () =
 describe('git-sync missed-interval alarm', () => {
   const withDeploy = (data: Record<string, unknown>) => mkHealth({ panels: { deploy: { data } } });
 
-  it('the threshold is the plan\'s "missed_intervals > 3"', () => {
+  it('the threshold is three missed intervals, inclusive', () => {
     expect(GIT_SYNC_MISSED_INTERVALS_ALARM).toBe(3);
   });
 
-  it('raises a blocker naming the install once it has missed MORE than the threshold', () => {
+  it('raises a blocker naming the install at exactly the threshold', () => {
     const sigs = evaluateLivenessAlarm(
-      withDeploy({ gitSyncMaxMissedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM + 1, gitSyncMissedIntervalsInstallSlug: 'papercusp' }),
+      withDeploy({ gitSyncMaxMissedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM, gitSyncMissedIntervalsInstallSlug: 'papercusp' }),
       null,
     );
     const s = sigs.find((x) => x.key === 'git-sync-missed-intervals:papercusp');
     expect(s?.severity).toBe('blocker');
     expect(s?.summary).toContain('papercusp');
-    expect(s?.summary).toContain(`missed ${GIT_SYNC_MISSED_INTERVALS_ALARM + 1}`);
+    expect(s?.summary).toContain(`missed ${GIT_SYNC_MISSED_INTERVALS_ALARM}`);
   });
 
   it('does not infer absent commits from missed scheduler intervals alone', () => {
@@ -175,8 +175,8 @@ describe('git-sync missed-interval alarm', () => {
     expect(signal?.summary).not.toContain('nothing written there is being committed');
   });
 
-  it('is silent at the threshold and when unmeasured', () => {
-    for (const data of [{ gitSyncMaxMissedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM }, { gitSyncMaxMissedIntervals: null }, {}]) {
+  it('is silent below the threshold and when unmeasured', () => {
+    for (const data of [{ gitSyncMaxMissedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM - 1 }, { gitSyncMaxMissedIntervals: null }, {}]) {
       expect(evaluateLivenessAlarm(withDeploy(data), null).some((x) => isGitSyncMissedIntervalsSignature(x.key))).toBe(false);
     }
   });
@@ -198,7 +198,7 @@ describe('git-sync missed-interval alarm', () => {
   it('records what the resolve observed, and classifies its own summary for legacy rows', () => {
     const h = withDeploy({ gitSyncMaxMissedIntervals: 1 });
     expect(resolveEvidenceFor('git-sync-missed-intervals', h)).toBe(
-      `observed deploy status=ok gitSyncMaxMissedIntervals=1 (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`,
+      `observed deploy status=ok gitSyncMaxMissedIntervals=1 (alarm threshold >= ${GIT_SYNC_MISSED_INTERVALS_ALARM})`,
     );
     const fired = evaluateLivenessAlarm(
       withDeploy({ gitSyncMaxMissedIntervals: 7, gitSyncMissedIntervalsInstallSlug: 'papercusp' }),
@@ -222,7 +222,7 @@ describe('git-sync missed-interval alarm', () => {
         gitSyncMissedIntervalsByInstall: [
           { installSlug: DEAD, missedIntervals: 5490 },
           { installSlug: 'papercusp', missedIntervals: 6 },
-          { installSlug: 'calendar', missedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM },
+          { installSlug: 'calendar', missedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM - 1 },
         ],
       }),
       null,
@@ -232,6 +232,32 @@ describe('git-sync missed-interval alarm', () => {
     expect(papercusp?.severity).toBe('blocker');
     expect(papercusp?.summary).toContain('git-sync on papercusp has missed 6 ');
     expect(papercusp?.summary).not.toContain(DEAD);
+  });
+
+  it('includes a per-install starvation reading at exactly the threshold', () => {
+    const sigs = evaluateLivenessAlarm(
+      withDeploy({
+        gitSyncMaxMissedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM,
+        gitSyncMissedIntervalsByInstall: [
+          { installSlug: 'calendar', missedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM },
+        ],
+      }),
+      null,
+    ).filter((x) => isGitSyncMissedIntervalsSignature(x.key));
+    expect(sigs.map((x) => x.key)).toContain('git-sync-missed-intervals:calendar');
+  });
+
+  it('includes a per-install starvation reading at exactly the threshold', () => {
+    const sigs = evaluateLivenessAlarm(
+      withDeploy({
+        gitSyncMaxMissedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM,
+        gitSyncMissedIntervalsByInstall: [
+          { installSlug: 'calendar', missedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM },
+        ],
+      }),
+      null,
+    ).filter((x) => isGitSyncMissedIntervalsSignature(x.key));
+    expect(sigs.map((x) => x.key)).toContain('git-sync-missed-intervals:calendar');
   });
 
   it('the per-install list is authoritative when present: an empty list is silent despite a stale max', () => {
@@ -263,7 +289,7 @@ describe('git-sync missed-interval alarm', () => {
     expect(evidence).toContain('papercusp absentFromCurrentStarvationCandidates');
     expect(evidence).toContain('not a raw zero');
     expect(evidence).toContain('gitSyncMaxMissedIntervals=40');
-    expect(evidence).toContain(`alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM}`);
+    expect(evidence).toContain(`alarm threshold >= ${GIT_SYNC_MISSED_INTERVALS_ALARM}`);
     expect(evidence).not.toContain('papercusp missedIntervals=0');
   });
 

@@ -41,17 +41,18 @@ const H = vi.hoisted(() => {
     return { text, values };
   };
 
-  const tx = (strings: TemplateStringsArray, ...values: unknown[]): Fragment => ({
-    __fragment: true,
-    strings: [...strings],
-    values,
-  });
+  const tx = (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const fragment: Fragment = { __fragment: true, strings: [...strings], values };
+    return Object.assign(fragment, {
+      then: (resolve: (value: unknown[]) => unknown) => {
+        statements.push(flatten(fragment));
+        return Promise.resolve(rows.shift() ?? []).then(resolve);
+      },
+    });
+  };
 
   const withWorkspace = async (_workspaceId: string, run: (sql: typeof tx) => unknown) => {
-    const result = await run(tx);
-    if (!isFragment(result)) throw new Error('test SQL seam received a non-fragment result');
-    statements.push(flatten(result));
-    return (rows.shift() ?? []) as never;
+    return await run(tx);
   };
 
   return { statements, rows, withWorkspace };
@@ -82,26 +83,33 @@ function queryWithoutPlaceholderNumbers(sql: string): string {
 }
 
 describe('harness_plans index-list query shape', () => {
-  it('reads indexed plan items without selecting their markdown body', async () => {
+  it('reads graph plan items without selecting their markdown body or legacy item index', async () => {
     H.rows.push([{
       plan_slug: 'plan-a',
       archived: false,
       is_legacy: false,
-      items: [{ id: 'P-001', text: 'Stored item', status: 'todo', importance: 'normal', blockedBy: [], decisionRefs: [], phase: 'Phase 1' }],
+      items: [],
       content: '',
+    }]);
+    H.rows.push([{
+      feature_id: 'WI-1', item_kind: 'feature', plan_slug: 'plan-a', plan_line_id: 'P-001',
+      plan_line_text: 'Stored item', status: 'open', plan_importance: 'normal',
+      plan_phase: 'Phase 1', plan_decision_refs: [], plan_deliverable: null,
+      plan_owner_gate_marker: null, blocked_by: [],
     }]);
 
     const row = await getPlanItemRow('plan-a', { harnessSlug: 'shape-harness', workspaceId: 'shape-workspace' });
     expect(row).toMatchObject({ planSlug: 'plan-a', archived: false, isLegacy: false, content: '' });
     expect(planItemsForRow(row!)).toMatchObject([{ id: 'P-001', text: 'Stored item', storedStatus: 'todo' }]);
-    expect(H.statements).toHaveLength(1);
-    expect(H.statements[0]!.text).toContain('SELECT plan_slug, archived, is_legacy, items');
-    expect(H.statements[0]!.text).toContain("CASE WHEN is_legacy THEN ''");
-    expect(H.statements[0]!.text).toContain("CASE WHEN jsonb_array_length(items) > 0 THEN '' ELSE content END");
+    expect(H.statements).toHaveLength(2);
+    expect(H.statements[0]!.text).toContain("SELECT plan_slug, archived, is_legacy, '[]'::jsonb AS items, '' AS content");
+    expect(H.statements[1]!.text).toContain('FROM harness_shared.work_items n');
+    expect(H.statements[1]!.text).toContain('FROM harness_shared.work_item_deps d');
+    expect(H.statements[1]!.text).not.toContain('plan_items');
     expect(H.statements[0]!.text).not.toMatch(/SELECT\s+workspace_id[\s\S]*content_hash/);
   });
 
-  it('keeps markdown parsing available when the stored item index is empty', async () => {
+  it('an empty graph stays empty even if stale markdown declares an item', async () => {
     const content = `
 # Demo
 
@@ -116,12 +124,13 @@ The plan is under test.
       archived: false,
       is_legacy: false,
       items: [],
-      content,
+      content: '',
     }]);
+    H.rows.push([]);
 
     const row = await getPlanItemRow('plan-a', { harnessSlug: 'shape-harness', workspaceId: 'shape-workspace' });
-    expect(row?.content).toBe(content);
-    expect(planItemsForRow(row!)).toMatchObject([{ id: 'P-001', text: 'First item' }]);
+    expect(row?.content).toBe('');
+    expect(planItemsForRow({ ...row!, content })).toEqual([]);
   });
 
   it('keeps the per-harness statement shape stable across optional filters', async () => {

@@ -13,6 +13,23 @@ import addTool from './add-item';
 import editTool from './edit';
 import getTool from './get';
 
+it('round-trips intended changes through add, unrelated plan rewrites and target updates', async () => {
+  const change = { action: 'modify', summary: 'Persist recovery state', reason: 'Avoid lost work' };
+  const result = data(await add({ anchors: [{ symbol: 'linked', path: 'code.ts', change }] }));
+  const item = result.results[0];
+  expect(item.ok, JSON.stringify(item)).toBe(true);
+  await add({ text: 'Unrelated index rewrite' });
+  const read = data(await getTool.handler({ slug: SLUG, harness: HARNESS, mode: 'full', includeEnrichments: false } as never, ctx())).results[0];
+  expect(read.items.find((i: any) => i.id === item.itemId).anchors[0].change).toEqual(change);
+  expect(read.prose).toContain('Persist recovery state');
+  const planned = { action: 'create', summary: 'Add recovery helper', reason: 'Keep existing queue ownership' };
+  const edited = data(await editTool.handler({ slug: SLUG, harness: HARNESS, itemId: item.itemId,
+    rationale: 'Implementation identified a new helper', anchors: [{ symbol: 'recoverNew', path: 'recovery.ts', change: planned }] } as never, ctx()));
+  expect(edited.anchors[0]).toMatchObject({ path: 'recovery.ts', unknownReason: 'planned', change: planned });
+  const stored = await anchorStore.readPlanItemAnchors({ workspaceId: WS, harnessSlug: HARNESS, planSlug: SLUG });
+  expect(stored[item.itemId][0].change).toEqual(planned);
+});
+
 const fixture = vi.hoisted(() => ({ root: '', snapshot: null as PushSnapshot | null }));
 vi.mock('../../plan-items/anchors', async importOriginal => {
   const actual = await importOriginal<typeof import('../../plan-items/anchors')>();
@@ -49,6 +66,9 @@ beforeAll(async () => {
     throw error;
   });
   await fx.admin.unsafe(ddl);
+  const intentDdl = await readFile(new URL('../../../../../libs/papercusp/libs/db/sql/1610-plan-anchor-change-intent.sql', import.meta.url), 'utf8');
+  await fx.admin.unsafe(intentDdl);
+  await fx.admin.unsafe(intentDdl);
   fixture.root = await mkdtemp(join(tmpdir(), 'plan-anchor-handler-'));
   await writeFile(join(fixture.root, 'code.ts'), source);
   const caller = "import { linked } from './code';\nlinked();\n";

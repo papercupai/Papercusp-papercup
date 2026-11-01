@@ -1,6 +1,7 @@
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { getBuildInfo } from '../build-info';
 import { readGoalPortfolioBrief } from '../goal-launch-settings';
 import { GOAL_OWNER_REPORT_FIELD, GOAL_OWNER_REPORT_SCHEMA_VERSION } from '../goal-owner-report';
 import { applyGoalPropertyWrite } from '../typed-properties-db';
@@ -42,9 +43,11 @@ describe('canonical GOAL portfolio ladder (real Postgres)', () => {
       const fingerprint = { planVersion: String(plan.version), acceptanceBarEpoch: plan.acceptance_bar_epoch,
         itemsWatermark: null, auditSeq: null, specBindings: null, rubrics: [],
         scorecardWatermark: null, metaScorecardWatermark: null };
-      await sql`INSERT INTO harness_shared.plan_closure_observations
-        (workspace_id, harness_slug, plan_slug, satisfied, fingerprint, observed_at)
-        VALUES (${WS}, ${harness}, ${slug}, ${index === 0}, ${sql.json(fingerprint)}, now())`;
+      const buildSha = getBuildInfo().sha;
+      if (!buildSha) throw new Error('test requires a resolved evaluator build SHA');
+      await sql`INSERT INTO harness_shared.plan_closure_observations_by_build
+        (workspace_id, harness_slug, plan_slug, build_sha, satisfied, fingerprint, observed_at)
+        VALUES (${WS}, ${harness}, ${slug}, ${buildSha.toLowerCase()}, ${index === 0}, ${sql.json(fingerprint)}, now())`;
     }
     const brief = await readGoalPortfolioBrief({ workspaceId: WS, goalId: goal, sql });
     expect(brief?.worklist.find((p) => p.harness === harnesses[0])?.placement.state).toBe('terminal');

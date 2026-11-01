@@ -140,6 +140,8 @@ vi.mock('../../events/await/psu-pty-discovery', () => {
       if (!host) return { available: false, reason: 'no_live_pty_host', host: null };
       if (!hostSupports(host, 'carry-respawn'))
         return { available: false, reason: 'host_predates_carry_respawn', host };
+      if (!hostSupports(host, 'control-socket-probe-v1'))
+        return { available: false, reason: 'host_socket_probe_unsupported', host };
       return { available: true, reason: null, host };
     },
   };
@@ -297,7 +299,7 @@ const call = (args: Record<string, unknown>, ctx: unknown = {}) =>
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 const injected = (): Envelope => (injectIntoHost.mock.calls[0] as [string, Envelope])[1];
 
-const carryHost = { ownerId: 'su-caller', sock: '/tmp/sock', caps: ['compact', 'carry-respawn', 'mcp-reconnect'] };
+const carryHost = { ownerId: 'su-caller', sock: '/tmp/sock', caps: ['compact', 'carry-respawn', 'control-socket-probe-v1', 'mcp-reconnect'] };
 const staleHost = { ownerId: 'su-caller', sock: '/tmp/sock', caps: ['compact'] }; // predates carry-respawn
 const closedSpec = {
   systemPromptAddendum: 'CARRY-DOC-ADDENDUM',
@@ -536,14 +538,32 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
       expect(b.note).not.toContain('Failed to reach');
     });
 
-    it('keeps the unreachable-socket report for a transport failure', async () => {
+    it('reports immediate connection failures without claiming the timeout elapsed', async () => {
+      findLiveHost.mockReturnValue(carryHost);
+      injectIntoHost.mockResolvedValue({
+        ok: false,
+        confirmation: 'error',
+        transportErrorCode: 'ECONNREFUSED',
+      });
+      const b = body(await call({ focus: 'finish the fence fix' }));
+      expect(b.ok).toBe(false);
+      expect(b.hostConfirmation).toBe('error');
+      expect(b.hostTransportErrorCode).toBe('ECONNREFUSED');
+      expect(b.note).toContain('failed before a host acknowledgement');
+      expect(b.note).toContain('ECONNREFUSED');
+      expect(b.note).not.toContain('waiting up to');
+    });
+
+    it('reports the socket acknowledgement timeout and preserves the ambiguous outcome', async () => {
       findLiveHost.mockReturnValue(carryHost);
       injectIntoHost.mockResolvedValue({ ok: false, confirmation: 'timeout' });
       const b = body(await call({ focus: 'finish the fence fix' }));
       expect(b.ok).toBe(false);
       expect(b).not.toHaveProperty('hostRefusalReason');
       expect(b.hostConfirmation).toBe('timeout');
-      expect(b.note).toContain('Failed to reach the session TUI host socket');
+      expect(b.note).toContain('No acknowledgement arrived from the session TUI host socket');
+      expect(b.note).toContain('within 540000ms');
+      expect(b.note).toContain('host may have accepted the request');
     });
   });
 
@@ -915,6 +935,23 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(body(out).note).toContain('no carry-respawn was queued');
     expect(injectIntoHost).not.toHaveBeenCalled();
     expect(detectRespawnStorm).not.toHaveBeenCalled();
+  });
+
+  it('refuses self-compaction when host metadata cannot verify its control socket', async () => {
+    findLiveHost.mockReturnValue({
+      ...carryHost,
+      caps: ['compact', 'carry-respawn', 'mcp-reconnect'],
+    });
+    const out = await call({ focus: 'x' });
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({
+      ok: false,
+      requested: false,
+      respawn: false,
+      error: 'host_socket_probe_unsupported',
+    });
+    expect(body(out).note).toContain('listener cannot be confirmed');
+    expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
   it('an armed cold loop and verified carry-note do not prove compaction without a host', async () => {

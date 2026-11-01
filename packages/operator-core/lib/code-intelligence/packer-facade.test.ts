@@ -49,6 +49,10 @@ import {
   type PackFormat,
 } from './packer-facade.ts';
 import { isTrustworthyEmpty, unmeasuredSourceEvidence, type CodeIntelAnswer } from './contracts.ts';
+import { applyResultDoor, beginResultDoorAggregate, type DoorableResult } from '../result-door.ts';
+import { parseScratchReference } from '../scratch-reference.ts';
+import { activeWorkspaceId } from '../workspace-registry.ts';
+import readTool from '../agent-tools/capability/read.ts';
 
 describe('native P010 change report contract', () => {
   it('cites the reference consumer and rechecks actual source bytes across report reads', async () => {
@@ -129,6 +133,72 @@ describe('native P010 change report contract', () => {
 const BASE: PackerArgs = { include: ['packages/**/*.ts'], rootPath: '/repo' };
 
 describe('native P021 symbol/source bundle evidence boundary', () => {
+  it('pages the published captured artifact losslessly after the aggregate output budget is exhausted', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-bundle-paging-'));
+    const source = 'export function target() { return "CAPTURED_LITERAL"; }\n';
+    writeFileSync(join(root, 'target.ts'), source);
+    const site = { path: 'target.ts', line1: 1, kind: 'function' as const, name: 'target' };
+    const answer: CodeIntelAnswer = { backend: 'typescript-service', intent: 'impact', query: 'target',
+      sites: Array.from({ length: 80 }, () => site), error: null, latencyMs: 0,
+      truncation: { truncated: false, totalAvailable: 80, continuation: null },
+      freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false } };
+    const evidence = unmeasuredSourceEvidence(answer,
+      { repositoryId: 'fixture', identityKind: 'registry', paths: ['.'], basis: 'compiler-project' }, []);
+    const contentHash = createHash('sha256').update(source).digest('hex');
+    const graph: CodeIntelAnswer = { ...answer, evidence: { ...evidence,
+      sourceScope: { ...evidence.sourceScope, sourceFingerprint: 'captured-inputs', supportingFiles: [
+        { path: 'target.ts', contentHash, language: 'typescript', representation: 'full-source' }] },
+      siteIdentities: answer.sites.map((_site, siteIndex) => ({ siteIndex, sourcePath: 'target.ts',
+        contentHash, versionedSymbolId: `captured-${siteIndex}` })) } };
+    let artifact: string | null = null;
+    try {
+      const bundle = (await nativeChangeReport({ rootPath: root, include: ['target.ts'] },
+        { symbol: 'target', file: 'target.ts' },
+        { graph: async () => graph, exec: async () => ({ stdout: '' }) })).report.bundle;
+      artifact = bundle.expansion.args.file_path;
+      const captured = parseScratchReference(readFileSync(artifact));
+      expect(captured, 'Native expansion must publish the maintained recovery container').not.toBeNull();
+      expect(captured!.manifest.sha256).toBe(bundle.expansion.sha256);
+      writeFileSync(join(root, 'target.ts'), 'export function target() { return "NEWER_SOURCE"; }\n');
+      const workspaceId = activeWorkspaceId();
+      const aggregateScope = beginResultDoorAggregate({ sessionKey: 'native-bundle-paging', outputGroupId: root });
+      const opts = { workspaceId, runId: '11111111-2222-4333-8444-555555555555', aggregateScope };
+      let exhausted: DoorableResult | undefined;
+      for (let index = 0; index < 3; index++) exhausted = applyResultDoor({
+        content: [{ type: 'text' as const, text: 'x'.repeat(5_000) }],
+      }, { ...opts, toolName: 'plans:get' });
+      expect(JSON.parse((exhausted!.content[0] as { text: string }).text).state).toBe('incomplete');
+      const pages: Buffer[] = [];
+      let cursor: { tool: string; args: Record<string, unknown> } | null = bundle.expansion;
+      while (cursor && pages.length < 64) {
+        const result = await readTool.handler(cursor.args as never, { projectDir: root, workspaceId } as never) as DoorableResult;
+        const doored = applyResultDoor({ ...result, content: [...result.content,
+          { type: 'text' as const, text: 'See also: tools:find (discover tools)' }] },
+        { ...opts, toolName: 'tools:invoke', nestedTargetToolName: 'capability:read' });
+        const page = JSON.parse((doored.content[0] as { text: string }).text);
+        expect(page.ok).toBe(true);
+        expect(page.encoding).toBe('base64');
+        const bytes = Buffer.from(page.data, 'base64');
+        expect(bytes.toString('base64')).toBe(page.data);
+        expect(bytes.length).toBe(page.byte_length);
+        expect(page.byte_offset).toBe(pages.reduce((total, row) => total + row.length, 0));
+        pages.push(bytes);
+        expect(Boolean(page.next_cursor)).toBe(!page.eof);
+        cursor = page.next_cursor;
+      }
+      expect(cursor).toBeNull();
+      expect(pages.length).toBeGreaterThan(2);
+      const document = Buffer.concat(pages).toString('utf8');
+      expect(createHash('sha256').update(document).digest('hex')).toBe(bundle.expansion.sha256);
+      expect(JSON.parse(document).context.symbols).toHaveLength(80);
+      expect(document).toContain('CAPTURED_LITERAL');
+      expect(document).not.toContain('NEWER_SOURCE');
+    } finally {
+      if (artifact) rmSync(artifact, { force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('expands omitted compiler records and preserves inferred provenance without substituting changed source', async () => {
     const root = mkdtempSync(join(tmpdir(), 'native-graph-bundle-unit-'));
     const source = 'export function target() { return "CAPTURED_LITERAL"; }\n';
@@ -507,6 +577,26 @@ describe('a refusal is an ANSWER that can never read as an empty selection', () 
 });
 
 describe('provenance states what the pack actually is', () => {
+  it('reports the producer phases before a slow flag read can consume the caller deadline', async () => {
+    let finishFlag!: (enabled: boolean) => void;
+    vi.mocked(getFlag).mockReturnValueOnce(new Promise<boolean>(resolve => { finishFlag = resolve; }));
+    const phases: string[] = [];
+    const pending = packerFacade('pack', BASE, stubEffects({ onPhase: phase => phases.push(phase) }));
+    expect(phases).toEqual(['flag-read']);
+    finishFlag(false);
+    expect((await pending).answer.error).toMatch(/disabled/);
+    expect(phases).toEqual(['flag-read']);
+  });
+
+  it('distinguishes execution, provenance, artifact and preview phases without changing the pack', async () => {
+    const phases: string[] = [];
+    const result = await packerFacade('pack', BASE, stubEffects({ onPhase: phase => phases.push(phase) }));
+    expect(phases).toEqual(['flag-read', 'identity', 'execution', 'selection', 'provenance', 'artifact-write', 'preview']);
+    expect(result.answer.error).toBeNull();
+    expect(result.artifact?.provenance.securityScan).toBe('secretlint+deny-set');
+    expect(result.answer.sites.map(site => site.path)).toEqual(['a.ts']);
+  });
+
   it('stamps engine, version, commit, dirtiness and selection', async () => {
     const r = await packerFacade('pack', BASE, stubEffects());
     const p = r.artifact?.provenance;

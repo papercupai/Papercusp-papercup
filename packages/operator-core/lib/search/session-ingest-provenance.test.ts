@@ -54,6 +54,13 @@ describe('stampTurnProvenance', () => {
     expect(r.turn_origin).toBe('loop-fire');
   });
 
+  it('records an envelope-less cold-loop wake as machine surface, never as owner input', () => {
+    const r = row({ source_kind: 'codex', text: '❄️ COLD LOOP WAKE (fire #41) — continue from the carry-note below.' });
+    stampTurnProvenance(r);
+    expect(r.turn_origin_verdict).toBe('machine-surface');
+    expect(r.turn_origin).toBeNull();
+  });
+
   it.each([
     ['wake-pump', '⟦turn-origin:wake-pump nonce:a86e21b122a13757⟧\n[await-event] fired'],
     ['self-compaction', '⟦turn-origin:self-compaction nonce:7f6dfc8e97d0016f⟧\nContinue where you left off'],

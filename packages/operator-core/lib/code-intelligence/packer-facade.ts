@@ -62,6 +62,8 @@ import { FLAGS } from '@papercusp/flags';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread.ts';
 import { LSP_VENDOR_DIR } from './lsp-adapter.ts';
 import { getBuildInfo } from '../build-info.ts';
+import { writeScratchReference } from '../scratch-reference.ts';
+import { activeWorkspaceId } from '../workspace-registry.ts';
 
 import {
   DEFAULT_RESOURCE_BUDGET,
@@ -898,16 +900,31 @@ const defaultExec: ExecFn = async (bin, argv, opts) => {
   return { stdout };
 };
 
+export type PackerPhase = 'flag-read' | 'identity' | 'execution' | 'selection' | 'provenance' | 'artifact-write' | 'preview';
+
 export interface PackerEffects {
   readonly exec: ExecFn;
   readonly writeArtifact: (body: string, engine: PackerEngine, format: PackFormat) => Promise<string>;
   readonly now: () => Date;
+  /** Report the phase before it starts, including awaits that may outlast a caller's deadline. */
+  readonly onPhase?: (phase: PackerPhase) => void;
 }
 
 const defaultWriteArtifact = async (body: string, engine: PackerEngine | 'native-source-path', format: PackFormat): Promise<string> => {
   const dir = papercuspPath('scratch', 'packs');
-  await mkdir(dir, { recursive: true });
   const sha = createShortHash(body);
+  if (engine === 'native-source-path') {
+    // Expansion is an exact recovery transport. Framed payload pages retain the
+    // captured hash and remain readable after the caller's aggregate door fills.
+    const path = join(dir, `${engine}-${sha}-${Date.now()}.spill`);
+    const deferredWrites: Promise<void>[] = [];
+    writeScratchReference({ filePath: path, payload: body, workspaceId: activeWorkspaceId(),
+      audience: 'workspace', mediaType: 'application/json', bodyOffsetInPayload: 0,
+      content: [{ index: 0, type: 'text', byteCount: Buffer.byteLength(body, 'utf8') }], deferredWrites });
+    await Promise.all(deferredWrites);
+    return path;
+  }
+  await mkdir(dir, { recursive: true });
   const path = join(dir, `${engine}-${sha}-${Date.now()}.${format === 'xml' ? 'xml' : 'md'}`);
   await writeFile(path, body, 'utf8');
   return path;
@@ -1000,7 +1017,11 @@ export async function packerFacade(
   const engine: PackerEngine = op === 'diff' ? 'code2prompt' : 'repomix';
   const format: PackFormat = args.format ?? (op === 'diff' ? 'markdown' : 'xml');
   const query = `${op}:${args.include.join(',')}${args.baseRef ? ` vs ${args.baseRef}` : ''}`;
+  const phase = (value: PackerPhase) => {
+    try { effects.onPhase?.(value); } catch { /* Diagnostics cannot change packing or its safety checks. */ }
+  };
 
+  phase('flag-read');
   if (!(await getFlag(FLAGS.CODE_INTEL_PACKERS, 'system').catch(() => false))) {
     return refusal(engine, query, `packing is disabled (${FLAGS.CODE_INTEL_PACKERS} is off)`, started);
   }
@@ -1014,6 +1035,7 @@ export async function packerFacade(
     );
   }
 
+  phase('identity');
   const id = await packerIdentity(engine, effects.exec);
   if (!id.ok) return refusal(engine, query, id.reason, started);
 
@@ -1026,6 +1048,7 @@ export async function packerFacade(
 
   let body: string;
   try {
+    phase('execution');
     const { stdout } = await effects.exec(id.identity.bin, argv, {
       cwd: args.rootPath,
       timeoutMs: 180_000,
@@ -1038,9 +1061,11 @@ export async function packerFacade(
     return refusal(engine, query, detail.slice(0, 500), started);
   }
 
+  phase('selection');
   const template = args.template ?? 'none';
   const document = templateHeader(template) + body;
   const selected = parseSelectedFiles(body, format);
+  phase('provenance');
   const git = await readGitProvenance(args.rootPath, args.baseRef, effects.exec, args.include);
 
   const provenance: PackProvenance = {
@@ -1062,6 +1087,7 @@ export async function packerFacade(
     capturedAt: effects.now().toISOString(),
   };
 
+  phase('artifact-write');
   const path = await effects.writeArtifact(document, engine, format);
   const sites: SymbolSite[] = (selected ?? []).map((p) => ({
     path: p,
@@ -1070,6 +1096,8 @@ export async function packerFacade(
     detail: null,
   }));
 
+  phase('preview');
+  const preview = packPreview(document, path, selected);
   return {
     answer: {
       backend: engine,
@@ -1096,6 +1124,6 @@ export async function packerFacade(
       latencyMs: Date.now() - started,
       error: null,
     },
-    artifact: { path, ...packPreview(document, path, selected), provenance },
+    artifact: { path, ...preview, provenance },
   };
 }

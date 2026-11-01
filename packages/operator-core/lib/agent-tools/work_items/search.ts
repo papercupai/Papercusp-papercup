@@ -112,7 +112,7 @@ export function shapeWorkItemsSearch(data: unknown, tier: keyof typeof SEARCH_TI
 export default defineTool({
   name: 'work_items:search',
   profile: 'engineer',
-  description: 'Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. The required free-text argument is `query` — `q` is not an alias. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs, retryable, retry? } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ `legs` before concluding "no duplicate exists": legs.degraded:true means a ranking leg did not contribute (legs.warning says why, e.g. the embedder is down), so a short list may be a degraded search rather than an absence. When `retryable:true`, retry before treating the result as a verified-empty or creating a new item. A cold query-embedder warmup includes a stable `retry.token` shared by concurrent calls and `retry.afterMs` guidance.',
+  description: 'Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. The required free-text argument is `query` — `q` is not an alias. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs, coverage, retryable, retry? } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ both `legs` and `coverage` before concluding "no duplicate exists": `legs.degraded:true` means a ranking leg did not contribute; `coverage.verdict:"degraded"` means the vector corpus is under-covered, and `"unknown"` means no fresh coverage sample exists. Either makes `retryable:true`, so `count:0` is not a verified-empty search. When `retryable:true`, retry before treating the result as verified-empty or creating a new item. A cold query-embedder warmup includes a stable `retry.token` shared by concurrent calls and `retry.afterMs` guidance.',
   guidance: {
     when: 'You want to find existing work-items by free text (e.g. dedup before filing, or locate a known issue/feature).',
     chaining: 'Results include draft plan items labeled planStatus:draft. Read those with plans:get {slug:planSlug}; read execution work with work_items:get {id}. Explicit kind/nature filters retain their requested scope.',
@@ -169,7 +169,7 @@ export default defineTool({
       ),
   }),
   async handler(args) {
-    const { items, discovery, legs, retry } = await searchWorkItems(args.query, {
+    const { items, discovery, legs, coverage, retry } = await searchWorkItems(args.query, {
       harness: args.harness,
       includeDraftPlans: true,
       kind: args.kind as WorkItemKind | undefined,
@@ -189,10 +189,15 @@ export default defineTool({
         count: (discovery ?? items).length,
         items: (discovery ?? items).map(projectWorkItemSearchMatch),
         legs,
+        ...(coverage ? { coverage } : {}),
         // A degraded search is fail-open for availability, but it is not a
-        // sound dedup answer. Give callers a machine-readable receipt so a
-        // `count: 0` result cannot be mistaken for a verified-empty search.
-        retryable: legs.degraded,
+        // sound dedup answer. Corpus coverage is an independent signal: a
+        // semantic leg can run successfully against an under-covered index,
+        // and an unknown coverage sample must not imply a clean corpus either.
+        // Keep both signals machine-readable so `count: 0` is never presented
+        // as a verified-empty search when either can hide matches.
+        retryable: legs.degraded || (coverage !== undefined
+          && coverage.verdict !== 'healthy' && coverage.verdict !== 'not-semantic'),
         ...(retry ? { retry } : {}),
       },
     };

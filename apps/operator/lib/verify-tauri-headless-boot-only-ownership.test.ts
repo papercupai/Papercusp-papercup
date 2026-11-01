@@ -63,6 +63,7 @@ describe.skipIf(process.platform !== 'linux')(
     const OWNER = 'su-wi17687-owner';
     const DISPLAY = ':977';
     const PORT = '45977';
+    const PTY_PORT = '45981';
     const PROVENANCE = 'wi17687-provenance';
     let target: ChildProcess;
     let dir: string;
@@ -74,6 +75,7 @@ describe.skipIf(process.platform !== 'linux')(
         env: {
           DISPLAY,
           OPERATOR_DEV_PORT: PORT,
+          OPERATOR_DEV_PTY_PORT: PTY_PORT,
           PAPERCUSP_SID: OWNER,
           PAPERCUSP_TAURI_LAUNCH_PROVENANCE: PROVENANCE,
         },
@@ -85,6 +87,7 @@ describe.skipIf(process.platform !== 'linux')(
       const header = [
         `VERIFY_TAURI_PID=${target.pid}`,
         `VERIFY_TAURI_PORT=${PORT}`,
+        `VERIFY_TAURI_PTY_PORT=${PTY_PORT}`,
         `VERIFY_TAURI_DISPLAY=${DISPLAY}`,
         `VERIFY_TAURI_OWNER_SID=${OWNER}`,
         `VERIFY_TAURI_LAUNCH_PROVENANCE=${PROVENANCE}`,
@@ -101,16 +104,18 @@ describe.skipIf(process.platform !== 'linux')(
       if (dir) rmSync(dir, { recursive: true, force: true });
     });
 
-    function sourceAs(sid: string) {
+    function sourceAs(sid: string, ptyPort = PTY_PORT) {
       // No vh_* helper is defined here: this is exactly the caller's shell.
       const script = [
         'source "$1"; rc=$?',
         'echo "RC=$rc"',
         'echo "VH=$(type -t vh_run_step || echo none)"',
         // A child process proves the values are EXPORTED, not just set.
-        `${JSON.stringify(process.execPath)} -e 'console.log("CHILD_DISPLAY=" + (process.env.DISPLAY ?? "")); console.log("CHILD_PID=" + (process.env.VERIFY_TAURI_PID ?? ""))'`,
+        `${JSON.stringify(process.execPath)} -e 'console.log("CHILD_DISPLAY=" + (process.env.DISPLAY ?? "")); console.log("CHILD_PID=" + (process.env.VERIFY_TAURI_PID ?? "")); console.log("CHILD_PTY_PORT=" + (process.env.VERIFY_TAURI_PTY_PORT ?? ""))'`,
       ].join('\n');
-      return spawnSync('bash', ['--noprofile', '--norc', '-c', script, 'bash', envFile], {
+      const sourceFile = join(dir, `env-${ptyPort}.sh`);
+      writeFileSync(sourceFile, readFileSync(envFile, 'utf8').replace(`VERIFY_TAURI_PTY_PORT=${PTY_PORT}`, `VERIFY_TAURI_PTY_PORT=${ptyPort}`));
+      return spawnSync('bash', ['--noprofile', '--norc', '-c', script, 'bash', sourceFile], {
         env: { PATH: process.env.PATH ?? '/usr/bin:/bin', PAPERCUSP_SID: sid, DISPLAY: ':1' },
         encoding: 'utf8',
       });
@@ -129,6 +134,14 @@ describe.skipIf(process.platform !== 'linux')(
       // The caller's own DISPLAY (:1, the owner's desktop) must be replaced.
       expect(r.stdout).toContain(`CHILD_DISPLAY=${DISPLAY}`);
       expect(r.stdout).toContain(`CHILD_PID=${target.pid}`);
+      expect(r.stdout).toContain(`CHILD_PTY_PORT=${PTY_PORT}`);
+    });
+
+    it('refuses a handoff whose PTY port differs from the owned process', () => {
+      const r = sourceAs(OWNER, '45982');
+      expect(r.stdout).toContain('RC=1');
+      expect(r.stderr).toContain('changed launch provenance');
+      expect(r.stdout).toContain('CHILD_PTY_PORT=\n');
     });
 
     it('still refuses a different session and exports nothing', () => {

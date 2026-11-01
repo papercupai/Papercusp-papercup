@@ -118,7 +118,7 @@ export function main({ repoRoot, roots, exempt, untypecheckable, listOnly, listI
         (...data: any[]): void;
         (message?: any, ...optionalParams: any[]): void;
     } | undefined;
-}): 1 | 0;
+}): 0 | 1;
 export { parseFilesArgs } from "./lib/explicit-files.mjs";
 /**
  * The superproject roots. `libs/papercusp` is deliberately ABSENT: it is a git submodule with its

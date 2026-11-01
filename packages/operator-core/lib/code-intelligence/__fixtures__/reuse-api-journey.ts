@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeClaimReuseContribution } from '../reuse-brief-providers.ts';
+import { preparePrivateNativeCallerSnapshot } from '../native-cli.fixture.ts';
 
 /** The staging adapter owns this lifecycle; private callers cannot opt out of
  * their guards merely by choosing a different workspace name. */
@@ -173,7 +174,7 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   ]));
   const snapshotPath = managed?.snapshotPath ?? join(homedir(), '.papercusp/graph-snapshot', harness, 'dependency-snapshot.json');
   await mkdir(join(snapshotPath, '..'), { recursive: true });
-  const writeCallerSnapshot = async (exclusive = false) => {
+  const writeCallerSnapshot = async (exclusive = false, prepareCallers = true) => {
     const sha = async (path: string) => createHash('sha256').update(await readFile(join(root, path))).digest('hex');
     const callerPaths = [readerPath, testPath];
     const targetSha = await sha(targetPath);
@@ -187,16 +188,21 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
         path, line: 2, column: 1, sha256: await sha(path), spelling: name, workspace: '@fixture/reuse',
       }))),
     })));
-    await writeFile(snapshotPath, JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
+    const snapshot = JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
       index: { backend: 'first-party-imports', lastCommit: baseline },
       edges: await Promise.all(callerPaths.map(async importer => ({
         imported: targetPath, importer, importerSha256: await sha(importer),
       }))),
       symbols: { schema: 'code-intel-symbol-snapshot-v1', knowledge: 'syntax-bound', symbols },
       clones: { schema: 'clone-advisory-v1', files: cloneFiles },
-    }), exclusive ? { flag: 'wx' } : undefined);
+    });
+    await writeFile(snapshotPath, snapshot, exclusive ? { flag: 'wx' } : undefined);
+    // Clone reuse reads the harness key; completion reads the home serving key.
+    // The completion-only fixture needs both, while managed/claim-only journeys
+    // retain their existing isolated snapshot ownership contract.
+    if (prepareCallers && !managed && !claimOnly) await preparePrivateNativeCallerSnapshot(workspace, snapshot);
   };
-  await writeCallerSnapshot(Boolean(managed));
+  await writeCallerSnapshot(Boolean(managed), false);
   // D026: a real persisted planning timestamp and one explicitly controlled CLI
   // session qualify provenance. This does not represent a model-session census.
   // D029: sparse authored context only; never shorten the returned task brief.
@@ -454,7 +460,7 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
       && JSON.parse(row.subject).indexVersion && row.chars > 0));
     const proof = { workspace, harness, root, fixtureWorkItem: id,
       planSlug, baseline, handlerHash, sourceFingerprint: brief.sourceFingerprint, controlledSession, cohortCandidates,
-      transport: 'real-cli-http', expectedProviders: expected, response, base, issued: finalIssued,
+      transport: 'real-cli-http', expectedProviders: expected, providerOutcomes, response, base, issued: finalIssued,
       testRunIds: run.testRunIds, runGroupId: run.runId,
       scope: managed ? 'controlled staging CLI fixture; no model invocation, live user census or final shipment'
         : 'controlled private current-source CLI fixture; no model invocation, live user census or final shipment' };

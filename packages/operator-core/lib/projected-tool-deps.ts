@@ -73,6 +73,7 @@ import { selectNarrowedLaunchSpecBody } from './capability-envelope/identity-rec
 // Type-only: the identity gate itself is reached by DYNAMIC import (see the resolver).
 import type { IdentityLaunchAuditStamp } from './capability-envelope/identity-grants-port';
 import { checkAuditModeMutationGuard } from './capability-envelope/audit-mode-guard';
+import { checkPlanExecutionGuard, isPlanImplementationCall } from './agent-tools/plans/plan-execution-guard';
 import { enforceAppKeyScope } from './connected-apps/enforce';
 import { enforceInheritedPolicy } from './governance-policy/enforce';
 // Imported for its INSTALL side effect (D-017 §5): loading the store assigns the session
@@ -954,13 +955,26 @@ export const controlAnchorKernelResolver: KernelEnforcementPort = async (request
   const first = await resolveControlAnchorKernelOnce(
     request, (heal) => { pending.heal = heal; }, timingCollector,
   );
-  if (!pending.heal) return attachKernelAuthorityTimings(first, timingCollector);
   // Re-resolve from a fresh read only when the convergence actually wrote; the
   // second pass never heals again, so a session the launch record cannot vouch
   // for keeps its original denial.
-  const final = (await healStaleArtifactFromLaunchRecord(pending.heal))
+  const final = pending.heal && (await healStaleArtifactFromLaunchRecord(pending.heal))
     ? await resolveControlAnchorKernelOnce(request, undefined, timingCollector)
     : first;
+  if (final.decision !== 'deny' && request.phase === 'enforce') {
+    if (!isPlanImplementationCall(request.toolName, request.args)) return attachKernelAuthorityTimings(final, timingCollector);
+    try {
+      const identity = resolveAgentIdentity(request.ctx);
+      if (!identity.workspaceId) return operatorKernelDenial('plan_execution_not_ready',
+        'Implementation workspace is unresolved; no plan execution authority can be established.');
+      const refused = await checkPlanExecutionGuard({ ownerId: identity.ownerId, workspaceId: identity.workspaceId,
+        toolName: request.toolName, args: request.args });
+      if (refused) return { ...final, decision: 'deny', availability: 'available', applied: true,
+        code: refused.code, reason: refused.reason, obligations: { planExecution: refused } };
+    } catch {
+      return operatorKernelDenial('plan_execution_not_ready', 'Implementation identity is unresolved; no plan execution authority can be established.');
+    }
+  }
   return attachKernelAuthorityTimings(final, timingCollector);
 };
 

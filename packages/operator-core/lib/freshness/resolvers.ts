@@ -96,7 +96,7 @@ function allNull(refs: readonly string[]): Map<string, string | null> {
  * a touch moves mtime without changing meaning, and a false stale here would train
  * agents to ignore the verdict.
  */
-type FreshnessFileRootSource = 'harness-root' | 'canonical-repo';
+export type FreshnessFileRootSource = 'harness-root' | 'canonical-repo' | 'explicit-root';
 
 function containedFilePath(root: string, ref: string): string | null {
   // Preserve the existing containment contract: absolute and ../-escaping refs
@@ -155,11 +155,15 @@ export function selectFreshnessFileRoot(
 
 async function resolveHarnessRepoRoots(
   ctx: FreshnessResolverCtx,
-): Promise<{ preferred: string | null; canonical: string | null }> {
+): Promise<{
+  preferred: string | null;
+  canonical: string | null;
+  preferredSource: FreshnessFileRootSource;
+}> {
   // An explicit override is a caller-owned test/embedding contract, not an ambient
   // registry guess. Keep it authoritative and do not escape to another checkout.
   if (ctx.repoRoot !== undefined && ctx.repoRoot !== null) {
-    return { preferred: ctx.repoRoot, canonical: null };
+    return { preferred: ctx.repoRoot, canonical: null, preferredSource: 'explicit-root' };
   }
 
   // A checkpoint's file dependencies belong to the item's harness, not to the
@@ -171,7 +175,7 @@ async function resolveHarnessRepoRoots(
       const registry = await loadHarnessRegistry(ctx.workspaceId);
       const harnessRoot = resolveHarnessContentPath(registry, ctx.harness);
       if (harnessRoot) {
-        return { preferred: harnessRoot, canonical: detectPapercupRoot() };
+        return { preferred: harnessRoot, canonical: detectPapercupRoot(), preferredSource: 'harness-root' };
       }
     } catch {
       // Registry reads are best-effort here; an unavailable registry must not
@@ -179,14 +183,41 @@ async function resolveHarnessRepoRoots(
     }
   }
   const canonical = detectPapercupRoot();
-  return { preferred: canonical, canonical: null };
+  return { preferred: canonical, canonical: null, preferredSource: 'canonical-repo' };
 }
 
-const resolveFiles = async (refs: readonly string[], ctx: FreshnessResolverCtx, allowDirectories = false) => {
+export interface FreshnessFileTokenResolution {
+  /** File tokens for one selected source tree. Keys are bare repo-relative refs. */
+  tokens: Map<string, string | null>;
+  /** The exact tree used for every ref in this batch, including unresolved refs. */
+  root: string | null;
+  rootSource: FreshnessFileRootSource | null;
+}
+
+/**
+ * Resolve file refs and retain which checkout supplied the evidence.
+ *
+ * Carry-reference warnings need this provenance because a hash comparison across
+ * two different checkouts can look like a file edit even when neither checkout
+ * changed. The ordinary freshness API still consumes only the token map.
+ */
+export async function resolveFileTokensWithProvenance(
+  refs: readonly string[],
+  ctx: FreshnessResolverCtx,
+  options: { allowDirectories?: boolean } = {},
+): Promise<FreshnessFileTokenResolution> {
   const out = new Map<string, string | null>();
   const roots = await resolveHarnessRepoRoots(ctx);
+  const allowDirectories = options.allowDirectories ?? false;
   const root = selectFreshnessFileRoot(refs, roots.preferred, roots.canonical, { allowDirectories });
-  if (!root) return allNull(refs);
+  if (!root) return { tokens: allNull(refs), root: null, rootSource: null };
+  const rootKey = resolve(root);
+  const rootSource =
+    roots.preferred && rootKey === resolve(roots.preferred)
+      ? roots.preferredSource
+      : roots.canonical && rootKey === resolve(roots.canonical)
+        ? 'canonical-repo'
+        : null;
   await Promise.all(
     refs.map(async (ref) => {
       const full = containedFilePath(root, ref);
@@ -207,7 +238,11 @@ const resolveFiles = async (refs: readonly string[], ctx: FreshnessResolverCtx, 
       }
     }),
   );
-  return out;
+  return { tokens: out, root, rootSource };
+}
+
+const resolveFiles = async (refs: readonly string[], ctx: FreshnessResolverCtx, allowDirectories = false) => {
+  return (await resolveFileTokensWithProvenance(refs, ctx, { allowDirectories })).tokens;
 };
 
 /**

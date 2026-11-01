@@ -123,9 +123,12 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
   });
 
   it.each([
-    ['success', 0, '{"before":null,"after":"verify-tauri-headless-isolated-v1","cleared":true}', '', 0],
+    ['success', 0, '{"result":"{\\"before\\":null,\\"after\\":\\"verify-tauri-headless-isolated-v1\\",\\"cleared\\":true}"}', '', 0],
     ['evaluation error', 17, 'partial response', 'evaluation context was destroyed', 1],
-    ['existing sentinel', 0, '{"before":"ambient","after":"verify-tauri-headless-isolated-v1","cleared":true}', '', 1],
+    ['missing JSON envelope', 0, '', '', 1],
+    ['empty eval result', 0, '{"result":""}', '', 1],
+    ['invalid JSON envelope', 0, 'not-json', '', 1],
+    ['existing sentinel', 0, '{"result":"{\\"before\\":\\"ambient\\",\\"after\\":\\"verify-tauri-headless-isolated-v1\\",\\"cleared\\":true}"}', '', 1],
     ['timeout', 124, 'evaluation pending', '', 1],
   ] as const)('retains the real storage probe evidence for %s', (kind, probeExit, stdout, stderr, expectedExit) => {
     const work = mkdtempSync(join(tmpdir(), 'verify-storage-evidence-'));
@@ -159,6 +162,18 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
         expect(result.stderr).toContain('storage isolation is unmeasured');
         expect(result.stderr).toContain(stdout);
         if (stderr) expect(result.stderr).toContain(stderr);
+      }
+      if (kind === 'missing JSON envelope') {
+        expect(result.stderr).toContain('returned no JSON envelope');
+        expect(result.stderr).toContain('storage isolation is unmeasured');
+      }
+      if (kind === 'empty eval result') {
+        expect(result.stderr).toContain('returned an empty result');
+        expect(result.stderr).toContain('storage isolation is unmeasured');
+      }
+      if (kind === 'invalid JSON envelope') {
+        expect(result.stderr).toContain('invalid JSON envelope');
+        expect(result.stderr).toContain('storage isolation is unmeasured');
       }
     } finally { rmSync(work, { recursive: true, force: true }); }
   });

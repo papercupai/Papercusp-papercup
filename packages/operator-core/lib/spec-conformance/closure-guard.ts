@@ -73,13 +73,21 @@ export async function evaluateConformanceClosureAssessment(
   const report = evaluateRequirementEnforcement(input.planContent);
   if (!report.applicable) return result(null);
   const map = parseBarMappings(input.planContent, new Set(report.requirements.map((r) => r.barKey)));
-  if (!map.ok) {
-    return result({ code: 'conformance_mapping_unavailable', error: map.problems.map((p) => p.detail).join('; ') }, { applicable: true });
-  }
   const mapped = new Set(map.mappings
     .filter((m) => m.planItemIds.some((id) => input.planItemIds.includes(id)))
     .map((m) => m.barKey));
   const mappedRequirements = [...mapped];
+  if (!map.ok) {
+    // Retiring/transferring another lane must not freeze support work. Only
+    // dropped-only errors with a known, unrelated subject are item-scoped;
+    // malformed/unknown mappings and this item's own dropped mapping still fail.
+    const problems = map.problems.filter((p) => p.code !== 'bar_mapping_dropped_only' ||
+      p.barKey === undefined || mapped.has(p.barKey));
+    if (problems.length) {
+      return result({ code: 'conformance_mapping_unavailable', error: problems.map((p) => p.detail).join('; ') },
+        { applicable: true, mappedRequirements });
+    }
+  }
   if (!mapped.size) return result(null);
   // Conformance is plan-wide at activation, but a terminal close only owns the
   // requirements mapped to this plan item. Do not block a support item because

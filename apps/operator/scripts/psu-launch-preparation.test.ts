@@ -259,6 +259,41 @@ describe('effective SU launch preparation', () => {
     }
   });
 
+  it('rejects a legacy Codex route when the present server home differs from the child home', () => {
+    const serverHome = mkdtempSync(join(tmpdir(), 'su-codex-server-home-'));
+    const childHome = mkdtempSync(join(tmpdir(), 'su-codex-child-home-'));
+    try {
+      writeFileSync(join(childHome, 'config.toml'), [
+        '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',
+        'model_provider = "papercusp-codex-gateway"',
+        '# END PAPERCUSP_CODEX_GATEWAY_ROOT',
+        '# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+        '[model_providers.papercusp-codex-gateway]',
+        'base_url = "http://127.0.0.1:8788/v1"',
+        'wire_api = "responses"',
+        'experimental_bearer_token = "test-token"',
+        'http_headers = { "x-papercusp-owner" = "chosen-owner" }',
+        '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+      ].join('\n'));
+      const legacy = bootstrap('codex');
+      delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE;
+      delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ID;
+      legacy.envelopeEnv.CODEX_HOME = childHome;
+      const options = { accountRoute: 'auto', inheritedEnv: {} };
+
+      expect(() => prepareSuLaunch({ ...legacy, codexHome: serverHome }, options))
+        .toThrow(expect.objectContaining({ code: 'account_route_mismatch' }));
+      expect(prepareSuLaunch({ ...legacy, codexHome: childHome }, options)
+        .env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+      const envelopeOnly = { ...legacy };
+      delete envelopeOnly.codexHome;
+      expect(prepareSuLaunch(envelopeOnly, options).env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+    } finally {
+      rmSync(serverHome, { recursive: true, force: true });
+      rmSync(childHome, { recursive: true, force: true });
+    }
+  });
+
   it.each([undefined, 'default'])('repairs a legacy Codex pin with marker %s only from the exact managed account and owner', routeMarker => {
     const home = mkdtempSync(join(tmpdir(), 'su-codex-pin-route-'));
     const config = [

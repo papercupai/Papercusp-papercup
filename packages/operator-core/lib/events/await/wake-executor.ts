@@ -34,17 +34,19 @@
  */
 
 import { spawn as childSpawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
   existsSync,
   fstatSync,
   mkdirSync,
   openSync,
+  renameSync,
   readFileSync,
   readSync,
   readdirSync,
   statSync,
+  unlinkSync,
   writeFileSync,
   type Dirent,
 } from 'node:fs';
@@ -2646,13 +2648,14 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
     );
     // A delivery can retry after its live reads change. Its pointer must continue
     // to identify that attempt's evidence, rather than a later retry's snapshot.
-    const contentHash = createHash('sha256').update(`${doorTokens}\n${text}`).digest('hex');
+    const contentHash = createHash('sha256').update(`${doorTokens}\n${d.eventKey}\n${text}`).digest('hex');
     const file = join(dir, `delivery-${d.id}-${contentHash}.md`);
+    const tempFile = join(dir, `.delivery-${d.id}-${randomUUID()}.tmp`);
     const packed = packWakeText(text, budgetChars, doorTokens, file);
     mkdirSync(dir, { recursive: true });
     try {
       writeFileSync(
-        file,
+        tempFile,
         `# Wake spill — delivery #${d.id} (event ${d.eventKey})\n\n` +
           `The composed wake exceeded the per-hop injection door (~${doorTokens} tokens), so ` +
           `${packed.omitted.length} whole section(s) were left out of the delivered text. ` +
@@ -2660,10 +2663,13 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
           `## Section index\n\n${renderSectionIndex(packed)}\n\n---\n\n${text}\n`,
         { mode: 0o600, flag: 'wx' },
       );
+      // Publish only a complete spill. If a prior interrupted writer left a
+      // partial file at the content-addressed path, atomic rename repairs it;
+      // readers never observe this attempt's temporary bytes.
+      renameSync(tempFile, file);
     } catch (error) {
-      // Identical retries share the same immutable snapshot; every other write
-      // failure retains the existing fail-soft full-text delivery below.
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      try { unlinkSync(tempFile); } catch { /* best-effort cleanup; keep fail-soft delivery */ }
+      throw error;
     }
     recordWakePack(packed.omitted.length);
     console.info(

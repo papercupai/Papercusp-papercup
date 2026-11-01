@@ -292,6 +292,8 @@ describe('projectFrozenRepairQueueRead — P-025', () => {
     expect(projected.read).toEqual({ status: 'absent' });
     expect(projected.freezeAndConverge).toEqual({
       ...stored.freezeAndConverge,
+      queuePhase: null,
+      blockedBy: null,
       repairLatency: null,
     });
   });

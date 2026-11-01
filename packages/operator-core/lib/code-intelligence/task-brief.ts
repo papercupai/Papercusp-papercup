@@ -1,5 +1,6 @@
 /** P-012: one bounded task brief at the existing claim/resume seam; no cache or store. */
 import { createHash } from 'node:crypto';
+import { channel } from 'node:diagnostics_channel';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, posix, relative } from 'node:path';
 import * as ts from 'typescript';
@@ -8,7 +9,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import type { ClaimTimeEnrichmentSubject } from '../claim-time-enrichment';
 import { deriveRepoPathsFromText } from '../agent-tools/work_items/_derive-paths';
 import { DEFAULT_PACKER_EFFECTS, nativeChangeReport, packerFacade, type ChangeReportEffects, type ChangeReportRequest,
-  type PackerEffects, type PackerResult } from './packer-facade';
+  type PackerEffects, type PackerPhase, type PackerResult } from './packer-facade';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { pushSnapshotMissReason, queryPushSnapshot } from './push-snapshot';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
@@ -294,7 +295,17 @@ export function claimedScopePaths(items: readonly Pick<ClaimTimeEnrichmentSubjec
 
 /** The capture phase in flight; a deadline fallback reports it so a timeout is diagnosable. */
 export type TaskBriefPhase = 'setup' | 'repository-root' | 'plan-decisions' | 'scope-read' | 'safe-pack'
-  | 'compiler-wait' | 'incident' | 'source-recheck';
+  | `safe-pack:${PackerPhase}` | 'compiler-wait' | 'incident' | 'source-recheck';
+
+/** Native fixtures observe the existing capture clock without changing the inline brief. */
+export const TASK_BRIEF_CAPTURE_CHANNEL = 'papercusp.code-intelligence.task-brief.capture';
+export interface TaskBriefCaptureTiming {
+  workItem: string | null;
+  status: TaskBrief['status'];
+  elapsedMs: number;
+  phases: Array<{ phase: TaskBriefPhase; elapsedMs: number }>;
+}
+const captureDiagnostics = channel(TASK_BRIEF_CAPTURE_CHANNEL);
 
 /** Root authority is the workspace registry, never payload.rootPath or operator cwd. */
 export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
@@ -343,10 +354,13 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
     if (ms <= 0) throw new Error('task brief deadline exceeded');
     return ms;
   };
-  const effects: PackerEffects = { ...deps.effects, exec: (bin, argv, opts) => deps.effects.exec(bin, argv, {
-    ...opts, timeoutMs: Math.min(opts?.timeoutMs ?? TASK_BRIEF_BUDGET_MS, remaining()),
-    maxBuffer: Math.min(opts?.maxBuffer ?? 262144, 262144),
-  }) };
+  const effects: PackerEffects = { ...deps.effects,
+    onPhase: value => { phase.current = `safe-pack:${value}`; deps.effects.onPhase?.(value); },
+    exec: (bin, argv, opts) => deps.effects.exec(bin, argv, {
+      ...opts, timeoutMs: Math.min(opts?.timeoutMs ?? TASK_BRIEF_BUDGET_MS, remaining()),
+      maxBuffer: Math.min(opts?.maxBuffer ?? 262144, 262144),
+    }),
+  };
   try {
     const workspaceId = ref.workspaceId ?? activeWorkspaceId();
     phase.current = 'repository-root';
@@ -423,6 +437,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
     const packed: PackerResult = await deps.pack('pack', {
       rootPath: root, include: brief.scope.paths, format: 'xml', compress: false,
     }, effects);
+    phase.current = 'source-recheck';
     if (packed.answer.error || !packed.artifact?.path) throw new Error(packed.answer.error ?? 'safe pack unavailable');
     const after = await Promise.all([...texts.keys()].map(async path => [path, hash(await readFile(join(root, path), 'utf8'))]));
     if (hash(JSON.stringify(after)) !== before) throw new Error('task source changed while packing; re-read before using excerpts');
@@ -534,13 +549,26 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
       timer = setTimeout(() => resolve({ status: 'unknown', scope: { harness: ref.workItem?.harness ?? ref.harness ?? null, paths: [] },
         sourceFingerprint: null, commit: null, files: [], excerpts: [],
         graph: { status: 'unknown', consumers: [], relationships: [] },
-        exclusions: [`Task brief exceeded its bounded read deadline during ${phase.current}`
-          + ` (elapsed ${Date.now() - started}ms; ${phaseTimings()}).`],
+        exclusions: [
+          `Task brief exceeded its bounded read deadline during ${phase.current}`
+            + ` (elapsed ${Date.now() - started}ms; ${phaseTimings()}).`,
+          'Scope paths are unknown because the bounded capture did not complete; an empty path list does not prove an empty input scope.',
+        ],
         recover: ref.workItem?.id ? { tool: 'work_items:get', args: { id: ref.workItem.id } }
           : { tool: 'coord:declare-intent', args: { intent: ref.intent!.slice(0, 500), current_files: [...ref.paths!].slice(0, 8),
             ...(ref.harness ? { harness: ref.harness } : {}) } } }), TASK_BRIEF_BUDGET_MS);
     })]);
     clearTimeout(timer);
+    if (captureDiagnostics.hasSubscribers) {
+      const at = Date.now();
+      // Reuse the deadline's phase clock for successful captures too. Copies
+      // keep subscribers from mutating the in-flight capture state.
+      captureDiagnostics.publish({ workItem: ref.workItem?.id ?? null, status: base.status,
+        elapsedMs: at - started,
+        phases: [...spent, [current, at - enteredAt] as [TaskBriefPhase, number]]
+          .map(([phase, elapsedMs]) => ({ phase, elapsedMs })),
+      } satisfies TaskBriefCaptureTiming);
+    }
     const harness = ref.workItem?.harness ?? ref.harness;
     let root = base.repository?.rootPath ?? null;
     if (!root && harness && deps.engineering && Date.now() < deadline) {

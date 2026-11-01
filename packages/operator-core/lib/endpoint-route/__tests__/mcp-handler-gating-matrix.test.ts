@@ -101,6 +101,10 @@ const h = vi.hoisted(() => {
     kernelAuthority,
     nativeSessionBinding: 'unbound' as 'bound' | 'unbound' | 'foreign',
     nativeSessionRows: null as Map<string, Array<{ id: number; session_id: string | null; active: boolean }>> | null,
+    livePtyHost: null as {
+      ownerId: string; advSessionId: string | null; pid: number; ptyPid: number | null;
+      sock: string; command: string; startedAt: number; nativeSessionId?: string | null;
+    } | null,
     nativeSessionVerifierFailure: null as { sessionId: string; error: Error } | null,
     nativeSessionCalls: [] as Array<{ ownerId: string; sessionId: string }>,
     nativeSessionWorkspaceScopes: [] as Array<string | undefined>,
@@ -195,6 +199,7 @@ const h = vi.hoisted(() => {
         uiClientId?: string | null;
         isSuperuser?: boolean;
         transport?: string;
+        principal?: UnifiedToolContext['principal'];
         requestOrigin?: UnifiedToolContext['requestOrigin'];
       };
       args?: unknown;
@@ -451,6 +456,16 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
     return { ok: true, contents: { uri: opts.uri, mimeType: 'text/plain', text: 'spill contents' } };
   },
 }));
+vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../events/await/psu-pty-discovery')>();
+  return {
+    ...actual,
+    findLiveHost: (ownerId: string, dir?: string, options?: Parameters<typeof actual.findLiveHost>[2]) =>
+      ownerId === 'su-owner' && h.livePtyHost
+        ? h.livePtyHost
+        : actual.findLiveHost(ownerId, dir, options),
+  };
+});
 vi.mock('../../adv-sessions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../adv-sessions')>();
   return {
@@ -2359,6 +2374,7 @@ beforeEach(() => {
   h.withWorkspaceCalls.length = 0;
   h.nativeSessionBinding = 'unbound';
   h.nativeSessionRows = null;
+  h.livePtyHost = null;
   h.nativeSessionVerifierFailure = null;
   h.nativeSessionCalls.length = 0;
   h.nativeSessionWorkspaceScopes.length = 0;
@@ -6368,6 +6384,45 @@ describe('successful native-session audit (get-feedback D-006)', () => {
     expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(native);
   });
 
+  it('retains Claude native call correlation as diagnostics on its verified header carrier', async () => {
+    const native = 'native-owner-session', callId = 'toolu_claude-native-item';
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
+    const meta = { 'claudecode/toolUseId': callId };
+    const extra = { ...(superuserExtra('&client=su-owner', { 'x-papercusp-native-session': native }) as Record<string, unknown>), _meta: meta };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
+      carrier: 'header:x-papercusp-native-session', binding: 'bound', candidateAdvSessionId: 541,
+      callIdFingerprint: createHash('sha256').update(callId, 'utf8').digest('hex'),
+    } });
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(callId);
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(native);
+    expect(h.invocations[0]?.ctx.principal).toBeNull();
+  });
+
+  it.each([undefined, '', ' leading-space', 'trailing-space ', 'a/b', 'x'.repeat(257), 7, { callId: 'nested' }])(
+    'omits malformed Claude native call correlation %j', async callId => {
+      const native = 'native-owner-session';
+      h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
+      const meta = { 'claudecode/toolUseId': callId };
+      const extra = { ...(superuserExtra('&client=su-owner', { 'x-papercusp-native-session': native }) as Record<string, unknown>), _meta: meta };
+      const res = await callTool('gatingtest:scoped', {}, extra, meta);
+      expect(res.isError, textOf(res)).toBeUndefined();
+      expect(h.invocations[0]?.ctx.requestOrigin?.nativeSession).not.toHaveProperty('callIdFingerprint');
+    },
+  );
+
+  it.each(['unbound', 'query', 'thread'] as const)('cannot borrow Claude native call correlation from a %s carrier', async kind => {
+    const native = 'native-owner-session';
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: kind === 'unbound' ? null : native, active: true }]]]);
+    const meta = { 'claudecode/toolUseId': 'toolu_unproven', ...(kind === 'thread' ? { threadId: native } : {}) };
+    const extra = { ...(superuserExtra('&client=su-owner' + (kind === 'query' ? `&native_session=${native}` : ''),
+      kind === 'query' ? {} : { 'x-papercusp-native-session': native }) as Record<string, unknown>), _meta: meta };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.invocations[0]?.ctx.requestOrigin?.nativeSession).not.toHaveProperty('callIdFingerprint');
+  });
+
   it.each([undefined, '', ' leading-space', 'trailing-space ', 'a/b', 'x'.repeat(257), 7, { callId: 'nested' }])(
     'omits malformed native call correlation %j without changing ordinary authorization', async (callId) => {
       const native = 'native-owner-session';
@@ -6442,6 +6497,56 @@ describe('successful native-session audit (get-feedback D-006)', () => {
       candidateAdvSessionId: 541,
     } });
     expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toMatch(/native-header|native-query/);
+  });
+
+  it('refuses a stale same-owner native session after a carry starts its successor', async () => {
+    const predecessor = 'native-carry-predecessor';
+    const successor = 'native-carry-successor';
+    h.nativeSessionRows = new Map([['su-owner', [
+      { id: 541, session_id: predecessor, active: true },
+      { id: 543, session_id: successor, active: true },
+    ]]]);
+    h.kernelAuthority.rows = [{
+      control_state: null,
+      control_generation: null,
+      workspace_id: 'ws-test',
+      adv_session_id: 543,
+      adv_session_xmin: 'native-successor-row-version',
+      launch_header_known: false,
+      launch_spec_type: 'object',
+      launch_spec_workspace_id: 'ws-test',
+      launch_spec_harness_slug: 'papercup',
+      launch_spec_has_accepted_operation: false,
+      launch_spec_accepted_operation: null,
+    }];
+    h.kernelAuthority.launchRecord = {
+      launch_spec: { workspaceId: 'ws-test', harnessSlug: 'papercup' },
+      launch_spec_xmin: 'native-successor-row-version',
+    };
+    h.livePtyHost = {
+      ownerId: 'su-owner', advSessionId: '543', pid: 1234, ptyPid: 5678,
+      sock: '/tmp/current-host.sock', command: 'codex', startedAt: 1,
+      nativeSessionId: successor,
+    };
+
+    const staleMeta = { threadId: predecessor, callId: 'call_stale-carry-predecessor' };
+    const staleExtra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>),
+      _meta: staleMeta,
+    };
+    const stale = await callTool('gatingtest:scoped', {}, staleExtra, staleMeta);
+    expect(stale.isError).toBe(true);
+    expect(textOf(stale)).toBe('request_rejected: superuser_foreign_native_session');
+    expect(seen).toHaveLength(0);
+
+    const currentMeta = { threadId: successor, callId: 'call_current-carry-successor' };
+    const currentExtra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>),
+      _meta: currentMeta,
+    };
+    const current = await callTool('gatingtest:scoped', {}, currentExtra, currentMeta);
+    expect(current.isError, textOf(current)).toBeUndefined();
+    expect(seen).toHaveLength(1);
   });
 
   it('records caller consistency without claiming physical actor proof for a different connection', async () => {

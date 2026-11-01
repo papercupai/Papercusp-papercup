@@ -7721,6 +7721,29 @@ describe('applyInjectionDoor (deterministic-context-carry P-006 leg (b))', () =>
     }
   });
 
+  it('repairs an incomplete spill left at the immutable path before reusing its pointer', () => {
+    const d = work({ id: 990_004, subscriberId: 'su-door-partial-retry-test' });
+    const text = [
+      'HEADLINE interrupted spill retry',
+      ...Array.from({ length: 400 }, (_, i) => `delivery paragraph ${i}: ${'evidence '.repeat(12)}`),
+      '## Next action\nRead the full spill.',
+    ].join('\n\n');
+    const pointer = (out: string) => out.match(/in full at (\S+) \(see its section index\)/)?.[1];
+    const firstPath = pointer(applyInjectionDoor(d, text));
+    expect(firstPath).toBeTruthy();
+    try {
+      writeFileSync(firstPath!, '# interrupted before the full spill was written\n', { mode: 0o600 });
+
+      const retry = applyInjectionDoor(d, text);
+
+      expect(pointer(retry)).toBe(firstPath);
+      expect(readFileSync(firstPath!, 'utf8')).toContain('## Section index');
+      expect(readFileSync(firstPath!, 'utf8')).toContain(text);
+    } finally {
+      if (firstPath) rmSync(firstPath, { force: true });
+    }
+  });
+
   it('kill-switch PAPERCUSP_INJECTION_DOOR_OFF=1 bypasses the door entirely', () => {
     const prev = process.env.PAPERCUSP_INJECTION_DOOR_OFF;
     process.env.PAPERCUSP_INJECTION_DOOR_OFF = '1';

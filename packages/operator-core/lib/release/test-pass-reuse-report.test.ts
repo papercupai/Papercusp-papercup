@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { runInNewContext } from 'node:vm';
+import { formatPassingTaskVerdictSummary } from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
 
 // The fixtures are PRINTED by the real writer-side formatters, not hand-copied, so a format
 // change in scripts/lib/test-pass-reuse.mjs breaks this test instead of silently blinding the
@@ -30,6 +31,8 @@ import {
 } from '../../../../scripts/lib/executed-source-map.mjs';
 import {
   buildTestPassReuseHealth,
+  buildGateSuiteMeasurement,
+  parseGateSuiteMeasurement,
   TEST_PASS_REUSE_HEALTH_MAX_EXCLUSION_EXAMPLES,
   evaluateTestPassReuseAuditWindow,
   formatDurationMs,
@@ -45,6 +48,61 @@ import {
   TEST_PASS_REUSE_EXCLUSION_REASONS,
   type TestPassReuseAuditInvocation,
 } from './test-pass-reuse-report';
+
+describe('P009 actual-suite measurements', () => {
+  const sha = 'a'.repeat(40);
+  const suite = { command: 'npm run test:affected', runGroupId: 'measured-A', startedAtMs: 100, completedAtMs: 200 };
+  const resume = formatPassingTaskVerdictSummary([
+    { status: 'hit', reason: 'passing' }, { status: 'miss', reason: 'inputChanged' },
+  ], { proofGroupApplied: true, cacheGroup: 'original-group', cacheScope: 'proof' });
+
+  it('reads the real resume formatter and binds both cache layers to the child invocation', () => {
+    const m = buildGateSuiteMeasurement(`${resume}\nTEST_PASS_REUSE_TOTAL tasks=1 candidates=9 reused=4 audited=0 minSavedTestMs=10 unmeasured=0`, sha, suite)!;
+    expect(m).toMatchObject({ ...suite, judgedSha: sha,
+      resume: { hits: 1, misses: 1, reasons: { passing: 1, inputChanged: 1 }, invocations: [{ proofIdentity: 'initial-run', scope: 'proof' }] },
+      reuse: { candidates: 9, reused: 4, suite },
+    });
+    expect(parseGateSuiteMeasurement(JSON.parse(JSON.stringify(m)))).toEqual(m);
+  });
+
+  it('adds distinct summary invocations while retaining their proof groups', () => {
+    const cross = formatPassingTaskVerdictSummary([{ status: 'miss', reason: 'noProof' }], { cacheScope: 'cross-run', cacheGroup: 'cross' });
+    expect(buildGateSuiteMeasurement(`${resume}\n${cross}`, sha, suite)?.resume).toMatchObject({ hits: 1, misses: 2,
+      reasons: { passing: 1, inputChanged: 1, noProof: 1 }, invocations: [{ scope: 'proof' }, { scope: 'cross-run' }] });
+  });
+
+  it.each(['', 'AFFECTED_TASK_CACHE_SUMMARY hits=1', `${resume}\nAFFECTED_TASK_CACHE_SUMMARY broken`,
+    resume.replace('"passing":1', '"passing":99')])('keeps missing/incomplete resume counters unknown: %s', (output) => {
+    const m = buildGateSuiteMeasurement(output, sha, suite)!;
+    expect(m).not.toBeNull();
+    expect(m.resume).toBeNull();
+    expect(m.reuse).toBeNull();
+  });
+
+  it('retains a measured zero instead of turning it into unknown', () => {
+    const output = formatPassingTaskVerdictSummary([], { cacheScope: 'missing' });
+    expect(buildGateSuiteMeasurement(output, sha, suite)?.resume).toMatchObject({ hits: 0, misses: 0, reasons: {} });
+  });
+
+  it('reads targeted reuse under its own invocation, without mixing it into candidate-suite evidence', () => {
+    const output = 'TARGETED_TEST_PASS_REUSE ws=core::test candidates=9 reused=4 noProof=5 minSavedTestMs=10';
+    const targeted = buildGateSuiteMeasurement(output, sha, suite, 'targeted-gate')!;
+    expect(targeted).toMatchObject({ kind: 'targeted-gate', ...suite, reuse: { candidates: 9, reused: 4 } });
+    expect(buildGateSuiteMeasurement(output, sha, suite)?.reuse).toBeNull();
+    expect(targeted.reuseRefusals).toEqual({ noProof: 5 });
+    expect(buildGateSuiteMeasurement('TARGETED_TEST_PASS_REUSE ws=core::test reused=4', sha, suite, 'targeted-gate')?.reuse).toBeNull();
+  });
+
+  it('refuses reuse from another run, SHA, or suite window', () => {
+    const m = buildGateSuiteMeasurement('TEST_PASS_REUSE applied=false reason=disabled', sha, suite)!;
+    for (const over of [{ judgedSha: 'b'.repeat(40) }, { suite: { ...suite, runGroupId: 'other' } },
+      { suite: { ...suite, completedAtMs: 199 } }]) {
+      expect(parseGateSuiteMeasurement({ ...m, reuse: { ...m.reuse, ...over } })).toBeNull();
+    }
+    expect(parseGateSuiteMeasurement({ ...m, startedAtMs: 201 })).toBeNull();
+    expect(parseGateSuiteMeasurement({ ...m, runGroupId: '' })).toBeNull();
+  });
+});
 
 const summary = (over: Record<string, number> = {}) => ({
   candidates: 10,

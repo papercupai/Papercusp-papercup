@@ -63,6 +63,203 @@ describe('host-local native request principal', () => {
     return { registry, principal, resolve, hooks, observation, input };
   }
 
+  function nativeInputFixture() {
+    const registry = new NativeInstalledPerUseTurns();
+    const principal = { kind: 'system' as const, slug: 'system:superuser', workspaceId: 'workspace',
+      trust: 'trusted' as const, authMethod: 'bearer-token' as const, capabilities: new Set(['*']) };
+    const resolve = vi.fn(async (): Promise<typeof principal | null> => principal);
+    const context = { workspaceId: 'workspace', ownerId: 'host-owner', principalId: 'synthetic-commerce-only',
+      advSessionId: 7, nativeSessionId: 'claude-session', ownerTurnId: 'owner-turn', mcpServer: 'papercusp-su',
+      nativeTools: { core_read: 'core:read', tools_invoke: 'tools:invoke' }, provider: 'claude' as const,
+      nativeInputId: 'native-input', resolveRequestPrincipal: resolve };
+    const hooks = registry.registerNativeInput(context);
+    const observation = { nativeSessionId: context.nativeSessionId, nativeInputId: context.nativeInputId,
+      callId: 'toolu_call', server: 'papercusp-su', tool: 'core_read', arguments: { resource: 'private' } };
+    const input = { workspaceId: 'workspace', ownerId: context.ownerId, advSessionId: 7,
+      nativeSessionFingerprint: fp(context.nativeSessionId), callIdFingerprint: fp(observation.callId),
+      toolName: 'core:read', arguments: observation.arguments, runtimeBearer: 'r'.repeat(43) };
+    vi.mocked(verifyNativeRuntimeBearer).mockResolvedValue(true);
+    return { registry, principal, resolve, context, hooks, observation, input };
+  }
+
+  it('uses a distinct Claude native input scope without inventing a billed native turn', async () => {
+    const f = nativeInputFixture();
+    expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
+    await f.hooks.observeToolCall(f.observation);
+    const principal = await f.registry.resolveRequestPrincipal(f.input);
+    expect(principal).toEqual(f.principal);
+    expect(verifyNativeRuntimeBearer).toHaveBeenLastCalledWith(f.input.runtimeBearer,
+      { workspaceId: 'workspace', ownerId: 'host-owner', advSessionId: 7, provider: 'claude' });
+    expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
+    expect(f.hooks).not.toHaveProperty('bindNativeTurn');
+    const request = { tool: tool(), toolName: 'core:read', callId: 'dispatch-native-input', input: f.observation.arguments, invoke: vi.fn(),
+      ctx: { ...ctx(), workspaceId: 'workspace', harnessSlug: 'selected', transport: 'mcp',
+        principal, uiClientId: 'host-owner', advSessionId: 7, requestOrigin: { transport: 'mcp', nativeSession: {
+          carrier: 'meta:threadId', binding: 'bound', candidateAdvSessionId: 7,
+          valueFingerprint: fp('claude-session'), callIdFingerprint: fp('toolu_call'),
+        } } } } as Parameters<NativeInstalledPerUseTurns['appendAuthorizedCapture']>[0];
+    expect(f.registry.resolve(request)).toBeNull();
+    const append = vi.fn();
+    expect(await f.registry.appendAuthorizedCapture({ ...request, tool: { ...request.tool, pluginInstallation: undefined } }, append)).toBe(false);
+    expect(append).not.toHaveBeenCalled();
+    await f.hooks.withdraw();
+  });
+
+  async function ompInputFixture() {
+    const f = nativeInputFixture();
+    await f.hooks.withdraw();
+    const credential = vi.fn(async (): Promise<string | null> => 'private-omp-runtime');
+    const hooks = f.registry.registerNativeInput({ ...f.context, provider: 'omp', resolveRuntimeBearer: credential });
+    return { ...f, hooks, credential, input: { ...f.input, runtimeBearer: '' } };
+  }
+
+  it('rendezvouses an exact OMP call with a host-only credential without granting a billed turn or capture receipt', async () => {
+    const f = await ompInputFixture();
+    expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
+    expect(f.credential).not.toHaveBeenCalled();
+    await f.hooks.observeToolCall(f.observation);
+    const principal = await f.registry.resolveRequestPrincipal(f.input);
+    expect(principal).toStrictEqual(f.principal);
+    expect(principal).not.toBe(f.principal);
+    expect(f.credential).toHaveBeenCalledOnce();
+    expect(verifyNativeRuntimeBearer).toHaveBeenLastCalledWith('private-omp-runtime', {
+      workspaceId: 'workspace', ownerId: 'host-owner', advSessionId: 7, provider: 'omp',
+    });
+    expect(f.hooks).not.toHaveProperty('bindNativeTurn');
+    expect(JSON.stringify(principal)).not.toContain('private-omp-runtime');
+    expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
+    const request = { tool: { ...tool(), pluginInstallation: undefined }, toolName: 'core:read',
+      callId: 'dispatch-omp-input', input: f.observation.arguments, invoke: vi.fn(), ctx: {
+        ...ctx(), workspaceId: 'workspace', harnessSlug: 'selected', transport: 'mcp', principal,
+        uiClientId: 'host-owner', advSessionId: 7, requestOrigin: { transport: 'mcp', nativeSession: {
+          carrier: 'meta:threadId', binding: 'bound', candidateAdvSessionId: 7,
+          valueFingerprint: fp('claude-session'), callIdFingerprint: fp('toolu_call'),
+        } },
+      } } as Parameters<NativeInstalledPerUseTurns['appendAuthorizedCapture']>[0];
+    expect(f.registry.resolve(request)).toBeNull();
+    const append = vi.fn();
+    expect(await f.registry.appendAuthorizedCapture(request, append)).toBe(false);
+    expect(append).not.toHaveBeenCalled();
+    await f.hooks.withdraw();
+  });
+
+  it.each(['owner', 'session', 'call', 'target', 'arguments', 'wrapper'] as const)(
+    'does not read the OMP host credential for a mismatched %s', async kind => {
+      const f = await ompInputFixture();
+      await f.hooks.observeToolCall(f.observation);
+      const input = { ...f.input,
+        ...(kind === 'owner' ? { ownerId: 'foreign' } : kind === 'session' ? { nativeSessionFingerprint: fp('foreign') }
+          : kind === 'call' ? { callIdFingerprint: fp('foreign') } : kind === 'target' ? { toolName: 'other:read' }
+            : kind === 'arguments' ? { arguments: { resource: 'foreign' } } : { toolName: 'tools:invoke' }),
+      };
+      expect(await f.registry.resolveRequestPrincipal(input)).toBeNull();
+      expect(f.credential).not.toHaveBeenCalled();
+      await f.hooks.withdraw();
+    },
+  );
+
+  it.each(['missing', 'throws', 'revoked', 'principal', 'withdraw-during-credential', 'withdraw-during-verification'] as const)(
+    'refuses OMP retained authority when %s', async kind => {
+      const f = await ompInputFixture();
+      await f.hooks.observeToolCall(f.observation);
+      if (kind === 'missing') f.credential.mockResolvedValue(null);
+      if (kind === 'throws') f.credential.mockRejectedValue(new Error('private credential unavailable'));
+      if (kind === 'revoked') vi.mocked(verifyNativeRuntimeBearer).mockResolvedValue(false);
+      if (kind === 'principal') f.resolve.mockResolvedValue(null);
+      if (kind === 'withdraw-during-credential') f.credential.mockImplementationOnce(async () => {
+        await f.hooks.withdraw(); return 'private-omp-runtime';
+      });
+      if (kind === 'withdraw-during-verification') vi.mocked(verifyNativeRuntimeBearer).mockImplementationOnce(async () => {
+        await f.hooks.withdraw(); return true;
+      });
+      expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
+      expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
+      await f.hooks.withdraw();
+    },
+  );
+
+  it('never repairs an explicit invalid OMP credential with the private credential', async () => {
+    const f = await ompInputFixture();
+    await f.hooks.observeToolCall(f.observation);
+    vi.mocked(verifyNativeRuntimeBearer).mockResolvedValue(false);
+    expect(await f.registry.resolveRequestPrincipal({ ...f.input, runtimeBearer: 'invalid-child-token' })).toBeNull();
+    expect(f.credential).not.toHaveBeenCalled();
+    expect(verifyNativeRuntimeBearer).toHaveBeenLastCalledWith('invalid-child-token', expect.objectContaining({ provider: 'omp' }));
+    await f.hooks.withdraw();
+  });
+
+  it('requires an OMP host closure and does not grant it to Claude or funded turns', async () => {
+    const f = nativeInputFixture();
+    await f.hooks.withdraw();
+    for (const extra of [{ provider: 'omp' }, { resolveRuntimeBearer: 'serialized-credential' },
+      { resolveRuntimeBearer: async () => 'private-credential' }]) {
+      expect(() => Reflect.apply(f.registry.registerNativeInput, f.registry, [{ ...f.context, ...extra }]))
+        .toThrow('genuine host binding');
+    }
+  });
+
+  it.each(['session', 'input', 'call'] as const)('refuses a different %s on a Claude native input observation', async kind => {
+    const f = nativeInputFixture();
+    await expect(f.hooks.observeToolCall({ ...f.observation,
+      ...(kind === 'session' ? { nativeSessionId: 'foreign' } : kind === 'input' ? { nativeInputId: 'foreign' } : { callId: 'bad/id' }),
+    })).rejects.toThrow('original active session and input');
+    expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
+    await f.hooks.withdraw();
+  });
+
+  it.each(['runtime', 'principal', 'withdraw-during-check', 'changed-arguments', 'changed-target', 'wrapper'] as const)(
+    'refuses Claude native input principal for %s', async kind => {
+      const f = nativeInputFixture();
+      await f.hooks.observeToolCall(f.observation);
+      let input = f.input;
+      if (kind === 'runtime') vi.mocked(verifyNativeRuntimeBearer).mockResolvedValue(false);
+      if (kind === 'principal') f.resolve.mockResolvedValue(null);
+      if (kind === 'withdraw-during-check') vi.mocked(verifyNativeRuntimeBearer).mockImplementationOnce(async () => {
+        await f.hooks.withdraw(); return true;
+      });
+      if (kind === 'changed-arguments' || kind === 'changed-target') {
+        await expect(f.hooks.observeToolCall({ ...f.observation,
+          ...(kind === 'changed-arguments' ? { arguments: { resource: 'other' } } : { tool: 'tools_invoke' }),
+        })).rejects.toThrow('Native call observation changed');
+      }
+      if (kind === 'wrapper') {
+        await f.hooks.observeToolCall({ ...f.observation, callId: 'wrapper', tool: 'tools_invoke' });
+        input = { ...f.input, callIdFingerprint: fp('wrapper'), toolName: 'tools:invoke' };
+      }
+      expect(await f.registry.resolveRequestPrincipal(input)).toBeNull();
+      await f.hooks.withdraw();
+    },
+  );
+
+  it('withdraws a Claude native input before allowing its successor and preserves call snapshots', async () => {
+    const f = nativeInputFixture();
+    await f.hooks.observeToolCall(f.observation);
+    f.observation.arguments.resource = 'changed-after-observation';
+    expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
+    expect(() => f.registry.registerNativeInput({ ...f.context, nativeInputId: 'successor' })).toThrow('already has a host admission');
+    await f.hooks.withdraw();
+    await expect(f.hooks.observeToolCall(f.observation)).rejects.toThrow('original active session and input');
+    const next = f.registry.registerNativeInput({ ...f.context, nativeInputId: 'successor' });
+    expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
+    await next.withdraw();
+  });
+
+  it('rejects funded admissions on a Claude native input scope', () => {
+    const f = nativeInputFixture();
+    expect(() => f.registry.registerNativeInput({ ...f.context, admissions: [] } as typeof f.context))
+      .toThrow('no funded admissions');
+    return f.hooks.withdraw();
+  });
+
+  it.each([undefined, null, 7, true, '', ' leading', 'bad/id', 'x'.repeat(257), ['native-input']])(
+    'rejects malformed Claude native input identity %j before registering', async nativeInputId => {
+      const f = nativeInputFixture();
+      expect(() => Reflect.apply(f.registry.registerNativeInput, f.registry, [{ ...f.context, nativeInputId }]))
+        .toThrow('genuine host binding');
+      await f.hooks.withdraw();
+    },
+  );
+
   it('uses the genuine request principal for one exact core call with independent possession', async () => {
     const f = await fixture();
     const principal = await f.registry.resolveRequestPrincipal(f.input);

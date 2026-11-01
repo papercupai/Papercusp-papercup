@@ -297,7 +297,8 @@ vi.mock('../../blueprint/phone-producer-admission', () => ({
     updatedTs: 1, readStoredOutcome: async () => ({}) })),
 }));
 
-const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
+const ctxFields = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' };
+const ctx = ctxFields as never;
 
 describe('work_items:complete — ambient workspace transaction safety (EI-20194230704550984)', () => {
   it('opts out because completion owns its workspace-scoped ledger operations', () => {
@@ -581,9 +582,12 @@ describe('EI-20286699547467039 — unmet completion gates accumulate into one re
     // turn and any consumer matching on a specific message still matches.
     expect(r.error).toMatch(/a terminal close requires `assumptions`/);
     expect(r.error).toMatch(/completion\.rootCauseVerification is missing/);
-    // The header must say the set is COMPLETE — otherwise the caller still cannot tell
-    // whether an N+1 gate is waiting behind the ones named, which is the whole defect.
+    // The complete-set header plus per-requirement evaluated marker distinguish listed
+    // failures from later checks that were not reached on this call.
     expect(r.error).toMatch(/COMPLETE set as evaluated on this call/);
+    expect(r.error).toMatch(/completionContract requirements with evaluated:false remain unassessed/);
+    expect(r.completionContract.requirements.find((requirement: { key: string }) => requirement.key === 'change-kind-proof'))
+      .toMatchObject({ evaluated: false, applicable: false, satisfied: null });
     // Typed side-fields still travel individually, so structured consumers are unaffected.
     expect(r.rootCauseVerificationError).toMatch(/completion\.rootCauseVerification is missing/);
     // Still atomic: accumulating must not push the refusal past the write boundary.
@@ -1056,7 +1060,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
         'work_items:complete',
         input,
         {
-          ...ctx,
+          ...ctxFields,
           log: vi.fn(),
           signal: new AbortController().signal,
           progress: vi.fn(),
@@ -8667,7 +8671,9 @@ describe('work_items:complete — change-kind proof gate (change-kind-declared-p
     expect(r.error).not.toContain('completion is recorded');
     expect(r).not.toHaveProperty('completion');
     expect(r.completionContract.requirements).toEqual(
-      expect.arrayContaining([expect.objectContaining({ key: 'change-kind-proof', applicable: true, satisfied: false })]),
+      expect.arrayContaining([expect.objectContaining({
+        key: 'change-kind-proof', evaluated: true, applicable: true, satisfied: false,
+      })]),
     );
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });

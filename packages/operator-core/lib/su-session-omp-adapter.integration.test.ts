@@ -25,6 +25,40 @@ const THREAD_B = '99999999-aaaa-4bbb-8ccc-dddddddddddd';
 const originalFetch = globalThis.fetch;
 const tempDirs: string[] = [];
 
+it.each((['pty', 'programmatic'] as const).flatMap(executionKind =>
+  (['transcript', 'account', 'exit', 'dispose'] as const).map(action => ({ executionKind, action })),
+))(
+  'P-009: replaced OMP $executionKind adapter cannot publish stale $action callbacks', async ({ executionKind, action }) => {
+    let settleAccount!: (account: string) => void;
+    const account = new Promise<string>((resolve) => { settleAccount = resolve; });
+    const old = createOmpSuSessionAdapter(binding(), runtime(), {
+      agentChatId: `stale-omp-${executionKind}-${action}`, runtimeGeneration: 1, executionKind,
+      servedAccountReader: () => account,
+    });
+    const refresh = action === 'account' ? old.refreshAccountServed() : Promise.resolve();
+    old.reconcileRuntimeExit({ expected: false, exitCode: 1 });
+    const ownerTurn = vi.fn<OmpSuSessionControls['ownerTurn']>(async () => ({ ok: true }));
+    const current = createOmpSuSessionAdapter(binding(), runtime(), {
+      agentChatId: `stale-omp-${executionKind}-${action}`, host: old.host, runtimeGeneration: 2, executionKind,
+      runtimeReady: () => true, controls: { ownerTurn },
+    });
+    try {
+      const before = current.host.snapshot();
+      if (action === 'transcript') old.ingestNativeLine('malformed old frame');
+      if (action === 'exit') old.reconcileRuntimeExit({ expected: false, exitCode: 137 });
+      if (action === 'dispose') old.dispose();
+      settleAccount('old-account');
+      await refresh;
+      expect(current.host.snapshot()).toEqual(before);
+      const dispatch = current.host.startCommand(command(current, {
+        type: 'owner_turn', commandId: 'current-turn', turnId: 'current-turn', content: 'continue',
+      }));
+      await expect(dispatch.terminal).resolves.toMatchObject({ status: 'completed' });
+      expect(ownerTurn).toHaveBeenCalledOnce();
+    } finally { settleAccount('old-account'); current.dispose(); old.dispose(); }
+  },
+);
+
 afterEach(() => {
   globalThis.fetch = originalFetch;
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });

@@ -8642,6 +8642,10 @@ const admissionIntent = (() => {
         durationEstimate(durationHistory, taskKey(context.t)),
     });
     const intent = {
+      // Disk-source snapshot at admission, not a claim about imported/evaluated closure.
+      caller: 'scripts/affected-tests.mjs',
+      sourceFileSha256: createHash('sha256')
+        .update(readFileSync(join(ROOT, 'scripts/affected-tests.mjs'))).digest('hex'),
       scope: derivationSource,
       paths: changedPathsOverride
         ? changedPathsOverride.length

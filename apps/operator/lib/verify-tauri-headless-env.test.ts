@@ -153,6 +153,19 @@ describe('EI-20210154033151684 — verifier launch scrubs ambient runtime env', 
 });
 
 describe('verifier loopback host selection', () => {
+  it('exports the selected PTY port to assertion children', () => {
+    const handoff = src.match(/^export VERIFY_TAURI_PORT=.*\nexport VERIFY_TAURI_PTY_PORT=.*$/m)?.[0];
+    expect(handoff).toBeTruthy();
+    const result = execFileSync('bash', ['-c', [
+      'DEV_PORT=45977',
+      'PTY_PORT=45981',
+      handoff ?? '',
+      'bash -c \'printf "%s/%s" "$VERIFY_TAURI_PORT" "$VERIFY_TAURI_PTY_PORT"\'',
+    ].join('\n')], { encoding: 'utf8', env: hermeticSpawnEnv() });
+    expect(result).toBe('45977/45981');
+    expect(src).toContain("printf 'VERIFY_TAURI_PTY_PORT=%q\\n' \"$VERIFY_TAURI_PTY_PORT\"");
+  });
+
   it('defaults to 127.0.0.1 and accepts localhost while rejecting other hosts', () => {
     expect(hostResolver).toBeTruthy();
     expect(urlBuilder).toBeTruthy();

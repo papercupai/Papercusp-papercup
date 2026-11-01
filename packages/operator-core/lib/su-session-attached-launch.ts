@@ -399,7 +399,7 @@ export async function launchAttachedSuSession(
           try {
             const options = { ...resume.options, host: restored, beforeReady: resume.beforeReady,
               onExit: resume.onExit, toolApproval: 'prompt' as const,
-              resolveRequestPrincipal: record.backend === 'codex'
+              resolveRequestPrincipal: record.backend === 'codex' || record.backend === 'claude'
                 ? await retainRequestPrincipal(request?.headers ?? null, workspaceId) : undefined };
             active = record.backend === 'claude'
               ? startClaudeSuEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'claude' },
@@ -551,6 +551,8 @@ export async function launchAttachedSuSession(
         carry: input.carry ?? 'warm', modes: input.mode ? [input.mode] : [],
         onExit: async () => { await markAdvSessionEnded(result.sessionId!, null, 'cleanup', { throwOnError: true }); },
         toolApproval: 'prompt' as const,
+        resolveRequestPrincipal: result.agent === 'codex' || result.agent === 'claude'
+          ? await retainRequestPrincipal(request.headers, workspaceId) : undefined,
       };
       trace?.stage('engine-start');
       engine = result.agent === 'claude'
@@ -558,9 +560,7 @@ export async function launchAttachedSuSession(
           { nativeSession: nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
           { ...options, forkFrom: claudeForkSource, identity: await engineIdentityForLaunch(workspaceId, result.cwd) })
         : startSuRpcEngine(result, binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
-          { ...options, identity: await engineIdentityForLaunch(workspaceId, result.cwd),
-            resolveRequestPrincipal: result.agent === 'codex'
-              ? await retainRequestPrincipal(request.headers, workspaceId) : undefined });
+          { ...options, identity: await engineIdentityForLaunch(workspaceId, result.cwd) });
       state.engines.set(key, engine);
       observeReadiness(engine);
       // WI-10003879: recorded before the launch returns, so PUI's very first

@@ -13,7 +13,15 @@ import {
   evaluateBm25Health,
   probeBm25Lexical,
 } from './service-health';
-import { BM25_P95_BUDGET_MS, percentileMs, type Bm25Health, type Bm25Latency } from './search/lexical/rank';
+import {
+  BM25_LATENCY_CANARY_QUERIES,
+  BM25_LATENCY_REPETITIONS_PER_QUERY,
+  BM25_P95_BUDGET_MS,
+  measureWarmBm25QueryLatencies,
+  percentileMs,
+  type Bm25Health,
+  type Bm25Latency,
+} from './search/lexical/rank';
 
 function health(over: Partial<Bm25Health> = {}): Bm25Health {
   return {
@@ -42,6 +50,20 @@ describe('evaluateBm25Health', () => {
     expect(r.up).toBe(false);
     expect(r.present).not.toBe(false);
     expect(r.note).toContain('pg_textsearch is not in shared_preload_libraries');
+  });
+
+  it('does not claim a lexical fallback for a latency-only health degradation', () => {
+    const measured = latency(BM25_P95_BUDGET_MS + 1, 1_000_000);
+    const r = evaluateBm25Health(health({
+      status: 'degraded',
+      reason: `lexical p95 ${measured.p95Ms}ms on ${measured.corpusIndex} exceeds the ${measured.budgetMs}ms budget`,
+      latency: measured,
+    }), 3);
+
+    expect(r.up).toBe(false);
+    expect(r.note).toContain('required BM25 components and corpus indexes are present');
+    expect(r.note).toContain('does not establish whether individual searches fell back');
+    expect(r.note).not.toContain('falling back to ts_rank');
   });
 
   it('reports UP with the index count and the measured p95 when healthy', () => {
@@ -110,5 +132,44 @@ describe('percentileMs', () => {
 
   it('is 0 for no samples', () => {
     expect(percentileMs([], 95)).toBe(0);
+  });
+});
+
+describe('warm BM25 latency sampling', () => {
+  it('does not let one isolated sample define p95, but retains persistent slow canaries', async () => {
+    const isolatedSpikeCanary = BM25_LATENCY_CANARY_QUERIES[0];
+    let isolatedClock = 0;
+    const isolatedCalls = new Map<string, number>();
+    const isolatedSamples = await measureWarmBm25QueryLatencies(
+      BM25_LATENCY_CANARY_QUERIES,
+      async (query) => {
+        const calls = isolatedCalls.get(query) ?? 0;
+        isolatedCalls.set(query, calls + 1);
+        isolatedClock += query === isolatedSpikeCanary && calls === 1 ? 100 : 1;
+      },
+      () => isolatedClock,
+      BM25_LATENCY_REPETITIONS_PER_QUERY,
+    );
+
+    expect(isolatedSamples).toHaveLength(BM25_LATENCY_CANARY_QUERIES.length * BM25_LATENCY_REPETITIONS_PER_QUERY);
+    expect([...isolatedCalls.values()]).toEqual(
+      Array(BM25_LATENCY_CANARY_QUERIES.length).fill(BM25_LATENCY_REPETITIONS_PER_QUERY + 1),
+    );
+    expect(Math.max(...isolatedSamples)).toBe(100);
+    expect(percentileMs(isolatedSamples, 95)).toBe(1);
+
+    let persistentClock = 0;
+    const persistentCalls = new Map<string, number>();
+    const persistentSamples = await measureWarmBm25QueryLatencies(
+      BM25_LATENCY_CANARY_QUERIES,
+      async (query) => {
+        const calls = persistentCalls.get(query) ?? 0;
+        persistentCalls.set(query, calls + 1);
+        persistentClock += query === isolatedSpikeCanary && calls > 0 ? 100 : 1;
+      },
+      () => persistentClock,
+      BM25_LATENCY_REPETITIONS_PER_QUERY,
+    );
+    expect(percentileMs(persistentSamples, 95)).toBe(100);
   });
 });

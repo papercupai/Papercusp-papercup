@@ -78,6 +78,7 @@ const detachedSettlements = new WeakSet<GovernedExecution>();
 export function settleGovernedExecutionInBackground(
   execution: GovernedExecution,
   settlement: GovernedExecutionSettlement,
+  onSettled?: () => void,
 ): void {
   // An error followed by exit must not replace a pending cancellation with a
   // release, nor treat settleOnce's concurrent-call false as a completed write.
@@ -88,6 +89,7 @@ export function settleGovernedExecutionInBackground(
     try {
       if (settlement.kind === 'cancel') await execution.cancel(settlement.reason);
       else await execution.finish(settlement.actualDemand);
+      try { onSettled?.(); } catch { /* observers must not retry an already-written settlement */ }
     } catch (error) {
       console.error('[governed-execution] settlement failed; lease retained, retry pending', {
         receiptId: execution.context.receiptId,

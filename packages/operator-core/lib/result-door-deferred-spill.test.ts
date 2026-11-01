@@ -1300,7 +1300,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
         manifest: readVolatileScratchReference(uri, caller).manifest,
       }));
     try {
-      const out = await applyResultDoorAsync(oversized(), OPTS);
+      const out: DoorableResult = await applyResultDoorAsync(oversized(), OPTS);
       expect(persist).toHaveBeenCalledTimes(1);
       const [volatileUri, caller] = persist.mock.calls[0];
       expect(readVolatileScratchReference(volatileUri, caller).payload.toString())

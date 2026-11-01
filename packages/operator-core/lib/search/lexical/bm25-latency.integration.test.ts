@@ -10,7 +10,15 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { BM25_LATENCY_CANARY_QUERIES, BM25_P95_BUDGET_MS, bm25Health, measureBm25Latency, percentileMs, resetBm25Availability } from './rank';
+import {
+  BM25_LATENCY_CANARY_QUERIES,
+  BM25_LATENCY_REPETITIONS_PER_QUERY,
+  BM25_P95_BUDGET_MS,
+  bm25Health,
+  measureBm25Latency,
+  percentileMs,
+  resetBm25Availability,
+} from './rank';
 import { seedBm25Corpus, startBm25TestDb, type Bm25TestDb } from './test-pg/bm25-test-db';
 
 const P50_BUDGET_MS = 10;
@@ -33,7 +41,9 @@ describe('lexical latency budgets (R-2, R-3)', () => {
   it('times every canary through the guarded top-k path on the work-item index', async () => {
     const latency = await measureBm25Latency(sql);
     expect(latency?.corpusIndex).toBe('work_items_bm25');
-    expect(latency?.samplesMs).toHaveLength(BM25_LATENCY_CANARY_QUERIES.length);
+    expect(latency?.samplesMs).toHaveLength(
+      BM25_LATENCY_CANARY_QUERIES.length * BM25_LATENCY_REPETITIONS_PER_QUERY,
+    );
     expect(latency!.budgetMs).toBe(BM25_P95_BUDGET_MS);
     expect(latency!.p95Ms).toBeGreaterThanOrEqual(latency!.p50Ms);
     expect(latency!.p50Ms).toBe(percentileMs(latency!.samplesMs, 50));

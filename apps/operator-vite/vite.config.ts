@@ -66,6 +66,10 @@ export const operatorRouterOptions = {
   target: 'react' as const,
   routesDirectory: './src/routes',
   generatedRouteTree: './src/routeTree.gen.ts',
+  // TanStack resolves its temp directory from the caller's cwd, independently
+  // of Vite's root. Keep atomic renames beside the generated output even when
+  // a private build runs from another checkout or filesystem.
+  tmpDir: resolve(import.meta.dirname, 'src/.tanstack/tmp'),
   routeFileIgnorePattern: '\\.test\\.tsx?$',
   autoCodeSplitting: true,
 };

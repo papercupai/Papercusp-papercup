@@ -34,3 +34,12 @@ describe('control-byte guard scope for retained evaluator code', () => {
       .toEqual([expect.objectContaining({ path, offset: 1, byte: 0x19 })]);
   });
 });
+
+describe('control-byte guard scope for verbatim text artifacts', () => {
+  it('exempts evidence_ captures while keeping neighboring Markdown covered', async () => {
+    const { isScannedPath } = await loadGuard();
+    expect(isScannedPath('.papercusp/state/text-artifacts/evidence_capture.md')).toBe(false);
+    expect(isScannedPath('.papercusp/state/text-artifacts/hand-authored.md')).toBe(true);
+    expect(isScannedPath('.papercusp/state/text-artifacts/evidence.md')).toBe(true);
+  });
+});

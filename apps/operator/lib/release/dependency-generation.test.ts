@@ -3836,35 +3836,45 @@ describe('WI-42354: the generation store is born un-committable', () => {
 // outright: green-checkpoint recorded `inconclusive: error` and never ran a suite.
 describe('dependency-generation publish-lock waiter', () => {
   function publishLockScenario(
-    scenario: 'dead-writer' | 'live-then-release' | 'live-holder',
+    scenario: 'dead-writer' | 'live-then-release' | 'live-holder' | 'empty-writer' | 'foreign-writer',
     env: Record<string, string> = {},
     timeoutMs?: number,
+    prepareRoot?: (root: string) => void,
   ): ShellResult & { signal: NodeJS.Signals | null } {
     const root = mkdtempSync(join(tmpdir(), 'papercusp-publish-lock-'));
     roots.push(root);
+    prepareRoot?.(root);
     const wrapper = [
       'set -uo pipefail',
       'source "$SCRIPT"',
       'lock="$ROOT/.publish-lock"',
-      'mkdir "$lock"',
+      'mkdir -p "$lock"',
       // Every background holder gets its OWN stdio. Inheriting the pipes makes an
       // orphaned holder outlive the spawnSync timeout still holding them open, so
       // the parent blocks on EOF long after the child was killed — the run then
       // takes ~40s per timeout case instead of the budget under test.
+      'writer_host="$(dependency_generation_host)"',
       'case "$SCENARIO" in',
       // An impossible PID stays dead even if the host reuses PIDs rapidly.
       // This isolates stale-lock recovery from process scheduling.
       '  dead-writer) holder=99999999 ;;',
       '  live-then-release) sleep 300 </dev/null >/dev/null 2>&1 & holder=$!; ( sleep 2; rm -rf -- "$lock" ) </dev/null >/dev/null 2>&1 & ;;',
       '  live-holder) sleep 45 </dev/null >/dev/null 2>&1 & holder=$! ;;',
+      '  empty-writer) holder= ;;',
+      '  foreign-writer) holder=99999999; writer_host=foreign-host ;;',
       'esac',
-      'printf "host=%s\\npid=%s\\nstarted=%s\\n" \\',
-      '  "$(dependency_generation_host)" "$holder" "$(date +%s)" > "$lock/writer"',
+      'if [ "$SCENARIO" = empty-writer ]; then',
+      '  [ -f "$lock/writer" ] || : > "$lock/writer"',
+      'else',
+      '  printf "host=%s\\npid=%s\\nstarted=%s\\n" \\',
+      '    "$writer_host" "$holder" "$(date +%s)" > "$lock/writer"',
+      'fi',
       'if dependency_generation_acquire_publish_lock "$ROOT"; then',
       '  printf "ACQUIRED\\n"',
       'else',
       '  printf "FAILED rc=%s\\n" "$?"',
       'fi',
+      'if [ -f "$lock/writer" ] && dependency_generation_writer_has_identity "$lock/writer"; then printf "OWNER_VALID\\n"; fi',
       'kill "$holder" 2>/dev/null || true',
     ].join('\n');
     const result = spawnSync('bash', ['-c', wrapper], {
@@ -3890,6 +3900,51 @@ describe('dependency-generation publish-lock waiter', () => {
     });
     expect(result.stdout, result.stderr).toContain('ACQUIRED');
     expect(result.stderr).toContain('quarantined abandoned publish lock');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('reclaims an aged empty writer marker after the stale-lock grace', () => {
+    const old = new Date(Date.now() - 301_000);
+    const result = publishLockScenario(
+      'empty-writer',
+      { DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC: '0' },
+      undefined,
+      (root) => {
+        const lock = join(root, '.publish-lock');
+        mkdirSync(lock);
+        writeFileSync(join(lock, 'writer'), '');
+        utimesSync(lock, old, old);
+      },
+    );
+    expect(result.stdout, result.stderr).toContain('ACQUIRED');
+    expect(result.stdout).toContain('OWNER_VALID');
+    expect(result.stderr).toContain('quarantined abandoned publish lock');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('keeps a recent empty writer marker fail-closed and reports it as unknown', () => {
+    const recent = new Date();
+    const result = publishLockScenario(
+      'empty-writer',
+      { DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC: '0' },
+      undefined,
+      (root) => {
+        const lock = join(root, '.publish-lock');
+        mkdirSync(lock);
+        writeFileSync(join(lock, 'writer'), '');
+        utimesSync(lock, recent, recent);
+      },
+    );
+    expect(result.stdout).toContain('FAILED rc=73');
+    expect(result.stderr).toContain('holder unknown-writer (invalid writer marker)');
+    expect(result.stderr).not.toContain('quarantined abandoned publish lock');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('preserves a valid foreign-host writer instead of reclaiming it', () => {
+    const result = publishLockScenario('foreign-writer', {
+      DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC: '0',
+    });
+    expect(result.stdout).toContain('FAILED rc=73');
+    expect(result.stderr).toContain('holder host=foreign-host pid=99999999');
+    expect(result.stderr).not.toContain('quarantined abandoned publish lock');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('waits for a LIVE holder and acquires the lock once it is released', () => {

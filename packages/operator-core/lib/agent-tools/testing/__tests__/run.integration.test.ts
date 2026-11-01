@@ -740,6 +740,63 @@ describe('owned private PG router supervision', () => {
     }
   });
 
+  it('auto-selects owned private PG for isolated integration proof files', async () => {
+    const file = 'packages/x/isolated-proof.integration.test.ts';
+    const root = await makeScratchTestCheckout('papercusp-testing-auto-owned-pg-', file);
+    await writeFile(join(root, file), [
+      "import { recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';",
+      'recordIsolatedIntegrationProof({});',
+    ].join('\n'));
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const capture = join(root, 'captured-environment.json');
+    const report = {
+      numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0,
+      numTotalTestSuites: 1, numPassedTestSuites: 1, numFailedTestSuites: 0,
+      startTime: Date.now(), success: true,
+      testResults: [{ name: join(root, file), status: 'passed',
+        assertionResults: [{ fullName: 'isolated proof parent observer', status: 'passed' }] }],
+    };
+    await writeFile(join(root, 'scripts', 'with-test-pg.mjs'), [
+      "import { spawnSync } from 'node:child_process';",
+      "const command = process.argv.slice(process.argv.indexOf('--') + 1);",
+      "const result = spawnSync(command[0], command.slice(1), { stdio: 'inherit', env: { ...process.env, PAPERCUSP_TEST_PG_ADMIN_URL: 'postgresql://127.0.0.1/owned-route-fixture' } });",
+      'process.exitCode = result.status ?? 1;',
+    ].join('\n'));
+    await writeFile(join(root, 'scripts', 'test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      'writeFileSync(' + JSON.stringify(capture) + ', JSON.stringify({ privatePg: process.env.PAPERCUSP_TEST_PG_ADMIN_URL, sink: process.env.PAPERCUSP_TEST_RUNS_DB_URL, run: process.env.PAPERCUSP_TEST_RUN_GROUP, harness: process.env.PAPERCUSP_TEST_RUN_HARNESS, workspace: process.env.PAPERCUSP_WORKSPACE_ID }));',
+      "writeFileSync(process.argv.find(a => a.startsWith('--outputFile=')).slice('--outputFile='.length), "
+        + JSON.stringify(JSON.stringify(report)) + ");",
+      "console.log('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');",
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const previousSink = process.env.PAPERCUSP_TEST_RUNS_DB_URL;
+    const previousPrivate = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+    try {
+      process.env.PAPERCUSP_TEST_RUNS_DB_URL = 'postgresql://127.0.0.1/durable-ledger-fixture';
+      delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+      const result = await runTestFilesCore({
+        root, files: [file], runId: 'auto-isolated-proof-private-pg',
+        workspaceId: 'auto-private-pg-workspace', harnessSlug: 'auto-private-pg-harness',
+        timeoutMs: 15_000, cleanupReserveMs: 1_000,
+      });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, passed: 1, skipped: 0 });
+      const observed = JSON.parse(await readFile(capture, 'utf8'));
+      expect(observed).toMatchObject({
+        privatePg: 'postgresql://127.0.0.1/owned-route-fixture',
+        sink: 'postgresql://127.0.0.1/durable-ledger-fixture',
+        run: 'auto-isolated-proof-private-pg',
+        harness: 'auto-private-pg-harness',
+        workspace: 'auto-private-pg-workspace',
+      });
+    } finally {
+      if (previousSink === undefined) delete process.env.PAPERCUSP_TEST_RUNS_DB_URL;
+      else process.env.PAPERCUSP_TEST_RUNS_DB_URL = previousSink;
+      if (previousPrivate === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+      else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = previousPrivate;
+    }
+  });
+
   it('refuses private-PG routing when the checkout has no maintained wrapper', async () => {
     const file = 'packages/x/real.integration.test.ts';
     const root = await makeScratchTestCheckout('papercusp-testing-private-pg-route-unavailable-', file);

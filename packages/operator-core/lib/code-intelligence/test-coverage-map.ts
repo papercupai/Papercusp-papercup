@@ -1,6 +1,7 @@
 /** P016 query/advisory adapter. A static edge never becomes execution evidence. */
 import { readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import fg from 'fast-glob';
 import { coverageHash, COVERAGE_MAX_FILES, COVERAGE_RETENTION_MS, parseTestCoverage,
   type TestCoverageSnapshot } from '@papercusp/test-config/test-coverage-map';
@@ -101,8 +102,28 @@ export async function readNativeCoverageScope(context: Readonly<ReuseProviderCon
   const [{ getOrgPg }, { loadHarnessRegistry }, { readTestCoverage }] = await Promise.all([
     import('@papercusp/db-org'), import('../harness-registry'), import('@papercusp/test-config/test-coverage-store'),
   ]);
-  const harness = (await loadHarnessRegistry(context.workspaceId)).projects.find(p => p.path === root)?.slug;
-  if (!harness) return null;
+  const projects = (await loadHarnessRegistry(context.workspaceId)).projects;
+  let harness = projects.find(p => p.path === root)?.slug;
+  if (!harness) {
+    // Maintained historical verifiers have their own physical coverage roots. The
+    // existing committed-tree verifier binds them to a registered dependency donor;
+    // never register a scratch checkout or re-label another root's snapshots.
+    try {
+      const { committedWorkRootDependencyDonor } = await import('../../../../scripts/lint-as-committed.mjs');
+      const donor = committedWorkRootDependencyDonor(root);
+      if (donor === root) return null;
+      harness = projects.find(p => p.path === donor)?.slug;
+      if (!harness) return null;
+      const git = promisify((await import('node:child_process')).execFile);
+      const options = { timeout: 10_000, signal, maxBuffer: 1024 * 1024 };
+      const { stdout } = await git('git', ['-C', root, 'rev-parse', 'HEAD'], options);
+      await git('git', ['-C', donor, 'cat-file', '-e', `${stdout.trim()}^{commit}`], options);
+      await git('git', ['-C', root, 'diff', '--quiet', 'HEAD', '--'], options);
+    } catch {
+      return null;
+    }
+  }
+  if (context.repository.harness && context.repository.harness !== harness) return null;
   signal.throwIfAborted();
   const snapshots = await readTestCoverage(getOrgPg().sql, context.workspaceId, harness, root, context.paths, binding?.runGroupId);
   if (binding && (snapshots.some(s => !binding.testFiles.includes(s.testFile))

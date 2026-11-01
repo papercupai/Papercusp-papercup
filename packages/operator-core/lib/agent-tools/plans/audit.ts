@@ -227,6 +227,10 @@ const itemProvenanceSchema = z.discriminatedUnion('kind', [
     itemId: itemIdSchema,
     kind: z.literal('agent-added'),
     reason: z.string().min(1).max(2000).describe('Why the agent added it; shown to the owner.'),
+    discoverySources: z.array(z.object({
+      ref: z.string().regex(/^issue-occurrence:[1-9]\d*$/),
+      sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict()).min(1).max(20).optional().describe('Original pre-plan improvements:capture occurrences and SHA-256 pins for agent-discovery blind review. Never owner speech or plan framing.'),
   }),
 ]).meta({
   // The compact discovery projection merges array-item union fields. Preserve

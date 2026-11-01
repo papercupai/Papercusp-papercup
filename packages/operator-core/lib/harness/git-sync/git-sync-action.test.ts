@@ -224,7 +224,12 @@ const recordingTx: FakeTx = (strings, ...values) => {
  *  cost the commit). Restored in beforeEach. */
 let fakeTxImpl: FakeTx = recordingTx;
 const fakeTx: FakeTx = (strings, ...values) => fakeTxImpl(strings, ...values);
-const lockReadPool: FakeTx = () => Promise.resolve([]);
+const lockReadPool = Object.assign(
+  (() => Promise.resolve([])) as FakeTx,
+  {
+    begin: async <T>(fn: (tx: FakeTx) => Promise<T>): Promise<T> => fn(fakeTx),
+  },
+);
 const workspaceTxnCalls: Array<{
   coordinationDomain: string;
   owner: string;
@@ -6945,9 +6950,40 @@ describe('WI-10007606: cooperative yield to a draining dev:restart barrier', () 
     });
     expect(await probe!()).toBe('exclusive git-sync drain requested by system:dev-restart:test');
     expect(readResourceQueueMock).toHaveBeenCalledTimes(1);
-    expect(readResourceQueueMock.mock.calls[0]?.[0]).toBe(lockReadPool);
+    expect(readResourceQueueMock.mock.calls[0]?.[0]).toBe(fakeTx);
     expect(workspaceTxnCalls.length).toBe(txnCallsBefore);
     expect(readResourceQueueMock.mock.calls[0]?.[1]).toMatchObject({ resource: 'git-sync' });
+  });
+
+  it('retries a lock-store 55P03 and does not widen the retry to query timeouts', async () => {
+    let probe: (() => Promise<string | null>) | undefined;
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      probe = opts.shouldYield as typeof probe;
+      return { status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] };
+    });
+    await action(ctx);
+    expect(typeof probe).toBe('function');
+
+    const start = txQueries.length;
+    readResourceQueueMock.mockClear();
+    readResourceQueueMock
+      .mockRejectedValueOnce(Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }))
+      .mockResolvedValueOnce({
+        holders: [{ resource: 'git-sync', mode: 'exclusive', status: 'draining', owner: 'system:dev-restart:test' }],
+        draining: true,
+        queue: [],
+      });
+    expect(await probe!()).toBe('exclusive git-sync drain requested by system:dev-restart:test');
+    expect(readResourceQueueMock).toHaveBeenCalledTimes(2);
+    const settings = txQueries.slice(start);
+    expect(settings.some((query) => query.text.includes('SET TRANSACTION READ ONLY'))).toBe(true);
+    expect(settings.find((query) => query.text.includes("set_config('lock_timeout'"))?.values).toEqual(['250ms']);
+    expect(settings.find((query) => query.text.includes("set_config('statement_timeout'"))?.values).toEqual(['1500ms']);
+
+    readResourceQueueMock.mockClear();
+    readResourceQueueMock.mockRejectedValueOnce(Object.assign(new Error('statement timeout'), { code: '57014' }));
+    await expect(probe!()).rejects.toMatchObject({ code: '57014' });
+    expect(readResourceQueueMock).toHaveBeenCalledTimes(1);
   });
 
   it('a yield is a SKIP: locks released, last_yield recorded, no outcome, no error streak, no escalation', async () => {

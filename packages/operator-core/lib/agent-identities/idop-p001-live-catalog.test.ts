@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { captureIdopLiveCatalog } from './idop-p001-live-catalog';
+import { AgentMcpConnectionError } from '../agent-mcp-client';
 
 const env = { PAPERCUSP_SID: 'su-fixture', PAPERCUSP_NATIVE_SESSION_ID: 'native-fixture',
   PAPERCUSP_WORKSPACE: 'fixture', PAPERCUSP_HARNESS_SLUG: 'fixture', PAPERCUSP_AGENT_ROLE: 'architect', TOKEN: 'fixture-secret-token' };
 const endpoint = 'http://127.0.0.1:9171/api/mcp?client=su-fixture&workspace=fixture&harness=fixture&role=architect&sig=fixture-secret-signature';
 const config = (url = endpoint) => `[mcp_servers.papercusp]\nurl = ${JSON.stringify(url)}\nbearer_token_env_var = "TOKEN"\n`;
+const suEndpoint = 'http://127.0.0.1:9171/api/mcp?client=su-fixture&workspace=fixture&superuser=1';
+const suConfig = (url = suEndpoint) => config(url).replace('mcp_servers.papercusp]', 'mcp_servers.papercusp-su]');
 const tool = (name: string) => ({ name, description: 'unchanged description', inputSchema: {
   type: 'object' as const, properties: { scope: { type: 'string', enum: ['self'] } }, required: ['scope'], additionalProperties: false },
   annotations: { readOnlyHint: true } });
@@ -67,5 +70,66 @@ describe('P-001 actual caller raw catalog instrument', () => {
     const c = connector([]);
     await expect(captureIdopLiveCatalog(config(), { ...env, PAPERCUSP_ROLE: 'su' }, c.connect)).rejects.toThrow('role mismatch');
     expect(c.connect).not.toHaveBeenCalled();
+  });
+  it.each([undefined, 'su', 'planner'])('observes an unchanged global SU endpoint with reported role %s', async (role) => {
+    const c = connector([{ tools: [tool('fixture:one')] }]);
+    const result = await captureIdopLiveCatalog(suConfig(), { ...env, PAPERCUSP_AGENT_ROLE: role }, c.connect);
+    expect(c.connect.mock.calls[0][0].url).toBe(suEndpoint);
+    expect(result).toMatchObject({ complete: true, toolCount: 1, caller: {
+      configuredRole: null, configuredHarness: null, reportedRole: role ?? null,
+      endpointTier: 'global-su', launchHarness: 'fixture', workspace: 'fixture',
+    } });
+    expect(c.close).toHaveBeenCalledOnce();
+  });
+  it('preserves a matching explicitly configured SU harness without confusing it with launch scope', async () => {
+    const c = connector([{ tools: [] }]);
+    const result = await captureIdopLiveCatalog(suConfig(suEndpoint + '&harness=fixture'),
+      { ...env, PAPERCUSP_AGENT_ROLE: 'planner' }, c.connect);
+    expect(result.caller).toMatchObject({ configuredHarness: 'fixture', launchHarness: 'fixture' });
+    expect(result.complete).toBe(true);
+  });
+  it.each([
+    ['foreign client', suEndpoint.replace('client=su-fixture', 'client=foreign'), 'planner', 'client mismatch'],
+    ['foreign workspace', suEndpoint.replace('workspace=fixture', 'workspace=foreign'), 'planner', 'scope mismatch'],
+    ['missing workspace', suEndpoint.replace('&workspace=fixture', ''), 'planner', 'scope mismatch'],
+    ['foreign harness', suEndpoint + '&harness=foreign', 'planner', 'scope mismatch'],
+    ['duplicate harness', suEndpoint + '&harness=fixture&harness=fixture', 'planner', 'scope mismatch'],
+    ['ordinary role', suEndpoint, 'architect', 'role endpoint'],
+    ['unknown role', suEndpoint, 'not-a-registered-su-tier-role', 'role endpoint'],
+    ['duplicate superuser', suEndpoint + '&superuser=1', 'planner', 'role mismatch'],
+    ['disabled superuser', suEndpoint.replace('superuser=1', 'superuser=0'), 'planner', 'role mismatch'],
+    ['absent superuser', suEndpoint.replace('&superuser=1', ''), 'planner', 'role mismatch'],
+    ['role query', suEndpoint + '&role=planner', 'planner', 'role mismatch'],
+    ['empty role query', suEndpoint + '&role=', 'planner', 'role mismatch'],
+    ['duplicate native', suEndpoint + '&native_session=native-fixture&native_session=native-fixture', 'planner', 'native session mismatch'],
+  ])('rejects global SU %s before connecting', async (_label, url, role, message) => {
+    const c = connector([]);
+    await expect(captureIdopLiveCatalog(suConfig(url), { ...env, PAPERCUSP_AGENT_ROLE: role }, c.connect))
+      .rejects.toThrow(message);
+    expect(c.connect).not.toHaveBeenCalled();
+  });
+  it('does not admit a global SU URL through an ordinary role server entry', async () => {
+    const c = connector([]);
+    await expect(captureIdopLiveCatalog(config(suEndpoint), { ...env, PAPERCUSP_AGENT_ROLE: 'planner' }, c.connect))
+      .rejects.toThrow('role mismatch');
+    expect(c.connect).not.toHaveBeenCalled();
+  });
+  it('still requires the ordinary role caller harness', async () => {
+    const c = connector([]);
+    await expect(captureIdopLiveCatalog(config(endpoint.replace('&harness=fixture', '')), env, c.connect))
+      .rejects.toThrow('scope mismatch');
+    expect(c.connect).not.toHaveBeenCalled();
+  });
+  it('retains allowlisted connection diagnosis without secrets or catalog coverage', async () => {
+    const c = connector([]);
+    c.connect.mockRejectedValueOnce(new AgentMcpConnectionError('http',
+      Object.assign(new Error(`failed ${endpoint} ${env.TOKEN}`), { cause: { code: 'ECONNREFUSED' } })));
+    const result = await captureIdopLiveCatalog(config(), env, c.connect);
+    expect(result).toMatchObject({ complete: false, toolCount: null, pages: [], failure: {
+      stage: 'connect', message: 'http_connection_failed', diagnostic: { category: 'network', systemCode: 'ECONNREFUSED' },
+    } });
+    expect(JSON.stringify(result)).not.toContain('fixture-secret');
+    expect(c.connect).toHaveBeenCalledOnce();
+    expect(c.close).not.toHaveBeenCalled();
   });
 });

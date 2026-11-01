@@ -7,6 +7,7 @@ import postgres from 'postgres';
 import { publishReport } from '../../../packages/operator-core/lib/report-library';
 import { insertNativeCollectionPlan } from './_ongoing-work-native-fixture';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
+import { sampleNativePopup, withNativePopupFailure } from './_native-popup-diagnostics';
 
 const exec = promisify(execFile);
 
@@ -76,6 +77,17 @@ test('Quick Access opens as an independent native launcher with reports and exac
         { name: 'Brainstorm', selected: 'false' }, { name: 'Docs', selected: 'false' }]);
   }
   const visible = () => evaluate('window.__TAURI_INTERNALS__.invoke("plugin:window|is_visible", {label:"docs-search-palette"})');
+  async function recordPopup(stage: string) {
+    const snapshot = await sampleNativePopup(stage, async () => {
+      const focus = await exec('xdotool', ['getwindowfocus'], { env: displayEnv, timeout: 5_000 });
+      const active = await exec('xprop', ['-root', '_NET_ACTIVE_WINDOW'], { env: displayEnv, timeout: 5_000 });
+      const windows = await Promise.all((await popupWindows(false)).map(async id => ({ id,
+        state: (await exec('xwininfo', ['-id', id], { env: displayEnv, timeout: 5_000 })).stdout,
+      })));
+      return { focus: focus.stdout.trim(), active: active.stdout.trim(), windows };
+    }, () => evaluate('Promise.all([window.__TAURI_INTERNALS__.invoke("plugin:window|is_visible", {label:"docs-search-palette"})]).then(([visible])=>({visible,documentFocused:document.hasFocus(),url:location.href,errors:window.__quickAccessErrors||[]}))'));
+    await info.attach('Quick Access popup ' + stage, { body: JSON.stringify(snapshot), contentType: 'application/json' });
+  }
   async function expectUsable(selectors: string[]) {
     for (const selector of selectors) {
       await wait('(() => { const e=document.querySelector(' + JSON.stringify(selector) + '); if(!e) return false; const r=e.getBoundingClientRect(); const top=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2); return r.width>0 && r.height>0 && r.left>=0 && r.top>=0 && r.right<=innerWidth && r.bottom<=innerHeight && !!top && (top===e || e.contains(top)); })()');
@@ -126,7 +138,7 @@ test('Quick Access opens as an independent native launcher with reports and exac
     expect(configHome).toMatch(/\/papercusp-home$/);
     expect(JSON.parse(await readFile(configHome + '/docs-search-shortcut.json', 'utf8')))
       .toEqual({ accelerator: 'CmdOrCtrl+Shift+K' });
-    await test.step('R-1: OS shortcut, hidden main window, retained tools and singleton reentry', async () => {
+    await test.step('R-1: OS shortcut, hidden main window, retained tools and singleton reentry', () => withNativePopupFailure(async () => {
       // Hide the real X11 window without asking the webview for an ungranted
       // core:window:allow-hide permission. Before first entry only main exists.
       const { stdout: mainWindows } = await exec('xdotool',
@@ -152,9 +164,12 @@ test('Quick Access opens as an independent native launcher with reports and exac
       }
       await shortcut();
       await expect.poll(async () => (await popupWindows()).length, { timeout: 30_000 }).toBe(1);
+      await recordPopup('first-os-entry');
       await ready();
+      await recordPopup('after-ready');
       expect(await popupWindows(false)).toHaveLength(1);
       await expectDefaultTabs();
+      await recordPopup('after-default-tabs');
       // The established shortcut toggles the existing popup off, then on.
       // Keep focus on the visible popup: activating the decoy would blur-hide
       // it before the keypress and accidentally test reopening instead.
@@ -167,7 +182,16 @@ test('Quick Access opens as an independent native launcher with reports and exac
       await expect.poll(visible).toBe(true);
       expect(await popupWindows(false)).toHaveLength(1);
       await expectDefaultTabs();
-    });
+      // A real departure must still dismiss. Unlike the passive shortcut
+      // grab above, the X server moves input focus to this other application.
+      await exec('xdotool', ['windowactivate', '--sync', decoyWindowId], { env: displayEnv, timeout: 15_000 });
+      await expect.poll(async () => (await exec('xdotool', ['getwindowfocus'], { env: displayEnv })).stdout.trim()).toBe(decoyWindowId);
+      await expect.poll(visible).toBe(false);
+      expect(await popupWindows(false)).toHaveLength(1);
+      await shortcut();
+      await ready();
+      await expect.poll(visible).toBe(true);
+    }, () => recordPopup('R-1-failure')));
     await info.attach('OS shortcut entry', { body: JSON.stringify({
       accelerator: 'CmdOrCtrl+Shift+K', outsideWindowId: decoyWindowId, configHome,
       popupVisible: await visible(), entry: 'OS keypress through native startup registrar',

@@ -1720,6 +1720,89 @@ test('dependency verification repairs nested dependency executable links before 
   }
 });
 
+test('native dependency verification fails closed when a required addon resolves through an external donor', async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'install-safe-native-target-'));
+  const donorRoot = mkdtempSync(join(tmpdir(), 'install-safe-native-donor-'));
+  const workspaceRoot = join(repoRoot, 'apps/operator');
+  const donorPackage = join(donorRoot, 'node_modules/better-sqlite3');
+  const donorEntry = join(donorPackage, 'index.js');
+  const targetLink = join(repoRoot, 'node_modules/better-sqlite3');
+  const donorSource = [
+    'class Database {',
+    '  constructor() {',
+    '    const error = new Error("native binding missing");',
+    '    error.code = "ERR_DLOPEN_FAILED";',
+    '    throw error;',
+    '  }',
+    '}',
+    'module.exports = Database;',
+    '',
+  ].join('\n');
+  mkdirSync(workspaceRoot, { recursive: true });
+  mkdirSync(donorPackage, { recursive: true });
+  mkdirSync(join(repoRoot, 'node_modules'), { recursive: true });
+  writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ workspaces: ['apps/operator'] }));
+  writeFileSync(join(workspaceRoot, 'package.json'), JSON.stringify({
+    name: 'operator-fixture',
+    dependencies: { 'better-sqlite3': '^1.0.0' },
+  }));
+  writeFileSync(join(donorPackage, 'package.json'), JSON.stringify({
+    name: 'better-sqlite3',
+    version: '1.0.0',
+    main: 'index.js',
+  }));
+  writeFileSync(donorEntry, donorSource);
+  writeFileSync(join(repoRoot, 'package-lock.json'), JSON.stringify({
+    lockfileVersion: 3,
+    packages: {
+      '': { workspaces: ['apps/operator'] },
+      'apps/operator': {
+        name: 'operator-fixture',
+        dependencies: { 'better-sqlite3': '^1.0.0' },
+      },
+      'node_modules/better-sqlite3': { version: '1.0.0' },
+    },
+  }));
+  symlinkSync(donorPackage, targetLink, 'dir');
+
+  const repairs = [];
+  try {
+    const status = await verifyDepsExtracted({
+      repoRoot,
+      npmArgs: ['install', '--workspace=operator-fixture'],
+      probeSpecifiers: [{ specifier: 'better-sqlite3', nativeExercise: 'sqlite-memory-query' }],
+      env: {},
+      deps: { sleep: async () => {} },
+      runNpm: (args) => {
+        repairs.push(args);
+        return 0;
+      },
+    });
+
+    assert.equal(status, 1);
+    assert.equal(repairs.length, 1);
+    assert.deepEqual(repairs, [['install', '--legacy-peer-deps']]);
+    assert.equal(readFileSync(donorEntry, 'utf8'), donorSource);
+    assert.equal(readFileSync(join(targetLink, 'index.js'), 'utf8'), donorSource);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(donorRoot, { recursive: true, force: true });
+  }
+});
+
+test("root install-script policy permits the locked better-sqlite3 native build", () => {
+  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const manifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+  const lock = JSON.parse(readFileSync(join(repoRoot, "package-lock.json"), "utf8"));
+  const lockedVersion = lock.packages?.["node_modules/better-sqlite3"]?.version;
+  assert.equal(typeof lockedVersion, "string", "better-sqlite3 must remain in the root lockfile");
+  const approvals = manifest.allowScripts ?? {};
+  assert.ok(
+    approvals["better-sqlite3"] === true || approvals[`better-sqlite3@${lockedVersion}`] === true,
+    `allowScripts must approve better-sqlite3@${lockedVersion}; its node-gyp script builds the native binding required by install:safe verification`,
+  );
+});
+
 for (const needsRepair of [false, true]) {
   test(`dependency verification provisions embedded extensions after scoped reify (repair=${needsRepair})`, async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-pg-extensions-"));

@@ -256,14 +256,21 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
   const pageSize = positive(opts.rowBudget, 250, 2000), rowCap = positive(opts.windowRowBudget, 20_000, 100_000);
   const measure = async (family: MonitoredFamily, work: (deadline: number, cancelled: () => boolean) => Promise<FamilyMeasurement>): Promise<FamilyMeasurement> => {
     let cancelled = false;
+    let phase: 'continuity-before' | 'window' | 'continuity-after' = family === 'sql' ? 'window' : 'continuity-before';
+    const observedContinuity: { before: 'complete' | 'gap' | 'unknown' | null;
+      after: 'complete' | 'gap' | 'unknown' | null } = { before: null, after: null };
     try { return await boundedStage(async () => {
       const deadline = Date.now() + budget;
       const continuity = () => readers.readContinuity({ family: family as Exclude<MonitoredFamily, 'sql'>,
         since: common.since, until: common.until });
       const before = family === 'sql' ? null : await continuity();
+      observedContinuity.before = before;
+      phase = 'window';
       const row = await work(deadline, () => cancelled);
       if (family === 'sql') return row;
+      phase = 'continuity-after';
       const after = await continuity();
+      observedContinuity.after = after;
       const source = row.diagnostics.sourceCoverage as { denied: number; incomplete: number; windowExhausted: boolean; matrix?: NativeCoverage[] };
       const complete = before === 'complete' && after === 'complete' && source.windowExhausted
         && source.denied === 0 && source.incomplete === 0 && row.diagnostics.collisions === 0
@@ -277,7 +284,9 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
       return row;
     }, budget); }
     catch (error) { return { family, coverage: 'UNKNOWN', scanned: 0, qualifying: 0,
-      diagnostics: { stage: 'source', reason: miningFailureReason(error), reviewEligible: false, candidates: [] } }; }
+      diagnostics: { stage: 'source', phase, reason: miningFailureReason(error),
+        ...(family === 'sql' ? {} : { continuity: { ...observedContinuity } }),
+        reviewEligible: false, candidates: [] } }; }
     finally { cancelled = true; }
   };
   const families = await Promise.all([

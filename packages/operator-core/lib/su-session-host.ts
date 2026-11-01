@@ -709,11 +709,12 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
         code: 'runtime_generation_mismatch', message: 'the command targets a replaced runtime generation', retryable: false,
       });
     }
-    if (!this.executeCommand || this.disposed || !this.runtimeReady() || ['starting', 'resuming', 'compacting'].includes(this.descriptorValue.lifecycle)) {
-      return this.rememberImmediateRefusal(command, fingerprint, {
-        code: 'session_not_ready', message: 'the session executor and stream are not ready', retryable: true,
-      });
-    }
+    // Bind admission before the durable reservation yields. Legacy clients may
+    // omit their optimistic generation fence, but a reservation must never move
+    // their command onto a runtime that replaced the one they submitted to.
+    const runtime = { generation: this.descriptorValue.runtimeGeneration, executeCommand: this.executeCommand };
+    const admissionRefusal = this.commandRuntimeRefusal(runtime);
+    if (admissionRefusal) return this.rememberImmediateRefusal(command, fingerprint, admissionRefusal);
     const dispatch = (async (): Promise<SuSessionCommandDispatch<B>> => {
       const reserved = await store.reserve(command, fingerprint);
       if (reserved.receipt.fingerprint !== fingerprint) {
@@ -740,7 +741,10 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
       // A readiness refusal was not an acceptance and must not poison a later
       // retry after the executor attaches.
       this.commands.delete(command.commandId);
-      const result = this.dispatchCommand(command, (outcome) => store.finish(command, fingerprint, outcome));
+      const refusal = this.commandRuntimeRefusal(runtime);
+      const result = refusal
+        ? this.rememberImmediateRefusal(command, fingerprint, refusal)
+        : this.dispatchCommand(command, (outcome) => store.finish(command, fingerprint, outcome), runtime);
       if (!result.accepted) {
         const terminal = await result.terminal;
         if (terminal.status === 'refused') await store.finish(command, fingerprint, {
@@ -763,9 +767,30 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     return this.dispatchCommand(input);
   }
 
+  private commandRuntimeRefusal(runtime: {
+    generation: number;
+    executeCommand: SuSessionCommandExecutor<B> | undefined;
+  }): SuSessionRefusal | null {
+    if (runtime.generation !== this.descriptorValue.runtimeGeneration
+      || (this.executeCommand && runtime.executeCommand !== this.executeCommand)) {
+      return {
+        code: 'runtime_generation_mismatch', message: 'the command was admitted by a replaced runtime', retryable: false,
+      };
+    }
+    if (!this.executeCommand || this.disposed || !this.runtimeReady()
+      || TERMINAL_STATES.has(this.descriptorValue.lifecycle)
+      || ['starting', 'resuming', 'compacting'].includes(this.descriptorValue.lifecycle)) {
+      return {
+        code: 'session_not_ready', message: 'the session executor and stream are not ready', retryable: true,
+      };
+    }
+    return null;
+  }
+
   private dispatchCommand(
     input: unknown,
     persistOutcome?: (outcome: SuSessionCommandOutcome) => Promise<void>,
+    runtime?: { generation: number; executeCommand: SuSessionCommandExecutor<B> | undefined },
   ): SuSessionCommandDispatch<B> {
     const command = parseCommand<B>(input);
     const fingerprint = canonicalJson(command);
@@ -842,6 +867,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
       });
     }
 
+    const executeCommand = this.executeCommand;
     const accepted = this.emit({
       type: 'command_result',
       commandId: command.commandId,
@@ -852,7 +878,10 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     this.activeCommands += 1;
     const terminal = Promise.resolve().then(async () => {
       try {
-        const outcome = await this.executeCommand!(command, {
+        // Acceptance and native execution are separated by a microtask too.
+        // Settle a known non-delivery if the runtime disappeared in that gap.
+        const refusal = runtime && this.commandRuntimeRefusal(runtime);
+        const outcome = refusal ? { status: 'refused' as const, refusal } : await executeCommand(command, {
           descriptor: () => this.descriptor(),
           emit: (event) => this.emit(event),
           transition: (state, reason, runtimeGeneration) => this.transition(state, reason, runtimeGeneration),

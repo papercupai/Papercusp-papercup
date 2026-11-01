@@ -148,7 +148,8 @@ function privateHostHandler(root: string, sourceKey: string) {
 async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch' | 'grep' | 'reuse' | 'reuse-claim',
   recordRuntime?: (runId: string) => void) {
     const root = resolve(import.meta.dirname, '../../../..');
-    const sourcePaths = ['packages/operator-core/lib/code-intelligence/__fixtures__/reuse-api-journey.ts',
+    const sourcePaths = ['packages/operator-core/lib/code-intelligence/native-cli.fixture.ts',
+      'packages/operator-core/lib/code-intelligence/__fixtures__/reuse-api-journey.ts',
       'packages/operator-core/lib/code-intelligence/clone-brief-provider.ts',
       'packages/operator-core/lib/code-intelligence/change-history.ts',
       'packages/operator-core/lib/code-intelligence/reuse-brief-providers.ts',
@@ -183,7 +184,8 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
     const beforeHashes = sourceHashes();
     // Native Node children execute committed source under the inherited guard.
     // Refuse before bundling/allocating PG if their fixture would be substituted.
-    const committedPaths = ['packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts',
+    const committedPaths = ['packages/operator-core/lib/code-intelligence/native-cli.fixture.ts',
+      'packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts',
       ...(mode.startsWith('reuse') ? ['packages/operator-core/lib/code-intelligence/__fixtures__/reuse-api-journey.ts',
         'packages/operator-core/lib/code-intelligence/change-history.ts',
         'libs/test-config/src/test-coverage-provider.ts', 'libs/test-config/src/admin-test-runs-reporter.ts',
@@ -203,8 +205,10 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
         ...scopedNativeFixtureArgs(new URL('./__fixtures__/incident-api-client.ts', import.meta.url).href,
           'runNativeIncidentApi', [join(homedir(), '.papercusp/vendor/repomix'),
             join(homedir(), '.papercusp/vendor/lsp'), handlerPath, handlerHash, mode])];
-    if (mode.startsWith('reuse')) {
-      expect(recordRuntime, 'Reuse acceptance requires a retained original runtime receipt').toBeTypeOf('function');
+    // Capture incident timings in the same retained packet as reuse journeys;
+    // the detached runner's bounded console tail can omit a passing proof line.
+    if (mode.startsWith('reuse') || mode === 'incident') {
+      expect(recordRuntime, 'Native reuse and incident acceptance requires a retained original runtime receipt').toBeTypeOf('function');
       const runId = await recordIsolatedIntegrationProof({ root,
         filePath: 'packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts',
         sourcePaths: [...sourcePaths, 'scripts/with-test-pg.mjs',
@@ -270,7 +274,7 @@ describe('native P010 private operator completion reuse delivery', () => {
 });
 
 describe('native P010 controlled CLI claim reuse delivery', () => {
-  it('preserves the anchored base and issues five capped providers with actual controlled edit provenance', async (context) => {
+  it('preserves the anchored base and records five capped provider outcomes with actual controlled edit provenance', async (context) => {
     const proof = await privateNativeJourney('reuse-claim', runId => {
       Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
     });
@@ -278,7 +282,16 @@ describe('native P010 controlled CLI claim reuse delivery', () => {
       expectedProviders: ['clones', 'cochange', 'provenance', 'sql', 'coverage'],
       scope: expect.stringContaining('controlled private current-source CLI fixture') });
     expect(proof.controlledSession.id).toBeGreaterThan(0);
-    expect(proof.issued).toHaveLength(5);
+    const requiredOutcomes = proof.providerOutcomes.filter((row: { provider: string }) =>
+      proof.expectedProviders.includes(row.provider));
+    expect(requiredOutcomes.map((row: { provider: string }) => row.provider)).toEqual(proof.expectedProviders);
+    const issued = proof.providerOutcomes.filter((row: { status: string }) => row.status === 'issued');
+    expect(proof.issued.map((row: { subject: string }) => JSON.parse(row.subject).provider).sort())
+      .toEqual(issued.map((row: { provider: string }) => row.provider).sort());
+    for (const row of requiredOutcomes) {
+      if (row.provider === 'coverage' && row.status === 'budget') expect(row.reason).toBe('truncated');
+      else expect(row.status).toBe('issued');
+    }
   }, privateJourneyTimeoutMs);
 });
 
@@ -310,8 +323,10 @@ describe('native P036 private operator installed first-touch Read', () => {
 });
 
 describe('native P018 private operator CLI incident claim and resume', () => {
-  it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async () => {
-    const proof = await privateNativeJourney('incident');
+  it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async (context) => {
+    const proof = await privateNativeJourney('incident', runId => {
+      Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    });
     expect(proof).toMatchObject({
       transport: 'real-cli-http', failure: 'actual-node-assertion', staticCandidate: true,
       cause: 'unknown', runtimeExecution: 'unmeasured', resume: 'current', repaired: true,

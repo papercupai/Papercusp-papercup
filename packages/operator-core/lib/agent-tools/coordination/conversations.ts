@@ -582,6 +582,8 @@ export function getThreadPost(postId: number, identity?: AgentIdentity) {
  */
 export interface ConsultLifecycleState {
   conversation_id: string;
+  /** Original reviewer evidence and append-only requester dispositions. */
+  review?: import('../../consult/review-findings').ConsultReviewState | null;
   state: string;
   /** Existing recoverable-request result JSON. Missing means unrecorded, not
    * measured absence; state remains the independent conversation lifecycle. */
@@ -701,7 +703,8 @@ export function getConsultStates(
       const rows = await sql<ConsultLifecycleBaseRow[]>`
         SELECT conversation_id, state, latency_contract, responder_id,
                expires_at, closed_at, wakes_used,
-               routing #> '{request,result}' AS request_result
+               routing #> '{request,result}' AS request_result,
+               outcome -> 'review' AS review
           FROM harness_shared.consult_state
          WHERE workspace_id = ${conversationsScopeWorkspace()}
            AND conversation_id = ANY(${conversationIds as string[]}::text[])
@@ -787,6 +790,7 @@ export function getConsultStates(
           conversation_id: r.conversation_id,
           state: r.state,
           request_result: r.request_result ?? null,
+          review: typeof r.review === 'string' ? JSON.parse(r.review) : r.review ?? null,
           latency_contract: r.latency_contract ?? null,
           responder_id: r.responder_id ?? null,
           expires_at: r.expires_at ?? null,

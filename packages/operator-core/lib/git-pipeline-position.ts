@@ -6628,6 +6628,8 @@ export async function gitPipelinePosition(
     candidateFailures,
     convergence: gate.convergence,
     testPassReuse: snap.gate.testPassReuse ?? null,
+    lastSuiteMeasurement: snap.gate.lastSuiteMeasurement ?? null,
+    lastTargetedSuiteMeasurement: snap.gate.lastTargetedSuiteMeasurement ?? null,
     // P-007: the NAMED non-test legs, from the same candidateFailures value this literal
     // already carries — so the brief can never read all-clear while a lint/perf/desktop/
     // delta leg is red, and its whyNot names the leg instead of an empty test list.

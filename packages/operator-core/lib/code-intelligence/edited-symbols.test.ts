@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { captureEditedSymbols, changedLineRanges, editedSymbols } from './edited-symbols';
+import { captureEditedSymbols, changedLineRanges, editedSymbols, observeEditedSymbols } from './edited-symbols';
 
 const BEFORE = [
   "import { x } from './x';",
@@ -104,5 +104,22 @@ describe('captureEditedSymbols', () => {
       .resolves.toBeNull();
     await expect(captureEditedSymbols('/repo', 'lib/mod.ts', {
       readText: async () => { throw new Error('ENOENT'); }, headText: read(BEFORE) })).resolves.toBeNull();
+  });
+
+  it('distinguishes source, Git and syntax failures without inventing measured empty output', async () => {
+    const cases = [
+      { readText: async () => { throw new Error('ENOENT'); }, headText: read(BEFORE), reason: 'source-unreadable' },
+      { readText: read(after), headText: async () => null, reason: 'head-unavailable' },
+      { readText: read(after), headText: async () => { throw new Error('git failed'); }, reason: 'head-unavailable' },
+      { readText: read('export function broken( {'), headText: read(BEFORE), reason: 'parse-diagnostics' },
+    ];
+    for (const { reason, ...deps } of cases) {
+      expect(await observeEditedSymbols('/repo', 'mod.ts', deps))
+        .toEqual({ version: 1, status: 'unknown', reason, symbols: null });
+    }
+    expect(await observeEditedSymbols('/repo', 'README.md'))
+      .toEqual({ version: 1, status: 'unknown', reason: 'unsupported-path', symbols: null });
+    expect(await observeEditedSymbols('/repo', 'mod.ts', { readText: read(BEFORE), headText: read(BEFORE) }))
+      .toEqual({ version: 1, status: 'measured', reason: null, symbols: [] });
   });
 });

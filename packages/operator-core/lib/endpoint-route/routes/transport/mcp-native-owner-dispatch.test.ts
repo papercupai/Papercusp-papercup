@@ -63,12 +63,13 @@ beforeEach(() => {
 });
 
 describe('D-063 owner rebuild of native MCP targets', () => {
-  it('retains the genuine principal only via the local exact-call registry capability', async () => {
+  it.each(['meta:threadId', 'header:x-papercusp-native-session'] as const)('retains a genuine principal only via the local exact-call registry with %s', async carrier => {
     target(vi.fn());
     const principal = { kind: 'system' as const, slug: 'system:superuser', workspaceId: address.workspaceId,
       authMethod: 'bearer-token' as const, trust: 'trusted' as const, capabilities: new Set(['*']) };
     const resolve = vi.spyOn(nativeInstalledPerUseTurns, 'resolveRequestPrincipal').mockResolvedValue(principal);
     const r = request();
+    r.spawn.requestOrigin!.nativeSession!.carrier = carrier;
     const enriched = await retainNativeRequestPrincipalForDispatch(r.spawn, r.toolName, r.args, 'private-runtime-bearer');
     expect(resolve).toHaveBeenCalledExactlyOnceWith({ workspaceId: address.workspaceId, advSessionId: 77,
       ownerId: address.ownerId, nativeSessionFingerprint: fingerprint, callIdFingerprint: 'a'.repeat(64),
@@ -95,7 +96,8 @@ describe('D-063 owner rebuild of native MCP targets', () => {
     expect(await retainNativeRequestPrincipalForDispatch(spawn, 'native-fixture:run', {}, '')).toBe(spawn);
     const ordinary = { ...spawn, requestOrigin: undefined };
     expect(await retainNativeRequestPrincipalForDispatch(ordinary, 'native-fixture:run', {}, 'runtime-bearer')).toBe(ordinary);
-    expect(resolve).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(resolve).toHaveBeenLastCalledWith(expect.objectContaining({ runtimeBearer: '' }));
     expect(spawn.authenticatedPrincipal).toBeUndefined();
   });
 

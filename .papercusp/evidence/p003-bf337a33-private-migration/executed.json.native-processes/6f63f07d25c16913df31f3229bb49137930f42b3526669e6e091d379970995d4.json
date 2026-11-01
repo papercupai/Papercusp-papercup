@@ -1,1 +1,0 @@
-{"schemaVersion":1,"kind":"native-node-process-event","event":"module-load-start","processIdentity":"2ba5e8bf-25dd-48ab-b564-b077b495cba6","pid":2942352,"ppid":2941354,"atMs":1792906658115,"loadId":87,"url":"file:///mnt/data/offload/papercusp-r2gcs-p003-bf337a33/node_modules/drizzle-orm/pg-core/view.js","scope":"node-sync-load-hook"}

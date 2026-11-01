@@ -327,6 +327,48 @@ describe('execProcess lazy receipt (real child processes)', () => {
     expect(cancel).not.toHaveBeenCalled();
   });
 
+  it('returns on child close while late admission is pending, then settles the receipt in the background', async () => {
+    const { execution, finish, cancel } = receiptSpies();
+    let resolveBegin!: (execution: GovernedExecution) => void;
+    let announceBegin!: () => void;
+    let announceClose!: () => void;
+    const beginStarted = new Promise<void>((resolve) => { announceBegin = resolve; });
+    const childClosed = new Promise<void>((resolve) => { announceClose = resolve; });
+    const stages: string[] = [];
+    const begin = vi.fn(() => new Promise<GovernedExecution>((resolve) => {
+      resolveBegin = resolve;
+      announceBegin();
+    }));
+    const resultPromise = execProcess(run(['ls-remote', 'origin'], { FAKE_GIT_SLEEP: '0.5' }), {
+      beginExecution: begin,
+      lazyReceiptMs: 50,
+      onStage: (stage) => {
+        stages.push(stage);
+        if (stage === 'child-close') announceClose();
+      },
+    });
+
+    await beginStarted;
+    await childClosed;
+    const beforeAdmissionResolves = await Promise.race([
+      resultPromise.then((result) => ({ kind: 'result' as const, result })),
+      new Promise<{ kind: 'timeout' }>((resolve) => { setTimeout(() => resolve({ kind: 'timeout' }), 200); }),
+    ]);
+    const settlementWasPrematurelyReported = stages.includes('settlement-complete');
+    resolveBegin(execution);
+
+    const result = await resultPromise;
+    expect(beforeAdmissionResolves.kind).toBe('result');
+    expect(result.code).toBe(0);
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(settlementWasPrematurelyReported).toBe(false);
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledTimes(1));
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith({ cpuWeight: 1 });
+    expect(cancel).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(stages).toContain('settlement-complete'));
+  });
+
   it('the late receipt is minted AFTER the child started (the delay measures runtime, not setup)', async () => {
     const { execution } = receiptSpies();
     await rm(marker, { force: true });
@@ -395,13 +437,19 @@ describe('execProcess lazy receipt (real child processes)', () => {
         throw new Error('release UPDATE timed out');
       },
     });
-    const result = await execProcess(run(['ls-remote', 'origin'], { FAKE_GIT_SLEEP: '0.4' }), {
-      beginExecution: async () => execution,
-      lazyReceiptMs: 100,
-    });
-    expect(finish).toHaveBeenCalledTimes(1);
-    expect(result.code).toBe(0);
-    expect(result.stderr).not.toContain('settlement failed');
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await execProcess(run(['ls-remote', 'origin'], { FAKE_GIT_SLEEP: '0.4' }), {
+        beginExecution: async () => execution,
+        lazyReceiptMs: 100,
+      });
+      expect(finish).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalledWith('[governed-execution] settlement failed; lease retained, retry pending', expect.any(Object));
+      expect(result.code).toBe(0);
+      expect(result.stderr).not.toContain('settlement failed');
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it('the exit code of a failing lazy read is preserved', async () => {

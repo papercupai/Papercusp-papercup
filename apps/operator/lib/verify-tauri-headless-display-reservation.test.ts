@@ -26,7 +26,7 @@ const src = readFileSync(SCRIPT, 'utf8');
 // Exercise the actual startup function without opening an X display or booting
 // the desktop. Only the two external processes and the readiness endpoint are
 // fixtures; the production wait, process check, timeout and diagnostics execute.
-function displayStartup(mode: 'delayed' | 'dead' | 'hung') {
+function displayStartup(mode: 'delayed' | 'dead' | 'hung' | 'wm-delayed' | 'wm-dead' | 'wm-hung' | 'wm-no-activation' | 'wm-stale-pointer') {
   const root = mkdtempSync(join(tmpdir(), 'verifier-display-ready-'));
   const fn = src.match(/start_display_server\(\) \{[\s\S]*?\n\}/)?.[0];
   expect(fn).toBeTruthy();
@@ -37,6 +37,26 @@ echo 'fixture: server still initializing' >&2
 exit 1
 `);
   chmodSync(join(root, 'xdpyinfo'), 0o755);
+  writeFileSync(join(root, 'xprop'), `#!/usr/bin/env bash
+if [ "$DISPLAY_TEST_MODE" = wm-hung ]; then exec sleep 60; fi
+if [ "$DISPLAY_TEST_MODE" = wm-delayed ] && [ ! -f "$WORK/wm-ready" ]; then
+  echo 'fixture: window manager still initializing' >&2
+  exit 1
+fi
+if [ "$1" = -root ]; then
+  echo '_NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x123'
+  if [ "$DISPLAY_TEST_MODE" = wm-no-activation ]; then
+    echo '_NET_SUPPORTED(ATOM) = _NET_ACTIVE_WINDOW_EXTRA'
+  else
+    echo '_NET_SUPPORTED(ATOM) = _NET_ACTIVE_WINDOW, _NET_SUPPORTED'
+  fi
+elif [ "$DISPLAY_TEST_MODE" = wm-stale-pointer ]; then
+  echo '_NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x456'
+else
+  echo '_NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x123'
+fi
+`);
+  chmodSync(join(root, 'xprop'), 0o755);
   try {
     const result = spawnSync('bash', ['-c', `
 set -uo pipefail
@@ -44,7 +64,22 @@ children=()
 trap 'for child in "\${children[@]}"; do kill "$child" 2>/dev/null || true; done; wait' EXIT
 log() { printf '%s\\n' "$*"; }
 start_verify_process() {
-  if [[ "$1" = *-openbox ]]; then echo OPENBOX_STARTED; return; fi
+  if [[ "$1" = *-openbox ]]; then
+    echo OPENBOX_STARTED
+    if [ "$DISPLAY_TEST_MODE" = wm-dead ]; then
+      echo 'fixture: fatal Openbox startup' > "$2"
+      VERIFY_STARTED_PROCESS_PID=999999999
+      return
+    fi
+    sleep 60 > "$2" 2>&1 &
+    VERIFY_STARTED_PROCESS_PID=$!
+    children+=("$!")
+    if [ "$DISPLAY_TEST_MODE" = wm-delayed ]; then
+      (sleep 1.2; touch "$WORK/wm-ready") &
+      children+=("$!")
+    fi
+    return
+  fi
   if [ "$DISPLAY_TEST_MODE" = dead ]; then
     echo 'fixture: fatal Xvfb startup' > "$2"
     VERIFY_STARTED_PROCESS_PID=999999999
@@ -56,6 +91,8 @@ start_verify_process() {
   if [ "$DISPLAY_TEST_MODE" = delayed ]; then
     (sleep 1.2; touch "$WORK/ready") &
     children+=("$!")
+  else
+    touch "$WORK/ready"
   fi
 }
 ${fn}
@@ -92,6 +129,58 @@ describe('EI-26363783041689120 — verifier display startup observes readiness',
     expect(result.stdout).not.toContain('OPENBOX_STARTED');
     expect(result.stderr).toContain('readiness deadline');
   }, 30_000);
+});
+
+describe('EI-27529057401533862 — native display requires a ready window manager', () => {
+  const preflight = src.match(/preflight_native_display_dependencies\(\) \{[\s\S]*?\n\}/)?.[0];
+
+  it('rejects missing tools before expensive native preparation, allowing prepare-only', () => {
+    expect(preflight).toBeTruthy();
+    for (const missing of ['Xvfb', 'openbox', 'xdpyinfo', 'xprop', 'timeout', 'none']) {
+      const result = spawnSync('bash', ['-c', `
+command() { [ "$2" != "$MISSING" ]; }
+${preflight}
+preflight_native_display_dependencies
+`], { encoding: 'utf8', env: { ...hermeticSpawnEnv(), MISSING: missing, PREPARE_ONLY: '0' } });
+      expect(result.status, result.stderr).toBe(missing === 'none' ? 0 : 1);
+      if (missing !== 'none') expect(result.stderr).toContain(`dependency missing: ${missing}`);
+    }
+    const prepare = spawnSync('bash', ['-c', `
+command() { echo UNEXPECTED_DEPENDENCY_CHECK >&2; return 1; }
+${preflight}
+preflight_native_display_dependencies
+`], { encoding: 'utf8', env: { ...hermeticSpawnEnv(), PREPARE_ONLY: '1' } });
+    expect(prepare.status, prepare.stderr).toBe(0);
+    expect(prepare.stderr).toBe('');
+    const call = src.indexOf('verifier_run_step native-display-dependencies ');
+    expect(call).toBeGreaterThan(-1);
+    expect(call).toBeLessThan(src.indexOf('verifier_run_step native-cargo-capacity '));
+    expect(call).toBeLessThan(src.indexOf('verifier_run_step operator-source-snapshot '));
+  });
+
+  it('waits for delayed EWMH publication by a live Openbox', () => {
+    const result = displayStartup('wm-delayed');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('EWMH ready');
+  }, 30_000);
+
+  it('fails immediately with Openbox diagnostics when the WM exits', () => {
+    const result = displayStartup('wm-dead');
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Openbox exited before readiness');
+    expect(result.stderr).toContain('fixture: fatal Openbox startup');
+    expect(result.stdout).not.toContain('EWMH ready');
+  }, 30_000);
+
+  it.each(['wm-hung', 'wm-no-activation', 'wm-stale-pointer'] as const)(
+    'bounds %s without reporting a usable window manager', (mode) => {
+      const result = displayStartup(mode);
+      expect(result.error, 'production probes must finish before the outer watchdog').toBeUndefined();
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toContain('EWMH readiness deadline exceeded');
+      expect(result.stdout).not.toContain('EWMH ready');
+    }, 30_000,
+  );
 });
 
 describe('EI-21617008171422271 — verify-tauri-headless atomically reserves displays', () => {

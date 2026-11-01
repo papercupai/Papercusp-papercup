@@ -1,1 +1,0 @@
-TEST_FILE_STARTUP_TRACE {"pid":2967096,"event":"node-loaded","nodeOptions":{"sha256":"60d7e6a895a5e7565e3c45aab2caa9dffb6b7dfe8491aeed619c4fdcbf2bb150","bytes":239,"switches":["--import"]},"execArgv":{"sha256":"1dfba7c0cd45274317964f50d051892d8aa7eb9d1d81978ea726de46ce90904d","bytes":177,"switches":["--require","--conditions"]}}

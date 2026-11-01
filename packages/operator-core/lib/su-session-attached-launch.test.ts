@@ -85,6 +85,14 @@ afterEach(() => {
 });
 
 describe('attached launch authority', () => {
+  it('retains a genuine request resolver for a fresh Claude engine without serializing credentials', async () => {
+    const resolver = vi.fn(async () => null), actual = request();
+    mocks.retainPrincipal.mockResolvedValue(resolver);
+    expect((await launchAttachedSuSession(actual, { ...input, agent_chat_id: 'claude-principal-fresh' })).ok).toBe(true);
+    expect(mocks.retainPrincipal).toHaveBeenCalledExactlyOnceWith(actual.headers, 'workspace');
+    expect(mocks.engine.mock.calls.at(-1)![3].resolveRequestPrincipal).toBe(resolver);
+    expect(JSON.stringify(mocks.engine.mock.calls.at(-1)![3])).not.toContain('fixture-principal');
+  });
   it('passes only a live request principal resolver to a fresh Codex engine', async () => {
     const resolver = vi.fn(async () => null), actual = request();
     mocks.retainPrincipal.mockResolvedValue(resolver);
@@ -299,15 +307,19 @@ describe('attached launch authority', () => {
     });
 
     it('recomputes the identity from the saved directory on resume', async () => {
+      const resolver = vi.fn(async () => null), actual = request();
+      mocks.retainPrincipal.mockResolvedValue(resolver);
       mocks.registry.mockResolvedValue({ projects: [{ slug: 'project', path: checkout }] });
       mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine', cwd: fresh, terminalBin: 'pui-structured-claude' });
       mocks.rehydrate.mockResolvedValue({ snapshot: () => ({ executorAttached: false, streamReady: false, terminal: true }) });
       mocks.resume.mockResolvedValue({ boot: { ...boot, cwd: fresh }, nativeSession: { backend: 'claude', sessionId: 'saved-native' },
         binding: { operation: 'attached', backend: 'claude', advSessionId: 18, ownerId: 'su-engine', workspaceId: 'workspace', harnessSlug: 'project', planSlug: null },
         options: { agentChatId: 'identity-resume' }, beforeReady: vi.fn(), onExit: vi.fn(), release: vi.fn(), exact: true });
-      await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'identity-resume' });
+      await launchAttachedSuSession(actual, { ...input, agent_chat_id: 'identity-resume' });
       expect(mocks.bootstrap).not.toHaveBeenCalled();
       expect(mocks.engine.mock.calls[0][3]).toMatchObject({ resume: true, identity: 'coding-assistant' });
+      expect(mocks.engine.mock.calls[0][3].resolveRequestPrincipal).toBe(resolver);
+      expect(mocks.retainPrincipal).toHaveBeenCalledExactlyOnceWith(actual.headers, 'workspace');
       expect(mocks.resume).toHaveBeenCalledWith(expect.objectContaining({ cwd: fresh }),
         expect.objectContaining({ identity: 'coding-assistant', stage: expect.any(Function) }));
     });

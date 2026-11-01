@@ -325,7 +325,7 @@ export interface AcceptanceBarTrace {
     state: 'current' | 'stale' | 'missing' | 'truncated';
     history?: Array<Pick<AcceptanceBarEvidenceSource,
       'id' | 'workItemId' | 'specId' | 'specRevision' | 'specFingerprint' | 'evidenceKind' |
-      'evidenceRef' | 'testRunId' | 'observedAt' | 'createdBy' | 'details' | 'currentness'> & {
+      'evidenceRef' | 'testRunId' | 'observedAt' | 'createdAt' | 'createdBy' | 'details' | 'currentness' | 'serverMeasurement'> & {
         currentRevision?: number;
         matchesCurrentSpec: boolean;
         activeAttempt?: boolean;
@@ -1534,6 +1534,7 @@ export function projectAcceptanceBarContractSnapshot(
           currentRevision: row.currentRevision,
           specFingerprint: row.specFingerprint, evidenceKind: row.evidenceKind, evidenceRef: row.evidenceRef,
           testRunId: row.testRunId, observedAt: row.observedAt, createdBy: row.createdBy,
+          createdAt: row.createdAt, serverMeasurement: row.serverMeasurement,
           details: row.details, currentness: row.currentness,
           activeAttempt: activeEvidence.includes(row),
           matchesCurrentSpec: clauses.some((clause) => clause.specId === row.specId &&

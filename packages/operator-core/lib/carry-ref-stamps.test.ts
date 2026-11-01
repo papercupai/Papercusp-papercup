@@ -91,6 +91,24 @@ describe('stampCarryRefs (write side)', () => {
     expect(await stampCarryRefs({ text: 'WI-1111', workspaceId: 'ws-1', harness: null, resolve: boom })).toEqual([]);
   });
 
+  it('persists the exact source root that supplied a carried file hash', async () => {
+    const stamps = await stampCarryRefs({
+      text: 'See packages/operator-core/lib/carry-ref-stamps.ts',
+      workspaceId: 'ws-1',
+      harness: 'papercusp',
+      now: 42,
+    });
+    expect(stamps).toEqual([
+      expect.objectContaining({
+        dep: 'file:packages/operator-core/lib/carry-ref-stamps.ts',
+        token: expect.stringMatching(/^sha256:[0-9a-f]{16}$/),
+        at: 42,
+        sourceRoot: expect.any(String),
+        sourceRootKind: 'canonical-repo',
+      }),
+    ]);
+  });
+
   // CRGM-P-002-own-item-excluded: a work-item checkpoint never stamps its own id, so the next
   // wake cannot report the author's own write as a moved reference.
   it('never stamps an excluded reference (a checkpoint citing its own work item)', async () => {
@@ -202,6 +220,42 @@ describe('diff + render (read side)', () => {
   it('says a work item was updated when only its timestamp moved', () => {
     const changes = diffCarryRefStamps([stamps[0]!], new Map([['work-item:WI-1111', 'wip@300']]), 'WI-9 checkpoint');
     expect(renderCarryRefChanges(changes, { where: 'compaction recovery' })).toContain('wip (updated since)');
+  });
+
+  it('identifies a file-source shift separately when the hash is unchanged', () => {
+    const stamp = {
+      dep: 'file:packages/x/y.ts',
+      token: 'sha256:aa',
+      at: Date.parse('2026-10-25T00:00:00Z'),
+      sourceRoot: '/old/checkout',
+      sourceRootKind: 'canonical-repo' as const,
+    };
+    const current = new Map([[stamp.dep, stamp.token]]);
+    const roots = new Map([[stamp.dep, { root: '/new/checkout', rootSource: 'canonical-repo' as const }]]);
+    const changes = diffCarryRefStamps([stamp], current, 'WI-9 checkpoint', roots);
+    expect(changes).toEqual([
+      expect.objectContaining({ dep: stamp.dep, kind: 'source-shift', rootChanged: true }),
+    ]);
+    expect(renderCarryRefChanges(changes, { where: 'compaction recovery' })).toContain('SOURCE ROOT CHANGED');
+  });
+
+  it('renders file hash changes with the stamp time and both source roots', () => {
+    const stamp = {
+      dep: 'file:packages/x/y.ts',
+      token: 'sha256:aa',
+      at: Date.parse('2026-10-25T00:00:00Z'),
+      sourceRoot: '/repo/staging',
+      sourceRootKind: 'harness-root' as const,
+    };
+    const current = new Map([[stamp.dep, 'sha256:bb']]);
+    const roots = new Map([[stamp.dep, { root: '/repo/staging', rootSource: 'harness-root' as const }]]);
+    const rendered = renderCarryRefChanges(
+      diffCarryRefStamps([stamp], current, 'WI-9 checkpoint', roots),
+      { where: 'compaction recovery', readAtIso: '2026-10-26T00:00:00Z' },
+    );
+    expect(rendered).toContain('stamped=2026-10-25T00:00:00.000Z');
+    expect(rendered).toContain('baseline-root=harness-root /repo/staging');
+    expect(rendered).toContain('current-root=harness-root /repo/staging');
   });
 });
 

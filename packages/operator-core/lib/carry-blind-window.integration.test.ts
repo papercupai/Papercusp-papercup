@@ -2,9 +2,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { readCarryBlindWindow } from './carry-blind-window';
 
-// EI-25951615327777689: the outer tools:invoke receipt lands 1 ms after
-// its inner compaction receipt. It is already represented in the carry,
-// while a later business call must still produce a recovery warning.
+// EI-25951615327777689 / EI-26986375145110421: the outer tools:invoke receipt
+// lands 1 ms after its inner compaction receipt. Hook-origin activity reports
+// can also land after the snapshot (including one for successor startup); neither
+// is unseen agent work, while a later business call must still warn.
 describe('carry blind window over real invocation rows', () => {
   const workspace = 'ws-carry-blind-window';
   const owner = 'su-carry-blind-window';
@@ -54,6 +55,9 @@ describe('carry blind window over real invocation rows', () => {
   it('does not manufacture a window from the matching wrapper and successor startup', async () => {
     await invocation('session:request-compaction', snapshot, compactionArgs);
     await invocation('tools:invoke', wrapper, { name: 'session:request-compaction', args: compactionArgs });
+    await invocation('activity:report', '2026-10-14T10:10:37.598Z', {
+      kind: 'tool', tool_name: 'session_request_compaction',
+    }, 'ok', 'hook');
     await invocation('activity:report', '2026-10-14T10:11:38.248Z', {
       kind: 'lifecycle', summary: 'session started', session_id: 'successor',
     }, 'ok', 'hook');

@@ -155,8 +155,8 @@ describe('recordEditAttribution symbols capture (real PG + real git, migration 1
     return root;
   }
 
-  async function record(root: string, file: string): Promise<string[] | null> {
-    await recordEditAttribution({ repoRoot: root, files: [file], agentId: 'agent-p007' }, { awaitSymbols: true });
+  async function record(root: string, file: string, workspaceId?: string): Promise<string[] | null> {
+    await recordEditAttribution({ repoRoot: root, files: [file], agentId: 'agent-p007', workspaceId }, { awaitSymbols: true });
     const rows = await h.db!.sql<{ symbols: string[] | null }[]>`
       SELECT symbols FROM harness_shared.edit_attribution_ledger WHERE repo_root = ${root} AND file = ${file}`;
     expect(rows).toHaveLength(1);
@@ -189,6 +189,40 @@ describe('recordEditAttribution symbols capture (real PG + real git, migration 1
     writeFileSync(join(root, 'notes.md'), '# base\nchanged\n');
 
     expect(await record(root, 'notes.md')).toBeNull();
+  });
+
+  it('journals the reason for unknown symbol capture without converting it to an empty result', async () => {
+    const root = repoWith({ 'mod.ts': BASE });
+    writeFileSync(join(root, 'mod.ts'), 'export function broken( {');
+
+    expect(await record(root, 'mod.ts', 'ws-p007')).toBeNull();
+    const [row] = await h.db!.sql<{ id: string; signal_eligibility: Record<string, unknown> | null }[]>`
+      SELECT id::text, signal_eligibility FROM harness_shared.edit_attribution_ledger
+       WHERE repo_root = ${root} AND file = 'mod.ts'`;
+    expect(row!.signal_eligibility?.['symbol-capture']).toMatchObject({
+      version: 1, status: 'unknown', reason: 'parse-diagnostics',
+    });
+    // A later valid rewrite cannot retroactively turn that failed observation
+    // into measured history or relabel its failure reason.
+    writeFileSync(join(root, 'mod.ts'), BASE);
+    const { fillEditedSymbols } = await import('./code-intelligence/edited-symbols');
+    expect(await fillEditedSymbols([{ id: row!.id, file: 'mod.ts' }], root, h.db!.sql)).toBe(0);
+    const [retained] = await h.db!.sql<{ symbols: string[] | null; signal_eligibility: Record<string, unknown> | null }[]>`
+      SELECT symbols, signal_eligibility FROM harness_shared.edit_attribution_ledger WHERE id = ${row!.id}::bigint`;
+    expect(retained!.symbols).toBeNull();
+    expect(retained!.signal_eligibility).toEqual(row!.signal_eligibility);
+  });
+
+  it('journals a measured empty symbol list alongside the independent interface observation', async () => {
+    const root = repoWith({ 'mod.ts': BASE });
+    writeFileSync(join(root, 'mod.ts'), BASE.replace('readFileSync', 'readFileSync, writeFileSync'));
+
+    expect(await record(root, 'mod.ts', 'ws-p007')).toEqual([]);
+    const [row] = await h.db!.sql<{ signal_eligibility: Record<string, unknown> | null }[]>`
+      SELECT signal_eligibility FROM harness_shared.edit_attribution_ledger
+       WHERE repo_root = ${root} AND file = 'mod.ts'`;
+    expect(row!.signal_eligibility?.['symbol-capture']).toMatchObject({ version: 1, status: 'measured', reason: null });
+    expect(row!.signal_eligibility).toHaveProperty('interface');
   });
 
   /** P-002 (D-018): the same write journals edit-time interface eligibility. */

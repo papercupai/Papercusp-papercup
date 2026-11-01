@@ -13,6 +13,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_REPLY_ROLES } from '../coordination/roles';
 import { hardText } from '../limits';
+import { reviewDispositionsSchema } from '../../consult/review-findings';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
@@ -45,6 +46,7 @@ export default defineTool({
       confidence: z.number().min(0).max(1).optional().describe('Confidence in the answer, 0..1 (answered only).'),
       evidence: z.array(evidenceRef).max(16).optional().describe('Transcript grounding [{ session_id, turn_idx, note? }] — an ARRAY of transcript-turn tuples, never prose or tool-probe output. If your evidence is not a transcript turn, OMIT this field; never fabricate session_id/turn_idx.'),
       reason: hardText(2000).optional().describe("Why (required for outcome=cant_help and outcome=graduate — for graduate: why the question outgrew the consult)."),
+      reviewDispositions: reviewDispositionsSchema.optional().describe('Requester dispositions of stored findings; planned work and accepted risks cite their carrying item/Decision. Findings and prior dispositions remain readable after close.'),
     })
     .refine((a) => (a.outcome === 'answered' ? Boolean(a.answer?.trim()) : Boolean(a.reason?.trim())), {
       message: "outcome=answered requires answer; outcome=cant_help and outcome=graduate require reason",
@@ -69,6 +71,7 @@ export default defineTool({
         confidence: args.confidence,
         evidence: args.evidence,
         reason: args.reason,
+        reviewDispositions: args.reviewDispositions,
       },
       {
         getSql: () => getOrgPg().sql,

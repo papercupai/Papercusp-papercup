@@ -14,6 +14,7 @@ import {
   mergeExactAndBm25,
   measureWarmBm25QueryLatencies,
   resetBm25Availability,
+  storedTsvectorLexicalLeg,
   usesWebsearchOperators,
 } from './rank';
 import type { AvailabilityEntry } from './rank';
@@ -149,6 +150,25 @@ describe('materializedTextLexicalLeg', () => {
     expect(queries.some((query) => query.includes("websearch_to_tsquery('english'"))).toBe(true);
     expect(queries.some((query) => query.includes('ts_rank_cd('))).toBe(true);
     expect(queries.some((query) => query.includes('@@'))).toBe(true);
+  });
+});
+
+describe('storedTsvectorLexicalLeg', () => {
+  it('keeps a simple/plain ts_rank query over the stored vector behind the lexical seam', () => {
+    const { sql, queries } = catalogSql();
+    const leg = storedTsvectorLexicalLeg(sql, sql`search_text`, 'invoice', {
+      textConfig: 'simple',
+      querySyntax: 'plain',
+      rankFunction: 'ts_rank',
+    });
+
+    expect(leg.engine).toBe('legacy');
+    expect(queries.some(query => query.includes('::regconfig'))).toBe(true);
+    expect(queries.some(query => query.includes('plainto_tsquery'))).toBe(true);
+    expect(queries.some(query => query.includes('ts_rank('))).toBe(true);
+    expect(queries.some(query => query.includes('@@'))).toBe(true);
+    expect(queries.some(query => query.includes('websearch_to_tsquery'))).toBe(false);
+    expect(queries.some(query => query.includes('ts_rank_cd('))).toBe(false);
   });
 });
 

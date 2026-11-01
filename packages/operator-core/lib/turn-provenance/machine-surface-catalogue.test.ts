@@ -147,6 +147,11 @@ describe('machine-surface catalogue — predicates', () => {
     ).toBe(true);
   });
 
+  it('recognizes the native environment wrapper while retaining questions quoting it', () => {
+    expect(isUnenrolledMachineSurface('<environment_context>cwd=/repo</environment_context>')).toBe(true);
+    expect(isUnenrolledMachineSurface('What does <environment_context> mean in my transcript?')).toBe(false);
+  });
+
   it('KEEPS an owner ASKING about their AGENTS.md — the rail for the two entries above', () => {
     expect(
       isUnenrolledMachineSurface('why does my AGENTS.md instructions block show up as my own turn?'),

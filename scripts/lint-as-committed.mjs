@@ -112,7 +112,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
+import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '@papercusp/test-config/tmpdir-guard';
 import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 import { withFsMutex } from './lib/fs-mutex.mjs';
 import { installLockNameForRoot, installMutexIsHeld } from './lib/install-lock-name.mjs';
@@ -479,7 +479,7 @@ export function liveProcessCwds({ readDir = readdirSync, readLink = readlinkSync
  * it cannot prove a tree is idle, so it only removes trees whose marker names a dead
  * non-keep owner — the one verdict that needs no cwd scan.
  */
-export async function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds = liveProcessCwds(), isAlive = pidAlive, remove = (p) => rmSync(p, { recursive: true, force: true }), beforeRemove = () => null, maxIdleKept = MAX_IDLE_KEPT_TREES } = {}) {
+export async function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds = liveProcessCwds(), isAlive = pidAlive, remove = (p) => rmSync(p, { recursive: true, force: true }), beforeRemove = /** @type {(path: string) => string | null} */ (() => null), maxIdleKept = MAX_IDLE_KEPT_TREES } = {}) {
   const removed = [];
   const kept = [];
   const idleKept = [];

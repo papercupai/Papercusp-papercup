@@ -20,6 +20,7 @@ import {
 import { isAbsolute, posix, resolve, sep } from 'node:path';
 import { assertRemoteAuthReady } from './remote-auth-policy';
 import { measurePinnedApplicationRuntime, resolveApplicationRuntimeLaunch } from './bundled-node';
+import type { ApplicationRuntimeAcceptance, ApplicationRuntimeCandidate } from './bundled-node';
 
 export const VM_RELEASE_DISTRIBUTION_PROFILE = 'vm-release';
 export const VM_RELEASE_FORBIDDEN_PORTS = new Set([3055, 3170, 3270]);
@@ -36,6 +37,7 @@ interface BuildProvenance {
   buildSha: string;
   gitHead?: string;
   artifacts: ProvenanceArtifact[];
+  applicationRuntime?: { name: 'node' | 'bun'; acceptanceRef?: string; harnessSlug?: string };
 }
 
 interface ModelAssetFile {
@@ -73,6 +75,10 @@ export interface VmReleaseRuntimePolicyOptions {
   sidecarDir: string;
   hostname: string;
   port: number;
+  /** Canonical authority is supplied by the host; package fields alone never authorize Bun. */
+  verifyApplicationRuntimeAcceptance?: (request: {
+    harnessSlug: string; evidenceRef: string; candidate: ApplicationRuntimeCandidate; role: string;
+  }) => Promise<ApplicationRuntimeAcceptance | null>;
 }
 
 export function isVmReleaseDistribution(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -104,6 +110,14 @@ function parseManifest(path: string): { manifest: BuildProvenance; bytes: Buffer
   }
   if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length === 0) {
     fail('build-provenance.json lists no artifacts');
+  }
+  const runtime = manifest.applicationRuntime;
+  if (runtime !== undefined && (!runtime || typeof runtime !== 'object' || Array.isArray(runtime)
+    || !['node', 'bun'].includes(runtime.name)
+    || Object.keys(runtime).some(key => !['name', 'acceptanceRef', 'harnessSlug'].includes(key))
+    || (runtime.name === 'bun' && (typeof runtime.acceptanceRef !== 'string' || !runtime.acceptanceRef
+      || typeof runtime.harnessSlug !== 'string' || !runtime.harnessSlug)))) {
+    fail('invalid package applicationRuntime declaration');
   }
   return { manifest: manifest as BuildProvenance, bytes };
 }
@@ -379,8 +393,8 @@ export function assertVmReleaseRuntimePolicy(options: VmReleaseRuntimePolicyOpti
  * Ordinary packaged host boots use the same pinned selector as candidate probes.
  * The provenance emitter already attests the retained Node and serve bytes. Bind
  * those bytes to the running process before --ensure, singleton locks, or PG boot.
- * Operational Bun is intentionally not selected from an environment or a manifest
- * assertion: its canonical acceptance reader must be connected before activation.
+ * A package may declare Bun only with an exact canonical acceptance reference.
+ * The declaration selects bytes; the authority reader decides whether they may run.
  */
 export async function assertVmReleaseApplicationRuntime(options: VmReleaseRuntimePolicyOptions) {
   const verified = assertVmReleaseRuntimePolicy(options);
@@ -395,23 +409,36 @@ export async function assertVmReleaseApplicationRuntime(options: VmReleaseRuntim
   const nodeArtifact = manifest.artifacts.find(artifact => artifact.name === 'bin/node')!;
   const entryArtifact = manifest.artifacts.find(artifact => artifact.name === 'serve.mjs')!;
   const node = await measurePinnedApplicationRuntime(resolve(sidecarRoot, 'bin/node'), nodeArtifact.sha256);
+  const runtime = manifest.applicationRuntime?.name ?? 'node';
+  let bun;
+  if (runtime === 'bun') {
+    const artifact = manifest.artifacts.find(artifact => artifact.name === 'bin/bun');
+    if (!artifact) fail('manifest does not attest required runtime artifact bin/bun');
+    if (!options.verifyApplicationRuntimeAcceptance) fail('canonical Bun acceptance reader is required');
+    bun = await measurePinnedApplicationRuntime(resolve(sidecarRoot, 'bin/bun'), artifact.sha256);
+  }
+  const candidate: ApplicationRuntimeCandidate = {
+    candidateSha256: createHash('sha256').update(manifestBytes).digest('hex'),
+    sourceSha: manifest.gitHead!, roles: ['host'], entrypoint: resolve(sidecarRoot, 'serve.mjs'),
+    entrypointSha256: entryArtifact.sha256, node, ...(bun ? { bun } : {}),
+  };
   const launch = await resolveApplicationRuntimeLaunch({
-    candidate: {
-      candidateSha256: createHash('sha256').update(manifestBytes).digest('hex'),
-      sourceSha: manifest.gitHead!,
-      roles: ['host'],
-      entrypoint: resolve(sidecarRoot, 'serve.mjs'),
-      entrypointSha256: entryArtifact.sha256,
-      node,
-    },
+    candidate, runtime,
     role: 'host',
     env,
+    ...(runtime === 'bun' ? {
+      acceptanceRef: manifest.applicationRuntime!.acceptanceRef!,
+      verifyAcceptance: (evidenceRef: string) => options.verifyApplicationRuntimeAcceptance!({
+        harnessSlug: manifest.applicationRuntime!.harnessSlug!, evidenceRef, candidate, role: 'host',
+      }),
+    } : {}),
   });
-  if (process.versions.bun || realpathSync(process.execPath) !== launch.executable
-    || process.versions.node !== launch.runtime.version
+  if ((process.versions.bun ? 'bun' : 'node') !== runtime
+    || realpathSync(process.execPath) !== launch.executable
+    || (process.versions.bun ?? process.versions.node) !== launch.runtime.version
     || process.platform !== launch.runtime.platform || process.arch !== launch.runtime.arch
     || sha256(process.execPath) !== launch.runtime.binarySha256) {
-    fail('ordinary host must run the package-pinned Node executable');
+    fail(`ordinary host must run the package-pinned ${runtime === 'bun' ? 'Bun' : 'Node'} executable`);
   }
   if (!readFileSync(manifestPath).equals(manifestBytes)) {
     fail('build provenance changed during application runtime selection');

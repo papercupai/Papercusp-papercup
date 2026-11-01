@@ -1,0 +1,1024 @@
+{
+  "schemaVersion": 1,
+  "routine": "external-trigger-dispatch",
+  "workspace": "test-runtime-c421d1b4-62c",
+  "processId": 285978,
+  "runtimeRoot": "/tmp/pcv/papercusp-test-runtime-Gee8ZZ",
+  "pgPort": 37179,
+  "buildSha": "03beaa7b735cd9b2e111d410a826c6c078caccaa",
+  "sourceHashes": {
+    "packages/operator-core/lib/harness/routines/external-trigger-dispatch-action.ts": "1314daf0720a288b94ab0b57698dd6111a257993dd699e6765b4777dd8da6b2a",
+    "packages/operator-core/lib/external-triggers/binding-engine.ts": "46ddc0968c019f35ae8efb1c42b0230bdde8d6c4bfa400bb2373244c0c1a7c4e",
+    "packages/operator-core/test/_trigger-pack-fixtures.ts": "0dff5bfed9acc19ff53095fe167405f1c27e18cc131485db081872d296e48bd5",
+    "packages/operator-core/test/_rules-events-reuse-cost-child.ts": "3f0a8fc13145c4c34ea3e142e86f709befa5c36d640a8e9c58b6f1ebc231bc2b"
+  },
+  "windowStartedAt": "2026-11-01T00:25:25.976Z",
+  "windowEndedAt": "2026-11-01T00:25:26.676Z",
+  "elapsedWindowMs": 699.5485320000007,
+  "attribution": "One isolated action process and real private PostgreSQL; setup and validation excluded from each fire.",
+  "queryDefinition": "SQL statements on the production admin client; transaction commands counted separately; hashes exclude parameter values.",
+  "idleCpuMicrosPerFire": {
+    "n": 30,
+    "mean": 3169.1,
+    "confidence95": [
+      2719.541685885273,
+      3618.6583141147266
+    ]
+  },
+  "idleStatementsPerFire": {
+    "n": 30,
+    "mean": 4,
+    "confidence95": [
+      4,
+      4
+    ]
+  },
+  "observedProductionRate": {
+    "windowStart": "2026-10-28T00:00:00.000Z",
+    "windowEnd": "2026-10-29T00:00:00.000Z",
+    "querySha256": "fb0f8e4a3f15e2ce31531056a1579ce28ef641da289587b9d323ce260a832bbf",
+    "actualStartedFires": 1114
+  },
+  "samples": [
+    {
+      "fireId": "external-trigger-dispatch:idle:0",
+      "kind": "idle",
+      "cpuMicros": 3029,
+      "elapsedMs": 9.79870099999971,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:1",
+      "kind": "idle",
+      "cpuMicros": 3178,
+      "elapsedMs": 7.685202000000572,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:2",
+      "kind": "idle",
+      "cpuMicros": 2184,
+      "elapsedMs": 8.303896000004897,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:3",
+      "kind": "idle",
+      "cpuMicros": 2770,
+      "elapsedMs": 10.301670999993803,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:4",
+      "kind": "idle",
+      "cpuMicros": 4461,
+      "elapsedMs": 11.75853300000017,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:5",
+      "kind": "idle",
+      "cpuMicros": 2991,
+      "elapsedMs": 6.640725999997812,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:6",
+      "kind": "idle",
+      "cpuMicros": 3285,
+      "elapsedMs": 5.813229000006686,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:7",
+      "kind": "idle",
+      "cpuMicros": 2673,
+      "elapsedMs": 6.749706000002334,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:8",
+      "kind": "idle",
+      "cpuMicros": 3576,
+      "elapsedMs": 8.4889519999997,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:9",
+      "kind": "idle",
+      "cpuMicros": 4427,
+      "elapsedMs": 8.70933900000091,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:10",
+      "kind": "idle",
+      "cpuMicros": 2027,
+      "elapsedMs": 6.9888280000013765,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:11",
+      "kind": "idle",
+      "cpuMicros": 2619,
+      "elapsedMs": 7.047791999997571,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:12",
+      "kind": "idle",
+      "cpuMicros": 3940,
+      "elapsedMs": 9.94628499999817,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:13",
+      "kind": "idle",
+      "cpuMicros": 2163,
+      "elapsedMs": 6.212469999998575,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:14",
+      "kind": "idle",
+      "cpuMicros": 3344,
+      "elapsedMs": 7.095253999999841,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:15",
+      "kind": "idle",
+      "cpuMicros": 2133,
+      "elapsedMs": 7.273897999999463,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:16",
+      "kind": "idle",
+      "cpuMicros": 2357,
+      "elapsedMs": 7.539590000000317,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:17",
+      "kind": "idle",
+      "cpuMicros": 7841,
+      "elapsedMs": 8.964821000001393,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:18",
+      "kind": "idle",
+      "cpuMicros": 2395,
+      "elapsedMs": 6.981944999999541,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:19",
+      "kind": "idle",
+      "cpuMicros": 1919,
+      "elapsedMs": 6.665853999998944,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:20",
+      "kind": "idle",
+      "cpuMicros": 1783,
+      "elapsedMs": 5.671165000007022,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:21",
+      "kind": "idle",
+      "cpuMicros": 3055,
+      "elapsedMs": 7.398349000002781,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:22",
+      "kind": "idle",
+      "cpuMicros": 3766,
+      "elapsedMs": 7.220896000006178,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:23",
+      "kind": "idle",
+      "cpuMicros": 4081,
+      "elapsedMs": 8.337570000003325,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:24",
+      "kind": "idle",
+      "cpuMicros": 4690,
+      "elapsedMs": 6.964370000001509,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:25",
+      "kind": "idle",
+      "cpuMicros": 2161,
+      "elapsedMs": 7.339895000004617,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:26",
+      "kind": "idle",
+      "cpuMicros": 1992,
+      "elapsedMs": 6.895497999998042,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:27",
+      "kind": "idle",
+      "cpuMicros": 3209,
+      "elapsedMs": 7.721722000002046,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:28",
+      "kind": "idle",
+      "cpuMicros": 3241,
+      "elapsedMs": 8.420280000005732,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:idle:29",
+      "kind": "idle",
+      "cpuMicros": 3783,
+      "elapsedMs": 8.316500000000815,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": false,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:0",
+      "kind": "known-work",
+      "cpuMicros": 2440,
+      "elapsedMs": 7.619775999999547,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:1",
+      "kind": "known-work",
+      "cpuMicros": 2012,
+      "elapsedMs": 6.96073400000023,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:2",
+      "kind": "known-work",
+      "cpuMicros": 1949,
+      "elapsedMs": 7.306320000003325,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:3",
+      "kind": "known-work",
+      "cpuMicros": 1979,
+      "elapsedMs": 5.746639999997569,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:4",
+      "kind": "known-work",
+      "cpuMicros": 14049,
+      "elapsedMs": 8.515684000005422,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:5",
+      "kind": "known-work",
+      "cpuMicros": 3137,
+      "elapsedMs": 5.958459000001312,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:6",
+      "kind": "known-work",
+      "cpuMicros": 1929,
+      "elapsedMs": 6.292373000003863,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:7",
+      "kind": "known-work",
+      "cpuMicros": 3657,
+      "elapsedMs": 6.102507000003243,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:8",
+      "kind": "known-work",
+      "cpuMicros": 2630,
+      "elapsedMs": 8.312992999999551,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:9",
+      "kind": "known-work",
+      "cpuMicros": 1841,
+      "elapsedMs": 6.082038000000466,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:10",
+      "kind": "known-work",
+      "cpuMicros": 1758,
+      "elapsedMs": 5.879346000001533,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:11",
+      "kind": "known-work",
+      "cpuMicros": 1891,
+      "elapsedMs": 6.165238000001409,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:12",
+      "kind": "known-work",
+      "cpuMicros": 1986,
+      "elapsedMs": 5.822706999999355,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:13",
+      "kind": "known-work",
+      "cpuMicros": 1555,
+      "elapsedMs": 6.196158000006108,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:14",
+      "kind": "known-work",
+      "cpuMicros": 3046,
+      "elapsedMs": 26.648057999998855,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:15",
+      "kind": "known-work",
+      "cpuMicros": 2314,
+      "elapsedMs": 7.533518999996886,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:16",
+      "kind": "known-work",
+      "cpuMicros": 1698,
+      "elapsedMs": 7.595848999997543,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:17",
+      "kind": "known-work",
+      "cpuMicros": 3252,
+      "elapsedMs": 8.070374999995693,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:18",
+      "kind": "known-work",
+      "cpuMicros": 2001,
+      "elapsedMs": 7.060566000000108,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:19",
+      "kind": "known-work",
+      "cpuMicros": 3252,
+      "elapsedMs": 8.767230000004929,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:20",
+      "kind": "known-work",
+      "cpuMicros": 5176,
+      "elapsedMs": 7.878474000004644,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:21",
+      "kind": "known-work",
+      "cpuMicros": 3118,
+      "elapsedMs": 7.040887999995903,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:22",
+      "kind": "known-work",
+      "cpuMicros": 3735,
+      "elapsedMs": 9.57880699999805,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:23",
+      "kind": "known-work",
+      "cpuMicros": 1770,
+      "elapsedMs": 6.767640999998548,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:24",
+      "kind": "known-work",
+      "cpuMicros": 2110,
+      "elapsedMs": 7.2879549999997835,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:25",
+      "kind": "known-work",
+      "cpuMicros": 3941,
+      "elapsedMs": 6.2925539999996545,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:26",
+      "kind": "known-work",
+      "cpuMicros": 2734,
+      "elapsedMs": 7.348992999999609,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:27",
+      "kind": "known-work",
+      "cpuMicros": 2117,
+      "elapsedMs": 6.794412000002922,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:28",
+      "kind": "known-work",
+      "cpuMicros": 1647,
+      "elapsedMs": 6.64217899999494,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    },
+    {
+      "fireId": "external-trigger-dispatch:known-work:29",
+      "kind": "known-work",
+      "cpuMicros": 1558,
+      "elapsedMs": 8.521355000004405,
+      "statements": 4,
+      "transactionCommands": 2,
+      "stateChanged": true,
+      "queryHashes": {
+        "5d043b1cdd67c09f525351ec157b28210287343edff4491e9e1208656a86db50": 2,
+        "e7b4cb60ae3ad9468b469fc8b9ec066dc0c3baabbfde128964749758da1e575f": 1,
+        "f3143e99d6e1f32561d2755e0258da0bab94e7a747a427e70e2c6dc7b9943d9d": 1,
+        "d4b78160caa87da10e6a40ac4dd9688845334ef6f1bd7c6345320932744b961a": 1,
+        "9505cacb7c710ed17125fcc6cb3669e8ddca6c8cd8af6a31f6b3cd64604c3098": 1
+      }
+    }
+  ],
+  "productionNoOpShare": {
+    "status": "unknown",
+    "reason": "Retained live action outputs have no counters."
+  },
+  "latencyComparison": {
+    "status": "not-measured",
+    "reason": "Maintenance controls do not measure user-job dispatch latency."
+  },
+  "r4Decision": "non-passing: actual production no-op share and paired latency comparison remain required",
+  "limitations": [
+    "CPU is action-process CPU; PostgreSQL server CPU is unavailable.",
+    "Isolated idle samples do not establish the preceding production window no-op share.",
+    "Known-work controls cover maintenance state transitions, not successful user-job dispatch."
+  ],
+  "cleanup": {
+    "runtimeRemoved": true,
+    "databaseRemoved": true,
+    "postgresConnectionRefused": true
+  }
+}
+

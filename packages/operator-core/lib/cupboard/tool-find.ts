@@ -7,14 +7,13 @@
  * native search it is operator-side, so it works for Claude/Codex too.
  * (tool-discovery-for-weak-models-2026-06-30 WS3.)
  *
- * Fusion is **floored-union, NOT plain RRF**. tools-search.ts deliberately
- * avoids RRF because for tools an exact/prefix NAME match must ALWAYS outrank a
+ * Fusion pins explicit names and blends all other candidates. tools-search.ts
+ * retains field weights because an explicit NAME match must ALWAYS outrank a
  * semantically-similar sibling (you don't want `coord:orient` buried under
  * `coord:glance`). So:
- *   - the LEXICAL leg is authoritative — its ranked hits are admitted in order, on top;
- *   - the SEMANTIC leg BROADENS recall — it contributes only entries the lexical
- *     leg missed (intent→tool when keywords don't overlap), appended below,
- *     ranked by cosine and gated by a minimum-similarity floor.
+ *   - explicit colon-form names lead, in request order;
+ *   - non-exact candidates blend query-normalized lexical relevance and floored
+ *     cosine before truncation, so weak keyword hits cannot crowd out recall.
  *
  * The embedder + corpus embeddings are INJECTED (a one-time boot index over the
  * full tool catalog). With neither, it degrades gracefully to lexical-only — the
@@ -24,7 +23,7 @@
  * `collectToolMeta`/`resolveToolEntries`, embeddings via `buildQueryEmbedder`).
  */
 import type { ToolDiscoveryEntry } from './tools-discovery';
-import { searchTools } from './tools-search';
+import { scoreTool, searchTools } from './tools-search';
 
 export type Embedder = (text: string) => Promise<number[]>;
 
@@ -140,6 +139,8 @@ export function decisiveToolForSymptom(query: string): string | null {
   // The roster audit composes census, claims, waits and wake outcomes. Generic
   // "audit" name hits otherwise outrank this maintained first-read surface.
   if (/\bparked[\s-]+agents?\b/.test(q) && /\baudit\b/.test(q)) return 'coord:roster';
+  if (/(?:agents?|sessions?|work)/.test(q) && /account|credential|quota|provider/.test(q)
+      && /before|working|doing|recover|interrupted/.test(q)) return 'sessions:digest';
   if (/connection refused|service (?:is )?(?:down|unreachable)|process (?:is )?running but no window|app (?:will not|won't) open/.test(q)) {
     return 'dev:service_health';
   }
@@ -186,8 +187,7 @@ function entryHit(e: ToolDiscoveryEntry, via: ToolFindHit['via'], cosine: number
 }
 
 /**
- * Hybrid search. Returns up to `limit` hits, lexical-authoritative with the
- * semantic leg broadening recall underneath (floored-union — see file head).
+ * Hybrid search with explicit-name priority and blended non-exact candidates.
  */
 export async function findTools(
   corpus: readonly ToolDiscoveryEntry[],
@@ -200,7 +200,6 @@ export async function findTools(
 
   // 1. Lexical leg — authoritative. Over-fetch so its ranking survives the cap.
   const lexical = searchTools(corpus, query, { limit: limit * 3 });
-  const lexicalNames = new Set(lexical.map((e) => e.tool));
 
   // 2. Semantic leg — only when an embedder + corpus index are present.
   const cosByName = new Map<string, number>();
@@ -235,31 +234,28 @@ export async function findTools(
     }
   }
 
-  // 3. Floored-union: lexical hits first (in their rank), annotated `both` when
-  //    the semantic leg also liked them; then semantic-only hits by descending
-  //    cosine. Dedup by tool name. Truncate to `limit`.
-  const out: ToolFindHit[] = [];
-  for (const e of lexical) {
-    const c = cosByName.get(e.tool);
-    out.push(entryHit(e, c != null ? 'both' : 'lexical', c ?? null));
-    if (out.length >= limit) break;
-  }
+  // Blend non-exact candidates before truncation: incidental keyword hits must
+  // not exhaust the result cap before the semantic leg can contribute.
   const byName = new Map(corpus.map((e) => [e.tool, e]));
-  if (out.length < limit) {
-    const semanticOnly = [...cosByName.entries()]
-      .filter(([name]) => !lexicalNames.has(name))
-      .sort((a, b) => b[1] - a[1]);
-    for (const [name, c] of semanticOnly) {
-      const e = byName.get(name);
-      if (!e) continue;
-      out.push(entryHit(e, 'semantic', c));
-      if (out.length >= limit) break;
-    }
-  }
+  const lexicalScores = new Map(lexical.map(e => [e.tool, scoreTool(e, query)]));
+  const maxLexical = Math.max(1, ...lexicalScores.values());
+  const candidates = new Set([...lexicalScores.keys(), ...cosByName.keys()]);
+  const explicitNames = [...new Set(query.toLowerCase().match(/[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*/g) ?? [])];
+  const explicitOrder = new Map(explicitNames.map((name, index) => [name, index]));
+  for (const name of explicitNames) if (byName.has(name)) candidates.add(name);
+  const blended = (name: string) => cosByName.size === 0
+    ? (lexicalScores.get(name) ?? 0)
+    : 0.45 * (lexicalScores.get(name) ?? 0) / maxLexical + 0.55 * (cosByName.get(name) ?? 0);
+  const ranked = [...candidates].sort((a, b) =>
+    (explicitOrder.get(a) ?? Infinity) - (explicitOrder.get(b) ?? Infinity) ||
+    blended(b) - blended(a) || a.localeCompare(b));
+  const out = ranked.slice(0, limit).map(name => entryHit(byName.get(name)!,
+    cosByName.has(name) ? (lexicalScores.has(name) ? 'both' : 'semantic') : 'lexical',
+    cosByName.get(name) ?? null));
 
   const decisive = decisiveToolForSymptom(query);
   const decisiveEntry = decisive ? byName.get(decisive) : undefined;
-  if (decisiveEntry) {
+  if (decisive && decisiveEntry) {
     const existing = out.find((hit) => hit.tool === decisive);
     const routed = existing ?? entryHit(decisiveEntry, 'lexical', cosByName.get(decisive) ?? null);
     return [routed, ...out.filter((hit) => hit.tool !== decisive)].slice(0, limit);

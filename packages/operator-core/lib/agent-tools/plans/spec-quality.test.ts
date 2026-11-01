@@ -1297,6 +1297,32 @@ describe('evaluatePlanSpecQuality', () => {
     );
   });
 
+  it('fails malformed and mismatched structured plan acceptance references', () => {
+    const malformed = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ acceptanceRef: 'plan:quality-plan@undefined#P-001' })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(malformed.ratings['stable-revision-identity'].rating).toBe('fail');
+    expect(malformed.ratings['stable-revision-identity'].evidence).toContain(
+      'SPEC-001-01:malformed-plan-acceptance-ref',
+    );
+
+    const mismatched = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ acceptanceRef: 'plan:quality-plan@10#P-002' })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(mismatched.ratings['stable-revision-identity'].rating).toBe('fail');
+    expect(mismatched.ratings['stable-revision-identity'].evidence).toContain(
+      'SPEC-001-01:plan-acceptance-ref-item-mismatch',
+    );
+  });
+
   it('does not pass empty behavioral evaluations when clauses are only draft', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',

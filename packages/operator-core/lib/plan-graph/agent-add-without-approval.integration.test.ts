@@ -11,8 +11,7 @@
  *
  * Every write goes through the real projected dispatch against a private, fully migrated
  * database (setupPlanPgFixture({ isolated: true })) — no module mocks. The line's node is
- * minted by harness_shared.convert_plan_lines_to_nodes (migration 1601, P-003), the same
- * function the plan-line writers call; a new open node carries the D-011 self-selection
+ * minted by the actual add-item writer; a new open node carries the D-011 self-selection
  * park, which is a transition park keyed to P-008 and not an approval step, so the suite
  * pins that the park is that one and nothing else.
  */
@@ -24,6 +23,7 @@ import '../agent-tools/work_items/create';
 import '../agent-tools/work_items/set_blocker';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-registry';
 import { runWithWorkspace } from '../workspace-als';
+import { withPlanLock } from '../agent-tools/plans/with-plan-lock';
 import {
   cleanupPlans,
   seedPlan,
@@ -141,6 +141,10 @@ beforeAll(async () => {
   fx = await setupPlanPgFixture({ isolated: true });
   admin = fx.admin;
   await seedPlan(admin, WS, HARNESS, SLUG, planBody(SLUG));
+  // Populate the existing seed through the ordinary writer, as creation does.
+  const seeded = await withPlanLock(null, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG, intent: 'R-11 seed' },
+    async () => ({ newBody: planBody(SLUG), value: { ok: true } }));
+  expect(seeded.kind).toBe('applied');
 }, 120_000);
 
 afterAll(async () => {
@@ -175,7 +179,6 @@ describe('R-11: an agent adds to an active plan without owner approval', () => {
     expect(indexed?.status, 'the line is indexed at once, as ordinary todo work').toBe('todo');
     expect(await planStatus(), 'the plan stays active').toBe('active');
 
-    await admin`SELECT harness_shared.convert_plan_lines_to_nodes(${WS})`;
     const [node] = await admin<{ feature_id: string; status: string; payload: Record<string, unknown> }[]>`
       SELECT feature_id, status, payload FROM harness_shared.work_items
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG} AND plan_line_id = ${lineId!}`;

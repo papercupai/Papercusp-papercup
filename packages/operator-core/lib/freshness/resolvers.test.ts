@@ -12,7 +12,7 @@ vi.mock('../harness-registry', async (importOriginal) => {
   return { ...actual, loadHarnessRegistry: h.loadHarnessRegistry };
 });
 
-const { resolveCurrentTokens, findFileInSiblingCheckouts, describeUnresolvedFileDep } = await import('./resolvers');
+const { resolveCurrentTokens, resolveFileTokensWithProvenance, findFileInSiblingCheckouts, describeUnresolvedFileDep } = await import('./resolvers');
 
 let tempRoot: string | undefined;
 let canonicalRoot: string | undefined;
@@ -55,6 +55,25 @@ describe('file dependency resolution', () => {
 
     expect(tokens.get(dep)).toMatch(/^sha256:[0-9a-f]{16}$/);
     expect(h.loadHarnessRegistry).toHaveBeenCalledWith('papercusp-workspace');
+  });
+
+  it('reports the canonical fallback root when the registered harness path is phantom', async () => {
+    tempRoot = await mkdtemp(join(tmpdir(), 'freshness-phantom-root-'));
+    const canonical = await makeCanonicalRoot();
+    await mkdir(join(canonical, 'src'), { recursive: true });
+    await writeFile(join(canonical, 'src', 'owner.ts'), 'export const owner = true;');
+    h.loadHarnessRegistry.mockResolvedValue({
+      projects: [{ slug: 'sidestage', path: tempRoot, harness_kind: 'coding' }],
+    });
+
+    const result = await resolveFileTokensWithProvenance(['src/owner.ts'], {
+      workspaceId: 'papercusp-workspace',
+      harness: 'sidestage',
+    });
+
+    expect(result.tokens.get('src/owner.ts')).toMatch(/^sha256:[0-9a-f]{16}$/);
+    expect(result.root).toBe(canonical);
+    expect(result.rootSource).toBe('canonical-repo');
   });
 
   it('falls back to the canonical repo when the registry root is phantom and the canonical repo resolves every ref', async () => {

@@ -347,6 +347,102 @@ describe('durable SU owner-turn acceptance', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it('P-009: fences a committed command when its runtime was replaced during reservation', async () => {
+    const original = vi.fn(async () => ({ status: 'completed' as const }));
+    const replacement = vi.fn(async () => ({ status: 'completed' as const }));
+    const host = readyHost(original);
+    let commit!: () => void;
+    const committed = new Promise<void>((resolve) => { commit = resolve; });
+    const store: SuSessionCommandStore = {
+      reserve: async (input, fingerprint) => {
+        await committed;
+        return { created: true, receipt: { command: input, fingerprint, acceptedAt: input.issuedAt } };
+      },
+      finish: vi.fn(async () => {}),
+    };
+    // Legacy clients omit expectedRuntimeGeneration; admission must still bind
+    // their command to the runtime that was ready when they submitted it.
+    const pending = host.acceptCommand(command('owner_turn'), store);
+    host.reconcileRuntimeExit({ expected: false, exitCode: 1 });
+    host.attachRuntime({
+      descriptor: { ...descriptor(), lifecycle: 'ready', runtimeGeneration: 2 },
+      executeCommand: replacement, runtimeReady: () => true,
+    });
+    commit();
+    const dispatch = await pending;
+    expect(dispatch.accepted).toBeNull();
+    expect(await dispatch.terminal).toMatchObject({
+      status: 'refused', refusal: { code: 'runtime_generation_mismatch', retryable: false },
+    });
+    expect(original).not.toHaveBeenCalled();
+    expect(replacement).not.toHaveBeenCalled();
+    expect(store.finish).toHaveBeenCalledWith(expect.anything(), expect.any(String), {
+      status: 'refused', refusal: expect.objectContaining({ code: 'runtime_generation_mismatch' }),
+    });
+    const replay = await host.acceptCommand(command('owner_turn'), store);
+    expect(replay.replayed).toBe(true);
+    expect((await replay.terminal).status).toBe('refused');
+    expect(replacement).not.toHaveBeenCalled();
+    const fresh = await host.acceptCommand(command('owner_turn', 'replacement-turn'), store);
+    expect((await fresh.terminal).status).toBe('completed');
+    expect(replacement).toHaveBeenCalledOnce();
+  });
+
+  it('P-009: refuses a committed command if its runtime disconnects during reservation', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    let ready = true;
+    const host = new SuSessionHost({
+      descriptor: { ...descriptor(), lifecycle: 'ready' }, executeCommand: execute, runtimeReady: () => ready,
+    });
+    hosts.push(host);
+    const store: SuSessionCommandStore = {
+      reserve: async (input, fingerprint) => {
+        ready = false;
+        return { created: true, receipt: { command: input, fingerprint, acceptedAt: input.issuedAt } };
+      },
+      finish: vi.fn(async () => {}),
+    };
+    const dispatch = await host.acceptCommand(command('owner_turn'), store);
+    expect(dispatch.accepted).toBeNull();
+    expect(await dispatch.terminal).toMatchObject({
+      status: 'refused', refusal: { code: 'session_not_ready', retryable: true },
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(store.finish).toHaveBeenCalledWith(expect.anything(), expect.any(String), {
+      status: 'refused', refusal: expect.objectContaining({ code: 'session_not_ready' }),
+    });
+  });
+
+  it('P-009: settles known non-delivery when the runtime disconnects after acceptance', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    let ready = true;
+    const host = new SuSessionHost({
+      descriptor: { ...descriptor(), lifecycle: 'ready' }, executeCommand: execute, runtimeReady: () => ready,
+    });
+    hosts.push(host);
+    const publish = host.emit.bind(host);
+    vi.spyOn(host, 'emit').mockImplementation((event) => {
+      const result = publish(event);
+      if (event.type === 'command_result' && event.status === 'accepted') ready = false;
+      return result;
+    });
+    const store: SuSessionCommandStore = {
+      reserve: async (input, fingerprint) => ({
+        created: true, receipt: { command: input, fingerprint, acceptedAt: input.issuedAt },
+      }),
+      finish: vi.fn(async () => {}),
+    };
+    const dispatch = await host.acceptCommand(command('owner_turn'), store);
+    expect(dispatch.accepted?.status).toBe('accepted');
+    expect(await dispatch.terminal).toMatchObject({
+      status: 'refused', refusal: { code: 'session_not_ready' },
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(store.finish).toHaveBeenCalledWith(expect.anything(), expect.any(String), {
+      status: 'refused', refusal: expect.objectContaining({ code: 'session_not_ready' }),
+    });
+  });
+
   it('reports uncertain prior delivery without executing the saved turn a second time', async () => {
     const execute = vi.fn(async () => ({ status: 'completed' as const }));
     const host = readyHost(execute);

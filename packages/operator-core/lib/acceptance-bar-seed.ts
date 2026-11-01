@@ -341,16 +341,16 @@ export function acceptanceBarBehaviorClass(
  * optional; omission is the conservative authoring default `tree`. */
 export function parseBarMappings(planContent: string, requirementKeys: ReadonlySet<string>):
   | { ok: true; mappings: ParsedBarMapping[] }
-  | { ok: false; problems: AcceptanceBarSeedProblem[] } {
+  | { ok: false; mappings: ParsedBarMapping[]; problems: AcceptanceBarSeedProblem[] } {
   const design = sectionBody(planContent, 'Design');
   const problems: AcceptanceBarSeedProblem[] = [];
   if (design === null) {
-    return { ok: false, problems: [{ code: 'bar_mapping_missing', detail: 'plan has no ## Design section containing a Bar-to-work map' }] };
+    return { ok: false, mappings: [], problems: [{ code: 'bar_mapping_missing', detail: 'plan has no ## Design section containing a Bar-to-work map' }] };
   }
   const lines = design.split('\n');
   const start = lines.findIndex((line) => /^###\s+Bar-to-work map for this plan\s*$/i.test(line.trim()));
   if (start < 0) {
-    return { ok: false, problems: [{ code: 'bar_mapping_missing', detail: '## Design has no `### Bar-to-work map for this plan` table' }] };
+    return { ok: false, mappings: [], problems: [{ code: 'bar_mapping_missing', detail: '## Design has no `### Bar-to-work map for this plan` table' }] };
   }
 
   const parsedPlan = parsePlan(planContent);
@@ -442,7 +442,9 @@ export function parseBarMappings(planContent: string, requirementKeys: ReadonlyS
       detail: `Bar-to-work map contains ${edgeCount} edges; maximum is ${MAX_BAR_PROJECTION_EDGES}`,
     });
   }
-  return problems.length ? { ok: false, problems } : { ok: true, mappings };
+  // Retain diagnostics' subject identities for item-scoped consumers. A failed
+  // parse remains failed for activation and every other plan-wide consumer.
+  return problems.length ? { ok: false, mappings, problems } : { ok: true, mappings };
 }
 
 /** The mandatory-outcome pass vocabulary is {healthy, pass}, and BOTH are legitimate:

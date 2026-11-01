@@ -306,13 +306,15 @@ function hookProvenanceStampOf(o: Record<string, unknown>): HookProvenanceStamp 
 }
 
 /**
- * Classify a parsed transcript turn: the text verdict, downgraded by the live
- * hook's stamp when the two disagree about an owner-typed default. This — not the
- * bare text classifier — is what every raw-transcript reader in this module uses.
+ * Classify a parsed transcript turn using the live hook's recorded provenance
+ * when present. The stamp carries stronger authorship evidence than the text
+ * heuristic: it can supply an injector origin even when a curated marker has
+ * already classified the text as a generic machine surface. An OWNER stamp
+ * never promotes a machine or synthetic turn.
  */
 export function classifyRecordedUserTurn(turn: RecordedUserTurn): RecordedTurnClass {
   const cls = classifyRecordedTurn(turn.text);
-  if (cls.verdict !== 'owner-typed' || !turn.hookStamp) return cls;
+  if (!turn.hookStamp || turn.hookStamp.kind === 'owner') return cls;
   switch (turn.hookStamp.kind) {
     case 'agent-origin':
       return { verdict: 'agent-injected', origin: turn.hookStamp.origin };
@@ -320,8 +322,6 @@ export function classifyRecordedUserTurn(turn: RecordedUserTurn): RecordedTurnCl
       return { verdict: 'agent-injected', origin: UNVERIFIED_HOOK_ORIGIN };
     case 'machine-surface':
       return { verdict: 'machine-surface', origin: null };
-    case 'owner':
-      return cls;
   }
 }
 

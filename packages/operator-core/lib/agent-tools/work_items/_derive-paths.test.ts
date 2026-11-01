@@ -16,6 +16,13 @@ describe('deriveRepoPathsFromText (EI-16028)', () => {
     ]);
   });
 
+  it('ignores repository-looking segments inside absolute URLs and keeps adjacent local paths', () => {
+    const upstream =
+      'https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/storage/aio/aio_funcs.c';
+    const local = 'packages/operator-core/lib/agent-tools/work_items/missing.ts';
+    expect(deriveRepoPathsFromText(`See upstream source ${upstream}; local reference ${local}.`)).toEqual([local]);
+  });
+
   it('extracts multiple distinct paths across several prefixes, deduped, order-preserved', () => {
     const text =
       'root-caused in libs/papercusp/lib/bar.ts and mirrored in apps/operator/app/baz.tsx; ' +

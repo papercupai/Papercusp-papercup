@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { CompletionRecordSchema } from '../coord-lifecycle/records';
+import { parseBarMappings } from '../acceptance-bar-seed';
 import {
   evaluateConformanceClosure,
   evaluateConformanceClosureAssessment,
@@ -118,6 +119,42 @@ describe('spec-discharging closure (R-16/R-18/R-19)', () => {
     const w = world('fail');
     expect(await w.run({}, plan(), ['P-003'])).toBeNull();
     expect(w.deps.listOpenDriftAlarms).not.toHaveBeenCalled();
+  });
+  describe('unrelated dropped-only mappings (EI-27532998676610560)', () => {
+    const dropped = () => plan().replace('**P-002** `todo`', '**P-002** `dropped`');
+
+    it('keeps full-plan mapping validation red while allowing unmapped support work to close', async () => {
+      const content = dropped();
+      expect(parseBarMappings(content, new Set(['R-1', 'R-2']))).toMatchObject({
+        ok: false, problems: [{ code: 'bar_mapping_dropped_only', barKey: 'R-2' }],
+      });
+      const w = world('fail');
+      expect(await w.run({}, content, ['P-003'])).toBeNull();
+      expect(w.deps.readDoneWhenVerdict).not.toHaveBeenCalled();
+      expect(w.deps.listOpenDriftAlarms).not.toHaveBeenCalled();
+    });
+
+    it('continues checking the closing item without importing an unrelated dropped obligation', async () => {
+      const w = world('pass');
+      expect(await w.run({ discharges: ['R-1'] }, dropped())).toBeNull();
+      expect(w.deps.readDoneWhenVerdict).toHaveBeenCalledOnce();
+      expect(await world('fail').run({ discharges: ['R-1'] }, dropped())).toMatchObject({
+        code: 'conformance_done_when_not_passing', requirements: ['R-1'],
+      });
+    });
+
+    it('still refuses a dropped-only mapping owned by the item being closed', async () => {
+      expect(await world().run({ discharges: ['R-2'] }, dropped(), ['P-002'])).toMatchObject({
+        code: 'conformance_mapping_unavailable',
+      });
+    });
+
+    it('still refuses other mapping errors even for unmapped support work', async () => {
+      const content = dropped().replace('| R-1 | P-001 | tree |', '| R-1 | P-404 | tree |');
+      expect(await world().run({}, content, ['P-003'])).toMatchObject({
+        code: 'conformance_mapping_unavailable',
+      });
+    });
   });
   it('does not block a mapped item on an unrelated requirement that is unenforced', async () => {
     const w = world('pass');

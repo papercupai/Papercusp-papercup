@@ -998,6 +998,7 @@ function sameAdmissionPrecheck(
     builtCommit: string;
     builtTree: string;
     files: readonly string[];
+    removedTestFiles: readonly string[];
     actor: string;
     sourceCommit: string;
     radius: FixPrecheckPopulation['radius'];
@@ -1034,6 +1035,7 @@ function sameAdmissionPrecheck(
     // admission tree on the same repairHead. Legacy markers resolve their commit tree here.
     measuredTree === input.builtTree &&
     state.actor === input.actor &&
+    canonicalJson(state.removedTestFiles ?? []) === canonicalJson(input.removedTestFiles) &&
     state.files.length === input.files.length &&
     state.files.every((file, index) => file === input.files[index])
   );
@@ -2013,6 +2015,7 @@ export default defineTool({
           builtCommit,
           builtTree: outcome.tree,
           files: population.files,
+          removedTestFiles: population.removedTestFiles ?? [],
           actor: identity.ownerId,
           sourceCommit: outcome.entry.source.sha,
           radius: population.radius,
@@ -2128,6 +2131,7 @@ export default defineTool({
             ledgerRowIds: hunkExact?.ledgerRowIds,
             builtTree: outcome.tree,
             files: [...population.files],
+            removedTestFiles: [...(population.removedTestFiles ?? [])],
             actor: identity.ownerId,
             runnerPid: process.pid,
             ...(runnerPidIdentity ? { runnerPidIdentity } : {}),

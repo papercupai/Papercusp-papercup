@@ -191,9 +191,12 @@ export async function fetchSelfWake(ownerIds: string[], db?: Sql): Promise<Map<s
         FROM harness_shared.event_awaits
        WHERE subscriber_id = ANY(${ownerIds}::text[])
          AND policy = 'wake'
+         -- Match awaitGuaranteesRewake: the keepalive is not a self-wake, but
+         -- an explicit bounded wake-on-timeout await on the same key is.
          AND (
            event_key <> ${COORD_INBOX_WAKE_PREFIX} || subscriber_id
            OR note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'}
+           OR (expires_ts IS NOT NULL AND timeout_behavior = 'wake')
          )
          AND fired_at IS NULL AND cancelled_at IS NULL
          AND (expires_ts IS NULL OR expires_ts > now())`,

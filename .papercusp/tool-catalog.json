@@ -13675,7 +13675,7 @@
           "POST"
         ]
       },
-      "description": "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec (a new identity, the fleet's claim lane inherited). When no boot-baked override is supplied, it respawns the member with the canonical saved launch profile unchanged. `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `claimKinds` is not settable here.",
+      "description": "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec and identity. Any explicit per-member claim spec is copied before launch; otherwise the member inherits the fleet lane. When no boot-baked override is supplied, it respawns the member with the canonical saved launch profile unchanged. `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `claimKinds` is not settable here.",
       "capabilities": [
         "fleet:respawn-member"
       ],
@@ -28555,7 +28555,7 @@
           "POST"
         ]
       },
-      "description": "Ledger-backed inventory of tasks this operator launched: provenance `ps` cannot give — launcher, work-item/plan, budget/deadline, log path, CPU/RSS/pid-count, and cgroup confinement. Also surfaces `unaccounted` rows — processes inside our slice with no registered chokepoint — and verifier-owned scopes in `live.verifierGroups`. Pass `live:true` to reconcile with the kernel (slower, authoritative).",
+      "description": "Ledger-backed inventory of tasks this operator launched: provenance `ps` cannot give — launcher, work-item/plan, budget/deadline, log path, CPU/RSS/pid-count, and cgroup confinement. Also surfaces `unaccounted` rows — processes inside our slice with no registered chokepoint — and verifier-owned scopes in `live.verifierGroups`. `live.unaccountedGroups[].taskId` is the stable ledger identity, including when `scopeUnit` is null. Pass `live:true` to reconcile with the kernel (slower, authoritative).",
       "capabilities": [
         "intel:read"
       ],
@@ -32176,7 +32176,7 @@
           "POST"
         ]
       },
-      "description": "What a session WAS — kickoff intent (its opening turn / loop goal), where it got to (closing turn), and WHY it stopped (endedReason: settled | active | awaiting_owner | auth_wall | usage_limit | model_error | context_limit), with evidence. Pass `session` for one, or `since`/`owner` to digest a whole window at once. Replaces the sessions:list → per-session sessions:read(tail) → \"hope the last turn was a summary\" pattern, which returns NOTHING for exactly the sessions that matter (crashed, wedged, still running).",
+      "description": "What a session WAS — kickoff intent (its opening turn / loop goal), where it got to (closing turn), and WHY it stopped (endedReason: settled | active | awaiting_owner | auth_wall | usage_limit | model_error | context_limit), with evidence. Recover what agents were working on before account limits: pass since/until and stopKinds for distinct quota, authentication, billing and temporary rate-limit incidents with as-of task/checkpoint refs. Pass `session` for one, or `since`/`owner` to digest a whole window at once. Replaces the sessions:list → per-session sessions:read(tail) → \"hope the last turn was a summary\" pattern, which returns NOTHING for exactly the sessions that matter (crashed, wedged, still running).",
       "capabilities": [
         "search:read"
       ],
@@ -35984,7 +35984,7 @@
           "POST"
         ]
       },
-      "description": "Claim one or many work-items for yourself or an assignee. Single: { id, assignee? }; many: ids:[…] or items:[{ id, assignee?, harness? }]. Results are independent. Fleet members receive only items matching their claim spec. Named claims override readiness floors, not terminal state, fleet scope or born-pending admission/trust; server-derived dispatch/force may bypass pending rows. Reopen terminal work first with work_items:set_state { force:true, reason }. `force:true` here is an audited, liveness-checked holder takeover.",
+      "description": "Claim one or many work-items for yourself or an assignee. Single: { id, assignee? }; many: ids:[…] or items:[{ id, assignee?, harness? }]. Results are independent. Fleet members receive only items matching their claim spec. Evidence judges may self-claim only one task with a supported payload.reviewConsult and changeKinds:[\"no-code-change\"]. Named claims override readiness floors, not terminal state, fleet scope or born-pending admission/trust; server-derived dispatch/force may bypass pending rows. Reopen terminal work first with work_items:set_state { force:true, reason }. `force:true` here is an audited, liveness-checked holder takeover.",
       "capabilities": [
         "work_items:write"
       ],
@@ -36007,6 +36007,7 @@
         "release-fixer",
         "merge-resolver",
         "content-fixer",
+        "judge",
         "researcher"
       ],
       "profile": "engineer",
@@ -37141,7 +37142,7 @@
           "POST"
         ]
       },
-      "description": "Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. The required free-text argument is `query` — `q` is not an alias. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs, retryable, retry? } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ `legs` before concluding \"no duplicate exists\": legs.degraded:true means a ranking leg did not contribute (legs.warning says why, e.g. the embedder is down), so a short list may be a degraded search rather than an absence. When `retryable:true`, retry before treating the result as a verified-empty or creating a new item. A cold query-embedder warmup includes a stable `retry.token` shared by concurrent calls and `retry.afterMs` guidance.",
+      "description": "Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. The required free-text argument is `query` — `q` is not an alias. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs, coverage, retryable, retry? } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ both `legs` and `coverage` before concluding \"no duplicate exists\": `legs.degraded:true` means a ranking leg did not contribute; `coverage.verdict:\"degraded\"` means the vector corpus is under-covered, and `\"unknown\"` means no fresh coverage sample exists. Either makes `retryable:true`, so `count:0` is not a verified-empty search. When `retryable:true`, retry before treating the result as verified-empty or creating a new item. A cold query-embedder warmup includes a stable `retry.token` shared by concurrent calls and `retry.afterMs` guidance.",
       "capabilities": [
         "work_items:read"
       ],

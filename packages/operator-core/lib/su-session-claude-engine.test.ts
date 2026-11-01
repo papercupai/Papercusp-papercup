@@ -3,10 +3,12 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
+import { nativeInstalledPerUseTurns } from './agent-tools/per-use-chokepoint';
 import { contextTrimmingEnv, prepareSuLaunch } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import { humanToolName } from './su-session-approval-display';
@@ -19,6 +21,24 @@ import {
 import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
 
 const nativeFunding = vi.hoisted(() => vi.fn<typeof import('./cupboard/identity-activation-gate-io').admitNativeIdentityInference>());
+const nativeTransport = vi.hoisted(() => ({
+  token: vi.fn<() => string | null>(),
+  issue: vi.fn<typeof import('@papercusp/agent-mcp/provisioning').provisionNativeRuntimeBearer>(),
+  create: vi.fn<typeof import('./su-session-claude-mcp').createClaudeNativeMcpServer>(),
+}));
+vi.mock('./superuser-token', async orig => ({ ...await orig<typeof import('./superuser-token')>(), readSuperuserToken: nativeTransport.token }));
+vi.mock('@papercusp/agent-mcp/provisioning', async orig => ({
+  ...await orig<typeof import('@papercusp/agent-mcp/provisioning')>(), provisionNativeRuntimeBearer: nativeTransport.issue,
+}));
+vi.mock('./su-session-claude-mcp', () => ({ createClaudeNativeMcpServer: nativeTransport.create }));
+beforeEach(() => {
+  nativeTransport.token.mockReset().mockReturnValue(null);
+  nativeTransport.issue.mockReset(); nativeTransport.create.mockReset();
+});
+vi.mock('@papercusp/agent-mcp', async orig => ({
+  ...await orig<typeof import('@papercusp/agent-mcp')>(),
+  resolveMcpName: (name: string) => name === 'capability:bash' ? { expose: { mcp: { name } } } : undefined,
+}));
 const forkPreparation = vi.hoisted(() => ({ prepare: vi.fn(), register: vi.fn(), cleanup: vi.fn() }));
 vi.mock('./su-session-tracked-claude-fork', () => ({ prepareTrackedClaudeFork: forkPreparation.prepare }));
 beforeEach(() => {
@@ -130,6 +150,40 @@ function command(engine: ClaudeSuEngine, type: 'owner_turn' | 'interrupt' | 'end
     type, ...(type === 'owner_turn' ? { turnId: 'owner-turn-1', content: '  hi 雪\n\n' } : {}),
   };
 }
+
+it.each(['stream-error', 'startup', 'exit'] as const)(
+  'P-009: replaced Claude engine fences delayed %s callbacks', async (action) => {
+    const p = peer();
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const beforeReady = vi.fn(async () => { if (action === 'startup') await held; });
+    const onExit = vi.fn(async () => undefined);
+    const engine = open(p, { beforeReady, onExit, runtimeGeneration: 1, startupTimeoutMs: 2_000 });
+    const readiness = engine.ready.catch(error => error);
+    try {
+      await vi.waitFor(() => expect(beforeReady).toHaveBeenCalledOnce());
+      if (action !== 'startup') await engine.ready;
+      const host = engine.adapter.host;
+      engine.adapter.reconcileRuntimeExit({ expected: false, exitCode: 137 });
+      host.attachRuntime({
+        descriptor: { ...host.descriptor(), lifecycle: 'ready', runtimeGeneration: 2 },
+        executeCommand: async () => ({ status: 'completed' }), runtimeReady: () => true,
+      });
+      const snapshot = host.snapshot(), events = [...host.recent];
+      if (action === 'stream-error') { p.output.destroy(new Error('late old stream error')); await engine.done; }
+      if (action === 'startup') release();
+      else await engine.close();
+      const result = await readiness;
+      if (action === 'startup') expect(result).toBeInstanceOf(Error);
+      if (action === 'startup') await engine.close();
+      await engine.done;
+      expect(host.snapshot()).toEqual(snapshot);
+      expect(host.recent).toEqual(events);
+      expect(onExit).not.toHaveBeenCalled();
+    } finally { release(); await engine.close(); }
+  },
+);
+
 function openCards(engine: ClaudeSuEngine) {
   const events = engine.adapter.host.recent.map(({ event }) => event);
   const closed = new Set(events.flatMap((event) => event.type === 'card' && event.phase === 'closed' ? [event.correlationId] : []));
@@ -140,6 +194,113 @@ function stalledReports(engine: ClaudeSuEngine) {
   return engine.adapter.host.recent.map(({ event }) => event)
     .filter((event) => event.type === 'error' && event.code === 'claude_turn_stalled');
 }
+
+describe('Claude accepted native input capture producer', () => {
+  const principal = { kind: 'system' as const, slug: 'request-principal', workspaceId: 'workspace',
+    capabilities: new Set(['*']), trust: 'trusted' as const, authMethod: 'bearer-token' as const };
+  const tool = 'mcp__papercusp-su__capability_bash';
+  let register: ReturnType<typeof vi.spyOn>;
+  type InputScope = ReturnType<typeof nativeInstalledPerUseTurns.registerNativeInput>;
+  let observe: ReturnType<typeof vi.fn<InputScope['observeToolCall']>>;
+  let withdraw: ReturnType<typeof vi.fn<InputScope['withdraw']>>;
+  beforeEach(() => {
+    observe = vi.fn(async () => undefined); withdraw = vi.fn(async () => undefined);
+    register = vi.spyOn(nativeInstalledPerUseTurns, 'registerNativeInput').mockReturnValue({
+      observeToolCall: observe, withdraw,
+    });
+  });
+  afterEach(() => register.mockRestore());
+  async function active(resolver: NonNullable<ClaudeEngineOptions['resolveRequestPrincipal']> = async () => principal) {
+    const p = peer({ noAck: true, statusAck: true, suTools: [{ name: 'capability_bash' }] });
+    const engine = open(p, { resolveRequestPrincipal: resolver, startupTimeoutMs: 2_000 });
+    await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    await vi.waitFor(() => expect(p.prompts).toHaveLength(1));
+    return { p, engine, replay: { ...p.prompts[0]!, parent_tool_use_id: null } };
+  }
+  const call = (parent: string | null = null, name = tool) => ({ type: 'assistant', session_id: nativeId,
+    parent_tool_use_id: parent, message: { content: [{ type: 'tool_use', id: 'toolu_root', name,
+      input: { command: 'pwd', callId: 'forged', session_id: 'forged' } }] } });
+
+  it('requires exact accepted root input and records only independently observed exact root calls', async () => {
+    const { p, replay } = await active();
+    p.output.write({ ...replay, uuid: 'another-input' });
+    p.output.write({ ...replay, parent_tool_use_id: 'subagent' });
+    p.output.write(call());
+    // Drain preceding frames through a later status before testing no authority.
+    p.output.write({ type: 'system', subtype: 'status', session_id: nativeId, status: null });
+    await vi.waitFor(() => expect(p.output.readableLength).toBe(0));
+    expect(register).not.toHaveBeenCalled(); expect(observe).not.toHaveBeenCalled();
+    p.output.write(replay);
+    await vi.waitFor(() => expect(register).toHaveBeenCalledOnce());
+    expect(register).toHaveBeenCalledWith(expect.objectContaining({ provider: 'claude', nativeInputId: replay.uuid,
+      nativeSessionId: nativeId, ownerTurnId: 'owner-turn-1', principalId: principal.slug,
+      nativeTools: { [tool]: 'capability:bash' } }));
+    expect(register.mock.calls[0]![0]).not.toHaveProperty('nativeTurnId');
+    p.output.write(call('subagent')); p.output.write(call(null, 'mcp__foreign__capability_bash'));
+    p.output.write(call());
+    await vi.waitFor(() => expect(observe).toHaveBeenCalledOnce());
+    expect(observe).toHaveBeenCalledWith({ nativeSessionId: nativeId, nativeInputId: replay.uuid,
+      server: 'papercusp-su', callId: 'toolu_root', tool,
+      arguments: { command: 'pwd', callId: 'forged', session_id: 'forged' } });
+  });
+
+  it.each(['result', 'interrupt', 'close', 'stream-error'] as const)('withdraws before %s can leave the scope usable', async end => {
+    const { p, engine, replay } = await active();
+    p.output.write(replay);
+    await vi.waitFor(() => expect(register).toHaveBeenCalledOnce());
+    if (end === 'result') p.output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+    else if (end === 'interrupt') await engine.adapter.host.startCommand(command(engine, 'interrupt')).terminal;
+    else if (end === 'close') await engine.close();
+    else p.output.destroy(new Error('fixture stream failed'));
+    await vi.waitFor(() => expect(withdraw).toHaveBeenCalledOnce());
+    if (end === 'result' || end === 'interrupt') {
+      p.output.write(call()); p.output.write(replay);
+      await vi.waitFor(() => expect(p.output.readableLength).toBe(0));
+      expect(observe).not.toHaveBeenCalled(); expect(register).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('cannot publish a scope after interrupt invalidates an in-flight principal resolution', async () => {
+    let release!: (value: typeof principal) => void;
+    const resolver = vi.fn(() => new Promise<typeof principal>(done => { release = done; }));
+    const { p, engine, replay } = await active(resolver);
+    p.output.write(replay);
+    await vi.waitFor(() => expect(resolver).toHaveBeenCalledOnce());
+    await engine.adapter.host.startCommand(command(engine, 'interrupt')).terminal;
+    release(principal);
+    p.output.write(call());
+    await vi.waitFor(() => expect(p.output.readableLength).toBe(0));
+    expect(register).not.toHaveBeenCalled(); expect(observe).not.toHaveBeenCalled();
+  });
+
+  it('keeps both credentials in the host and only releases private calls after exact native observation', async () => {
+    nativeTransport.token.mockReturnValue('private-shared-transport-token');
+    nativeTransport.issue.mockResolvedValue({ bearer: 'private-runtime-token', binding: {
+      workspaceId: 'workspace', advSessionId: 61, ownerId: 'su-test', provider: 'claude',
+    } });
+    const server = new McpServer({ name: 'papercusp-su', version: '1' });
+    nativeTransport.create.mockResolvedValue(server);
+    const { p, engine, replay } = await active();
+    expect(p.options()?.mcpServers?.['papercusp-su']).toMatchObject({ type: 'sdk', instance: server });
+    const input = nativeTransport.create.mock.calls[0]![0];
+    // The canonical host lists colon names; the installed CLI calls their
+    // underscore spellings. Inventory and observation must still rendezvous.
+    input.onToolsListed?.([{ name: 'capability:bash' }]);
+    expect(input.url).toContain('workspace=workspace');
+    expect(input.headers['x-papercusp-native-session']).toBe(nativeId);
+    expect(input.runtimeBearer).toBe('private-runtime-token');
+    expect(JSON.stringify(p.options()?.env)).not.toMatch(/private-(?:shared-transport|runtime)-token/);
+    const signal = new AbortController().signal;
+    let resolved = false;
+    const waiting = input.beforeToolCall('toolu_root', signal).then(value => { resolved = true; return value; });
+    await Promise.resolve(); expect(resolved).toBe(false);
+    p.output.write(replay); p.output.write(call());
+    await expect(waiting).resolves.toBe(true);
+    await engine.adapter.host.startCommand(command(engine, 'interrupt')).terminal;
+    await expect(input.beforeToolCall('toolu_root', signal)).resolves.toBe(false);
+  });
+});
 
 describe('structured Claude SU engine', () => {
   const forkSource = { advSessionId: 60, nativeSession: { ...runtime.nativeSession,

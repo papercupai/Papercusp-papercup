@@ -133,7 +133,7 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
       () => JSON.stringify({ events: f.rows(), output: f.output() }));
       expect(f.output().match(/SUBMITTED:/g)).toHaveLength(1);
       expect(await injectIntoHostWithConfirmation(f.sock, f.envelope))
-        .toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
+        .toMatchObject({ ok: true, reason: 'delivery-already-started' });
     } finally { await f.close(); }
   }, 15_000);
 
@@ -194,7 +194,7 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
       expect(prompts).toHaveLength(1);
       expect(prompts[0].message.content).toContain(source);
       expect(await injectIntoHostWithConfirmation(f.sock, f.envelope))
-        .toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
+        .toMatchObject({ ok: true, reason: 'delivery-already-started' });
     } finally { await f.close(); }
   }, 20_000);
 
@@ -232,6 +232,34 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
     expect(hermeticEnv({ PI_CODING_AGENT_DIR: '/tmp/private-omp-agent' }, source)
       .PI_CODING_AGENT_DIR).toBe('/tmp/private-omp-agent');
   });
+
+  it('rejects a 1295-second-old loop envelope before it can start a native turn', async () => {
+    const f = await fixture('codex', 'API Error: 502 Bad Gateway');
+    try {
+      const stale = {
+        ...f.envelope,
+        routineId: 'rt-papercusp-loop',
+        fireNumber: 2,
+        provenanceIssuedAtMs: Date.now() - 1_295_000,
+        data: `⟦turn-origin:loop-fire nonce:${'c'.repeat(16)}⟧\nlate loop wake`,
+      };
+      expect(await injectIntoHostWithConfirmation(f.sock, stale)).toMatchObject({
+        ok: false,
+        reason: 'provenance-expired',
+      });
+      expect(f.rows()).toContainEqual(expect.objectContaining({
+        kind: 'wake-provenance-rejected',
+        phase: 'receive',
+        reason: 'expired',
+        deliveryId: stale.deliveryId,
+        ageMs: expect.any(Number),
+        maxAgeMs: 600_000,
+      }));
+      expect(f.rows().some(row => row.kind === 'native-turn-start-confirmed' &&
+        row.deliveryId === stale.deliveryId)).toBe(false);
+      expect(f.output()).not.toContain('SUBMITTED:');
+    } finally { await f.close(); }
+  }, 15_000);
 
   it.each([
     ['codex', 'You’ve hit your usage limit. Try again at Oct 17th, 2026 11:58 PM.', true],
@@ -276,7 +304,7 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
         ? user[0].message.content : user[0].message.content[0].text).toBe(f.data);
       await until(() => f.rows().some(row => row.kind === 'native-turn-start-confirmed'), 6_000,
         () => JSON.stringify({ phase: 'native-start', output: f.output(), events: f.rows(), transcript: rows }));
-      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope)).toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
+      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope)).toMatchObject({ ok: true, reason: 'delivery-already-started' });
       await delay(150);
       expect(f.output().match(/SUBMITTED:/g)).toHaveLength(1);
     } finally { await f.close(); }

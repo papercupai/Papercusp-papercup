@@ -17,6 +17,16 @@ import { z } from 'zod';
 
 type Client = ReturnType<typeof getOrgPg>['sql'];
 type Binding = { id: string; owner: string; provider: NativeProvider; harness: string | null };
+/** Interpret only our MCP server's advertisement. Codex's maintained parser
+ * preserves its `functions` namespace; remove that transport prefix without
+ * letting a foreign server borrow the same registered Papercusp tool name.
+ * Resolution is correlation only: receipt, call, runtime and ACL checks follow. */
+function nativeDispatchTool(source: Pick<SearchSource, 'provider' | 'tool'>) {
+  const name = source.provider === 'codex' && /^functions\.mcp__/i.test(source.tool)
+    ? source.tool.slice('functions.'.length) : source.tool;
+  if (/^mcp__/i.test(name) && !/^mcp__papercusp(?:[-_]su)?__/i.test(name)) return undefined;
+  return resolveMcpName(name);
+}
 type CallEvidence = Record<string, { fingerprint: string; at: string }>;
 type SourceContinuation = { snapshot: string; files: Record<string, {
   offset: number; lines: number; identity: boolean; retainedBytes: number; calls: number; fingerprint: string; done: boolean;
@@ -249,7 +259,7 @@ export async function readAuthorizedNativeDispatch(input: {
     if (source && (source.workspaceId !== receipt.workspaceId || source.harnessSlug !== receipt.harnessSlug
       || source.authorizationScope !== opts.sourceBoundary || source.actor !== receipt.ownerId || source.provider !== receipt.provider
       || source.identityAuthority !== 'provider' || !source.sourceComplete || source.namespace !== receipt.nativeSessionId
-      || source.callId !== receipt.callId || resolveMcpName(source.tool)?.expose.mcp?.name !== receipt.toolName
+      || source.callId !== receipt.callId || nativeDispatchTool(source)?.expose.mcp?.name !== receipt.toolName
       || canonicalJson(source.args) !== canonicalJson(args)
       || eventCopy && micros(String(candidate.created_at)) !== micros(source.at))) return null;
     // Finish every caller-supplied ACL await BEFORE the final database/key
@@ -311,7 +321,7 @@ export async function inspectNativeDispatchCandidate(source: SearchSource, bindi
   try {
     // Native shell/browser tools and code-mode/wrapper fanout have no faithful
     // one-to-one dispatch projection. Do not inspect their program text.
-    const tool = resolveMcpName(source.tool)?.expose.mcp?.name;
+    const tool = nativeDispatchTool(source)?.expose.mcp?.name;
     const args = object(source.args);
     if (!tool || ['tools:invoke', 'code:run'].includes(tool) || !args || Object.hasOwn(args, '_truncated')
       || !source.callId || !source.namespace || source.workspaceId !== opts.workspaceId
@@ -668,27 +678,38 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     const wave = (ordered.length ? ordered : refresh).slice(0, ENROLLMENT_BATCH);
     const observed = new Map<string, { binding: Binding; snapshot: string }>();
     let last = prior?.sourceEnrollment?.cursor ?? null;
-    for (const binding of wave) {
-      if (Date.now() >= deadline - 100) break;
+    // Use the same bounded, fully drained metadata wave as population closure.
+    // Serial enrollment followed by serial renewal can exhaust the fixed
+    // deadline on every turn and discard otherwise valid preparation forever.
+    const reads = Date.now() < deadline - 100
+      ? await Promise.allSettled(wave.map(binding => canonicalNativeRuntimeManifest(binding, deadline - 100))) : [];
+    for (const [index, read] of reads.entries()) {
+      const binding = wave[index]!;
       last = key(binding);
-      try {
-        const source = await canonicalNativeRuntimeManifest(binding, deadline - 100);
+      if (read.status === 'fulfilled') {
+        const source = read.value;
         // Losing a predecessor is a gap, never a smaller completed population.
         if (manifest[last]?.some(id => !source.identities.includes(id))) return 'unknown';
         manifest[last] = source.identities; snapshots[last] = source.snapshot;
         observed.set(last, { binding, snapshot: source.snapshot });
-      } catch {
+      } else {
         // Retain expected predecessor identities, but revoke their preparation
         // snapshot when a previously observed root becomes unavailable.
         delete snapshots[last];
       }
     }
+    const renewObserved = async () => {
+      const observations = [...observed.values()];
+      const renewed = await Promise.allSettled(observations.map(({ binding }) =>
+        canonicalNativeRuntimeManifest(binding, deadline)));
+      return renewed.every((read, index) => read.status === 'fulfilled'
+        && read.value.snapshot === observations[index]!.snapshot);
+    };
     if (!await opts.authorize() || !await opts.authorize()
       || canonicalJson(roster) !== canonicalJson(await population())) return 'unknown';
     // Close the ACL/DB await gap without opening any transcript body. A source
     // changed during renewal cannot be saved as this turn's enrollment evidence.
-    for (const { binding, snapshot } of observed.values())
-      if ((await canonicalNativeRuntimeManifest(binding, deadline)).snapshot !== snapshot) return 'unknown';
+    if (!await renewObserved()) return 'unknown';
     if (Date.now() >= deadline) return 'unknown';
     const prepared = roster.every(b => manifest[key(b)] && snapshots[key(b)]);
     // Source enrollment is only the first phase. On later turns independently
@@ -831,8 +852,7 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     }
     // Final authority awaits must precede the last filesystem renewal, just as
     // in enrollment. This metadata pass neither reopens bodies nor grants scope.
-    for (const { binding, snapshot } of observed.values())
-      if ((await canonicalNativeRuntimeManifest(binding, deadline)).snapshot !== snapshot) return 'unknown';
+    if (!await renewObserved()) return 'unknown';
     if (Date.now() >= deadline) return 'unknown';
     const receipt = { version: 1, manifest, population: digest(roster), revision: progress.revision,
       sourceEnrollment: { version: 1, prepared, snapshots, cursor: last },

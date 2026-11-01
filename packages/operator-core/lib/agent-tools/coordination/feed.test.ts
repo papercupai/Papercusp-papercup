@@ -22,7 +22,7 @@ vi.mock('./log', () => ({
   coordLog: { readLinesBoundedCursor: vi.fn(), readEventsBoundedCursor: vi.fn() },
 }));
 
-import { readCoordFeed, type CoordSurface, DEFAULT_FEED_LIMIT, MAX_FEED_LIMIT } from './feed';
+import { readCoordFeed, type CoordFeedReadPhase, type CoordSurface, DEFAULT_FEED_LIMIT, MAX_FEED_LIMIT } from './feed';
 import { coordLog } from './log';
 
 const mockLog = coordLog as unknown as {
@@ -139,6 +139,50 @@ describe('union + surface tagging + broadcast flag', () => {
     const { rows } = await readCoordFeed();
     expect(rows.find((r) => r.msg_id === 'bc')!.broadcast).toBe(true);
     expect(rows.find((r) => r.msg_id === 'dm')!.broadcast).toBe(false);
+  });
+});
+
+describe('read-phase observer', () => {
+  it('reports bounded surface reads and the supersession lookup', async () => {
+    setSurfaces({ messages: [env({ msg_id: 'phase-message' })] });
+    const phases: CoordFeedReadPhase[] = [];
+
+    const result = await readCoordFeed({ limit: 1 }, (phase) => {
+      phases.push(phase);
+    });
+
+    expect(result.rows.map((row) => row.msg_id)).toEqual(['phase-message']);
+    expect(phases.map((phase) => phase.name).sort()).toEqual([
+      'supersession-marker-read',
+      'surface-read:escalations',
+      'surface-read:handoffs',
+      'surface-read:messages',
+      'surface-read:plan-events',
+    ]);
+    const surfacePhases = phases.filter((phase) => phase.name.startsWith('surface-read:'));
+    expect(surfacePhases).toHaveLength(4);
+    expect(surfacePhases.every((phase) => phase.status === 'fulfilled')).toBe(true);
+    const markerPhase = phases.find((phase) => phase.name === 'supersession-marker-read');
+    expect(markerPhase).toBeDefined();
+    expect(['fulfilled', 'rejected']).toContain(markerPhase?.status);
+    expect(phases.every((phase) => typeof phase.elapsedMs === 'number' && phase.elapsedMs >= 0)).toBe(true);
+    expect(phases.find((phase) => phase.name === 'surface-read:messages')).toMatchObject({
+      round: 1,
+      returnedRows: 1,
+      exhausted: true,
+    });
+    expect(markerPhase).toMatchObject({ round: 1 });
+  });
+
+  it('does not let a throwing observer change the feed result', async () => {
+    setSurfaces({ messages: [env({ msg_id: 'observer-failure' })] });
+
+    const result = await readCoordFeed({ limit: 1 }, () => {
+      throw new Error('observer unavailable');
+    });
+
+    expect(result.rows.map((row) => row.msg_id)).toEqual(['observer-failure']);
+    expect(result.total).toBe(1);
   });
 });
 

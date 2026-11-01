@@ -255,6 +255,39 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
     expect(map.get(MEMBER.ownerId)?.count).toBe(2);
   });
 
+  it('EI-26993684356681285: a recipient message that asks for a reply cannot clear an older ask', async () => {
+    const expectsKinds = ['ack', 'answer', 'action'] as const;
+    const incomingAskIds: string[] = [];
+
+    for (const expects of expectsKinds) {
+      const ask = await sendMessage(LEADER, {
+        to: [MEMBER.ownerId],
+        summary: `incoming ${expects} request`,
+        expectsReply: true,
+        extra: { expects },
+      });
+      incomingAskIds.push(ask.msg_id);
+      await sendMessage(MEMBER, {
+        to: [LEADER.ownerId],
+        summary: `independent ${expects} request`,
+        expectsReply: true,
+        extra: { expects },
+      });
+    }
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)?.count).toBe(incomingAskIds.length);
+    expect(map.get(MEMBER.ownerId)?.newest.map((entry) => entry.msgId)).toEqual(
+      expect.arrayContaining(incomingAskIds),
+    );
+
+    const senderMap = await fetchOpenAsks([LEADER.ownerId]);
+    expect(senderMap.get(LEADER.ownerId)?.count).toBe(incomingAskIds.length);
+    expect(senderMap.get(LEADER.ownerId)?.newest.map((entry) => entry.msgId)).toEqual(
+      expect.arrayContaining(incomingAskIds),
+    );
+  });
+
   it('WI-6729: continued correspondence still converges — N replies clear N asks (no EI-13819 stuck-at-1)', async () => {
     await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'question 1', expectsReply: true });
     await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'question 2', expectsReply: true });

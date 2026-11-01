@@ -215,6 +215,45 @@ it('D030 production enrollment pages more than 500 issued runtimes and resumes p
   expect(await f.db.adminSql`SELECT id FROM harness_shared.agent_activity`).toHaveLength(0);
 }, 120_000);
 
+it('D030 production enrollment saves a bounded metadata wave under real filesystem delay', async () => {
+  for (let i = 0; i < 32; i++) await seed((['codex', 'claude', 'omp'] as const)[i % 3]!);
+  // Serial enrollment plus renewal cannot save any progress within the fixed
+  // one-second production deadline. Delay actual metadata IO, never the clock
+  // or an invented manifest; enrollment must still avoid transcript bodies.
+  metadataIO.delayMs = 35;
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  const [row] = await f.db.adminSql`SELECT native_capture_receipt AS receipt
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`;
+  expect(Object.keys(row?.receipt?.manifest ?? {})).toHaveLength(32);
+  expect(row!.receipt).toMatchObject({ sourceEnrollment: { prepared: true } });
+  expect(metadataIO.active).toBe(0);
+  expect(metadataIO.peak).toBe(32);
+  expect(new Set(metadataIO.roots).size).toBe(32);
+  expect(bodyIO.size).toBe(0);
+  expect(await f.db.adminSql`SELECT id FROM harness_shared.agent_activity`).toHaveLength(0);
+}, 120_000);
+
+it.each(['missing-root', 'deadline'] as const)(
+  'D030 production enrollment drains its metadata wave after %s', async failure => {
+    const first = await seed();
+    for (let i = 1; i < 32; i++) await seed();
+    metadataIO.delayMs = failure === 'deadline' ? 1100 : 35;
+    if (failure === 'missing-root') {
+      metadataIO.fastRoot = dirname(dirname(dirname(dirname(first.paths[0]!))));
+      await rm(metadataIO.fastRoot, { recursive: true });
+    }
+    expect(await reconcileNativeCapture(options())).toBe('unknown');
+    expect(metadataIO.active).toBe(0);
+    expect(metadataIO.peak).toBe(32);
+    expect(new Set(metadataIO.roots).size).toBe(32);
+    const [row] = await f.db.adminSql`SELECT native_capture_receipt AS receipt
+      FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`;
+    expect(Object.keys(row?.receipt?.manifest ?? {})).toHaveLength(failure === 'deadline' ? 0 : 31);
+    if (failure === 'missing-root')
+      expect(row!.receipt).toMatchObject({ sourceEnrollment: { prepared: false } });
+    expect(bodyIO.size).toBe(0);
+  }, 120_000);
+
 it.each([2, 3])('D030 production enrollment refuses a source rewrite during ACL renewal %s', async changedAt => {
   const s = await seed();
   let calls = 0;

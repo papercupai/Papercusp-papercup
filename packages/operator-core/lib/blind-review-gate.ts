@@ -29,6 +29,8 @@ import { activeWorkspaceId } from './workspace-registry';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
 import { fetchSourceTurns } from './activation-item-provenance';
 import { buildBlindReviewBrief, type BlindReviewBrief } from './blind-review-brief';
+import { loadBlindReviewDiscoveries } from './blind-review-discovery-source';
+import type { ItemProvenanceDeclaration } from './activation-item-provenance';
 
 /** Plans created before this instant are not in the cohort unless they record a review. */
 export const BLIND_REVIEW_REQUIRED_AFTER = '2026-10-11T03:00:00.000Z';
@@ -91,7 +93,7 @@ interface PlanRow {
 
 interface ActivationRow {
   audit_seq: number;
-  activation: { mappings?: Array<{ sourceRefs?: string[] | null }> } | null;
+  activation: { mappings?: Array<{ sourceRefs?: string[] | null }>; itemProvenance?: ItemProvenanceDeclaration[] } | null;
 }
 
 interface ReviewRow {
@@ -526,9 +528,15 @@ export async function loadBlindReviewBrief(
   const mappings = facts.activation.activation?.mappings ?? [];
   const refs = [...new Set(mappings.flatMap((m) => m.sourceRefs ?? []))];
   const turns = await fetchSourceTurns(sql as never, input.workspaceId, refs, BRIEF_TURN_CHARS);
+  const discoveries = await loadBlindReviewDiscoveries({
+    workspaceId: input.workspaceId, harnessSlug: facts.plan.harness_slug,
+    planCreatedAt: facts.plan.created_at,
+    declarations: facts.activation.activation?.itemProvenance ?? [],
+  }, sql);
   return buildBlindReviewBrief({
     planSlug: input.planSlug,
     activation: { auditSeq: facts.activation.audit_seq, mappings },
     turns,
+    discoveries,
   });
 }

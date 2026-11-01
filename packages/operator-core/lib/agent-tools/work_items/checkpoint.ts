@@ -316,8 +316,30 @@ async function unresolvedProsePathsInCheckpoint(
 
     const deps = paths.map((path) => `file:${path}`);
     const tokens = await resolveCurrentTokens(deps, ctx, { allowDirectories: true });
-    const missing = paths.filter((path) => tokens.get(`file:${path}`) === null);
+    let missing = paths.filter((path) => tokens.get(`file:${path}`) === null);
     if (missing.length === 0) return undefined;
+
+    // TypeScript and JavaScript prose commonly uses extensionless module paths.
+    // The freshness resolver intentionally checks literal files, so verify the
+    // unresolved extensionless names against the source suffixes before warning.
+    const extensionless = missing.filter((path) => {
+      const leaf = path.slice(path.lastIndexOf('/') + 1);
+      return leaf.length > 0 && !leaf.includes('.');
+    });
+    if (extensionless.length > 0) {
+      const suffixes = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'] as const;
+      const suffixedDeps = extensionless.flatMap((path) =>
+        suffixes.map((suffix) => 'file:' + path + suffix),
+      );
+      const suffixedTokens = await resolveCurrentTokens(suffixedDeps, ctx);
+      const modulePathsThatResolve = new Set(
+        extensionless.filter((path) =>
+          suffixes.some((suffix) => suffixedTokens.get('file:' + path + suffix) != null),
+        ),
+      );
+      missing = missing.filter((path) => !modulePathsThatResolve.has(path));
+      if (missing.length === 0) return undefined;
+    }
 
     const noun = missing.length === 1 ? 'path' : 'paths';
     return {
@@ -2334,10 +2356,12 @@ export default defineTool({
          * check bytes than the current cap permits. The append transform preserves
          * those rows, then trims narrative to make room. A submitted addendum can
          * survive while previously stored evidence is evicted. Re-run the exact
-         * transform under the same locked prior and refuse if either side is lost.
+         * transform under the same locked prior. Without explicit confirmation,
+         * refuse loss of prior narrative; regardless of that option, never allow the
+         * newly submitted addendum to be clipped.
          */
         const appendBodyPreservationGuard: CheckpointGuard | null =
-          !wantsConfirmShrink && didAttemptJoin && joinAddendumStored
+          didAttemptJoin && joinAddendumStored
             ? (priorNote, priorLen) => {
                 const candidate = timedChecksTransform?.(priorNote, checkpointToStore);
                 const candidateBody = candidate
@@ -2345,7 +2369,7 @@ export default defineTool({
                   : '';
                 const submitted = joinAddendumStored.trim();
                 const priorBody = splitCarryNoteWalls(splitCarryNoteChecks(priorNote).body).body.trim();
-                if (priorBody.length > 0 && !candidateBody.includes(priorBody)) {
+                if (!wantsConfirmShrink && priorBody.length > 0 && !candidateBody.includes(priorBody)) {
                   appendPriorBodyOverflowDetails = {
                     priorNarrativeChars: priorBody.length,
                     candidateNarrativeChars: candidateBody.length,
@@ -2385,9 +2409,9 @@ export default defineTool({
                   '(1) SAFE — first retire specific stale rows in a separate, non-append write ' +
                   '({ rowsMode: "replace", checks: [], retireIds: [...] } naming the specific row IDs), ' +
                   'which frees cap room without replacing the prose, then retry this append; ' +
-                  '(2) pass { confirmShrink: true } to THIS append — it keeps every carried check row intact but ' +
-                  'silently trims or entirely drops the append body you are submitting now, so use it only when ' +
-                  'losing this new note (never the checks) is acceptable.'
+                  '(2) shorten the new append or compact the prior note in a separate write before retrying. ' +
+                  '{ confirmShrink: true } may authorize trimming superseded prior narrative, but it never allows ' +
+                  'this newly submitted append to be clipped; every carried check row remains intact.'
                 );
               }
             : null;

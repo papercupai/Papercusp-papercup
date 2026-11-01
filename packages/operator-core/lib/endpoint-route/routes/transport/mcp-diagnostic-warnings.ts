@@ -173,6 +173,20 @@ function hasPopulatedMcpResultValue(parsed: unknown): boolean {
   if (body.notFound === true || body.not_found === true || body.missing === true) return false;
   if (typeof body.status === 'string' && body.status.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') return false;
   if (typeof body.code === 'string' && body.code.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') return false;
+  // dev:pg_query can return zero source rows while proving the Postgres path
+  // with a known-positive control. That is a verified absence, not an empty
+  // transport result, so a recent proxy retry must not relabel it as degraded.
+  const positiveControl = body.positiveControl;
+  const absence = body.absence;
+  if (
+    body.mode === 'query' &&
+    positiveControl !== null && typeof positiveControl === 'object' && !Array.isArray(positiveControl) &&
+    (positiveControl as Record<string, unknown>).status === 'passed' &&
+    Array.isArray((positiveControl as Record<string, unknown>).rows) &&
+    ((positiveControl as Record<string, unknown>).rows as unknown[]).length > 0 &&
+    absence !== null && typeof absence === 'object' && !Array.isArray(absence) &&
+    (absence as Record<string, unknown>).status === 'verified'
+  ) return true;
   // capability:git-evidence reports authoritative values in operation-specific fields;
   // empty files and a negative ancestry result are still successful, populated reads.
   if (isPopulatedGitEvidenceResult(body)) return true;

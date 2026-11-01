@@ -733,7 +733,13 @@ export function findLiveHost(
 
 /** Why a carry-respawn (session:request-compaction) cannot run for this session.
  *  These are exactly the two refusal branches request-compaction returns. */
-export type SelfCompactionUnavailableReason = 'no_live_pty_host' | 'host_predates_carry_respawn';
+export type SelfCompactionUnavailableReason =
+  | 'no_live_pty_host'
+  | 'host_predates_carry_respawn'
+  | 'host_socket_probe_unsupported'
+  | 'host_socket_unavailable';
+
+const SELF_COMPACTION_PROBE_TIMEOUT_MS = 750;
 
 /** Discriminated on `available` so the AVAILABLE case narrows `host` to non-null —
  *  request-compaction's own handler consumes this and then uses the host. */
@@ -803,6 +809,15 @@ export async function selfCompactionAvailabilityAsync(
   if (!hostSupports(host, 'carry-respawn')) {
     return { available: false, reason: 'host_predates_carry_respawn', host };
   }
+  if (!hostSupports(host, 'control-socket-probe-v1')) {
+    return { available: false, reason: 'host_socket_probe_unsupported', host };
+  }
+  const probe = await injectIntoHostWithConfirmation(host.sock, {
+    mode: 'probe',
+    data: '',
+    ownerId,
+  }, SELF_COMPACTION_PROBE_TIMEOUT_MS);
+  if (!probe.ok) return { available: false, reason: 'host_socket_unavailable', host };
   return { available: true, reason: null, host };
 }
 
@@ -1111,6 +1126,7 @@ export interface InjectHostResult {
    *  shutdown path reads it (to tell an owner-attended REFUSAL apart from a
    *  transport miss); every other caller branches on `ok` exactly as before. */
   reason?: string | null;
+  transportErrorCode?: string;
   /** Present only for a pinned, confirmed hooks-observe receipt. */
   observation?: Record<string, unknown>;
   /** Exact nonce/incarnation receipt; a socket close never establishes a fence. */
@@ -1464,6 +1480,7 @@ export async function injectIntoHostWithConfirmation(
       | 'hooks-observe'
       | 'identity-assume'
       | 'delivery-cancel'
+      | 'probe'
       | 'shutdown';
     data: string;
     /** Trusted session-assume adapter only; host validates durable custody. */
@@ -1702,6 +1719,7 @@ export async function injectIntoHostWithConfirmation(
       // Omit `reason` entirely when the host sent none, so this stays shape-compatible
       // with every existing exact-equality assertion on InjectHostResult.
       resolve({ ok, confirmation, ...(reason === undefined ? {} : { reason }),
+        ...(transportErrorCode === undefined ? {} : { transportErrorCode }),
         ...(observation ? { observation } : {}), ...(carryFence ? { carryFence } : {}) });
     };
     if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES) {
@@ -1769,9 +1787,12 @@ export async function injectIntoHostWithConfirmation(
       // before writing back. Either way this is the EXACT pre-fix fallback:
       // bare close alone still resolves true. Once a real ack DID arrive,
       // `finish` already ran above and this is a no-op (the `settled` guard).
-      if (!ackReceived) finish(msg.mode !== 'hooks-observe' && msg.mode !== 'carry-fence', 'assumed-close',
+      if (!ackReceived) finish(
+        msg.mode !== 'hooks-observe' && msg.mode !== 'carry-fence' && msg.mode !== 'probe',
+        'assumed-close',
         msg.mode === 'hooks-observe' ? 'observation-unconfirmed' :
-          msg.mode === 'carry-fence' ? 'carry-fence-unconfirmed' : undefined);
+          msg.mode === 'carry-fence' ? 'carry-fence-unconfirmed' :
+            msg.mode === 'probe' ? 'control-socket-probe-unconfirmed' : undefined);
     });
     const t = setTimeout(() => {
       try {

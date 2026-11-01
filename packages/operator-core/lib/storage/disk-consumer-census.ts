@@ -533,7 +533,8 @@ def flush():
 def emit(path, value):
     mode = value.st_mode
     kind = 'd' if stat.S_ISDIR(mode) else 'f' if stat.S_ISREG(mode) else 'l' if stat.S_ISLNK(mode) else 'p' if stat.S_ISFIFO(mode) else 's' if stat.S_ISSOCK(mode) else 'b' if stat.S_ISBLK(mode) else 'c' if stat.S_ISCHR(mode) else '?'
-    boundary = path in excluded or kind not in ['f', 'd'] or value.st_dev != config['dev'] or (uid is not None and value.st_uid != uid) or max(value.st_mtime_ns, value.st_ctime_ns) / 1000000 >= cutoff
+    symlink_child = kind == 'l' and path != candidate_path
+    boundary = path in excluded or (kind not in ['f', 'd'] and not symlink_child) or value.st_dev != config['dev'] or (uid is not None and value.st_uid != uid) or max(value.st_mtime_ns, value.st_ctime_ns) / 1000000 >= cutoff
     # Aggregate before crossing the worker pipe, rather than formatting and
     # reparsing nine fields for every ordinary file in the supervisor. Keep
     # identities, hardlinks, build tags and eligibility boundaries verbatim.
@@ -705,7 +706,7 @@ export async function inspectRetentionTrees(root: string, opts: {
     const started = performance.now();
     let lastProgressAfterMs: number | null = null, lastChildPath: string | null = null;
     let timeoutKind: RetentionCensusTiming['timeoutKind'] = null;
-    const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; allocation: RetentionAllocationCounter; reason?: string }>();
+    const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; allocation: RetentionAllocationCounter; reason?: string; buildDirsBlocked?: boolean }>();
     const pinnedAllocation = new RetentionAllocationCounter();
     const ancestors = new Map<string, { path: string; dev: number; ino: number }>();
     let pending = '', fields: string[] = [], stderr = '', stderrOverflow = false, malformed = false, timedOut = false, settled = false;
@@ -745,7 +746,7 @@ export async function inspectRetentionTrees(root: string, opts: {
         if (type === 'd') ancestors.set(path, { path, dev: Number(dev), ino: Number(ino) });
         const candidate = type === 'd' && path.endsWith('/node_modules') ? ancestors.get(path)
           : type === 'f' && path.endsWith('/CACHEDIR.TAG') ? ancestors.get(dirname(path)) : undefined;
-        if (candidate && candidate.path !== child) {
+        if (candidate && candidate.path !== child && !group.buildDirsBlocked) {
           const builds = group.entry.buildDirs ??= [];
           if (!builds.some(value => value.path === candidate.path)) builds.push(candidate);
         }
@@ -761,8 +762,12 @@ export async function inspectRetentionTrees(root: string, opts: {
       }
       catch { malformed = true; }
       if (excluded.includes(path)) group.reason = 'protected policy root';
-      else if (type === 'l') group.reason = 'symlink boundary';
-      else if (type !== 'f' && type !== 'd' && !aggregate) group.reason = 'special filesystem entry';
+      else if (type === 'l' && direct) group.reason = 'symlink boundary';
+      else if (type === 'l' && opts.collectBuildDirs) {
+        group.buildDirsBlocked = true;
+        group.entry.buildDirs = [];
+      }
+      else if (type !== 'f' && type !== 'd' && type !== 'l' && !aggregate) group.reason = 'special filesystem entry';
       else if (Number(dev) !== rootStat.dev) group.reason = 'filesystem boundary';
       else if (!privileged && uid !== undefined && Number(owner) !== uid) group.reason = 'foreign ownership boundary';
       else if (!opts.includeRecent && newest >= opts.retainAfterMs && !group.reason) group.reason = 'recent write';

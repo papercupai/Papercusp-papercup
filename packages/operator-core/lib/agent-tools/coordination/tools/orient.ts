@@ -424,6 +424,8 @@ export interface OrientClaimableTruncated {
 
 export interface OrientResult {
   ok: boolean;
+  /** Human identity is an exact standing-fact read, never a recency-ranked fold. */
+  ownerIdentity?: import('../../../agent-facts/store').WorkspaceOwnerIdentity;
   /** fleet:assignments scoped to me (assignments, lane, load, orphans). */
   me: unknown;
   /** The claimable backlog. EI-19452326548245557: the issue-family lane (bug/change/
@@ -3515,6 +3517,7 @@ export default defineTool({
       // recovery recipes. Declare them here so recipe preflight can validate
       // those reads against the same contract the live response provides.
       self: z.unknown().optional(),
+      ownerIdentity: z.unknown().optional(),
       host: z.unknown().optional(),
       assignments: z.unknown().optional(),
       claimable: z.unknown().optional(),
@@ -4191,6 +4194,17 @@ export default defineTool({
     // the "and this is you" anchor). Best-effort — omitted for an unattributable
     // caller. See self-marker.ts for why this is a response-layer overlay.
     const self = resolveSelfRef(ctx);
+    result.ownerIdentity = (await phaseTracker.track('handler:ownerIdentity', () => withBoundedTimeout(
+      async () => {
+        const { readWorkspaceOwnerIdentity } = await import('../../../agent-facts/store');
+        return readWorkspaceOwnerIdentity(orientWorkspaceId);
+      },
+      {
+        timeoutMs: 1500,
+        label: 'orient:ownerIdentity',
+        fallback: { status: 'unknown' as const, displayName: null, sourceRef: null, reason: 'resolver-failed' as const },
+      },
+    ))).value;
     // Keep selected mode attribution/revisions on every orient. Full contract
     // prose is needed until its exact bytes are proven in the current context;
     // recovery and explicit full requests always retain it.

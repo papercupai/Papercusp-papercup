@@ -568,7 +568,7 @@ describe('mutation-probe.sh reader preflight survives a restarting reader', () =
    * the connection with no reply (a reader mid-restart), a number is that HTTP
    * status — and the health body once the list is exhausted. Resolves listening.
    */
-  async function startReader(opts: { responses: Array<'drop' | number>; sha: string }): Promise<{ port: number; hits: string }> {
+  async function startReader(opts: { responses: Array<'drop' | 'hang' | number>; sha: string }): Promise<{ port: number; hits: string }> {
     const port = await freePort();
     const script = join(dir, 'reader-server.cjs');
     const hits = join(dir, 'reader-hits.log');
@@ -579,6 +579,7 @@ http.createServer((req, res) => {
   n += 1; fs.appendFileSync(${JSON.stringify(hits)}, n + '\\n');
   const r = o.responses[n - 1];
   if (r === 'drop') { req.socket.destroy(); return; }
+  if (r === 'hang') return;
   if (typeof r === 'number') { res.writeHead(r); res.end('restarting'); return; }
   res.writeHead(200, { 'content-type': 'application/json' });
   res.end(JSON.stringify({ ok: true, service: 'papercusp-operator', sha: o.sha }));
@@ -629,6 +630,30 @@ setTimeout(() => process.exit(0), 80000);
     expect(out).toMatch(/^MUTATION_PROBE_READER_RETRY attempt=2 curl_exit=0 http=503 /m);
     expect(readerJson(out)).toMatchObject({ sha, attempts: 3 });
     expect(hitCount(hits)).toBe(3);
+    expect(out).toMatch(/mutation descriptor on: deployed reader [0-9a-f]+ parses execution_details\.mutation/);
+    const seen = legs(log);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((leg) => leg.descriptor !== null
+      && parseMutationInvocationDescriptor(JSON.parse(leg.descriptor)))).toBe(true);
+  });
+
+  it('retries curl exit 28 when the reader health request times out, then binds to the recovered reader', async () => {
+    const { reader, sha } = makeParserReader();
+    const { port, hits } = await startReader({ responses: ['hang'], sha });
+    const { file } = makeSubjectRepo();
+    const { recorder, log } = makeRecorder();
+    const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `http://127.0.0.1:${port}/api/health`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: reader,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '30',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_RETRY_SEC: '1',
+    });
+
+    expect(code, out).toBe(0);
+    expect(out).toMatch(/^MUTATION_PROBE_READER_RETRY attempt=1 curl_exit=28 /m);
+    expect(readerJson(out)).toMatchObject({ sha, attempts: 2 });
+    expect(hitCount(hits)).toBe(2);
     expect(out).toMatch(/mutation descriptor on: deployed reader [0-9a-f]+ parses execution_details\.mutation/);
     const seen = legs(log);
     expect(seen.length).toBeGreaterThan(0);

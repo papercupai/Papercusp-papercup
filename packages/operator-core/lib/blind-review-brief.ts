@@ -2,10 +2,9 @@
  * The blind gap reviewer's brief (verification-system-improvements-2026-10-10 P-006,
  * D-006, D-039 (6); clause SPEC-P-006-BLIND-BRIEF).
  *
- * A blind reviewer judges whether the shipped product does what the OWNER asked, without
- * the plan's framing. Its brief is therefore built from ONE source only: the owner's own
- * turns cited by the plan's latest activation audit. Everything an agent wrote is left
- * out, on purpose:
+ * A blind reviewer judges the product against original sources without the plan's
+ * framing. Sources are owner turns, or explicitly pinned original pre-plan discoveries
+ * for agent-added work. Discoveries retain agent attribution and never become owner turns.
  *
  *   - `mappings[].requirement` is the auditor's paraphrase of a turn, so it carries the
  *     plan's framing. Only `mappings[].sourceRefs` is read.
@@ -26,6 +25,7 @@
  */
 import { isOwnerTurnVerdict, parseOrderSourceRef, type SourceTurn } from './activation-item-provenance';
 import { parseTurnRef } from './agent-tools/sessions/_shared';
+import type { BlindReviewDiscovery } from './blind-review-discovery-source';
 
 /** The only part of an activation audit payload the brief reads. */
 export interface BlindReviewActivationInput {
@@ -45,6 +45,8 @@ export interface BlindReviewBrief {
   ownerTurns: BlindReviewBriefTurn[];
   /** User turns whose authorship was never established (verdict `unknown`); carried, labelled. */
   unverifiedTurns: BlindReviewBriefTurn[];
+  /** Original agent discoveries, separately attributed and hash-pinned. */
+  agentDiscoveries?: BlindReviewDiscovery[];
   /** `not-owner` = an assistant or verified agent-origin turn; `unresolved` = no readable text. */
   excludedRefs: Array<{ ref: string; reason: 'not-owner' | 'unresolved' }>;
   /** The kickoff text handed to the reviewer. */
@@ -59,8 +61,8 @@ export function isUnverifiedUserTurn(turn: Pick<SourceTurn, 'speaker' | 'verdict
 }
 
 /** Turns a blind brief carries (verified owner plus unverified user turns). */
-export function briefTurnCount(brief: Pick<BlindReviewBrief, 'ownerTurns' | 'unverifiedTurns'>): number {
-  return brief.ownerTurns.length + brief.unverifiedTurns.length;
+export function briefTurnCount(brief: Pick<BlindReviewBrief, 'ownerTurns' | 'unverifiedTurns' | 'agentDiscoveries'>): number {
+  return brief.ownerTurns.length + brief.unverifiedTurns.length + (brief.agentDiscoveries?.length ?? 0);
 }
 
 function refOrder(ref: string): [string, string, number] {
@@ -80,6 +82,7 @@ export function buildBlindReviewBrief(input: {
   planSlug: string;
   activation: BlindReviewActivationInput;
   turns: ReadonlyMap<string, SourceTurn>;
+  discoveries?: readonly BlindReviewDiscovery[];
 }): BlindReviewBrief {
   const refs = [...new Set(input.activation.mappings.flatMap((m) => m.sourceRefs ?? []))].sort(compareRefs);
   const ownerTurns: BlindReviewBriefTurn[] = [];
@@ -105,11 +108,17 @@ export function buildBlindReviewBrief(input: {
     }
   }
   const seq = input.activation.auditSeq;
+  const agentDiscoveries = [...(input.discoveries ?? [])];
   const header = [
     `Blind gap review for plan '${input.planSlug}' (activation audit #${seq}).`,
     '',
-    'Below are the owner\'s own words that asked for this work. Run the product and judge whether it does what',
-    'they asked. Record every gap you find: something they asked for that is missing, wrong, or only partly done.',
+    ...(agentDiscoveries.length ? [
+      'Below are original sources for this work. Agent discoveries are agent-authored observations, not owner speech.',
+      'Run the product and assess whether it resolves the original problem. Record missing, wrong or partly done behavior.',
+    ] : [
+      'Below are the owner\'s own words that asked for this work. Run the product and judge whether it does what',
+      'they asked. Record every gap you find: something they asked for that is missing, wrong, or only partly done.',
+    ]),
     ...(unverifiedTurns.length ? [
       'Turns marked "origin unverified" were recorded as user turns but their authorship was never established',
       '(most predate turn-origin stamping). Treat them as the owner\'s words unless their text plainly is not.',
@@ -127,12 +136,15 @@ export function buildBlindReviewBrief(input: {
   ];
   const body = carried.map((t, i) =>
     `\n--- owner turn ${i + 1}${t.unverified ? ' — origin unverified' : ''} (${t.ref}) ---\n${t.text}`);
+  const discoveryBody = agentDiscoveries.map((source, i) =>
+    `\n--- agent discovery ${i + 1} (${source.ref}; ${source.workItemId}; reporter ${source.reporter}; ${source.occurredAt}; sha256 ${source.sha256}) ---\n${source.title}\n${source.text}`);
   return {
     planSlug: input.planSlug,
     activationAuditSeq: seq,
     ownerTurns,
     unverifiedTurns,
+    agentDiscoveries,
     excludedRefs,
-    text: header.join('\n') + body.join('\n'),
+    text: header.join('\n') + body.join('\n') + discoveryBody.join('\n'),
   };
 }

@@ -129,7 +129,7 @@ export function aggressivenessCandidatesFromTriage(batches: readonly TriageBatch
     id: `${batch.area}#${batch.index}`,
     units: batch.families.map(f => ({
       id: f.id, findingClass: 'clone' as const, cloneKind: kinds.get(f.id),
-      members: f.members.map(m => ({ ...m, endLine: endLine?.(m) })),
+      members: f.members.map(m => ({ ...m, endLine: endLine?.(m) ?? m.endLine })),
     })),
   }));
 }

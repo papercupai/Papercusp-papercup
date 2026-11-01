@@ -501,13 +501,24 @@ export async function immutablePrecheckPopulation(input: ImmutablePrecheckInput)
   const unavailable = (detail: string) => ({ ok: false as const, detail });
   try {
     const top = treeAt(root, input.commit);
+    const builtFiles = new Set(top.filter((entry) => entry.type === 'blob').map((entry) => entry.file));
+    const removedAdmittedTests = input.admittedPaths
+      .map((file) => file.trim().replaceAll('\\', '/').replace(/^\.\//, ''))
+      .filter((file) => isTestFilePath(file) && !builtFiles.has(file));
+    const removedTestFiles = [...new Set([
+      ...removedAdmittedTests,
+      ...input.signature
+        .filter((entry) => entry.kind === 'test-file')
+        .map((entry) => entry.id.trim().replaceAll('\\', '/').replace(/^\.\//, ''))
+        .filter((id) => removedAdmittedTests.some((file) => file === id || file.endsWith(`/${id}`))),
+    ])];
     const canonicalRoot = await resolveCanonicalIntegrationRoot(root);
     const admitted = new Set(input.admittedPaths.map((file) => file.trim().replaceAll('\\', '/').replace(/^\.\//, '')));
     const gitlinks = top.filter((entry) => entry.type === 'commit' && admitted.has(entry.file));
     // P-007: an ordinary admission adds its related-test radius to the exact admitted files.
     if (gitlinks.length === 0) {
       const radius = ordinaryAdmissionRadius({ root, commit: input.commit, top, signature: input.signature, admittedPaths: input.admittedPaths });
-      return { ok: true, population: precheckPopulation({ ...input, radius }) };
+      return { ok: true, population: precheckPopulation({ ...input, radius, removedTestFiles }) };
     }
     const blobs = new Map<string, string | null>();
     const ownRoots = gitlinks.map((entry) => resolve(root, entry.file));
@@ -541,7 +552,7 @@ export async function immutablePrecheckPopulation(input: ImmutablePrecheckInput)
     // Router spellings absent from the selector's test regex cannot silently disappear.
     const affectedTestFiles = [...new Set([...related, ...own, ...tests.filter((file) => !isTestFile(file))])]
       .map((file) => relative(root, file).split(sep).join('/')).sort();
-    return { ok: true, population: precheckPopulation({ ...input, affectedTestFiles }) };
+    return { ok: true, population: precheckPopulation({ ...input, affectedTestFiles, removedTestFiles }) };
   } catch (error) {
     return unavailable(error instanceof Error ? error.message : String(error));
   }

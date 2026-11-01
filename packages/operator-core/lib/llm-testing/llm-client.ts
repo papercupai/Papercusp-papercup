@@ -242,10 +242,16 @@ async function llmCallViaCodexGateway(
   } catch {
     raw = text;
   }
+  const gatewayRequestId = res.headers.get(MODEL_REQUEST_ID_HEADER)?.trim() || undefined;
+  const gatewayRoutedAccountId = res.headers.get(ROUTED_ACCOUNT_HEADER)?.trim() || undefined;
   if (!res.ok) {
     const message =
       raw && typeof raw === 'object' ? ((raw as { error?: { message?: string } }).error?.message ?? text) : text;
     const failure = new LlmCallError(classifyHttpError({ status: res.status, message }, providerForBackend('codex')));
+    if (gatewayRequestId || gatewayRoutedAccountId) Object.assign(failure, {
+      ...(gatewayRequestId ? { gatewayRequestId } : {}),
+      ...(gatewayRoutedAccountId ? { gatewayRoutedAccountId } : {}),
+    });
     const refusal = raw && typeof raw === 'object' ? raw as { gateway?: unknown; error?: { code?: unknown } } : null;
     if (refusal?.gateway === true &&
         ((res.status === 422 && refusal.error?.code === 'output_token_limit_unsupported') ||
@@ -259,7 +265,7 @@ async function llmCallViaCodexGateway(
 
   // Persist the expected model event with this invocation even if PostHog
   // never receives it. A tool's successful status alone cannot establish this.
-  expectSuccessfulToolModelTrace(res.headers.get(MODEL_REQUEST_ID_HEADER));
+  expectSuccessfulToolModelTrace(gatewayRequestId ?? null);
   const finalText = extractResponsesText(raw);
   const usage =
     raw && typeof raw === 'object'
@@ -282,7 +288,7 @@ async function llmCallViaCodexGateway(
   const costUsd = cost.usd;
   const json = opts.responseFormat === 'json' ? tryParseJson(finalText) : undefined;
 
-  const servedAccount = res.headers.get(ROUTED_ACCOUNT_HEADER)?.trim() || undefined;
+  const servedAccount = gatewayRoutedAccountId;
   return {
     text: finalText,
     json,

@@ -74,6 +74,8 @@ describe('gate.greenCheckpoint.freezeDisposition (P-004/P-008) — spec resolves
     state: 'converging',
     reason: 'frozen repair fixer dispatched (attempt 1); no suite run',
     candidate: 'd165d7537d201ac8eded1a520b137cbdafd260a0',
+    queuePhase: 'ready-to-test',
+    blockedBy: 'disk-headroom',
     holdUntilMs: null,
     capacityRetryAtMs: null,
     observedAtMs: NOW - 30_000,
@@ -83,11 +85,15 @@ describe('gate.greenCheckpoint.freezeDisposition (P-004/P-008) — spec resolves
   it('a live converging disposition resolves every hoisted path and emits a documented code', () => {
     assertNoDrift(S(), payload(record));
     expect(pathExists(payload(record), S().assessment!.path).value).toBe('converging');
+    expect(pathExists(payload(record), 'gate.freezeDisposition.queuePhase').value).toBe('ready-to-test');
+    expect(pathExists(payload(record), 'gate.freezeDisposition.blockedBy').value).toBe('disk-headroom');
   });
 
   it('the unmeasured projection (no record) still carries every hoisted key — null values, never absent keys', () => {
     assertNoDrift(S(), payload(null));
     expect(pathExists(payload(null), S().assessment!.path).value).toBe('no-disposition-recorded');
+    expect(pathExists(payload(null), 'gate.freezeDisposition.queuePhase').value).toBeNull();
+    expect(pathExists(payload(null), 'gate.freezeDisposition.blockedBy').value).toBeNull();
   });
 
   it('a stale record outranks its state (the false-current-retired class)', () => {

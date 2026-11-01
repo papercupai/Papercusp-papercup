@@ -6,6 +6,7 @@ import type { Sql } from 'postgres';
 import * as ts from 'typescript';
 import { rrfCombine } from '../../../../libs/generic/rrf/src/index';
 import { cloneBlobSha, extractCloneFile, type CloneSource } from './clone-index';
+import { storedTsvectorLexicalLeg } from '../search/lexical/rank';
 
 export const SEMANTIC_CODE_VERSION = `semantic-code-v2:typescript-${ts.version}`;
 /** Preregistered floor in the identified scorer's relevance units. The
@@ -207,9 +208,14 @@ export class SemanticCodeIndex {
         AND marker.embedding_profile=semantic_code_functions.embedding_profile
         AND marker.path=semantic_code_functions.path AND marker.blob_sha=semantic_code_functions.blob_sha
         AND marker.state='ready' AND marker.normalization_version=${this.normalizationVersion})`;
+    const lexicalLeg = storedTsvectorLexicalLeg(this.sql, this.sql`search_text`, query, {
+      textConfig: 'simple',
+      querySyntax: 'plain',
+      rankFunction: 'ts_rank',
+    });
     const lexical = await this.sql`SELECT * FROM harness_shared.semantic_code_functions WHERE ${common}
-      AND search_text @@ plainto_tsquery('simple',${query})
-      ORDER BY ts_rank(search_text,plainto_tsquery('simple',${query})) DESC,path,line,column_number LIMIT 100`;
+      AND ${lexicalLeg.match}
+      ORDER BY ${lexicalLeg.order},path,line,column_number LIMIT 100`;
     let semantic: Array<(typeof lexical)[number]> = [], vectorStatus: 'measured' | 'unknown' = 'unknown', vectorError: string | null = null;
     try {
       const embedded = vector(await this.embedder.query(query, options.signal), s.dimensions);

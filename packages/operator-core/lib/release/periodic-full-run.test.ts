@@ -301,7 +301,6 @@ describe('payloads are accepted by lint-as-committed (WI-6554700010018216)', () 
   // npm hands the script everything after the first '--' (npm's own separator).
   const scriptArgv = (args: string[]) => args.slice(args.indexOf('--') + 1);
   async function parse(args: string[]) {
-    // @ts-expect-error TS7016 — plain-JS script with no .d.mts; the cast names the one export used.
     const mod = (await import('../../../../scripts/lint-as-committed.mjs')) as {
       parseArgs: (argv: string[]) => { scripts: string[]; forward: string[]; ref: string; any: boolean; unknown: string[]; nonLint: string[] };
     };

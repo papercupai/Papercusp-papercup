@@ -158,6 +158,7 @@ describe('coord:orient declares ALL THREE uncapping legs (WI-37843)', () => {
     }));
     const source = {
       ok: true,
+      ownerIdentity: { status: 'known', displayName: 'Fixture human', sourceRef: 'fact:owner-identity' },
       self: { ownerId: 'su-test' },
       me: 'ownerId: su-test\ncoverage[37]:\n' + '  - plan: p\n'.repeat(400),
       claimable: Array.from({ length: 100 }, (_, i) => ({
@@ -171,6 +172,7 @@ describe('coord:orient declares ALL THREE uncapping legs (WI-37843)', () => {
       inbox: { summary: { total: 80 }, entries: inbox },
     };
     const shaped = shapeOrient(source, 'trimmed') as Record<string, unknown>;
+    expect(shaped.ownerIdentity).toEqual(source.ownerIdentity);
     expect(JSON.stringify(shaped).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
     const shapedInbox = shaped.inbox as {
       entries: unknown[];
@@ -199,6 +201,7 @@ describe('coord:orient declares ALL THREE uncapping legs (WI-37843)', () => {
       log: ceilingLog,
     });
     expect(applied.payloadProjection).toMatchObject({ forced: true, tier: 'trimmed' });
+    expect(applied.data).toMatchObject({ ownerIdentity: source.ownerIdentity });
     expect(JSON.stringify(applied.data).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
     expect(ceilingLog).toHaveBeenCalledWith(expect.stringContaining('force-applied the trimmed shaper'));
   });
@@ -230,6 +233,7 @@ describe('EI-20213176698128052: assembler and shaper share one priority ledger',
     );
     const result = {
       ok: true,
+      ownerIdentity: { status: 'known', displayName: 'Fixture human', sourceRef: 'fact:owner-identity' },
       me: 'me-value',
       claimable: [],
       claimableHarnessScope: { requested: 'h', resolved: 'h', resolution: 'requested' },

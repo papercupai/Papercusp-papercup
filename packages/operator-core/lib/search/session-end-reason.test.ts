@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { MODEL_CAPACITY_RE } from '@papercusp/papercusp-shared/agent';
 import {
   classifySessionEnd,
+  classifyHistoricalSessionStop,
   classifyWedgeText,
   isMachineModelErrorText,
   isMachineUsageLimitText,
@@ -16,6 +17,22 @@ import {
 
 const NOW = Date.UTC(2026, 6, 13, 12, 0, 0);
 const minsAgo = (m: number) => NOW - m * 60_000;
+
+describe('historical provider stop distinctions', () => {
+  it.each([
+    ["You've hit your session limit", 'quota'],
+    ['API Error: 401 Authentication failed', 'authentication'],
+    ['402 Insufficient credits', 'billing'],
+    ['API Error: 429 Too many requests', 'rate_limit'],
+    ['API Error: maximum context length exceeded', 'context_limit'],
+    ['API Error: model example not found', 'model_error'],
+    ['⚠ Selected model is at capacity. Please try a different model.', 'capacity'],
+    ['We discussed 429 handling and insufficient credits', null],
+    ['The message said "You\'ve hit your session limit"', null],
+  ])('classifies %s without conflating provider failures', (text, expected) => {
+    expect(classifyHistoricalSessionStop(text)).toBe(expected);
+  });
+});
 
 describe('classifySessionEnd', () => {
   it('classifies the org auth wall as WEDGED (verbatim string from session c3a5178a)', () => {

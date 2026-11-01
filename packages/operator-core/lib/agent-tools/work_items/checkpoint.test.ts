@@ -1693,6 +1693,31 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(storedArg.endsWith(addendum)).toBe(true);
     });
 
+    it('confirmShrink:true cannot truncate the newly submitted append', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      const prior = '## MEASURED BASELINE\nshort prior';
+      const progressPrefix = '## LATEST PROGRESS\n';
+      // The submitted value must satisfy the 32,000-char input schema while the
+      // prior note makes the joined candidate exceed the storage cap.
+      const addendum = progressPrefix + 'A'.repeat(CHECKPOINT_BODY_CAP_CHARS - progressPrefix.length);
+      let stored = prior;
+      setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string, opts) => {
+        const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+        stored = blockedReason ? prior : opts?.transform?.(prior, text) ?? text;
+        return { stored, priorLength: prior.length, blockedReason };
+      });
+
+      const result = await one({ id: 'WI-7', checkpoint: addendum, append: true, confirmShrink: true });
+
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'append_body_overflow',
+        appendBodyOverflowDiagnostics: { submittedAppendChars: addendum.length },
+      });
+      expect(result.error).toContain('Refusing the write');
+      expect(stored).toBe(prior);
+    });
+
     it('EI-26833103898072347: refuses a capped append that retains the addendum but evicts prior narrative', async () => {
       getWorkItem.mockResolvedValue({ id: 'EI-268331-PRIOR-BODY-OVERFLOW', harness: 'papercusp' });
       const prior = '## VERIFIED HANDBACK\n' + 'P'.repeat(31970);
@@ -5467,6 +5492,79 @@ describe('work_items:checkpoint — prose path continuity lint (EI-2238651493968
       workspaceId: 'default',
       harness: 'papercup',
     }, { allowDirectories: true });
+  });
+
+  it('ignores an upstream source URL while still reporting a genuinely missing local path', async () => {
+    const upstreamPath = 'src/backend/storage/aio/aio_funcs.c';
+    const missingLocal = 'packages/operator-core/lib/agent-tools/work_items/url-path-regression-missing.ts';
+    const body =
+      'The upstream reference is https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/' +
+      upstreamPath +
+      '; the local implementation should be in ' +
+      missingLocal +
+      '.';
+    resolveCurrentTokens.mockResolvedValue(new Map([[`file:${missingLocal}`, null]]));
+    getWorkItem.mockResolvedValue({ id: 'WI-PROSE-UPSTREAM-URL', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-PROSE-UPSTREAM-URL', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result.prosePathLint).toMatchObject({
+      flagged: true,
+      paths: [missingLocal],
+      note: expect.stringContaining('advisory only'),
+    });
+    expect(resolveCurrentTokens).toHaveBeenCalledWith(
+      [`file:${missingLocal}`],
+      { workspaceId: 'default', harness: 'papercup' },
+      { allowDirectories: true },
+    );
+  });
+
+  it('does not flag an extensionless TypeScript module path when its source file resolves', async () => {
+    const modulePath = 'packages/operator-core/lib/search/bench/bm25-hybrid-recall';
+    const body = 'The benchmark module is ' + modulePath + '.';
+    resolveCurrentTokens
+      .mockResolvedValueOnce(new Map([['file:' + modulePath, null]]))
+      .mockResolvedValueOnce(new Map([['file:' + modulePath + '.ts', 'sha256:present']]));
+    getWorkItem.mockResolvedValue({ id: 'WI-PROSE-EXTENSIONLESS-MODULE', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-PROSE-EXTENSIONLESS-MODULE', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result.prosePathLint).toBeUndefined();
+    expect(resolveCurrentTokens).toHaveBeenNthCalledWith(
+      1,
+      ['file:' + modulePath],
+      { workspaceId: 'default', harness: 'papercup' },
+      { allowDirectories: true },
+    );
+    const [suffixedDeps] = resolveCurrentTokens.mock.calls[1] as [string[]];
+    expect(suffixedDeps).toContain('file:' + modulePath + '.ts');
+  });
+
+  it('still flags an extensionless path when no source-extension candidate resolves', async () => {
+    const missing = 'packages/operator-core/lib/search/bench/missing-benchmark';
+    const body = 'The benchmark module is ' + missing + '.';
+    resolveCurrentTokens
+      .mockResolvedValueOnce(new Map([['file:' + missing, null]]))
+      .mockResolvedValueOnce(new Map());
+    getWorkItem.mockResolvedValue({ id: 'WI-PROSE-MISSING-EXTENSIONLESS', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-PROSE-MISSING-EXTENSIONLESS', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result.prosePathLint).toMatchObject({
+      flagged: true,
+      paths: [missing],
+      note: expect.stringContaining('advisory only'),
+    });
   });
 
   it('does not flag an existing repository directory cited in narrative prose', async () => {

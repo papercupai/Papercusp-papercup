@@ -75,6 +75,7 @@ beforeAll(async () => {
   `);
   await applyMigrationForTest(db.sql, migration('1284-plan-closure-observations.sql'));
   await applyMigrationForTest(db.sql, migration('1313-plan-closure-observations-rubric-grader.sql'));
+  await applyMigrationForTest(db.sql, migration('1612-plan-closure-observations-by-build.sql'));
 }, 120_000);
 
 afterAll(async () => {
@@ -86,7 +87,8 @@ beforeEach(async () => {
   await db.sql.unsafe(`
     TRUNCATE harness_shared.harness_plans, harness_shared.plan_items, harness_shared.plan_audits,
              harness_shared.engineer_issues, harness_shared.spec_evidence_bindings,
-             harness_shared.plan_closure_observations
+             harness_shared.plan_closure_observations,
+             harness_shared.plan_closure_observations_by_build
   `);
   await db.sql`
     INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, version, acceptance_bar_epoch, template, template_data)
@@ -155,6 +157,31 @@ describe('plan closure observations (D-032)', () => {
       (node['Relation Name'] === 'plan_items' ? node['Actual Loops'] : 0)
       + (node.Plans ?? []).reduce((total, child) => total + scanLoops(child), 0);
     expect(scanLoops(explained['QUERY PLAN'][0].Plan)).toBe(1);
+  });
+
+  it('keeps a current-build observation fresh after an older runtime overwrites the legacy row', async () => {
+    const currentBuild = 'b53aa7a8aa';
+    state.buildSha = currentBuild;
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, {
+      ...VERDICT,
+      buildProvenance: { sha: currentBuild },
+    });
+    expect(await read()).toMatchObject({ status: 'fresh', gate: { satisfied: false } });
+
+    // Simulate the still-live release binary: it knows only the legacy table and
+    // can overwrite its single plan row after the staging evaluator writes.
+    await db.sql`
+      UPDATE harness_shared.plan_closure_observations
+         SET build_sha = 'd740fc3802',
+             satisfied = true,
+             observed_at = now() + interval '1 second'
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
+
+    expect(await read()).toMatchObject({ status: 'fresh', gate: { satisfied: false } });
+    const [legacy] = await db.sql`
+      SELECT build_sha FROM harness_shared.plan_closure_observations
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
+    expect(legacy.build_sha).toBe('d740fc3802');
   });
 
   it('reads canonical supersession beside stale and absent acceptance verdicts', async () => {

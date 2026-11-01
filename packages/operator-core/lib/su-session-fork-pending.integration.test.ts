@@ -5,7 +5,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stringify } from '@iarna/toml';
@@ -30,11 +30,21 @@ vi.mock('./su-session-commands', async original => ({ ...await original<object>(
 vi.mock('./role-codex-home', () => ({ makeCodingAssistantCodexHome: vi.fn() }));
 vi.mock('./task-manager/managed-spawn', () => ({ managedSpawn: async (bin: string, args: string[], _spec: unknown,
   options: { spawnOptions: object }) => {
-  const child = spawn(bin, args, options.spawnOptions), taskId = randomUUID();
+  const child = spawn(bin, args, { ...options.spawnOptions, detached: true }), taskId = randomUUID();
   fixture.children.set(taskId, child); return { child, taskId };
 } }));
-vi.mock('./task-manager/control', () => ({ killTask: async (id: string) => {
-  fixture.children.get(id)?.kill('SIGKILL'); return { ok: true };
+vi.mock('./task-manager/control', () => ({ killTask: async (id: string,
+  options: { signal?: NodeJS.Signals; includeSubtree?: boolean }) => {
+  const child = fixture.children.get(id), signal = options.signal ?? 'SIGKILL';
+  if (child?.pid && options.includeSubtree) {
+    try { process.kill(-child.pid, signal); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+        if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+      } else throw error;
+    }
+  } else child?.kill(signal);
+  return { ok: true };
 } }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async original => ({
   ...await original<object>(), assertLaunchPersona: vi.fn(), startSupervisorBeat: vi.fn(),
@@ -57,6 +67,83 @@ const engines: Array<{ close(): Promise<void>; done: Promise<void>; adapter: {
   dispose(): void; host: { snapshot(): { streamReady: boolean } };
 } }> = [];
 const roots: string[] = [], subscribers: string[] = [];
+
+/** Find live processes whose cwd or open descriptors still point into a native
+ * test home. Keep argv/env out of the failure report; only process identity,
+ * relative paths and descriptor access mode are useful for this race. */
+function rootProcessOwners(root: string, procRoot = '/proc', deadlineMs = 10_000) {
+  if (process.platform !== 'linux') return { status: 'unsupported' as const, pidsScanned: 0, pidsTotal: 0, owners: [] };
+  const startedAt = Date.now(), prefix = root.endsWith('/') ? root : `${root}/`;
+  let pids: string[];
+  try { pids = readdirSync(procRoot).filter(entry => /^\d+$/.test(entry)); }
+  catch { return { status: 'unavailable' as const, pidsScanned: 0, pidsTotal: 0, owners: [] }; }
+  const owners: Array<{ pid: number; parentPid: number | null; comm: string | null; cwd: string | null;
+    descriptors: Array<{ fd: string; path: string; access: string }> }> = [];
+  let pidsScanned = 0, unreadable = 0, timedOut = false;
+  const underRoot = (target: string) => {
+    const deleted = target.endsWith(' (deleted)');
+    const path = deleted ? target.slice(0, -10) : target;
+    if (path === root) return { path: '.', deleted };
+    if (path.startsWith(prefix)) return { path: `${path.slice(prefix.length)}${deleted ? ' (deleted)' : ''}`, deleted };
+    return null;
+  };
+  for (const pidText of pids) {
+    if (Date.now() - startedAt >= deadlineMs) { timedOut = true; break; }
+    const proc = `${procRoot}/${pidText}`;
+    let cwd: string | null = null;
+    try { const target = underRoot(readlinkSync(`${proc}/cwd`)); if (target) cwd = target.path; } catch { /* exited or inaccessible */ }
+    let fds: string[];
+    try { fds = readdirSync(`${proc}/fd`); } catch { unreadable++; continue; }
+    const descriptors: Array<{ fd: string; path: string; access: string }> = [];
+    for (const fd of fds) {
+      if (Date.now() - startedAt >= deadlineMs) { timedOut = true; break; }
+      try {
+        const target = underRoot(readlinkSync(`${proc}/fd/${fd}`));
+        if (!target) continue;
+        let access = 'unknown';
+        try {
+          const flagsText = readFileSync(`${proc}/fdinfo/${fd}`, 'utf8');
+          const flags = /^flags:\s*([0-7]+)/m.exec(flagsText)?.[1];
+          if (flags) access = ['read-only', 'write-only', 'read-write', 'unknown'][Number.parseInt(flags, 8) & 3] ?? 'unknown';
+        } catch { /* preserve the holder with unknown access */ }
+        descriptors.push({ fd, path: target.path, access });
+      } catch { /* fd closed during the scan */ }
+    }
+    if (cwd || descriptors.length) {
+      let stat: string | null = null;
+      try { stat = readFileSync(`${proc}/stat`, 'utf8'); } catch { unreadable++; }
+      const closeParen = stat?.lastIndexOf(')') ?? -1;
+      const comm = closeParen >= 0 ? stat!.slice(stat!.indexOf('(') + 1, closeParen) : null;
+      const fields = closeParen >= 0 ? stat!.slice(closeParen + 2).trim().split(/\s+/) : [];
+      const parentPid = Number.isInteger(Number(fields[1])) ? Number(fields[1]) : null;
+      owners.push({ pid: Number(pidText), parentPid, comm, cwd, descriptors: descriptors.slice(0, 20) });
+    }
+    pidsScanned++;
+    if (timedOut) break;
+  }
+  return { status: timedOut ? 'timed-out' as const : 'complete' as const, pidsScanned, pidsTotal: pids.length,
+    unreadable, elapsedMs: Date.now() - startedAt, owners: owners.slice(0, 20), ownerCount: owners.length,
+    truncated: owners.length > 20 };
+}
+
+it.skipIf(process.platform !== 'linux')('identifies native-home cwd and writable descriptor owners without reading argv or env', () => {
+  const fixtureRoot = mkdtempSync(join(tmpdir(), 'su-fork-pending-proc-fixture-')); roots.push(fixtureRoot);
+  const nativeRoot = join(fixtureRoot, 'native'), procRoot = join(fixtureRoot, 'proc'), pidRoot = join(procRoot, '4242');
+  const nativeFile = join(nativeRoot, 'child', 'rollout.sqlite');
+  mkdirSync(join(nativeRoot, 'child'), { recursive: true });
+  mkdirSync(join(pidRoot, 'fd'), { recursive: true });
+  mkdirSync(join(pidRoot, 'fdinfo'), { recursive: true });
+  writeFileSync(nativeFile, 'fixture');
+  writeFileSync(join(pidRoot, 'stat'), '4242 (codex app-server) S 42 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n');
+  symlinkSync(nativeRoot, join(pidRoot, 'cwd'));
+  symlinkSync(nativeFile, join(pidRoot, 'fd', '7'));
+  writeFileSync(join(pidRoot, 'fdinfo', '7'), 'pos:\t0\nflags:\t0100002\n');
+
+  expect(rootProcessOwners(nativeRoot, procRoot)).toMatchObject({ status: 'complete', ownerCount: 1,
+    owners: [{ pid: 4242, parentPid: 42, comm: 'codex app-server', cwd: '.',
+      descriptors: [{ fd: '7', path: 'child/rollout.sqlite', access: 'read-write' }] }] });
+});
+
 beforeAll(async () => {
   mutex = await acquireBaselineSchemaMutex(inject('baselineSchemaDsn'), { label: 'fork-pending-isolation' });
   fixture.sql = postgres(inject('baselineSchemaDsn'), { max: 2, onnotice: () => {} });
@@ -79,6 +166,7 @@ afterEach(async () => {
       throw new Error(`Native fork cleanup failed: ${JSON.stringify({ root,
         processes: [...fixture.children.values()].map(child => ({ pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode })),
         remaining: readdirSync(root, { recursive: true }).map(String).slice(0, 40),
+        rootProcessOwners: rootProcessOwners(root),
       })}`, { cause });
     }
     roots.pop();
@@ -318,9 +406,18 @@ for (const { backend, registrationFailure, pty, name } of [
     const fired = await fireAwaitsForKey({ eventKey }); expect(fired.map(row => row.id)).toEqual([awaited.id]);
     expect(await insertDeliveries({ awaits: fired, payload: { secret: 'PARENT_WAKE_PRIVATE' } })).toBe(1);
     const [delivery] = await fixture.sql`SELECT * FROM harness_shared.event_wake_deliveries WHERE await_id = ${awaited.id}`;
+    // The production pump claims pending rows before settling the channel result. Simulate
+    // that transition for this row only so the fixture does not drain unrelated deliveries.
+    const [claim] = await fixture.sql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET status = 'delivering', attempts = attempts + 1
+       WHERE id = ${delivery.id} AND status = 'pending'
+       RETURNING id
+    `;
+    expect(claim, 'the fixture delivery must be claimed before channel settlement').toBeDefined();
     await markDeliveryDelivered(Number(delivery.id), 'psu-socket-inject');
     const [before] = await fixture.sql`SELECT * FROM harness_shared.event_wake_deliveries WHERE id = ${delivery.id}`;
-    expect(before).toMatchObject({ status: 'delivered', turn_proof: 'awaiting', turn_started_at: null });
+    expect(before, JSON.stringify(before)).toMatchObject({ status: 'delivered', turn_proof: 'awaiting', turn_started_at: null });
     expect(queueSettled).toBe(false);
     if (pty) {
       expect(execFileSync('claude', ['--version'], { encoding: 'utf8' })).toContain(SU_EXEC_INVENTORY.versions.claude);

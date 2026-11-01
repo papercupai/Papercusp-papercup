@@ -88,8 +88,8 @@ export const PORTS = {
   // refusal reason: non-empty means deny this one call, empty means no verdict.
   // Adapters render it ONLY as a deny — never allow, never updatedInput, never
   // additionalContext — so a context hook can still never vote (D-027). A slow
-  // or down operator costs no verdict, and the client's own permission flow
-  // decides; evaluation failures fail closed server-side, where a rule is named.
+  // or down operator refuses native mutations in the dispatcher: unavailable
+  // authority cannot authorize a plan-bound write. Read-only tools keep no verdict.
   'pre-tool': {
     endpoint: '/api/agent-mcp/tool-guard',
     timeoutMs: 1500,

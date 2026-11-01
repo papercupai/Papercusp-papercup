@@ -1229,9 +1229,34 @@ dependency_generation_path_is_old() {
   [ $((now - mtime)) -ge "$min_age" ]
 }
 
+dependency_generation_writer_has_identity() {
+  local marker="$1" owner_host owner_pid
+  [ -f "$marker" ] || return 1
+  owner_host="$(dependency_generation_read_field "$marker" host)"
+  owner_pid="$(dependency_generation_read_field "$marker" pid)"
+  [ -n "$owner_host" ] || return 1
+  case "$owner_pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+# Keep valid foreign-host owners fail-closed. Missing or malformed ownership is
+# reclaimable only after the same age grace as a missing marker.
+dependency_generation_writer_is_abandoned() {
+  local marker="$1" host="$2" path="$3" min_age="$4"
+  [ -n "$min_age" ] || min_age=300
+  if dependency_generation_writer_has_identity "$marker"; then
+    ! dependency_generation_writer_is_live "$marker" "$host"
+    return $?
+  fi
+  dependency_generation_path_is_old "$path" "$min_age"
+}
+
 # A killed publisher may leave a large writable build tree or the tiny publish
-# lock behind. Reclaim only same-host state whose recorded PID is no longer
-# alive; foreign-host state remains fail-closed. Quarantine a stale lock so its
+# lock behind. Reclaim same-host state whose recorded PID is no longer alive;
+# missing or malformed ownership is reclaimable only after its age grace, while
+# valid foreign-host state remains fail-closed. Quarantine a stale lock so its
 # ownership record survives inspection.
 dependency_generation_cleanup_abandoned() {
   local generation_root="$1" host build marker lock quarantine
@@ -1239,8 +1264,7 @@ dependency_generation_cleanup_abandoned() {
   for build in "$generation_root"/.build-*; do
     [ -d "$build" ] || continue
     marker="$build/.papercusp-generation-writer"
-    if { [ -f "$marker" ] && ! dependency_generation_writer_is_live "$marker" "$host"; } \
-      || { [ ! -f "$marker" ] && dependency_generation_path_is_old "$build"; }; then
+    if dependency_generation_writer_is_abandoned "$marker" "$host" "$build" 300; then
       dependency_generation_log "removing abandoned build $(basename "$build")"
       chmod -R u+w "$build" 2>/dev/null || true
       rm -rf -- "$build"
@@ -1248,9 +1272,7 @@ dependency_generation_cleanup_abandoned() {
   done
 
   lock="$generation_root/.publish-lock"
-  if [ -d "$lock" ] \
-    && { { [ -f "$lock/writer" ] && ! dependency_generation_writer_is_live "$lock/writer" "$host"; } \
-      || { [ ! -f "$lock/writer" ] && dependency_generation_path_is_old "$lock"; }; }; then
+  if dependency_generation_writer_is_abandoned "$lock/writer" "$host" "$lock" 300; then
     quarantine="$generation_root/.stale-publish-lock.$(date +%s).$$"
     if mv "$lock" "$quarantine" 2>/dev/null; then
       dependency_generation_log "quarantined abandoned publish lock as $(basename "$quarantine")"
@@ -1266,10 +1288,23 @@ dependency_generation_cleanup_abandoned() {
 }
 
 dependency_generation_write_owner() {
-  local marker="$1" owner_pid="${2:-$$}" process_start="${3:-}"
+  local marker="$1" owner_pid="${2:-$$}" process_start="${3:-}" marker_dir marker_name temp_marker
   [ -n "$process_start" ] || process_start="$(dependency_generation_process_start "$owner_pid" || true)"
-  printf 'host=%s\npid=%s\nstarted=%s\nprocess_start=%s\n' \
-    "$(dependency_generation_host)" "$owner_pid" "$(date +%s)" "$process_start" > "$marker"
+  case "$marker" in
+    */*) marker_dir="${marker%/*}"; marker_name="${marker##*/}" ;;
+    *) marker_dir='.'; marker_name="$marker" ;;
+  esac
+  [ -n "$marker_dir" ] || marker_dir='/'
+  temp_marker="$marker_dir/.$marker_name.tmp.$$"
+  if ! printf 'host=%s\npid=%s\nstarted=%s\nprocess_start=%s\n' \
+    "$(dependency_generation_host)" "$owner_pid" "$(date +%s)" "$process_start" > "$temp_marker"; then
+    rm -f -- "$temp_marker"
+    return 1
+  fi
+  if ! mv -f -- "$temp_marker" "$marker"; then
+    rm -f -- "$temp_marker"
+    return 1
+  fi
 }
 
 # A PID alone is not an identity: the kernel can recycle it while a selector
@@ -1308,6 +1343,10 @@ dependency_generation_publish_lock_holder() {
   if [ ! -f "$marker" ]; then
     [ -d "$lock" ] || { printf 'released-during-wait'; return 0; }
     printf 'unknown-writer'
+    return 0
+  fi
+  if ! dependency_generation_writer_has_identity "$marker"; then
+    printf 'unknown-writer (invalid writer marker)'
     return 0
   fi
   host="$(dependency_generation_read_field "$marker" host)"
@@ -1366,7 +1405,11 @@ dependency_generation_acquire_publish_lock() {
     fi
     sleep 0.1
   done
-  dependency_generation_write_owner "$lock/writer"
+  if ! dependency_generation_write_owner "$lock/writer"; then
+    dependency_generation_log 'FATAL: could not publish dependency-generation lock owner'
+    rmdir "$lock" 2>/dev/null || true
+    return 73
+  fi
   DEPENDENCY_GENERATION_PUBLISH_LOCK="$lock"
 }
 
@@ -1431,7 +1474,11 @@ dependency_generation_acquire_selector_lease() {
     dependency_generation_log "FATAL: dependency-generation lease owner process changed: $owner_pid"
     return 74
   fi
-  dependency_generation_write_owner "$lease" "$owner_pid" "$owner_start"
+  if ! dependency_generation_write_owner "$lease" "$owner_pid" "$owner_start"; then
+    dependency_generation_release_publish_lock
+    dependency_generation_log 'FATAL: could not publish dependency-generation lease owner'
+    return 74
+  fi
   printf 'identity=%s\n' "$identity" >> "$lease"
   if [ "$(dependency_generation_process_start "$owner_pid" || true)" != "$owner_start" ]; then
     rm -f -- "$lease"
@@ -1464,8 +1511,7 @@ DEPENDENCY_GENERATION_JOINED_RC=79
 
 dependency_generation_inflight_is_abandoned() {
   local lock="$1" host="$2"
-  { [ -f "$lock/writer" ] && ! dependency_generation_writer_is_live "$lock/writer" "$host"; } \
-    || { [ ! -f "$lock/writer" ] && dependency_generation_path_is_old "$lock" 60; }
+  dependency_generation_writer_is_abandoned "$lock/writer" "$host" "$lock" 60
 }
 
 dependency_generation_reclaim_inflight() {
@@ -1484,7 +1530,11 @@ dependency_generation_try_inflight() {
   host="$(dependency_generation_host)"
   while :; do
     if mkdir "$lock" 2>/dev/null; then
-      dependency_generation_write_owner "$lock/writer"
+      if ! dependency_generation_write_owner "$lock/writer"; then
+        dependency_generation_log "FATAL: could not publish in-flight writer for $identity"
+        rmdir "$lock" 2>/dev/null || true
+        return 74
+      fi
       DEPENDENCY_GENERATION_INFLIGHT_LOCK="$lock"
       DEPENDENCY_GENERATION_INFLIGHT_PROGRESS="$lock/progress"
       return 0
@@ -3265,7 +3315,11 @@ dependency_generation_ensure_once() {
   before_manifest="$build/.source-before"
   after_manifest="$build/.source-after"
   mkdir -p "$tree"
-  dependency_generation_write_owner "$build/.papercusp-generation-writer"
+  if ! dependency_generation_write_owner "$build/.papercusp-generation-writer"; then
+    dependency_generation_log 'FATAL: could not publish dependency-generation build owner'
+    dependency_generation_remove_build "$build"
+    return 74
+  fi
   if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
     dependency_generation_snapshot_lockfiles "$integration_root" "$build/.lock-inputs" || {
       dependency_generation_log 'FATAL: could not snapshot the input lockfiles before copy'
@@ -3740,8 +3794,7 @@ dependency_generation_sweep_exact_scratch() {
   for dir in "$parent"/*; do
     [ -d "$dir" ] || continue
     marker="$dir/.papercusp-exact-ref-writer"
-    if { [ -f "$marker" ] && ! dependency_generation_writer_is_live "$marker" "$host"; } \
-      || { [ ! -f "$marker" ] && dependency_generation_path_is_old "$dir"; }; then
+    if dependency_generation_writer_is_abandoned "$marker" "$host" "$dir" 300; then
       dependency_generation_log "removing abandoned exact-ref scratch $(basename "$dir")"
       dependency_generation_remove_exact_scratch "$dir"
     fi
@@ -3830,7 +3883,11 @@ dependency_generation_stage_exact_ref_inputs() {
   # each live scratch tree before its first writer/input, including in new pots
   # whose enclosing repository has no Papercusp ignore rules yet.
   dependency_generation_ensure_store_root "$scratch" || return 1
-  dependency_generation_write_owner "$scratch/.papercusp-exact-ref-writer" || return 1
+  if ! dependency_generation_write_owner "$scratch/.papercusp-exact-ref-writer"; then
+    dependency_generation_log 'FATAL: could not publish exact-ref writer'
+    dependency_generation_remove_exact_scratch "$scratch"
+    return 1
+  fi
 
   # 1. The ref's dependency inputs, materialised by the same walk that keys them.
   ref_manifest="$(

@@ -95,8 +95,8 @@ function effectiveConfinement(row: StoredSessionConfinement): SessionToolConfine
 
 /** Authoritative per-call read: a warm miss in another host process is not
  * evidence of absence. Read failures reject instead of manufacturing authority. */
-export async function readSessionConfinement(ownerId: string | null | undefined,
-  workspaceId?: string): Promise<SessionToolConfinement | null> {
+async function readStoredSessionConfinement(ownerId: string | null | undefined,
+  workspaceId?: string): Promise<StoredSessionConfinement | null> {
   if (!ownerId || isTransportOnlyIdentity(ownerId)) return null;
   const payload = await readOperatorState<SessionConfinementsPayload>(STATE_TABLE, workspaceId, { fresh: true });
   if (payload !== null && (typeof payload !== 'object' || Array.isArray(payload) ||
@@ -117,7 +117,20 @@ export async function readSessionConfinement(ownerId: string | null | undefined,
         (row.confinement.denyOutside === undefined || !validScratchPlanBoundary(row.confinement.denyPlansOutside)))
     throw new Error('Stored session confinement is malformed');
   state.cache[ownerId] = row;
-  return effectiveConfinement(row);
+  return row;
+}
+
+export async function readSessionConfinement(ownerId: string | null | undefined,
+  workspaceId?: string): Promise<SessionToolConfinement | null> {
+  const row = await readStoredSessionConfinement(ownerId, workspaceId);
+  return row ? effectiveConfinement(row) : null;
+}
+
+/** Original declaration for external recovery validation, never dispatch authority.
+ * The launcher must still re-declare this exact ceiling before opening a process. */
+export async function readDeclaredSessionConfinement(ownerId: string,
+  workspaceId: string): Promise<SessionToolConfinement | null> {
+  return (await readStoredSessionConfinement(ownerId, workspaceId))?.confinement ?? null;
 }
 
 /** Read the table into the sync cache, dropping expired rows. */

@@ -15,7 +15,8 @@ export interface NativeExtensionApi {
     name: string; label: string; description: string; parameters: unknown;
     mcpServerName: string; mcpToolName: string; approval: 'read' | 'write';
     strict: false;
-    execute(id: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
+    execute(id: string, params: Record<string, unknown>, signal?: AbortSignal,
+      onUpdate?: unknown, context?: { sessionManager: { getSessionId(): string } }): Promise<unknown>;
   }): void;
   on(name: 'session_shutdown', handler: () => Promise<void>): void;
 }
@@ -56,9 +57,19 @@ export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOm
               label: `${name}/${tool.name}`, description: tool.description ?? '',
               parameters: tool.inputSchema, mcpServerName: name, mcpToolName: tool.name,
               approval: tool.annotations?.readOnlyHint === true ? 'read' : 'write', strict: false,
-              async execute(_id, params, signal) {
+              async execute(id, params, signal, _onUpdate, context) {
                 if (!catalog.has(tool.name)) throw new Error('native_mcp_tool_removed');
-                const result = await client.callTool({ name: tool.name, arguments: params }, undefined, { signal });
+                // Read the native callback's current session for EVERY call,
+                // including after OMP rotates it. Inherited env/config and model
+                // arguments cannot supply this identity. Reuse the existing MCP
+                // threadId/callId carrier; the host still verifies its binding,
+                // exact observed call, principal and ACL independently.
+                const sessionId = context?.sessionManager.getSessionId();
+                const nativeCall = typeof sessionId === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(sessionId)
+                  && typeof id === 'string' && /^[A-Za-z0-9._:-]{1,256}$/.test(id)
+                  ? { threadId: sessionId, callId: id } : undefined;
+                const result = await client.callTool({ name: tool.name, arguments: params,
+                  ...(nativeCall ? { _meta: nativeCall } : {}) }, undefined, { signal });
                 return {
                   content: result.content,
                   details: {

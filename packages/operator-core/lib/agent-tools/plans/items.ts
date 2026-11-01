@@ -428,6 +428,7 @@ export default defineTool({
       {
         tool: "plans:items",
         key: {
+          source: "work-graph-v1",
           slug: args.slug ?? null,
           status: args.status ?? null,
           actionable: args.actionable === true,
@@ -438,7 +439,7 @@ export default defineTool({
           harness: opts.harnessSlug,
           specTriad: specTriadFlag,
         },
-        tags: ["harness_plans", "plan_revisions", "plan_runs"],
+        tags: ["harness_plans", "plan_revisions", "plan_runs", "work_items", "work_item_deps"],
         softTtlMs: PLANS_ITEMS_SOFT_TTL_MS,
         // P-024/D-082: the portal can land on any operator worker. Share the
         // plan/status projection through the durable cache so a worker-local

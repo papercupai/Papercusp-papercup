@@ -393,6 +393,8 @@ function recordEndsTurn(record: Record<string, unknown>): boolean {
 export class OmpSuSessionAdapter {
   readonly host: SuSessionHost<'omp'>;
   private runtimeValue: OmpSuRuntimeBinding;
+  private runtimeGeneration: number;
+  private disposed = false;
   private parser: TimelineLineParser = createOmpTimelineParser();
   private currentTurnId: string | null = null;
   private turnSerial = 0;
@@ -433,6 +435,7 @@ export class OmpSuSessionAdapter {
     };
     this.host = options.host ?? new SuSessionHost(hostOptions);
     if (options.host) this.host.attachRuntime(hostOptions);
+    this.runtimeGeneration = hostOptions.descriptor.runtimeGeneration;
     void bindSuSessionToAdvSession({
       advSessionId: binding.advSessionId,
       agentChatId: options.agentChatId,
@@ -445,15 +448,22 @@ export class OmpSuSessionAdapter {
 
   get runtime(): OmpSuRuntimeBinding { return this.runtimeValue; }
 
+  /** An older adapter may finish cleanup after its shared host was reused. */
+  private ownsRuntime(generation = this.runtimeGeneration): boolean {
+    return !this.disposed && generation === this.host.descriptor().runtimeGeneration;
+  }
+
   /** Refresh gateway serving-account provenance after a known native turn. */
   async refreshAccountServed(): Promise<void> {
+    const generation = this.runtimeGeneration;
+    if (!this.ownsRuntime(generation)) return;
     let account: string | null;
     try {
       account = await this.servedAccountReader(this.host.descriptor().identity.ownerId);
     } catch {
       return;
     }
-    this.host.updateAccountServed(account);
+    if (this.ownsRuntime(generation)) this.host.updateAccountServed(account);
   }
 
   async materializeRuntime(runtime: OmpSuRuntimeBinding): Promise<void> {
@@ -493,6 +503,7 @@ export class OmpSuSessionAdapter {
   }
 
   ingestNativeLine(line: string, { preserveLifecycle = false, replay = false }: { preserveLifecycle?: boolean; replay?: boolean } = {}): void {
+    if (!this.ownsRuntime()) return;
     let record: Record<string, unknown>;
     try { record = JSON.parse(line) as Record<string, unknown>; }
     catch {
@@ -612,8 +623,10 @@ export class OmpSuSessionAdapter {
   }
 
   replaceRuntime(runtime: OmpSuRuntimeBinding, reason = 'OMP runtime replaced'): void {
+    if (!this.ownsRuntime()) return;
     const generation = this.host.descriptor().runtimeGeneration + 1;
     this.host.transition('resuming', reason, generation);
+    this.runtimeGeneration = generation;
     this.runtimeValue = runtime;
     this.parser = createOmpTimelineParser();
     this.currentTurnId = null;
@@ -625,6 +638,7 @@ export class OmpSuSessionAdapter {
   }
 
   reconcileRuntimeExit(input: { expected: boolean; reason?: string; exitCode?: number | null; signal?: string | null }): void {
+    if (!this.ownsRuntime()) return;
     this.host.reconcileRuntimeExit(input);
   }
 
@@ -671,6 +685,9 @@ export class OmpSuSessionAdapter {
   }
 
   dispose(): void {
+    const ownsRuntime = this.ownsRuntime();
+    this.disposed = true;
+    if (!ownsRuntime) return;
     if (this.unregister) this.unregister();
     else this.host.dispose('OMP adapter disposed');
   }

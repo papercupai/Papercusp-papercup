@@ -41,13 +41,14 @@ vi.mock('../presence', async (original) => ({
   ...(await original<typeof import('../presence')>()),
   getPresence: vi.fn(async () => null),
 }));
-vi.mock('../../../adv-sessions', () => ({
+vi.mock('../../../adv-sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../adv-sessions')>()),
   latestAdvSessionByCoordOwner: vi.fn(async () => null),
   // lib/coord/couplings.ts reads this at module load (reached via
   // derived-signal-census); without it the whole file fails to collect.
   RECORDED_LIVE_MAX_AGE_MS: 12 * 60 * 60 * 1000,
 }));
-const orgPgSqlMock = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+const orgPgSqlMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => [] as unknown[]));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const original = await importOriginal<typeof import('@papercusp/db-org')>();
   return {
@@ -512,6 +513,7 @@ vi.mock('../../../workspace-registry', async (importOriginal) => ({
 }));
 
 beforeEach(() => {
+  orgPgSqlMock.mockReset().mockResolvedValue([]);
   // mockResolvedValue does NOT reset the call log, and these mocks are module-scoped
   // across ~200 tests — so any assertion about WHETHER a fold ran (not just with what)
   // needs the log cleared per test, or it reads a predecessor's calls.
@@ -997,6 +999,12 @@ describe('coord:orient args', () => {
   });
 
   it('acknowledges the recovered control generation after a successful afterCompaction assembly', async () => {
+    orgPgSqlMock.mockImplementation(async (...args: unknown[]) => {
+      const query = args[0];
+      return Array.isArray(query) && query.join('').includes('SELECT id, claim FROM harness_shared.agent_facts')
+        ? [{ id: '123', claim: { displayName: 'Fixture human' } }]
+        : [];
+    });
     acknowledgeControlTransitionMock.mockClear();
     const ownerId = 'su-orient-handler-success-test';
     const recovery = {
@@ -1048,6 +1056,8 @@ describe('coord:orient args', () => {
     )) as { data: Record<string, unknown> };
 
     expect(result.data).toMatchObject({ ok: true, recovery });
+    expect(result.data.ownerIdentity).toMatchObject({ status: 'known', displayName: 'Fixture human' });
+    expect(result.data.ownerIdentity).not.toHaveProperty('value');
     expect(recordOrientDisclosuresMock).toHaveBeenCalledWith(
       ownerId,
       'ws-test',

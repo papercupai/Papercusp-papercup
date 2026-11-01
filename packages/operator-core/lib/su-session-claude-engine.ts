@@ -28,6 +28,12 @@ import { loadSuOwnerTurnReceipts } from './su-session-commands';
 import { prepareSuSessionInput, SuInputRefusal } from './su-session-input';
 import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
 import { prepareTrackedClaudeFork, type TrackedClaudeForkSource } from './su-session-tracked-claude-fork';
+import { resolveMcpName } from '@papercusp/agent-mcp';
+import { normalizeMcpName } from '@papercusp/tooldef/tool-projection';
+import type { HostRequestPrincipalResolver } from './auth/require-principal';
+import { nativeInstalledPerUseTurns } from './agent-tools/per-use-chokepoint';
+import { buildClaudeMcpEntry } from './desktop-install/claude-integration';
+import { readSuperuserToken } from './superuser-token';
 
 export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>
   // P-026: the streaming-input model switch. Optional so a peer without it
@@ -66,6 +72,8 @@ export async function applyClaudeModelSwitch(sdk: ClaudeEngineQuery, spec: strin
 export type ClaudeEngineIdentity = 'su' | 'coding-assistant';
 export interface ClaudeEngineOptions extends ClaudeSuSessionDescriptorOptions {
   host?: SuSessionHost<'claude'>;
+  /** Host-local launch authority; never persisted or passed to the CLI. */
+  resolveRequestPrincipal?: HostRequestPrincipalResolver;
   /** Defaults to `su`. */
   identity?: ClaudeEngineIdentity;
   resume?: boolean;
@@ -245,9 +253,63 @@ export function startClaudeSuEngine(
   const deliveries: Array<{ interrupted: boolean }> = [];
   let activeInputUuid: string | undefined;
   let activeOwnerTurnId: string | undefined;
+  let nativeInputEpoch = 0;
+  let nativeInputOpen = false;
+  let nativeInputScope: ReturnType<typeof nativeInstalledPerUseTurns.registerNativeInput> | undefined;
+  let privateMcpServer: Awaited<ReturnType<typeof import('./su-session-claude-mcp').createClaudeNativeMcpServer>> | undefined;
+  const observedNativeCalls = new Set<string>();
+  const nativeCallWaiters = new Map<string, Set<(observed: boolean) => void>>();
+  let nativeTools: Readonly<Record<string, string>> = Object.freeze(Object.create(null));
+  const withdrawNativeInput = () => {
+    nativeInputEpoch++;
+    nativeInputOpen = false;
+    observedNativeCalls.clear();
+    for (const waiters of nativeCallWaiters.values()) for (const done of waiters) done(false);
+    nativeCallWaiters.clear();
+    const scope = nativeInputScope;
+    nativeInputScope = undefined;
+    // withdraw() tombstones synchronously, before any awaited cleanup.
+    return scope?.withdraw();
+  };
+  const beforeNativeToolCall = (callId: string, signal: AbortSignal): Promise<boolean> => {
+    if (!nativeInputOpen || closed || !ownsRuntime() || signal.aborted || !/^[A-Za-z0-9._:-]{1,256}$/.test(callId)) return Promise.resolve(false);
+    if (observedNativeCalls.has(callId)) return Promise.resolve(true);
+    if (nativeCallWaiters.size >= 1000) return Promise.resolve(false);
+    return new Promise(done => {
+      const finish = (observed: boolean) => {
+        clearTimeout(timer); signal.removeEventListener('abort', abort);
+        const waiting = nativeCallWaiters.get(callId); waiting?.delete(finish);
+        if (waiting?.size === 0) nativeCallWaiters.delete(callId);
+        done(observed);
+      };
+      const abort = () => finish(false);
+      const timer = setTimeout(() => finish(false), 2_000);
+      const waiting = nativeCallWaiters.get(callId) ?? new Set();
+      waiting.add(finish); nativeCallWaiters.set(callId, waiting);
+      signal.addEventListener('abort', abort, { once: true });
+    });
+  };
   // Filled once the SU tool connection is up; until then every request asks.
   let readOnlySuTools = new Set<string>();
   let directiveDispositionSuTools = new Set<string>();
+  const acceptNativeTools = (tools: Array<{ name: string; annotations?: { readOnly?: boolean } }>) => {
+    const server = { name: 'papercusp-su', tools };
+    readOnlySuTools = claudeReadOnlySuTools(server);
+    directiveDispositionSuTools = claudeDirectiveDispositionSuTools(server);
+    const names: Record<string, string> = Object.create(null);
+    for (const tool of tools) {
+      const prefix = 'mcp__papercusp-su__';
+      const advertised = tool.name.startsWith(prefix) ? tool.name.slice(prefix.length) : tool.name;
+      // Claude presents canonical MCP names (e.g. reports:get) to the model
+      // with unsupported name characters replaced by underscores. Keep the
+      // exact observed-call key in that native spelling, while registry
+      // resolution still refuses ambiguous separator aliases.
+      const name = prefix + advertised.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const canonical = resolveMcpName(normalizeMcpName(name))?.expose.mcp?.name;
+      if (canonical) names[name] = canonical;
+    }
+    nativeTools = Object.freeze(names);
+  };
   // Whether the active owner turn has produced any assistant frame. A turn that
   // ends having produced none is reported, never left to read as an answer.
   let activeTurnSawAssistant = false;
@@ -288,7 +350,7 @@ export function startClaudeSuEngine(
     // "turn went quiet" event to subscribe to: silence is the signal.
     stallWatch ??= managedSetInterval('su-session-claude-turn-stall',
       Math.max(50, Math.round(turnStallTimeoutMs / 3)), () => {
-        if (closed || stallReported || !activeInputUuid || awaitingOwnerAnswers > 0) return;
+        if (closed || !ownsRuntime() || stallReported || !activeInputUuid || awaitingOwnerAnswers > 0) return;
         const idleMs = Date.now() - lastFrameAt;
         if (idleMs < turnStallTimeoutMs) return;
         stallReported = true;
@@ -309,7 +371,7 @@ export function startClaudeSuEngine(
     ownerTurnReceipts: (identity) => loadSuOwnerTurnReceipts(identity),
     controls: {
       async ownerTurn({ content, input: richInput, turnId, model: nextModel, approvals: nextApprovals }) {
-        if (!ready || closed) return unavailable('The structured Claude connection is not ready');
+        if (!ready || closed || !ownsRuntime()) return unavailable('The structured Claude connection is not ready');
         const uuid = randomUUID();
         const receipt = deferred<ClaudeNativeCommandVerdict>();
         pending.set(uuid, receipt);
@@ -321,7 +383,7 @@ export function startClaudeSuEngine(
               message: 'The owner interrupted this turn before native delivery' });
             return true;
           }
-          if (closed) { receipt.resolve(unavailable('Claude closed before this saved turn was sent')); return true; }
+          if (closed || !ownsRuntime()) { receipt.resolve(unavailable('Claude closed or was replaced before this saved turn was sent')); return true; }
           return false;
         };
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -353,6 +415,7 @@ export function startClaudeSuEngine(
                 message: `Could not switch to ${nextModel}: ${error instanceof Error ? error.message : String(error)}` });
               return;
             }
+            if (deliveryStopped()) return;
             currentModel = nextModel;
             adapter.host.updateModel(nextModel);
             if (deliveryStopped()) return;
@@ -368,6 +431,7 @@ export function startClaudeSuEngine(
                 message: `Could not switch approvals to ${nextApprovals}: ${error instanceof Error ? error.message : String(error)}` });
               return;
             }
+            if (deliveryStopped()) return;
             currentApprovals = nextApprovals;
             adapter.host.updateApprovals(nextApprovals);
             if (deliveryStopped()) return;
@@ -388,6 +452,7 @@ export function startClaudeSuEngine(
           adapter.correlateOwnerTurn(turnId);
           activeOwnerTurnId = turnId;
           activeInputUuid = uuid;
+          nativeInputOpen = true;
           activeTurnSawAssistant = false;
           activeTurnInterrupted = false;
           armStallWatch();
@@ -397,6 +462,7 @@ export function startClaudeSuEngine(
               origin: { kind: 'human' }, message: { role: 'user', content: prepared.claude } } satisfies SDKUserMessage);
             await finished.promise;
           } finally {
+            await withdrawNativeInput();
             disarmStallWatch();
             activeInputUuid = undefined;
             activeOwnerTurnId = undefined;
@@ -417,8 +483,9 @@ export function startClaudeSuEngine(
           return { ok: true };
         }
         const request = (async (): Promise<ClaudeNativeCommandVerdict> => {
-          cards.cancel();
           if (activeInputUuid) activeTurnInterrupted = true;
+          await withdrawNativeInput();
+          cards.cancel();
           try {
             await sdk.interrupt();
             return { ok: true };
@@ -436,7 +503,12 @@ export function startClaudeSuEngine(
       async end() { await close(); return { ok: true }; },
     },
   });
+  // The host survives reconnects. This engine's delayed work belongs only to
+  // the generation it attached, including the session-wide end callback.
+  const runtimeGeneration = adapter.host.descriptor().runtimeGeneration;
+  function ownsRuntime(): boolean { return adapter.host.descriptor().runtimeGeneration === runtimeGeneration; }
   const cards = new SuNativeCards(boot.workspaceId, `pui-native:${binding.advSessionId}:${options.runtimeGeneration ?? 0}`, (event) => {
+    if (!ownsRuntime()) return;
     adapter.host.emit(event as SuSessionEventInput<'claude'>);
     if (event.type === 'card' && !closed && !adapter.host.snapshot().terminal) {
       adapter.host.transition(event.phase === 'opened' ? 'waiting-for-owner' : 'running', 'Claude native question');
@@ -445,7 +517,7 @@ export function startClaudeSuEngine(
     cwd: boot.cwd,
     // D-028: option 2 on an edit switched Claude to accept-edits for the
     // session, which is the auto-edit approvals mode (D-026).
-    approvalsChanged: (mode) => { currentApprovals = mode; adapter.host.updateApprovals(mode); },
+    approvalsChanged: (mode) => { if (ownsRuntime()) { currentApprovals = mode; adapter.host.updateApprovals(mode); } },
   });
   const flagValue = (flag: string) => {
     const at = preparation.modelArgs.indexOf(flag);
@@ -509,7 +581,7 @@ export function startClaudeSuEngine(
       ? { permissionMode: 'default' as const }
       : { permissionMode: 'bypassPermissions' as const, allowDangerouslySkipPermissions: true }),
     canUseTool(toolName, input, permission) {
-      if (closed || !activeOwnerTurnId) return Promise.resolve({ behavior: 'deny', message: 'Claude has no active PUI owner turn for this permission request' });
+      if (closed || !ownsRuntime() || !activeOwnerTurnId) return Promise.resolve({ behavior: 'deny', message: 'Claude has no active PUI owner turn for this permission request' });
       // D-021 allows advertised read-only SU tools; D-022 adds only the exact
       // owner directive disposition write. A user ask rule always forces the card.
       if ((readOnlySuTools.has(toolName) || directiveDispositionSuTools.has(toolName))
@@ -525,7 +597,7 @@ export function startClaudeSuEngine(
     },
     disallowedTools,
     onElicitation(request, elicitation) {
-      if (closed || !activeOwnerTurnId) return Promise.resolve({ action: 'cancel' });
+      if (closed || !ownsRuntime() || !activeOwnerTurnId) return Promise.resolve({ action: 'cancel' });
       awaitingOwnerAnswers += 1;
       return cards.handleClaudeElicitation(request, activeOwnerTurnId, elicitation).finally(() => {
         awaitingOwnerAnswers -= 1;
@@ -615,6 +687,7 @@ export function startClaudeSuEngine(
   async function close(): Promise<void> {
     if (!closed) {
       closed = true; ready = false;
+      await withdrawNativeInput();
       cards.cancel();
       heartbeat?.stop();
       disarmStallWatch();
@@ -623,6 +696,7 @@ export function startClaudeSuEngine(
       input.end(); sdk?.close(); abortController.abort();
     }
     await done;
+    await privateMcpServer?.close();
     await stopChild();
   }
   // A single deadline covers several independent resume steps. Retain the
@@ -633,7 +707,7 @@ export function startClaudeSuEngine(
   const enterStartupStage = (stage: string) => { startupStage = stage; stageStartedAt = Date.now(); };
   const startup = (async () => {
     if (!options.query) await probeScopeSupport();
-    if (closed) throw new Error('Claude startup was cancelled');
+    if (closed || !ownsRuntime()) throw new Error('Claude startup was cancelled or replaced');
     let fork: Awaited<ReturnType<typeof prepareTrackedClaudeFork>> | undefined;
     if (options.forkFrom) {
       if (!runtime.nativeSession.configDir) throw new Error('Claude child configuration is unavailable');
@@ -644,7 +718,7 @@ export function startClaudeSuEngine(
       Object.assign(sdkOptions, { resume: options.forkFrom.nativeSession.sessionId!, forkSession: true, sessionId: nativeId });
     }
     try {
-    if (closed) throw new Error('Claude fork preparation was cancelled');
+    if (closed || !ownsRuntime()) throw new Error('Claude fork preparation was cancelled or replaced');
     if (options.resume) {
       // WI-10004162: show the saved conversation now, not after the SDK launch,
       // its initialization and the SU tool connection (seconds, or never when
@@ -653,13 +727,40 @@ export function startClaudeSuEngine(
       // surfaces a missing transcript; the host never shows a record twice.
       enterStartupStage('transcript restore');
       await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true }).catch(() => undefined);
-      if (closed) throw new Error('Claude connection closed during startup');
+      if (closed || !ownsRuntime()) throw new Error('Claude connection closed or was replaced during startup');
     }
     enterStartupStage('SDK launch');
+    const token = su && options.resolveRequestPrincipal ? readSuperuserToken() : null;
+    if (su && token && options.resolveRequestPrincipal) {
+      // Reuse the issuer and maintained config. Credentials never enter the
+      // child environment, argv, a file or a persisted session descriptor.
+      const principal = await options.resolveRequestPrincipal();
+      if (principal) {
+        const { provisionNativeRuntimeBearer } = await import('@papercusp/agent-mcp/provisioning');
+        const issued = await provisionNativeRuntimeBearer({ workspaceId: boot.workspaceId,
+          advSessionId: binding.advSessionId, issuer: principal }).catch(() => null);
+        if (issued?.binding.provider === 'claude' && issued.binding.ownerId === binding.ownerId
+          && issued.binding.workspaceId === boot.workspaceId && issued.binding.advSessionId === binding.advSessionId) {
+          const entry = buildClaudeMcpEntry(env.PAPERCUSP_OPERATOR_URL!, token, binding.ownerId!, '');
+          const values: NodeJS.ProcessEnv = { ...env, PAPERCUSP_SID: binding.ownerId!, PAPERCUSP_WORKSPACE: boot.workspaceId,
+            PAPERCUSP_HARNESS_SLUG: binding.harnessSlug ?? '', PAPERCUSP_NATIVE_SESSION_ID: nativeId,
+            CLAUDE_CODE_SESSION_ID: nativeId };
+          const expand = (value: string) => value.replace(/\$\{([A-Z0-9_]+):-([^}]*)\}/g,
+            (_match, key: string, fallback: string) => values[key] || fallback);
+          const { createClaudeNativeMcpServer } = await import('./su-session-claude-mcp');
+          privateMcpServer = await createClaudeNativeMcpServer({ url: expand(entry.url),
+            headers: Object.fromEntries(Object.entries(entry.headers).map(([key, value]) => [key.toLowerCase(), expand(value)])),
+            runtimeBearer: issued.bearer, beforeToolCall: beforeNativeToolCall, onToolsListed: acceptNativeTools });
+          sdkOptions.mcpServers = { 'papercusp-su': { type: 'sdk', name: 'papercusp-su', instance: privateMcpServer } };
+        }
+      }
+    }
+    if (closed || !ownsRuntime()) { await privateMcpServer?.close(); throw new Error('Claude startup was cancelled or replaced'); }
     sdk = (options.query ?? query)({ prompt: input, options: sdkOptions });
     done = (async () => {
       try {
         for await (const event of sdk) {
+          if (!ownsRuntime()) break;
           // ANY frame is progress. The watchdog measures SILENCE, not the absence
           // of a reply — a long tool call streams frames and is not a stall.
           lastFrameAt = Date.now();
@@ -667,7 +768,11 @@ export function startClaudeSuEngine(
           // provenance is refreshed below. That reader can await the gateway
           // for up to 1.5s; it must not leave the silence watchdog armed during
           // that post-turn bookkeeping window.
-          if (event.type === 'result') disarmStallWatch();
+          if (event.type === 'result') {
+            await withdrawNativeInput();
+            disarmStallWatch();
+          }
+          if (!ownsRuntime()) break;
           if ('session_id' in event && event.session_id && event.session_id !== nativeId) {
             throw new Error('Claude stream identity differs from the bootstrapped session');
           }
@@ -676,6 +781,36 @@ export function startClaudeSuEngine(
             throw new Error('Claude startup identity or project does not match');
           }
           if (event.type === 'user' && event.uuid) pending.get(event.uuid)?.resolve({ ok: true });
+          // Delivery receipts/status/assistant IDs are not accepted-input
+          // authority. Only this exact root replay can publish a capture scope.
+          if (event.type === 'user' && event.uuid === activeInputUuid && activeOwnerTurnId
+            && event.session_id === nativeId && event.parent_tool_use_id === null
+            && nativeInputOpen && !closed && !activeTurnInterrupted && !nativeInputScope && options.resolveRequestPrincipal) {
+            const epoch = nativeInputEpoch, inputId = activeInputUuid, ownerTurnId = activeOwnerTurnId;
+            const principal = await options.resolveRequestPrincipal();
+            if (principal && principal.workspaceId === boot.workspaceId && ['trusted', 'verified'].includes(principal.trust)
+              && nativeInputOpen && !closed && ownsRuntime() && !activeTurnInterrupted && epoch === nativeInputEpoch
+              && inputId === activeInputUuid && ownerTurnId === activeOwnerTurnId) {
+              nativeInputScope = nativeInstalledPerUseTurns.registerNativeInput({ provider: 'claude',
+                nativeInputId: inputId!, nativeSessionId: nativeId, ownerTurnId,
+                workspaceId: boot.workspaceId, ownerId: binding.ownerId!, advSessionId: binding.advSessionId,
+                principalId: principal.slug, mcpServer: 'papercusp-su', nativeTools,
+                resolveRequestPrincipal: options.resolveRequestPrincipal });
+            }
+          }
+          if (event.type === 'assistant' && event.session_id === nativeId && event.parent_tool_use_id === null
+            && nativeInputScope && activeInputUuid && !closed && !activeTurnInterrupted) {
+            for (const block of event.message.content) {
+              if (block.type === 'tool_use' && Object.hasOwn(nativeTools, block.name)) {
+                await nativeInputScope.observeToolCall({ nativeSessionId: nativeId, nativeInputId: activeInputUuid,
+                  server: 'papercusp-su', callId: block.id, tool: block.name, arguments: block.input });
+                if (nativeInputOpen && !closed && ownsRuntime() && !activeTurnInterrupted) {
+                  observedNativeCalls.add(block.id);
+                  for (const done of nativeCallWaiters.get(block.id) ?? []) done(true);
+                }
+              }
+            }
+          }
           // The SDK can begin the root API request before it replays the input
           // or starts an assistant message. The live CLI does not guarantee
           // that a status message's UUID echoes the submitted input UUID. The
@@ -740,21 +875,28 @@ export function startClaudeSuEngine(
             finishActiveTurn?.();
           }
         }
-        if (!closed) throw new Error('Claude event stream closed unexpectedly');
+        if (!closed && ownsRuntime()) throw new Error('Claude event stream closed unexpectedly');
       } catch (error) {
         const cause = error instanceof Error ? error : new Error(String(error));
-        if (!closed) {
+        if (!closed && ownsRuntime()) {
           adapter.host.emit({ type: 'error', scope: 'transport', code: 'claude_stream_failed', message: `${cause.message}${childStderrSuffix(childStderr.read())}`, recoverable: true });
           adapter.reconcileRuntimeExit({ expected: false, reason: cause.message });
           closed = true; ready = false; cards.cancel(); input.end(); sdk.close(); abortController.abort();
         }
       } finally {
+        if (!ownsRuntime()) {
+          closed = true; ready = false;
+          cards.cancel(); heartbeat?.stop(); disarmStallWatch();
+          input.end(); sdk.close(); abortController.abort();
+        }
+        await withdrawNativeInput();
+        await privateMcpServer?.close();
         for (const receipt of pending.values()) receipt.resolve(unavailable('Claude stream ended before acknowledgement'));
         finishActiveTurn?.();
         if (closed && !adapter.host.snapshot().terminal) adapter.reconcileRuntimeExit({ expected: true });
         if (closed) {
           await stopChild();
-          await options.onExit?.();
+          if (ownsRuntime()) await options.onExit?.();
         }
       }
     })();
@@ -762,7 +904,7 @@ export function startClaudeSuEngine(
     const initialization = await sdk.initializationResult();
     // A coding-assistant session loads no MCP servers, so it has no SU tool
     // connection to wait for.
-    if (su) {
+    if (su && !privateMcpServer) {
       enterStartupStage('SU tool connection');
       let servers = await sdk.mcpServerStatus();
       let suServer = servers.find((server) => server.name === 'papercusp-su');
@@ -770,7 +912,7 @@ export function startClaudeSuEngine(
       // Keep the host starting within its existing deadline until that handshake
       // settles; failed/missing/unauthenticated connections remain refusals.
       while (suServer && new Set(['pending', 'connecting']).has(suServer.status)) {
-        if (closed) throw new Error('Claude connection closed during SU tool initialization');
+        if (closed || !ownsRuntime()) throw new Error('Claude connection closed or was replaced during SU tool initialization');
         await new Promise((resolve) => setTimeout(resolve, 100));
         servers = await sdk.mcpServerStatus();
         suServer = servers.find((server) => server.name === 'papercusp-su');
@@ -785,15 +927,15 @@ export function startClaudeSuEngine(
           .filter(Boolean).join('; ');
         throw new Error(`Claude SU tool connection is ${suServer?.status ?? 'missing'}${detail ? ` (${detail})` : ''}; reconnect the SU tool connection (servers: ${servers.map((server) => `${server.name}:${server.status}`).join(', ') || 'none'})`);
       }
-      readOnlySuTools = claudeReadOnlySuTools(suServer);
-      directiveDispositionSuTools = claudeDirectiveDispositionSuTools(suServer);
+      acceptNativeTools(suServer.tools ?? []);
     }
+    if (!ownsRuntime()) throw new Error('Claude runtime was replaced during initialization');
     if (options.resume) {
       adapter.host.transition('resuming', 'Restoring saved conversation before attaching the executor');
       enterStartupStage('transcript restore');
       await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true });
     }
-    if (closed) throw new Error('Claude connection closed during startup');
+    if (closed || !ownsRuntime()) throw new Error('Claude connection closed or was replaced during startup');
     enterStartupStage('resume finalization');
     await options.beforeReady?.(processId);
     if (fork) {
@@ -802,7 +944,7 @@ export function startClaudeSuEngine(
       enterStartupStage('tracked fork registration');
       await fork.register();
     }
-    if (closed) throw new Error('Claude connection closed while finalizing resume');
+    if (closed || !ownsRuntime()) throw new Error('Claude connection closed or was replaced while finalizing resume');
     ready = true;
     adapter.host.transition('ready', su
       ? 'Claude structured stream, SU tools and command executor attached'

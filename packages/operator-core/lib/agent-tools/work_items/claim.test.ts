@@ -203,7 +203,7 @@ const forceAuditM = vi.mocked(recordForceTransitionAudit);
 const tool = (await import('./claim')).default;
 
 type Out = { data: any };
-const body = async (args: unknown) => ((await tool.handler(args as never, {} as never)) as Out).data;
+const body = async (args: unknown, ctx: unknown = {}) => ((await tool.handler(args as never, ctx as never)) as Out).data;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -311,6 +311,48 @@ describe('work_items:claim idempotent-completion opt-in (EI-21593186656422114)',
 });
 
 describe('work_items:claim handler (keyed-array)', () => {
+  it('lets an evidence judge self-claim one pullable review-consult task', async () => {
+    getM.mockResolvedValue(issueItem({
+      id: 'WI-REVIEW',
+      kind: 'task',
+      payload: { reviewConsult: { conversationId: 'conv-review', kind: 'rubric-vetting' } },
+    }));
+
+    const b = await body({ id: 'WI-REVIEW', harness: 'papercusp', changeKinds: ['no-code-change'] }, { role: 'judge' });
+
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-REVIEW' });
+    expect(claimM).toHaveBeenCalledWith('WI-REVIEW', 'me', { harness: 'papercusp', fromHolder: 'me' });
+    expect((tool as { agentRoles?: readonly string[] }).agentRoles).toContain('judge');
+  });
+
+  it('keeps ordinary work-item claims denied to evidence judges', async () => {
+    getM.mockResolvedValue(issueItem({ id: 'EI-ORDINARY', kind: 'bug' }));
+
+    const b = await body({ id: 'EI-ORDINARY', changeKinds: ['no-code-change'] }, { role: 'judge' });
+
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'EI-ORDINARY', error: 'judge_review_claim_only' });
+    expect(claimM).not.toHaveBeenCalled();
+  });
+
+  it('requires judges to declare no-code-change before claiming a review task', async () => {
+    const b = await body({ id: 'WI-REVIEW' }, { role: 'judge' });
+
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'judge_review_claim_only' });
+    expect(b.results[0].hint).toContain('changeKinds:["no-code-change"]');
+    expect(getM).not.toHaveBeenCalled();
+    expect(claimM).not.toHaveBeenCalled();
+  });
+
+  it('refuses judge batch and delegated claims before reading or mutating items', async () => {
+    const batch = await body({ ids: ['WI-REVIEW'] }, { role: 'judge' });
+    const delegated = await body({ id: 'WI-REVIEW', assignee: 'peer' }, { role: 'judge' });
+
+    expect(batch.results[0]).toMatchObject({ ok: false, error: 'judge_review_claim_only' });
+    expect(delegated.results[0]).toMatchObject({ ok: false, error: 'judge_review_claim_only' });
+    expect(getM).not.toHaveBeenCalled();
+    expect(claimM).not.toHaveBeenCalled();
+  });
+
   it('refuses terminal state claims before mutation and names the explicit reopen path', async () => {
     getM.mockResolvedValue(issueItem({
       id: 'WI-terminal',

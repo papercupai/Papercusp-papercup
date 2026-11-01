@@ -110,7 +110,7 @@ describe('conversation context projection', () => {
       if (text.includes('FROM harness_shared.adv_sessions')) {
         return Promise.resolve([{
           coord_owner_id: 'su-foreign', role: 'su', feature: null,
-          plan_slug: 'plan-a', harness_slug: 'papercusp',
+          plan_slug: 'plan-a',
           started_at: '2026-08-26T00:00:00Z', ended_at: null,
         }]);
       }
@@ -169,6 +169,9 @@ describe('conversation context projection', () => {
       harness: 'papercusp',
     }, { sql, loadFleetContext });
 
+    const advSessionQuery = queries.find((query) => query.includes('FROM harness_shared.adv_sessions'));
+    expect(advSessionQuery).toBeDefined();
+    expect(advSessionQuery).not.toContain('harness_slug');
     expect(projected?.session).toMatchObject({
       sourceKind: 'codex',
       sessionId: 'session-1',

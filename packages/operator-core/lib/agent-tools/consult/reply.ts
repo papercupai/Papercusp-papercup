@@ -19,6 +19,7 @@ import { lookupEndedSessions } from '../coordination/dead-session-recipient-guid
 import { hardText } from '../limits';
 import { consultPostAbortCompletionReceipt } from './abort-completion';
 import { DECISION_REVIEW_POSITIONS, OBJECTION_BASES, OWNER_AUTHORITY_TOPICS } from '../../consult/decision-review';
+import { reviewAnswerSchema, reviewDispositionsSchema } from '../../consult/review-findings';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
@@ -105,6 +106,8 @@ export default defineTool({
         .enum(['answer', 'clarifying_question', 'new_fact', 'question'])
         .describe('Responder: answer | clarifying_question | new_fact. Requester follow-up: question | new_fact.'),
       body: hardText(8000),
+      review: reviewAnswerSchema.optional().describe('Responder answer: preserve findings with the reviewed subject/revision and coverage. Stable finding ids are returned.'),
+      reviewDispositions: reviewDispositionsSchema.optional().describe('Requester new_fact: disposition stored finding ids without overwriting reviewer evidence. Planned obligations may proceed to implementation.'),
       evidence: z
         .array(evidenceRef)
         .max(16)
@@ -162,6 +165,8 @@ export default defineTool({
         conversationId: args.conversation_id,
         kind: args.kind,
         body: args.body,
+        review: args.review,
+        reviewDispositions: args.reviewDispositions,
         evidence: args.evidence,
         stance: args.stance,
         parkResponse: args.parkResponse,

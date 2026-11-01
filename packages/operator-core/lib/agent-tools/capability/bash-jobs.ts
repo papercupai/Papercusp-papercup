@@ -148,6 +148,13 @@ const TEST_ENV_ASSIGNMENT = String.raw`[A-Za-z_][A-Za-z0-9_]*=(?:[^\s"'\\;&|]|\\
 // Keep this prefix shared so npm/direct runners cannot miss the verifier's case.
 const TEST_SEGMENT_PREFIX = String.raw`(?:^|(?:&&|\|\||;|\n)\s*)(?:${TEST_ENV_ASSIGNMENT})*(?:env\s+(?:--\s+)?(?:${TEST_ENV_ASSIGNMENT})*)?`;
 const RTK_TEST_WRAPPER_PREFIX = String.raw`(?:rtk\s+test\s+--\s+)?`;
+const TIMEOUT_DURATION = String.raw`(?:\d+(?:\.\d*)?|\.\d+)(?:[smhd])?`;
+const TIMEOUT_SIGNAL = String.raw`[A-Za-z0-9]+`;
+const TIMEOUT_OPTION = String.raw`(?:--foreground|--preserve-status|--verbose|-f|-p|-v|--signal(?:=${TIMEOUT_SIGNAL}|[ \t]+${TIMEOUT_SIGNAL})|-s(?:${TIMEOUT_SIGNAL}|[ \t]+${TIMEOUT_SIGNAL})|--kill-after(?:=${TIMEOUT_DURATION}|[ \t]+${TIMEOUT_DURATION})|-k(?:${TIMEOUT_DURATION}|[ \t]+${TIMEOUT_DURATION}))`;
+const TIMEOUT_WRAPPER_RE = new RegExp(
+  String.raw`(${TEST_SEGMENT_PREFIX})(rtk\s+test\s+--\s+)?timeout(?:[ \t]+${TIMEOUT_OPTION})*(?:[ \t]+--)?[ \t]+${TIMEOUT_DURATION}[ \t]+`,
+  'ig',
+);
 const DIRECT_TEST_RUNNER_RE = new RegExp(
   `${TEST_SEGMENT_PREFIX}${RTK_TEST_WRAPPER_PREFIX}(?:(?:npx|bunx|pnpm\\s+exec|yarn\\s+dlx)\\s+)?` +
     String.raw`(?:vitest|jest|mocha|ava|pytest|playwright\s+test|cargo\s+test|go\s+test)(?:\s|$)`,
@@ -175,7 +182,10 @@ const MAINTAINED_VERIFIER_RE = new RegExp(
  * policy classification only; the command is still executed byte-for-byte.
  */
 export function isBackgroundTestCommand(command: string): boolean {
-  return DIRECT_TEST_RUNNER_RE.test(command) || PACKAGE_TEST_SCRIPT_RE.test(command) || MAINTAINED_VERIFIER_RE.test(command);
+  const withoutTimeout = command.replace(TIMEOUT_WRAPPER_RE, '$1$2');
+  return [command, withoutTimeout].some((candidate) =>
+    DIRECT_TEST_RUNNER_RE.test(candidate) || PACKAGE_TEST_SCRIPT_RE.test(candidate) || MAINTAINED_VERIFIER_RE.test(candidate),
+  );
 }
 
 /** Reserved child-env provenance for long-running physical drills. Only the
@@ -2305,6 +2315,15 @@ function normalizeMissingCommandResult(
   return { status: 'failed', exitCode: MISSING_COMMAND_EXIT_CODE };
 }
 
+/** A close callback can overtake an overdue local timer after RuntimeMaxSec fires. */
+export function classifyBackgroundCloseStatus(
+  status: BashStatus,
+  deadlineAt: number | undefined,
+  closedAt: number,
+): BashStatus {
+  return status === 'running' && deadlineAt !== undefined && closedAt >= deadlineAt ? 'timed_out' : status;
+}
+
 export interface StreamingSecretRedactor {
   /** Consume one raw child-process chunk and return only the safe prefix. */
   push(chunk: string): string;
@@ -2748,17 +2767,52 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // for immediate background return or waits through the bounded response
   // window, so the sandbox path (when enabled) must not die-with-parent.
   const spawnRequestedAt = Date.now();
-  const child = spawnShell(
-    opts.command,
-    opts.cwd,
-    childEnv,
-    opts.sandboxEnabled,
-    opts.sandboxRequired,
-    true,
-    enrolment.wrap,
-    id,
-    opts.sandboxBuildOpts,
-  );
+  // Arm the local timer before systemd-run can activate the unit. RuntimeMaxSec
+  // is the restart-surviving backstop; it must not beat this timer to the same
+  // deadline and make the close handler mistake a timeout for a command error.
+  let deadlineJob: BashJob | undefined;
+  let appendDeadlineDiagnostic = (): void => {};
+  const timer = setTimeout(() => {
+    const job = deadlineJob;
+    if (!job || job.status !== 'running') return;
+    job.status = 'timed_out';
+    // WI-6677: SAY SO, in the job's own output. A silent death at a deadline the
+    // caller never chose is indistinguishable from an OOM, a peer's pkill, or a
+    // crash — and agents have burned real time hunting each of those. The line
+    // lands in the spill log too, so it survives loss of the in-memory registry.
+    appendDeadlineDiagnostic();
+    // SIGTERM first so the job's own trap/finally can clean up (temp trees,
+    // checkouts, spawned sidecars). SIGKILL skips all of it, which is how a
+    // timed-out job used to leak gigabytes.
+    try {
+      killJobProcessTree(job, 'SIGTERM');
+    } catch {
+      /* fall through to the SIGKILL escalation */
+    }
+    setTimeout(() => {
+      // Liveness must be judged by `exitCode`, not `job.status` — the status was
+      // flipped to 'timed_out' synchronously above, so testing it here would make
+      // this escalation dead code. Same reasoning as killJob's grace timer below.
+      if (job.exitCode === null) killJobProcessTree(job, 'SIGKILL');
+    }, TIMEOUT_SIGTERM_GRACE_MS).unref();
+  }, effectiveTimeoutMs);
+  let child: ChildProcess;
+  try {
+    child = spawnShell(
+      opts.command,
+      opts.cwd,
+      childEnv,
+      opts.sandboxEnabled,
+      opts.sandboxRequired,
+      true,
+      enrolment.wrap,
+      id,
+      opts.sandboxBuildOpts,
+    );
+  } catch (error) {
+    clearTimeout(timer);
+    throw error;
+  }
   const spawnReturnedAt = Date.now();
   // A service can finish before the job object and redactor are fully assembled.
   // Keep stdout/stderr flowing from the instant spawn returns, then replay the
@@ -2780,7 +2834,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     command: opts.command,
     cwd: opts.cwd,
     child,
-    startedAt: Date.now(),
+    startedAt: spawnRequestedAt,
     endedAt: null,
     status: 'running',
     exitCode: null,
@@ -2798,7 +2852,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     taskId: enrolment.taskId,
     scopeUnit: enrolment.scopeUnit,
     timeoutMs: effectiveTimeoutMs,
-    deadlineAt: Date.now() + effectiveTimeoutMs,
+    deadlineAt: spawnRequestedAt + effectiveTimeoutMs,
     phaseTiming: {
       spawnRequestedAt,
       spawnReturnedAt,
@@ -2807,6 +2861,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     },
   };
   JOBS.set(id, job);
+  deadlineJob = job;
   child.once('spawn', () => {
     job.phaseTiming!.clientSpawnedAt = Date.now();
   });
@@ -2954,14 +3009,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     child.pid ?? null,
   );
 
-  const timer = setTimeout(() => {
-    if (job.status !== 'running') return;
-    job.status = 'timed_out';
-    // WI-6677: SAY SO, in the job's own output. A silent death at a deadline the
-    // caller never chose is indistinguishable from an OOM, a peer's pkill, or a
-    // crash — and agents have burned real time hunting each of those. The line
-    // lands in the spill log too, so it survives loss of the in-memory registry.
-    //
+  appendDeadlineDiagnostic = (): void => {
     // EI-19315037905600226: a SECOND, narrower ambiguity hides inside "deadline
     // reached" itself — it does not say whether the job ever got to DO anything.
     // A missing slot-acquired marker is not enough to diagnose queueing: a
@@ -2980,21 +3028,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       `For a longer job pass an explicit \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms).\n`;
     appendRawOutput(deadlineDiagnostic);
     appendRunnerOwnedDiagnostic(deadlineDiagnostic);
-    // SIGTERM first so the job's own trap/finally can clean up (temp trees,
-    // checkouts, spawned sidecars). SIGKILL skips all of it, which is how a
-    // timed-out job used to leak gigabytes.
-    try {
-      killJobProcessTree(job, 'SIGTERM');
-    } catch {
-      /* fall through to the SIGKILL escalation */
-    }
-    setTimeout(() => {
-      // Liveness must be judged by `exitCode`, not `job.status` — the status was
-      // flipped to 'timed_out' synchronously above, so testing it here would make
-      // this escalation dead code. Same reasoning as killJob's grace timer below.
-      if (job.exitCode === null) killJobProcessTree(job, 'SIGKILL');
-    }, TIMEOUT_SIGTERM_GRACE_MS).unref();
-  }, effectiveTimeoutMs);
+  };
 
   child.on('error', (err) => {
     const spawnDiagnostic = `\n[spawn error] ${err instanceof Error ? err.message : String(err)}\n`;
@@ -3040,6 +3074,9 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     );
   });
   child.on('close', (code) => {
+    const statusBeforeClose = job.status;
+    job.status = classifyBackgroundCloseStatus(job.status, job.deadlineAt, Date.now());
+    if (statusBeforeClose === 'running' && job.status === 'timed_out') appendDeadlineDiagnostic();
     if (job.status === 'running') {
       const sigpipeNormalized = normalizeExpectedSigpipeResult(opts.command, code === 0 ? 'completed' : 'failed', code);
       const ppidNormalized = normalizeExpectedPsPpidEmptyResult(

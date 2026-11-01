@@ -91,6 +91,14 @@ function fixture(n = 20) {
 }
 
 describe('shapeOrient trimmed', () => {
+  it('preserves the exact owner identity independently of recent workspace facts', () => {
+    const ownerIdentity = { status: 'known', displayName: 'Fixture owner', sourceRef: 'fact:workspace:owner-identity@v1' };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const shaped = shapeOrient({ ...fixture(200), ownerIdentity }, tier) as Record<string, unknown>;
+      expect(shaped.ownerIdentity).toEqual(ownerIdentity);
+    }
+  });
+
   const out = shapeOrient(fixture(), 'trimmed') as Record<string, never> & Record<string, unknown>;
 
   it('projects claimable rows to placement essentials with a loud cap', () => {

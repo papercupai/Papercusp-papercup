@@ -40,6 +40,19 @@ type CursorSurfaceState = { cursor: number | undefined; exhausted: boolean };
 /** The four append-only channels that live in coord_event_log. */
 export type CoordSurface = 'messages' | 'escalations' | 'handoffs' | 'plan-events';
 
+/** Bounded timing evidence for the per-surface reads behind coord:feed. */
+export interface CoordFeedReadPhase {
+  name: string;
+  round: number;
+  status: 'running' | 'fulfilled' | 'rejected';
+  startedAt: string;
+  elapsedMs: number | null;
+  returnedRows?: number;
+  exhausted?: boolean;
+}
+
+export type CoordFeedPhaseObserver = (phase: CoordFeedReadPhase) => void;
+
 /** Every kind that can appear in the feed, across all surfaces. Keep this
  * derived from the canonical executable/conversational vocabularies so the
  * feed's filter cannot silently reject a newly-added wire kind (for example
@@ -222,6 +235,7 @@ function matchesText(env: CoordEnvelope, needle: string): boolean {
  */
 export async function readCoordFeed(
   opts: ReadCoordFeedOpts = {},
+  observePhase?: CoordFeedPhaseObserver,
 ): Promise<{
   rows: CoordFeedRow[];
   nextCursor: string | null;
@@ -248,6 +262,40 @@ export async function readCoordFeed(
   );
   const allSurfacesExhausted = (): boolean =>
     [...lineState.values(), ...eventState.values()].every((surface) => surface.exhausted);
+
+  let fetchRoundNumber = 0;
+  const measureSurfaceRead = async <T extends { rows: unknown[]; exhausted: boolean }>(
+    name: string,
+    round: number,
+    action: () => Promise<T>,
+  ): Promise<T> => {
+    if (!observePhase) return action();
+    const phase: CoordFeedReadPhase = {
+      name,
+      round,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      elapsedMs: null,
+    };
+    try {
+      observePhase(phase);
+    } catch {
+      // Diagnostic delivery must never replace the feed result or error.
+    }
+    const startedAt = performance.now();
+    try {
+      const page = await action();
+      phase.status = 'fulfilled';
+      phase.returnedRows = page.rows.length;
+      phase.exhausted = page.exhausted;
+      return page;
+    } catch (error) {
+      phase.status = 'rejected';
+      throw error;
+    } finally {
+      phase.elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
+    }
+  };
 
   // Filter predicate — extracted so the deepening loop below can cheaply
   // check "do we have enough yet?" without duplicating the filter logic.
@@ -286,18 +334,21 @@ export async function readCoordFeed(
   // One round: fetch each not-yet-exhausted surface's next RAW_SURFACE_FETCH_CAP
   // window (from its current cursor), tag + accumulate, advance the cursor.
   const fetchRound = async (): Promise<void> => {
+    const round = ++fetchRoundNumber;
     const lineReads = LINE_SURFACES.map(async (surface) => {
       const st = lineState.get(surface)!;
       if (st.exhausted) return;
-      const page = await coordLog.readLinesBoundedCursor(surface, {
-        limit: RAW_SURFACE_FETCH_CAP,
-        ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
-        ...(opts.from ? { from: opts.from } : {}),
-        ...(opts.since_ts ? { sinceTs: opts.since_ts } : {}),
-        ...(opts.plan_slug ? { planSlug: opts.plan_slug } : {}),
-        ...(opts.before_ts ? { beforeTs: opts.before_ts, beforeMsgId: opts.before_msg_id } : {}),
-        ...(st.cursor !== undefined ? { beforeId: st.cursor } : {}),
-      });
+      const page = await measureSurfaceRead('surface-read:' + surface, round, () =>
+        coordLog.readLinesBoundedCursor(surface, {
+          limit: RAW_SURFACE_FETCH_CAP,
+          ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
+          ...(opts.from ? { from: opts.from } : {}),
+          ...(opts.since_ts ? { sinceTs: opts.since_ts } : {}),
+          ...(opts.plan_slug ? { planSlug: opts.plan_slug } : {}),
+          ...(opts.before_ts ? { beforeTs: opts.before_ts, beforeMsgId: opts.before_msg_id } : {}),
+          ...(st.cursor !== undefined ? { beforeId: st.cursor } : {}),
+        }),
+      );
       for (const row of page.rows) {
         tagged.push({ ...row.envelope, surface, broadcast: isBroadcast(row.envelope.to) });
       }
@@ -307,13 +358,15 @@ export async function readCoordFeed(
     const eventReads = EVENT_SURFACES.map(async (surface) => {
       const st = eventState.get(surface)!;
       if (st.exhausted) return;
-      const page = await coordLog.readEventsBoundedCursor(surface, {
-        limit: RAW_SURFACE_FETCH_CAP,
-        ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
-        ...(opts.from ? { from: opts.from } : {}),
-        ...(opts.before_ts ? { beforeTs: opts.before_ts, beforeMsgId: opts.before_msg_id } : {}),
-        ...(st.cursor !== undefined ? { beforeId: st.cursor } : {}),
-      });
+      const page = await measureSurfaceRead('surface-read:' + surface, round, () =>
+        coordLog.readEventsBoundedCursor(surface, {
+          limit: RAW_SURFACE_FETCH_CAP,
+          ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
+          ...(opts.from ? { from: opts.from } : {}),
+          ...(opts.before_ts ? { beforeTs: opts.before_ts, beforeMsgId: opts.before_msg_id } : {}),
+          ...(st.cursor !== undefined ? { beforeId: st.cursor } : {}),
+        }),
+      );
       for (const row of page.rows) {
         tagged.push({ ...row.envelope, surface, broadcast: isBroadcast(row.envelope.to) });
       }
@@ -407,10 +460,31 @@ export async function readCoordFeed(
   // failing query today; this one keeps the guarantee true if that helper is ever
   // refactored into something that can throw.
   if (page.length > 0) {
+    const markerPhase: CoordFeedReadPhase | null = observePhase
+      ? {
+          name: 'supersession-marker-read',
+          round: fetchRoundNumber,
+          status: 'running',
+          startedAt: new Date().toISOString(),
+          elapsedMs: null,
+        }
+      : null;
+    if (markerPhase) {
+      try {
+        observePhase?.(markerPhase);
+      } catch {
+        // Diagnostic delivery must never replace the feed result or error.
+      }
+    }
+    const markerStartedAt = performance.now();
     try {
       const marks = await getSupersededMap(
         page.map((r) => r.msg_id).filter((id): id is string => typeof id === 'string'),
       );
+      if (markerPhase) {
+        markerPhase.status = 'fulfilled';
+        markerPhase.returnedRows = marks.size;
+      }
       for (const row of page) {
         const mark = typeof row.msg_id === 'string' ? marks.get(row.msg_id) : undefined;
         if (!mark) continue;
@@ -418,7 +492,12 @@ export async function readCoordFeed(
         row.superseded_at = mark.supersededAt;
       }
     } catch {
+      if (markerPhase) markerPhase.status = 'rejected';
       // Unmarked, but complete — see above.
+    } finally {
+      if (markerPhase) {
+        markerPhase.elapsedMs = Math.max(0, Math.round(performance.now() - markerStartedAt));
+      }
     }
   }
 

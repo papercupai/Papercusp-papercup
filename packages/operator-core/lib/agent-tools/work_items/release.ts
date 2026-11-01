@@ -226,7 +226,10 @@ function hasStructuredCompletionPremise(message: unknown, itemId: string): boole
  */
 function completionClauses(segment: string): string[] {
   return segment
-    .split(/(?:\r?\n|[.!?;]+|:\s+|,\s+(?=(?:and|but|while|whereas|yet|or)\b|[A-Z0-9])|\s+(?:—|–|--)+\s+)/)
+    // A comma before a polite imperative starts a new request clause too:
+    // "the check is complete, please reply with WI-X" must not attach the
+    // check's completion to the later work-item reference.
+    .split(/(?:\r?\n|[.!?;]+|:\s+|,\s+(?=(?:and|but|while|whereas|yet|or|please)\b|[A-Z0-9])|\s+(?:—|–|--)+\s+)/)
     .map((clause) => clause.trim())
     .filter(Boolean);
 }

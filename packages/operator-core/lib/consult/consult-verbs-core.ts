@@ -50,6 +50,7 @@ import {
 import { consultResponderVerbMenu } from './responder-verb-menu';
 import { isDecisionReviewRouting, validateDecisionReviewStance, type DecisionReviewStance } from './decision-review';
 import { appendParkerResponse } from './park-adapters';
+import { appendConsultReview, readConsultReview, type ReviewAnswer, type ReviewDispositionInput, type ConsultReviewState } from './review-findings';
 
 export const RESPONDER_REPLY_KINDS = ['answer', 'clarifying_question', 'new_fact'] as const;
 export const REQUESTER_REPLY_KINDS = ['question', 'new_fact'] as const;
@@ -193,6 +194,7 @@ export type ConsultVerbError =
   | { error: 'exchange_cap'; exchanges_used: number; max_exchanges: number; hint: string }
   | { error: 'answer_required' }
   | { error: 'reason_required' }
+  | { error: 'invalid_review'; hint: string }
   | { error: 'post_failed'; cause: string }
   | { error: 'graduate_unavailable'; hint: string }
   | { error: 'graduate_failed'; cause: string }
@@ -484,6 +486,8 @@ export interface ConsultReplyRequest {
   conversationId: string;
   kind: ConsultReplyKind;
   body: string;
+  review?: ReviewAnswer;
+  reviewDispositions?: ReviewDispositionInput[];
   evidence?: ConsultEvidenceRef[];
   /** Decision-review consults only (consult-backed-parking P-004, R-4/R-15): the
    * reviewer's stance. REQUIRED on every responder reply to a decision review;
@@ -499,6 +503,7 @@ export interface ConsultReplyResult {
   ok: true;
   post_id: number;
   role: 'requester' | 'responder';
+  review?: ConsultReviewState;
   /** The validated stance stored with this post (decision-review responder replies only). */
   stance?: DecisionReviewStance;
   state: string;
@@ -594,6 +599,18 @@ export async function consultReplyCore(
       hint: 'kind=answer requires evidence: [{ session_id, turn_idx, note? }] — cite the transcript turns the answer rests on (sessions:read resolves them).',
     };
   }
+  if (req.review !== undefined && (role !== 'responder' || req.kind !== 'answer')) {
+    return { error: 'invalid_review', hint: 'Only a responder answer may publish review findings.' };
+  }
+  if (req.reviewDispositions !== undefined && (role !== 'requester' || req.kind !== 'new_fact')) {
+    return { error: 'invalid_review', hint: 'The requester records review dispositions with kind:new_fact or consult:close.' };
+  }
+  const changesReview = req.review !== undefined || req.reviewDispositions !== undefined;
+  if (changesReview) {
+    try { appendConsultReview({ current: readConsultReview(row.outcome), answer: req.review,
+      dispositions: req.reviewDispositions, postId: 0, authorId: req.authorId, requesterId: row.requester_id, at: now }); }
+    catch (error) { return { error: 'invalid_review', hint: error instanceof Error ? error.message : String(error) }; }
+  }
   // consult-backed-parking P-004 (R-4/R-15, D-003): a reviewer on a decision-review
   // consult (a product-decision park) must declare support / object / no-view, and an
   // objection must carry an alternative, hazard evidence or an owner-authority topic.
@@ -659,40 +676,51 @@ export async function consultReplyCore(
   if ('error' in posted) return { error: 'post_failed', cause: posted.error };
   const postId = posted.post.id;
 
-  // The stance column (migration 1482) is written ONLY when a stance exists, so an
-  // ordinary consult insert keeps the pre-1482 column list (fixtures that hand-roll
-  // consult_post_meta without it stay valid).
-  if (stance) {
-    await sql`
-      INSERT INTO harness_shared.consult_post_meta
-        (workspace_id, post_id, conversation_id, author_id, kind, evidence, stance)
-      VALUES
-        (${req.workspaceId}, ${postId}, ${req.conversationId}, ${req.authorId},
-         ${req.kind}, ${req.evidence ? sql.json(req.evidence as never) : null}, ${sql.json(stance as never)})
-    `;
-  } else {
-    await sql`
-      INSERT INTO harness_shared.consult_post_meta
-        (workspace_id, post_id, conversation_id, author_id, kind, evidence)
-      VALUES
-        (${req.workspaceId}, ${postId}, ${req.conversationId}, ${req.authorId},
-         ${req.kind}, ${req.evidence ? sql.json(req.evidence as never) : null})
-    `;
-  }
-
   const nextState =
     role === 'responder' && (row.state === 'awaiting_responder' || row.state === 'no_qualified_responder')
       ? 'active'
       : row.state;
   const exchangesUsed = row.exchanges_used + (isPerspective ? 0 : 1);
-  await sql`
+  let review: ConsultReviewState | undefined;
+  // Serialize structured history with close/other answers so neither can erase it.
+  await sql.begin(async (tx) => {
+    if (changesReview) {
+      const [latest] = await tx`SELECT outcome FROM harness_shared.consult_state
+        WHERE workspace_id=${req.workspaceId} AND conversation_id=${req.conversationId} FOR UPDATE`;
+      review = appendConsultReview({ current: readConsultReview(latest?.outcome), answer: req.review,
+        dispositions: req.reviewDispositions, postId, authorId: req.authorId, requesterId: row.requester_id, at: now });
+    }
+  // The stance column (migration 1482) is written ONLY when a stance exists, so an
+  // ordinary consult insert keeps the pre-1482 column list (fixtures that hand-roll
+  // consult_post_meta without it stay valid).
+  if (stance) {
+    await tx`
+      INSERT INTO harness_shared.consult_post_meta
+        (workspace_id, post_id, conversation_id, author_id, kind, evidence, stance)
+      VALUES
+        (${req.workspaceId}, ${postId}, ${req.conversationId}, ${req.authorId},
+         ${req.kind}, ${req.evidence ? tx.json(req.evidence as never) : null}, ${tx.json(stance as never)})
+    `;
+  } else {
+    await tx`
+      INSERT INTO harness_shared.consult_post_meta
+        (workspace_id, post_id, conversation_id, author_id, kind, evidence)
+      VALUES
+        (${req.workspaceId}, ${postId}, ${req.conversationId}, ${req.authorId},
+         ${req.kind}, ${req.evidence ? tx.json(req.evidence as never) : null})
+    `;
+  }
+
+  await tx`
     UPDATE harness_shared.consult_state
        SET state = CASE WHEN ${resumesUndelivered}::boolean THEN state ELSE ${nextState} END,
            exchanges_used = CASE WHEN ${resumesUndelivered}::boolean THEN exchanges_used + 1 ELSE ${exchangesUsed} END,
            wakes_used = wakes_used + ${willWake ? 1 : 0},
+           outcome = COALESCE(outcome, '{}'::jsonb) || ${tx.json(review ? { review } as never : {} as never)}::jsonb,
            updated_at = ${now}::timestamptz
      WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
   `;
+  });
 
   // consult-backed-parking P-006: the parker's adopt/rebut is data, recorded on the
   // committed reply (not fail-soft); the resolver run after it is a side effect (fail-soft).
@@ -852,6 +880,7 @@ export async function consultReplyCore(
     ok: true,
     post_id: postId,
     role,
+    ...(review ? { review } : {}),
     state: resumesUndelivered ? (await readState(sql, req.workspaceId, req.conversationId))?.state ?? nextState : nextState,
     exchanges_used: exchangesUsed,
     max_exchanges: row.max_exchanges,
@@ -1075,6 +1104,7 @@ export interface ConsultCloseRequest {
   /** Responder's confidence in the answer, 0..1 (outcome jsonb, D-001). */
   confidence?: number;
   evidence?: ConsultEvidenceRef[];
+  reviewDispositions?: ReviewDispositionInput[];
   reason?: string;
 }
 
@@ -1082,6 +1112,7 @@ export interface ConsultCloseResult {
   ok: true;
   post_id: number;
   state: 'closed_answered' | 'closed_cant_help' | 'graduated';
+  review?: ConsultReviewState;
   /** The minted shared work item (graduate closes only). */
   work_item_id?: string;
   hint: string;
@@ -1130,6 +1161,12 @@ export async function consultCloseCore(
 
   if (!isConsultParticipant(row, req.authorId)) {
     return { error: 'not_a_participant', hint: CONSULT_PARTICIPATION_REMEDY };
+  }
+
+  if (req.reviewDispositions !== undefined) {
+    try { appendConsultReview({ current: readConsultReview(row.outcome), dispositions: req.reviewDispositions,
+      postId: 0, authorId: req.authorId, requesterId: row.requester_id, at: now }); }
+    catch (error) { return { error: 'invalid_review', hint: error instanceof Error ? error.message : String(error) }; }
   }
 
   // Structured outcome (D-001 — the outcome column comment is the authority):
@@ -1195,7 +1232,13 @@ export async function consultCloseCore(
   // boundary. The metadata, consult state, and coarse projection share one
   // transaction so a failed secondary write cannot leave consult_state
   // terminal while conversations:get/list still reports the consult open.
+  let review: ConsultReviewState | undefined;
   await sql.begin(async (tx) => {
+    const [latest] = await tx`SELECT outcome FROM harness_shared.consult_state
+      WHERE workspace_id=${req.workspaceId} AND conversation_id=${req.conversationId} FOR UPDATE`;
+    review = readConsultReview(latest?.outcome);
+    if (req.reviewDispositions !== undefined) review = appendConsultReview({ current: review,
+      dispositions: req.reviewDispositions, postId, authorId: req.authorId, requesterId: row.requester_id, at: now });
     await tx`
       INSERT INTO harness_shared.consult_post_meta
         (workspace_id, post_id, conversation_id, author_id, kind, evidence)
@@ -1206,10 +1249,7 @@ export async function consultCloseCore(
     await tx`
       UPDATE harness_shared.consult_state
          SET state = ${state},
-             outcome = ${tx.json(outcome as never)}::jsonb
-                       || CASE WHEN (outcome -> 'reconciliation') IS NOT NULL
-                               THEN jsonb_build_object('reconciliation', outcome -> 'reconciliation')
-                               ELSE '{}'::jsonb END,
+             outcome = COALESCE(outcome, '{}'::jsonb) || ${tx.json({ ...outcome, ...(review ? { review } : {}) } as never)}::jsonb,
              closed_at = ${now}::timestamptz,
              updated_at = ${now}::timestamptz
        WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
@@ -1263,6 +1303,7 @@ export async function consultCloseCore(
     post_id: postId,
     state,
     ...(graduatedWorkItemId ? { work_item_id: graduatedWorkItemId } : {}),
+    ...(review ? { review } : {}),
     hint:
       state === 'closed_answered'
         ? `Closed with a structured answer${req.confidence != null ? ` (confidence ${req.confidence})` : ''}. The outcome is on consult_state (the D-003 honesty-metric feed).`

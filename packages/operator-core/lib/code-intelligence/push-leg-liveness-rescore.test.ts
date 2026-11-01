@@ -8,6 +8,8 @@
  * Kept in its own file because the module mocks below are file-wide.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getFlag } from '@papercusp/flags/server';
+import { resolveAlarm } from '../alarm-attention';
 
 const unsafe = vi.fn(async (_query: string, _params?: unknown[]) => [] as unknown[]);
 const resolvePlanImplementerIdentities = vi.fn(async (_plan: string, _opts: { workspaceId?: string }) => ['su-implementer-a', 'su-implementer-b']);
@@ -30,6 +32,8 @@ describe('code-intel liveness rescore lineage (WI-6554700010030221)', () => {
   beforeEach(() => {
     unsafe.mockClear();
     resolvePlanImplementerIdentities.mockClear();
+    vi.mocked(getFlag).mockClear();
+    vi.mocked(resolveAlarm).mockClear();
   });
 
   it('delegates the excluded lineage to resolvePlanImplementerIdentities for the subject plan and workspace', async () => {
@@ -64,5 +68,12 @@ describe('code-intel liveness rescore lineage (WI-6554700010030221)', () => {
     resolvePlanImplementerIdentities.mockRejectedValueOnce(new Error('lineage unreadable'));
     await expect(codeIntelLivenessRescore().resolve(WINDOW)).rejects.toThrow('lineage unreadable');
     expect(unsafe).not.toHaveBeenCalled();
+  });
+
+  it('does not turn a flag read failure into an OFF disposition that clears an alarm', async () => {
+    vi.mocked(getFlag).mockRejectedValueOnce(new Error('flag store unreadable'));
+    await expect(codeIntelLivenessRescore().resolve(WINDOW)).rejects.toThrow('flag store unreadable');
+    expect(resolveAlarm).not.toHaveBeenCalled();
+    expect(unsafe.mock.calls.some(([q]) => /INSERT INTO harness_shared\.audit_log/.test(String(q)))).toBe(false);
   });
 });

@@ -13,14 +13,14 @@ export async function writePlanItemAnchors(tx: TransactionSql, scope: PlanAnchor
   const rows = JSON.stringify(write.anchors);
   await tx`INSERT INTO harness_shared.plan_item_anchors
     (workspace_id,harness_slug,plan_slug,item_id,anchor_kind,requested,symbol_id,symbol_name,path,line,
-     signature,content_hash,consumers,consumers_total,tests,resolution,unknown_reason,freshness,resolved_commit,created_by,last_checked_at,last_check_ok)
+     signature,content_hash,consumers,consumers_total,tests,resolution,unknown_reason,freshness,resolved_commit,created_by,last_checked_at,last_check_ok,change_intent)
     SELECT ${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},${write.itemId},
       x."anchorKind",x.requested,x."symbolId",x."symbolName",x.path,x.line,x.signature,x."contentHash",
-      x.consumers,x."consumersTotal",x.tests,x.resolution,x."unknownReason",x.freshness,x."resolvedCommit",${actor},now(),x.resolution='resolved'
+      x.consumers,x."consumersTotal",x.tests,x.resolution,x."unknownReason",x.freshness,x."resolvedCommit",${actor},now(),x.resolution='resolved',x.change
     -- Match plan-index-rows: bind pre-serialized JSON as TEXT before casting,
     -- independent of whether this connection has the hybrid JSON serializer.
     FROM jsonb_to_recordset(${rows}::text::jsonb) AS x("anchorKind" text,requested text,"symbolId" text,"symbolName" text,path text,line int,
-      signature text,"contentHash" text,consumers jsonb,"consumersTotal" int,tests jsonb,resolution text,"unknownReason" text,freshness text,"resolvedCommit" text)`;
+      signature text,"contentHash" text,consumers jsonb,"consumersTotal" int,tests jsonb,resolution text,"unknownReason" text,freshness text,"resolvedCommit" text,change jsonb)`;
 }
 
 export async function readPlanItemAnchors(scope: PlanAnchorScope): Promise<Record<string, PlanItemAnchor[]>> {
@@ -30,7 +30,7 @@ export async function readPlanItemAnchors(scope: PlanAnchorScope): Promise<Recor
       a.symbol_id AS "symbolId", a.symbol_name AS "symbolName", a.path, a.line, a.signature,
       a.content_hash AS "contentHash", a.consumers, a.consumers_total AS "consumersTotal", a.tests,
       a.resolution, a.unknown_reason AS "unknownReason", a.freshness, a.resolved_commit AS "resolvedCommit",
-      a.stale_notice_id::text AS "staleNoticeId"
+      a.stale_notice_id::text AS "staleNoticeId", a.change_intent AS change
     FROM harness_shared.plan_item_anchors a
     WHERE a.workspace_id=${scope.workspaceId} AND a.harness_slug=${scope.harnessSlug} AND a.plan_slug=${scope.planSlug}
       AND EXISTS (SELECT 1 FROM harness_shared.plan_items i WHERE i.workspace_id=a.workspace_id

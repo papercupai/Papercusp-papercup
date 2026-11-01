@@ -74,6 +74,38 @@ async function makeTestRoot(router = false) {
   return root;
 }
 
+it('refuses private PG across multiple checkouts before launching a router', async () => {
+  const checkouts = await Promise.all([makeTestRoot(true), makeTestRoot(true)]);
+  const runRouterFn = vi.fn();
+  const result = await runTestFilesCore({
+    root: checkouts[0]!,
+    files: checkouts.map(root => join(root, 'feature.test.ts')),
+    privatePg: true,
+  }, { runRouterFn, artifactBaseDir: checkouts[0]! });
+
+  expect(result).toMatchObject({
+    ok: false,
+    error: 'private_pg_requires_single_checkout',
+    roots: checkouts,
+  });
+  expect(runRouterFn).not.toHaveBeenCalled();
+  expect(phases.detach).not.toHaveBeenCalled();
+});
+
+it('refuses private PG when the selected checkout has no maintained PG launcher', async () => {
+  const root = await makeTestRoot(true);
+  const runRouterFn = vi.fn();
+  const result = await runTestFilesCore({
+    root,
+    files: ['feature.test.ts'],
+    privatePg: true,
+  }, { runRouterFn, artifactBaseDir: root });
+
+  expect(result).toMatchObject({ ok: false, error: 'private_pg_route_unavailable', root });
+  expect(runRouterFn).not.toHaveBeenCalled();
+  expect(phases.detach).not.toHaveBeenCalled();
+});
+
 it('cleans detached report files while preserving their shared parent and sibling artifacts', async () => {
   const root = await makeTestRoot();
   const reportPath = join(root, 'detached-report.json');

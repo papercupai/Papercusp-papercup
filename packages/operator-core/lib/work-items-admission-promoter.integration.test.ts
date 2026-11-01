@@ -440,6 +440,78 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(h.scopeDecisions).toContainEqual(expect.objectContaining({ harness: 'unrelated-app', verdict: 'held' }));
   });
 
+  it.each([false, true])('records the queue selection witness before model work and preserves it on replay (targeted=%s)', async (targeted) => {
+    await seedItem({ id: 'WI-selection-input' });
+    await seedItem({ id: 'WI-selection-comparison', admission: 'admitted' });
+    const selection = {
+      schemaVersion: 1,
+      runScope: targeted ? 'targeted' : 'scheduled',
+      selectedItemIds: ['WI-selection-input'],
+      comparisonItemIds: ['WI-selection-comparison'],
+    };
+    const model = judgementCall('r-remedy-keep');
+    const llmCall = vi.fn(async (input: Parameters<typeof model>[0]) => {
+      const [running] = await db.sql`
+        SELECT detail FROM harness_shared.admission_runs WHERE id = 'selection-complete'`;
+      expect(running.detail.status).toBe('running');
+      expect(running.detail.queueSelection).toEqual(selection);
+      return model(input);
+    });
+    const options = {
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'selection-complete', sql: db.sql,
+      batchSize: 1, now: () => NOW,
+      ...(targeted ? { targetItemIds: ['WI-selection-input'] } : {}),
+    };
+    await runWorkItemAdmissionPromoter({ ...options, llmCall });
+    expect(llmCall).toHaveBeenCalledOnce();
+    const [complete] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'selection-complete'`;
+    expect(complete.detail.status).toBe('complete');
+    expect(complete.detail.queueSelection).toEqual(selection);
+    // Exact-target guards may retain the row. Explicitly empty the later input
+    // so replay must preserve the original witness instead of replacing it with [].
+    await db.sql`UPDATE harness_shared.work_items SET admission = 'admitted'
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-selection-input'`;
+    const replayModel = vi.fn(async () => { throw new Error('empty replay must not call the model'); });
+    await runWorkItemAdmissionPromoter({ ...options, llmCall: replayModel });
+    expect(replayModel).not.toHaveBeenCalled();
+    const [replayed] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'selection-complete'`;
+    expect(replayed.detail.queueSelection).toEqual(selection);
+  });
+
+  it('retains the queue selection witness when model work fails', async () => {
+    await seedItem({ id: 'WI-selection-input' });
+    await seedItem({ id: 'WI-selection-comparison', admission: 'admitted' });
+    await expect(runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'selection-failed', sql: db.sql,
+      batchSize: 1, targetItemIds: ['WI-selection-input'], now: () => NOW,
+      llmCall: async () => { throw new Error('selection witness model failure'); },
+    })).rejects.toThrow('selection witness model failure');
+    const [failed] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'selection-failed'`;
+    expect(failed.detail.status).toBe('failed');
+    expect(failed.detail.queueSelection).toEqual({
+      schemaVersion: 1, runScope: 'targeted',
+      selectedItemIds: ['WI-selection-input'], comparisonItemIds: ['WI-selection-comparison'],
+    });
+  });
+
+  it.each([false, true])('records an explicit empty queue selection witness (targeted=%s)', async (targeted) => {
+    const llmCall = vi.fn();
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'selection-empty', sql: db.sql,
+      now: () => NOW, llmCall, ...(targeted ? { targetItemIds: ['WI-selection-missing'] } : {}),
+    });
+    const [empty] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'selection-empty'`;
+    expect(empty.detail.queueSelection).toEqual({
+      schemaVersion: 1, runScope: targeted ? 'targeted' : 'scheduled',
+      selectedItemIds: [], comparisonItemIds: [],
+    });
+    expect(llmCall).not.toHaveBeenCalled();
+  });
+
   it('records the actual producing runtime process and preserves it during stranded recovery', async () => {
     const build = getBuildInfo();
     const identity = readProcessIdentity(process.pid);

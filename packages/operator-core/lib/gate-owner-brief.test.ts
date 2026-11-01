@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { composeGateOwnerBrief, type GateOwnerBriefInput } from './gate-owner-brief';
 import { projectFrozenRepairConvergenceCell } from './release/frozen-candidate-repair-queue';
-import { buildTestPassReuseHealth } from './release/test-pass-reuse-report';
+import { buildGateSuiteMeasurement, buildTestPassReuseHealth } from './release/test-pass-reuse-report';
 
 const NOW = 1_788_193_000_000;
 const CANDIDATE = '1111111111111111111111111111111111111111';
@@ -18,6 +18,40 @@ const MAIN_PIN = '2222222222222222222222222222222222222222';
 const STAGING_HEAD = '3333333333333333333333333333333333333333';
 
 describe('owner brief test progress retrieval', () => {
+  it('keeps the last actual suite and both cache layers under their measured identity across newer ticks', () => {
+    const lastSuite = buildGateSuiteMeasurement(
+      'AFFECTED_TASK_CACHE_SUMMARY hits=7 misses=1 proofIdentity=initial-run group=111111111111 scope=proof reasons={"passing":7,"inputChanged":1}\nTEST_PASS_REUSE applied=false reason=disabled',
+      CANDIDATE, { command: 'npm run test:affected', runGroupId: 'real-suite-A', startedAtMs: NOW - 6000, completedAtMs: NOW - 5000 })!;
+    const p = progress({ lastSuiteMeasurement: lastSuite, testPassReuse: lastSuite.reuse,
+      verdictObservedAtMs: NOW - 1000, inconclusive: { status: 'awaiting-fixer', detail: 'no suite', observedAtMs: NOW } });
+    expect(p.lastSuite).toEqual(lastSuite);
+    expect(p.taskResume).toMatchObject({ runGroupId: 'real-suite-A', observedAtMs: NOW - 5000, summary: { hits: 7, misses: 1 } });
+    expect(p.passReuse).toMatchObject({ runGroupId: 'real-suite-A', judgedSha: CANDIDATE, offReasons: ['disabled'] });
+    expect(p.lastAttempt.observedAtMs).toBe(NOW);
+    expect(progress().lastSuite).toBeNull();
+    expect(progress().taskResume.summary).toBeNull();
+    const unreported = buildGateSuiteMeasurement('', MAIN_PIN, { command: 'npm run test:affected',
+      runGroupId: 'real-suite-B', startedAtMs: NOW - 2000, completedAtMs: NOW - 1000 })!;
+    expect(progress({ lastSuiteMeasurement: unreported, testPassReuse: lastSuite.reuse }).passReuse).toMatchObject({
+      status: 'not-recorded', candidates: null, selectedForReuse: null, runGroupId: null });
+    const leg = { id: 'lint:tsc', state: 'fixed' as const, admittedRound: 1, admittedHead: CANDIDATE,
+      admittedAtMs: NOW - 10000, lastMeasuredHead: MAIN_PIN, lastMeasuredAtMs: NOW, lastMeasuredRound: 9, failingRounds: 1 };
+    const queueLegs = progress({ lastSuiteMeasurement: lastSuite, repairQueue: {
+      phase: 'awaiting-fixer', attempts: 3, updatedAtMs: NOW, ageMs: 10000, fixerSpawnId: 'fixer',
+      fixerAlive: true, zeroAttemptStalled: false, legs: [leg, { ...leg, id: 'lint:other', state: 'failing' }],
+    } });
+    expect(queueLegs.queueLegs).toMatchObject({ phase: 'awaiting-fixer', fixerAlive: true, fixed: 1, failing: 1,
+      measurements: [{ id: 'lint:tsc', lastMeasuredRound: 9 }, { id: 'lint:other', lastMeasuredRound: 9 }] });
+    expect(queueLegs.lastSuite?.runGroupId).toBe('real-suite-A');
+    expect(queueLegs.lastSuite?.completedAtMs).toBe(NOW - 5000);
+    const targeted = buildGateSuiteMeasurement('TARGETED_TEST_PASS_REUSE ws=core::test candidates=9 reused=4 noProof=5',
+      MAIN_PIN, { command: 'npm run test -w core', runGroupId: 'targeted-C', startedAtMs: NOW - 500, completedAtMs: NOW }, 'targeted-gate')!;
+    const all = progress({ lastSuiteMeasurement: lastSuite, lastTargetedSuiteMeasurement: targeted });
+    expect(all.lastTargetedSuite).toEqual(targeted);
+    expect(all.taskResume.runGroupId).toBe('real-suite-A');
+    expect(all.lastTargetedSuite?.reuseRefusals).toEqual({ noProof: 5 });
+  });
+
   const failures: NonNullable<GateOwnerBriefInput['candidateFailures']> = {
     candidateSha: CANDIDATE, repairHeadSha: MAIN_PIN, filesJudged: 400,
     failingFileCount: 83, scope: 'Candidate affected radius only.', unavailable: null, truncated: true,

@@ -138,6 +138,25 @@ it('R26-PROVIDERS', async () => {
   expect(groupNativeOperations(partial.observations).chains).toEqual([]);
 });
 
+it.each(['claude', 'codex', 'omp'])('retains missing-source coverage for %s replacement MCP shell calls', async provider => {
+  const tool = 'mcp__papercusp_su__capability_bash';
+  await seed({ provider, tool, args: { command: 'rg replacement-private' } });
+  await seed({ provider, tool, args: { command: 'rg replacement-private' } });
+  const hydrated = await fetchNativeOperations(opts());
+  expect(groupNativeOperations(hydrated.observations).chains).toMatchObject([
+    { kind: 'shell', logicalDemand: 2, successCount: 2 },
+  ]);
+  expect(hydrated.coverage.matrix).toContainEqual({ provider, kind: 'shell', source: 'transcript', status: 'measured' });
+  const missing = await fetchNativeOperations(opts({ readTranscript: undefined }));
+  expect(missing.coverage.incomplete).toBe(2);
+  expect(missing.coverage.matrix).toContainEqual({ provider, kind: 'shell', source: 'transcript', status: 'missing' });
+  expect(groupNativeOperations(missing.observations).chains[0]).toMatchObject({ successCount: 0, unknownCount: 2 });
+  expect(missing.coverage.complete).toBe(false);
+  const denied = await fetchNativeOperations(opts({ authorizeSource: async () => null }));
+  expect(denied.observations).toEqual([]);
+  expect(JSON.stringify({ hydrated, missing })).not.toContain('replacement-private');
+});
+
 it.each([
   ['before', '2026-10-23T23:59:59.999Z', false],
   ['start', '2026-10-24T00:00:00Z', true],

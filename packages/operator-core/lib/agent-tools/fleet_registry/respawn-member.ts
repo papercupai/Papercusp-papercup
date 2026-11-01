@@ -5,13 +5,14 @@
  * a running session cannot change them (unlike the runtime settings fleet:reconfigure-member
  * adjusts in place). So a respawn KILLS the old session (graceful SIGTERM via fleet:kill, releasing
  * its claims) and FRESH-LAUNCHES a replacement into the SAME fleet with the new declarative
- * MemberSpec (capability:launch-agent), which inherits the fleet's claim lane and mints a new
- * identity — one tool instead of a hand-rolled kill + relaunch.
+ * MemberSpec (capability:launch-agent), preserving any explicit per-member claim spec and otherwise
+ * inheriting the fleet lane, then mints a new identity — one tool instead of a hand-rolled kill + relaunch.
  *
  * Scope: this routes the relaunch through capability:launch-agent (the headless-fleet-member door
  * the fleet already uses), so `carry` / `claimKinds` — which only fleet:launch-on-plan honors — are
- * NOT settable here (use fleet:reconfigure-member for the claim lane; fleet:launch-on-plan for a
- * carry change). Member resolution + leader/queen/owner auth are the shared resolveFleetMemberTarget.
+ * NOT settable here (use fleet:reconfigure-member for a runtime claim-lane change; fleet:launch-on-plan
+ * for a carry change). An existing source=cup claim spec is copied before launch; source=fleet/default
+ * behavior remains inherited. Member resolution + leader/queen/owner auth are the shared resolver.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -54,6 +55,7 @@ import { strandWedgedMember, type StrandMemberResult } from '../../fleet/member-
 import { listTasks, markStranded } from '../../task-manager/store';
 import { freezeTask } from '../../task-manager/control';
 import { emitFleetTransitionEdge } from '../../fleet-transition-events';
+import { getClaimSpecRecord, setClaimSpec } from '../../scheduler/claim-spec-store';
 
 /** Default window to wait for the replacement's FIRST heartbeat before calling the respawn failed. */
 const DEFAULT_VERIFY_SEC = 90;
@@ -1019,7 +1021,7 @@ async function preflightSavedModel(opts: {
 export default defineTool({
   name: 'fleet:respawn-member',
   description:
-    "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec (a new identity, the fleet's claim lane inherited). When no boot-baked override is supplied, it respawns the member with the canonical saved launch profile unchanged. `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `claimKinds` is not settable here.",
+    "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec and identity. Any explicit per-member claim spec is copied before launch; otherwise the member inherits the fleet lane. When no boot-baked override is supplied, it respawns the member with the canonical saved launch profile unchanged. `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `claimKinds` is not settable here.",
   guidance: {
     when: 'Move a member to a different model/effort/account/carry/context-size/agent/role — anything fixed at launch — or recover it with the same saved profile.',
     notWhen:
@@ -1302,6 +1304,29 @@ export default defineTool({
       }
     }
 
+    // Capture the old member's resolved claim record before draining it. An explicit per-member
+    // row is stronger than the fleet profile and must be copied to the pre-pinned replacement
+    // identity before launch-agent can issue its first scheduler pull. Fleet/default records need
+    // no copy: the replacement inherits the same fleet policy or default behavior as before.
+    let memberClaimSpec: Awaited<ReturnType<typeof getClaimSpecRecord>>;
+    try {
+      memberClaimSpec = await getClaimSpecRecord({ cupId: memberOwnerId, workspaceId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return json(
+        {
+          ok: false,
+          error: 'claim_spec_preflight_failed',
+          fleet: slug,
+          member: memberOwnerId,
+          killed: false,
+          launched: false,
+          message: `Could not read the member's effective claim spec before draining; no replacement was launched: ${message}`,
+        },
+        true,
+      );
+    }
+
     // Snapshot the transaction revision before the destructive drain. A respawn is allowed to
     // reconcile only the launch lineage it observed; if another launch starts while this one is
     // draining, persistRespawnLaunchTransaction reports and preserves that newer transaction.
@@ -1521,6 +1546,49 @@ export default defineTool({
       );
     }
 
+    let copiedClaimSpecRevision: number | undefined;
+    if (memberClaimSpec.source === 'cup') {
+      let copyError: string | undefined;
+      try {
+        const copied = await setClaimSpec({
+          cupId: replacementOwner,
+          workspaceId,
+          spec: memberClaimSpec.spec,
+          updatedBy: identity.ownerId,
+          potSlug: memberClaimSpec.harnessSlug ?? null,
+        });
+        if (!copied.ok) copyError = copied.errors.join('; ') || 'claim-spec store refused the copy';
+        else copiedClaimSpecRevision = copied.revision;
+      } catch (error) {
+        copyError = error instanceof Error ? error.message : String(error);
+      }
+      if (copyError) {
+        const launchTransactionPersistence = await persistRespawnTransaction(
+          'launch-failed',
+          `replacement claim-spec copy failed: ${copyError}`,
+        );
+        return json(
+          {
+            ok: false,
+            error: 'replacement_claim_spec_copy_failed',
+            fleet: slug,
+            oldMember: memberOwnerId,
+            replacementOwner,
+            invokedAs,
+            changed: changedFields,
+            drainOutcome,
+            killed: kill.data,
+            launched: false,
+            verified: false,
+            claimSpec: { source: 'cup', copied: false },
+            launchTransactionPersistence: summarizeRespawnLaunchTransaction(launchTransactionPersistence),
+            message: `The old member was drained, but its explicit per-member claim spec could not be installed on ${replacementOwner}; no replacement was launched. ${copyError}`,
+          },
+          true,
+        );
+      }
+    }
+
     // 2. Fresh-launch the replacement into the SAME fleet from the RESOLVED
     //    canonical spec. The caller's explicit delta is already audited above;
     //    nothing omitted can now fall through to a system default.
@@ -1601,6 +1669,11 @@ export default defineTool({
           killed: kill.data,
           launched: launch.text,
           ...(cooperativeRequest ? { cooperativeRequest, cooperativeDrain } : {}),
+          claimSpec: {
+            source: memberClaimSpec.source,
+            copied: memberClaimSpec.source === 'cup',
+            ...(copiedClaimSpecRevision !== undefined ? { revision: copiedClaimSpecRevision } : {}),
+          },
           launchSpec: {
             provenance: savedLaunchSpec.provenance,
             reusePath: savedLaunchSpec.reusePath,
@@ -1635,6 +1708,11 @@ export default defineTool({
         killed: kill.data,
         launched: launch.text,
         ...(cooperativeRequest ? { cooperativeRequest, cooperativeDrain } : {}),
+        claimSpec: {
+          source: memberClaimSpec.source,
+          copied: memberClaimSpec.source === 'cup',
+          ...(copiedClaimSpecRevision !== undefined ? { revision: copiedClaimSpecRevision } : {}),
+        },
         launchSpec: {
           provenance: savedLaunchSpec.provenance,
           reusePath: savedLaunchSpec.reusePath,
@@ -1687,6 +1765,11 @@ export default defineTool({
         killed: kill.data,
         launched: launch.text,
         ...(cooperativeRequest ? { cooperativeRequest, cooperativeDrain } : {}),
+        claimSpec: {
+          source: memberClaimSpec.source,
+          copied: memberClaimSpec.source === 'cup',
+          ...(copiedClaimSpecRevision !== undefined ? { revision: copiedClaimSpecRevision } : {}),
+        },
         launchSpec: {
           provenance: savedLaunchSpec.provenance,
           reusePath: savedLaunchSpec.reusePath,

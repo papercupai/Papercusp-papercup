@@ -3,7 +3,7 @@
  * existing UDS transport; contains no second JSON-RPC implementation.
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { UdsMcpTransport } from '@papercusp/tooldef-mcp/uds-transport';
@@ -44,6 +44,43 @@ export interface AgentMcpClientOptions {
   name?: string;
   platform?: string;
   env?: NodeJS.ProcessEnv;
+}
+
+/** Safe initialization evidence; never retain raw error messages, URLs or causes. */
+export class AgentMcpConnectionError extends Error {
+  readonly diagnostic: {
+    category: 'request-timeout' | 'connection-closed' | 'http-status' | 'network' | 'unknown';
+    httpStatus?: number;
+    systemCode?: string;
+  };
+  constructor(kind: 'http' | 'uds', error: unknown) {
+    // Preserve the existing public message for callers that branch on it.
+    super(`${kind}_connection_failed`);
+    this.name = 'AgentMcpConnectionError';
+    if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
+      this.diagnostic = { category: 'request-timeout' };
+    } else if (error instanceof McpError && error.code === ErrorCode.ConnectionClosed) {
+      this.diagnostic = { category: 'connection-closed' };
+    } else if (error instanceof StreamableHTTPError && typeof error.code === 'number' &&
+        Number.isInteger(error.code) && error.code >= 400 && error.code <= 599) {
+      this.diagnostic = { category: 'http-status', httpStatus: error.code };
+    } else {
+      let current = error;
+      let systemCode: string | undefined;
+      for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth++) {
+        const value = current as { code?: unknown; cause?: unknown };
+        if (typeof value.code === 'string' && [
+          'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
+          'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET',
+        ].includes(value.code)) {
+          systemCode = value.code;
+          break;
+        }
+        current = value.cause;
+      }
+      this.diagnostic = systemCode ? { category: 'network', systemCode } : { category: 'unknown' };
+    }
+  }
 }
 
 /** A lost response is not evidence that a mutation failed or rolled back. */
@@ -119,11 +156,11 @@ export async function connectAgentMcp(options: AgentMcpClientOptions): Promise<{
       client, transportKind: endpoint ? 'uds' : 'http',
       ...(endpoint ? { operatorId: endpoint.operatorId, generation: endpoint.generation } : {}),
     };
-  } catch {
+  } catch (error) {
     await client.close().catch(() => {});
     await transport.close().catch(() => {});
     // NEVER fall back/replay after sending initialize, or expose credential URLs.
-    throw new Error(endpoint ? 'uds_connection_failed' : 'http_connection_failed');
+    throw new AgentMcpConnectionError(endpoint ? 'uds' : 'http', error);
   }
 }
 

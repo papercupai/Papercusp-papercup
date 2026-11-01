@@ -56,8 +56,10 @@ const MACHINE_TURNS: ReadonlyArray<readonly [label: string, text: string]> = [
   ['machine self-compaction', '/compact ⟦machine-issued self-compaction — not owner-typed⟧ focus on the plan'],
   ['compaction status line', '✻ Conversation compacted to 12,000 tokens'],
   ['codex AGENTS.md wrapper', '# AGENTS.md instructions\n\n<INSTRUCTIONS>\nbe helpful\n</INSTRUCTIONS>'],
+  ['codex environment context wrapper', '<environment_context>\n<cwd>/workspace/papercusp</cwd>\n</environment_context>'],
   ['codex plugin preamble', '<recommended_plugins>\nHere is a list of plugins\n</recommended_plugins>'],
   ['codex Stop-hook response wrapper', '<hook_prompt hook_run_id=stop:22:/tmp/hooks.json>\nStop context'],
+  ['cold-loop wake banner', '❄️ COLD LOOP WAKE (fire #41) — a context reset was REQUESTED for this session.'],
   ['synthetic command wrapper', '<command-name>/clear</command-name>\n<command-message>clear</command-message>'],
   // ── The three migrated in P-005; each was a measured chat-pane leak. ──
   ['stop-hook wall', 'Stop hook feedback: This turn ends by handing the next move back to the owner.'],
@@ -85,6 +87,7 @@ const OWNER_TURNS: ReadonlyArray<readonly [label: string, text: string]> = [
   ['quotes a machine marker mid-sentence', 'why does my transcript keep saying "This session is being continued from a previous conversation"? it is annoying'],
   ['quotes a migrated marker mid-sentence', 'the agent printed Base directory for this skill: and I have no idea what that means'],
   ['quotes a Codex Stop-hook wrapper mid-sentence', 'Why did my transcript include <hook_prompt hook_run_id=stop:22:/tmp/hooks.json>?'],
+  ['quotes a cold-loop wake banner mid-sentence', 'Why did my transcript include “❄️ COLD LOOP WAKE (fire #41)” at the top?'],
   ['quotes a torn wake', 'Why did this appear?\n0d55a713f50015a⟧\n[await-event] coord:inbox-wake:su-a20d fired — continue the work'],
   ['quotes a Papercusp peer diagnostic', 'Why did this appear? [peer:su-4a84c93a-e530-450c-b01e-8beb7bdc670f] Parent recovery diagnostic under existing EI-26842368936683990.'],
   ['ordinary untagged native ownerTurn mode turn', "Please keep this native ownerTurn mode:'turn' request as owner input."],

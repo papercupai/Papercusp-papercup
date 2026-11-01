@@ -1859,6 +1859,8 @@ _guard_typecheck_cgroup_headroom() {
   _is_full_typecheck_command "$@" || return 0
 
   local _headroom _heap _overhead _needed _runner _reexec_rc _sentinel _child_rc
+  local _scope_unit _scope_state _scope_key _scope_value
+  local _scope_result=unknown _scope_invocation=unknown _scope_active=unknown _scope_sub=unknown
   _headroom="$(_caller_cgroup_headroom_mib)"
   [ -n "$_headroom" ] || return 0  # unlimited / unreadable / cgroup-v1 → fail open
 
@@ -1886,7 +1888,11 @@ _guard_typecheck_cgroup_headroom() {
       # Test overrides describe the OUTER cgroup and must not leak into the
       # detached child. In production these variables are absent and this branch
       # simply inherits the real child scope's memory.max/current values.
-      local -a _scope_cmd=("$_runner" --user --scope --collect)
+      # Match task-manager's retain -> snapshot -> reset-failed ordering. --collect
+      # erases Result=oom-kill and InvocationID before this parent can read them.
+      # Successful scopes still collect automatically; only our failed unit is reset.
+      _scope_unit="pc-heavy-typecheck-${BASHPID}-${RANDOM}.scope"
+      local -a _scope_cmd=("$_runner" --user --scope "--unit=$_scope_unit")
       if [ -n "${PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE:-}" ] || [ -n "${PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE:-}" ]; then
         _scope_cmd+=(env -u PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE -u PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE)
       fi
@@ -1905,8 +1911,7 @@ _guard_typecheck_cgroup_headroom() {
       # code: the child records its OWN real status, and a missing record is
       # reported as undetermined (75, the established EX_TEMPFAIL class used by the
       # child-start-timeout / invalid-child-process-group paths above) — never as
-      # success. Falling back to the unverified form when mktemp fails keeps a
-      # broken TMPDIR from making the typecheck unrunnable.
+      # success. A recorder that cannot be created is also no proof of completion.
       _sentinel=""
       if _sentinel="$(mktemp "${TMPDIR:-/tmp}/pc-heavy-reexec-rc.XXXXXX" 2>/dev/null)"; then
         : > "$_sentinel" 2>/dev/null || _sentinel=""
@@ -1916,17 +1921,36 @@ _guard_typecheck_cgroup_headroom() {
       if [ -n "$_sentinel" ]; then
         _scope_cmd+=(bash -c 'rc=0; "${@:2}" || rc=$?; printf "%s" "$rc" > "$1"; exit "$rc"' pc-heavy-reexec "$_sentinel" "$@")
       else
-        _scope_cmd+=("$@")
+        echo "PC_HEAVY_RESULT status=undetermined reason=detached-scope-recorder-unavailable exit=75 scope=$_scope_unit" >&2
+        exit 75
       fi
+      echo "[pc-heavy] detached typecheck scope=$_scope_unit" >&2
       PC_HEAVY_CGROUP_REEXEC=1 "${_scope_cmd[@]}"
       _reexec_rc=$?
+      # Bounded manager evidence, not a guessed explanation from exit 137. If
+      # D-Bus is unavailable or the unit already collected, leave it UNKNOWN.
+      _scope_state="$(timeout 3s systemctl --user show "$_scope_unit" \
+        --property=Result,InvocationID,ActiveState,SubState 2>/dev/null)" || _scope_state=""
+      while IFS='=' read -r _scope_key _scope_value; do
+        case "$_scope_value" in ''|*[!a-zA-Z0-9_-]*) continue ;; esac
+        case "$_scope_key" in
+          Result) _scope_result="$_scope_value" ;;
+          InvocationID) _scope_invocation="$_scope_value" ;;
+          ActiveState) _scope_active="$_scope_value" ;;
+          SubState) _scope_sub="$_scope_value" ;;
+        esac
+      done <<< "$_scope_state"
+      echo "PC_HEAVY_SCOPE_RESULT unit=$_scope_unit runnerExit=$_reexec_rc result=$_scope_result invocationId=$_scope_invocation activeState=$_scope_active subState=$_scope_sub" >&2
+      if [ "$_scope_active" = "failed" ]; then
+        timeout 3s systemctl --user reset-failed "$_scope_unit" >/dev/null 2>&1 || true
+      fi
       if [ -n "$_sentinel" ]; then
         _child_rc="$(head -1 "$_sentinel" 2>/dev/null || true)"
         rm -f "$_sentinel" 2>/dev/null || true
         case "$_child_rc" in
           ''|*[!0-9]*)
-            echo "[pc-heavy] UNDETERMINED typecheck: the detached scope runner exited ${_reexec_rc}, but the child left no completion record — it had not finished when the runner returned. Reporting undetermined rather than success, because a verdict-less run must never read as a clean one. Re-run, or run the check via tools:invoke { name: \"capability:inspect\", args: { check: \"typecheck\", package: \"packages/<workspace>\", onlyPaths: [\"<changed file>\"], run_in_background: true } }." >&2
-            echo "PC_HEAVY_RESULT status=undetermined reason=detached-scope-child-incomplete exit=75" >&2
+            echo "[pc-heavy] UNDETERMINED typecheck: the detached scope runner exited ${_reexec_rc}, but the child left no completion record. It may have exited early or been terminated; scope=$_scope_unit managerResult=$_scope_result invocationId=$_scope_invocation. Reporting undetermined rather than success, because a verdict-less run must never read as a clean one. Re-run, or run the check via tools:invoke { name: \"capability:inspect\", args: { check: \"typecheck\", package: \"packages/<workspace>\", onlyPaths: [\"<changed file>\"], run_in_background: true } }." >&2
+            echo "PC_HEAVY_RESULT status=undetermined reason=detached-scope-child-incomplete exit=75 scope=$_scope_unit scopeResult=$_scope_result runnerExit=$_reexec_rc invocationId=$_scope_invocation" >&2
             exit 75
             ;;
         esac

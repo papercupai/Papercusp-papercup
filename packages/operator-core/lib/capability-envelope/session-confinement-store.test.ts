@@ -28,6 +28,7 @@ import {
   releaseSessionConfinement,
   sessionConfinementFor,
   readSessionConfinement,
+  readDeclaredSessionConfinement,
   type StoredSessionConfinement,
 } from './session-confinement-store';
 
@@ -184,6 +185,28 @@ describe('exact native launch ceilings', () => {
     await declareSessionConfinement({ ownerId: 'su-another', confinement: CONFINEMENT });
     expect((pgState.payload as { sessions: Record<string, unknown> }).sessions[IMPLEMENTER_OWNER]).toBeDefined();
     expect((await readSessionConfinement(IMPLEMENTER_OWNER))?.denyOutside).toEqual([]);
+  });
+  it('reads the original declaration for external recovery while dispatch stays denied until exact renewal', async () => {
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement, expiresAt: 'invalid' }) } };
+    const before = structuredClone(pgState.payload);
+    expect(await readDeclaredSessionConfinement(IMPLEMENTER_OWNER, 'bench-private')).toEqual(confinement);
+    expect(pgState.payload).toEqual(before);
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER, 'bench-private'))?.denyOutside).toEqual([]);
+    expect(await checkSessionConfinement({ toolName: 'coord:whoami', ctx: {
+      isSuperuser: true, workspaceId: 'bench-private', uiClientId: IMPLEMENTER_OWNER,
+    } as UnifiedToolContext })).toMatchObject({ decision: 'deny' });
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'bench-private',
+      confinement: { ...confinement, denyOutside: [...confinement.denyOutside!, 'capability:bash'] } }))
+      .rejects.toThrow(/cannot be replaced/);
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'bench-private', confinement }))
+      .toEqual({ ok: true });
+    expect(await readSessionConfinement(IMPLEMENTER_OWNER, 'bench-private')).toEqual(confinement);
+  });
+  it('does not recover missing, malformed or transport-only declarations', async () => {
+    expect(await readDeclaredSessionConfinement(IMPLEMENTER_OWNER, 'bench-private')).toBeNull();
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: { ...confinement, denyOutside: [3] } as never }) } };
+    await expect(readDeclaredSessionConfinement(IMPLEMENTER_OWNER, 'bench-private')).rejects.toThrow(/malformed/);
+    expect(await readDeclaredSessionConfinement(SUPERUSER_FALLBACK_CLIENT_ID, 'bench-private')).toBeNull();
   });
   it('snapshots the declaration and refuses a wider replacement', async () => {
     const ceiling = ['coord:whoami'];

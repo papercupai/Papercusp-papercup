@@ -275,7 +275,7 @@ export interface CarryBrief {
   neverDropFacts?: string[];
   /** Armed event awaits (infra inbox-wake rows excluded) — they survive the
    *  boundary and WILL wake the successor. */
-  awaits: Array<{ eventKey: string; note: string | null }>;
+  awaits: Array<{ awaitId?: number; eventKey: string; note: string | null }>;
   /** Fleet membership pointer, when presence carries one. */
   fleet: { slug: string; role: string | null } | null;
 }
@@ -1061,7 +1061,7 @@ export interface BuildCarryBriefOpts {
   checkFactsStalenessFn?: typeof checkCarriedFactsStaleness;
   listActiveAwaitsFn?: (
     ownerId: string,
-  ) => Promise<Array<{ eventKey: string; note: string | null }>>;
+  ) => Promise<Array<{ awaitId?: number; eventKey: string; note: string | null }>>;
   getFleetFn?: (ownerId: string) => Promise<{ slug: string; role: string | null } | null>;
   listOpenDirectivesFn?: (
     workspaceId: string,
@@ -1624,7 +1624,7 @@ export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts
         (async (id: string) => {
           const { listActiveAwaits } = await import('./events/await/store');
           const rows = await listActiveAwaits(id);
-          return rows.map((r) => ({ eventKey: r.eventKey, note: r.note }));
+          return rows.map((r) => ({ awaitId: r.id, eventKey: r.eventKey, note: r.note }));
         });
       return (await listAwaits(ownerId)).filter((a) => !isInfraAwait(a.eventKey)).slice(0, CARRY_BRIEF_MAX_AWAITS);
     },
@@ -1805,7 +1805,7 @@ function humanAge(ms: number): string {
  *  narrower CompactReprimeInput) can still derive handles from what they have. */
 export interface CarryQueryHandleInputs {
   heldItems: ReadonlyArray<{ id: string; title: string | null }>;
-  awaits: ReadonlyArray<{ eventKey: string; note: string | null }>;
+  awaits: ReadonlyArray<{ awaitId?: number; eventKey: string; note: string | null }>;
   facts: ReadonlyArray<{ key: string; body: string }>;
 }
 
@@ -1817,6 +1817,10 @@ const HANDLE_QUERY_CLAMP_CHARS = 200;
 function clampHandleQuery(text: string): string {
   const t = text.replace(/\s+/g, ' ').trim();
   return t.length > HANDLE_QUERY_CLAMP_CHARS ? `${t.slice(0, HANDLE_QUERY_CLAMP_CHARS - 1)}…` : t;
+}
+
+function isConversationAnsweredAwait(eventKey: string): boolean {
+  return eventKey.startsWith('conversation:answered:');
 }
 
 /**
@@ -1839,7 +1843,10 @@ export function deriveCarryQueryHandles(
   }
   for (const a of inputs.awaits) {
     if (handles.length >= max) return handles;
-    const label = a.note?.trim() || a.eventKey;
+    // The event key carries the exact conversation identity. Notes are prose
+    // supplied by the await creator and can be stale or crossed between two
+    // concurrent conversations, so never use one to resolve this event family.
+    const label = isConversationAnsweredAwait(a.eventKey) ? a.eventKey : a.note?.trim() || a.eventKey;
     handles.push({ kind: 'topic', ref: a.eventKey, query: [clampHandleQuery(label)] });
   }
   for (const f of inputs.facts) {
@@ -2353,7 +2360,11 @@ export function renderCarryBriefColdExtras(
   }
   if (brief.awaits.length > 0) {
     const lines = brief.awaits.map(
-      (a) => `  • ${a.eventKey}${a.note ? ` — ${cap(a.note, 120)}` : ''}`,
+      (a) => {
+        const identity = a.awaitId == null ? a.eventKey : `await ${a.awaitId} → ${a.eventKey}`;
+        const note = isConversationAnsweredAwait(a.eventKey) ? '' : a.note ? ` — ${cap(a.note, 120)}` : '';
+        return `  • ${identity}${note}`;
+      },
     );
     sections.push(`Your armed awaits are still live and WILL wake you:\n${lines.join('\n')}`);
   }

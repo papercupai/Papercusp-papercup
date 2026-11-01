@@ -6,7 +6,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,18 +20,33 @@ import type { RpcFrame, SuStdioPeer, SuStdioReceipt } from './su-session-stdio-p
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
-const processState = vi.hoisted(() => ({ children: new Map<string, ChildProcess>(), stderr: '', killFailure: '', killError: '' }));
+const processState = vi.hoisted(() => ({ children: new Map<string, ChildProcess>(), stderr: '', killFailure: '', killError: '',
+  killCalls: [] as Array<{ pid: number | null; includeSubtree?: boolean; reapTerminalResidue?: boolean }> }));
 vi.mock('./task-manager/managed-spawn', () => ({ managedSpawn: async (binary: string, args: string[], _spec: unknown, options: { spawnOptions: object }) => {
-  const child = spawn(binary, args, options.spawnOptions);
+  const child = spawn(binary, args, { ...options.spawnOptions, detached: true });
   const taskId = randomUUID(); processState.children.set(taskId, child);
   child.stderr?.on('data', (chunk) => { processState.stderr = (processState.stderr + chunk).slice(-1000); });
   return { child, taskId };
 } }));
-vi.mock('./task-manager/control', () => ({ killTask: async (taskId: string) => {
-  processState.children.get(taskId)?.kill('SIGKILL');
+vi.mock('./task-manager/control', () => ({ killTask: async (taskId: string, options: { signal?: NodeJS.Signals; includeSubtree?: boolean; reapTerminalResidue?: boolean }) => {
+  const child = processState.children.get(taskId);
+  processState.killCalls.push({ pid: child?.pid ?? null, includeSubtree: options.includeSubtree,
+    reapTerminalResidue: options.reapTerminalResidue });
+  let emptyScope = !child?.pid;
+  if (child?.pid && options.includeSubtree) {
+    try { process.kill(-child.pid, options.signal ?? 'SIGKILL'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+        emptyScope = child.exitCode !== null || child.signalCode !== null;
+        if (!emptyScope) child.kill(options.signal ?? 'SIGKILL');
+      }
+      else throw error;
+    }
+  } else if (child) child.kill(options.signal ?? 'SIGKILL');
   return processState.killFailure
     ? { ok: false, error: processState.killError || 'command_failed', detail: processState.killFailure }
-    : { ok: true };
+    : emptyScope ? { ok: false, error: 'not_live', detail: 'state is exited — reap requested but scope holds no live process right now; nothing to reap' }
+      : { ok: true };
 } }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({ startSupervisorBeat: vi.fn() }));
 import { startSuStdioPeer } from './su-session-stdio-peer';
@@ -56,7 +71,7 @@ const homes: string[] = [];
 afterEach(async () => {
   for (const peer of peers.splice(0)) await peer.close();
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
-  processState.children.clear(); processState.stderr = ''; processState.killFailure = ''; processState.killError = '';
+  processState.children.clear(); processState.stderr = ''; processState.killFailure = ''; processState.killError = ''; processState.killCalls.length = 0;
 });
 
 async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {}, onMessage = (_frame: RpcFrame) => {}, config?: string,
@@ -491,6 +506,31 @@ describe('native JSON-line pipe transport', () => {
       peers.splice(peers.indexOf(refused), 1);
       await refused.done;
     }
+  });
+
+  it.skipIf(process.platform !== 'linux')('reaps a native-home writer when its direct peer exits first', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pui-native-protocol-descendant-'));
+    homes.push(home);
+    const nativeFile = join(home, 'native.sqlite'), pidFile = join(home, 'descendant.pid');
+    writeFileSync(nativeFile, '');
+    const childScript = `const fs=require('node:fs');setInterval(()=>fs.appendFileSync(process.env.PUI_TEST_NATIVE_FILE,'x'),5);`;
+    const parentScript = `const {spawn}=require('node:child_process');const fs=require('node:fs');`+
+      `const child=spawn(process.execPath,['-e',${JSON.stringify(childScript)}],{stdio:'ignore'});`+
+      `fs.writeFileSync(process.env.PUI_TEST_DESCENDANT_PID,String(child.pid));`+
+      `process.stdout.write(JSON.stringify({method:'ready'})+'\\n');process.stdin.on('end',()=>process.exit(0));`;
+    const p = await peer(process.execPath, ['-e', parentScript], {
+      PUI_TEST_NATIVE_FILE: nativeFile, PUI_TEST_DESCENDANT_PID: pidFile,
+    }, undefined, undefined, undefined, home);
+    await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true), { timeout: 5000 });
+    await vi.waitFor(() => expect(statSync(nativeFile).size).toBeGreaterThan(0), { timeout: 5000 });
+    const before = processState.killCalls.length;
+
+    await p.close();
+    await expect(p.done).resolves.toBeUndefined();
+    expect(processState.killCalls.slice(before).at(-1)).toMatchObject({ pid: p.pid(), includeSubtree: true, reapTerminalResidue: true });
+    const stoppedAt = statSync(nativeFile).size;
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(statSync(nativeFile).size).toBe(stoppedAt);
   });
 
   it('separates responses, notifications and server requests across fragmented writes', async () => {

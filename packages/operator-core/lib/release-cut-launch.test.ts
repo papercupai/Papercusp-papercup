@@ -809,7 +809,85 @@ const dependencyReady = {
   readDependencyGeneration: () => `v1-${dependencySource}`,
   runModelCachePreflight: () => ({ exitCode: 0, output: 'fixture model cache ready' }),
   runSourceIdentityPreflight: () => ({ exitCode: 0, output: 'fixture source identity clean' }),
+  runWindowsInputPreflight: () => ({ exitCode: 0, output: 'fixture Windows inputs ready' }),
 };
+
+describe('Windows input readiness (EI-27527354796036349)', () => {
+  const root = '/frozen/papercusp-desktop';
+  const orchestratorRoot = '/current/papercusp-desktop';
+  const deps = { ...dependencyReady, home: '/home/tester', exists: () => true, isUnitActive: () => false };
+
+  it.each([1, null])('blocks on verifier exit %s before a Windows cut can launch', (exitCode) => {
+    const runWindowsInputPreflight = vi.fn(() => ({ exitCode, output: 'stamp has no bunArchiveSha256' }));
+    const result = preflightCut({ windows: true }, { root, orchestratorRoot }, { ...deps, runWindowsInputPreflight });
+    expect(runWindowsInputPreflight).toHaveBeenCalledExactlyOnceWith(`${orchestratorRoot}/bin/lib/wsl-rootfs-preflight.sh`, root);
+    expect(result.go).toBe(false);
+    expect(result.blockers.join('\n')).toMatch(/windows-inputs: .*bunArchiveSha256/);
+  });
+
+  it('admits verified Windows inputs and skips the probe for non-Windows cuts', () => {
+    const runWindowsInputPreflight = vi.fn(dependencyReady.runWindowsInputPreflight);
+    expect(preflightCut({ windows: true }, { root }, { ...deps, runWindowsInputPreflight }).go).toBe(true);
+    runWindowsInputPreflight.mockClear();
+    expect(preflightCut({ mac: true }, { root }, { ...deps, runWindowsInputPreflight }).go).toBe(true);
+    expect(runWindowsInputPreflight).not.toHaveBeenCalled();
+  });
+
+  it('uses the async runner for the read-only Windows probe and fails closed on rejection', async () => {
+    const specs: ProbeSpec[] = [];
+    const result = await preflightCutAsync({ windows: true }, { root, orchestratorRoot }, {
+      ...deps, runWindowsInputPreflight: undefined, runSmokeTargetPreflight: () => ({ exitCode: 0, output: 'ready' }),
+    }, async (spec) => { specs.push(spec); throw new Error('Windows probe failed'); });
+    expect(specs).toHaveLength(1);
+    expect(specs[0]).toMatchObject({ command: 'bash', timeoutMs: 120_000 });
+    expect(specs[0]!.args).toContain(`${orchestratorRoot}/bin/lib/wsl-rootfs-preflight.sh`);
+    expect(specs[0]!.args).toContain(root);
+    expect(specs[0]!.args.join(' ')).toContain('--read-only');
+    expect(result.go).toBe(false);
+    expect(result.blockers.join('\n')).toContain('Windows probe failed');
+  });
+
+  it('refuses an old orchestrator helper before it can ignore read-only and hydrate the target', async () => {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'release-old-wsl-helper-'));
+    const lib = path.join(ws, 'bin', 'lib');
+    fs.mkdirSync(lib, { recursive: true });
+    const marker = path.join(ws, 'hydrated');
+    fs.writeFileSync(path.join(lib, 'wsl-rootfs-preflight.sh'), 'papercusp_wsl_rootfs_preflight() { touch "$1/hydrated"; }\n');
+    try {
+      const result = await preflightCutAsync({ windows: true }, { root: ws, orchestratorRoot: ws }, {
+        ...deps, runWindowsInputPreflight: undefined, runSmokeTargetPreflight: () => ({ exitCode: 0, output: 'ready' }),
+      });
+      expect(result.go).toBe(false);
+      expect(result.blockers.join('\n')).toContain('does not support read-only readiness');
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a real frozen-style stamp without changing the selected resources', async () => {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'release-windows-readiness-'));
+    const target = path.join(ws, 'target', 'papercusp-desktop');
+    const res = path.join(target, 'src-tauri', 'resources');
+    fs.mkdirSync(res, { recursive: true });
+    const stamp = JSON.stringify({ rootfsSha256: 'a'.repeat(64), recipeSha256: 'b'.repeat(64) });
+    fs.writeFileSync(path.join(res, '.rootfs-build-stamp'), stamp);
+    fs.writeFileSync(path.join(res, 'papercup-runtime.tar.gz'), 'frozen rootfs');
+    const current = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../papercusp-desktop');
+    try {
+      const before = fs.readdirSync(res);
+      const result = await preflightCutAsync({ windows: true }, { root: target, orchestratorRoot: current }, {
+        ...deps, runWindowsInputPreflight: undefined, runSmokeTargetPreflight: () => ({ exitCode: 0, output: 'ready' }),
+      });
+      expect(result.go).toBe(false);
+      expect(result.blockers.join('\n')).toMatch(/windows-inputs: .*has no bunArchiveSha256/);
+      expect(fs.readdirSync(res)).toEqual(before);
+      expect(fs.readFileSync(path.join(res, '.rootfs-build-stamp'), 'utf8')).toBe(stamp);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+});
 
 // EI-27109514509838099: the release:cut handler ran preflightCut's spawnSync probes on the
 // operator's main thread (three source-identity guards measured 21.6s back to back), and

@@ -14,7 +14,10 @@ const root = resolve(import.meta.dirname, '../../../..');
 // The outer Vitest case and file router must outlive every independently
 // bounded private-worker phase. recordIsolatedIntegrationProof checks the file
 // runner allowance before it allocates the disposable runtime.
-const workerOptions = isolatedWorkerOptions(120_000, process.env, 120_000, {
+// One retained run completed the identity read and listener/pool cleanup but
+// timed out on a referenced MessagePort; another stalled inside parallel
+// identity-module imports. Leave enough bounded time to locate the stall.
+const workerOptions = isolatedWorkerOptions(240_000, process.env, 240_000, {
   // The migration boot has measured at about four minutes. Keep enough room for
   // that distinct bootstrap progress while ensuring the composed proof fits the
   // maintained test-file router's 600s ceiling.
@@ -93,6 +96,7 @@ it('measures the production identity policy read in a private background runtime
       'packages/operator-core/lib/agent-tools/index.ts',
       'packages/operator-core/lib/capability-envelope/identity-grants-port.ts',
       'packages/operator-core/lib/capability-envelope/identity-tool-surface.ts',
+      'packages/operator-core/lib/pg-listen-hub.ts',
       'packages/operator-core/lib/operator-state-pg.ts',
       'scripts/with-test-pg.mjs',
       'scripts/lib/with-test-pg-cleanup.mjs',
@@ -124,12 +128,12 @@ it('measures the production identity policy read in a private background runtime
         const asyncResources = new Map();
         const asyncResourceHook = createHook({
           init(asyncId, type, triggerAsyncId) {
-            if (!['TCPSocketWrap', 'Timeout'].includes(type) || asyncResources.size >= 256) return;
+            if (!['TCPSocketWrap', 'Timeout', 'MESSAGEPORT'].includes(type) || asyncResources.size >= 256) return;
             asyncResources.set(asyncId, {
               asyncId,
               type,
               triggerAsyncId,
-              stack: new Error().stack?.split('\n').slice(2, 7),
+              stack: new Error().stack?.split('\n').slice(2, 12),
             });
           },
           destroy(asyncId) { asyncResources.delete(asyncId); },
@@ -171,15 +175,26 @@ it('measures the production identity policy read in a private background runtime
         await import('./packages/operator-core/lib/agent-tools/index.ts');
         await progress('agent-tools-bootstrap-complete');
         await progress('identity-modules-import-start');
+        const importWithProgress = async (name, load) => {
+          await progress('identity-module-import-start', { module: name });
+          try {
+            const module = await load();
+            await progress('identity-module-import-complete', { module: name });
+            return module;
+          } catch (error) {
+            await progress('identity-module-import-failed', { module: name, error: String(error) });
+            throw error;
+          }
+        };
         const [{ compileAgentSpecification }, { listAllProjectedTools },
           { readOperatorState, writeOperatorState },
           { checkIdentityGrantKernel, readIdentityGrantPolicy },
           { resolveIdentityToolSurface }] = await Promise.all([
-          import('@papercusp/orchestrator/blueprint'),
-          import('@papercusp/agent-mcp'),
-          import('./packages/operator-core/lib/operator-state-pg.ts'),
-          import('./packages/operator-core/lib/capability-envelope/identity-grants-port.ts'),
-          import('./packages/operator-core/lib/capability-envelope/identity-tool-surface.ts'),
+          importWithProgress('orchestrator-blueprint', () => import('@papercusp/orchestrator/blueprint')),
+          importWithProgress('agent-mcp', () => import('@papercusp/agent-mcp')),
+          importWithProgress('operator-state-pg', () => import('./packages/operator-core/lib/operator-state-pg.ts')),
+          importWithProgress('identity-grants-port', () => import('./packages/operator-core/lib/capability-envelope/identity-grants-port.ts')),
+          importWithProgress('identity-tool-surface', () => import('./packages/operator-core/lib/capability-envelope/identity-tool-surface.ts')),
         ]);
         await progress('identity-modules-import-complete');
 
@@ -343,8 +358,13 @@ it('measures the production identity policy read in a private background runtime
         } finally {
           try {
             if (resetForTests) {
+              await progress('listen-hub-stop-start');
+              const { _stopHubForTests } = await import('./packages/operator-core/lib/pg-listen-hub.ts');
+              await _stopHubForTests();
+              await progress('listen-hub-stop-complete');
               await progress('operator-pg-pool-reset-start');
               await resetForTests();
+              await new Promise(done => setImmediate(done));
               const activeHandleDetails = process._getActiveHandles().map(handle => ({
                 type: handle.constructor?.name ?? typeof handle,
                 hasRef: typeof handle.hasRef === 'function' ? handle.hasRef() : null,
@@ -359,6 +379,7 @@ it('measures the production identity policy read in a private background runtime
                 timeout: typeof handle.timeout === 'number' ? handle.timeout : null,
               }));
               await progress('operator-pg-pool-reset-complete', {
+                processConnected: process.connected,
                 activeResources: process.getActiveResourcesInfo(),
                 activeHandleTypes: activeHandleDetails.map(handle => handle.type),
                 activeHandleDetails,
@@ -410,11 +431,20 @@ it('measures the production identity policy read in a private background runtime
       const progressRows = readFileSync(join(evidenceDir, 'worker-progress.ndjson'), 'utf8')
         .trim().split('\n').map(value => JSON.parse(value));
       const progressStages = progressRows.map(value => value.stage);
+      const privateDatabasePort = progressRows.find(value => value.stage === 'private-database-connect-complete')?.port;
+      const poolReset = progressRows.find(value => value.stage === 'operator-pg-pool-reset-complete');
       expect(progressStages).toContain('db-org-reset-import-start');
       expect(progressStages).toContain('db-org-reset-import-complete');
+      expect(progressStages).toContain('listen-hub-stop-start');
+      expect(progressStages).toContain('listen-hub-stop-complete');
       expect(progressStages).toContain('operator-pg-pool-reset-start');
       expect(progressStages).toContain('operator-pg-pool-reset-complete');
       expect(progressStages.at(-1)).toBe('operator-pg-pool-reset-complete');
+      expect(privateDatabasePort).toBeGreaterThan(0);
+      expect(poolReset?.activeHandleDetails).toEqual(expect.any(Array));
+      expect(poolReset.activeHandleDetails).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ remotePort: privateDatabasePort }),
+      ]));
       writeFileSync(join(evidenceDir, 'identity-surface-receipt.json'),
         JSON.stringify({ worker, cleanup }, null, 2), { flag: 'wx' });
     },

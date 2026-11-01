@@ -64,6 +64,7 @@ import {
   recolorViaPty,
   pidIsPsuHost,
   selfCompactionAvailability,
+  selfCompactionAvailabilityAsync,
   pruneDeadDiscoveryFilesAsync,
   sanitizeKey,
   sockOwnerIdFromPath,
@@ -107,6 +108,32 @@ function startSocket(dir: string, ownerId: string): { sock: string; received: Pr
   server.listen(sock);
   cleanups.push(() => server.close());
   return { sock, received };
+}
+
+async function startProbeSocket(dir: string, ownerId: string): Promise<string> {
+  const sock = join(dir, `${sanitizeKey(ownerId)}.sock`);
+  const server = net.createServer({ allowHalfOpen: true }, (conn) => {
+    const chunks: Buffer[] = [];
+    conn.on('data', (d) => chunks.push(d));
+    conn.on('end', () => {
+      let request: Record<string, unknown> | null = null;
+      try {
+        request = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      } catch {}
+      const ok = request?.mode === 'probe' && request.ownerId === ownerId;
+      conn.end(JSON.stringify({
+        v: 1,
+        ok,
+        reason: ok ? 'control-socket-live' : 'ownerId-mismatch',
+      }) + String.fromCharCode(10));
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(sock, resolve);
+  });
+  cleanups.push(() => server.close());
+  return sock;
 }
 
 function writeMeta(dir: string, ownerId: string, meta: Record<string, unknown>): void {
@@ -577,7 +604,7 @@ describe('failed wake confirmation audit retention', () => {
     const ownerId = `su-wake-error-${process.pid}`;
     const msg = { mode: 'turn' as const, ownerId, deliveryId: 'test-wake-socket-error', data: 'private wake body' };
     const result = await injectIntoHostWithConfirmation(join(tmpDir(), `${ownerId}.sock`), msg, 500);
-    expect(result).toEqual({ ok: false, confirmation: 'error' });
+    expect(result).toMatchObject({ ok: false, confirmation: 'error', transportErrorCode: 'ENOENT' });
     expect(await failures()).toEqual([expect.objectContaining({
       ownerId, deliveryId: msg.deliveryId, confirmation: 'error',
       reason: null, transportErrorCode: 'ENOENT',
@@ -590,7 +617,7 @@ describe('failed wake confirmation audit retention', () => {
     const result = await injectIntoHostWithConfirmation(join(tmpDir(), `${ownerId}.sock`), {
       mode: 'turn', ownerId, deliveryId: 'test-wake-unwritable-audit', data: 'x',
     }, 500);
-    expect(result).toEqual({ ok: false, confirmation: 'error' });
+    expect(result).toMatchObject({ ok: false, confirmation: 'error', transportErrorCode: 'ENOENT' });
   });
 
   it('retains a timeout when the socket accepts but the host never acknowledges', async () => {
@@ -942,6 +969,66 @@ describe('selfCompactionAvailability (the shared recommend-vs-refuse predicate)'
     expect(a.available).toBe(true);
     expect(a.reason).toBeNull();
     expect(a.host?.sock).toBe(sock);
+  });
+
+  it('requires an ACK from the live control socket, not only a metadata file', async () => {
+    const dir = tmpDir();
+    const ownerId = 'su-probe-live';
+    const sock = await startProbeSocket(dir, ownerId);
+    writeMeta(dir, ownerId, {
+      pid: process.pid,
+      ptyPid: process.pid,
+      sock,
+      command: 'claude-su',
+      startedAt: 1,
+      caps: ['carry-respawn', 'control-socket-probe-v1'],
+    });
+
+    const availability = await selfCompactionAvailabilityAsync(ownerId, dir, ID_OK);
+    expect(availability).toMatchObject({ available: true, reason: null, host: { sock } });
+  });
+
+  it('rejects a live-looking host whose recorded socket has no listener', async () => {
+    const dir = tmpDir();
+    const ownerId = 'su-probe-stale';
+    const sock = join(dir, `${sanitizeKey(ownerId)}.sock`);
+    writeFileSync(sock, 'stale socket path');
+    writeMeta(dir, ownerId, {
+      pid: process.pid,
+      ptyPid: process.pid,
+      sock,
+      command: 'claude-su',
+      startedAt: 1,
+      caps: ['carry-respawn', 'control-socket-probe-v1'],
+    });
+
+    const availability = await selfCompactionAvailabilityAsync(ownerId, dir, ID_OK);
+    expect(availability).toMatchObject({
+      available: false,
+      reason: 'host_socket_unavailable',
+      host: { sock },
+    });
+  });
+
+  it('does not send a probe to hosts that do not advertise probe support', async () => {
+    const dir = tmpDir();
+    const ownerId = 'su-probe-old';
+    const sock = join(dir, `${sanitizeKey(ownerId)}.sock`);
+    writeFileSync(sock, 'legacy socket path');
+    writeMeta(dir, ownerId, {
+      pid: process.pid,
+      ptyPid: process.pid,
+      sock,
+      command: 'claude-su',
+      startedAt: 1,
+      caps: ['carry-respawn'],
+    });
+
+    const availability = await selfCompactionAvailabilityAsync(ownerId, dir, ID_OK);
+    expect(availability).toMatchObject({
+      available: false,
+      reason: 'host_socket_probe_unsupported',
+    });
   });
 
   it('inherits findLiveHost\'s identity gate — a recycled pid is NOT a self-compactable session', () => {

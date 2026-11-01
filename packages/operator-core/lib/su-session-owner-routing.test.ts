@@ -52,7 +52,11 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('native MCP owner request materialization', () => {
+describe.each(['codex', 'claude', 'omp'] as const)('%s native MCP owner request materialization', backend => {
+  beforeEach(() => {
+    const descriptor = hostState.host.descriptor();
+    hostState.host.descriptor = () => ({ ...descriptor, identity: { ...descriptor.identity, backend } });
+  });
   it('does not materialize a host-local request when this process owns the session', async () => {
     const makeRemoteRequest = vi.fn(() => { throw new Error('host-local request was serialized'); });
     const local = vi.fn(async () => 'local-result');
@@ -62,6 +66,35 @@ describe('native MCP owner request materialization', () => {
     expect(local).toHaveBeenCalledOnce();
     expect(rpc.call).not.toHaveBeenCalled();
   });
+
+  it.each(['missing-host', 'descriptor-only', 'ended', 'failed', 'workspace', 'adv-session',
+    'owner', 'native-session', 'unsupported-backend', 'recycled-process'])(
+    'refuses %s before local execution or request serialization', async fault => {
+      const descriptor = hostState.host.descriptor();
+      if (fault === 'missing-host') hostState.host = null;
+      else if (fault === 'descriptor-only') hostState.host.hasRuntime = () => false;
+      else {
+        if (fault === 'ended' || fault === 'failed') descriptor.lifecycle = fault;
+        if (fault === 'workspace') descriptor.identity.workspaceId = 'foreign-workspace';
+        if (fault === 'adv-session') descriptor.identity.advSessionId++;
+        if (fault === 'owner') descriptor.identity.ownerId = 'foreign-owner';
+        if (fault === 'native-session') descriptor.identity.nativeSessionId = 'replaced-session';
+        if (fault === 'unsupported-backend') descriptor.identity.backend = 'unsupported-fixture';
+        hostState.host.descriptor = () => descriptor;
+      }
+      if (fault === 'recycled-process') {
+        _configureSuSessionRoutingForTest({ readOwner: async () => ({ ...localSuSessionHostOwner(), nonce: 'old-process' }) });
+      }
+      const makeRemoteRequest = vi.fn(() => { throw new Error('host-local request was serialized'); });
+      const local = vi.fn(async () => 'must not execute');
+      await expect(runOnSuNativeToolOwner(address, makeRemoteRequest, local)).rejects.toMatchObject({
+        code: 'not_owner', outcomeUnknown: false,
+      });
+      expect(makeRemoteRequest).not.toHaveBeenCalled();
+      expect(local).not.toHaveBeenCalled();
+      expect(rpc.call).not.toHaveBeenCalled();
+    },
+  );
 
   it('materializes the request only after selecting a different live owner', async () => {
     const localOwner = localSuSessionHostOwner();

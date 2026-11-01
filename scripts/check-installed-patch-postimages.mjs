@@ -124,6 +124,20 @@ export function parsePatchPostimages(patchSource, patchPath = '<patch>') {
   if (postimages.length === 0) {
     throw new Error(patchPath + ' contains no node_modules file diffs');
   }
+  // Postimage hashes cannot prove a patch is applicable: malformed hunk counts
+  // can coexist with correct hashes when the installed donor was already patched.
+  // Use Git's parser without applying anything or depending on installed bytes.
+  try {
+    execFileSync('git', ['apply', '--numstat', '-'], {
+      input: String(patchSource),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30_000,
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (error) {
+    throw new Error(patchPath + ' has invalid unified diff syntax: ' +
+      String(error.stderr ?? error.message).trim());
+  }
   return postimages;
 }
 

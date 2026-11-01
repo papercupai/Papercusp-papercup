@@ -2411,6 +2411,19 @@ export function evaluateBm25Health(health: Bm25Health, latencyMs: number): Probe
   if (health.status === 'off') {
     return { name, up: true, status: null, latencyMs, present: false, note: 'BM25_LEXICAL_RANKING is off: lexical search uses ts_rank by configuration' };
   }
+  const latencyOnlyDegraded = health.status === 'degraded' && health.latency !== null &&
+    health.latency.p95Ms > health.latency.budgetMs && health.libraryLoaded && health.extensionInstalled &&
+    health.missingIndexes.length === 0;
+  if (latencyOnlyDegraded) {
+    return {
+      name,
+      up: false,
+      status: null,
+      latencyMs,
+      present: true,
+      note: `BM25 latency degraded: ${health.reason ?? 'unknown reason'}${p95Attribution}; required BM25 components and corpus indexes are present, but this probe does not establish whether individual searches fell back`,
+    };
+  }
   if (health.status === 'degraded') {
     return { name, up: false, status: null, latencyMs, note: `BM25 degraded, lexical search is falling back to ts_rank: ${health.reason ?? 'unknown reason'}${p95Attribution}` };
   }

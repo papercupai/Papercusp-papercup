@@ -2883,6 +2883,9 @@ async function finishRun(
            tokens_out = ${input.tokensOut},
            latency_ms = ${input.latencyMs},
            detail = (${detail}::text::jsonb - 'producingRuntime') ||
+             CASE WHEN detail ? 'queueSelection'
+               THEN jsonb_build_object('queueSelection', detail->'queueSelection')
+               ELSE '{}'::jsonb END ||
              CASE WHEN detail ? 'committedItems'
                THEN jsonb_build_object('committedItems', detail->'committedItems',
                  'announcedCount', detail->'announcedCount')
@@ -2903,10 +2906,19 @@ async function failRun(
   committedItemIds?: readonly string[],
 ): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
+  const transportMetadata = error && typeof error === 'object'
+    ? error as { gatewayRequestId?: unknown; gatewayRoutedAccountId?: unknown }
+    : null;
+  const gatewayRequestId = typeof transportMetadata?.gatewayRequestId === 'string'
+    ? transportMetadata.gatewayRequestId : undefined;
+  const gatewayRoutedAccountId = typeof transportMetadata?.gatewayRoutedAccountId === 'string'
+    ? transportMetadata.gatewayRoutedAccountId : undefined;
   const detail = JSON.stringify({
     status: 'failed',
     mode,
     error: message,
+    ...(gatewayRequestId ? { gatewayRequestId } : {}),
+    ...(gatewayRoutedAccountId ? { gatewayRoutedAccountId } : {}),
     ...(usage ? { modelCostUsd: usage.modelCostUsd } : {}),
     ...(committedItemIds ? { committedItemIds } : {}),
     outcome: {
@@ -2929,6 +2941,9 @@ async function failRun(
            latency_ms = ${latencyMs},
            auto_promoted_unreviewed = COALESCE(${committedItemIds?.length ?? null}::int, auto_promoted_unreviewed),
            detail = (${detail}::text::jsonb - 'producingRuntime') ||
+             CASE WHEN detail ? 'queueSelection'
+               THEN jsonb_build_object('queueSelection', detail->'queueSelection')
+               ELSE '{}'::jsonb END ||
              CASE WHEN detail ? 'committedItems'
                THEN jsonb_build_object('committedItems', detail->'committedItems',
                  'announcedCount', detail->'announcedCount')
@@ -6049,6 +6064,27 @@ export async function runWorkItemAdmissionPromoter(opts: {
       a: bindAdmissionMergeSnapshot(pair.a, snapshotsById.get(pair.a.id)),
       b: bindAdmissionMergeSnapshot(pair.b, snapshotsById.get(pair.b.id)),
     }));
+    // EI-27527594210317270: heldReasons includes comparison/component endpoints and
+    // cannot prove which pending rows consumed the queue window. Save those roles
+    // before model latency, including empty selections, and keep the original witness
+    // when the same run is replayed. Completion/failure must preserve this evidence.
+    const selectedItemIds = [...new Set(pending.map((item) => item.id))].sort();
+    const selectedIds = new Set(selectedItemIds);
+    const queueSelection = JSON.stringify({
+      schemaVersion: 1,
+      runScope: targetItemIds === undefined ? 'scheduled' : 'targeted',
+      selectedItemIds,
+      comparisonItemIds: [...new Set(pairs.flatMap((pair) => [pair.a.id, pair.b.id]))]
+        .filter((id) => !selectedIds.has(id)).sort(),
+    });
+    await sql`
+      UPDATE harness_shared.admission_runs
+         SET detail = COALESCE(detail, '{}'::jsonb) ||
+           jsonb_build_object('queueSelection', ${queueSelection}::text::jsonb)
+       WHERE id = ${runId}
+         AND workspace_id = ${opts.workspaceId}
+         AND harness_slug = ${opts.harnessSlug}
+         AND NOT COALESCE(detail, '{}'::jsonb) ? 'queueSelection'`;
     let judgements: PromoterJudgement[] = [];
     if (pairs.length > 0 && !noModel) {
       runModelId = model;
@@ -6060,6 +6096,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
         messages: [{ role: 'user', content: prompt.user }],
         responseFormat: 'json',
         maxTokens: Math.min(8_000, 500 + pairs.length * 180),
+        ownerId: PROMOTER_ACTOR,
       }));
       // Capture usage before parsing. A schema-invalid response still consumed
       // tokens/cost and the failed run must retain that actual evidence.

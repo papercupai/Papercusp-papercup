@@ -165,7 +165,13 @@ describe('extractRecoveryLookups — successor first-window trace', () => {
     ], carry);
     expect(out).toEqual([
       { kind: 'self-search', targetClass: 'recent-tail', recoveredInCarry: true },
-      { kind: 'reread-state', targetClass: 'held-wi', recoveredInCarry: true },
+      {
+        kind: 'reread-state',
+        targetClass: 'held-wi',
+        recoveredInCarry: true,
+        targetRefs: ['WI-4852'],
+        targetPath: 'results[].workItem.state',
+      },
       { kind: 'reread-state', targetClass: 'plan-state', recoveredInCarry: false },
     ]);
     expect(out.map(classifyRecoveryLookup)).toEqual(['surfacing-gap', 'surfacing-gap', 'gap']);

@@ -37,6 +37,48 @@ const NOW = new Date('2026-08-16T00:00:00Z');
 const REQUESTER = 'req-1';
 const RESPONDER = 'resp-1';
 
+describe('preserving review findings through consult settlement', () => {
+  const review = { subjectRef: 'plan:recovery@source-hash', coverage: 'complete' as const,
+    findings: [{ key: 'F1', severity: 'major' as const, text: 'Recovery drops pending work', evidenceRefs: ['source:queue.ts'] }] };
+  it('persists original reviewer evidence and requester disposition together at close', async () => {
+    const id = await seedConsult();
+    const { deps } = makeDeps();
+    const posted = await consultReplyCore({ workspaceId: WS, conversationId: id, authorId: RESPONDER,
+      kind: 'answer', body: 'Found a recovery gap', evidence: [{ session_id: 'review-session', turn_idx: 1 }], review }, deps);
+    if ('error' in posted) throw new Error(posted.error);
+    const findingId = `post:${posted.post_id}#F1`;
+    expect(posted.review?.findings[0]).toMatchObject({ id: findingId, reviewerId: RESPONDER });
+    const closed = await consultCloseCore({ workspaceId: WS, conversationId: id, authorId: REQUESTER,
+      outcome: 'answered', answer: 'Carry the repair into implementation', reviewDispositions: [{ findingId,
+        status: 'planned', reason: 'Binding repair obligation', reference: 'plan:recovery#D-001' }] }, deps);
+    expect(closed).toMatchObject({ ok: true, state: 'closed_answered', review: { findings: [expect.objectContaining({
+      text: review.findings[0].text, reviewerId: RESPONDER, postId: posted.post_id })],
+      dispositions: [expect.objectContaining({ findingId, status: 'planned', authorId: REQUESTER })] } });
+    if ('error' in closed) throw new Error(closed.error);
+    expect((await stateRow(id)).outcome).toMatchObject({ review: closed.review });
+  });
+  it('preserves incomplete review evidence on a non-answer close', async () => {
+    const id = await seedConsult();
+    const { deps } = makeDeps();
+    await consultReplyCore({ workspaceId: WS, conversationId: id, authorId: RESPONDER, kind: 'answer',
+      body: 'Runtime unavailable', evidence: [{ session_id: 'review-session', turn_idx: 2 }],
+      review: { ...review, coverage: 'incomplete', findings: [] } }, deps);
+    const result = await consultCloseCore({ workspaceId: WS, conversationId: id, authorId: REQUESTER,
+      outcome: 'cant_help', reason: 'Record the coverage limit' }, deps);
+    expect(result).toMatchObject({ ok: true, review: { answers: [expect.objectContaining({ coverage: 'incomplete' })], findings: [] } });
+  });
+  it('refuses invented dispositions before posting or closing', async () => {
+    const id = await seedConsult();
+    const { deps, posts } = makeDeps();
+    const result = await consultCloseCore({ workspaceId: WS, conversationId: id, authorId: REQUESTER,
+      outcome: 'answered', answer: 'Dismissed', reviewDispositions: [{ findingId: 'post:999#F1',
+        status: 'rejected', reason: 'Unsupported', reference: 'source:queue.ts' }] }, deps);
+    expect(result).toMatchObject({ error: 'invalid_review' });
+    expect(posts).toEqual([]);
+    expect((await stateRow(id)).state).toBe('awaiting_responder');
+  });
+});
+
 // Durable acknowledgement/recovery uses the real production adapter and real
 // consult rows; only the launch seam is controlled, so a blocked launch cannot
 // accidentally pass because the test bypassed the interactive binding.

@@ -2685,19 +2685,62 @@ describe('task-sized shared admission (EI-26797533961242022)', () => {
     } finally { release.resolve(); await Promise.allSettled([holder, ...(peer ? [peer] : [])]); }
     expect(peerStarted).toBe(true);
 
+    const start = AFFECTED_TESTS_SRC.indexOf('const admissionIntent = (() => {');
+    const end = AFFECTED_TESTS_SRC.indexOf('\n})();', start) + '\n})();'.length;
+    const intent = new Script(AFFECTED_TESTS_SRC.slice(start, end) + '\nadmissionIntent;')
+      .runInNewContext({ ROOT: REPO_ROOT, readFileSync, createHash, join,
+        process: { env: { AFFECTED_TESTS_DISCARDABLE: '1' } },
+        TASK_CONTEXT_SHARD_PLAN: [], SCHEDULER_CONFIG: {}, durationHistory: {},
+        taskKey: () => '', durationEstimate: () => 0,
+        derivationSource: 'all', changedPathsOverride: null, changedPathTotal: 0,
+        affected: [], tasks: [], estimateBudgetedTaskWallMs: () => ({
+          projectedWallMs: 1000, knownWorkMs: 1000, knownTasks: 0,
+          unknownTasks: 0, mode: 'parallel', maxConcurrentTasks: 2,
+        }),
+      });
+    const sourceHash = createHash('sha256').update(AFFECTED_TESTS_SRC).digest('hex');
+    const previousOwner = process.env.PAPERCUSP_SID;
+    const previousTask = process.env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID;
+    process.env.PAPERCUSP_SID = 'writer-fixture-owner';
+    process.env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID = 'writer-fixture-task';
     const writerRelease = deferred<void>(), acquired = deferred<void>();
+    let notice = '', queuedTaskStarted = false;
+    let waitingTask: Promise<unknown> | undefined;
     const writer = withFsMutex(admissionMutexName(), async () => {
       acquired.resolve(); await writerRelease.promise;
-    });
-    await acquired.promise;
+    }, { intent });
     try {
-      await expect(withFsMutexBudget(admissionMutexName(), async () => 'must-not-run', {
+      await acquired.promise;
+      let ranUnderWriter = false;
+      await expect(withFsMutexBudget(admissionMutexName(), async () => { ranUnderWriter = true; }, {
         ...options, resource: 'private-under-writer', timeoutMs: 100,
+        onWaiting: info => { notice = formatAdmissionHolder(info.owner); },
       })).rejects.toThrow('Timed out');
-    } finally { writerRelease.resolve(); await writer; }
-    await expect(withFsMutexBudget(admissionMutexName(), async () => 'after-release', {
-      ...options, resource: 'private-after-writer',
-    })).resolves.toBe('after-release');
+      expect(ranUnderWriter).toBe(false);
+      notice = '';
+      waitingTask = runBudgetedTasks(['private-after-writer'], {
+        ...config, admissionTimeoutMs: 8000, taskAdmissionKey: task => task,
+        onAdmissionNotice: line => { notice = line; },
+        runTask: async () => { queuedTaskStarted = true; return 'after-release'; },
+      });
+      await until(() => !!notice, 'the attributed writer-blocked scheduler notice');
+      expect(queuedTaskStarted).toBe(false);
+      expect(notice).toContain('AFFECTED_TESTS_ADMISSION_QUEUED');
+      expect(notice).toContain('owner=writer-fixture-owner task=writer-fixture-task');
+      expect(notice).toContain('caller=scripts/affected-tests.mjs');
+      expect(notice).toContain(`sourceFileSha256=${sourceHash}`);
+      expect(notice).toContain('discardable=true');
+      expect(notice).toContain('constraints=writer');
+    } finally {
+      writerRelease.resolve(); await writer;
+      await waitingTask;
+      if (previousOwner === undefined) delete process.env.PAPERCUSP_SID;
+      else process.env.PAPERCUSP_SID = previousOwner;
+      if (previousTask === undefined) delete process.env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID;
+      else process.env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID = previousTask;
+    }
+    expect(queuedTaskStarted).toBe(true);
+    await expect(waitingTask).resolves.toMatchObject({ results: [{ value: 'after-release' }] });
   }, 20_000);
 
   it('reports a blocking reader and exact reservation constraints when no writer exists', async () => {

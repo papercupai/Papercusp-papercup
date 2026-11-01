@@ -29,7 +29,7 @@ export function parseCargoLockStrict(text: any, label?: string): {
     version: string;
 }[];
 export function cvss31BaseScore(vector: any): number | null;
-export function severityLabelForScore(score: any): "unknown" | "none" | "low" | "high" | "critical" | "moderate";
+export function severityLabelForScore(score: any): "none" | "unknown" | "low" | "high" | "critical" | "moderate";
 /**
  * Classify ONE OSV document.
  *

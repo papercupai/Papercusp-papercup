@@ -77,6 +77,8 @@
   // An explicit list is also the honest surface: a glob would silently start
   // emitting declarations for every future script in the repo.
   "files": [
+    // Native coverage reuses the maintained committed-root verifier for historical artifacts.
+    "scripts/lint-as-committed.mjs",
     "scripts/mcp-call.mjs",
     // Imported by apps/operator/scripts/mcp-reconnect.test.ts (TS7016 without it; EI-26553890541062376).
     "scripts/mcp-reconnect.mjs",

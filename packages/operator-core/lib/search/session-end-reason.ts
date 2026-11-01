@@ -168,6 +168,22 @@ export interface SessionEndClassification {
 
 const EVIDENCE_MAX = 200;
 
+/** Narrow historical incident vocabulary; keep billing and temporary throttles
+ * separate from the legacy terminal-state labels used by liveness callers. */
+export const HISTORICAL_STOP_KINDS = ['quota', 'authentication', 'billing', 'rate_limit', 'capacity', 'model_error', 'context_limit'] as const;
+export const HISTORICAL_STOP_OPENING = new RegExp(`^[\\s\\W]{0,8}(?:API Error[:\\s]|Error:\\s*|[45][0-9]{2}\\s|Your organization has disabled|Organization has disabled|Subscription access.*disabled|You(?:'|’)ve hit your|You have (?:hit your|exceeded your)|Usage limit reached|Quota exceeded|Insufficient credits|Authentication failed|Unauthorized|Rate limit|Too many requests|Prompt is too long|Context window exceeded|${MODEL_CAPACITY_RE.source})`, 'i');
+export function classifyHistoricalSessionStop(text: string | null | undefined): typeof HISTORICAL_STOP_KINDS[number] | null {
+  if (!text || !HISTORICAL_STOP_OPENING.test(text)) return null;
+  const opening = text.slice(0, 700);
+  if (/insufficient credits|payment required|billing|\b402\b/i.test(opening)) return 'billing';
+  if (/authentication|unauthorized|invalid.api.key|organization has disabled|subscription access.*disabled|\b401\b|\b403\b/i.test(opening)) return 'authentication';
+  if (isMachineUsageLimitText(text.replace(/^[\s\W]{0,8}/, '')) || /(?:usage|weekly|monthly|session|daily) limit|quota exceeded/i.test(opening)) return 'quota';
+  if (/rate.?limit|too many requests|\b429\b/i.test(opening)) return 'rate_limit';
+  if (MODEL_CAPACITY_RE.test(opening)) return 'capacity';
+  const cls = classifySessionEnd({ lastAssistantText: opening, lastTsMs: null, nowMs: Date.now() });
+  return cls.reason === 'context_limit' || cls.reason === 'model_error' ? cls.reason : null;
+}
+
 export function classifySessionEnd(input: ClassifySessionEndInput): SessionEndClassification {
   const text = (input.lastAssistantText ?? '').trim();
   const activeWithin = input.activeWithinMs ?? 10 * 60 * 1000;

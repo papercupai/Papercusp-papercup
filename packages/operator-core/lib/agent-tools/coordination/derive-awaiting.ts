@@ -23,7 +23,8 @@
  *   · The standing `coord:inbox-wake:<owner>` subscription: every live agent
  *     holds one permanently (see `event_awaits_inbox_wake_one_per_agent`);
  *     stamping it would put an identical plumbing line on every message —
- *     fill-rate theatre, information-free.
+ *     fill-rate theatre, information-free. A separate bounded wake-on-timeout
+ *     await on that same key is deliberate and remains visible.
  *   · Lock-queue waits (`agent_lock_waiters`): sub-minute transients the lock
  *     hook retries through; a stamp would mostly capture waits already over by
  *     read time. Addable behind this same seam if a real reader emerges.
@@ -45,7 +46,8 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeExternalBlockers } from '../../external-blockers';
-import { EXPLICIT_PARK_NOTE_MARKER } from '../../events/await/types';
+import { INBOX_WAKE_KEY_PREFIX, EXPLICIT_PARK_NOTE_MARKER } from '../../events/await/types';
+import { nonWakeReason } from '../../events/await/wake-source-predicate';
 
 /** Max entries stamped — a pointer set, not a transcript (basedOn's rule). */
 export const AWAITING_MAX_ENTRIES = 6;
@@ -89,21 +91,52 @@ export async function deriveAwaiting(opts: {
 
     // Leg 1 — active event awaits. The inbox-wake standing subscription is
     // plumbing every agent holds; excluded (see module header).
-    const awaits = await sql<{ event_key: string; created_at: Date }[]>`
-      SELECT event_key, created_at
+    const awaits = await sql<{
+      event_key: string;
+      created_at: Date;
+      expires_ts: Date | string | null;
+      timeout_behavior: string | null;
+      once: boolean | null;
+      note: string | null;
+    }[]>`
+      SELECT event_key, created_at, expires_ts, timeout_behavior, once, note
         FROM harness_shared.event_awaits
        WHERE workspace_id = ${opts.workspaceId}
          AND subscriber_id = ${opts.ownerId}
          AND fired_at IS NULL
          AND cancelled_at IS NULL
          AND (
-           event_key NOT LIKE 'coord:inbox-wake:%'
+           event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
            OR note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'}
+           OR (
+             event_key = ${INBOX_WAKE_KEY_PREFIX + opts.ownerId}
+             AND policy = 'wake'
+             AND expires_ts IS NOT NULL
+             AND timeout_behavior = 'wake'
+           )
          )
        ORDER BY created_at DESC
        LIMIT ${limit}`;
     for (const row of awaits) {
       if (out.length >= limit) break;
+      const isInboxWakeEvent = row.event_key.startsWith(INBOX_WAKE_KEY_PREFIX);
+      const isOwnInboxWake = row.event_key === INBOX_WAKE_KEY_PREFIX + opts.ownerId;
+      const isInboxKeepalive = nonWakeReason(
+        {
+          subscriberId: opts.ownerId,
+          eventKey: row.event_key,
+          expiresTs: row.expires_ts instanceof Date ? row.expires_ts.toISOString() : row.expires_ts,
+          timeoutBehavior: row.timeout_behavior,
+          once: row.once,
+        },
+        new Map(),
+        INBOX_WAKE_KEY_PREFIX,
+      ) === 'inbox-watcher';
+      if (
+        isInboxWakeEvent &&
+        !row.note?.startsWith(EXPLICIT_PARK_NOTE_MARKER) &&
+        (!isOwnInboxWake || isInboxKeepalive)
+      ) continue;
       out.push({
         kind: 'event-await',
         ref: row.event_key,

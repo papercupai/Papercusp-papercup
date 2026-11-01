@@ -863,7 +863,14 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
     expect(sufficient.smokeEvidence.elapsedMs).toBeGreaterThanOrEqual(1500);
     const insufficient = runSmoke(delayed, 1);
     expect(insufficient.status).toBe(1);
-    expect(insufficient.smokeEvidence).toMatchObject({ exitCode: 124, outcome: "process-failed" });
+    // timeout's configured --kill-after fallback returns 137 if TERM did not
+    // finish the import. Both paths are bounded failures, not a smoke pass.
+    const diagnostic = JSON.stringify({ evidence: insufficient.smokeEvidence,
+      output: insufficient.smokeOutput, stderr: insufficient.stderr });
+    expect(insufficient.smokeEvidence, diagnostic).toMatchObject({ outcome: "process-failed" });
+    expect([124, 137], diagnostic).toContain(insufficient.smokeEvidence.exitCode);
+    expect(insufficient.smokeEvidence.elapsedMs).toBeGreaterThanOrEqual(900);
+    expect(insufficient.retainedBundle).toBe(delayed);
   });
 
   it('isolates the standalone smoke fixture from a failing outer-runner preload', () => {
@@ -908,9 +915,11 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
   it("terminates an import smoke that exceeds its deadline", () => {
     const result = runSmoke("setInterval(() => {}, 1000);\n", 1);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("failed before Tauri startup (exit 124)");
+    expect(result.stderr).toMatch(/failed before Tauri startup \(exit (124|137)\)/);
     expect(result.smokeOutput).toContain("PAPERCUSP_HOST_IMPORT_SMOKE_START");
-    expect(result.smokeEvidence).toMatchObject({ exitCode: 124, timeoutSec: 1, outcome: "process-failed" });
+    expect(result.smokeEvidence, JSON.stringify(result.smokeEvidence))
+      .toMatchObject({ timeoutSec: 1, outcome: "process-failed" });
+    expect([124, 137]).toContain(result.smokeEvidence.exitCode);
     expect(result.smokeEvidence.elapsedMs).toBeGreaterThanOrEqual(900);
     expect(result.smokeEvidence.bundleSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(result.retainedBundle).toBe("setInterval(() => {}, 1000);\n");
@@ -1553,11 +1562,14 @@ describe("independent copy memory admission precedes native preparation", () => 
 
 describe("pinned verifier inputs fail before native preparation", () => {
   const preflightStartIdx = src.indexOf("preflight_verifier_pinned_inputs() {");
-  const preflightEndIdx = src.indexOf('NATIVE_CARGO_DISK_RESERVATION_FILE=""', preflightStartIdx);
   const earlyCallIdx = src.indexOf(
     "verifier_run_step verifier-pinned-inputs-preflight preflight_verifier_pinned_inputs",
     preflightStartIdx,
   );
+  // Execute only this preflight and its call. Using the next subsystem's
+  // variable declaration also executed intervening display/Cargo preflights
+  // against this deliberately minimal fixture environment.
+  const preflightEndIdx = earlyCallIdx < 0 ? -1 : src.indexOf('\n', earlyCallIdx);
   const nativeCargoIdx = src.indexOf("verifier_run_step native-cargo-capacity preflight_native_cargo");
   const nativeConsoleIdx = src.indexOf(
     "verifier_run_step native-console-platform-check preflight_native_console_platform",
@@ -1710,14 +1722,20 @@ describe('native shell dependency preflight', () => {
 
 describe("native copy callers preserve frozen helpers and bounded admission", () => {
   function snapshot(mode: string, bounded = true, generationStatus: number | null = null,
-    inheritedEnv: NodeJS.ProcessEnv = hermeticSpawnEnv()) {
+    inheritedEnv: NodeJS.ProcessEnv = hermeticSpawnEnv(), prewarmStatus = 0) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-copy-helper-"));
     const frozen = resolve(fixture, "frozen");
     const helper = resolve(frozen, "papercusp-desktop/bin/lib/pinned-deps.sh");
+    const generationRoot = resolve(frozen, "apps/operator/bin/release");
     mkdirSync(resolve(frozen, "scripts/lib"), { recursive: true });
     mkdirSync(resolve(frozen, "papercusp-desktop/bin/lib"), { recursive: true });
+    mkdirSync(generationRoot, { recursive: true });
     writeFileSync(resolve(frozen, "scripts/lib/task-cgroup-limits.mjs"),
       `export function readTaskCgroupMemoryMaxMb() { return ${bounded ? 4096 : "null"}; }`);
+    writeFileSync(resolve(generationRoot, "dependency-generation.sh"), [
+      'printf "prewarm:%s\\n" "$*" >> "$WORK/order"',
+      `exit ${prewarmStatus}`,
+    ].join("\n"));
     writeFileSync(resolve(frozen, "scripts/pc-heavy.sh"),
       'echo admission >> "$WORK/order"\nshift\n"$@"');
     writeFileSync(helper, [
@@ -1744,6 +1762,7 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
         WORK: fixture, REPO_DIR: "/canonical-donor",
         TEST_FROZEN: frozen, TEST_HELPER: helper,
         VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: mode,
+        VERIFY_TAURI_SOURCE_REF: inheritedEnv.VERIFY_TAURI_SOURCE_REF ?? "fixture-commit",
       } });
       const order = existsSync(resolve(fixture, "order")) ? readFileSync(resolve(fixture, "order"), "utf8") : "";
       expect(readFileSync(helper, "utf8")).toBe(before);
@@ -1761,7 +1780,21 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
   it.each([0, 74])("uses the immutable generation when supported and preserves its refusal: %s", status => {
     const result = snapshot("copy", true, status);
     expect(result.status, result.diagnostic).toBe(status);
-    expect(result.order).toBe(`admission\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
+    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor --ensure-ref fixture-commit\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
+  });
+
+  it("prewarms the live input when no committed source ref is selected", () => {
+    const result = snapshot("copy", true, 0, {
+      ...hermeticSpawnEnv(), VERIFY_TAURI_SOURCE_REF: "",
+    });
+    expect(result.status, result.diagnostic).toBe(0);
+    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
+  });
+
+  it("preserves a dependency prewarm refusal before copying the generation", () => {
+    const result = snapshot("copy", true, 0, undefined, 74);
+    expect(result.status, result.diagnostic).toBe(74);
+    expect(result.order).toBe("admission\nprewarm:--integration /canonical-donor --ensure-ref fixture-commit\n");
   });
 
   it('isolates the synthetic copy helper from a failing outer-runner preload', () => {
@@ -1769,7 +1802,7 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
       ...hermeticSpawnEnv(), NODE_OPTIONS: failingOuterPreload,
     });
     expect(result.status, result.diagnostic).toBe(0);
-    expect(result.order).toBe(`admission\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
+    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor --ensure-ref fixture-commit\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
     expect(result.stderr).not.toContain('outer runner preload leaked');
   });
 

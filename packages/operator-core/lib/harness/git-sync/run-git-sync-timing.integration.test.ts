@@ -279,6 +279,203 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
 });
 
+// Contrast the two seams beneath the real-sidecar baseline above without
+// perturbing a shared sync. Both blockers are real, on disposable PostgreSQL;
+// the governor, queue and acquisition/result diagnostics remain production code.
+it.for(['acquisition', 'admission'] as const)('distinguishes %s delay in private-PG governed Git admission', { timeout: options.testTimeoutMs }, async (blocker: 'acquisition' | 'admission', context: TestContext) => {
+  const paths = [
+    'packages/operator-core/lib/resource-governor/execution.ts',
+    'packages/operator-core/lib/resource-governor/admission.ts',
+    'packages/operator-core/lib/resource-governor/queue.ts',
+    'packages/operator-core/lib/resource-governor/admission-cutover-store.ts',
+    'packages/operator-core/lib/resource-governor/admission-ledger-store.ts',
+    'packages/operator-core/lib/pg-bounded-txn.ts',
+    'libs/papercusp/libs/db/src/connection.ts',
+    'libs/papercusp/libs/db/src/acquire-registry.ts',
+  ];
+  const runId = await recordIsolatedIntegrationProof({ root, filePath, sourcePaths: paths,
+    retainedArtifacts: ['phases/execute/admission-control.json', 'phases/execute/worker.log',
+      'phases/execute/worker-result.json'],
+    execute: async (observe, evidenceDir) => {
+      const probe = `
+        import assert from 'node:assert/strict';
+        import { createHash } from 'node:crypto';
+        import { readFile, writeFile } from 'node:fs/promises';
+        import { setTimeout as delay } from 'node:timers/promises';
+        import postgres from 'postgres';
+        import { createDedicatedOrgPg, acquireSnapshot, pgResultDiagnosticSnapshot } from '@papercusp/db-org';
+        import { withPgAcquireDiagnostics, pgAcquireTimingSnapshot } from '@papercusp/db-org/acquire-registry';
+        import { Governor } from './packages/operator-core/lib/resource-governor/admission.ts';
+        import { WorkItemAdmissionQueueDriver } from './packages/operator-core/lib/resource-governor/queue.ts';
+        import { PgAdmissionCutoverQueueStore } from './packages/operator-core/lib/resource-governor/admission-cutover-store.ts';
+        import { beginGovernedExecution } from './packages/operator-core/lib/resource-governor/execution.ts';
+
+        try {
+          assert.match(process.env.PAPERCUSP_WORKSPACE_ID, /^test-runtime-/);
+          assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '1');
+          assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');
+          const paths = ${JSON.stringify(paths)};
+          const hashes = async () => Object.fromEntries(await Promise.all(paths.map(async path =>
+            [path, createHash('sha256').update(await readFile(path)).digest('hex')])));
+          const before = await hashes();
+          const blocker = ${JSON.stringify(blocker)};
+          const pool = 'org-admin-git-timing-control';
+          const { sql } = createDedicatedOrgPg('git-timing-control', {
+            max: 1, sessionAffinity: true, url: process.env.HARNESS_ADMIN_DATABASE_URL,
+          });
+          // Separate, uninstrumented observer: its probes never occupy or add
+          // acquisitions to the subject's single-connection pool.
+          const observer = postgres(process.env.HARNESS_ADMIN_DATABASE_URL, { max: 2, onnotice: () => {} });
+          const workspace = process.env.PAPERCUSP_WORKSPACE_ID;
+          const namespace = 'git-timing-control';
+          const key = 'controlled-' + blocker;
+          const driver = new WorkItemAdmissionQueueDriver(new PgAdmissionCutoverQueueStore({
+            workspaceId: workspace, sql, acquirePool: pool,
+            // Owner liveness is not the subject and must not consult a shared host.
+            resolveSessionStatesFn: async () => new Map(),
+          }), { namespace });
+          const governor = new Governor(driver);
+          let held;
+          let admission;
+          let advisoryHeld = false;
+          const lockKey = 'resource-governor:' + workspace + ':' + namespace + ':id:' + key;
+          const releaseBlocker = async () => {
+            if (!held) return;
+            if (advisoryHeld) {
+              const rows = await held.unsafe('SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS unlocked', [lockKey]);
+              assert.equal(rows[0].unlocked, true);
+              advisoryHeld = false;
+            }
+            held.release();
+            held = undefined;
+          };
+          const until = async read => {
+            const deadline = Date.now() + 5_000;
+            while (Date.now() < deadline) {
+              const value = await read();
+              if (value) return value;
+              await delay(10);
+            }
+            throw new Error('controlled blocker did not reach its expected seam');
+          };
+          try {
+            // Warm the exact subject connection first: this control is pool
+            // occupancy, not a dead endpoint or first-connect experiment.
+            const [{ pid: backendPid }] = await sql.unsafe('SELECT pg_backend_pid() AS pid');
+            let blockerPid = backendPid;
+            if (blocker === 'acquisition') held = await sql.reserve();
+            else {
+              held = await observer.reserve();
+              [{ pid: blockerPid }] = await held.unsafe('SELECT pg_backend_pid() AS pid');
+              await held.unsafe('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
+              advisoryHeld = true;
+            }
+            const phases = [];
+            let enqueueTiming;
+            let enqueueQueries;
+            const proof = await withPgAcquireDiagnostics('git-sync.timing-control', async diagnosticRequestId => {
+              admission = beginGovernedExecution({ idempotencyKey: key, admissionClass: 'process',
+                metadata: { command: 'git', processKind: 'timing-control' } }, {
+                owner: 'isolated-git-timing-control', leaseTtlMs: 60_000,
+                onAdmissionPhase: event => {
+                  phases.push(event);
+                  if (event.phase === 'enqueue' && event.state === 'fulfilled') {
+                    enqueueTiming = pgAcquireTimingSnapshot();
+                    enqueueQueries = pgResultDiagnosticSnapshot(pool);
+                  }
+                },
+              }, { governor, driver });
+              void admission.catch(() => undefined);
+              const blocked = await until(async () => {
+                const rows = await observer.unsafe(
+                  'SELECT pid, state, wait_event_type, wait_event, pg_blocking_pids(pid) AS blockers FROM pg_stat_activity WHERE pid = $1',
+                  [backendPid]);
+                const backend = rows[0];
+                // Read the in-process seam AFTER the server observation. A
+                // pre-await snapshot may still say waiting while SQL has since
+                // acquired its connection and reached the advisory lock.
+                const pressure = acquireSnapshot(pool);
+                if (blocker === 'acquisition' ? pressure.waiting === 1
+                  : backend?.wait_event === 'advisory' && backend.blockers.includes(blockerPid)) {
+                  return { pressure, backend, timing: pgAcquireTimingSnapshot() };
+                }
+              });
+              assert.equal(phases.some(event => event.phase === 'enqueue' && event.state === 'fulfilled'), false);
+              assert.equal(blocked.timing.requestId, diagnosticRequestId);
+              assert.equal(blocked.timing.omitted, 0);
+              if (blocker === 'acquisition') {
+                assert.equal(blocked.pressure.max, 1);
+                assert.deepEqual(blocked.timing.acquisitions, []);
+                assert.equal(blocked.backend.state, 'idle');
+                assert.deepEqual(blocked.backend.blockers, []);
+              } else {
+                assert.equal(blocked.pressure.waiting, 0, JSON.stringify(blocked));
+                assert.ok(blocked.timing.acquisitions.some(row => row.pool === pool && row.outcome === 'acquired'));
+                assert.equal(blocked.backend.wait_event_type, 'Lock');
+              }
+              const holdStart = performance.now();
+              await delay(350);
+              const heldMs = performance.now() - holdStart;
+              await releaseBlocker();
+              const execution = await admission;
+              assert.equal(await execution.finish(), true);
+              const enqueue = phases.find(event => event.phase === 'enqueue' && event.state === 'fulfilled');
+              assert.ok(enqueue.elapsedMs >= heldMs - 50, JSON.stringify({ enqueue, heldMs }));
+              assert.equal(enqueueTiming.requestId, diagnosticRequestId);
+              assert.equal(enqueueTiming.operation, 'git-sync.timing-control');
+              assert.equal(enqueueTiming.omitted, 0);
+              if (blocker === 'acquisition') {
+                assert.ok(enqueueTiming.acquisitions.some(row => row.pool === pool && row.elapsedMs >= heldMs - 50));
+              } else {
+                // This completed query's writer measures query execution,
+                // unlike the acquisition seam. The actual backend blocker above
+                // is the causal proof; a long enqueue alone would not be.
+                assert.ok(enqueueQueries.results.some(row => row.backendPid === backendPid
+                  && row.queryFamily === 'select' && row.elapsedMs >= heldMs - 50),
+                  JSON.stringify(enqueueQueries));
+              }
+              const receipts = await observer.unsafe(
+                'SELECT receipt_id, state FROM harness_shared.resource_governor_admissions WHERE workspace_id = $1 AND namespace = $2 AND idempotency_key = $3',
+                [workspace, namespace, key]);
+              assert.deepEqual(receipts.map(row => row.state), ['completed']);
+              assert.equal(receipts[0].receipt_id, execution.receiptId);
+              return { blocker, diagnosticRequestId, backendPid, blockerPid, blocked, heldMs,
+                phases, enqueueTiming, enqueueQueries, receipts };
+            });
+            assert.deepEqual(await hashes(), before, 'source stable through control');
+            await writeFile(process.env.PC_ADMISSION_CONTROL_OUTPUT, JSON.stringify({
+              ...proof, hashes: before, workspace, privateDatabase: true,
+              scope: 'controlled pool occupancy versus identity advisory lock; not historical/shared-host causality',
+            }, null, 2));
+          } finally {
+            await releaseBlocker();
+            await admission?.then(execution => execution.finish()).catch(() => undefined);
+            await Promise.all([sql.end({ timeout: 5 }), observer.end({ timeout: 5 })]);
+          }
+        } catch (error) {
+          console.error('GIT_ADMISSION_CONTROL_FAILURE ' + (error?.stack ?? String(error)));
+          process.exitCode = 1;
+        }
+      `;
+      const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime',
+        '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
+        cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
+          PC_ADMISSION_CONTROL_OUTPUT: join(evidenceDir, 'admission-control.json') },
+      });
+      observe(child);
+      const result = await captureIsolatedWorker(child, evidenceDir, options);
+      expect(result, isolatedWorkerFailureDetail(result.output, result)).toMatchObject({
+        code: 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
+      });
+      const proof = JSON.parse(readFileSync(join(evidenceDir, 'admission-control.json'), 'utf8'));
+      expect(proof.blocker).toBe(blocker);
+      expect(proof.hashes).toEqual(Object.fromEntries(paths.map(path => [path, createSourceHash(path)])));
+    },
+  });
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+});
+
 function createSourceHash(path: string): string {
   return createHash('sha256').update(readFileSync(join(root, path))).digest('hex');
 }

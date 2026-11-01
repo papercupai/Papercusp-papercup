@@ -476,7 +476,7 @@ export function formatD026QuiescedSummary(wf: {
  * P-009 (ex-P-010, EI-22489500008234936): git-sync is fleet-blocking. While it is starved, nothing
  * any agent writes reaches a commit. The generic dead-routine alarm fires only once a routine is
  * 10 to 20 minutes overdue. This one fires on the cadence-relative measure
- * (deriveGitSyncFreshness.missed_intervals) once it EXCEEDS this count.
+ * (deriveGitSyncFreshness.missed_intervals) once it REACHES this count.
  */
 export const GIT_SYNC_MISSED_INTERVALS_ALARM = 3;
 
@@ -524,7 +524,7 @@ function gitSyncMissedIntervalsRevalidationEvidence(
 ): string {
   const observedAt = new Date(observedAtMs).toISOString();
   const starvedCandidates = candidates.filter(
-    (candidate) => candidate.missedIntervals > GIT_SYNC_MISSED_INTERVALS_ALARM,
+    (candidate) => candidate.missedIntervals >= GIT_SYNC_MISSED_INTERVALS_ALARM,
   );
   const installSlug = sig.length > GIT_SYNC_MISSED_INTERVALS_SIGNATURE.length
     ? sig.slice(GIT_SYNC_MISSED_INTERVALS_SIGNATURE.length + 1)
@@ -532,7 +532,7 @@ function gitSyncMissedIntervalsRevalidationEvidence(
   if (installSlug) {
     const candidate = starvedCandidates.find((entry) => entry.installSlug === installSlug);
     return candidate
-      ? `live routines recheck at ${observedAt} confirmed ${installSlug} remains a starvation candidate at ${candidate.missedIntervals} missed intervals (threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`
+      ? `live routines recheck at ${observedAt} confirmed ${installSlug} remains a starvation candidate at ${candidate.missedIntervals} missed intervals (threshold >= ${GIT_SYNC_MISSED_INTERVALS_ALARM})`
       : `live routines recheck at ${observedAt} found no current starvation candidate for ${installSlug}; the filtered candidate list is not a raw-zero or commit-progress measure`;
   }
   const max = starvedCandidates.reduce<number | null>(
@@ -541,7 +541,7 @@ function gitSyncMissedIntervalsRevalidationEvidence(
   );
   return max === null
     ? `live routines recheck at ${observedAt} found no current starvation candidates; the filtered candidate list is not a raw-zero or commit-progress measure`
-    : `live routines recheck at ${observedAt} found a current starvation candidate at ${max} missed intervals (threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
+    : `live routines recheck at ${observedAt} found a current starvation candidate at ${max} missed intervals (threshold >= ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
 }
 
 /**
@@ -704,9 +704,9 @@ export function evaluateLivenessAlarm(
     deployData?.gitSyncMissedIntervalsByInstall,
   )
     ? deployData.gitSyncMissedIntervalsByInstall.filter(
-        (e) => typeof e?.missedIntervals === 'number' && e.missedIntervals > GIT_SYNC_MISSED_INTERVALS_ALARM,
+        (e) => typeof e?.missedIntervals === 'number' && e.missedIntervals >= GIT_SYNC_MISSED_INTERVALS_ALARM,
       )
-    : typeof gitSyncMissedMax === 'number' && gitSyncMissedMax > GIT_SYNC_MISSED_INTERVALS_ALARM
+    : typeof gitSyncMissedMax === 'number' && gitSyncMissedMax >= GIT_SYNC_MISSED_INTERVALS_ALARM
       ? [{ installSlug: deployData?.gitSyncMissedIntervalsInstallSlug ?? null, missedIntervals: gitSyncMissedMax }]
       : [];
   for (const { installSlug: slug, missedIntervals: gitSyncMissed } of starvedInstalls) {
@@ -1363,7 +1363,7 @@ export function resolveEvidenceFor(
         ? ` ${slug} starvationCandidateMissedIntervals=${installCandidate.missedIntervals}`
         : ` ${slug} absentFromCurrentStarvationCandidates (not a raw zero; a progressing in-flight fire can leave routines:list degraded until completion)`
       : '';
-    return `observed deploy status=${dp?.status ?? 'panel-absent'} gitSyncMaxMissedIntervals=${typeof missed === 'number' ? missed : 'unreadable'}${installNote} (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
+    return `observed deploy status=${dp?.status ?? 'panel-absent'} gitSyncMaxMissedIntervals=${typeof missed === 'number' ? missed : 'unreadable'}${installNote} (alarm threshold >= ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
   }
   if (sig === 'agents-wedged' || sig === 'agents-stranded') {
     const strand = health.panels.coordination?.data?.agentStrand;
@@ -2398,7 +2398,7 @@ export async function runLivenessAlarmTick(
     } else {
       gitSyncLiveRevalidation = { status: 'readable', observedAtMs: now, candidates };
       const starvedNow = candidates.filter(
-        (candidate) => candidate.missedIntervals > GIT_SYNC_MISSED_INTERVALS_ALARM,
+        (candidate) => candidate.missedIntervals >= GIT_SYNC_MISSED_INTERVALS_ALARM,
       );
       const keepLegacyFamilySignal = signals.some(
         (signal) => signal.key === GIT_SYNC_MISSED_INTERVALS_SIGNATURE,

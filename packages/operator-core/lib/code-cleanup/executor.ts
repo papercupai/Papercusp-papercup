@@ -81,7 +81,7 @@ const memberLabel = (m: ExecutorMember) => `${m.path}:${m.line}${m.endLine ? `-$
 
 /** A batch id stable across runs: the triage area plus the batch's index in it. */
 export function executorBatchFromTriage(batch: TriageBatch, endLine?: (m: TriageLocation) => number | undefined): ExecutorBatch {
-  const members = batch.families.flatMap(f => f.members.map(m => ({ ...m, endLine: endLine?.(m) })));
+  const members = batch.families.flatMap(f => f.members.map(m => ({ ...m, endLine: endLine?.(m) ?? m.endLine })));
   return { id: `${batch.area}#${batch.index}`, members };
 }
 

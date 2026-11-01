@@ -468,6 +468,43 @@ describe('gradeColdBootDrill — host event + successor transcript', () => {
     expect(ledger.at(-1)?.kind).toBe('carry-drill-graded');
   });
 
+  it('identifies the unrecovered work-item and state path in the grade and ledger', async () => {
+    const ledger = [requested];
+    const unrecoveredTranscript: ReplayTranscript = {
+      ref: '/tmp/unrecovered-work-item.jsonl',
+      backend: 'claude-code',
+      turns: [
+        { index: 0, role: 'user', text: '⟦carry-drill:drill-1⟧continue' },
+        tool(1, 'work_items:get', { id: 'WI-4852' }),
+        tool(2, 'session:carry-drill', { op: 'grade', drillId: 'drill-1' }),
+      ],
+    };
+
+    const result = await gradeColdBootDrill('su-1', 'drill-1', {
+      readLedger: async () => ledger,
+      appendLedger: async (event) => { ledger.push(event); return true; },
+      readHostEvents: async () => [{ kind: 'carry-drill-respawned', drillId: 'drill-1', nativeId: 'native-2', launchContextPath: '/safe/carry.md' }],
+      readCarry: async () => 'A fresh successor with no held-item entry.',
+      loadTranscript: async () => unrecoveredTranscript,
+      now: () => NOW + 1000,
+    });
+
+    const lookup = {
+      kind: 'reread-state',
+      targetClass: 'held-wi',
+      recoveredInCarry: false,
+      targetRefs: ['WI-4852'],
+      targetPath: 'results[].workItem.state',
+    };
+    expect(result).toMatchObject({
+      ok: true,
+      alreadyGraded: false,
+      sample: { lookups: [lookup] },
+      report: { perClass: [{ sessionClass: 'claude-su', drills: 1, gaps: 1, sufficient: false }] },
+    });
+    expect(ledger.at(-1)).toMatchObject({ kind: 'carry-drill-graded', lookups: [lookup] });
+  });
+
   it('grades a delivered drill when the recipient identity differs from its originating owner', async () => {
     const ledger = [requested];
     const hostOwners: string[] = [];

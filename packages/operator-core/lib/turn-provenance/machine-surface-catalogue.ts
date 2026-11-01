@@ -181,6 +181,9 @@ export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
   // the wrapper, so there is no seam to prefix an envelope onto — see the
   // "why this is a pattern and not an enrolment" note below.
   /^\s*# AGENTS\.md instructions\s*\n+<INSTRUCTIONS>/,
+  // Codex can emit its environment separately from the AGENTS.md turn. The
+  // wrapper describes the runtime; it is not the task that follows it.
+  /^\s*<environment_context>/,
   // The codex CLI's plugin preamble, same population and same authorship
   // (12 rows/14d at turn_idx=0).
   /^\s*<recommended_plugins>/,
@@ -201,6 +204,10 @@ export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
   /^\s*Stop hook feedback:/,
   // Codex's native Stop-hook wrapper around a Papercusp refusal/reinjection.
   CODEX_STOP_HOOK_PROMPT_RE,
+  // A cold-loop carry can lose its enrolled envelope at the PTY/carry boundary;
+  // the fixed wake banner still identifies the whole turn as machine-authored.
+  // Anchor the marker so an owner quoting it later in a sentence remains visible.
+  /^\s*❄️\s*COLD LOOP WAKE\b/i,
   // The MCP transport auto-heal advisory (mcp-dark-watchdog).
   /^\s*⚠\s*MCP transport auto-heal/,
   // Claude Code's skill-loader preamble, e.g. "Base directory for this skill: …"
@@ -311,7 +318,7 @@ export const CLASSIFY_HEAD_CHARS = 240;
 // 10 → 11 (EI-26851488432023641): managed-host parent recovery diagnostics
 // arrived as bare peer-labeled mode:'turn' text and fell through to owner.
 // Make those persisted rows findable for reclassification.
-export const MACHINE_SURFACE_CATALOGUE_VERSION = 11;
+export const MACHINE_SURFACE_CATALOGUE_VERSION = 12;
 
 /** Does this turn's head carry a CLI/subsystem synthetic-command wrapper? */
 export function hasSyntheticMarker(text: string): boolean {

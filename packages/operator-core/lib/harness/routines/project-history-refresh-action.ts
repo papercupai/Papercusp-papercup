@@ -94,6 +94,7 @@ export interface ProjectHistoryHealth {
   consecutiveFailures: number;
   lastOkAt: string | null;
   lastFailureAt: string | null;
+  lastFailureReason: string | null;
   alerted: boolean;
 }
 
@@ -101,6 +102,7 @@ export const PROJECT_HISTORY_HEALTH_DEFAULT: ProjectHistoryHealth = {
   consecutiveFailures: 0,
   lastOkAt: null,
   lastFailureAt: null,
+  lastFailureReason: null,
   alerted: false,
 };
 
@@ -365,21 +367,49 @@ export function decideProjectHistoryHealthUpdate(
   success: boolean,
   threshold: number,
   nowMs: number,
+  failureReason: string | null = prev.lastFailureReason,
 ): HealthUpdate {
   const nowIso = new Date(nowMs).toISOString();
   if (success) {
     return {
-      next: { consecutiveFailures: 0, lastOkAt: nowIso, lastFailureAt: prev.lastFailureAt, alerted: false },
+      next: {
+        consecutiveFailures: 0,
+        lastOkAt: nowIso,
+        lastFailureAt: prev.lastFailureAt,
+        lastFailureReason: prev.lastFailureReason,
+        alerted: false,
+      },
       shouldAlert: false,
       shouldResolve: prev.consecutiveFailures > 0,
     };
   }
   const consecutiveFailures = prev.consecutiveFailures + 1;
   return {
-    next: { consecutiveFailures, lastOkAt: prev.lastOkAt, lastFailureAt: nowIso, alerted: prev.alerted || consecutiveFailures >= threshold },
+    next: {
+      consecutiveFailures,
+      lastOkAt: prev.lastOkAt,
+      lastFailureAt: nowIso,
+      lastFailureReason: failureReason,
+      alerted: prev.alerted || consecutiveFailures >= threshold,
+    },
     shouldAlert: consecutiveFailures >= threshold && !prev.alerted,
     shouldResolve: false,
   };
+}
+
+/** Keep the first useful child diagnostic for persisted health and alerts. The
+ * final output line is often a generic wrapper message that hides the cause. */
+export function projectHistoryFailureDetail(outcome: ProjectHistoryHealthOutcome): string {
+  if (outcome.reason) return outcome.reason.slice(0, 500);
+  if (outcome.timedOut) return 'timed out after ' + outcome.timeoutMs + 'ms';
+  const output = (outcome.stderr || outcome.stdout)
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+  const cause = output.find(line =>
+    /\b(error|failed|failure|exception|fatal|unauthorized|forbidden)\b/i.test(line),
+  ) ?? output[0];
+  return cause ? 'exited ' + outcome.code + ': ' + cause.slice(0, 400) : 'exited ' + outcome.code;
 }
 
 async function persistProjectHistoryHealth(
@@ -403,6 +433,7 @@ async function persistProjectHistoryHealth(
       outcome.success,
       PROJECT_HISTORY_FAILURE_ALERT_THRESHOLD,
       Date.now(),
+      outcome.success ? null : projectHistoryFailureDetail(outcome),
     );
     await sql.unsafe(
       `UPDATE harness_shared.routines
@@ -417,7 +448,7 @@ async function persistProjectHistoryHealth(
         summary: `Project history for ${ctx.installSlug} has failed ${update.next.consecutiveFailures} consecutive refreshes`,
       }).catch(() => false);
     }
-    const failureDetail = outcome.reason ?? (
+    const failureDetail = update.next.lastFailureReason ?? outcome.reason ?? (
       outcome.timedOut
         ? `timed out after ${outcome.timeoutMs}ms`
         : outcome.code !== 0
@@ -533,14 +564,35 @@ export async function runProjectHistoryRefreshAction(
     `[project-history-refresh] generating ${config.projectId} history -> ${config.output} ` +
       `(harness=${config.harness} prefix="${config.planPrefix}" cli=${cliBin} ptool=${ptool})`,
   );
-  const r = await generator(cliBin, config, timeoutMs, env);
+  let r: GenerateRunResult;
+  try {
+    r = await generator(cliBin, config, timeoutMs, env);
+  } catch (error) {
+    const detail = error instanceof Error
+      ? [error.name, error.message].filter(Boolean).join(': ')
+      : String(error);
+    const reason = 'Project History generator failed before returning a result: ' + detail;
+    console.error('[project-history-refresh] FAILED: ' + reason);
+    await recordFailure(reason, config.output);
+    return;
+  }
   const elapsedSec = Math.round((now() - startedAt) / 1000);
   const success = !r.timedOut && r.code === 0;
+  const failureDetail = success ? null : projectHistoryFailureDetail({
+    success,
+    timedOut: r.timedOut,
+    code: r.code,
+    stdout: r.stdout,
+    stderr: r.stderr,
+    timeoutMs,
+    output: config.output,
+  });
+  if (failureDetail) console.warn('[project-history-refresh] first failure detail: ' + failureDetail);
 
   if (r.timedOut) {
     console.warn(`[project-history-refresh] TIMED OUT after ${timeoutMs}ms (${elapsedSec}s) — process tree killed`);
   } else if (r.code !== 0) {
-    console.warn(`[project-history-refresh] exited ${r.code} after ${elapsedSec}s — ${(r.stderr || r.stdout).slice(-500)}`);
+    console.warn('[project-history-refresh] failed after ' + elapsedSec + 's — ' + failureDetail);
   } else {
     console.log(`[project-history-refresh] ok in ${elapsedSec}s — ${config.output}`);
   }
@@ -553,6 +605,7 @@ export async function runProjectHistoryRefreshAction(
     stderr: r.stderr,
     timeoutMs,
     output: config.output,
+    reason: failureDetail ?? undefined,
   });
   // WI-10005745: spawns the tree's own CLI bin (libs/papercusp/packages/cli/bin/papercusp).
 }

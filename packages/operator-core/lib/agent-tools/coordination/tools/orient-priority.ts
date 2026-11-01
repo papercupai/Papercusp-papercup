@@ -29,6 +29,7 @@ export const ORIENT_FACTS_RECOVERY_VIA =
 /** Result fields that are never eligible for optional-leg eviction. */
 export const ORIENT_CORE_RESULT_KEYS = [
   'ok',
+  'ownerIdentity',
   'me',
   'claimable',
   'claimableHarnessScope',

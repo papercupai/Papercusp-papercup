@@ -14,6 +14,7 @@ const sqlMock = vi.hoisted(() => {
   return mock;
 });
 const readConfinementMock = vi.hoisted(() => vi.fn());
+const readDeclaredConfinementMock = vi.hoisted(() => vi.fn());
 const retireRuntimeMock = vi.hoisted(() => vi.fn(async (_input: unknown, _deps: unknown) => ({ cutoff: 0, released: 0, pending: 0 })));
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock }) }));
@@ -21,6 +22,7 @@ vi.mock('./pg-read-query', () => ({ boundedPgReadTxn: vi.fn() }));
 vi.mock('./blind-review-runtime-recovery', () => ({ retireRuntimeNamespacesForBinding: retireRuntimeMock }));
 vi.mock('./capability-envelope/session-confinement-store', () => ({
   readSessionConfinement: (...args: unknown[]) => readConfinementMock(...args),
+  readDeclaredSessionConfinement: (...args: unknown[]) => readDeclaredConfinementMock(...args),
 }));
 
 import {
@@ -168,6 +170,7 @@ beforeEach(() => {
   };
   state.binding = null;
   readConfinementMock.mockReset().mockResolvedValue(CONFINEMENT);
+  readDeclaredConfinementMock.mockReset().mockResolvedValue(CONFINEMENT);
   sqlMock.mockReset();
   Object.assign(sqlMock, {
     json: (value: unknown) => value,
@@ -267,5 +270,43 @@ describe('typed blind-review session bindings', () => {
     const posted = await findBlindReviewSessionBinding({ workspaceId: 'ws-1', planSlug: 'reviewed-plan', activationAuditSeq: 4 });
     expect(posted).toMatchObject({ status: 'posted', reviewId: 91, resumeLeaseId: null });
     expect(await releaseBlindReviewSessionResume(lease.binding.id, lease.leaseId)).toBe(false);
+  });
+  it('leases exact expired declarations for recovery without allowing an expired review post', async () => {
+    state.binding = bindingRow();
+    readConfinementMock.mockResolvedValue({ ...CONFINEMENT, denyOutside: [], reason: 'launch ceiling expired' });
+    const lease = await acquireBlindReviewSessionResume({ workspaceId: 'ws-1', planSlug: 'reviewed-plan', activationAuditSeq: 4 });
+    expect(lease).toMatchObject({ ok: true, binding: { nativeSessionId: 'native-review-1', confinementSnapshot: CONFINEMENT } });
+    expect(readDeclaredConfinementMock).toHaveBeenCalledWith('su-reviewer', 'ws-1');
+    if (!lease.ok) throw new Error(lease.message);
+    expect(await verifyBlindReviewSessionBinding(lease.binding)).toMatchObject({ ok: false, code: 'confinement_mismatch' });
+    expect(await releaseBlindReviewSessionResume(lease.binding.id, lease.leaseId)).toBe(true);
+  });
+  it.each([
+    ['missing declaration', null],
+    ['changed ceiling', { ...CONFINEMENT, denyOutside: ['plans:blind-review'] }],
+    ['changed attribution', { ...CONFINEMENT, imposedBy: 'other' }],
+  ])('refuses recovery with %s and releases the lease', async (_label, declaration) => {
+    state.binding = bindingRow();
+    readDeclaredConfinementMock.mockResolvedValue(declaration);
+    expect(await acquireBlindReviewSessionResume({ workspaceId: 'ws-1', planSlug: 'reviewed-plan', activationAuditSeq: 4 }))
+      .toMatchObject({ ok: false, code: 'confinement_mismatch' });
+    expect(state.binding).toMatchObject({ status: 'ready', resume_lease_id: null });
+  });
+  it.each([
+    ['native identity', { session_id: 'other-native' }, 'adv_session_mismatch'],
+    ['account profile', { launch_argv: ['psu', '--headless', '--account=default'] }, 'launch_profile_mismatch'],
+  ])('refuses expired recovery after changed %s', async (_label, changes, code) => {
+    state.binding = bindingRow();
+    state.adv = { ...state.adv, ...changes };
+    expect(await acquireBlindReviewSessionResume({ workspaceId: 'ws-1', planSlug: 'reviewed-plan', activationAuditSeq: 4 }))
+      .toMatchObject({ ok: false, code });
+    expect(state.binding).toMatchObject({ status: 'ready', resume_lease_id: null });
+  });
+  it('fails closed on an unreadable declaration and releases the lease', async () => {
+    state.binding = bindingRow();
+    readDeclaredConfinementMock.mockRejectedValue(new Error('store down'));
+    expect(await acquireBlindReviewSessionResume({ workspaceId: 'ws-1', planSlug: 'reviewed-plan', activationAuditSeq: 4 }))
+      .toMatchObject({ ok: false, code: 'binding_unavailable' });
+    expect(state.binding).toMatchObject({ status: 'ready', resume_lease_id: null });
   });
 });

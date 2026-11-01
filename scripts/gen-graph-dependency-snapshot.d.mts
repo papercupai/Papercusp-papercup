@@ -286,7 +286,7 @@ export function registryIndexReader({ registry, repo, readFile, backendVersion }
 }>;
 /** The installed gitnexus version next to a CLI binary (`…/node_modules/.bin/gitnexus`). */
 export function backendVersionNearBin(bin: any, readFile?: (p: any) => string): any;
-export function main(argv?: string[]): Promise<0 | 2 | 3 | 4>;
+export function main(argv?: string[]): Promise<3 | 2 | 0 | 4>;
 /** DIRECT-mode page: no response budget applies, ~12 pages for 59k edges (each query ~5s to open). */
 export const DIRECT_PAGE_SIZE: 5000;
 export const DIRECT_QUERY_TIMEOUT_MS: 120000;

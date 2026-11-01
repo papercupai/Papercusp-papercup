@@ -44,6 +44,7 @@ import {
   fingerprintRepoFileSetAtCommit,
   listCommittedGlobMatches,
   locateCommittedBlobs,
+  readCommittedFiles,
   repoFileSetFingerprint,
   REPO_FILE_SET_READ_LIMITS,
   REPO_FIXTURE_READ_LIMITS,
@@ -1262,14 +1263,18 @@ export async function measureAndPinEvidenceForScope(
 
 const MAX_OPERATIONAL_ARTIFACT_BYTES = 8 * 1024 * 1024;
 
-type OperationalEvidenceDisclosureRow = {
+export type OperationalEvidenceDisclosureRow = {
   id?: number;
   evidenceKind: SpecEvidenceKind;
   evidenceRef: string;
   details: Record<string, unknown>;
   currentness: { overall: string };
-  serverMeasurement?: { status: string };
+  serverMeasurement?: { status: string; measuredAtCommit?: string };
 };
+
+export type OperationalArtifactRead =
+  | { artifact: Record<string, unknown>; sha256: string; measuredAtCommit: string | null }
+  | { error: string };
 
 /**
  * Read explicit coverage disclosures from a current, server-measured operational
@@ -1277,11 +1282,11 @@ type OperationalEvidenceDisclosureRow = {
  * deliberately excluded: only a file included in the repo-files measurement and
  * measured current by listSpecEvidence can contribute artifact disclosures.
  */
-export async function readCurrentOperationalArtifactDisclosures(
+export async function readCurrentOperationalArtifacts(
   workspaceId: string,
   harnessSlug: string,
   rows: readonly OperationalEvidenceDisclosureRow[],
-): Promise<Map<number, string[]>> {
+): Promise<Map<number, OperationalArtifactRead>> {
   const candidates = rows.flatMap((row) => {
     if (
       row.id === undefined ||
@@ -1300,13 +1305,14 @@ export async function readCurrentOperationalArtifactDisclosures(
   if (candidates.length === 0) return new Map();
 
   const roots = new Map<string, Promise<string>>();
-  const byReference = new Map<string, Promise<string[]>>();
+  const byReference = new Map<string, Promise<OperationalArtifactRead>>();
   const readOne = (
     evidenceRef: string,
     measurement: RepoFilesEvidenceMeasurement,
-  ): Promise<string[]> => {
+    measuredAtCommit: string | undefined,
+  ): Promise<OperationalArtifactRead> => {
     const rootKey = measurement.rootHarnessSlug ?? harnessSlug;
-    const key = JSON.stringify([rootKey, evidenceRef]);
+    const key = JSON.stringify([rootKey, evidenceRef, measuredAtCommit ?? null]);
     const existing = byReference.get(key);
     if (existing) return existing;
     const task = (async () => {
@@ -1320,33 +1326,76 @@ export async function readCurrentOperationalArtifactDisclosures(
         root = await rootPromise;
       } catch (error) {
         const reason = error instanceof Error ? error.message.split('\n')[0] : String(error);
-        return [`The measured operational evidence repository could not be resolved for disclosure verification: ${reason.slice(0, 180)}`];
+        return { error: `The measured operational evidence repository could not be resolved: ${reason.slice(0, 180)}` };
       }
       const pathParts = evidenceRef.split('/');
       if (
         isAbsolute(evidenceRef) ||
         evidenceRef.includes('\\') ||
         pathParts.some((part) => part === '' || part === '.' || part === '..')
-      ) return ['The current operational evidence artifact path is unsafe, so its disclosure fields could not be verified.'];
+      ) return { error: 'The current operational evidence artifact path is unsafe.' };
       const candidate = resolve(root, evidenceRef);
       if (!containedBy(root, candidate)) {
-        return ['The current operational evidence artifact resolves outside its repository root, so its disclosure fields could not be verified.'];
+        return { error: 'The current operational evidence artifact resolves outside its repository root.' };
       }
       try {
         const canonical = await realpath(candidate);
         if (!containedBy(root, canonical)) {
-          return ['The current operational evidence artifact follows a path outside its repository root, so its disclosure fields could not be verified.'];
+          return { error: 'The current operational evidence artifact follows a path outside its repository root.' };
         }
         const info = await stat(canonical);
         if (!info.isFile() || info.size > MAX_OPERATIONAL_ARTIFACT_BYTES) {
-          return ['The current operational evidence artifact is not a bounded regular file, so its disclosure fields could not be verified.'];
+          return { error: 'The current operational evidence artifact is not a bounded regular file.' };
         }
-        const parsed: unknown = JSON.parse(await readFile(canonical, 'utf8'));
+        const bytes = await readFile(canonical);
+        if (bytes.length > MAX_OPERATIONAL_ARTIFACT_BYTES) {
+          return { error: 'The current operational evidence artifact exceeds the read bound.' };
+        }
+        const digest = createHash('sha256').update(bytes).digest('hex');
+        if (measuredAtCommit) {
+          if (!/^[a-f0-9]{40,64}$/.test(measuredAtCommit)) {
+            return { error: 'The operational evidence measurement commit is invalid.' };
+          }
+          const committed = (await readCommittedFiles(root, measuredAtCommit, [evidenceRef], {},
+            REPO_FILE_SET_READ_LIMITS)).get(evidenceRef);
+          if (!committed || committed.sha256 !== digest) {
+            return { error: 'The operational evidence artifact differs from its server-measured committed bytes.' };
+          }
+        }
+        const parsed: unknown = JSON.parse(bytes.toString('utf8'));
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          return ['The current operational evidence artifact is not a JSON object, so its disclosure fields could not be verified.'];
+          return { error: 'The current operational evidence artifact is not a JSON object.' };
         }
-        const artifact = parsed as Record<string, unknown>;
-        if (artifact.kind !== 'operational-test-evidence') return [];
+        return { artifact: parsed as Record<string, unknown>, sha256: digest,
+          measuredAtCommit: measuredAtCommit ?? null };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message.split('\n')[0] : String(error);
+        return { error: `The current operational evidence artifact could not be read: ${reason.slice(0, 180)}` };
+      }
+    })();
+    byReference.set(key, task);
+    return task;
+  };
+
+  const output = new Map<number, OperationalArtifactRead>();
+  await Promise.all(candidates.map(async ({ row, measurement }) => {
+    output.set(row.id!, await readOne(row.evidenceRef, measurement, row.serverMeasurement?.measuredAtCommit));
+  }));
+  return output;
+}
+
+/** Disclosure and runtime-acceptance consumers share the same artifact admission/read fence. */
+export async function readCurrentOperationalArtifactDisclosures(
+  workspaceId: string,
+  harnessSlug: string,
+  rows: readonly OperationalEvidenceDisclosureRow[],
+): Promise<Map<number, string[]>> {
+  const output = new Map<number, string[]>();
+  for (const [id, result] of await readCurrentOperationalArtifacts(workspaceId, harnessSlug, rows)) {
+    if ('error' in result) {
+      output.set(id, [result.error]);
+    } else if (result.artifact.kind === 'operational-test-evidence') {
+        const artifact = result.artifact;
         const gaps: string[] = [];
         for (const field of ['disclosures', 'couldNotDetermine'] as const) {
           const value = artifact[field];
@@ -1363,21 +1412,9 @@ export async function readCurrentOperationalArtifactDisclosures(
             gaps.push(`Artifact ${field} is malformed, so its disclosure could not be verified.`);
           }
         }
-        return gaps;
-      } catch (error) {
-        const reason = error instanceof Error ? error.message.split('\\n')[0] : String(error);
-        return [`The current operational evidence artifact could not be read for disclosure fields: ${reason.slice(0, 180)}`];
-      }
-    })();
-    byReference.set(key, task);
-    return task;
-  };
-
-  const output = new Map<number, string[]>();
-  await Promise.all(candidates.map(async ({ row, measurement }) => {
-    const gaps = await readOne(row.evidenceRef, measurement);
-    if (gaps.length > 0) output.set(row.id!, gaps);
-  }));
+        if (gaps.length > 0) output.set(id, gaps);
+    }
+  }
   return output;
 }
 

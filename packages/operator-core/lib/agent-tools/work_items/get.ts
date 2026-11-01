@@ -821,6 +821,8 @@ const workItemsGetReadSchema = z.object({
     elapsedMs: z.number().int().nonnegative(),
   })).optional(),
   enrichmentDiagnosticsOmitted: z.number().int().nonnegative().optional(),
+  /** Time spent on the bounded post-row declaration-history lookup; null when skipped. */
+  changeKindsReadMs: z.number().int().nonnegative().nullable().optional(),
   outerStageAttribution: z.literal('tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time'),
   detailRows: z.number().int().nonnegative().optional(),
   stubbedRows: z.number().int().nonnegative().optional(),
@@ -1992,6 +1994,7 @@ export default defineTool({
           }
         : {}),
       enrichmentMaxMs: maxMeasured(stageSamples.map((sample) => sample?.enrichmentMs ?? null)),
+      changeKindsReadMs: null as number | null,
       ...(boundedEnrichmentDiagnostics.length > 0
         ? {
             enrichmentDiagnostics: boundedEnrichmentDiagnostics,
@@ -2002,7 +2005,6 @@ export default defineTool({
         : {}),
       outerStageAttribution: 'tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time' as const,
     };
-    ctx.metadata?.({ workItemsGet: read });
     if (args.operationalBrief && !args.resume && !checksOnly) {
       const { projectWorkItemOperationalBrief, renderOperationalBrief, renderWorkItemFactLines } = await import('../../operational-brief');
       for (const result of env.results as Array<Record<string, unknown>>) {
@@ -2022,15 +2024,34 @@ export default defineTool({
         (r) => r.ok === true && r.availability === 'available' && typeof r.id === 'string',
       );
       if (rows.length > 0) {
-        try {
-          const { readChangeKinds } = await import('../../work-item-change-kinds');
-          const views = await readChangeKinds(activeWorkspaceId(), rows.map((r) => r.id as string));
-          for (const r of rows) r.changeKinds = views.get(r.id as string) ?? { current: null, history: [] };
-        } catch {
+        const startedAt = Date.now();
+        const remainingBudgetMs = Math.max(1, WORK_ITEMS_GET_BUDGET_MS - (startedAt - bulkStartedAt));
+        const markReadFailed = () => {
           for (const r of rows) r.changeKinds = { current: null, history: [], readFailed: true };
+        };
+        if (ctx.signal?.aborted) {
+          read.changeKindsReadMs = 0;
+          markReadFailed();
+        } else {
+          const lookup = import('../../work-item-change-kinds').then(({ readChangeKinds }) =>
+            readChangeKinds(activeWorkspaceId(), rows.map((r) => r.id as string)),
+          );
+          const bounded = await withWorkItemsGetBudget(lookup, {
+            timeoutMs: remainingBudgetMs,
+            signal: ctx.signal,
+            label: 'work_items:get:changeKinds',
+          });
+          read.changeKindsReadMs = Date.now() - startedAt;
+          if (bounded.reason === null) {
+            for (const r of rows) r.changeKinds = bounded.value.get(r.id as string) ?? { current: null, history: [] };
+          } else {
+            markReadFailed();
+          }
         }
       }
     }
+    read.elapsedMs = Date.now() - bulkStartedAt;
+    ctx.metadata?.({ workItemsGet: read });
     return bulkContent({
       ...env,
       read,

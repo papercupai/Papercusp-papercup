@@ -44,7 +44,7 @@ import type {
   RepairSignatureEntry,
 } from './release/frozen-candidate-repair-queue';
 import type { FrozenRepairLegState } from './release/repair-leg-lifecycle';
-import type { TestPassReuseHealth } from './release/test-pass-reuse-report';
+import type { GateSuiteMeasurement, TestPassReuseHealth } from './release/test-pass-reuse-report';
 
 /** The closed answer vocabulary — mirrored by the cell registration's assessment codes. */
 export type GateOwnerBriefAnswer =
@@ -366,6 +366,8 @@ export interface GateOwnerBriefInput {
   > | null;
   convergence?: FrozenRepairConvergenceCellProjection | null;
   testPassReuse?: TestPassReuseHealth | null;
+  lastSuiteMeasurement?: GateSuiteMeasurement | null;
+  lastTargetedSuiteMeasurement?: GateSuiteMeasurement | null;
 }
 
 /** No new reads: retain each existing instrument's units, identity and missingness. */
@@ -381,8 +383,30 @@ function composeTestProgress(inp: GateOwnerBriefInput) {
   const newerAbort = inp.inconclusive?.observedAtMs != null &&
     convergence?.observedAtMs != null && inp.inconclusive.observedAtMs >= convergence.observedAtMs;
   const comparable = convergence != null && !convergence.unmeasured && sameSubject && !newerAbort;
-  const reuse = inp.testPassReuse;
+  // A measured invocation with no reuse markers is UNKNOWN, not the prior run's counters.
+  const reuse = inp.lastSuiteMeasurement ? inp.lastSuiteMeasurement.reuse : inp.testPassReuse;
   return {
+    queueLegs: {
+      phase: inp.repairQueue?.phase ?? null,
+      fixerAlive: inp.repairQueue?.fixerAlive ?? null,
+      fixed: inp.repairQueue?.legs?.filter((leg) => leg.state === 'fixed').length ?? null,
+      failing: inp.repairQueue?.legs?.filter((leg) => leg.state === 'failing').length ?? null,
+      // Per-leg rounds remain per-leg; they never establish that the whole suite ran.
+      measurements: inp.repairQueue?.legs?.map(({ id, lastMeasuredRound, lastMeasuredHead, lastMeasuredAtMs }) =>
+        ({ id, lastMeasuredRound, lastMeasuredHead, lastMeasuredAtMs })) ?? null,
+    },
+    // P-009: queue ticks and replayed verdicts have their own timestamps. This identity
+    // belongs only to the last actual suite; never pair its counters with the current run.
+    lastSuite: inp.lastSuiteMeasurement ?? null,
+    lastTargetedSuite: inp.lastTargetedSuiteMeasurement ?? null,
+    taskResume: {
+      status: inp.lastSuiteMeasurement?.resume == null ? 'not-recorded' as const : 'recorded' as const,
+      runGroupId: inp.lastSuiteMeasurement?.runGroupId ?? null,
+      judgedSha: inp.lastSuiteMeasurement?.judgedSha ?? null,
+      observedAtMs: inp.lastSuiteMeasurement?.completedAtMs ?? null,
+      summary: inp.lastSuiteMeasurement?.resume ?? null,
+      unit: 'task-cache-decisions' as const,
+    },
     fullSuiteFailingCases: {
       value: null,
       unit: 'test-cases' as const,
@@ -428,9 +452,12 @@ function composeTestProgress(inp: GateOwnerBriefInput) {
       recordedAtMs: reuse?.recordedAtMs ?? null,
       candidates: reuse?.candidates ?? null,
       selectedForReuse: reuse?.reused ?? null,
+      runGroupId: reuse?.suite?.runGroupId ?? null,
+      exclusions: reuse?.exclusions ?? null,
+      offReasons: reuse?.offReasons ?? null,
       consumerSkippedFiles: null,
       unit: 'test-file-selections' as const,
-      source: 'gate_health.testPassReuse',
+      source: inp.lastSuiteMeasurement ? 'gate_health.lastSuiteMeasurement.reuse' : 'gate_health.testPassReuse',
       scope: 'Selector decisions, not confirmed runner skips or elapsed wall-clock savings.',
     },
     lastAttempt: {

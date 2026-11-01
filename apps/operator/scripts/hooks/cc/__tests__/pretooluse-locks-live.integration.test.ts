@@ -20,78 +20,44 @@
  *   6. the matching PostToolUse hook is a no-op for that preexisting hold,
  *      so B must explicitly release it before A can re-acquire.
  *
- * Live-gated like su-locks-http-mcp.integration.test.ts: skips when no
- * operator answers. All paths are run-id namespaced; everything acquired
+ * Runs only inside the maintained isolated verifier; a broken selected
+ * private runtime fails setup. All paths are run-id namespaced; everything acquired
  * is released (and TTL covers a crashed run).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFileSync } from 'node:child_process';
 import { runHookProcess } from './spawn-hook';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { cleanupPrivateLockOwners, privateLiveTarget, registerPrivateLockOwners } from '../../../../test/private-live-fixture';
 
-const OP_PORT = process.env.OP_PORT ?? null;
-const BASE = OP_PORT
-  ? `http://localhost:${OP_PORT}`
-  : (process.env.OPERATOR_BASE_URL ?? 'http://localhost:3070');
+const ENABLED = process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED === '1';
+const TARGET = ENABLED ? privateLiveTarget(process.env) : null;
+const BASE = TARGET?.base ?? '';
 
 const PRE_HOOK = join(__dirname, '..', 'pretooluse-locks-acquire.sh');
 const POST_HOOK = join(__dirname, '..', 'posttooluse-locks-release.sh');
 
 let TOKEN = '';
-let reachable = false;
-try {
-  TOKEN = fs.readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
-  const probe = await fetch(`${BASE}/api/mcp?superuser=1`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${TOKEN}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json, text/event-stream',
-    },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/list', params: {} }),
-    signal: AbortSignal.timeout(4000),
-  });
-  reachable = probe.status < 500;
-} catch { /* operator not running → suite skips */ }
-
-const describeLive = reachable ? describe : describe.skip;
+const describeLive = ENABLED ? describe : describe.skip;
 
 const RUN_ID = `${process.pid}-${Date.now()}`;
 const OWNER_A = `e2e-hooklive-A-${RUN_ID}`;
 const OWNER_B = `e2e-hooklive-B-${RUN_ID}`;
+const NATIVE_SESSIONS = { [OWNER_A]: randomUUID(), [OWNER_B]: randomUUID() };
 const REL_PATH = `e2e-hook-live/${RUN_ID}/contested.ts`;
 
 // Both peers must resolve to the SAME workspace so they contend on one lock key.
-const E2E_WS = 'papercusp-workspace';
+const E2E_WS = TARGET?.workspace ?? '';
 
 // The scoped-superuser-workspace-clamp (2026-06-18, FLAGS.SCOPED_SUPERUSER_CLAMP,
 // default-on) rejects a `?superuser=1&client=<owner>` whose workspace can't resolve.
 // In production the owner is a real adv_session row; here the e2e owners are throwaway,
 // so register them — exactly as a live agent is registered — and BOTH the test's MCP
 // calls and the spawned hook scripts (same ?client= path) resolve their workspace.
-// execFileSync (arg array, no shell): the SQL is one argument, so no interpolation
-// reaches a shell. Values here are internal constants anyway (owner = e2e-…-<pid>-<ts>).
-function psql(sql: string): void {
-  execFileSync(
-    'psql',
-    ['-h', 'localhost', '-U', 'harness_admin', '-d', 'papercusp', '-tAc', sql],
-    { env: { ...process.env, PGPASSWORD: 'harness_admin_pwd' }, stdio: 'ignore' },
-  );
-}
-function registerSession(owner: string): void {
-  psql(
-    `INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id) ` +
-      `VALUES ('${E2E_WS}', 'console', '${owner}')`,
-  );
-}
-function unregisterSessions(): void {
-  try {
-    psql(`DELETE FROM harness_shared.adv_sessions WHERE coord_owner_id IN ('${OWNER_A}','${OWNER_B}')`);
-  } catch { /* best-effort cleanup */ }
-}
+const sessionIds: number[] = [];
+let sql: ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
 
 /**
  * Call a tool over the real HTTP MCP transport as `client`.
@@ -116,11 +82,12 @@ async function callTool(client: string, tool: string, args: unknown): Promise<Re
       ? { ...(args as Record<string, unknown>), coordination_domain: repo }
       : args;
   const res = await fetch(
-    `${BASE}/api/mcp?superuser=1&client=${encodeURIComponent(client)}`,
+    `${BASE}/api/mcp?superuser=1&client=${encodeURIComponent(client)}&native_session=${NATIVE_SESSIONS[client]}`,
     {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${TOKEN}`,
+        'x-papercusp-workspace': E2E_WS,
         'Content-Type': 'application/json',
         Accept: 'application/json, text/event-stream',
       },
@@ -133,6 +100,7 @@ async function callTool(client: string, tool: string, args: unknown): Promise<Re
       signal: AbortSignal.timeout(15_000),
     },
   );
+  if (!res.ok) throw new Error(`MCP ${tool} HTTP ${res.status}`);
   const raw = await res.text();
   for (let line of raw.split('\n')) {
     line = line.trim();
@@ -179,11 +147,21 @@ let home: string, cache: string, ws: string, repo: string;
 let hookEnvB: Record<string, string>;
 let editedAbsPath: string;
 
-beforeAll(() => {
-  // Hook identity home: REAL token (live operator), e2e agent id.
+beforeAll(async () => {
+  if (!TARGET) return;
+  if (process.env.OPERATOR_BASE_URL) expect(process.env.OPERATOR_BASE_URL).toBe(BASE);
+  if (process.env.OP_PORT) expect(process.env.OP_PORT).toBe(new URL(BASE).port);
+  // All target pins are checked before importing a DB client or reading a token.
+  TOKEN = fs.readFileSync(join(TARGET.home, 'superuser-token'), 'utf8').trim();
+  expect(TOKEN.length).toBeGreaterThan(0);
+  const db = await import('@papercusp/db-org');
+  sql = db.getOrgPg().sql;
+  await registerPrivateLockOwners(E2E_WS, [OWNER_A, OWNER_B].map(coordOwnerId => ({ coordOwnerId, sessionId: NATIVE_SESSIONS[coordOwnerId] })), sessionIds,
+    await import('@papercusp/operator-core/lib/adv-sessions'));
+  // Private bearer from this verifier, never the caller's ambient home.
   home = fs.mkdtempSync(join(os.tmpdir(), 'cchook-live-home-'));
   fs.mkdirSync(join(home, '.papercusp'), { recursive: true });
-  fs.writeFileSync(join(home, '.papercusp', 'superuser-token'), TOKEN + '\n');
+  fs.writeFileSync(join(home, '.papercusp', 'superuser-token'), TOKEN + '\n', { mode: 0o600 });
   fs.writeFileSync(join(home, '.papercusp', 'su-agent-id'), `${OWNER_B}-machine\n`);
   cache = fs.mkdtempSync(join(os.tmpdir(), 'cchook-live-cache-'));
 
@@ -192,6 +170,7 @@ beforeAll(() => {
   ws = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'cchook-live-ws-')));
   repo = join(ws, 'papercup-test');
   fs.mkdirSync(join(repo, `e2e-hook-live/${RUN_ID}`), { recursive: true });
+  repo = fs.realpathSync(repo);
   fs.writeFileSync(join(repo, '.git'), 'gitdir: /nonexistent\n');
   editedAbsPath = join(repo, REL_PATH);
   fs.writeFileSync(editedAbsPath, '// contested\n');
@@ -203,6 +182,8 @@ beforeAll(() => {
     // throwaway hook acquire as the test runner rather than OWNER_B.
     CODEX_HOME: join(home, 'codex-home'),
     PAPERCUSP_OPERATOR_URL: BASE,
+    PAPERCUSP_WORKSPACE: E2E_WS,
+    PAPERCUSP_WORKSPACE_ID: E2E_WS,
     PAPERCUSP_LOCKS_CACHE_DIR: cache,
     PAPERCUSP_WORKSPACE_ROOT: ws,
     // The worktree-discipline guard (worktree-discipline-single-tree-enforcement-
@@ -214,26 +195,37 @@ beforeAll(() => {
     PAPERCUSP_SID: OWNER_B,
   };
 
-  // Register both e2e owners so the scoped-superuser clamp resolves their workspace
-  // (workspaceForCoordOwner reads adv_sessions) for BOTH the test's MCP calls and the
-  // spawned hooks — without this they're rejected as scoped_superuser_workspace_unresolved.
-  if (reachable) {
-    registerSession(OWNER_A);
-    registerSession(OWNER_B);
+  // tools/list can succeed while actual dispatch/auth/workspace binding fails.
+  for (const owner of [OWNER_A, OWNER_B]) {
+    const queue = await callTool(owner, 'locks:queue', { owner });
+    expect(queue.active_locks).toEqual([]);
+    expect(queue.waiting).toEqual([]);
   }
 });
 
 afterAll(async () => {
-  // Hygiene: drop anything still held by either owner (TTL would cover it,
-  // but leave the shared store clean).
-  if (reachable) {
-    await callTool(OWNER_A, 'locks:release', { all_mine: true }).catch(() => {});
-    await callTool(OWNER_B, 'locks:release', { all_mine: true }).catch(() => {});
+  if (!TARGET) return;
+  const failures: unknown[] = [];
+  try {
+    if (repo) await cleanupPrivateLockOwners([OWNER_A, OWNER_B], callTool);
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    try {
+      if (sql && sessionIds.length) {
+        await sql`DELETE FROM harness_shared.adv_sessions WHERE workspace_id = ${E2E_WS}
+          AND id IN ${sql(sessionIds)} AND coord_owner_id IN ${sql([OWNER_A, OWNER_B])}`;
+        const left = await sql`SELECT id FROM harness_shared.adv_sessions WHERE workspace_id = ${E2E_WS}
+          AND coord_owner_id IN ${sql([OWNER_A, OWNER_B])}`;
+        expect(left).toHaveLength(0);
+      }
+    } catch (error) { failures.push(error); }
+    for (const root of [home, cache, ws].filter(Boolean)) {
+      fs.rmSync(root, { recursive: true, force: true });
+      expect(fs.existsSync(root)).toBe(false);
+    }
   }
-  fs.rmSync(home, { recursive: true, force: true });
-  fs.rmSync(cache, { recursive: true, force: true });
-  fs.rmSync(ws, { recursive: true, force: true });
-  if (reachable) unregisterSessions();
+  if (failures.length) throw new AggregateError(failures, 'private live-lock cleanup failed');
 });
 
 describeLive('lock-hook live rung (coord-e2e P-008)', () => {
@@ -256,7 +248,7 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
       tool_name: 'Edit',
       tool_input: { file_path: editedAbsPath },
       tool_use_id: TOOL_USE_ID,
-      session_id: 'sess-live-b',
+      session_id: NATIVE_SESSIONS[OWNER_B],
       cwd: repo,
     }, hookEnvB);
 
@@ -299,7 +291,7 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
         tool_name: 'Edit',
         tool_input: { file_path: editedAbsPath },
         tool_use_id: TOOL_USE_ID,
-        session_id: 'sess-live-b',
+        session_id: NATIVE_SESSIONS[OWNER_B],
         cwd: repo,
       }, hookEnvB);
       lastStdout = r.stdout;
@@ -320,7 +312,7 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
       tool_name: 'Edit',
       tool_input: { file_path: editedAbsPath },
       tool_use_id: TOOL_USE_ID,
-      session_id: 'sess-live-b',
+      session_id: NATIVE_SESSIONS[OWNER_B],
       cwd: repo,
     }, hookEnvB);
     expect(r.code).toBe(0);
@@ -376,7 +368,7 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
       tool_name: 'Edit',
       tool_input: { file_path: absEdit },
       tool_use_id: toolUseId,
-      session_id: 'sess-live-b',
+      session_id: NATIVE_SESSIONS[OWNER_B],
       cwd: repo,
     }, hookEnvB);
     expect(preRes.code).toBe(0);
@@ -389,7 +381,7 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
       tool_name: 'Edit',
       tool_input: { file_path: absEdit },
       tool_use_id: toolUseId,
-      session_id: 'sess-live-b',
+      session_id: NATIVE_SESSIONS[OWNER_B],
       cwd: repo,
     }, hookEnvB);
     expect(postRes.code).toBe(0);
