@@ -14,6 +14,7 @@
  *   - `agent_threshold`    — (a) uncovered-demand floor in distinct agents.
  *   - `grace_days`         — (c) days after ship before the check applies.
  *   - `required_fall_pct`  — (c) fraction of pre-ship agents that must go away.
+ *   - `intent_time_budget_ms` — bounded SQL-intent and monitored-family budget (default 30 s).
  *
  * Env kill switches (the `<=0` convention the sibling watchdog floors use, so a
  * noisy leg can be silenced without a code change or a deploy):
@@ -305,10 +306,12 @@ export interface SqlIntentCensusDeps extends SqlMiningDeps {
   repairMeasurement?: (review: Awaited<ReturnType<typeof submitSqlCandidateReview>>) => Promise<SqlRepairMeasurement | null>;
 }
 export const SQL_CENSUS_REVIEW_LIMIT = 10;
+export const DEFAULT_INTENT_CENSUS_TIME_BUDGET_MS = 30_000;
 export function censusMiningOptions(opts: Omit<SqlMiningOptions, 'scope' | 'authorize'> &
   Partial<Pick<SqlMiningOptions, 'scope' | 'authorize'>>): SqlMiningOptions {
   const epoch = new Date(opts.now ?? Date.now()).toISOString().slice(0, 7);
-  return { ...opts, scope: opts.scope ?? { workspaceId: opts.workspaceId, sourceBoundary: 'authorized-tool-ledger', epoch,
+  return { ...opts, timeBudgetMs: opts.timeBudgetMs ?? DEFAULT_INTENT_CENSUS_TIME_BUDGET_MS,
+    scope: opts.scope ?? { workspaceId: opts.workspaceId, sourceBoundary: 'authorized-tool-ledger', epoch,
     key: createHmac('sha256', getDbEncryptionKey()).update(`sql-intent-mining-v1:${epoch}`).digest() },
   authorize: opts.authorize ?? (async () => true) };
 }

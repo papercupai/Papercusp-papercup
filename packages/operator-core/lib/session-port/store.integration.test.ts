@@ -22,6 +22,7 @@ const {
   readSessionPortBootstrapDisposition,
   recordSessionPortBootstrapReceipt,
   reserveSessionPortTarget,
+  sessionPortsNeedingCleanup,
   transitionSessionPort,
 } = await import('./store');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
@@ -300,6 +301,54 @@ describe('session-port atomic attempt lifecycle (real PG)', () => {
       id: hungRetryPortId,
       retryOfPortId: hungPortId,
       status: 'prepared',
+    });
+  }, 120_000);
+
+  it('keeps committed bootstrap receipt expirations classified as acknowledgement unknown', async () => {
+    const makeCommittedExpiredPort = async (idempotencyKey: string) => {
+      const portId = randomUUID();
+      const requestHash = 'f'.repeat(64);
+      await createPreparedSessionPort(preparedInput(portId, null, idempotencyKey));
+      const reservation = await reserveSessionPortTarget({
+        portId,
+        workspaceId,
+        requestHash,
+        target,
+      });
+      if (reservation.status !== 'reserved') throw new Error('unexpected reservation ' + reservation.status);
+      await recordSessionPortBootstrapReceipt({
+        portId,
+        workspaceId,
+        requestHash,
+        targetAdvSessionId: reservation.targetAdvSessionId,
+        receipt: { targetAdvSessionId: reservation.targetAdvSessionId },
+      });
+      await db.adminSql`
+        UPDATE harness_shared.session_ports
+           SET expires_at = '2020-01-01T00:00:00.000Z'
+         WHERE id = ${portId}`;
+      return portId;
+    };
+
+    const cleanupPortId = await makeCommittedExpiredPort('cleanup-receipt-' + randomUUID());
+    const cleanupRows = await sessionPortsNeedingCleanup(workspaceId);
+    expect(cleanupRows.find((candidate) => candidate.id === cleanupPortId)).toMatchObject({
+      status: 'expired',
+      error: 'delivery acknowledgement unknown after committed bootstrap receipt',
+      metadata: { bootstrapReceiptCommitted: true },
+    });
+
+    const lookupIdempotencyKey = 'lookup-receipt-' + randomUUID();
+    const lookupPortId = await makeCommittedExpiredPort(lookupIdempotencyKey);
+    const lookup = await findSessionPortByIdempotency(
+      workspaceId,
+      lookupIdempotencyKey,
+    );
+    expect(lookup).toMatchObject({
+      id: lookupPortId,
+      status: 'expired',
+      error: 'delivery acknowledgement unknown after committed bootstrap receipt',
+      metadata: { bootstrapReceiptCommitted: true },
     });
   }, 120_000);
 });

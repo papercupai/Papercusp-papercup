@@ -45,6 +45,11 @@ export async function cleanupExpiredSessionPorts(input: {
   };
 
   for (const row of rows) {
+    const bootstrapReceiptCommitted = row.metadata.bootstrapReceiptCommitted === true;
+    const failureClass = bootstrapReceiptCommitted ? 'delivery-ack-unknown' : 'preparation-expired';
+    const failureMessage = bootstrapReceiptCommitted
+      ? 'delivery acknowledgement unknown after committed bootstrap receipt'
+      : row.error ?? 'preparation expired before native persistence';
     let artifactComplete = false;
     let cleanupOutcome: 'deleted' | 'already-absent' | 'failed' = 'failed';
     try {
@@ -59,18 +64,19 @@ export async function cleanupExpiredSessionPorts(input: {
     let targetComplete = row.targetAdvSessionId == null;
     if (row.targetAdvSessionId != null) {
       try {
-        targetComplete = await updateTarget(row.targetAdvSessionId, input.workspaceId, 'failed', {
-          deliveryErrorClass: 'preparation-expired',
-        });
-        // 'cleanup', not 'self': nothing observed this session exit — it never ran. The
-        // stamp is the administrative close time, so it cannot answer "when did it end".
-        // exitCode NULL, not 1, for the same reason adv-sessions.ts refuses a sentinel in
-        // reconcileDeadTerminalLaunches: we never reaped this process, so we never observed
-        // a status, and a fabricated 1 is indistinguishable from an observed failure. The
-        // failure itself is already recorded by updateTarget(status 'failed') above.
-        await endTarget(row.targetAdvSessionId, null, 'cleanup');
-        if (targetComplete) out.targetsFailed += 1;
-        else out.errors += 1;
+        targetComplete = await updateTarget(
+          row.targetAdvSessionId,
+          input.workspaceId,
+          bootstrapReceiptCommitted ? 'pending' : 'failed',
+          { deliveryErrorClass: failureClass },
+        );
+        if (!bootstrapReceiptCommitted) {
+          // 'cleanup', not 'self': this janitor did not observe a process exit.
+          // exitCode stays NULL because no exit status was observed.
+          await endTarget(row.targetAdvSessionId, null, 'cleanup');
+          if (targetComplete) out.targetsFailed += 1;
+        }
+        if (!targetComplete) out.errors += 1;
       } catch {
         out.errors += 1;
       }
@@ -78,10 +84,15 @@ export async function cleanupExpiredSessionPorts(input: {
 
     try {
       await transition(row.id, input.workspaceId, 'expired', {
+        error: failureMessage,
         metadata: {
           cleanupComplete: artifactComplete && targetComplete,
           cleanupArtifactAbsent: artifactComplete,
-          cleanupTargetEnded: targetComplete,
+          cleanupTargetEnded: !bootstrapReceiptCommitted && row.targetAdvSessionId != null && targetComplete,
+          cleanupTargetDisposition: row.targetAdvSessionId == null
+            ? 'no-target'
+            : bootstrapReceiptCommitted ? 'delivery-ack-unknown' : 'preparation-expired',
+          deliveryErrorClass: failureClass,
         },
       });
     } catch {
@@ -104,7 +115,7 @@ export async function cleanupExpiredSessionPorts(input: {
       renderedHash: row.renderedHash,
       protocolVersion: row.protocolVersion,
       cleanupOutcome,
-      failureClass: 'preparation-expired',
+      failureClass,
     });
   }
 

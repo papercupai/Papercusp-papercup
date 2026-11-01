@@ -10,6 +10,7 @@ import {
   ALWAYS_ON_SYSTEM_ROUTINE_NAMES,
   BESPOKE_ACTIVE_SEEDS,
   checkBespokeActiveSeeds,
+  formatBespokeActiveSeedWarning,
   isAlwaysOnSystemRoutine,
   isReaffirmed,
   type BespokeActiveSeed,
@@ -42,8 +43,12 @@ const paused = (name: string, pause: Record<string, unknown> | null): FakeRow =>
 });
 
 const ROUTINES_DIR = dirname(fileURLToPath(import.meta.url));
-const ACTIVE_BY_DEFAULT = /const\s+active\s*=\s*!process\.argv\.includes\(['"]--inactive['"]\);/;
+const ACTIVE_BY_DEFAULT = /(?:const\s+active\s*=\s*!process\.argv\.includes\(['"]--inactive['"]\);|routineSeedJanitorArguments\s*\()/;
 const INACTIVE_BY_DEFAULT = /const\s+active\s*=\s*process\.argv\.includes\(['"]--active['"]\);/;
+const ACTIVE_BY_DEFAULT_EXCEPTIONS: Record<string, string> = {
+  'seed-plan-anchor-freshness-routine.ts':
+    'its initial INSERT explicitly creates an active row and its ON CONFLICT update preserves the existing active state',
+};
 
 // EI-22136759189899545: the enumerator used to be `-routine\.ts` (singular) only, which
 // silently exempted every plural `-routines.ts` writer from every assertion in this file —
@@ -72,6 +77,8 @@ const EXEMPT_SEED_SCRIPTS: Record<string, string> = {
   'seed-routine-announce.ts':
     'a shared print helper for other seed scripts, not itself a seed writer — no main(), no ' +
     'INSERT into harness_shared.routines',
+  'seed-routine-main.ts':
+    'shared seed execution and janitor-argument helpers; it has no fixed routine identity of its own',
 };
 
 function seedSources(): Array<{ file: string; source: string }> {
@@ -199,6 +206,29 @@ describe('checkBespokeActiveSeeds', () => {
     expect(res.ok).toBe(true);
     expect(res.missing).toEqual([]);
     expect(res.inactive).toEqual([]);
+  });
+});
+
+describe('formatBespokeActiveSeedWarning', () => {
+  it('puts each routine scope, name, and missing/inactive/dark state in the boot alert', () => {
+    const warning = formatBespokeActiveSeedWarning([
+      { name: 'missing-rescue', seedScript: 'seed-missing-rescue.ts', installSlug: 'hive-canary' },
+      {
+        name: 'paused-rescue', seedScript: 'seed-paused-rescue.ts', installSlug: 'papercusp',
+        pauseReason: 'migration hold', reviewBy: null, pausedAtMs: NOW,
+      },
+      {
+        name: 'dark-rescue', seedScript: 'seed-dark-rescue.ts', installSlug: 'sidestage',
+        lastFiredAtMs: null, createdAtMs: NOW - 3_600_000, intervalSec: 900, neverFired: true, ageSec: 3_600,
+      },
+    ]);
+
+    expect(warning.summary).toContain('hive-canary/missing-rescue [MISSING]');
+    expect(warning.summary).toContain('papercusp/paused-rescue [INACTIVE]');
+    expect(warning.summary).toContain('sidestage/dark-rescue [DARK]');
+    expect(warning.body).toContain('hive-canary/missing-rescue — MISSING:');
+    expect(warning.body).toContain('papercusp/paused-rescue — INACTIVE: active=false; pause reason: migration hold');
+    expect(warning.body).toContain('sidestage/dark-rescue — DARK: active=true; never fired since creation (60m ago)');
   });
 });
 
@@ -343,7 +373,9 @@ describe('ALWAYS_ON_SYSTEM_ROUTINE_NAMES — derived from the registry, never ha
 
   it('registers every seed script whose executable writer defaults active', () => {
     const sources = seedSources();
-    const activeSeedScripts = sources.filter(({ source }) => ACTIVE_BY_DEFAULT.test(source)).map(({ file }) => file);
+    const activeSeedScripts = sources
+      .filter(({ file, source }) => ACTIVE_BY_DEFAULT.test(source) || file in ACTIVE_BY_DEFAULT_EXCEPTIONS)
+      .map(({ file }) => file);
     // Deduped: EI-22136759189899545 — a script may legitimately upsert several named
     // routines in one run (seed-coord-invariant-routines.ts seeds 5, seed-oddsmith-cron-
     // routines.ts seeds 3), so it appears once per NAME in BESPOKE_ACTIVE_SEEDS but only
@@ -360,7 +392,8 @@ describe('ALWAYS_ON_SYSTEM_ROUTINE_NAMES — derived from the registry, never ha
 
   it('makes every bespoke seed writer declare active or inactive as its executable default', () => {
     const unclassified = seedSources()
-      .filter(({ source }) => !ACTIVE_BY_DEFAULT.test(source) && !INACTIVE_BY_DEFAULT.test(source))
+      .filter(({ file, source }) =>
+        !ACTIVE_BY_DEFAULT.test(source) && !INACTIVE_BY_DEFAULT.test(source) && !(file in ACTIVE_BY_DEFAULT_EXCEPTIONS))
       .map(({ file }) => file);
 
     expect(
@@ -368,6 +401,18 @@ describe('ALWAYS_ON_SYSTEM_ROUTINE_NAMES — derived from the registry, never ha
       "A bespoke seed must use one explicit default: `!process.argv.includes('--inactive')` for always-on, " +
         "or `process.argv.includes('--active')` for human-gated. This is the source of truth for the live guard.",
     ).toEqual([]);
+  });
+
+  it('pins the shared janitor default and the explicit active SQL seed exception', () => {
+    const sharedHelper = readFileSync(resolve(ROUTINES_DIR, 'seed-routine-main.ts'), 'utf8');
+    expect(sharedHelper).toMatch(
+      /export function routineSeedJanitorArguments[\s\S]*?const active\s*=\s*!process\.argv\.includes\(['"]--inactive['"]\);/,
+    );
+
+    expect(ACTIVE_BY_DEFAULT_EXCEPTIONS['seed-plan-anchor-freshness-routine.ts']).toBeTruthy();
+    const explicitSeed = readFileSync(resolve(ROUTINES_DIR, 'seed-plan-anchor-freshness-routine.ts'), 'utf8');
+    expect(explicitSeed).toContain('Seed ACTIVE by default');
+    expect(explicitSeed).toMatch(/'skip','skip-old',true,now\(\)/);
   });
 
   it('EI-22136759189899545: every seed-*.ts file is accounted for — idiom-checked or explicitly exempt', () => {

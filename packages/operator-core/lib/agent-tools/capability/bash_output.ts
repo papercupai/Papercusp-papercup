@@ -31,7 +31,7 @@ import { parseJobLogEndMarker } from '../../task-manager/job-log-terminal';
 import { backgroundTypecheckVerdict } from './background-typecheck-verdict';
 import { capturedExitMismatch } from './captured-exit-verdict';
 import { coresBetween, readCgroupCpuSample, MIN_SAMPLE_GAP_MS } from './cgroup-cpu';
-import { classifyTerminalClose, getTask, getTaskByBashJobId } from '../../task-manager/store';
+import { classifyTerminalClose, closeTask, getTask, getTaskByBashJobId } from '../../task-manager/store';
 import { inspectTaskUnitTerminals } from '../../task-manager/scope-terminal-state';
 import { isTerminalState, serviceUnitForTask, type TaskRow, type TaskTerminalProvenance } from '../../task-manager/types';
 import { readProcessIdentity } from '../../process-identity';
@@ -49,6 +49,35 @@ import {
  * LAST.
  */
 const MAX_VERDICT_LOG_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Persist a terminal verdict recovered by BashOutput, but return as soon as the
+ * ledger update is durable. The terminal-event outbox is retried independently;
+ * a slow event bridge must not hold the output read open.
+ */
+function persistRecoveredTaskTerminal(
+  taskId: string,
+  input: Parameters<typeof closeTask>[1],
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let finished = false;
+    const finish = (persisted: boolean) => {
+      if (finished) return;
+      finished = true;
+      resolve(persisted);
+    };
+    const pending = closeTask(taskId, input, undefined, {
+      onTerminalPersisted: () => finish(true),
+    });
+    void pending.then((persisted) => finish(persisted)).catch((error: unknown) => {
+      console.warn(
+        `[capability:bash_output] recovered terminal persistence failed for ${taskId}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      finish(false);
+    });
+  });
+}
 
 /**
  * The full job output, for verdict classification only. Falls back to the
@@ -1309,8 +1338,9 @@ export default defineTool({
         const currentTaskIsLive = ledgerVerdict.kind === 'confirmed_alive' || scopeActive;
 
         // The unit retains its own terminal result even when the watcher and
-        // ledger update were lost. Reuse the ledger writer's classification;
-        // this read reports evidence without mutating the task or starting work.
+        // ledger update were lost. Reuse the ledger writer's classification and
+        // persist that exact terminal evidence before returning. Wait for the
+        // durable row update, not for the separately retried event delivery.
         // A live unit, an unavailable probe, or not-found defaults never qualify.
         if (ledgerRow && scopeSnapshot?.loadState === 'loaded' &&
             (scopeSnapshot.activeState === 'failed' || scopeSnapshot.activeState === 'inactive') &&
@@ -1323,11 +1353,19 @@ export default defineTool({
           const terminal = terminalStatusFromLedger({ ...ledgerRow, ...classified });
           if (terminal) {
             const ok = terminal.status === 'completed';
+            const ledgerReconciled = await persistRecoveredTaskTerminal(ledgerRow.taskId, {
+              state: classified.state,
+              exitCode: classified.exitCode,
+              exitReason: classified.exitReason,
+              terminalProvenance: classified.terminalProvenance,
+            });
             return {
               content: [{ type: 'text' as const, text: JSON.stringify({
                 ok, ...jobIdentity, status: terminal.status, exit_code: terminal.exitCode,
                 exit_reason: classified.exitReason, running: false, recovered_from_scope: true,
-                ledger_state: ledgerRow.state, terminal_provenance: classified.terminalProvenance,
+                ledger_state: ledgerReconciled ? classified.state : ledgerRow.state,
+                ledger_reconciled: ledgerReconciled,
+                terminal_provenance: classified.terminalProvenance,
                 ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                 ...(stranded ? { total_bytes_written: stranded.sizeBytes } : {}),
                 ...selfRedirectFields, ...strandedOutput, output: recoveredStrandedOutput,
@@ -1354,6 +1392,20 @@ export default defineTool({
           (ledgerVerdict.kind !== 'confirmed_dead' || isLedgerConfirmedUnobservedDeath(ledgerVerdict.state))
         ) {
           const markerOk = strandedLog.terminal.status === 'completed';
+          const markerState = strandedLog.terminal.status === 'killed'
+            ? 'killed'
+            : strandedLog.terminal.status === 'timed_out'
+              ? 'timed_out'
+              : 'exited';
+          const ledgerReconciled = ledgerRow
+            ? await persistRecoveredTaskTerminal(ledgerRow.taskId, {
+                state: markerState,
+                exitCode: strandedLog.terminal.exitCode,
+                exitReason:
+                  `runner-log: JOB END status=${strandedLog.terminal.status} ` +
+                  `exit=${strandedLog.terminal.exitCode ?? 'null'} read from ${strandedLog.logPath}`,
+              })
+            : false;
           return {
             content: [
               {
@@ -1367,6 +1419,10 @@ export default defineTool({
                   ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
                   ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                   recovered_from_log_marker: true,
+                  ...(ledgerRow ? {
+                    ledger_state: ledgerReconciled ? markerState : ledgerRow.state,
+                    ledger_reconciled: ledgerReconciled,
+                  } : {}),
                   ...(recoveredResourceLimitFields ?? {}),
                   ...selfRedirectFields,
                   ...strandedOutput,

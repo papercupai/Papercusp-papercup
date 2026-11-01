@@ -490,10 +490,52 @@ describe('the sampling leg — live without any stamp', () => {
     expect(out.divergences[0].retryLoop?.identicalRetries).toBe(0);
   });
 
-  it('calls out IDENTICAL retries, which cannot succeed for a deterministic refusal', () => {
+  it('retains IDENTICAL retries after non-transient failures', () => {
     const out = detectIntentActionDivergence(flail(3, { sameArgs: true }));
     expect(out.divergences[0].retryLoop?.identicalRetries).toBe(2);
     expect(out.divergences[0].detail).toContain('IDENTICAL args');
+  });
+
+  it('excludes retryable PostgreSQL timeouts from MAST retry evidence', () => {
+    const timeouts = flail(3, { sameArgs: true }).map((c) => ({
+      ...c,
+      status: 'timeout',
+      errorCode: 'timeout',
+      errorMessage: 'statement timeout (PostgreSQL 57014)',
+    }));
+    const out = detectIntentActionDivergence(timeouts);
+
+    expect(out.divergences).toEqual([]);
+    expect(out.coverage.failuresSeen).toBe(0);
+    expect(out.coverage.transientFailuresExcluded).toBe(3);
+    expect(out.coverage.rateLimitFailuresExcluded).toBe(0);
+    expect(out.coverage.samplingLegRan).toBe(true);
+  });
+
+  it('filters transient and rate-limit calls out of a mixed retry run', () => {
+    const base = (id: number, status: string, errorCode?: string, errorMessage?: string): DivergenceCall =>
+      call({
+        id,
+        toolName: 'work_items:claim',
+        status,
+        errorCode,
+        errorMessage,
+        invokedAt: new Date(T0 + id * 1000).toISOString(),
+        args: { same: true },
+      });
+    const out = detectIntentActionDivergence([
+      base(1, 'invalid-input'),
+      base(2, 'timeout', 'timeout', 'statement timeout (PostgreSQL 57014)'),
+      base(3, 'invalid-input'),
+      base(4, 'error', 'handler_error', '429 Too Many Requests'),
+      base(5, 'invalid-input'),
+    ]);
+
+    expect(out.divergences).toHaveLength(1);
+    expect(out.divergences[0].retryLoop).toMatchObject({ attempts: 3, identicalRetries: 2 });
+    expect(out.coverage.failuresSeen).toBe(3);
+    expect(out.coverage.transientFailuresExcluded).toBe(1);
+    expect(out.coverage.rateLimitFailuresExcluded).toBe(1);
   });
 
   it('suppresses explicitly marked dispatch-wrapper failures from retry sampling', () => {

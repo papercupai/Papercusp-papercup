@@ -1796,6 +1796,11 @@ export async function _settleScratchMaintenanceForTests(timeoutMs = 5_000): Prom
   }
 }
 
+export function _scratchUsageRefreshDiagnosticsForTests(workspaceId: string) {
+  const diagnostics = usageState.byWorkspace.get(workspaceId)?.refreshDiagnostics;
+  return diagnostics ? snapshotScratchQuotaRecoveryDiagnostics(diagnostics) : null;
+}
+
 export function _resetScratchUsageForTests(): void {
   usageState.byWorkspace.clear();
   for (const path of usageState.sharedStatePaths) {

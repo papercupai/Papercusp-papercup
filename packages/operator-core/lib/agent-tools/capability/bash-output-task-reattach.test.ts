@@ -14,6 +14,7 @@ import type { BashJob } from './bash-jobs';
 import { formatJobLogEndMarker } from './bash-jobs';
 
 const store = vi.hoisted(() => ({
+  closeTask: vi.fn(),
   getTask: vi.fn(),
   getTaskByBashJobId: vi.fn(),
 }));
@@ -25,6 +26,7 @@ const jobs = vi.hoisted(() => ({
 
 vi.mock('../../task-manager/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../task-manager/store')>()),
+  closeTask: store.closeTask,
   getTask: store.getTask,
   getTaskByBashJobId: store.getTaskByBashJobId,
 }));
@@ -107,6 +109,7 @@ function ctx(workspaceId = 'ws-current', stateDir = '/tmp/task-reattach-state') 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  store.closeTask.mockResolvedValue(true);
   store.getTask.mockResolvedValue(taskRow());
   store.getTaskByBashJobId.mockResolvedValue(null);
   jobs.getJob.mockReturnValue(liveJob());
@@ -519,8 +522,19 @@ esac
       expect(result.isError).toBe(true);
       expect(payload).toMatchObject({
         ok: false, task_id: 'tsktimeout123', running: false, status: 'timed_out',
-        exit_code: 137, exit_reason: 'timeout', recovered_from_scope: true, ledger_state: 'running',
+        exit_code: 137, exit_reason: 'timeout', recovered_from_scope: true,
+        ledger_state: 'timed_out', ledger_reconciled: true,
       });
+      expect(store.closeTask).toHaveBeenCalledWith(
+        'tsktimeout123',
+        expect.objectContaining({
+          state: 'timed_out',
+          exitCode: 137,
+          terminalProvenance: expect.objectContaining({ invocationId: 'deadline-test' }),
+        }),
+        undefined,
+        expect.objectContaining({ onTerminalPersisted: expect.any(Function) }),
+      );
       expect(payload.reason).not.toBe('stranded_by_operator_restart');
       expect(payload).not.toHaveProperty('recovered_from_log_marker');
       if (mode === 'copied-success') expect(payload.output).toContain('preparing browser');
@@ -741,9 +755,58 @@ esac
         exit_code: 1,
         running: false,
         recovered_from_log_marker: true,
+        ledger_state: 'exited',
+        ledger_reconciled: true,
       });
+      expect(store.closeTask).toHaveBeenCalledWith(
+        'task-carry-1',
+        expect.objectContaining({
+          state: 'exited',
+          exitCode: 1,
+          exitReason: expect.stringContaining('JOB END status=failed'),
+        }),
+        undefined,
+        expect.objectContaining({ onTerminalPersisted: expect.any(Function) }),
+      );
       expect(jobs.startBackground).not.toHaveBeenCalled();
     } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns after persisting a recovered JOB END without waiting for terminal-event delivery', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-marker-nonblocking-close-'));
+    const logPath = join(stateDir, 'stale.log');
+    let releaseEvent: (() => void) | undefined;
+    try {
+      writeFileSync(logPath, formatJobLogEndMarker('completed', 0, Date.now()));
+      store.getTask.mockResolvedValue(taskRow({
+        state: 'running',
+        pid: null,
+        processIdentity: null,
+        cgroupPath: null,
+        scopeUnit: null,
+        logPath,
+      }));
+      jobs.getJob.mockReturnValue(null);
+      store.closeTask.mockImplementation((...args: unknown[]) => {
+        const effects = args[3] as { onTerminalPersisted?: () => void } | undefined;
+        effects?.onTerminalPersisted?.();
+        return new Promise<boolean>((resolve) => {
+          releaseEvent = () => resolve(true);
+        });
+      });
+
+      const result = await bashOutput.handler({ task_id: 'task-carry-1' }, ctx('ws-current', stateDir));
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+      expect(payload).toMatchObject({
+        status: 'completed',
+        ledger_state: 'exited',
+        ledger_reconciled: true,
+      });
+      expect(store.closeTask).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseEvent?.();
       rmSync(stateDir, { recursive: true, force: true });
     }
   });

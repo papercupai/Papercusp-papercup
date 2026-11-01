@@ -75,4 +75,59 @@ describe('session-port stale cleanup', () => {
     expect(result.errors).toBe(1);
     expect(transition.mock.calls[0][3].metadata.cleanupComplete).toBe(false);
   });
+
+  it('keeps a receipt-committed target pending when native persistence proof is absent', async () => {
+    const updateTarget = vi.fn(async () => true);
+    const endTarget = vi.fn(async () => true);
+    const transition = vi.fn(async (id, workspaceId, status, fields) =>
+      row({ id, workspaceId, status, error: fields.error, metadata: fields.metadata }));
+    const recordTelemetry = vi.fn(async () => true);
+
+    const result = await cleanupExpiredSessionPorts({
+      workspaceId: 'ws',
+      rows: [row({
+        status: 'pending',
+        metadata: {
+          bootstrapReceiptCommitted: true,
+          bootstrapReceiptTargetAdvSessionId: 9,
+        },
+      })],
+      deleteArtifact: async () => true,
+      pruneArtifacts: async () => ({ scanned: 0, removed: 0, errors: 0 }),
+      updateTarget,
+      endTarget,
+      transition,
+      recordTelemetry,
+    });
+
+    expect(result).toEqual({
+      expiredRows: 1,
+      targetsFailed: 0,
+      artifactsDeleted: 1,
+      orphanArtifactsDeleted: 0,
+      errors: 0,
+    });
+    expect(updateTarget).toHaveBeenCalledWith(9, 'ws', 'pending', {
+      deliveryErrorClass: 'delivery-ack-unknown',
+    });
+    expect(endTarget).not.toHaveBeenCalled();
+    expect(transition).toHaveBeenCalledWith(
+      row().id,
+      'ws',
+      'expired',
+      expect.objectContaining({
+        error: 'delivery acknowledgement unknown after committed bootstrap receipt',
+        metadata: expect.objectContaining({
+          cleanupComplete: true,
+          cleanupTargetEnded: false,
+          cleanupTargetDisposition: 'delivery-ack-unknown',
+          deliveryErrorClass: 'delivery-ack-unknown',
+        }),
+      }),
+    );
+    expect(recordTelemetry).toHaveBeenCalledWith(expect.objectContaining({
+      stage: 'failed',
+      failureClass: 'delivery-ack-unknown',
+    }));
+  });
 });

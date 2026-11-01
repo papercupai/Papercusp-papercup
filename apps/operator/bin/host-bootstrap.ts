@@ -697,7 +697,7 @@ export function runBootstrap(): void {
   // `backgroundWorkersEnabled()` is NOT the gate: it is env-only and a fork inherits env.
   if (cluster.isPrimary) void (async () => {
     try {
-      const [{ checkBespokeActiveSeeds, operatorHomeScope }, { getOrgPg }] = await Promise.all([
+      const [{ checkBespokeActiveSeeds, formatBespokeActiveSeedWarning, operatorHomeScope }, { getOrgPg }] = await Promise.all([
         import('@papercusp/operator-core/lib/harness/routines/bespoke-active-seeds-check'),
         import('@papercusp/db-org'),
       ]);
@@ -742,14 +742,15 @@ export function runBootstrap(): void {
         await resolveAlarm(conditionKey, 'bespoke-active-seeds');
         return;
       }
+      const warning = formatBespokeActiveSeedWarning(r.escalatable);
       // Boot is a one-shot measurement. Silence after it cannot prove that a
       // missing/paused/dark routine recovered; a later complete check must do so.
       try {
         const { broadcastSevereEvent } = await import('@papercusp/operator-core/lib/severe-event-broadcast');
         await broadcastSevereEvent({
           conditionKey, oneShot: true,
-          summary: `${r.escalatable.length} always-on routine(s) are not running at operator boot`,
-          body: r.escalatable.map((entry) => `${entry.installSlug}: ${entry.name}`).join(', '),
+          summary: warning.summary,
+          body: warning.body,
         });
       } catch (e) {
         console.warn('[bespoke-active-seeds] condition broadcast failed (non-fatal):', (e as Error)?.message ?? e);
@@ -766,14 +767,13 @@ export function runBootstrap(): void {
       }
       for (const [targetInstallSlug, entries] of escalatableBySlug) {
         const names = entries.map((e) => e.name);
+        const scopedWarning = formatBespokeActiveSeedWarning(entries);
         await notifyAttention({
           kind: 'intervention',
           importance: 'high',
           harnessSlug: targetInstallSlug,
           title: `${names.length} always-on routine(s) are not running`,
-          body:
-            `${names.join(', ')} — seeded ACTIVE by default but currently missing or paused, and ` +
-            `nothing re-arms them on their own. Detected at operator boot.`,
+          body: scopedWarning.body,
           data: { routines: names.join(','), installSlug: targetInstallSlug, event: 'always-on-routine-not-running' },
         });
       }

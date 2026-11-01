@@ -181,6 +181,19 @@ describe('host-bootstrap wires every startup guard', () => {
     );
   });
 
+  it('uses per-routine identity and state in both boot warning destinations', () => {
+    const warningBlock = bootSrc.slice(
+      bootSrc.indexOf('// [D-007 startup validation]'),
+      bootSrc.indexOf('// [EI-19298078028509573 startup visibility]'),
+    );
+    expect(warningBlock).toContain('formatBespokeActiveSeedWarning');
+    expect(warningBlock).toMatch(/formatBespokeActiveSeedWarning\(r\.escalatable\)/);
+    expect(warningBlock).toMatch(/summary:\s*warning\.summary/);
+    expect(warningBlock).toMatch(/body:\s*warning\.body/);
+    expect(warningBlock).toMatch(/formatBespokeActiveSeedWarning\(entries\)/);
+    expect(warningBlock).toMatch(/body:\s*scopedWarning\.body/);
+  });
+
   // [EI-727] Not a STARTUP_GUARDS entry (it doesn't live in its own startup/validate-*
   // module — it's a one-line pure predicate on agent-config.ts) but the same
   // called-not-just-imported wiring risk applies: a silently-orphaned boot warning is as

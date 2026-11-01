@@ -658,6 +658,21 @@ it('consumes the row-bound receipt only for its independent canonical source and
   expect(await reconcileNativeCapture({ ...s.opts, since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' })).toBe('unknown');
 });
 
+it('keeps predecessor transcript reads bound after the adv-session native ID is re-anchored', async () => {
+  const s = await authorizedFixture();
+  const successor = randomUUID();
+  await f.db.adminSql`UPDATE harness_shared.adv_sessions
+    SET session_id=${successor} WHERE id=${s.binding.id}::bigint`;
+  const [current] = await f.db.adminSql`SELECT session_id FROM harness_shared.adv_sessions
+    WHERE id=${s.binding.id}::bigint`;
+  expect(current.session_id).toBe(successor);
+  expect(current.session_id).not.toBe(s.input.sessionId);
+
+  const result = await productionOpportunityReaders(s.opts).readTranscript(s.input);
+  expect(result?.sources).toHaveLength(1);
+  expect(result?.sources[0]?.result?.body).toEqual({ private: 'canonical-result' });
+});
+
 it('D030 MCP advertisement preserves the Codex functions namespace at exact-call receipt consumption', async () => {
   const s = await authorizedFixture();
   await writeFile(s.path, s.records.map((record, index) => JSON.stringify(index === 1

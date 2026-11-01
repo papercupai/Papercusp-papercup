@@ -986,6 +986,10 @@ export default defineTool({
               ? { nativeBgTasks }
               : {}),
             openOwnerQuestion,
+            // Keep the compatibility aggregate while exposing which independent
+            // source raised it: an unanswered owner transcript turn or open asks.
+            openOwnerMessageQuestion,
+            openOwnerAskCount,
             priorRespawn,
             ...(gate.verdict === 'mechanical-fallback' && gate.fallback
               ? { mechanicalFallback: gate.fallback }

@@ -54,10 +54,9 @@ beforeAll(async () => {
   try {
     db = await createOrgTestDb();
   } catch {
-    // Soft-skip, mirroring this file's previous "no PG reachable" contract —
-    // now "no Docker/testcontainer reachable" (e.g. a capability:bash sandbox
-    // with no docker.sock; see pg-container.ts's NO-DOCKER escape hatch,
-    // PAPERCUSP_TEST_PG_ADMIN_URL). Stays green on a machine without either.
+    // Keep the DB-backed cases optional on machines without Docker or an
+    // explicit test PG. itPg marks each case skipped, so none reports a pass
+    // without having executed its assertions.
     dbReady = false;
     return;
   }
@@ -79,15 +78,37 @@ afterAll(async () => {
   await db?.cleanup();
 });
 
-const itPg = (name: string, fn: () => Promise<void> | void) => {
-  it(name, async () => {
-    if (!dbReady || !authMod) {
-      // Soft-skip so a Docker-less environment stays green.
-      return;
-    }
-    await fn();
-  });
+const PG_SETUP_SKIP_REASON = 'isolated Postgres test database is unavailable';
+
+const runPgTest = (
+  ready: boolean,
+  skip: (reason: string) => void,
+  fn: () => Promise<void> | void,
+) => {
+  if (!ready) {
+    skip(PG_SETUP_SKIP_REASON);
+    return;
+  }
+  return fn();
 };
+
+const itPg = (name: string, fn: () => Promise<void> | void) => {
+  it(name, (context) => runPgTest(dbReady && authMod !== null, context.skip.bind(context), fn));
+};
+
+describe('auth PostgreSQL test gate', () => {
+  it('reports unavailable database setup as skipped without invoking assertions', () => {
+    const skip = vi.fn((reason: string) => {
+      throw new Error(reason);
+    });
+    const testBody = vi.fn();
+
+    expect(() => runPgTest(false, skip, testBody)).toThrow(PG_SETUP_SKIP_REASON);
+    expect(skip).toHaveBeenCalledTimes(1);
+    expect(skip).toHaveBeenCalledWith(PG_SETUP_SKIP_REASON);
+    expect(testBody).not.toHaveBeenCalled();
+  });
+});
 
 describe('auth.ts integration', () => {
   const uname = () => `vitest_${randomBytes(4).toString('hex')}`;

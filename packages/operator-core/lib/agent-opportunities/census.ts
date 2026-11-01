@@ -256,7 +256,12 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
   const pageSize = positive(opts.rowBudget, 250, 2000), rowCap = positive(opts.windowRowBudget, 20_000, 100_000);
   const measure = async (family: MonitoredFamily, work: (deadline: number, cancelled: () => boolean) => Promise<FamilyMeasurement>): Promise<FamilyMeasurement> => {
     let cancelled = false;
-    let phase: 'continuity-before' | 'window' | 'continuity-after' = family === 'sql' ? 'window' : 'continuity-before';
+    type Phase = 'continuity-before' | 'window' | 'continuity-after';
+    let phase: Phase = family === 'sql' ? 'window' : 'continuity-before';
+    const phaseDurationsMs: Partial<Record<Phase, number>> = {};
+    let phaseStartedAt = Date.now();
+    const startPhase = (next: Phase) => { phase = next; phaseStartedAt = Date.now(); };
+    const finishPhase = () => { phaseDurationsMs[phase] = Math.max(0, Date.now() - phaseStartedAt); };
     const observedContinuity: { before: 'complete' | 'gap' | 'unknown' | null;
       after: 'complete' | 'gap' | 'unknown' | null } = { before: null, after: null };
     try { return await boundedStage(async () => {
@@ -265,12 +270,15 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
         since: common.since, until: common.until });
       const before = family === 'sql' ? null : await continuity();
       observedContinuity.before = before;
-      phase = 'window';
+      if (family !== 'sql') finishPhase();
+      startPhase('window');
       const row = await work(deadline, () => cancelled);
-      if (family === 'sql') return row;
-      phase = 'continuity-after';
+      finishPhase();
+      if (family === 'sql') return { ...row, diagnostics: { ...row.diagnostics, phaseDurationsMs: { ...phaseDurationsMs } } };
+      startPhase('continuity-after');
       const after = await continuity();
       observedContinuity.after = after;
+      finishPhase();
       const source = row.diagnostics.sourceCoverage as { denied: number; incomplete: number; windowExhausted: boolean; matrix?: NativeCoverage[] };
       const complete = before === 'complete' && after === 'complete' && source.windowExhausted
         && source.denied === 0 && source.incomplete === 0 && row.diagnostics.collisions === 0
@@ -281,12 +289,15 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
       for (const candidate of row.diagnostics.candidates as CandidateEvidence[]) {
         candidate.reviewEligible = complete && (family !== 'native-operation' || candidate.metrics.unknown === 0);
       }
-      return row;
+      return { ...row, diagnostics: { ...row.diagnostics, phaseDurationsMs: { ...phaseDurationsMs } } };
     }, budget); }
-    catch (error) { return { family, coverage: 'UNKNOWN', scanned: 0, qualifying: 0,
+    catch (error) {
+      if (phaseDurationsMs[phase] === undefined) phaseDurationsMs[phase] = Math.max(0, Date.now() - phaseStartedAt);
+      return { family, coverage: 'UNKNOWN', scanned: 0, qualifying: 0,
       diagnostics: { stage: 'source', phase, reason: miningFailureReason(error),
         ...(family === 'sql' ? {} : { continuity: { ...observedContinuity } }),
-        reviewEligible: false, candidates: [] } }; }
+        phaseDurationsMs: { ...phaseDurationsMs }, reviewEligible: false, candidates: [] } };
+    }
     finally { cancelled = true; }
   };
   const families = await Promise.all([

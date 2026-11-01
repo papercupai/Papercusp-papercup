@@ -69,8 +69,8 @@ export function turnEndRewakeNote(attempt: number, held: readonly HeldWorkItem[]
     ids.slice(0, NOTE_LISTED_CAP).join(', ') +
     (ids.length > NOTE_LISTED_CAP ? `, +${ids.length - NOTE_LISTED_CAP} more` : '');
   return (
-    `turn-end rewake ${attempt} of ${TURN_END_REWAKE_NO_PROGRESS_BUDGET}: you ended a turn in an autonomy mode ` +
-    `holding ${listed} with nothing set to wake you. Take the next step on one of them, arm a wake, ` +
+    `turn-end rewake ${attempt} of ${TURN_END_REWAKE_NO_PROGRESS_BUDGET}: this one-shot fallback woke you after you ended a turn in an autonomy mode ` +
+    `holding ${listed} with no standing wake source. Take the next step on one of them, arm a wake, ` +
     'or release / complete the items you cannot advance.'
   );
 }
@@ -80,8 +80,8 @@ export function turnEndRewakeRefusalLine(outcome: TurnEndRewakeOutcome): string 
   if (outcome.kind === 'armed') {
     const minutes = Math.round(outcome.timeoutSec / 60);
     return (
-      `⏱ Rewake timer set: if you stop anyway, you will be woken in about ${minutes} min ` +
-      `(timed rewake ${outcome.attempt} of ${TURN_END_REWAKE_NO_PROGRESS_BUDGET}; it never pages anyone).`
+      `⏱ One-shot rewake fallback scheduled: if you stop anyway, the timer will request a wake in about ${minutes} min ` +
+      `(timed rewake ${outcome.attempt} of ${TURN_END_REWAKE_NO_PROGRESS_BUDGET}). This is not a standing wake source and never pages anyone.`
     );
   }
   return (

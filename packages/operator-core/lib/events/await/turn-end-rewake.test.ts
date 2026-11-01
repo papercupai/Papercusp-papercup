@@ -92,8 +92,13 @@ describe('turn-end rewake timer (WI-6554700010018567)', () => {
     expect(turnEndRewakeNote(1, many)).toContain('WI-5, +2 more');
   });
 
-  it('never mentions paging in a way that implies one happens', () => {
-    expect(turnEndRewakeRefusalLine({ kind: 'armed', attempt: 1, timeoutSec: 900 })).toContain('never pages anyone');
+  it('labels the one-shot fallback without implying a standing wake or paging', () => {
+    const armed = turnEndRewakeRefusalLine({ kind: 'armed', attempt: 1, timeoutSec: 900 });
+    expect(armed).toContain('One-shot rewake fallback scheduled');
+    expect(armed).toContain('not a standing wake source');
+    expect(armed).toContain('timed rewake 1 of 2');
+    expect(armed).toContain('never pages anyone');
+    expect(turnEndRewakeNote(1, [held('WI-1')])).toContain('one-shot fallback woke you');
     expect(turnEndRewakeRefusalLine({ kind: 'exhausted', firedWithoutProgress: 2 })).not.toMatch(/\bpag(e|ed|ing)\b/);
   });
 });

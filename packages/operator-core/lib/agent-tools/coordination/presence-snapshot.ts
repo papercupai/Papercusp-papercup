@@ -33,7 +33,12 @@ import {
   type NurseryAliasRow,
 } from './nursery-alias-liveness';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
-import { deriveFleetControlVisibility, fetchPresenceFleet, type FleetMembership } from './presence-fleet';
+import {
+  deriveFleetControlVisibility,
+  fetchPresenceFleet,
+  liveSessionLogFleetFallbackOwnerIds,
+  type FleetMembership,
+} from './presence-fleet';
 import { createHash } from 'node:crypto';
 import { toStableRosterRow, deltaEligibleProjection, type RosterRow } from './presence-payload';
 import {
@@ -684,8 +689,8 @@ export async function assemblePresenceSnapshot(
   let onDesktopOwners = new Set<string>();
   let viewerAttachedOwners = new Set<string>();
   // Named-fleet membership (P-005): the SOFT coord_presence label, joined in per-owner
-  // (it does NOT ride the base PresenceRecord like hive_slug). Fetched for the WHOLE
-  // local roster (active + stale) so a parked fleet member still shows its fleet.
+  // (it does NOT ride the base PresenceRecord like hive_slug). The guarded ledger
+  // fallback is added after the shared liveness verdict is available.
   let fleet = new Map<string, FleetMembership>();
   // EI-22805550006169069: the forward-looking self-wake schedule. Fetched for the
   // WHOLE local roster (active + stale) on purpose — the row this exists to repair
@@ -786,12 +791,6 @@ export async function assemblePresenceSnapshot(
         viewerAttachedOwners = s;
       })
       .catch(() => {}),
-    // Named-fleet membership (P-005) — best-effort + independent of the other joins.
-    boundedLeg('enrichment', 'fetchPresenceFleet', () => fetchPresenceFleet(localAllIds), new Map())
-      .then((m) => {
-        fleet = m;
-      })
-      .catch(() => {}),
     // EI-22805550006169069: engine-loop schedules, batched for the whole local
     // roster like every join here. Best-effort + independent by the same contract:
     // a failed read leaves `loops` empty, which surfaces as `dormantScheduled:null`
@@ -809,27 +808,6 @@ export async function assemblePresenceSnapshot(
       })
       .catch(() => {}),
   ]));
-
-  // EI-22072194984361823: the fleet's CONTROL state (active|winding-down),
-  // batched for exactly the distinct slugs this roster touched above. Must
-  // run AFTER the Promise.all (it depends on `fleet`'s resolved slugs), and is
-  // skipped for a cross-workspace scope (wsId null) — agent_fleets is
-  // workspace-scoped and there is no single cheap query across all of them.
-  // Fail-soft like every other join here: a read error just leaves every row
-  // without the field, never blocks or corrupts the roster.
-  let fleetControl = new Map<string, { controlState: 'active' | 'winding-down'; controlReason: string | null }>();
-  if (wsId && fleet.size > 0) {
-    try {
-      fleetControl = await boundedLeg('post-enrichment', 'getFleetControlStates', async () => {
-        const { getFleetControlStates } = await import('../../agent-fleets-store');
-        const slugs = [...new Set([...fleet.values()].map((m) => m.fleetSlug).filter((s): s is string => !!s))];
-        fleetControl = await getFleetControlStates(wsId, slugs);
-        return fleetControl;
-      }, new Map(), PRESENCE_OPTIONAL_LEG_TIMEOUT_MS);
-    } catch {
-      /* fail-soft — see comment above */
-    }
-  }
 
   /** Attach the P-001 wakeability signals via the shared liveness oracle
    *  (presence-derivation-unification-2026-07-17 P-002): deriveVerdict is the
@@ -945,6 +923,43 @@ export async function assemblePresenceSnapshot(
     };
   };
 
+  const activeWithWakeability = activeWithTier1.map(withWakeability);
+  const staleWithWakeability = stale.map((r) => withWakeability(r as RosterRow));
+  const liveSessionLogOwnerIds = liveSessionLogFleetFallbackOwnerIds(
+    [...activeWithWakeability, ...staleWithWakeability]
+      .filter((r) => !isFederated(r))
+      .map((r) => ({
+        ownerId: r.ownerId,
+        source: r.source,
+        sessionState: r.sessionState,
+      })),
+  );
+  fleet = await boundedLeg(
+    'enrichment',
+    'fetchPresenceFleet',
+    () => fetchPresenceFleet(localAllIds, { workspaceId: wsId, liveSessionLogOwnerIds }),
+    new Map(),
+  );
+
+  // EI-22072194984361823: the fleet's CONTROL state (active|winding-down),
+  // batched for exactly the distinct slugs this roster touched above. This runs
+  // after the guarded membership fallback and is skipped for a cross-workspace
+  // scope (wsId null), where there is no single cheap query across all fleets.
+  // Fail-soft like every other join here: a read error leaves rows without the field.
+  let fleetControl = new Map<string, { controlState: 'active' | 'winding-down'; controlReason: string | null }>();
+  if (wsId && fleet.size > 0) {
+    try {
+      fleetControl = await boundedLeg('post-enrichment', 'getFleetControlStates', async () => {
+        const { getFleetControlStates } = await import('../../agent-fleets-store');
+        const slugs = [...new Set([...fleet.values()].map((m) => m.fleetSlug).filter((s): s is string => !!s))];
+        fleetControl = await getFleetControlStates(wsId, slugs);
+        return fleetControl;
+      }, new Map(), PRESENCE_OPTIONAL_LEG_TIMEOUT_MS);
+    } catch {
+      /* fail-soft — see comment above */
+    }
+  }
+
   /** Attach the on-desktop flag for LOCAL rows (a federated row's windows live on
    *  its home box → leave it null/unknown, like sessionState). */
   const withOnDesktop = (r: RosterRow): RosterRow =>
@@ -1014,8 +1029,7 @@ export async function assemblePresenceSnapshot(
   let derivationStatus: 'ok' | 'error' = 'error';
   const derivationStartedAt = opts.onDiagnostic ? performance.now() : 0;
   try {
-    activeEnriched = activeWithTier1
-      .map(withWakeability)
+    activeEnriched = activeWithWakeability
       .map(withOnDesktop)
       .map(withViewerAttached)
       .map(withDormantSchedule)
@@ -1025,9 +1039,9 @@ export async function assemblePresenceSnapshot(
   // the leg that actually matters — a dormant-between-fires agent is stale BY
   // CONSTRUCTION (no heartbeat between fires), so omitting it here would leave the
   // originating bug unfixed on the exact population it was reported against.
-    staleEnriched = stale.map((r) =>
+    staleEnriched = staleWithWakeability.map((r) =>
       withFleet(
-        withContextPressure(withDormantSchedule(withViewerAttached(withOnDesktop(withWakeability(r as RosterRow))))),
+        withContextPressure(withDormantSchedule(withViewerAttached(withOnDesktop(r)))),
       ),
     );
     derivationStatus = 'ok';

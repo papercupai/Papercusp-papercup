@@ -25,7 +25,6 @@ import {
   type FleetRosterDegradedLeg,
 } from '../../fleet/fleet-roster';
 import { applyPsuHostAuthority } from '../coordination/liveness-oracle';
-import { findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 import { getCompletionIntegrityStats, type CompletionIntegrityStats } from '../../work-items';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import type { AdvSessionEndedBy } from '../../adv-sessions';
@@ -61,14 +60,65 @@ const FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS = 6_000;
  * or request the full tier when it needs a particular member's resume detail.
  */
 export const FLEET_STATUS_TIER_CAPS = {
-  trimmed: { members: 8, label: 80, intent: 100, doing: 80, resumeHint: 180 },
-  standard: { members: 12, label: 140, intent: 180, doing: 120, resumeHint: 300 },
+  trimmed: {
+    members: 8,
+    label: 80,
+    intent: 100,
+    doing: 80,
+    resumeHint: 180,
+    launchHistory: 12,
+    launchHistoryReason: 240,
+  },
+  standard: {
+    members: 12,
+    label: 140,
+    intent: 180,
+    doing: 120,
+    resumeHint: 300,
+    launchHistory: 24,
+    launchHistoryReason: 480,
+  },
 } as const;
 
 type FleetStatusTier = keyof typeof FLEET_STATUS_TIER_CAPS;
 
 const clipFleetStatus = (value: unknown, max: number): string | null =>
   typeof value === 'string' ? (value.length > max ? `${value.slice(0, max - 1)}…` : value) : null;
+
+function shapeLaunchTransaction(value: unknown, tier: FleetStatusTier): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const transaction = value as Record<string, unknown>;
+  const governor = transaction.governor;
+  if (!governor || typeof governor !== 'object' || Array.isArray(governor)) return value;
+  const governorRecord = governor as Record<string, unknown>;
+  if (!Array.isArray(governorRecord.history)) return value;
+
+  const caps = FLEET_STATUS_TIER_CAPS[tier];
+  const history = governorRecord.history as unknown[];
+  const retainedHistory = history.slice(-caps.launchHistory);
+  let clippedReasons = 0;
+  const shapedHistory = retainedHistory.map((event) => {
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return event;
+    const record = event as Record<string, unknown>;
+    if (typeof record.reason !== 'string' || record.reason.length <= caps.launchHistoryReason) return event;
+    clippedReasons += 1;
+    return {
+      ...record,
+      reason: clipFleetStatus(record.reason, caps.launchHistoryReason),
+    };
+  });
+  const historyTruncated = history.length > retainedHistory.length;
+
+  return {
+    ...transaction,
+    governor: {
+      ...governorRecord,
+      history: shapedHistory,
+      ...(historyTruncated ? { historyTotal: history.length, historyTruncated: true } : {}),
+      ...(clippedReasons > 0 ? { historyReasonsTruncated: clippedReasons } : {}),
+    },
+  };
+}
 
 const isNonRunnableFleetMember = (row: unknown): boolean => {
   const state = (row as { sessionState?: unknown } | null | undefined)?.sessionState;
@@ -188,6 +238,9 @@ export function shapeFleetStatus(data: unknown, tier: FleetStatusTier): unknown 
 
   return {
     ...d,
+    ...(Object.prototype.hasOwnProperty.call(d, 'launchTransaction')
+      ? { launchTransaction: shapeLaunchTransaction(d.launchTransaction, tier) }
+      : {}),
     ...(populationLifecycle ? { populationLifecycle } : {}),
     members,
     ...(source.length > caps.members
@@ -483,38 +536,10 @@ export default defineTool({
         label: 'fleet:status:headcountGovernorFlag',
       }),
     ]);
-    // A leader can be present in another fleet's labelled roster when it leads
-    // multiple fleets. Reconcile the liveness-only enrichment alongside the
-    // queried roster, then project the queried ids back out before calculating
-    // members/counts so cross-fleet leadership never changes this fleet's census.
-    const queriedRosterIds = new Set(rosterResult.entries.map((member) => member.agentId));
-    const rosterForLiveness =
-      fleet.leaderOwnerId &&
-      rosterResult.leaderEntry &&
-      !queriedRosterIds.has(fleet.leaderOwnerId)
-        ? [...rosterResult.entries, rosterResult.leaderEntry]
-        : rosterResult.entries;
-    const visibleHostIds = rosterForLiveness
-      .filter((member) => member.tty != null && member.agentRole != null && member.agentRole !== 'cup')
-      .map((member) => member.agentId);
-    const visibleHostsResult = await withBoundedTimeout((async () => {
-      const hosts = new Map<string, unknown | null>();
-      for (let i = 0; i < visibleHostIds.length; i += 16) {
-        await Promise.all(visibleHostIds.slice(i, i + 16).map(async (ownerId) => {
-          hosts.set(ownerId, await findLiveHostAsync(ownerId).catch(() => null));
-        }));
-      }
-      return hosts;
-    })(), {
-      fallback: new Map<string, unknown | null>(visibleHostIds.map((id) => [id, { lookupTimedOut: true }])),
-      timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
-      label: 'fleet:status:psuHosts',
-    });
-    const reconciledRoster = reconcileFleetStatusLiveness(
-      rosterForLiveness,
-      (ownerId) => visibleHostsResult.value.get(ownerId) ?? null,
-    );
-    const roster = reconciledRoster.filter((member) => queriedRosterIds.has(member.agentId));
+    // A leader may have a different fleet label. Keep its separate liveness
+    // entry out of this fleet's member census, and reuse both roster snapshots
+    // rather than probing the visible hosts a second time.
+    const roster = rosterResult.entries;
     const completionStats = completionStatsResult.value;
     const runningBees = runningBeesResult.value;
     const beeCount = beeCountResult.value;
@@ -647,9 +672,9 @@ export default defineTool({
     // A missing roster row is UNKNOWN (not vacancy); only an explicit ended/recorded
     // verdict is positive evidence that the slot is gone. A null registry leader is an
     // explicit vacancy.
-    const leaderMember = fleet.leaderOwnerId
-      ? reconciledRoster.find((member) => member.agentId === fleet.leaderOwnerId)
-      : undefined;
+    const leaderMember =
+      rosterResult.leaderEntry ??
+      roster.find((member) => member.agentId === fleet.leaderOwnerId);
     const leaderRecordedLive = rosterResult.leaderLiveness?.recordedLive === true;
     const leaderSessionState = leaderMember?.sessionState ?? (leaderRecordedLive ? 'recorded' : null);
     const leaderEvidenceComplete =

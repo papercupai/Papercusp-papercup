@@ -107,7 +107,7 @@ describe('loadRecentCalls', () => {
     expect(originValues).not.toContain(hookOriginFixture.call_origin);
     expect(queryCall.values).toContain(originPredicate);
     const query = Array.from(queryCall.strings).join(' ');
-    expect(query).toContain('i.args_json, i.metadata_json, i.call_origin');
+    expect(query).toContain('i.args_json, i.metadata_json, i.call_origin, i.error_code, i.error_message');
     expect(query).toContain("e.body->>'plan_slug' AS declared_plan_slug");
     expect(query).toContain("e.body->'declared_plan_items' AS declared_plan_items");
     expect(query).toContain("e.body->'declared_goal_refs' AS declared_goal_refs");
@@ -181,6 +181,8 @@ describe('loadRecentCalls', () => {
         owner: 'su-a',
         tool_name: 'fleet:launch-on-plan',
         status: 'timeout',
+        error_code: 'timeout',
+        error_message: 'statement timeout (PostgreSQL 57014)',
         invoked_at: new Date(T0).toISOString(),
         intent_event_id: null,
         goal_ref: null,
@@ -215,6 +217,10 @@ describe('loadRecentCalls', () => {
       openedMemberIds: ['member-1'],
       verifiedMemberIds: [],
       failedOwnerIds: ['member-2'],
+    });
+    expect(call).toMatchObject({
+      errorCode: 'timeout',
+      errorMessage: 'statement timeout (PostgreSQL 57014)',
     });
   });
 });
@@ -261,7 +267,9 @@ describe('formatDivergenceAlert', () => {
   });
 
   it('names identical retries explicitly — they cannot succeed', () => {
-    expect(formatDivergenceAlert(loop).body).toContain('BYTE-IDENTICAL');
+    const body = formatDivergenceAlert(loop).body;
+    expect(body).toContain('BYTE-IDENTICAL');
+    expect(body).toContain('after non-transient failures');
   });
 
   it('says the threshold was measured, so it does not read as an accusation', () => {

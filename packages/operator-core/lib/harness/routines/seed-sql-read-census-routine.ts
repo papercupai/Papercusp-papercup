@@ -34,7 +34,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
-import { DEFAULT_CENSUS_WINDOW_DAYS } from './sql-read-census-action';
+import { DEFAULT_CENSUS_WINDOW_DAYS, DEFAULT_INTENT_CENSUS_TIME_BUDGET_MS } from './sql-read-census-action';
 
 const SLUG = process.env.SQL_READ_CENSUS_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 export const SQL_READ_CENSUS_ROUTINE_NAME = 'sql-read-census';
@@ -55,6 +55,7 @@ async function main(): Promise<void> {
   const triggerConfig = {
     cron: CRON,
     window_days: DEFAULT_CENSUS_WINDOW_DAYS,
+    intent_time_budget_ms: DEFAULT_INTENT_CENSUS_TIME_BUDGET_MS,
     agent_threshold: 10,
     grace_days: 14,
     required_fall_pct: 0.3,

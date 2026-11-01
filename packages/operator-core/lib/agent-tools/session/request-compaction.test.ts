@@ -1751,6 +1751,8 @@ describe('session:request-compaction — P-010 open-owner-question first-prompt 
     });
     const b = body(await call({ focus: 'x' }));
     expect(b.openOwnerQuestion).toBe(true);
+    expect(b.openOwnerMessageQuestion).toBe(true);
+    expect(b.openOwnerAskCount).toBe(0);
     expect(b.firstPromptSource).toBe('open-owner-message');
     expect(b.note).toContain('open-owner-question');
     // Warn-only: the cut was NOT blocked.
@@ -1765,6 +1767,8 @@ describe('session:request-compaction — P-010 open-owner-question first-prompt 
     buildOwnerRespawnLaunchSpec.mockResolvedValue(closedSpec);
     const b = body(await call({ focus: 'x' }));
     expect(b.openOwnerQuestion).toBe(false);
+    expect(b.openOwnerMessageQuestion).toBe(false);
+    expect(b.openOwnerAskCount).toBe(0);
     expect(b.firstPromptSource).toBe('continuation-note');
     expect(b.note).not.toContain('open-owner-question');
     expect(injected().data).toMatch(ENVELOPE_LINE);
@@ -1780,6 +1784,8 @@ describe('session:request-compaction — P-010 open-owner-question first-prompt 
     });
     const b = body(await call({ focus: 'x' }));
     expect(b.openOwnerQuestion).toBe(true);
+    expect(b.openOwnerMessageQuestion).toBe(false);
+    expect(b.openOwnerAskCount).toBe(1);
     expect(b.note).toContain('open-owner-question');
     expect(b.note).toContain('1 owner ask(s) remain OPEN');
     expect(b.ok).toBe(true);
@@ -1804,6 +1810,8 @@ describe('session:request-compaction — P-010 open-owner-question first-prompt 
     const b = body(await call({ focus: 'x' }));
     // The signal is still raised — this fix corrects the WORDING, it does not suppress.
     expect(b.openOwnerQuestion).toBe(true);
+    expect(b.openOwnerMessageQuestion).toBe(true);
+    expect(b.openOwnerAskCount).toBe(0);
     expect(b.note).toContain('open-owner-question');
     expect(b.note).toContain('TRUNCATED');
     expect(b.note).toContain('UNKNOWN');
@@ -1823,6 +1831,8 @@ describe('session:request-compaction — P-010 open-owner-question first-prompt 
     });
     const b = body(await call({ focus: 'x' }));
     expect(b.openOwnerQuestion).toBe(true);
+    expect(b.openOwnerMessageQuestion).toBe(true);
+    expect(b.openOwnerAskCount).toBe(0);
     expect(b.note).toContain('final message looks UNANSWERED');
     expect(b.note).not.toContain('NOT a finding that an owner message exists');
     expect(b.ok).toBe(true);

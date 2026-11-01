@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   resolveAgentIdentity: vi.fn(),
   executingOwnersSince: vi.fn(),
   getLoopStatuses: vi.fn(),
+  findLiveHostAsync: vi.fn(),
   // P-007 / R-17: pending event_awaits rows for the silence rule's await leg.
   awaitRows: [] as { subscriber_id: string; event_key: string }[],
 }));
@@ -101,6 +102,15 @@ vi.mock('../../harness/routines/loop', async () => {
   return {
     ...actual,
     getLoopStatuses: (...a: unknown[]) => h.getLoopStatuses(...a),
+  };
+});
+vi.mock('../../events/await/psu-pty-discovery', async () => {
+  const actual = await vi.importActual<typeof import('../../events/await/psu-pty-discovery')>(
+    '../../events/await/psu-pty-discovery',
+  );
+  return {
+    ...actual,
+    findLiveHostAsync: (...a: unknown[]) => h.findLiveHostAsync(...a),
   };
 });
 vi.mock('../../fleet-membership-store', () => ({
@@ -202,6 +212,7 @@ beforeEach(() => {
   // An empty map is a MEASURED "no loop rows for these owners", not a failed read —
   // so the healthy-payload tests above stay byte-identical (no degraded leg).
   h.getLoopStatuses.mockResolvedValue(new Map());
+  h.findLiveHostAsync.mockResolvedValue(null);
   h.awaitRows = [];
 });
 
@@ -1272,5 +1283,84 @@ describe('fleet:status workspace targeting (EI-21934696112365508)', () => {
 
     expect(h.getFleet).toHaveBeenCalledWith('ws', 'rocket');
     expect(h.getFleet).not.toHaveBeenCalledWith('*', 'rocket');
+  });
+});
+
+describe('fleet:status slow-path bounds', () => {
+  it('bounds launch governor history and long reasons in default tiers', () => {
+    const history = Array.from({ length: 40 }, (_, index) => ({
+      at: index,
+      action: 'observe',
+      reason: 'x'.repeat(600),
+    }));
+    const source = {
+      members: [],
+      launchTransaction: {
+        transactionId: 'tx-history',
+        governor: { history },
+      },
+    };
+
+    const trimmed = shapeFleetStatus(source, 'trimmed') as {
+      launchTransaction: { governor: Record<string, unknown> };
+    };
+    const trimmedGovernor = trimmed.launchTransaction.governor;
+    const trimmedHistory = trimmedGovernor.history as Array<Record<string, unknown>>;
+    expect(trimmedHistory).toHaveLength(FLEET_STATUS_TIER_CAPS.trimmed.launchHistory);
+    expect(trimmedHistory[0]?.at).toBe(28);
+    expect(trimmedHistory[0]?.reason).toHaveLength(FLEET_STATUS_TIER_CAPS.trimmed.launchHistoryReason);
+    expect(trimmedGovernor.historyTotal).toBe(40);
+    expect(trimmedGovernor.historyTruncated).toBe(true);
+    expect(trimmedGovernor.historyReasonsTruncated).toBe(FLEET_STATUS_TIER_CAPS.trimmed.launchHistory);
+
+    const standard = shapeFleetStatus(source, 'standard') as {
+      launchTransaction: { governor: Record<string, unknown> };
+    };
+    const standardHistory = standard.launchTransaction.governor.history as unknown[];
+    expect(standardHistory).toHaveLength(FLEET_STATUS_TIER_CAPS.standard.launchHistory);
+  });
+
+  it('uses the roster liveness snapshot without a second host discovery pass', async () => {
+    const leader = {
+      agentId: 'su-leader',
+      ownerLabel: 'Leader',
+      fleetRole: 'leader',
+      agentRole: 'su',
+      tty: '/dev/pts/10',
+      intent: 'lead',
+      alive: true,
+      heartbeatFresh: true,
+      sessionState: 'live',
+      lastActiveSecAgo: 1,
+      doing: 'WI-1',
+      load: 1,
+    };
+    const visibleMember = {
+      agentId: 'su-visible-member',
+      ownerLabel: 'Visible member',
+      fleetRole: 'member',
+      agentRole: 'su',
+      tty: '/dev/pts/11',
+      intent: 'work',
+      alive: true,
+      heartbeatFresh: true,
+      sessionState: 'live',
+      lastActiveSecAgo: 1,
+      doing: 'WI-2',
+      load: 1,
+    };
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [leader, visibleMember],
+      degradedLegs: [],
+      leaderEntry: leader,
+      leaderLiveness: { recordedLive: false, complete: true },
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.members).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentId: 'su-visible-member', sessionState: 'live' }),
+    ]));
+    expect(h.findLiveHostAsync).not.toHaveBeenCalled();
   });
 });

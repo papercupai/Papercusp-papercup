@@ -36,6 +36,7 @@ const {
   wakeabilityMock,
   selfWakeMock,
   fleetMock,
+  fleetControlStatesMock,
   findLiveHostMock,
   findLiveHostAsyncMock,
   readHostEventTailAsyncMock,
@@ -52,6 +53,7 @@ const {
   wakeabilityMock: vi.fn(async (..._a: unknown[]) => new Map()),
   selfWakeMock: vi.fn(async (..._a: unknown[]) => new Map()),
   fleetMock: vi.fn(async (..._a: unknown[]) => new Map()),
+  fleetControlStatesMock: vi.fn(async (..._a: unknown[]) => new Map()),
   findLiveHostMock: vi.fn<(id: string) => { ownerId: string } | null>(() => null),
   findLiveHostAsyncMock: vi.fn<(id: string) => Promise<{ ownerId: string } | null>>(async () => null),
   // P-011(a): the host-condition leg reads the host's lifecycle tail. Mocked so the
@@ -114,6 +116,10 @@ vi.mock('./presence-fleet', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   fetchPresenceFleet: fleetMock,
 }));
+vi.mock('../../agent-fleets-store', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getFleetControlStates: fleetControlStatesMock,
+}));
 vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   findLiveHost: findLiveHostMock,
@@ -160,6 +166,8 @@ beforeEach(() => {
   // fixtures into each other (order-dependent false positives).
   endedSessionsMock.mockResolvedValue([]);
   endedOwnerIdsMock.mockResolvedValue(new Set<string>());
+  fleetMock.mockResolvedValue(new Map());
+  fleetControlStatesMock.mockResolvedValue(new Map());
   findLiveHostMock.mockImplementation(() => null);
   readHostEventTailAsyncMock.mockResolvedValue([]);
   listPresenceMock.mockResolvedValue([row('su-aaa', false), row('su-bbb', false), row('su-ccc', true)]);
@@ -201,7 +209,10 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
     expect(tier1Mock).toHaveBeenCalledWith(['su-bbb']);
     expect(wakeabilityMock).toHaveBeenCalledWith(['su-bbb']);
     expect(selfWakeMock).toHaveBeenCalledWith(['su-bbb']);
-    expect(fleetMock).toHaveBeenCalledWith(['su-bbb']);
+    expect(fleetMock).toHaveBeenCalledWith(['su-bbb'], {
+      workspaceId: 'test-ws',
+      liveSessionLogOwnerIds: [],
+    });
     // Selection semantics preserved: the matched row comes back, alone.
     expect(snap.active.map((r) => (r as { ownerId?: string }).ownerId)).toEqual(['su-bbb']);
     // Summary describes the matched subset on a targeted read.
@@ -212,6 +223,37 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
   it('skips the GC sweep on the targeted point-read', async () => {
     await assemblePresenceSnapshot(RESOLVED, { owner: 'su-bbb' });
     expect(sweepMock).not.toHaveBeenCalled();
+  });
+
+  it('requests the ledger fallback only for session-log rows with a live verdict', async () => {
+    const liveOwner = 'su-session-log-live';
+    const parkedOwner = 'su-session-log-parked';
+    listPresenceMock.mockResolvedValue([
+      { ...row(liveOwner, false), source: RECORDED_SESSION_SOURCE },
+      { ...row(parkedOwner, false), source: RECORDED_SESSION_SOURCE },
+    ]);
+    wakeabilityMock.mockResolvedValue(new Map([
+      [liveOwner, { wakeable: false, liveTurn: true }],
+      [parkedOwner, { wakeable: true, liveTurn: false }],
+    ]));
+    fleetMock.mockResolvedValue(new Map([
+      [liveOwner, { fleetSlug: 'ledger-fleet', fleetRole: 'member' }],
+    ]));
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, {});
+
+    expect(fleetMock).toHaveBeenCalledWith([liveOwner, parkedOwner], {
+      workspaceId: 'test-ws',
+      liveSessionLogOwnerIds: [liveOwner],
+    });
+    expect(snap.active.find((r) => r.ownerId === liveOwner)).toMatchObject({
+      sessionState: 'live',
+      fleetSlug: 'ledger-fleet',
+      fleetRole: 'member',
+    });
+    const parked = snap.active.find((r) => r.ownerId === parkedOwner);
+    expect(parked?.sessionState).toBe('parked');
+    expect(parked?.fleetSlug).toBeUndefined();
   });
 
   it('matches a STALE owner too — the "inspect one dead agent" path still enriches it', async () => {

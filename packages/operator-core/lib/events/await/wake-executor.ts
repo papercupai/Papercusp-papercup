@@ -184,6 +184,7 @@ import {
 import { getLoopStatus, countAgentToolCallsInWindow } from '../../harness/routines/loop';
 import {
   formatEnvelope,
+  LOOP_FIRE_PROVENANCE_TTL_MS,
   mintNonce,
   tagTurnForInjection,
   type TaggedTurn,
@@ -2733,6 +2734,11 @@ export async function tagWakeText(d: Pick<DeliveryWork, 'payload' | 'subscriberI
       origin,
       text,
       nowMs: provenanceIssuedAtMs,
+      // A loop wake can be written to a live PTY before the client's
+      // UserPromptSubmit runs. Retain its typed fire identity through that
+      // deferred client turn; the host separately rejects stale pre-write
+      // deliveries at the default 10-minute boundary.
+      ...(origin === 'loop-fire' ? { ttlMs: LOOP_FIRE_PROVENANCE_TTL_MS } : {}),
       ...(loopMarker?.routineId && Number.isInteger(loopMarker.wakeCount) && (loopMarker.wakeCount ?? 0) > 0
         ? { loopFire: { routineId: loopMarker.routineId, wakeCount: loopMarker.wakeCount! } }
         : {}),

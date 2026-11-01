@@ -108,7 +108,7 @@ export function formatDivergenceAlert(d: Divergence): { summary: string; body: s
     const evidence: string[] = [];
     if (r?.identicalRetries) {
       evidence.push(
-        `${r.identicalRetries} of those retries re-sent BYTE-IDENTICAL arguments — a deterministic refusal cannot change its answer, so those attempts could not have succeeded`,
+        `${r.identicalRetries} of those retries re-sent BYTE-IDENTICAL arguments after non-transient failures`,
       );
     }
     if (r?.argsChangedTransitions) {
@@ -207,6 +207,8 @@ interface CallRow {
   owner: string;
   tool_name: string;
   status: string | null;
+  error_code: string | null;
+  error_message: string | null;
   invoked_at: string | Date;
   intent_event_id: string | number | null;
   goal_ref: string | null;
@@ -275,7 +277,7 @@ export async function loadRecentCalls(opts: {
            i.intent_event_id, i.goal_ref, e.body->>'plan_slug' AS declared_plan_slug,
            e.body->'declared_plan_items' AS declared_plan_items,
            e.body->'declared_goal_refs' AS declared_goal_refs,
-           i.args_json, i.metadata_json, i.call_origin,
+           i.args_json, i.metadata_json, i.call_origin, i.error_code, i.error_message,
            f.fleet_slug AS launch_fleet,
            f.last_launch_transaction AS launch_transaction
       FROM harness_shared.tool_invocations AS i
@@ -339,6 +341,8 @@ export async function loadRecentCalls(opts: {
     ownerId: r.owner,
     toolName: r.tool_name,
     status: r.status,
+    errorCode: r.error_code ?? null,
+    errorMessage: r.error_message ?? null,
     invokedAt: r.invoked_at instanceof Date ? r.invoked_at.toISOString() : String(r.invoked_at),
     intentEventId: r.intent_event_id == null ? null : Number(r.intent_event_id),
     goalRef: r.goal_ref,

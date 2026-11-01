@@ -659,6 +659,37 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('Codex bootstrap plus a loop-fire prompt do not create an unanswered owner message', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'papercusp-carry-doc-test-'));
+    try {
+      const f = join(dir, 'sess.jsonl');
+      const line = (text: string, ts: string) =>
+        JSON.stringify({ type: 'user', timestamp: ts, sessionId: 's', message: { role: 'user', content: [{ type: 'text', text }] } });
+      writeFileSync(
+        f,
+        [
+          line('# AGENTS.md instructions\n\n<INSTRUCTIONS>session setup</INSTRUCTIONS>', '2026-07-14T10:00:00Z'),
+          line('⟦turn-origin:loop-fire nonce:6b5c8079e022af6b⟧ continue from the loop checkpoint', '2026-07-14T10:01:00Z'),
+        ].join('\n') + '\n',
+      );
+      const doc = await buildCarryDoc('su-1', {
+        ...base,
+        getPlanItemsFn: async () => [],
+        boundaryDeliberate: true,
+        transcriptPath: f,
+      });
+      expect(doc.tail.map((t) => t.provenance)).toEqual([
+        { verdict: 'machine-surface', origin: null },
+        { verdict: 'agent-injected', origin: 'loop-fire' },
+      ]);
+      expect(doc.continuation.lastOwnerMessage).toBeNull();
+      expect(doc.continuation.pendingOwnerMessages ?? []).toEqual([]);
+      expect(gateOpenOwnerQuestion(doc.continuation).crossesOpenOwnerMessage).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('same-session retracted continuation guard (EI-22416629442936687)', () => {

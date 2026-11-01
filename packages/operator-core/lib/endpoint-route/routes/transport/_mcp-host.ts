@@ -5978,10 +5978,20 @@ export function registerMcpHost(server: McpServer): void {
               const canCodeRunHere =
                 dispatchSpawnCtx.isSuperuser === true || canRoleActOnCodeRun(dispatchSpawnCtx.role);
               const codeRunInSurface = !nudgeSurface || nudgeSurface.has('code:run');
+              const nudgeTool = lookupByMcpName(toolName);
+              let nudgeEffect: 'read' | 'write' = 'write';
+              try {
+                const perCallEffect = nudgeTool?.effectForCall?.(args);
+                if (perCallEffect === 'read' || perCallEffect === 'write') nudgeEffect = perCallEffect;
+                else if (nudgeTool?.effect === 'read') nudgeEffect = 'read';
+              } catch {
+                // Fail closed: a classification error must not make a write look reorderable.
+              }
               try {
                 const hint = maybeBatchNudge({
                   sessionKey: nudgeSessionKey,
                   toolName,
+                  effect: nudgeEffect,
                   // P-001/P-003 (code-run-batch-adoption): args unwrap tools:invoke-routed calls
                   // to their inner tool and prefill the skeletons with the burst's real args.
                   args,

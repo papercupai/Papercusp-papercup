@@ -80,6 +80,7 @@
  * stated purpose (MAST FM-2.6), and it yielded on measurement, not taste.
  */
 import { isDispatchWrapperMetadata } from './agent-tools/sessions/automatic-tool-names';
+import { classifyToolError } from './harness/improvements/tool-error-classifier';
 
 /** How an agent's actions diverged from its declaration. */
 export const DIVERGENCE_KINDS = [
@@ -225,6 +226,9 @@ export interface DivergenceCall {
   ownerId: string;
   toolName: string;
   status: string | null;
+  /** Persisted tool-invocation classification inputs. */
+  errorCode?: string | null;
+  errorMessage?: string | null;
   /** ISO-8601. Used for ordering and the sampling window only. */
   invokedAt: string;
   intentEventId?: number | null;
@@ -309,8 +313,7 @@ export interface RetryLoopEvidence {
   /** Consecutive attempts whose args differed — P-010's "retry with changed
    *  args". High relative to `attempts` means the agent is varying inputs. */
   argsChangedTransitions: number;
-  /** Attempts whose args were byte-identical to the previous one — retrying an
-   *  unchanged call, which cannot succeed for a deterministic refusal. */
+  /** Attempts whose args were byte-identical across eligible non-transient failures. */
   identicalRetries: number;
   /** A different verb in the same namespace ran between attempts — P-010's
    *  "tool/verb fallback after failure". */
@@ -352,8 +355,12 @@ export interface DivergenceCoverage {
    * false-positive-rate denominator, the analog of P-011's `comparedPairs`.
    */
   comparableBuckets: number;
-  /** Failed calls — the false-positive denominator for the sampling leg. */
+  /** Non-transient failed calls — the false-positive denominator for the sampling leg. */
   failuresSeen: number;
+  /** Transient failures excluded from retry and fallback evidence. */
+  transientFailuresExcluded: number;
+  /** Rate-limit failures excluded from retry and fallback evidence. */
+  rateLimitFailuresExcluded: number;
   /**
    * Runs that reached {@link RETRY_THRASH_THRESHOLD}.
    *
@@ -722,15 +729,35 @@ export function detectIntentActionDivergence(
   let unsettledRuns = 0;
   let launchOutcomeCalls = 0;
   let launchFailuresReconciled = 0;
+  let transientFailuresExcluded = 0;
+  let rateLimitFailuresExcluded = 0;
   for (const owned of byOwner.values()) {
     // A dispatch wrapper is an outer telemetry row for a deliberate schema
     // probe. Wrapper failures are expected negative-control evidence, not agent
     // retries. A successful code:run wrapper is different: its persisted
     // effectiveStatus/childFailureCount proves that code:run converged, so keep
     // that row as a success boundary for adjacent ingress failures.
-    const samplingOwned = owned.filter(
+    const samplingCandidates = owned.filter(
       (c) => !isDispatchWrapperMetadata(c.metadataJson) || isSuccessfulCodeRunDispatchWrapper(c),
     );
+    // Retryable infrastructure failures and provider rate limits are not MAST
+    // retry evidence: unchanged args can succeed as the shared condition clears.
+    // Keep them out of fallback evidence too; a capacity retry is not a useful
+    // alternate-route signal. A reconciled success boundary remains intact.
+    const samplingOwned = samplingCandidates.filter((c) => {
+      const isFailure = isFailureStatus(c.status);
+      if (!isFailure || hasCommittedLaunchOutcome(c) || isSuccessfulCodeRunDispatchWrapper(c)) return true;
+      const errorClass = classifyToolError(c.errorCode, c.status, c.errorMessage);
+      if (errorClass === 'transient') {
+        transientFailuresExcluded += 1;
+        return false;
+      }
+      if (errorClass === 'rate-limit') {
+        rateLimitFailuresExcluded += 1;
+        return false;
+      }
+      return true;
+    });
     // Calls of ONE tool, in time order — SUCCESSES INCLUDED. Grouping by tool
     // before running the window is what makes "the same call keeps failing"
     // distinguishable from "this agent had a bad minute across five different
@@ -889,6 +916,8 @@ export function detectIntentActionDivergence(
     intentBuckets: buckets.size,
     comparableBuckets,
     failuresSeen,
+    transientFailuresExcluded,
+    rateLimitFailuresExcluded,
     thrashRuns,
     convergedRuns,
     unsettledRuns,
@@ -896,7 +925,8 @@ export function detectIntentActionDivergence(
     // The leg RAN if it had failures to examine — not if it found something.
     // Same distinction as `comparableBuckets`: an agent whose every failure
     // self-corrected was genuinely examined and genuinely came back clean.
-    samplingLegRan: failuresSeen > 0,
+    samplingLegRan:
+      failuresSeen > 0 || transientFailuresExcluded > 0 || rateLimitFailuresExcluded > 0,
     terminalFilterApplied,
     terminalGoalCallsExcluded,
     bucketsCollapsedByTerminal,

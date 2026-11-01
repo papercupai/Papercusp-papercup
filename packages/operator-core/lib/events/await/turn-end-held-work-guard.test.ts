@@ -128,8 +128,11 @@ describe('turn-end rewake timer (WI-6554700010018567)', () => {
     const spy = rewakeSpy();
     const text = await evaluateTurnEndHeldWorkStop({ ownerId: OWNER, workspaceId: WS, deps: deps(spy.deps) });
     expect(text).toContain('TURN-END REFUSED');
-    expect(text).toContain('Rewake timer set');
+    expect(text).toContain('One-shot rewake fallback scheduled');
     expect(text).toContain('15 min');
+    expect(text).toContain('no standing wake source is active');
+    expect(text).toContain('one-shot safety fallback may be scheduled below');
+    expect(text).toContain('not a standing wake source');
     expect(spy.calls.armed).toEqual([['WI-1', 'WI-2']]);
     expect(spy.calls.cancelled).toBe(0);
   });
@@ -268,7 +271,7 @@ describe('turn-end held-work guard (WI-6554700010015550)', () => {
       deps: deps({ listParkedAwaits: async () => [inboxKeepalive, untimed] }),
     });
     expect(text).toContain('TURN-END REFUSED');
-    expect(text).toContain('no bounded wake is guaranteed after this turn');
+    expect(text).toContain('no standing wake source is active');
     expect(text).toContain('An unbounded event wait may still wake if its event arrives');
     expect(text).toContain('Arm a bounded wake');
     expect(text).not.toContain('nothing will wake you after this turn');

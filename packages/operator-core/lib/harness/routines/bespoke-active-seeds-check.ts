@@ -377,6 +377,38 @@ export interface CheckResult {
   ok: boolean;
 }
 
+/** Owner-facing boot alert text for the exact always-on routine findings. */
+export function formatBespokeActiveSeedWarning(
+  findings: CheckResult['escalatable'],
+): { summary: string; body: string } {
+  const formatted = findings.map((entry) => {
+    const identity = `${entry.installSlug}/${entry.name}`;
+    if ('neverFired' in entry) {
+      const detail = entry.neverFired
+        ? `active=true; never fired since creation (${Math.round(entry.ageSec / 60)}m ago)`
+        : `active=true; last fired ${Math.round(entry.ageSec / 60)}m ago, beyond its ${entry.intervalSec ?? 'unknown'}s cadence`;
+      return { identity, status: 'DARK', detail };
+    }
+    if ('pauseReason' in entry) {
+      const pauseReason = entry.pauseReason ?? 'NONE RECORDED — active=false was set without an audited reason';
+      const reviewBy = entry.reviewBy ? `; review by ${entry.reviewBy}` : '';
+      return { identity, status: 'INACTIVE', detail: `active=false; pause reason: ${pauseReason}${reviewBy}` };
+    }
+    return {
+      identity,
+      status: 'MISSING',
+      detail: `no routine row exists; seed with ${entry.seedScript}`,
+    };
+  });
+
+  return {
+    summary: `${findings.length} always-on routine(s) are not running at operator boot: ` +
+      formatted.map(({ identity, status }) => `${identity} [${status}]`).join(', '),
+    body: `${formatted.map(({ identity, status, detail }) => `${identity} — ${status}: ${detail}`).join('\n')}` +
+      '\n\nDetected at operator boot; this one-shot warning clears only after a later complete check confirms recovery.',
+  };
+}
+
 /**
  * How many of its own declared intervals a routine may miss before it counts as dark.
  *

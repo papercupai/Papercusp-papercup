@@ -8,7 +8,7 @@ import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
 import { mineSqlCandidateSlice } from '../bash-substitution/sql-tool-candidates';
 import { readMonitoredCandidate, readProductionMonitoredCandidate, runMonitoredCensus } from './census';
 import { MONITORED_FAMILIES } from './pipeline';
-import { runSqlOpportunityCensus } from '../harness/routines/sql-read-census-action';
+import { censusMiningOptions, DEFAULT_INTENT_CENSUS_TIME_BUDGET_MS, runSqlOpportunityCensus } from '../harness/routines/sql-read-census-action';
 import { buildScratchUri, safeScratchFilesystemPath } from '../scratch-uri';
 import { writeScratchReference } from '../scratch-reference';
 import { miningScopeId } from './privacy';
@@ -166,12 +166,32 @@ it('rejects completed-workflow replay and runtime drift instead of relabeling ne
 });
 it('wires the production census facade through SQL intake and all four passive adapters on the same workflow', async () => {
   await f.seed();
-  const result = await runSqlOpportunityCensus({ ...f.opts({ rowBudget: 100, timeBudgetMs: 30_000 }),
+  const opts = f.opts({ rowBudget: 100, timeBudgetMs: undefined });
+  expect(censusMiningOptions(opts).timeBudgetMs).toBe(DEFAULT_INTENT_CENSUS_TIME_BUDGET_MS);
+  expect(censusMiningOptions({ ...opts, timeBudgetMs: 12_000 }).timeBudgetMs).toBe(12_000);
+  const result = await runSqlOpportunityCensus({ ...opts,
     routineId: 'production-facade', workflowId: 'production-workflow' });
   expect(result.sql).toMatchObject({ status: 'ok', rows: 1 });
   expect(result.monitored?.families.map(f => f.family)).toEqual(MONITORED_FAMILIES);
+  expect(result.monitored?.families.every(f => f.diagnostics.reason !== 'sql_mining_time_budget')).toBe(true);
   const [parent] = await f.db.adminSql`SELECT routine_id,workflow_id FROM harness_shared.sql_intent_runs`;
   expect(parent).toMatchObject({ routine_id: 'production-facade', workflow_id: 'production-workflow' });
+});
+it('persists elapsed time for the phase that reaches its bounded timeout', async () => {
+  const budgetMs = 250;
+  const opts = f.opts({ timeBudgetMs: budgetMs });
+  const run = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }), {
+    readContinuity: async ({ family }) => family === 'native-operation'
+      ? new Promise<'complete' | 'gap' | 'unknown'>(() => {}) : 'unknown',
+  });
+  const native = run.families.find(row => row.family === 'native-operation')!;
+  expect(native).toMatchObject({ coverage: 'UNKNOWN', diagnostics: {
+    phase: 'continuity-before', reason: 'sql_mining_time_budget' } });
+  const elapsed = Number((native.diagnostics.phaseDurationsMs as Record<string, number>)['continuity-before']);
+  expect(elapsed).toBeGreaterThanOrEqual(200);
+  const [saved] = await f.db.adminSql`SELECT diagnostics FROM harness_shared.sql_intent_family_runs
+    WHERE workspace_id=${opts.workspaceId} AND run_id=${run.runId}::uuid AND family='native-operation'`;
+  expect(saved!.diagnostics.phaseDurationsMs['continuity-before']).toBeGreaterThanOrEqual(200);
 });
 it('drains a fixed activity window across equal-timestamp keyset pages before grouping a search chain', async () => {
   for (const query of ['job queue', 'job status', 'job owner']) {

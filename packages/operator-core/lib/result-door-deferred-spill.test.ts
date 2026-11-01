@@ -45,7 +45,7 @@ import {
 } from './result-door';
 import readTool from './agent-tools/capability/read';
 import * as scratchGc from './scratch-gc';
-import { _resetScratchUsageForTests, _setScratchUsageForTests, refreshScratchUsage, WORKSPACE_QUOTA_BYTES, writeWithScratchQuota } from './scratch-gc';
+import { _resetScratchUsageForTests, _scratchUsageRefreshDiagnosticsForTests, _setScratchUsageForTests, refreshScratchUsage, WORKSPACE_QUOTA_BYTES, writeWithScratchQuota } from './scratch-gc';
 import * as scratchReference from './scratch-reference';
 import type { ScratchWriteTimings } from './scratch-gc';
 
@@ -1156,7 +1156,14 @@ describe('result-door deferred spill (WI-10004533)', () => {
     truncateSync(join(old, 'data'), WORKSPACE_QUOTA_BYTES);
     const past = (Date.now() - 10_000) / 1000;
     utimesSync(old, past, past);
-    await refreshScratchUsage('ws-1');
+    let refreshSettled = false;
+    const refresh = refreshScratchUsage('ws-1').then(() => { refreshSettled = true; });
+    await Promise.race([refresh, new Promise((resolve) => setTimeout(resolve, 5_000))]);
+    expect(
+      refreshSettled,
+      `refresh diagnostics: ${JSON.stringify(_scratchUsageRefreshDiagnosticsForTests('ws-1'))}`,
+    ).toBe(true);
+    await refresh;
     const out = await applyResultDoorAsync(oversized(), OPTS);
     expect(existsSync(old)).toBe(false);
     const files = spillFiles();
