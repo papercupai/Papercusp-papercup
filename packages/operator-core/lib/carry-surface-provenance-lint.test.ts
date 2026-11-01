@@ -130,6 +130,13 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(r.matches[0]?.kind).toBe('bare-gate-imperative');
   });
 
+  it('EI-27076574392480618: ignores gate-pattern notation without an action word and keeps a real gate', () => {
+    expect(lintCarrySurfaceProvenance('The check describes the pattern “do not … until” as a trigger.'))
+      .toEqual({ flagged: false, matches: [] });
+    expect(lintCarrySurfaceProvenance('Do not publish until release:trace reports green.')
+      .matches[0]?.kind).toBe('bare-gate-imperative');
+  });
+
   it('EI-20246140574201628: does NOT flag an inline-code quoted factual pending-verdict gate', () => {
     const r = lintCarrySurfaceProvenance(
       'The evidence records the safety phrase `do not act on the 18-red names until a real verdict is rendered` as a factual pending-verdict constraint.',
@@ -318,6 +325,20 @@ describe('lintCarrySurfaceProvenance', () => {
       expect(lintCarrySurfaceProvenance('owner directive order 10: hold the deploy').matches[0]?.kind).toBe(
         'manual-owner-tag',
       );
+    });
+
+    it('treats neutral actions on directive records as references, while preserving attributed directives', () => {
+      expect(
+        lintCarrySurfaceProvenance('Reconcile owner directives and omitted session history.'),
+      ).toEqual({ flagged: false, matches: [] });
+      expect(lintCarrySurfaceProvenance('Review the existing owner directive records.')).toEqual({
+        flagged: false,
+        matches: [],
+      });
+      expect(
+        lintCarrySurfaceProvenance('Owner directive #17: reconcile owner directives and session history.')
+          .matches[0]?.kind,
+      ).toBe('manual-owner-tag');
     });
 
     it('EI-20234090473445932: does not flag a factual status report for a recorded directive', () => {

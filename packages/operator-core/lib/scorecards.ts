@@ -139,6 +139,8 @@ import {
   type ScorecardRatingRubric,
   type ScorecardGradingAudit,
   type ScorecardGradingAuditCurrentness,
+  type ScorecardGradingAuditReplayRefusal,
+  type ScorecardGradingAuditReservationSnapshot,
   type ScorecardProvisional,
   type ScorecardVetting,
   type ScorecardReleaseGateBinding,
@@ -1101,6 +1103,39 @@ export function scorecardEvidenceFingerprint(input: {
   // different evidence even when its prose ratings and instrument values match.
   // Keep historical hashes byte-stable by adding the field only when supplied.
   if (input.testedSha) material.testedSha = input.testedSha;
+  return createHash('sha256').update(canonicalJson(material)).digest('hex');
+}
+
+/** Stable identity for the evidence and grading-audit rules behind a replay refusal. */
+export function gradingAuditReplayBasisFingerprint(
+  issueId: string,
+  gradingAudit: Pick<ScorecardGradingAudit, 'metaRubricRef' | 'stampedAt' | 'rubricRevision' | 'criteriaHash'>,
+  snapshot: ScorecardGradingAuditReservationSnapshot | undefined,
+): string | undefined {
+  const normalizedIssueId = issueId.trim();
+  const evidenceFingerprint = snapshot?.evidenceFingerprint?.trim();
+  if (!normalizedIssueId || !evidenceFingerprint || !snapshot) return undefined;
+  const material = {
+    issueId: normalizedIssueId,
+    metaRubricRef: gradingAudit.metaRubricRef,
+    stampedAt: gradingAudit.stampedAt,
+    rubricRevision: gradingAudit.rubricRevision ?? null,
+    criteriaHash: gradingAudit.criteriaHash ?? null,
+    evidenceFingerprint,
+    evaluatorBuild: snapshot.evaluatorBuild
+      ? { sha: snapshot.evaluatorBuild.sha, version: snapshot.evaluatorBuild.version }
+      : null,
+    bindingIds: [...snapshot.bindingIds].sort((a, b) => a - b),
+    bindingCurrentness: snapshot.bindingCurrentness
+      ? {
+          state: snapshot.bindingCurrentness.state,
+          reason: snapshot.bindingCurrentness.reason,
+          citedBindingCount: snapshot.bindingCurrentness.citedBindingCount,
+          retractedBindingIds: [...snapshot.bindingCurrentness.retractedBindingIds].sort(),
+          unavailableBindingIds: [...snapshot.bindingCurrentness.unavailableBindingIds].sort(),
+        }
+      : null,
+  };
   return createHash('sha256').update(canonicalJson(material)).digest('hex');
 }
 
@@ -2175,17 +2210,29 @@ async function readScorecard(
                )
                ELSE NULL
              END AS cited_snapshot_rows,
-             -- Same supersession predicate as listScorecards: supersession is a
-             -- READ-TIME relation (a later card names this one in "supersedes"),
-             -- never a stamp on this card's own observation (EI-24583166035391772).
+             -- Supersession is a READ-TIME relation, never a stamp on this card's
+             -- own observation (EI-24583166035391772). A newer spec-quality card
+             -- for the same class and plan but a different exact set hash also
+             -- makes this card stale.
              (
-               SELECT superseder.issue_id
-                 FROM harness_shared.engineer_issues AS superseder
-                WHERE superseder.workspace_id = scorecard.workspace_id
-                  AND superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
-                  AND (superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef') IS TRUE -- IS TRUE: not an equivalence-class qual (WI-6554700010018130)
-                  AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
-                ORDER BY superseder.created_at DESC
+               SELECT relation.issue_id
+                 FROM (
+                   (
+                     SELECT explicit_superseder.issue_id, explicit_superseder.created_at
+                       FROM harness_shared.engineer_issues AS explicit_superseder
+                      WHERE explicit_superseder.workspace_id = scorecard.workspace_id
+                        AND explicit_superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
+                        AND (explicit_superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef') IS TRUE -- IS TRUE: not an equivalence-class qual (WI-6554700010018130)
+                        AND explicit_superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
+                      ORDER BY explicit_superseder.created_at DESC, explicit_superseder.issue_id DESC
+                      LIMIT 1
+                   )
+                   UNION ALL
+                   (
+                     ${specQualitySupersederSql(tx)}
+                   )
+                 ) AS relation
+                ORDER BY relation.created_at DESC, relation.issue_id DESC
                 LIMIT 1
              ) AS superseded_by
         FROM harness_shared.engineer_issues AS scorecard
@@ -3294,6 +3341,60 @@ export async function markGradingAuditAwaitingReemit(
   return true;
 }
 
+/** Persist the exact deterministic replay refusal on the pending source stamp. */
+export async function markGradingAuditReplayRefused(
+  issueId: string,
+  expected: ScorecardGradingAudit,
+  input: {
+    basisFingerprint: string;
+    reservation: { key: string; reservedAt: string };
+    responderOwnerId: string;
+    at?: string;
+  },
+  deps: ScorecardAtomicWriteDeps & {
+    notifySyncInvalidate?: (key: 'scorecards.list' | 'rubrics.trend') => void;
+  } = {},
+): Promise<boolean> {
+  const fencingReservation = expected.lastDispatchReservation ?? expected.dispatchReservation;
+  const responderOwnerId = input.responderOwnerId.trim();
+  if (
+    expected.state !== 'pending' ||
+    !/^[a-f0-9]{64}$/.test(input.basisFingerprint) ||
+    !responderOwnerId ||
+    !fencingReservation ||
+    fencingReservation.key !== input.reservation.key ||
+    fencingReservation.reservedAt !== input.reservation.reservedAt
+  ) return false;
+  const replayRefusal: ScorecardGradingAuditReplayRefusal = {
+    code: 'grading_audit_replay_consistent',
+    at: input.at ?? new Date().toISOString(),
+    basisFingerprint: input.basisFingerprint,
+    reservation: input.reservation,
+    responderOwnerId,
+  };
+  const refused: ScorecardGradingAudit = { ...expected, replayRefusal };
+  const updated = await settlePendingGradingAuditAtomically(
+    issueId,
+    expected,
+    refused,
+    deps,
+    responderOwnerId,
+  );
+  if (!updated) return false;
+  if (deps.notifySyncInvalidate) {
+    deps.notifySyncInvalidate('scorecards.list');
+    deps.notifySyncInvalidate('rubrics.trend');
+  } else {
+    void trackDetached(import('./sync-sse'))
+      .then((m) => {
+        m.notifySyncInvalidate('scorecards.list');
+        m.notifySyncInvalidate('rubrics.trend');
+      })
+      .catch(() => {});
+  }
+  return true;
+}
+
 /** Dedicated cross-process advisory lock for grading-audit subject transitions. */
 const GRADING_AUDIT_SUBJECT_MUTEX_NAMESPACE = 'scorecards:grading-audit:subject';
 /** Registry label of the dedicated mutex pool; also its `pcusp:<label>:p<pid>` application_name. */
@@ -4000,6 +4101,31 @@ export function scorecardTimeoutLeadIn(error: unknown, surface: string): string 
 // string as an explicit UTC ISO value instead.
 const tsIso = pgTimestampToIso;
 
+// Spec-quality subjects encode class, exact spec-set hash, and a stable plan key.
+const SPEC_QUALITY_RUBRIC_REF = 'spec-quality';
+const SPEC_QUALITY_SUBJECT_REF_PATTERN = '^spec-set:[^:]+:[a-f0-9]{64}:[a-f0-9]{16}$';
+
+/** Newer, different-hash scorecards invalidate only the same plan/class series. */
+function specQualitySupersederSql(tx: OrgSql) {
+  return tx`
+    SELECT spec_superseder.issue_id, spec_superseder.created_at
+      FROM harness_shared.engineer_issues AS spec_superseder
+     WHERE spec_superseder.workspace_id = scorecard.workspace_id
+       AND (spec_superseder.payload -> 'observation' ->> 'rubricRef' = ${SPEC_QUALITY_RUBRIC_REF}) IS TRUE
+       AND (scorecard.payload -> 'observation' ->> 'rubricRef' = ${SPEC_QUALITY_RUBRIC_REF}) IS TRUE
+       AND spec_superseder.payload -> 'observation' -> 'subject' ->> 'kind' = 'plan'
+       AND scorecard.payload -> 'observation' -> 'subject' ->> 'kind' = 'plan'
+       AND spec_superseder.payload -> 'observation' -> 'subject' ->> 'ref' ~ ${SPEC_QUALITY_SUBJECT_REF_PATTERN}
+       AND scorecard.payload -> 'observation' -> 'subject' ->> 'ref' ~ ${SPEC_QUALITY_SUBJECT_REF_PATTERN}
+       AND split_part(spec_superseder.payload -> 'observation' -> 'subject' ->> 'ref', ':', 2) = split_part(scorecard.payload -> 'observation' -> 'subject' ->> 'ref', ':', 2)
+       AND split_part(spec_superseder.payload -> 'observation' -> 'subject' ->> 'ref', ':', 4) = split_part(scorecard.payload -> 'observation' -> 'subject' ->> 'ref', ':', 4)
+       AND split_part(spec_superseder.payload -> 'observation' -> 'subject' ->> 'ref', ':', 3) <> split_part(scorecard.payload -> 'observation' -> 'subject' ->> 'ref', ':', 3)
+       AND spec_superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
+       AND (spec_superseder.created_at, spec_superseder.issue_id) > (scorecard.created_at, scorecard.issue_id)
+     ORDER BY spec_superseder.created_at DESC, spec_superseder.issue_id DESC
+     LIMIT 1`;
+}
+
 /**
  * List rubric-graded scorecards (newest-first), optionally filtered by rubric,
  * source-hive, and time-window. A direct, workspace-scoped jsonb query over
@@ -4057,13 +4183,24 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
               LIMIT 1
            ) AS audit_criteria_hash,
            (
-             SELECT superseder.issue_id
-               FROM harness_shared.engineer_issues AS superseder
-              WHERE superseder.workspace_id = scorecard.workspace_id
-                AND superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
-                AND (superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef') IS TRUE -- IS TRUE: not an equivalence-class qual (WI-6554700010018130)
-                AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
-              ORDER BY superseder.created_at DESC
+             SELECT relation.issue_id
+               FROM (
+                 (
+                   SELECT explicit_superseder.issue_id, explicit_superseder.created_at
+                     FROM harness_shared.engineer_issues AS explicit_superseder
+                    WHERE explicit_superseder.workspace_id = scorecard.workspace_id
+                      AND explicit_superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
+                      AND (explicit_superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef') IS TRUE -- IS TRUE: not an equivalence-class qual (WI-6554700010018130)
+                      AND explicit_superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
+                    ORDER BY explicit_superseder.created_at DESC, explicit_superseder.issue_id DESC
+                    LIMIT 1
+                 )
+                 UNION ALL
+                   (
+                     ${specQualitySupersederSql(tx)}
+                   )
+               ) AS relation
+              ORDER BY relation.created_at DESC, relation.issue_id DESC
               LIMIT 1
            ) AS superseded_by
       FROM harness_shared.engineer_issues AS scorecard
@@ -4100,6 +4237,11 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
             AND (superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef') IS TRUE -- IS TRUE: not an equivalence-class qual (WI-6554700010018130)
             AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
        )`
+       }
+       AND ${
+         filter.includeSuperseded
+           ? tx`TRUE`
+           : tx`NOT EXISTS (${specQualitySupersederSql(tx)})`
        }
        AND ${filter.includeRetracted ? tx`TRUE` : tx`scorecard.payload -> 'observation' -> 'retracted' IS NULL`}
      ORDER BY scorecard.created_at DESC, scorecard.issue_id DESC

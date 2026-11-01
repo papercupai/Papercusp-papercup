@@ -18,6 +18,9 @@ export interface SuNativeToolCall {
   callId: string;
   tool: string;
   arguments: Record<string, unknown>;
+  /** Present only on the later native tool_result observation. The original
+   * arguments stay unchanged; neither snapshot supplies resource authority. */
+  executedArguments?: Record<string, unknown>;
 }
 
 export function agentMcpMode(value: string | undefined): AgentMcpMode {
@@ -56,14 +59,33 @@ export interface AgentMcpClientOptions {
 }
 
 /** Safe initialization evidence; never retain raw error messages, URLs or causes. */
+type AgentMcpConnectionDiagnostic = {
+  category: 'request-timeout' | 'connection-closed' | 'http-status' | 'network' | 'mcp-error' | 'unknown';
+  httpStatus?: number;
+  systemCode?: string;
+  mcpErrorCode?: number;
+};
+
+function safeConnectionFailureClass(diagnostic: AgentMcpConnectionDiagnostic): string {
+  switch (diagnostic.category) {
+    case 'request-timeout': return 'timeout';
+    case 'connection-closed': return 'connection-closed';
+    case 'http-status':
+      return Number.isInteger(diagnostic.httpStatus) ? `http-${diagnostic.httpStatus}` : 'unknown';
+    case 'network': return diagnostic.systemCode ?? 'unknown';
+    case 'mcp-error':
+      return Number.isSafeInteger(diagnostic.mcpErrorCode)
+        ? `mcp-json-rpc(${diagnostic.mcpErrorCode})`
+        : 'unknown';
+    default: return 'unknown';
+  }
+}
+
 export class AgentMcpConnectionError extends Error {
-  readonly diagnostic: {
-    category: 'request-timeout' | 'connection-closed' | 'http-status' | 'network' | 'unknown';
-    httpStatus?: number;
-    systemCode?: string;
-  };
+  readonly diagnostic: AgentMcpConnectionDiagnostic;
   constructor(kind: 'http' | 'uds', error: unknown) {
-    // Preserve the existing public message for callers that branch on it.
+    // Preserve the stable prefix; the UDS caller also needs the safe cause class
+    // because mcp-call reports this message before any tool request is sent.
     super(`${kind}_connection_failed`);
     this.name = 'AgentMcpConnectionError';
     if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
@@ -73,13 +95,15 @@ export class AgentMcpConnectionError extends Error {
     } else if (error instanceof StreamableHTTPError && typeof error.code === 'number' &&
         Number.isInteger(error.code) && error.code >= 400 && error.code <= 599) {
       this.diagnostic = { category: 'http-status', httpStatus: error.code };
+    } else if (error instanceof McpError && Number.isSafeInteger(error.code)) {
+      this.diagnostic = { category: 'mcp-error', mcpErrorCode: error.code };
     } else {
       let current = error;
       let systemCode: string | undefined;
       for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth++) {
         const value = current as { code?: unknown; cause?: unknown };
         if (typeof value.code === 'string' && [
-          'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
+          'ENOENT', 'EACCES', 'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
           'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET',
         ].includes(value.code)) {
           systemCode = value.code;
@@ -89,6 +113,7 @@ export class AgentMcpConnectionError extends Error {
       }
       this.diagnostic = systemCode ? { category: 'network', systemCode } : { category: 'unknown' };
     }
+    if (kind === 'uds') this.message += `:${safeConnectionFailureClass(this.diagnostic)}`;
   }
 }
 

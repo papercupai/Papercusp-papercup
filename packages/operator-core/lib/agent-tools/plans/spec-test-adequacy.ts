@@ -3446,6 +3446,11 @@ export function evaluateSpecTestAdequacy(input: {
   );
   const fixtureCurrentNotCalibratedSummary = fixtureCalibrationBindingSummary(fixtureCurrentNotCalibrated);
   const fixtureOutsideCurrentSummary = fixtureCalibrationBindingSummary(fixtureOutsideCurrent);
+  const operationalFixtureFreeNote = exactEvidence.some(
+    (row) => row.evidenceKind === 'operational' && detailsOf(row).fixtureFree === true,
+  )
+    ? ' Operational adequacy.fixtureFree=true metadata is not used to establish fixture absence.'
+    : '';
   // Keep ratings scoped to the current cohort, but show both non-passing current rows and
   // exact fixture rows outside it so a pass cannot hide uncalibrated evidence.
   const fixtureOutsideCurrentNote = fixtureOutsideCurrent.length > 0
@@ -3490,14 +3495,12 @@ export function evaluateSpecTestAdequacy(input: {
       })
     : {
         rating: 'not-applicable',
-        evidence: executableFixtureFreeProof.length > 0
+        evidence: executableFixtureFreeProof.some(row => row.id && fixtureAbsenceVerifications.has(row.id))
           ? evidenceWithBindings(
-              executableFixtureFreeProof.some(row => row.id && fixtureAbsenceVerifications.has(row.id))
-                ? `Fixture absence for ${clauseIdentity(clause)} is independently verified for the selected measured executable binding(s); fixture calibration is not applicable. Verification citations: ${JSON.stringify(executableFixtureFreeProof.flatMap(row => row.id ? fixtureAbsenceVerifications.get(row.id) ?? [] : []))}.`
-                : `Executable binding(s) explicitly attest fixtureFree=true for ${clauseIdentity(clause)}; fixture calibration is not applicable.`,
+              `Fixture absence for ${clauseIdentity(clause)} is independently verified for the selected measured executable binding(s); fixture calibration is not applicable. Verification citations: ${JSON.stringify(executableFixtureFreeProof.flatMap(row => row.id ? fixtureAbsenceVerifications.get(row.id) ?? [] : []))}.`,
               executableFixtureFreeProof,
             )
-          : `No fixture-dependent proof is bound for ${clauseIdentity(clause)}; the exact bindings inspected were ${bindingSummary(exactEvidence)}.`,
+          : `Fixture calibration is not applicable to ${clauseIdentity(clause)} as a scope judgment: the clause has no fixture requirement or declared use, no fixture binding is present, and no fixture-dependent test proof awaits classification. Exact bindings inspected: ${bindingSummary(exactEvidence)}.${operationalFixtureFreeNote}`,
       };
   const fixtureCurrentNotCalibratedNote = fixtureRating.rating === 'pass' && fixtureCurrentNotCalibrated.length > 0
     ? `Current fixture bindings not attesting calibration: ${fixtureCurrentNotCalibratedSummary}.`

@@ -736,6 +736,21 @@ export function pickRepairCandidates(body: unknown, path: string): string[] {
   }
   if (!isPlainObject(body)) return out;
 
+  // An explicit keyed-array root that exists in this body is a boundary. The
+  // caller may have stopped one level short inside its rows, so test nested
+  // row paths under that same array; never redirect the selection to a
+  // similarly named field under a different top-level object or array.
+  const explicitArrayRoot = /^([A-Za-z0-9_$]+)\[\]\.(.+)$/.exec(path);
+  if (explicitArrayRoot && Object.prototype.hasOwnProperty.call(body, explicitArrayRoot[1]!)) {
+    const root = explicitArrayRoot[1]!;
+    const tail = explicitArrayRoot[2]!;
+    const value = body[root];
+    if (Array.isArray(value)) {
+      for (const nested of nestedRowKeys(value)) push(`${root}[].${nested}.${tail}`);
+    }
+    return out.slice(0, MAX_REPAIR_CANDIDATES);
+  }
+
   // A keyed envelope: the caller's path may name the wrong envelope key, omit
   // it entirely, or stop one level short of where the row actually nests.
   const tail = pickPathTail(path);

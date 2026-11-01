@@ -1978,11 +1978,91 @@ describe('logical checkpoint qualification transaction', () => {
     ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
   });
 
+  // WI-6554700010029878: a terminal no-verdict predecessor must preserve an unmeasured head even
+  // when the pending-request marker is missing and no convergence round records a verdict.
+  it('preserves an unmarked unmeasured retest after an inconclusive no-verdict predecessor', () => {
+    const terminal = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'unchanged-since-verdict',
+      green: null,
+      nowMs: 400,
+    }).transaction;
+    expect(terminal.outcome.kind).toBe('code-inconclusive');
+
+    const baseQueue = createFrozenCandidateQueue({
+      candidate: 'candidate-1',
+      qualificationAttemptId: 'attempt-1',
+      base: null,
+      nowMs: 200,
+    });
+    const unmarkedRetest = {
+      ...baseQueue,
+      phase: 'ready-to-verify' as const,
+      unmeasuredRetestHead: 'candidate-1',
+      attempts: 0,
+      fixerSpawnId: null,
+      dispatchReservation: null,
+      convergenceRounds: [],
+      retestRequested: undefined,
+    };
+    expect(unmarkedRetest).toMatchObject({
+      phase: 'ready-to-verify',
+      candidate: 'candidate-1',
+      repairHead: 'candidate-1',
+      attempts: 0,
+      fixerSpawnId: null,
+      dispatchReservation: null,
+      convergenceRounds: [],
+      unmeasuredRetestHead: 'candidate-1',
+    });
+    expect(unmarkedRetest.retestRequested).toBeUndefined();
+
+    const successor = { attemptId: 'attempt-2', declaredPaths: [], candidate: 'candidate-2', nowMs: 500 };
+    expect(assessTerminalRepairQueueReconciliation(terminal, successor, unmarkedRetest)).toMatchObject({
+      status: 'preserved',
+      reason: 'matching-untested-repair-head',
+      predecessorAttemptId: 'attempt-1',
+      successorAttemptId: 'attempt-2',
+      candidate: 'candidate-1',
+    });
+
+    const redTerminal = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 400,
+    }).transaction;
+    expect(assessTerminalRepairQueueReconciliation(redTerminal, successor, unmarkedRetest)).toMatchObject({
+      status: 'blocked',
+      reason: 'queue-not-safe-unstarted',
+      fence: 'head-already-judged',
+    });
+
+    const judgedRetest = {
+      ...markFrozenRepairUnmeasuredRetest(
+        markFrozenCandidateVerificationRed(
+          createFrozenCandidateQueue({
+            candidate: 'candidate-1',
+            qualificationAttemptId: 'attempt-1',
+            base: null,
+            nowMs: 200,
+          }),
+          { failingTests: [], nowMs: 300 },
+        ),
+        { nowMs: 350 },
+      ),
+      retestRequested: undefined,
+    };
+    expect(assessTerminalRepairQueueReconciliation(terminal, successor, judgedRetest)).toMatchObject({
+      status: 'blocked',
+      reason: 'queue-not-safe-unstarted',
+      fence: 'head-already-judged',
+    });
+  });
+
   // WI-6554700010018169 — measured on slack-asana-bug-drill 2026-10-15 → 2026-10-20: the
-  // once-per-head unmeasured retest (WI-10003213) moved the queue to ready-to-verify at the SAME
-  // head (repairHead === candidate, already in convergenceRounds); the requesting run then
-  // skipped the suite as unchanged-since-verdict and went terminal inconclusive, and every later
-  // successor was refused `queue-not-safe-unstarted` — 24 verdictless fires a day for five days.
+  // once-per-head retest marker normally preserves a same-head verification after an inconclusive
+  // predecessor, including when that head already has a convergence round.
   it('preserves a same-head unmeasured retest left pending by an inconclusive predecessor', () => {
     const terminal = settleQualificationTransaction(begin(), {
       attemptId: 'attempt-1',

@@ -158,15 +158,26 @@ export async function bindSuSessionToAdvSession(input: {
   descriptor?: SuSessionDescriptor | null;
   workspaceId?: string;
 }): Promise<SuSessionBindingResult> {
-  if (!Number.isSafeInteger(input.advSessionId) || input.advSessionId <= 0 || !input.agentChatId.trim()) {
+  const workspaceId = input.workspaceId ?? activeWorkspaceId();
+  const agentChatId = input.agentChatId.trim();
+  if (!Number.isSafeInteger(input.advSessionId) || input.advSessionId <= 0 || !agentChatId) {
     return { status: 'not_found' };
   }
   if (input.descriptor && !isPersistedSuSessionDescriptor(input.descriptor)) {
     return { status: 'conflict', reason: 'identity_mismatch' };
   }
+  const descriptorIdentity = input.descriptor?.identity ?? null;
+  if (descriptorIdentity && (
+    descriptorIdentity.advSessionId !== input.advSessionId ||
+    descriptorIdentity.workspaceId !== workspaceId ||
+    descriptorIdentity.agentChatId !== agentChatId
+  )) {
+    return { status: 'conflict', reason: 'identity_mismatch' };
+  }
+  const descriptorNativeSessionId = descriptorIdentity?.nativeSessionId.trim() || null;
+  const descriptorRuntimeGeneration = input.descriptor?.runtimeGeneration ?? null;
   try {
     const { sql } = getOrgPg();
-    const workspaceId = input.workspaceId ?? activeWorkspaceId();
     const descriptorJson = input.descriptor ? JSON.stringify(input.descriptor) : null;
     // The alias `a` is REQUIRED, not cosmetic: RECORD_COLUMNS projects
     // `to_jsonb(a)` (adv_sessions has no harness_slug column of its own), and
@@ -184,10 +195,13 @@ export async function bindSuSessionToAdvSession(input: {
     // this hot table would add a lock-ordering hazard to buy nothing.
     const rows = await sql<Record<string, unknown>[]>`
       UPDATE harness_shared.adv_sessions AS a
-         SET su_agent_chat_id = ${input.agentChatId.trim()},
+         SET su_agent_chat_id = ${agentChatId},
              su_session_descriptor = COALESCE(${descriptorJson}::jsonb, a.su_session_descriptor),
              su_session_state = COALESCE(${input.descriptor?.lifecycle ?? null}, a.su_session_state),
-             su_runtime_generation = COALESCE(${input.descriptor?.runtimeGeneration ?? null}, a.su_runtime_generation),
+             su_runtime_generation = GREATEST(
+               a.su_runtime_generation,
+               COALESCE(${descriptorRuntimeGeneration}::integer, a.su_runtime_generation)
+             ),
              su_session_updated_at = now()
         FROM (
           SELECT id AS prev_id,
@@ -197,17 +211,29 @@ export async function bindSuSessionToAdvSession(input: {
            WHERE id = ${input.advSessionId} AND workspace_id = ${workspaceId}
         ) AS prev
        WHERE a.id = prev.prev_id
-         AND (a.su_agent_chat_id IS NULL OR a.su_agent_chat_id = ${input.agentChatId.trim()})
+         AND (a.su_agent_chat_id IS NULL OR a.su_agent_chat_id = ${agentChatId})
+         AND (${descriptorIdentity?.backend ?? null}::text IS NULL OR a.agent = ${descriptorIdentity?.backend ?? null})
+         AND (${descriptorIdentity?.ownerId ?? null}::text IS NULL OR a.coord_owner_id = ${descriptorIdentity?.ownerId ?? null})
+         AND (
+           ${descriptorNativeSessionId}::text IS NULL OR
+           CASE WHEN a.agent = 'omp' THEN a.omp_thread_id ELSE a.session_id END IS NULL OR
+           CASE WHEN a.agent = 'omp' THEN a.omp_thread_id ELSE a.session_id END = ${descriptorNativeSessionId}
+         )
+         AND (
+           ${descriptorRuntimeGeneration}::integer IS NULL OR
+           a.su_runtime_generation <= ${descriptorRuntimeGeneration}
+         )
        RETURNING ${sql.unsafe(RECORD_COLUMNS)}, prev.prior_agent_chat_id, prev.prior_has_descriptor`;
     if (rows[0]) {
       const record = mapRow(rows[0]);
       const priorChatId =
         typeof rows[0].prior_agent_chat_id === 'string' ? rows[0].prior_agent_chat_id : null;
-      const alreadyBound = priorChatId === input.agentChatId.trim() && rows[0].prior_has_descriptor === true;
+      const alreadyBound = priorChatId === agentChatId && rows[0].prior_has_descriptor === true;
       return { status: alreadyBound ? 'already_bound' : 'bound', record };
     }
     const existing = await readDurableSuSession({ advSessionId: input.advSessionId, workspaceId });
     if (!existing) return { status: 'not_found' };
+    if (input.descriptor) return { status: 'conflict', reason: 'identity_mismatch' };
     return { status: 'conflict', reason: existing.agentChatId ? 'identity_mismatch' : 'chat_bound_elsewhere' };
   } catch (error) {
     if ((error as { code?: string })?.code === '23505') {

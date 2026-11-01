@@ -88,10 +88,16 @@ const RESULT_DOOR_SCRATCH_WRITE_WAIT_MS = 30_000;
 const RESULT_DOOR_SCRATCH_MUTEX_WAIT_MS = RESULT_DOOR_SCRATCH_WRITE_WAIT_MS;
 // Start durable recovery before a stalled primary spill consumes its full 30s mutex
 // allowance. The primary writer may still finish in the background; its late settlement
-// is tracked. A 20s response window plus the 20s PG-spool fallback stays below the
-// ~55s MCP transport cap with 15s of headroom.
+// is tracked. These 20s values are ceilings for non-MCP callers; MCP callers pass an
+// absolute response deadline so each wait leaves time for transport delivery.
 const RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS = 20_000;
 const RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS = 20_000;
+// Leave time for encoding and transport delivery after spill recovery. The
+// scratch waits share the MCP request's absolute deadline; they are not extra
+// time added after the handler has already used most of that budget.
+const RESULT_DOOR_RESPONSE_DEADLINE_RESERVE_MS = 1_000;
+const RESULT_DOOR_PENDING_METADATA_WAIT_MS = 250;
+const RESULT_DOOR_FINALIZE_RESERVE_MS = 250;
 
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOOL_SEGMENT_REGEX = /^[A-Za-z0-9._:-]+$/;
@@ -155,6 +161,8 @@ export interface ResultDoorOpts {
   onScratchWriteTiming?: (timings: ScratchWriteTimings) => void;
   /** MCP request ID attached to process-local scratch mutex holder diagnostics. */
   requestTraceId?: string;
+  /** Absolute transport response deadline; result-door waits must fit inside it. */
+  responseDeadlineAtMs?: number | null;
   /** Internal replay of a deferred failure: cap honestly without retrying filesystem I/O. */
   scratchWriteFailure?: { error: unknown };
 }
@@ -2792,6 +2800,17 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   } as T;
 }
 
+function responseDeadlineWaitBudgetMs(
+  opts: ResultDoorOpts,
+  maximumWaitMs: number,
+  reserveMs: number,
+): number {
+  const deadlineAtMs = opts.responseDeadlineAtMs;
+  if (deadlineAtMs == null) return maximumWaitMs;
+  if (!Number.isFinite(deadlineAtMs)) return 0;
+  return Math.max(0, Math.min(maximumWaitMs, deadlineAtMs - Date.now() - reserveMs));
+}
+
 /**
  * applyResultDoor for request handlers: identical output, but any spill file is written
  * with fs.promises instead of blocking the event loop, and awaited before this resolves —
@@ -2810,15 +2829,40 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   const doored = applyResultDoor(result, { ...opts, deferredScratchWrites: deferred });
   if (deferred.length === 0) return doored;
   const writeSettlements = Promise.allSettled(deferred);
-  const boundedWrites = await withBoundedTimeout(writeSettlements, {
-    fallback: null,
-    timeoutMs: RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS,
-    label: 'result-door scratch spill write',
-  });
+  const spillWaitMs = responseDeadlineWaitBudgetMs(
+    opts,
+    RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS,
+    RESULT_DOOR_RESPONSE_DEADLINE_RESERVE_MS,
+  );
+  const boundedWrites = spillWaitMs > 0
+    ? await withBoundedTimeout(writeSettlements, {
+        fallback: null,
+        timeoutMs: spillWaitMs,
+        label: 'result-door scratch spill write',
+      })
+    : { value: null, degraded: true, reason: 'timeout' as const, elapsedMs: 0 };
   const recoverTimedOut = async (error: unknown): Promise<T | null> => {
-    const pendingResult = markPendingScratchWrite(doored, error, opts);
+    const pendingResult = markPendingScratchWrite(doored, error, opts, spillWaitMs);
     if (!pendingResult) return null;
-    await recordPendingScratchWriteTimeout(pendingResult, opts);
+    const pendingMetadata = recordPendingScratchWriteTimeout(pendingResult, opts, spillWaitMs);
+    if (opts.responseDeadlineAtMs == null) {
+      await pendingMetadata;
+    } else {
+      const metadataWaitMs = responseDeadlineWaitBudgetMs(
+        opts,
+        RESULT_DOOR_PENDING_METADATA_WAIT_MS,
+        RESULT_DOOR_FINALIZE_RESERVE_MS,
+      );
+      if (metadataWaitMs > 0) {
+        await withBoundedTimeout(pendingMetadata, {
+          fallback: undefined,
+          timeoutMs: metadataWaitMs,
+          label: 'result-door pending-spill metadata',
+        });
+      } else {
+        void pendingMetadata;
+      }
+    }
     observeLateScratchWrite(writeSettlements, pendingResult, opts);
     const volatileFallback = applyResultDoor(result, {
       ...opts,
@@ -2830,12 +2874,12 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
       opts,
       'result-door durable timeout recovery',
     );
-    return attachPendingScratchFallback(recoveryFallback, pendingResult, opts) ?? pendingResult;
+    return attachPendingScratchFallback(recoveryFallback ?? volatileFallback, pendingResult, opts) ?? pendingResult;
   };
   if (boundedWrites.degraded || boundedWrites.value === null) {
     const error = boundedWrites.reason === 'timeout'
       ? Object.assign(
-          new Error(`result-door scratch spill write exceeded ${RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS}ms`),
+          new Error(`result-door scratch spill write exceeded ${spillWaitMs}ms`),
           { code: 'ETIMEDOUT' },
         )
       : boundedWrites.error ?? new Error('result-door scratch spill write did not settle');
@@ -2879,6 +2923,12 @@ async function persistFailedScratchFallback<T extends DoorableResult>(
     : null;
   if (!volatileUri) return fallback;
 
+  const timeoutMs = responseDeadlineWaitBudgetMs(
+    opts,
+    RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS,
+    RESULT_DOOR_FINALIZE_RESERVE_MS,
+  );
+  if (timeoutMs <= 0) return fallback;
   const parts = scratchParts(opts);
   const persisted = await withBoundedTimeout(
     persistVolatileScratchReference(volatileUri, {
@@ -2887,7 +2937,7 @@ async function persistFailedScratchFallback<T extends DoorableResult>(
     }),
     {
       fallback: null,
-      timeoutMs: RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS,
+      timeoutMs,
       label,
     },
   );
@@ -3083,6 +3133,7 @@ function markPendingScratchWrite<T extends DoorableResult>(
   result: T,
   error: unknown,
   opts: ResultDoorOpts,
+  timeoutMs: number,
 ): T | null {
   const meta = result._meta ?? {};
   const sourceDoorMeta = recordAt(meta.resultDoor);
@@ -3117,12 +3168,12 @@ function markPendingScratchWrite<T extends DoorableResult>(
     ? opts.nestedTargetToolName
     : opts.toolName;
   const pendingNext = coordSendCall
-    ? `The spill write exceeded ${RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS}ms and is still running. ` +
+    ? `The spill write exceeded ${timeoutMs}ms and is still running. ` +
       'The coord:send delivery outcome may be unknown; do NOT repeat the send until you check coordination ' +
       'state with coord:feed or the recipient\'s coord:inbox. The pending URI/path in _projection.cursor ' +
       'is not a durable recovery guarantee. Retry capability:read after it becomes readable; if late ' +
       'settlement reports failed, the overflow is unavailable from this result.'
-    : `The spill write exceeded ${RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS}ms and is still running. ` +
+    : `The spill write exceeded ${timeoutMs}ms and is still running. ` +
       `Do NOT repeat ${operationName}; the pending URI/path in _projection.cursor is not a durable ` +
       `recovery guarantee. Retry capability:read after it becomes readable; if late settlement reports ` +
       `failed, the overflow is unavailable from this result.`;
@@ -3226,6 +3277,7 @@ function observeLateScratchWrite<T extends DoorableResult>(
 async function recordPendingScratchWriteTimeout<T extends DoorableResult>(
   pendingResult: T,
   opts: ResultDoorOpts,
+  timeoutMs: number,
 ): Promise<void> {
   const callback = opts.onScratchWritePending;
   const meta = recordAt(pendingResult._meta?.resultDoor);
@@ -3236,7 +3288,7 @@ async function recordPendingScratchWriteTimeout<T extends DoorableResult>(
   const aggregate = recordAt(meta.aggregate);
   try {
     await callback({
-      timeoutMs: RESULT_DOOR_SCRATCH_RESPONSE_WAIT_MS,
+      timeoutMs,
       timedOutAt: new Date().toISOString(),
       spillPath,
       spillUri,

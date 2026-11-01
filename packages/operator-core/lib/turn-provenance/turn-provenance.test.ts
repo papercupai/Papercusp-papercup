@@ -22,6 +22,7 @@ import {
   ledgerTtlMs,
   LEDGER_GC_GRACE_MS,
   LEDGER_TTL_MS_DEFAULT,
+  LOOP_FIRE_PROVENANCE_TTL_MS,
   mintNonce,
   normalizeForHash,
   parseEnvelope,
@@ -735,6 +736,57 @@ describe('tagTurnForInjection (the injector one-call API)', () => {
     expect(readLedgerRows(SID, { dir, nowMs: NOW + 1, includeExpired: true })).toEqual([
       expect.objectContaining({ nonce: tagged.nonce, loopFire: { routineId: 'routine-10', wakeCount: 10 } }),
     ]);
+  });
+
+  it('persists loop-fire TTL so a 615s delayed prompt stays verified; the default control expires', async () => {
+    const delayedMs = LEDGER_TTL_MS_DEFAULT + 15_000;
+    const text = 'cold loop wake delayed past the global provenance TTL';
+    const tagged = await tagTurnForInjection({
+      sid: SID,
+      origin: 'loop-fire',
+      text,
+      loopFire: { routineId: 'routine-delayed', wakeCount: 11 },
+      dir,
+      nowMs: NOW,
+      ttlMs: LOOP_FIRE_PROVENANCE_TTL_MS,
+    });
+    const rows = readLedgerRows(SID, {
+      dir,
+      nowMs: NOW + delayedMs,
+      ttlMs: LEDGER_TTL_MS_DEFAULT,
+      includeExpired: true,
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      nonce: tagged.nonce,
+      origin: 'loop-fire',
+      ttlMs: LOOP_FIRE_PROVENANCE_TTL_MS,
+    });
+    expect(classify(tagged.taggedText, rows, {
+      nowMs: NOW + delayedMs,
+      ttlMs: LEDGER_TTL_MS_DEFAULT,
+    })).toMatchObject({ verdict: 'verified-agent', origin: 'loop-fire' });
+
+    const controlSid = 'su-test-default-ttl';
+    const control = await tagTurnForInjection({
+      sid: controlSid,
+      origin: 'wake-pump',
+      text: 'control wake without per-row TTL',
+      dir,
+      nowMs: NOW,
+    });
+    const controlRows = readLedgerRows(controlSid, {
+      dir,
+      nowMs: NOW + delayedMs,
+      ttlMs: LEDGER_TTL_MS_DEFAULT,
+      includeExpired: true,
+    });
+    expect(controlRows[0]).not.toHaveProperty('ttlMs');
+    expect(classify(control.taggedText, controlRows, {
+      nowMs: NOW + delayedMs,
+      ttlMs: LEDGER_TTL_MS_DEFAULT,
+    })).toMatchObject({ verdict: 'unverified-claim', reason: expect.stringContaining('EXPIRED') });
   });
 
   it('fail-soft: unwritable ledger still returns deliverable tagged text', async () => {

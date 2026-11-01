@@ -10642,7 +10642,7 @@ interface CheckpointCargoReclaimResult {
 }
 
 export interface InfraFaultClassification {
-  /** the host fault class; NO class renders a code verdict. */
+  /** the suite/run fault class; NO class renders a code verdict. */
   kind:
     | "vite-node-cache-vanished"
     | "disk-space-exhausted"
@@ -10657,6 +10657,9 @@ export interface InfraFaultClassification {
     // absorber could NOT absorb — the no-signature crash whose re-run crashed again,
     // errored, or was too broad / unlocalizable to attempt.
     | "worker-pool-crash"
+    // A run-level unhandled Vitest error with no parseable per-file failure. Its cause may be
+    // code or environment, but this output cannot attribute a candidate verdict.
+    | "run-level-unhandled"
     // P-016 (green-main-ratchet-convergence-2026-10-17#D-004): most failing files failed with
     // a host-resource signature (ENOSPC, EMFILE, …) — see classifyEnvironmentDominatedInfraFault.
     | "environment-dominated";
@@ -10767,6 +10770,24 @@ export function parseSuiteRefusal(output: string): SuiteRefusal | null {
     };
   }
   return null;
+}
+
+/** Vitest's structured summary for unhandled errors that apply to the whole invocation. */
+const VITEST_UNHANDLED_ERROR_COUNT_RE = /^[ \t]*Errors[ \t]+(\d+)[ \t]+errors?\b/gm;
+const VITEST_UNHANDLED_SECTION_RE = /^[ \t]*Unhandled (?:Errors?|Rejection)\b/m;
+
+/**
+ * Read the invocation-level error count from Vitest's summary. When only its explicit
+ * `Unhandled Errors` section is present, retain one occurrence rather than guessing a count.
+ */
+function parseVitestUnhandledErrorCount(output: string): number | null {
+  const text = stripAnsi(output);
+  const summaries = [...text.matchAll(VITEST_UNHANDLED_ERROR_COUNT_RE)];
+  if (summaries.length > 0) {
+    const count = summaries.reduce((sum, match) => sum + Number(match[1]), 0);
+    return Number.isSafeInteger(count) && count > 0 ? count : null;
+  }
+  return VITEST_UNHANDLED_SECTION_RE.test(text) ? 1 : null;
 }
 
 /**
@@ -10886,6 +10907,23 @@ export function classifyInfraFault(
           `. Measured failures stay red: a crash that still named failing files keeps its red.`,
       };
     }
+  }
+
+  // EI-27091100313528424: the reporter records one run-level unhandled error on each pending
+  // pass/skip row, so many ledger errors can represent one invocation error rather than many
+  // failing files. A structured Vitest error summary with no parseable file failures has no
+  // candidate-level verdict. Keep measured failures red and never turn this into a green.
+  const runLevelErrorCount = parseVitestUnhandledErrorCount(output);
+  if (runLevelErrorCount !== null && parseFailingFilesByWorkspace(output).length === 0) {
+    return {
+      kind: "run-level-unhandled",
+      occurrences: runLevelErrorCount,
+      note:
+        `test-run fault: Vitest reported ${runLevelErrorCount} unhandled run-level error(s), but ` +
+        `the output contains zero parseable per-file failures. The cause is unclassified, so this ` +
+        `result has no code verdict and remains INCONCLUSIVE; do not dispatch file repairs from ` +
+        `the run-level error.`,
+    };
   }
 
   return classifyDiskInfraFault(output, disk) ?? classifyEnvironmentDominatedInfraFault(output);

@@ -7,7 +7,7 @@
  * excluded as unassessable.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { cancelPendingGradingAuditsForBindingInTransaction, cancelStaleEvidencePendingGradingAuditAtomically, cancelSupersededPendingGradingAuditAtomically, classifyGradingAuditCurrentness, classifyScorecardGenerationFreshness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
+import { cancelPendingGradingAuditsForBindingInTransaction, cancelStaleEvidencePendingGradingAuditAtomically, cancelSupersededPendingGradingAuditAtomically, classifyGradingAuditCurrentness, classifyScorecardGenerationFreshness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, gradingAuditReplayBasisFingerprint, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, markGradingAuditReplayRefused, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
 import type { Rubric } from './rubrics';
 import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
@@ -315,6 +315,110 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
         { ...expected, state: 'awaiting-reemit' },
         { resolveWorkspace: async () => 'ws-test', transact },
       ),
+    ).resolves.toBe(false);
+    expect(statements.filter((statement) => statement.text.includes('UPDATE harness_shared.work_items'))).toHaveLength(updateCount);
+  });
+
+  it('fingerprints normalized replay evidence and changes identity when that basis changes', () => {
+    const gradingAudit = {
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-09-20T04:02:01.584Z',
+      rubricRevision: 7,
+      criteriaHash: 'hash-v7',
+    };
+    const snapshot = {
+      evidenceFingerprint: 'exact-fingerprint',
+      evaluatorBuild: { sha: 'a'.repeat(40), version: '1.2.3' },
+      bindingIds: [2, 1],
+      bindingCurrentness: {
+        state: 'current' as const,
+        reason: 'current',
+        citedBindingCount: 2,
+        retractedBindingIds: ['binding:2', 'binding:1'],
+        unavailableBindingIds: [],
+      },
+    };
+    const reordered = {
+      ...snapshot,
+      bindingIds: [1, 2],
+      bindingCurrentness: {
+        ...snapshot.bindingCurrentness,
+        retractedBindingIds: ['binding:1', 'binding:2'],
+      },
+    };
+
+    const original = gradingAuditReplayBasisFingerprint('EI-TARGET', gradingAudit, snapshot);
+    expect(original).toMatch(/^[a-f0-9]{64}$/);
+    expect(gradingAuditReplayBasisFingerprint('EI-TARGET', gradingAudit, reordered)).toBe(original);
+    expect(gradingAuditReplayBasisFingerprint('EI-TARGET', gradingAudit, {
+      ...snapshot,
+      evidenceFingerprint: 'changed-fingerprint',
+    })).not.toBe(original);
+  });
+
+  it('persists only the typed refusal basis against the exact pending reservation', async () => {
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      statements.push({ text, values });
+      if (text.includes('FROM harness_shared.consult_state')) return [];
+      if (text.includes('FROM harness_shared.task_ledger')) return [{ coord_owner_id: 'su-auditor' }];
+      return [{ feature_id: 'EI-TARGET' }];
+    }) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(withUnsafe(tx))) as never;
+    const reservation = {
+      key: 'grading-audit:EI-TARGET',
+      reservedAt: '2026-09-20T04:02:01.600Z',
+    };
+    const expected = {
+      state: 'pending' as const,
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-09-20T04:02:01.584Z',
+      rubricRevision: 7,
+      criteriaHash: 'hash-v7',
+      dispatchReservation: reservation,
+      lastDispatchReservation: reservation,
+    };
+    const notifySyncInvalidate = vi.fn();
+    const basisFingerprint = 'b'.repeat(64);
+
+    await expect(
+      markGradingAuditReplayRefused('EI-TARGET', expected, {
+        basisFingerprint,
+        reservation,
+        responderOwnerId: 'su-auditor',
+        at: '2026-09-20T04:03:00.000Z',
+      }, { resolveWorkspace: async () => 'ws-test', transact, notifySyncInvalidate }),
+    ).resolves.toBe(true);
+
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('scorecards.list');
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('rubrics.trend');
+    const write = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'))!;
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'state' = 'pending'");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ?");
+    const stamp = write.values.find((value): value is string =>
+      typeof value === 'string' && value.includes('grading_audit_replay_consistent'));
+    expect(stamp).toBeDefined();
+    expect(JSON.parse(stamp!)).toMatchObject({
+      state: 'pending',
+      dispatchReservation: reservation,
+      replayRefusal: {
+        code: 'grading_audit_replay_consistent',
+        at: '2026-09-20T04:03:00.000Z',
+        basisFingerprint,
+        reservation,
+        responderOwnerId: 'su-auditor',
+      },
+    });
+    expect(JSON.parse(stamp!)).not.toHaveProperty('replayRefusal.reason');
+
+    const updateCount = statements.filter((statement) => statement.text.includes('UPDATE harness_shared.work_items')).length;
+    await expect(
+      markGradingAuditReplayRefused('EI-TARGET', expected, {
+        basisFingerprint,
+        reservation: { ...reservation, reservedAt: '2026-09-20T04:03:01.000Z' },
+        responderOwnerId: 'su-auditor',
+      }, { resolveWorkspace: async () => 'ws-test', transact, notifySyncInvalidate }),
     ).resolves.toBe(false);
     expect(statements.filter((statement) => statement.text.includes('UPDATE harness_shared.work_items'))).toHaveLength(updateCount);
   });

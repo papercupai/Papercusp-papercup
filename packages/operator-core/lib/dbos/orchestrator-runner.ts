@@ -69,6 +69,7 @@ import {
 } from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
 import { acquireAgentDisplay, agentDisplayPool } from '../deployment/display-allocator';
+import { resolveOrchestratorMcpBaseUrl } from '../mcp-base-url';
 import {
   emitFeatureWorkedStart,
   emitFeatureWorkedEnd,
@@ -341,20 +342,15 @@ export async function spawnInvokeOnce(
       /* fall back to the child reading .papercusp/config.json */
     }
   }
-  // EI-286 leg (b): pin the child's MCP config to THIS host. spawn-mcp resolves
-  // its operator URL as PAPERCUSP_OPERATOR_URL ?? :3070/:3055 — and the child
-  // INHERITS the host process env (buildInvokeOnce spreads process.env), where
-  // .env.local sets PAPERCUSP_OPERATOR_URL=:3070. So agents spawned by the
-  // staging host (:3170) handshook the GREEN host's MCP: wrong code version,
-  // wrong role catalog (P-071 smoke: four consecutive Queen launches saw no
-  // placement tools). The host's own env value is the HOST's config, not a
-  // per-child directive — when this host knows its serving port it OVERRIDES
-  // the inherited value so children always talk to their spawner. An explicit
-  // caller pin (extraEnv) still wins.
+  // EI-286 leg (b): pin the child's MCP config to this spawn host's runtime.
+  // The child inherits process.env (including .env.local's :3070 URL), so derive
+  // the host base and its same-vintage proxy instead. On bg-host, orchestrator
+  // agents use :9271 → :3271; the separate :9071 BG_HOST_AGENTS endpoint is for
+  // long-lived sessions and console launches. An explicit per-spawn pin wins.
   if (!resolvedExtraEnv.PAPERCUSP_OPERATOR_URL && process.env.PAPERCUSP_HONO_PORT) {
     resolvedExtraEnv = {
       ...resolvedExtraEnv,
-      PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${process.env.PAPERCUSP_HONO_PORT}/api/mcp`,
+      PAPERCUSP_OPERATOR_URL: `${resolveOrchestratorMcpBaseUrl()}/api/mcp`,
     };
   }
   // P-002 (hive-frame-desktops-live-view): on a desktop-enabled frame the

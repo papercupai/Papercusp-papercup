@@ -265,6 +265,52 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect(out?.gradingAudit).toEqual(gradingAudit);
   });
 
+  it('preserves only the typed operational basis for a deterministic replay refusal', () => {
+    const replayRefusal = {
+      code: 'grading_audit_replay_consistent',
+      at: '2026-10-02T02:31:00.000Z',
+      basisFingerprint: 'a'.repeat(64),
+      reservation: {
+        key: 'grading-audit:EI-refused',
+        reservedAt: '2026-10-02T02:30:00.000Z',
+      },
+      responderOwnerId: 'su-auditor',
+    } as const;
+    const out = asStructuredObservation({
+      rubricRef: 'spec-test-adequacy',
+      ratings: { traceability: { rating: 'pass', evidence: 'exact replay passed' } },
+      gradingAudit: {
+        state: 'pending',
+        metaRubricRef: 'grading-integrity',
+        stampedAt: '2026-10-02T02:00:00.000Z',
+        replayRefusal,
+      },
+    });
+
+    expect(out?.gradingAudit?.replayRefusal).toEqual(replayRefusal);
+  });
+
+  it('drops malformed replay-refusal basis metadata instead of surfacing a partial marker', () => {
+    const out = asStructuredObservation({
+      rubricRef: 'spec-test-adequacy',
+      ratings: { traceability: { rating: 'pass', evidence: 'exact replay passed' } },
+      gradingAudit: {
+        state: 'pending',
+        metaRubricRef: 'grading-integrity',
+        stampedAt: '2026-10-02T02:00:00.000Z',
+        replayRefusal: {
+          code: 'grading_audit_replay_consistent',
+          at: '2026-10-02T02:31:00.000Z',
+          basisFingerprint: 'not-a-sha256',
+          reservation: { key: 'grading-audit:EI-refused', reservedAt: '2026-10-02T02:30:00.000Z' },
+          responderOwnerId: 'su-auditor',
+        },
+      },
+    });
+
+    expect(out?.gradingAudit).not.toHaveProperty('replayRefusal');
+  });
+
   it('preserves a server-stamped vetting seat through the structured observation parser', () => {
     const seat = {
       succeededFrom: 'su-ended-author',

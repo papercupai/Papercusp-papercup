@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
+import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
 
 const h = vi.hoisted(() => ({
   getFleet: vi.fn(),
@@ -220,6 +222,52 @@ describe('fleet:status', () => {
   it('opts out of the dispatcher ambient workspace transaction', () => {
     expect((statusTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
+
+  it.each(['trimmed', 'standard'] as const)(
+    'applies the %s payload tier through the registered MCP dispatcher',
+    async (payloadTier) => {
+      const entries = Array.from({ length: FLEET_STATUS_TIER_CAPS[payloadTier].members + 3 }, (_, index) => ({
+        agentId: index === 0 ? 'su-leader' : `su-member-${index}`,
+        ownerLabel: index === 0 ? 'Leader' : `Member ${index}`,
+        fleetRole: index === 0 ? 'leader' : 'member',
+        agentRole: 'su',
+        intent: `work ${index}`,
+        alive: true,
+        heartbeatFresh: true,
+        sessionState: 'live',
+        lastActiveSecAgo: 1,
+        doing: `WI-${index}`,
+        load: 1,
+      }));
+      h.listFleetRosterDiagnosed.mockResolvedValueOnce({ entries, degradedLegs: [] });
+
+      const projected = lookupByMcpName('fleet:status');
+      expect(projected).toBeTruthy();
+      const result = await dispatchProjectedToolToMcp(
+        projected!,
+        'fleet:status',
+        { fleet: 'rocket', payloadTier },
+        {
+          ...CTX,
+          transport: 'mcp',
+          requestedFormat: 'json',
+          requestedStructured: false,
+          gateBypass: { capability: true, role: true, quota: true },
+          log: vi.fn(),
+          signal: new AbortController().signal,
+          progress: vi.fn(),
+          emit: vi.fn(),
+        } as never,
+        {},
+      );
+
+      expect(result.isError).toBeUndefined();
+      const out = JSON.parse((result.content[0] as { text: string }).text);
+      expect(out.members).toHaveLength(FLEET_STATUS_TIER_CAPS[payloadTier].members + 1);
+      expect(out.members.at(-1).agentId).toBe('(truncated)');
+      expect(out.members_note).toContain(`roster capped at ${FLEET_STATUS_TIER_CAPS[payloadTier].members}`);
+    },
+  );
 
   it('keeps the deliberate full-roster response parseable for machine consumers', () => {
     expect((statusTool as { skipResultDoor?: string }).skipResultDoor).toBe('oversize-by-design');

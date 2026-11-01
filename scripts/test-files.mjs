@@ -652,6 +652,12 @@ export function createRouterProofCustody(groups, env, repoRoot) {
     return { id: `group-${index}`, attempt: 'primary', selected: group.routes.map(route => route.absolute),
       runner: group.runner === 'node' ? 'node' : 'vitest',
       armed: Boolean(child.PC_EXECUTED_SOURCE_MAP_WORKSPACE?.trim() && child.PC_EXECUTED_SOURCE_MAP_OUT?.trim()),
+      // D's producer is the original Node load preload, independently of the
+      // Vitest reporter producing A/B. Preserve its inputs before launch so a
+      // missing requested receipt cannot be reclassified as an opt-out later.
+      processSources: { preload: child.PC_EXECUTED_SOURCE_MAP_PRELOAD ?? null,
+        workspace: child.PC_EXECUTED_SOURCE_MAP_WORKSPACE ?? null,
+        root: child.PC_EXECUTED_SOURCE_MAP_ROOT ?? null },
       out: child.PC_EXECUTED_SOURCE_MAP_OUT ? resolve(child.PC_EXECUTED_SOURCE_MAP_OUT) : null,
       cwd: resolve(group.cwd), auxiliary: [] };
   });

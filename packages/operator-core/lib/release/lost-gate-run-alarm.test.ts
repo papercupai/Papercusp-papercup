@@ -12,8 +12,10 @@ import type { StoredInFlightCandidate } from './in-flight-candidate';
 import {
   beginQualificationTransaction,
   QUALIFICATION_POST_VERDICT_HANG_MS,
+  settleQualificationTransaction,
   type CheckpointQualificationTransaction,
 } from './checkpoint-qualification-transaction';
+import { GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER } from '../release-checkpoint-launch';
 import {
   LOST_RUN_SWEEP_INTERVAL_MS,
   claimLostRunAlarm,
@@ -456,6 +458,120 @@ describe('qualification progress in the existing lost-run sweep', () => {
       'you hold the papercusp gate and its in-flight run died',
       "the papercusp gate's in-flight run died; fleet gate-fleet leads it",
     ]);
+  });
+
+  it('settles an exact terminal repair-in-progress result without a lost-run alarm or retry', async () => {
+    const tx = qualification();
+    tx.candidate = 'repair-head-1';
+    tx.runId = 'run-1';
+    tx.currentPhysicalRunner = {
+      ...tx.currentPhysicalRunner!,
+      candidate: 'repair-head-1',
+      unit: 'papercup-green-checkpoint-scheduled-run-1.service',
+      evidenceRefs: ['gate-fire:runner-1', 'checkpoint-run:run-1'],
+    };
+    const { sql, row } = fakeRoutineRow(null, tx);
+    const log = [
+      `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify({
+        runId: 'run-1', candidate: 'frozen-candidate-1', reason: 'repair-in-progress', advanced: false,
+        repairQueue: { candidate: 'frozen-candidate-1', repairHead: 'repair-head-1' },
+      })}`,
+      `${GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER} service_result=success exit_code=exited exit_status=0`,
+    ].join('\n');
+    const reconcile = vi.fn(async (
+      _target: { installSlug: string; workspaceId: string },
+      input: {
+        attemptId?: string; reason: string; green?: boolean | null; candidate?: string | null;
+        repairHead?: string | null; runId?: string | null; evidenceRefs?: readonly string[]; nowMs?: number;
+      },
+    ) => {
+      const result = settleQualificationTransaction(tx, {
+        ...input,
+        attemptId: input.attemptId ?? tx.attemptId,
+      });
+      row.qualification = result.transaction;
+      return result;
+    });
+    const d = Object.assign(progressDeps('dead'), {
+      readQualificationRunLog: vi.fn(async () => log),
+      reconcileTerminalNoVerdict: reconcile,
+    });
+
+    await expect(sweepLostGateRuns(sql, d)).resolves.toEqual({ alarmed: [], deduped: [], failed: [] });
+    expect(d.readQualificationRunLog).toHaveBeenCalledWith(tx.currentPhysicalRunner);
+    expect(reconcile).toHaveBeenCalledWith(
+      { installSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+      expect.objectContaining({
+        attemptId: 'attempt-1', reason: 'repair-in-progress', candidate: 'frozen-candidate-1',
+        repairHead: 'repair-head-1', runId: 'run-1',
+        evidenceRefs: expect.arrayContaining(['checkpoint-terminal:run-1']),
+      }),
+    );
+    expect(row.qualification).toMatchObject({
+      phase: 'waiting',
+      candidate: 'frozen-candidate-1',
+      repairHead: 'repair-head-1',
+      outcome: { kind: 'pre-suite-no-verdict', reason: 'repair-in-progress' },
+      currentPhysicalRunner: null,
+    });
+    expect(row.retries).toBe(0);
+    expect(d.broadcast).not.toHaveBeenCalled();
+  });
+
+  it('does not reconcile a terminal repair-in-progress marker bound to another run', async () => {
+    const tx = qualification();
+    tx.runId = 'run-1';
+    tx.currentPhysicalRunner = {
+      ...tx.currentPhysicalRunner!,
+      unit: 'papercup-green-checkpoint-scheduled-run-1.service',
+      evidenceRefs: ['gate-fire:runner-1', 'checkpoint-run:run-1'],
+    };
+    const { sql, row } = fakeRoutineRow(null, tx);
+    const log = [
+      `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify({
+        runId: 'other-run', candidate: 'candidate-1', reason: 'repair-in-progress', advanced: false,
+      })}`,
+      `${GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER} service_result=success exit_code=exited exit_status=0`,
+    ].join('\n');
+    const reconcile = vi.fn();
+    const d = Object.assign(progressDeps('dead'), {
+      readQualificationRunLog: vi.fn(async () => log),
+      reconcileTerminalNoVerdict: reconcile,
+    });
+
+    await expect(sweepLostGateRuns(sql, d)).resolves.toEqual({ alarmed: ['papercusp'], deduped: [], failed: [] });
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(row.retries).toBe(1);
+    expect(d.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports reconciliation refusal as terminal no-verdict and still does not retry', async () => {
+    const tx = qualification();
+    tx.runId = 'run-1';
+    tx.currentPhysicalRunner = {
+      ...tx.currentPhysicalRunner!,
+      unit: 'papercup-green-checkpoint-scheduled-run-1.service',
+      evidenceRefs: ['gate-fire:runner-1', 'checkpoint-run:run-1'],
+    };
+    const { sql, row } = fakeRoutineRow(null, tx);
+    const log = [
+      `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify({
+        runId: 'run-1', candidate: 'candidate-1', reason: 'repair-in-progress', advanced: false,
+      })}`,
+      `${GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER} service_result=success exit_code=exited exit_status=0`,
+    ].join('\n');
+    const d = Object.assign(progressDeps('dead'), {
+      readQualificationRunLog: vi.fn(async () => log),
+      reconcileTerminalNoVerdict: vi.fn(async () => ({ status: 'conflict' as const, transaction: tx })),
+    });
+
+    await expect(sweepLostGateRuns(sql, d)).resolves.toEqual({ alarmed: ['papercusp'], deduped: [], failed: [] });
+    expect(row.retries).toBe(0);
+    expect(d.broadcast.mock.calls[0]![0].summary).toContain('ended without a verdict');
+    expect(d.broadcast.mock.calls[0]![0].body).toContain("terminal no-verdict reason 'repair-in-progress'");
+    expect(d.broadcast.mock.calls[0]![0].body).toContain("reconciliation returned 'conflict'");
+    expect(d.broadcast.mock.calls[0]![0].body).not.toContain('proved dead without a terminal verdict');
+    expect(d.broadcast.mock.calls[0]![0].route.reason).toContain('ended with a terminal no-verdict result');
   });
 
   it('requeues a run-bound clean superseded red round without paging it as a lost runner', async () => {

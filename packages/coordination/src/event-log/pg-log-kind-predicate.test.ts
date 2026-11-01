@@ -193,8 +193,22 @@ describe('PgCoordLog kinds predicate (WI-6988)', () => {
   }
 });
 
-describe('PgCoordLog bounded cursor timestamp upper bound', () => {
+describe('PgCoordLog bounded timestamp predicates', () => {
   const beforeTs = '2026-06-23T12:00:00.000Z';
+
+  it.each(['messages', 'plan-events'] as const)(
+    'pushes sinceTs to the timestamp column in readLinesBounded for %s',
+    async (surface) => {
+      const { sql, outer } = makeFakeSql();
+      const sinceTs = '2026-06-23T11:00:00.000Z';
+      await makeLog(sql).readLinesBounded(surface, { limit: 50, sinceTs });
+      const { text, params } = outer();
+
+      expect(text).toContain('AND ts > ?::timestamptz');
+      expect(text).not.toContain("body->>'ts'");
+      expect(params).toContain(sinceTs);
+    },
+  );
 
   it('filters event-surface candidates by the envelope timestamp before the page limit', async () => {
     const { sql, outer } = makeFakeSql();
@@ -220,6 +234,20 @@ describe('PgCoordLog bounded cursor timestamp upper bound', () => {
     expect(text).toContain('AND ts < ?::timestamptz');
     expect(params).toContain(beforeTs);
   });
+
+  it.each(['messages', 'plan-events'] as const)(
+    'pushes sinceTs to the timestamp column for %s',
+    async (surface) => {
+      const { sql, outer } = makeFakeSql();
+      const sinceTs = '2026-06-23T11:00:00.000Z';
+      await makeLog(sql).readLinesBoundedCursor(surface, { limit: 50, sinceTs });
+      const { text, params } = outer();
+
+      expect(text).toContain('AND ts > ?::timestamptz');
+      expect(text).not.toContain("body->>'ts'");
+      expect(params).toContain(sinceTs);
+    },
+  );
 
   it('keeps the line boundary timestamp for the caller composite tie-break', async () => {
     const { sql, outer } = makeFakeSql();

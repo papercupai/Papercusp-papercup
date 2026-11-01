@@ -30,6 +30,17 @@ describe('formatInvalidArgs', () => {
     );
   });
 
+  it('too_big number → reports the input, not the excess, for logs:read limit=2000/max=1000 (EI-27123690537579472)', () => {
+    const input = { limit: 2000 };
+    const parsed = z.object({ limit: z.number().int().positive().max(1000) }).safeParse(input);
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error('Expected limit to exceed the 1000 ceiling');
+
+    expect(formatInvalidArgs(parsed.error.issues, input)).toBe(
+      'limit: too big — 2000 over the 1000 limit; use ≤1000.',
+    );
+  });
+
   it('too_big number without a numeric actual value at the issue path → falls back to the bare ceiling message', () => {
     // Defensive: the raw input can lack the offending value at the issue's
     // path (undefined/non-number). The rendered message must stay well-formed

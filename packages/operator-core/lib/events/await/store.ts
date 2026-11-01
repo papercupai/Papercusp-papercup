@@ -1263,6 +1263,65 @@ export async function clearOperatorCancelledAwaits(
   return rows.length;
 }
 
+/**
+ * Find timed-out one-shot deliveries whose exact wait has since been re-armed.
+ *
+ * A timeout may already have fired before registerAwait can retire its row.
+ * At delivery time, a newer live exact-key registration for the same
+ * subscriber makes that old timeout notice redundant. Mirror the exact
+ * one-shot replacement eligibility here so filtered, pattern, composed, and
+ * fleet-bench waits do not suppress an unrelated deadline.
+ */
+export async function findSupersededTimeoutAwaitIds(
+  subscriberId: string,
+  awaitIds: readonly number[],
+): Promise<number[]> {
+  const ids = [...new Set(awaitIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
+  if (!subscriberId.trim() || ids.length === 0) return [];
+
+  const { sql } = getOrgPg();
+  const rows = await boundedOrgTxn(
+    (tx) => tx`
+      SELECT timed_out.id
+        FROM harness_shared.event_awaits timed_out
+       WHERE timed_out.workspace_id = ${eventsWs()}
+         AND timed_out.subscriber_id = ${subscriberId}
+         AND timed_out.id = ANY(${sql.array(ids)}::bigint[])
+         AND timed_out.policy <> 'announce'
+         AND timed_out.once = true
+         AND timed_out.root_id IS NULL
+         AND timed_out.payload_filter IS NULL
+         AND (timed_out.note IS NULL OR timed_out.note NOT LIKE ${FLEET_BENCH_NOTE_PREFIX + '%'})
+         AND timed_out.fired_at IS NOT NULL
+         AND timed_out.fired_reason = 'timeout'
+         AND POSITION('*' IN timed_out.event_key) = 0
+         AND LEFT(timed_out.event_key, 1) <> '@'
+         AND EXISTS (
+           SELECT 1
+             FROM harness_shared.event_awaits newer
+            WHERE newer.workspace_id = timed_out.workspace_id
+              AND newer.subscriber_id = timed_out.subscriber_id
+              AND newer.event_key = timed_out.event_key
+              AND newer.id > timed_out.id
+              AND newer.policy <> 'announce'
+              AND newer.once = true
+              AND newer.root_id IS NULL
+              AND newer.payload_filter IS NULL
+              AND (newer.note IS NULL OR newer.note NOT LIKE ${FLEET_BENCH_NOTE_PREFIX + '%'})
+              AND newer.fired_at IS NULL
+              AND newer.cancelled_at IS NULL
+              AND newer.superseded_at IS NULL
+              AND (newer.expires_ts IS NULL OR newer.expires_ts > now())
+         )
+       ORDER BY timed_out.id
+    `,
+    AWAIT_READ_TXN_OPTIONS,
+  );
+  return rows
+    .map((row: any) => Number(row.id))
+    .filter((id: number) => Number.isSafeInteger(id) && id > 0);
+}
+
 /** Active awaits for a subscriber (events:status). */
 export async function listActiveAwaits(subscriberId: string): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();

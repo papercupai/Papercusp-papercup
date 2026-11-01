@@ -34,7 +34,9 @@ const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 type Ref = { workItem?: ClaimTimeEnrichmentSubject | null; harness?: string | null; workspaceId?: string | null;
   intent?: string; paths?: readonly string[]; reuse?: ClaimBriefReuseIdentity; maxChars?: number;
   /** The recipient session; its listed tools decide which recovery calls the brief may name. */
-  owner?: string };
+  owner?: string;
+  /** Optional per-invocation timing sink; bounded by the scheduler before persistence. */
+  onTiming?: (timing: { phase: string; elapsedMs: number; outcome: 'ok' | 'unknown' | 'error' }) => void };
 export interface ClaimBriefReuseIdentity {
   owner: string;
   invocation: string;
@@ -550,6 +552,7 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
   // safe-pack timeout that a standalone re-run could not reproduce).
   const started = Date.now();
   const spent: Array<[TaskBriefPhase, number]> = [];
+  let timingOutcome: 'ok' | 'unknown' | 'error' = 'error';
   let current: TaskBriefPhase = 'setup', enteredAt = started;
   const phase = {
     get current() { return current; },
@@ -577,6 +580,7 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
           : { tool: 'coord:declare-intent', args: { intent: ref.intent!.slice(0, 500), current_files: [...ref.paths!].slice(0, 8),
             ...(ref.harness ? { harness: ref.harness } : {}) } } }), TASK_BRIEF_BUDGET_MS);
     })]);
+    timingOutcome = base.status === 'unknown' ? 'unknown' : 'ok';
     clearTimeout(timer);
     if (captureDiagnostics.hasSubscribers) {
       const at = Date.now();
@@ -606,8 +610,34 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
     // remove hints after their issuance was recorded.
     const mandatory = compactTaskBrief(base, ref.maxChars ?? TASK_BRIEF_MAX_CHARS);
     // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/getClaimTimeTaskBrief:fa78d302a2e17cd5d2de:1","classification":"durable","reason":"Re-keyed from getClaimTimeTaskBrief:19e65e51 (WI-6554700010042548). No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
-    return { taskBrief: await enrichTaskBriefWithReuse(mandatory, ref, deps, deadline) };
-  } finally { clearTimeout(timer); }
+    const result = { taskBrief: await enrichTaskBriefWithReuse(mandatory, ref, deps, deadline) };
+    timingOutcome = result.taskBrief.status === 'unknown' ? 'unknown' : 'ok';
+    return result;
+  } finally {
+    clearTimeout(timer);
+    const finishedAt = Date.now();
+    const phases = [...spent, [current, finishedAt - enteredAt] as [TaskBriefPhase, number]];
+    for (const [name, elapsedMs] of phases) {
+      try {
+        ref.onTiming?.({
+          phase: name,
+          elapsedMs: Math.min(300_000, Math.max(0, elapsedMs)),
+          outcome: timingOutcome,
+        });
+      } catch {
+        // Optional telemetry must not change the claim-time advisory.
+      }
+    }
+    try {
+      ref.onTiming?.({
+        phase: 'total',
+        elapsedMs: Math.min(300_000, Math.max(0, finishedAt - started)),
+        outcome: timingOutcome,
+      });
+    } catch {
+      // Optional telemetry must not change the claim-time advisory.
+    }
+  }
 }
 
 /** Only additive edits to existing fields are allowed: no replacement of mandatory evidence,

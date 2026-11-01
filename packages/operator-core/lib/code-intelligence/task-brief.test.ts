@@ -718,6 +718,7 @@ describe('P012 bounded scoped task briefs', () => {
     const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
     const deps = depsFor(root), pack = deps.pack;
     const timings: TaskBriefCaptureTiming[] = [];
+    const invocationTimings: Array<{ phase: string; elapsedMs: number; outcome: string }> = [];
     const diagnostics = channel(TASK_BRIEF_CAPTURE_CHANNEL);
     const observe = (message: unknown) => { timings.push(message as TaskBriefCaptureTiming); };
     const clock = vi.spyOn(Date, 'now').mockReturnValue(10_000);
@@ -731,12 +732,18 @@ describe('P012 bounded scoped task briefs', () => {
     diagnostics.subscribe(observe);
     try {
       const result = await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: { id: 'WI-task', harness: 'h',
-        payload: { paths: ['target.ts'] } } }, deps);
+        payload: { paths: ['target.ts'] } },
+        onTiming: timing => invocationTimings.push(timing) }, deps);
       expect(result?.taskBrief.status).toBe('current');
       expect(timings).toHaveLength(1);
       expect(timings[0]).toMatchObject({ workItem: 'WI-task', status: 'current', elapsedMs: 18 });
       expect(timings[0]?.phases).toEqual(expect.arrayContaining([
         { phase: 'safe-pack:identity', elapsedMs: 7 }, { phase: 'safe-pack:execution', elapsedMs: 11 },
+      ]));
+      expect(invocationTimings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ phase: 'safe-pack:identity', elapsedMs: 7, outcome: 'ok' }),
+        expect.objectContaining({ phase: 'safe-pack:execution', elapsedMs: 11, outcome: 'ok' }),
+        expect.objectContaining({ phase: 'total', elapsedMs: 18, outcome: 'ok' }),
       ]));
       expect(JSON.stringify(result)).not.toContain('elapsedMs');
     } finally { diagnostics.unsubscribe(observe); clock.mockRestore(); }

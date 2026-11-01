@@ -268,7 +268,34 @@ export function createNativeArtifactPersister(evidenceRoot) {
 // expected groups are supplied by the router before launch; observations may
 // never silently replace that population with the subset which finished.
 const custodyHash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const custodyLimits = Object.freeze({ objects: 16384, bytes: 64 * 1024 * 1024, objectBytes: 16 * 1024 * 1024 });
+const legacyCustodyLimits = Object.freeze({ objects: 16384, bytes: 64 * 1024 * 1024, objectBytes: 16 * 1024 * 1024 });
+const custodyFamilies = Object.freeze({
+  A: Object.freeze({ objects: 4096, bytes: 16 * 1024 * 1024 }),
+  B: Object.freeze({ objects: 8192, bytes: 24 * 1024 * 1024 }),
+  C: Object.freeze({ objects: 2048, bytes: 12 * 1024 * 1024 }),
+  D: Object.freeze({ objects: 1024, bytes: 4 * 1024 * 1024 }),
+  auxiliary: Object.freeze({ objects: 1024, bytes: 8 * 1024 * 1024 }),
+});
+const custodyLimits = Object.freeze({ ...legacyCustodyLimits, referenceOccurrences: 65536, families: custodyFamilies });
+// v3 keeps each segment under the existing IO/family limits. The archive has
+// an independent finite population bound; rollover never admits a larger object.
+const custodyArchiveLimits = Object.freeze({ segments: 64, objects: custodyLimits.objects });
+const custodyFamilyKeys = ['A', 'B', 'C', 'D', 'auxiliary'];
+function custodyProcessSourcesRequested(expected) {
+  // Older independent contracts required all four families unconditionally.
+  if (expected.processSources === undefined) return true;
+  const { preload, workspace, root } = expected.processSources;
+  // Producer: executed-config-load-capture.ts install() and termination hook.
+  return preload === '1' && Boolean(workspace && expected.out && root && isAbsolute(root));
+}
+function custodyAccounting(budget) {
+  return { bytesRead: budget.bytes, objectsRead: budget.objects,
+    bytesReadByFamily: { ...budget.bytesByFamily }, objectsReadByFamily: { ...budget.objectsByFamily } };
+}
+function custodyBudget() {
+  return { objects: 0, bytes: 0, objectsByFamily: { A: 0, B: 0, C: 0, D: 0, auxiliary: 0 },
+    bytesByFamily: { A: 0, B: 0, C: 0, D: 0, auxiliary: 0 } };
+}
 function custodyDirectory(path, privateMode = false) {
   const full = resolve(path);
   for (let part = full;; part = dirname(part)) {
@@ -281,23 +308,35 @@ function custodyDirectory(path, privateMode = false) {
     throw new Error('custody nonprivate or redirected root');
   return full;
 }
-function custodyRead(path, budget) {
+function custodyRead(path, budget, family = null, limits = custodyLimits) {
   custodyDirectory(dirname(path));
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || (budget.private && (stat.mode & 0o777) !== 0o600))
     throw new Error('custody nonregular or nonprivate artifact');
-  if (++budget.objects > custodyLimits.objects || stat.size > custodyLimits.objectBytes ||
-      budget.bytes + stat.size + 1 > custodyLimits.bytes) throw new Error('custody limit');
-  return readNativeArtifactBytes(path, stat.size, custodyLimits.bytes - budget.bytes,
-    count => { budget.bytes += count; });
+  const familyLimit = family ? limits.families?.[family] : null;
+  if (familyLimit && budget.objectsByFamily[family] + 1 > familyLimit.objects)
+    throw new Error('custody ' + family + ' object limit');
+  if (budget.objects + 1 > limits.objects) throw new Error('custody total object limit');
+  if (stat.size > limits.objectBytes) throw new Error('custody object byte limit');
+  if (familyLimit && budget.bytesByFamily[family] + stat.size + 1 > familyLimit.bytes)
+    throw new Error('custody ' + family + ' byte limit');
+  if (budget.bytes + stat.size + 1 > limits.bytes) throw new Error('custody total byte limit');
+  budget.objects++;
+  if (family) budget.objectsByFamily[family]++;
+  const byteLimit = Math.min(limits.bytes - budget.bytes,
+    familyLimit ? familyLimit.bytes - budget.bytesByFamily[family] : limits.bytes - budget.bytes);
+  return readNativeArtifactBytes(path, stat.size, byteLimit, count => {
+    budget.bytes += count;
+    if (family) budget.bytesByFamily[family] += count;
+  });
 }
-function custodyInventory(directory) {
+function custodyInventory(directory, objectLimit = custodyLimits.objects) {
   custodyDirectory(directory);
   const stat = lstatSync(directory), names = [];
   const handle = opendirSync(directory);
   try {
     for (let entry; (entry = handle.readSync()) !== null;) {
-      if (names.length === custodyLimits.objects) throw new Error('custody inventory limit');
+      if (names.length === objectLimit) throw new Error('custody inventory limit');
       if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('custody inventory nonregular entry');
       names.push(entry.name);
     }
@@ -308,7 +347,7 @@ function custodyInventory(directory) {
   return names.sort();
 }
 function custodyReferences(payload) {
-  const refs = [];
+  const occurrences = [], artifacts = new Map(), gaps = new Set();
   const scan = (rows, prefix, observation) => {
     if (rows === undefined) return;
     if (!Array.isArray(rows) || rows.length > 4096) throw new Error('custody observation population');
@@ -322,10 +361,22 @@ function custodyReferences(payload) {
         const pins = value[role] ?? (role === 'vmInputs' ? [] : null);
         if (!Array.isArray(pins)) throw new Error('custody evaluator population');
         pins.forEach((pin, i) => {
-          if (refs.length === 4096 || !comparisonDigest(pin?.sha256) ||
+          if (occurrences.length === custodyLimits.referenceOccurrences) {
+            gaps.add('evaluator-occurrence-limit');
+            return;
+          }
+          if (!comparisonDigest(pin?.sha256) ||
               !Number.isSafeInteger(pin.byteLength) || pin.byteLength < 0 || typeof pin.codeRef !== 'string')
-            throw new Error('custody evaluator reference');
-          refs.push({ location: `${prefix}/${index}/${role}/${i}`, ...pin });
+            throw new Error('custody evaluator reference malformed');
+          const artifact = { codeRef: pin.codeRef, sha256: pin.sha256, byteLength: pin.byteLength };
+          const known = artifacts.get(pin.codeRef);
+          if (known && (known.sha256 !== artifact.sha256 || known.byteLength !== artifact.byteLength))
+            throw new Error('custody evaluator reference conflict');
+          if (!known) {
+            if (artifacts.size === custodyLimits.families.B.objects) gaps.add('evaluator-artifact-limit');
+            else artifacts.set(pin.codeRef, artifact);
+          }
+          occurrences.push({ location: `${prefix}/${index}/${role}/${i}`, ...pin });
         });
       }
     });
@@ -333,7 +384,7 @@ function custodyReferences(payload) {
   scan(payload.rows, '/rows', row => row?.moduleEvaluations);
   scan(payload.diagnostics, '/diagnostics', row => row?.moduleEvaluations);
   scan(payload.nativeRun?.files, '/nativeRun/files', row => row?.proof?.inputs?.moduleEvaluations);
-  return refs;
+  return { occurrences, artifacts: [...artifacts.values()], gaps: [...gaps] };
 }
 function custodyIdentity(identity) {
   if (!identity || !['workspace', 'harness', 'runId'].every(key => typeof identity[key] === 'string' && identity[key]))
@@ -358,14 +409,43 @@ export function retainNativeProofPacket(directory, input) {
   const objectRoot = join(root, 'objects');
   mkdirSync(objectRoot, { mode: 0o700, recursive: true });
   custodyDirectory(objectRoot, true);
-  const store = createNativeArtifactPersister(objectRoot), budget = { objects: 0, bytes: 0 }, gaps = [];
-  const capture = (path, suffix = 'bytes') => store.persist(custodyRead(path, budget), suffix);
+  const store = createNativeArtifactPersister(objectRoot), budget = custodyBudget(), gaps = [];
+  const segments = [];
+  const capture = (path, suffix = 'bytes', family = null) => {
+    const size = lstatSync(path).size, limit = custodyLimits.families[family];
+    if (size > custodyLimits.objectBytes) throw new Error('custody object byte limit');
+    if (size + 1 > limit.bytes) throw new Error('custody ' + family + ' byte limit');
+    if (budget.objects === custodyArchiveLimits.objects) throw new Error('custody archive object limit');
+    let segment = segments.at(-1);
+    if (!segment || segment.budget.bytes + size + 1 > custodyLimits.bytes ||
+        segment.budget.objects + 1 > custodyLimits.objects ||
+        segment.budget.bytesByFamily[family] + size + 1 > limit.bytes ||
+        segment.budget.objectsByFamily[family] + 1 > limit.objects) {
+      if (segments.length === custodyArchiveLimits.segments) throw new Error('custody archive segment limit');
+      segment = { index: segments.length, budget: custodyBudget(), entries: [] };
+      segments.push(segment);
+    }
+    const before = custodyAccounting(segment.budget);
+    try {
+      const pin = { ...store.persist(custodyRead(path, segment.budget, family), suffix), segment: segment.index };
+      segment.entries.push({ family, artifact: pin });
+      return pin;
+    } finally {
+      budget.bytes += segment.budget.bytes - before.bytesRead;
+      budget.objects += segment.budget.objects - before.objectsRead;
+      for (const key of custodyFamilyKeys) {
+        budget.bytesByFamily[key] += segment.budget.bytesByFamily[key] - before.bytesReadByFamily[key];
+        budget.objectsByFamily[key] += segment.budget.objectsByFamily[key] - before.objectsReadByFamily[key];
+      }
+    }
+  };
   const observations = input.observations ?? [];
   if (observations.length !== input.expected.length || new Set(observations.map(row => row.id)).size !== observations.length)
     gaps.push('group-population-mismatch');
   const groups = input.expected.map(expected => {
     const observed = observations.find(row => row.id === expected.id);
-    const group = { id: expected.id, attempt: expected.attempt, families: [], references: [], auxiliary: [],
+    const group = { id: expected.id, attempt: expected.attempt, families: [], references: [],
+      referenceArtifacts: [], referenceGaps: [], auxiliary: [],
       captureComplete: observed?.captureComplete ?? null };
     if (!observed || observed.out !== expected.out) gaps.push(`${expected.id}:group-binding-missing`);
     if (observed?.captureComplete === false) gaps.push(`${expected.id}:child-stream-capture-incomplete`);
@@ -377,16 +457,25 @@ export function retainNativeProofPacket(directory, input) {
         entry.reason = expected.runner === 'vitest' ? 'reporter-not-armed' : `runner:${expected.runner}`;
         continue;
       }
+      if (family === 'D' && !custodyProcessSourcesRequested(expected)) {
+        entry.state = 'not-requested';
+        entry.reason = 'process-source-preload-not-requested';
+        continue;
+      }
       try {
         if (!observed || !expected.out || !isAbsolute(expected.out)) throw new Error('producer-unavailable');
         const path = expected.out + suffix;
         if (family === 'A') {
-          const artifact = capture(path, 'out.json');
+          const artifact = capture(path, 'out.json', family);
+          entry.entries.push({ original: path, artifact });
           const payload = JSON.parse(readNativeArtifactBytes(join(objectRoot, artifact.ref), artifact.byteLength,
             custodyLimits.objectBytes).toString('utf8'));
-          entry.entries.push({ original: path, artifact });
-          group.references = custodyReferences(payload);
-          for (const ref of group.references)
+          const refs = custodyReferences(payload);
+          group.references = refs.occurrences;
+          group.referenceArtifacts = refs.artifacts;
+          group.referenceGaps = refs.gaps;
+          for (const reason of refs.gaps) gaps.push(expected.id + ':A:' + reason);
+          for (const ref of group.referenceArtifacts)
             if (ref.codeRef !== join(resolve(`${expected.out}.modules`), `${ref.sha256}.js`))
               throw new Error('foreign-evaluator-reference');
           // These are observations only. Even a terminal reporter is not a
@@ -396,22 +485,29 @@ export function retainNativeProofPacket(directory, input) {
               modulePopulationMatched: payload.nativeRun?.modulePopulationMatched ?? null }, status: 'unqualified' };
         } else {
           const names = custodyInventory(path);
+          if (family === 'D' && names.length === 0) throw new Error('process-source-receipts-missing');
           for (const name of names) {
-            const original = join(path, name), artifact = capture(original);
+            const original = join(path, name), artifact = capture(original, 'bytes', family);
+            // Retain even semantically rejected bytes; partial custody must
+            // still reconcile with the segment's exact capture inventory.
+            entry.entries.push({ original, artifact });
             if (family === 'C' && /^[a-f0-9]{64}\.(json|source|stream)$/.test(name) &&
                 artifact.sha256 !== name.slice(0, 64)) throw new Error('native-artifact-digest');
             if (family === 'D' && name.endsWith('.pending')) gaps.push(`${expected.id}:process-writer-pending`);
-            entry.entries.push({ original, artifact });
           }
           if (JSON.stringify(custodyInventory(path)) !== JSON.stringify(names)) throw new Error('inventory-changed');
-          if (family === 'B') for (const ref of group.references) {
+          if (family === 'B') for (const ref of group.referenceArtifacts) {
             const retained = entry.entries.find(row => row.original === ref.codeRef)?.artifact;
             if (!retained || retained.sha256 !== ref.sha256 || retained.byteLength !== ref.byteLength)
               throw new Error('referenced-evaluator-unavailable');
           }
         }
         entry.state = 'produced';
-      } catch (error) { entry.reason = String(error?.code ?? error?.message ?? error); gaps.push(`${expected.id}:${family}:${entry.reason}`); }
+      } catch (error) {
+        entry.reason = String(error?.code ?? error?.message ?? error);
+        entry.state = entry.entries.length ? 'partial' : 'unavailable';
+        gaps.push(expected.id + ':' + family + ':' + entry.reason);
+      }
     }
     for (const spec of expected.auxiliary) {
       const entry = { ...spec };
@@ -419,21 +515,31 @@ export function retainNativeProofPacket(directory, input) {
       try {
         if (!spec.role || !['produced', 'not-requested', 'not-produced', 'not-applicable', 'unavailable'].includes(spec.state))
           throw new Error('auxiliary-declaration-missing');
-        if (spec.state === 'produced') entry.artifact = capture(spec.path);
+        if (spec.state === 'produced') entry.artifact = capture(spec.path, 'bytes', 'auxiliary');
         else if (!spec.reason || spec.state === 'unavailable' || spec.state === 'not-produced')
           throw new Error('auxiliary-unavailable-or-unsupported-absence');
-      } catch (error) { gaps.push(`${expected.id}:${spec.role}:${error?.code ?? error?.message ?? error}`); }
+      } catch (error) {
+        entry.captureError = String(error?.code ?? error?.message ?? error);
+        gaps.push(expected.id + ':' + spec.role + ':' + entry.captureError);
+      }
     }
     return group;
   });
-  const manifest = { schemaVersion: 'native-proof-custody-v1', identity: input.identity,
+  const retainedSegments = segments.map(segment => ({ index: segment.index, ...custodyAccounting(segment.budget),
+    artifact: store.persist(Buffer.from(JSON.stringify({ schemaVersion: 'native-proof-segment-v1',
+      index: segment.index, entries: segment.entries })), 'native-segment.json') }));
+  const manifest = { schemaVersion: 'native-proof-custody-v3', identity: input.identity,
     expected: input.expected, expectedHash: custodyHash(input.expected), groups, limits: custodyLimits,
-    bytesRead: budget.bytes, gaps, predecessor: input.predecessor ?? null,
+    bytesRead: budget.bytes, bytesReadByFamily: budget.bytesByFamily,
+    objectsRead: budget.objects, objectsReadByFamily: budget.objectsByFamily,
+    segments: retainedSegments, archiveLimits: custodyArchiveLimits,
+    gaps, predecessor: input.predecessor ?? null,
     verdicts: { custody: gaps.length ? 'partial' : 'complete', execution: input.execution ?? 'unknown',
       protocol: 'unqualified', producerRetirement: 'not-performed', cleanup: input.cleanup ?? 'unknown',
       nativeProof: 'unqualified', acceptance: 'unmeasured' } };
   const manifestPin = store.persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
-  for (const name of custodyInventory(objectRoot)) {
+  // Segment/manifest metadata is separately object-bounded, not capture content.
+  for (const name of custodyInventory(objectRoot, custodyLimits.objects + custodyArchiveLimits.segments + 1)) {
     const fd = openSync(join(objectRoot, name), constants.O_RDONLY | constants.O_NOFOLLOW);
     try { fsyncSync(fd); } finally { closeSync(fd); }
   }
@@ -444,7 +550,7 @@ export function retainNativeProofPacket(directory, input) {
   // Keep the producer's observed inventory and partial states in the original
   // locator. A newly sealed manifest cannot redefine which objects were captured.
   const locator = { manifest: manifestPin, identity: input.identity, expectedHash: manifest.expectedHash,
-    inventoryHash: custodyHash({ groups, gaps }) };
+    inventoryHash: custodyHash({ groups, gaps, segments: retainedSegments }) };
   const verified = verifyNativeProofPacket(root, locator, { identity: input.identity, expected: input.expected });
   return { directory: root, locator, ...verified };
 }
@@ -454,12 +560,21 @@ export function retainNativeProofPacket(directory, input) {
 export function verifyNativeProofPacket(directory, locator, contract) {
   custodyIdentity(contract?.identity); custodyPopulation(contract?.expected);
   const root = custodyDirectory(directory, true), objects = custodyDirectory(join(root, 'objects'), true);
-  const budget = { objects: 0, bytes: 0, private: true };
-  const read = (pin, readBudget = budget) => {
+  const budget = Object.assign(custodyBudget(), { private: true });
+  const segmentBudgets = [], segmentEntries = [], consumedEntries = [];
+  let segmented = false;
+  let readLimits = custodyLimits;
+  const read = (pin, readBudget = budget, family = null) => {
     if (!pin || !comparisonDigest(pin.sha256) || !Number.isSafeInteger(pin.byteLength) ||
         pin.byteLength < 0 || basename(pin.ref ?? '') !== pin.ref || !pin.ref.startsWith(`${pin.sha256}.`))
       throw new Error('custody invalid retained pin');
-    const bytes = custodyRead(join(objects, pin.ref), readBudget);
+    if (segmented && family !== null) {
+      if (!Number.isSafeInteger(pin.segment) || !segmentBudgets[pin.segment])
+        throw new Error('custody retained segment missing');
+      readBudget = segmentBudgets[pin.segment];
+      consumedEntries[pin.segment].push({ family, artifact: pin });
+    }
+    const bytes = custodyRead(join(objects, pin.ref), readBudget, family, readLimits);
     if (bytes.length !== pin.byteLength || createHash('sha256').update(bytes).digest('hex') !== pin.sha256)
       throw new Error('custody retained bytes differ');
     return bytes;
@@ -467,16 +582,66 @@ export function verifyNativeProofPacket(directory, locator, contract) {
   // The producer's content budget excludes the manifest it writes afterward.
   // Apply the same accounting when consuming a partial packet at that limit;
   // the manifest still has its own ordinary single-object bound.
-  const manifest = JSON.parse(read(locator.manifest, { objects: 0, bytes: 0, private: true }).toString('utf8'));
-  if (manifest.schemaVersion !== 'native-proof-custody-v1' ||
+  const manifest = JSON.parse(read(locator.manifest, { objects: 0, bytes: 0, private: true }, null).toString('utf8'));
+  const legacy = manifest.schemaVersion === 'native-proof-custody-v1';
+  segmented = manifest.schemaVersion === 'native-proof-custody-v3';
+  const current = manifest.schemaVersion === 'native-proof-custody-v2' || segmented;
+  readLimits = legacy ? legacyCustodyLimits : custodyLimits;
+  if ((!legacy && !current) || JSON.stringify(manifest.limits) !== JSON.stringify(readLimits) ||
       JSON.stringify(manifest.identity) !== JSON.stringify(contract.identity) ||
       JSON.stringify(locator.identity) !== JSON.stringify(contract.identity) ||
       locator.expectedHash !== custodyHash(contract.expected) || manifest.expectedHash !== locator.expectedHash ||
       JSON.stringify(manifest.expected) !== JSON.stringify(contract.expected) ||
       !Array.isArray(manifest.groups) || manifest.groups.length !== contract.expected.length)
     throw new Error('custody identity or expected population mismatch');
+  if (current) {
+    const familyKeys = custodyFamilyKeys;
+    const byteTotal = familyKeys.reduce((sum, key) => sum + manifest.bytesReadByFamily?.[key], 0);
+    const objectTotal = familyKeys.reduce((sum, key) => sum + manifest.objectsReadByFamily?.[key], 0);
+    if (familyKeys.some(key => !Number.isSafeInteger(manifest.bytesReadByFamily?.[key]) ||
+        manifest.bytesReadByFamily[key] < 0 || manifest.bytesReadByFamily[key] > custodyLimits.families[key].bytes * (segmented ? custodyArchiveLimits.segments : 1) ||
+        !Number.isSafeInteger(manifest.objectsReadByFamily?.[key]) ||
+        manifest.objectsReadByFamily[key] < 0 || manifest.objectsReadByFamily[key] > custodyLimits.families[key].objects * (segmented ? custodyArchiveLimits.segments : 1)) ||
+        byteTotal !== manifest.bytesRead || objectTotal !== manifest.objectsRead)
+      throw new Error('custody family budget accounting mismatch');
+  }
+  if (segmented) {
+    if (JSON.stringify(manifest.archiveLimits) !== JSON.stringify(custodyArchiveLimits) ||
+        !Array.isArray(manifest.segments) || manifest.segments.length > custodyArchiveLimits.segments ||
+        !Number.isSafeInteger(manifest.objectsRead) || manifest.objectsRead > custodyArchiveLimits.objects)
+      throw new Error('custody archive population mismatch');
+    const sums = custodyBudget();
+    for (const [index, segment] of manifest.segments.entries()) {
+      if (segment.index !== index || !Number.isSafeInteger(segment.bytesRead) || segment.bytesRead < 0 ||
+          segment.bytesRead > custodyLimits.bytes || !Number.isSafeInteger(segment.objectsRead) ||
+          segment.objectsRead < 0 || segment.objectsRead > custodyLimits.objects)
+        throw new Error('custody segment budget mismatch');
+      let bytes = 0, objects = 0;
+      for (const key of custodyFamilyKeys) {
+        const nbytes = segment.bytesReadByFamily?.[key], nobjects = segment.objectsReadByFamily?.[key];
+        if (!Number.isSafeInteger(nbytes) || nbytes < 0 || nbytes > custodyFamilies[key].bytes ||
+            !Number.isSafeInteger(nobjects) || nobjects < 0 || nobjects > custodyFamilies[key].objects)
+          throw new Error('custody segment family budget mismatch');
+        bytes += nbytes; objects += nobjects;
+        sums.bytesByFamily[key] += nbytes; sums.objectsByFamily[key] += nobjects;
+      }
+      if (bytes !== segment.bytesRead || objects !== segment.objectsRead)
+        throw new Error('custody segment accounting mismatch');
+      sums.bytes += bytes; sums.objects += objects;
+      const metadata = JSON.parse(read(segment.artifact, { objects: 0, bytes: 0, private: true }).toString('utf8'));
+      if (metadata.schemaVersion !== 'native-proof-segment-v1' || metadata.index !== index ||
+          !Array.isArray(metadata.entries) || metadata.entries.length > custodyLimits.objects)
+        throw new Error('custody segment inventory mismatch');
+      segmentBudgets.push(Object.assign(custodyBudget(), { private: true }));
+      segmentEntries.push(metadata.entries); consumedEntries.push([]);
+    }
+    if (JSON.stringify(custodyAccounting(sums)) !== JSON.stringify({ bytesRead: manifest.bytesRead,
+      objectsRead: manifest.objectsRead, bytesReadByFamily: manifest.bytesReadByFamily,
+      objectsReadByFamily: manifest.objectsReadByFamily })) throw new Error('custody archive accounting mismatch');
+  }
   if (!comparisonDigest(locator.inventoryHash) ||
-      custodyHash({ groups: manifest.groups, gaps: manifest.gaps }) !== locator.inventoryHash)
+      custodyHash({ groups: manifest.groups, gaps: manifest.gaps,
+        ...(segmented ? { segments: manifest.segments } : {}) }) !== locator.inventoryHash)
     throw new Error('custody captured inventory mismatch');
   for (const expected of contract.expected) {
     const group = manifest.groups.find(row => row.id === expected.id);
@@ -484,7 +649,9 @@ export function verifyNativeProofPacket(directory, locator, contract) {
         new Set(group.families.map(row => row.family)).size !== 4 ||
         !['A', 'B', 'C', 'D'].every(family => group.families.some(row => row.family === family)) ||
         group.auxiliary.length !== expected.auxiliary.length) throw new Error('custody missing group or family');
-    if (group.captureComplete === false && !manifest.gaps.length) throw new Error('custody incomplete child capture');
+    const groupGap = manifest.gaps.includes(expected.id + ':child-stream-capture-incomplete');
+    const familyGap = family => manifest.gaps.some(gap => gap.startsWith(expected.id + ':' + family + ':'));
+    if (group.captureComplete === false && !groupGap) throw new Error('custody incomplete child capture');
     let reporter;
     for (const family of group.families) {
       if (!Array.isArray(family.entries)) throw new Error('custody inventory missing');
@@ -493,10 +660,15 @@ export function verifyNativeProofPacket(directory, locator, contract) {
            family.entries[0]?.original !== expected.out))
         throw new Error('custody produced OUT inventory mismatch');
       for (const [index, entry] of family.entries.entries()) {
-        const bytes = read(entry.artifact);
+        const bytes = read(entry.artifact, budget, family.family);
         if (family.family === 'A' && index === 0) reporter = bytes;
       }
-      if (family.state !== 'produced' && expected.armed && expected.runner === 'vitest' && !manifest.gaps.length)
+      const processNotRequested = segmented && expected.armed && expected.runner === 'vitest' &&
+        family.family === 'D' && !custodyProcessSourcesRequested(expected);
+      if (processNotRequested && (family.state !== 'not-requested' || family.entries.length ||
+          family.reason !== 'process-source-preload-not-requested')) throw new Error('custody process applicability mismatch');
+      if (family.state !== 'produced' && !processNotRequested && expected.armed && expected.runner === 'vitest' &&
+          !familyGap(family.family) && !groupGap)
         throw new Error('custody unsupported family absence');
     }
     const out = group.families.find(row => row.family === 'A').entries[0];
@@ -504,21 +676,38 @@ export function verifyNativeProofPacket(directory, locator, contract) {
       // Validate the exact bytes already read above; charging another read can
       // reject a correctly retained packet near the bounded capture limit.
       const refs = custodyReferences(JSON.parse(reporter.toString('utf8')));
-      if (JSON.stringify(refs) !== JSON.stringify(group.references)) throw new Error('custody reference occurrences missing');
-      for (const ref of refs) {
-        const pin = group.families.find(row => row.family === 'B').entries.find(row => row.original === ref.codeRef)?.artifact;
+      if (JSON.stringify(refs.occurrences) !== JSON.stringify(group.references))
+        throw new Error('custody reference occurrences missing');
+      if (current && (JSON.stringify(refs.artifacts) !== JSON.stringify(group.referenceArtifacts) ||
+          JSON.stringify(refs.gaps) !== JSON.stringify(group.referenceGaps)))
+        throw new Error('custody reference artifact population missing');
+      const retainedByOriginal = new Map(group.families.find(row => row.family === 'B').entries
+        .map(row => [row.original, row.artifact]));
+      for (const ref of refs.artifacts) {
+        const pin = retainedByOriginal.get(ref.codeRef);
         if (!pin || pin.sha256 !== ref.sha256 || pin.byteLength !== ref.byteLength) {
-          if (!manifest.gaps.length) throw new Error('custody evaluator mapping missing');
+          if (!familyGap('B')) throw new Error('custody evaluator mapping missing');
         }
       }
     }
     expected.auxiliary.forEach((spec, index) => {
       const entry = group.auxiliary[index];
-      if (JSON.stringify(spec) !== JSON.stringify(Object.fromEntries(Object.entries(entry).filter(([key]) => key !== 'artifact'))))
+      if (JSON.stringify(spec) !== JSON.stringify(Object.fromEntries(Object.entries(entry)
+        .filter(([key]) => key !== 'artifact' && key !== 'captureError'))))
         throw new Error('custody auxiliary declaration mismatch');
-      if (entry.artifact) read(entry.artifact);
-      else if (spec.state === 'produced' && !manifest.gaps.length) throw new Error('custody auxiliary bytes missing');
+      if (entry.artifact) read(entry.artifact, budget, 'auxiliary');
+      else if (spec.state === 'produced' && !familyGap(spec.role))
+        throw new Error('custody auxiliary bytes missing');
     });
+  }
+  if (segmented) for (let index = 0; index < segmentEntries.length; index++) {
+    if (JSON.stringify(segmentEntries[index]) !== JSON.stringify(consumedEntries[index]))
+      throw new Error('custody segment captured inventory mismatch');
+    const actual = custodyAccounting(segmentBudgets[index]), declared = manifest.segments[index];
+    if (actual.bytesRead > declared.bytesRead || actual.objectsRead > declared.objectsRead ||
+        custodyFamilyKeys.some(key => actual.bytesReadByFamily[key] > declared.bytesReadByFamily[key] ||
+          actual.objectsReadByFamily[key] > declared.objectsReadByFamily[key]))
+      throw new Error('custody segment capture accounting understated');
   }
   if (manifest.verdicts.nativeProof !== 'unqualified' || manifest.verdicts.acceptance !== 'unmeasured' ||
       manifest.verdicts.protocol !== 'unqualified' || manifest.verdicts.custody !== (manifest.gaps.length ? 'partial' : 'complete'))

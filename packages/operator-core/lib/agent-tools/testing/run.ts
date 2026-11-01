@@ -349,14 +349,14 @@ export function resolveAdminTestRunsReporterPath(testRoot: string): string | und
 
 const DETACHED_INSPECT_TEST_HINT =
   "For one test file, re-run it detached with capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output. " +
-  'capability:inspect accepts one test path per call; split a multi-file run into one detached call per file, and do not pass the file array as onlyPaths (that field is typecheck-only). If this run returns a detachedRunId, poll it with testing:run-status { runId }. ';
+  'capability:inspect accepts one test path per call; split a multi-file run into one detached call per file, and do not pass the file array as onlyPaths (that field is typecheck-only). If testing:run returns both runId and detachedRunId, pass the detachedRunId value as testing:run-status { runId }; the top-level runId is the foreground origin. ';
 
 const DETACHED_ROUTER_TEST_HINT =
   "For integration test files, re-run detached with capability:bash { command: 'npm run test:file -- <test path>', run_in_background: true }, then poll capability:bash_output. " +
-  'The test:file router selects the owning Vitest config; run one file per detached call when needed. If this run returns a detachedRunId, poll it with testing:run-status { runId }. ';
+  'The test:file router selects the owning Vitest config; run one file per detached call when needed. If testing:run returns both runId and detachedRunId, pass the detachedRunId value as testing:run-status { runId }; the top-level runId is the foreground origin. ';
 
-function detachedRunStatusHint(runId: string): string {
-  return `started detached recovery run ${runId}; poll it with testing:run-status { runId: '${runId}' }. `;
+function detachedRunStatusHint(detachedRunId: string): string {
+  return `started detached recovery run ${detachedRunId}; poll it with testing:run-status { runId: '${detachedRunId}' } (this is the detachedRunId, not the foreground runId). `;
 }
 
 /**
@@ -364,10 +364,10 @@ function detachedRunStatusHint(runId: string): string {
  * budget may be visible only on its owner worker until a later snapshot write
  * succeeds. Avoid promising that status will be available immediately.
  */
-function detachedRunUndurableHint(runId: string): string {
+function detachedRunUndurableHint(detachedRunId: string): string {
   return (
-    `started detached recovery run ${runId}, but its initial durable snapshot was NOT confirmed before the response deadline. ` +
-    `testing:run-status { runId: '${runId}' } may answer unknown_run if no shared snapshot is available — which is NOT evidence the tests passed. ` +
+    `started detached recovery run ${detachedRunId}, but its initial durable snapshot was NOT confirmed before the response deadline. ` +
+    `testing:run-status { runId: '${detachedRunId}' } may answer unknown_run if no shared snapshot is available — which is NOT evidence the tests passed. This value is detachedRunId, not the foreground runId. ` +
     'Prefer the detached fallback below. '
   );
 }
@@ -492,6 +492,8 @@ export function buildDetachedTestRunRequest(opts: {
   /** expensive-verification-loops P-001: the work-item this run verifies, stamped on
    *  the task-ledger row so a long detached run counts as an attempt against it. */
   workItemId?: string;
+  /** The foreground testing:run ID whose timeout created this detached recovery. */
+  originRunId?: string;
 }): SpawnRequest {
   if (opts.deadline) {
     // Re-enter the maintained core, rather than the bare router: only the core
@@ -540,6 +542,7 @@ export function buildDetachedTestRunRequest(opts: {
       detachedReportArtifacts: reportArtifacts,
       runtimeMaxSec: Math.max(1, Math.floor((opts.deadline.taskDeadlineAtMs - Date.now()) / 1_000)),
       ...(opts.workItemId ? { workItemId: opts.workItemId } : {}),
+      ...(opts.originRunId ? { originRunId: opts.originRunId } : {}),
       env: {
         NODE_ENV: 'test',
         PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: String(opts.deadline.taskDeadlineAtMs),
@@ -600,6 +603,7 @@ export function buildDetachedTestRunRequest(opts: {
     }],
     runtimeMaxSec: detachedRecoveryRuntimeMaxSec(opts.timeoutMs),
     ...(opts.workItemId ? { workItemId: opts.workItemId } : {}),
+    ...(opts.originRunId ? { originRunId: opts.originRunId } : {}),
     ...(Object.keys(env).length > 0 ? { env } : {}),
   };
 }
@@ -625,6 +629,8 @@ export function buildDetachedMixedTestRunRequest(opts: {
   /** expensive-verification-loops P-001: the work-item this run verifies, stamped on
    *  the task-ledger row so a long detached run counts as an attempt against it. */
   workItemId?: string;
+  /** The foreground testing:run ID whose timeout created this detached recovery. */
+  originRunId?: string;
 }): SpawnRequest {
   if (opts.deadline) return buildDetachedTestRunRequest({
     ...opts,
@@ -721,6 +727,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
     // remainder. It gets the full bounded test window, including mixed-root suites.
     runtimeMaxSec: detachedRecoveryRuntimeMaxSec(opts.timeoutMs),
     ...(opts.workItemId ? { workItemId: opts.workItemId } : {}),
+    ...(opts.originRunId ? { originRunId: opts.originRunId } : {}),
     ...(Object.keys(env).length > 0 ? { env } : {}),
   };
 }
@@ -1660,6 +1667,8 @@ type TestFilesCorePayload =
       detachedRunId?: string;
       /** Whether the detached run's durable snapshot landed before we advertised its id. */
       detachedDurable?: boolean;
+      /** Whether the task-ledger alias for the foreground origin id is durable. */
+      originAliasDurable?: boolean;
       /** Managed task that did not confirm exit within the foreground termination grace. */
       taskId?: string;
       /** The foreground process may still be writing its report; do not retry it concurrently. */
@@ -3717,6 +3726,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
         const detachedStart = await startRunDurable(
           buildDetachedMixedTestRunRequest({
             groups,
+            originRunId: runId,
             ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
             ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
             ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
@@ -3733,6 +3743,9 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
           timeoutMs,
           detachedRunId: detachedStart.snapshot.runId,
           detachedDurable: detachedStart.durable,
+          ...(detachedStart.originAliasDurable !== undefined
+            ? { originAliasDurable: detachedStart.originAliasDurable }
+            : {}),
           routerOutput: errors.map((result) => result.routerOutput ?? result.hint ?? result.error).join('\n'),
           ...summarizePartialCompletedGroups(completed),
         };
@@ -4065,6 +4078,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
               buildDetachedTestRunRequest({
                 root,
                 files: pathResolution.files,
+                originRunId: runId,
                 ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
                 ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
                 ...(detachedHarnessSlug !== undefined ? { harnessSlug: detachedHarnessSlug } : {}),
@@ -4089,7 +4103,15 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
           detachedRecoveryHint({ runId: detachedRunId, durable: detachedDurable }) +
           detachedTestTimeoutHint(opts.files),
         routerOutput: outcome.output.slice(-2000),
-        ...(detachedRunId ? { detachedRunId, detachedDurable } : {}),
+        ...(detachedRunId
+          ? {
+              detachedRunId,
+              detachedDurable,
+              ...(detachedStart?.originAliasDurable !== undefined
+                ? { originAliasDurable: detachedStart.originAliasDurable }
+                : {}),
+            }
+          : {}),
       };
     }
     // A typed router refusal is still exit 2, but its strict marker distinguishes

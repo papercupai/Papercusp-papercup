@@ -101,6 +101,7 @@ describe('buildConsoleEnvelope cwd for a workspace-only launch (EI-10938)', () =
       skipMcpJson: true,
     });
 
+    expect(envelope.workspaceId).toBe('default');
     // The cwd must be a checkout — carry the two repo markers…
     expect(existsSync(join(envelope.cwd, 'apps', 'operator', 'package.json'))).toBe(true);
     expect(existsSync(join(envelope.cwd, 'libs', 'papercusp', 'package.json'))).toBe(true);

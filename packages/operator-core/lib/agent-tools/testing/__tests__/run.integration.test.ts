@@ -113,6 +113,7 @@ interface RunResult {
   rootSource?: string;
   error?: string;
   detachedRunId?: string;
+  originAliasDurable?: boolean;
   hint?: string;
   routerOutput?: string;
   completedGroups?: Array<{
@@ -976,6 +977,7 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
     expect(out.roots).toEqual(roots);
     const detachedRunId = out.detachedRunId;
     expect(typeof detachedRunId).toBe('string');
+    expect(typeof out.originAliasDurable).toBe('boolean');
     if (typeof detachedRunId !== 'string') return;
 
     try {
@@ -2637,6 +2639,7 @@ describe('testing:run (integration)', () => {
       workspaceId: 'papercusp-workspace',
       harnessSlug: 'papercusp',
       timeoutMs: 900_000,
+      originRunId: 'foreground-origin-1',
     });
     expect(request).toMatchObject({
       kind: 'vitest',
@@ -2645,6 +2648,7 @@ describe('testing:run (integration)', () => {
       filePath: 'packages/example.test.ts',
       requestedFiles: ['packages/example.test.ts'],
       runtimeMaxSec: 930,
+      originRunId: 'foreground-origin-1',
     });
     expect(request.args).toEqual([
       join(REPO_ROOT, 'scripts', 'test-files.mjs'),
@@ -2666,19 +2670,44 @@ describe('testing:run (integration)', () => {
     expect(request).not.toHaveProperty('workItemId');
   });
 
+  it('stores the foreground origin on the detached task, outside its deadline replay payload', () => {
+    const originRunId = 'foreground-origin-deadline';
+    const startedAtMs = Date.now();
+    const taskDeadlineAtMs = startedAtMs + 120_000;
+    const request = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files: ['packages/example.test.ts'],
+      timeoutMs: 60_000,
+      originRunId,
+      deadline: {
+        startedAtMs,
+        taskDeadlineAtMs,
+        childCutoffAtMs: taskDeadlineAtMs - 10_000,
+        cleanupReserveMs: 10_000,
+      },
+    });
+
+    expect(request.originRunId).toBe(originRunId);
+    expect(request.args.join('\n')).not.toContain(originRunId);
+  });
+
   it('carries the verified work-item onto the detached request (expensive-verification-loops P-001)', () => {
     const single = buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files: ['packages/example.test.ts'],
       workItemId: 'WI-10003898',
+      originRunId: 'foreground-origin-2',
     });
     expect(single.workItemId).toBe('WI-10003898');
+    expect(single.originRunId).toBe('foreground-origin-2');
 
     const mixed = buildDetachedMixedTestRunRequest({
       groups: [{ root: REPO_ROOT, files: ['packages/example.test.ts'] }],
       workItemId: 'WI-10003898',
+      originRunId: 'foreground-origin-3',
     });
     expect(mixed.workItemId).toBe('WI-10003898');
+    expect(mixed.originRunId).toBe('foreground-origin-3');
     expect(single.requestedFiles).toEqual(['packages/example.test.ts']);
     expect(mixed.requestedFiles).toEqual(['packages/example.test.ts']);
   });

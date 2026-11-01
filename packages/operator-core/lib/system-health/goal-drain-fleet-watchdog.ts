@@ -96,7 +96,7 @@ import {
 import {
   DEFAULT_CLAIM_SPEC,
   claimSpecFilterPositivelyTargets as claimSpecFilterConstrainsField,
-  validateClaimSpec,
+  validateClaimSpecForRead,
   type ClaimSpec,
   type FilterNode,
 } from '../scheduler/claim-spec';
@@ -377,7 +377,7 @@ export interface GoalPlanFleetCoverageLike {
 
 /** A failed canonical read is UNKNOWN, never an empty cohort. */
 export type GoalPlanFleetCohort =
-  | { status: 'known'; plans: GoalPlanFleetCoverageLike[] }
+  | { status: 'known'; plans: GoalPlanFleetCoverageLike[]; warnings?: string[] }
   | { status: 'unknown'; plans: [] };
 
 export type GoalPlanFleetReason =
@@ -509,9 +509,11 @@ export async function readGoalPlanFleetCohort(
            AND bee_id LIKE 'fleet:%'`,
     ]);
 
+    const claimSpecWarnings: string[] = [];
     const validSpecs = specRows.flatMap((row) => {
-      const checked = validateClaimSpec(row.spec);
+      const checked = validateClaimSpecForRead(row.spec);
       if (!checked.ok || !checked.spec) return [];
+      claimSpecWarnings.push(...checked.warnings.map((warning) => row.bee_id + ': ' + warning));
       return [{ workspaceId: row.workspace_id, fleetSlug: row.bee_id.slice('fleet:'.length), spec: checked.spec }];
     });
     const targetPairs = relevantPlans.flatMap((plan) =>
@@ -566,6 +568,7 @@ export async function readGoalPlanFleetCohort(
           }),
         };
       }),
+      ...(claimSpecWarnings.length ? { warnings: [...new Set(claimSpecWarnings)] } : {}),
     };
   } catch {
     return { status: 'unknown', plans: [] };
@@ -578,6 +581,7 @@ export type GoalPlanFleetObservation =
       status: 'known';
       alert: GoalPlanFleetAlert | null;
       applicablePlanCount: number;
+      warnings?: string[];
     }
   | {
       status: 'unknown';
@@ -648,6 +652,7 @@ export async function readGoalPlanFleetObservation(
       status: 'known',
       alert: classifyGoalPlanFleetCoverage(goal, relevantHolders, verdicts, cohort),
       applicablePlanCount,
+      ...(cohort.warnings?.length ? { warnings: cohort.warnings } : {}),
     };
   } catch {
     return { status: 'unknown', alert: null, applicablePlanCount: null };

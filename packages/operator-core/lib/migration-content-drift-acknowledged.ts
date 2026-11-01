@@ -43,6 +43,8 @@ export const ACKNOWLEDGED_CONTENT_DRIFT: ReadonlyMap<string, string> = new Map<s
   ['132-coordination-conversations.sql', F.executable],
   ['151-operator-curation.sql', F.executable],
   ['159-work-items-union-view.sql', F.executable],
+  ['1590-cleanup-issue-family-kind.sql',
+    'repaired by the applied 1591-cleanup-issue-family-index-build.sql: the applied pre-split 1590 postconditions updated functions, views and indexes; the current 1590 keeps the same function/view transform and moves index work into 1591, whose applied hash matches disk and whose postcondition verifies the issue-family indexes'],
   ['181-hyperbee-projection-fed-ts-guard.sql', F.executable],
   ['208-scout-ticks-and-lens-weights.sql', F.executable],
   ['225-fleet-assignment-nursery-alias-liveness.sql', F.executable],

@@ -1250,6 +1250,8 @@ export interface SpawnRequest {
    * than guess: an unlinked run is recorded as unknown, a wrong link is not.
    */
   workItemId?: string | null;
+  /** Original testing:run id for a detached timeout recovery; persisted so either id can poll it. */
+  originRunId?: string | null;
   /**
    * JSON reports retained by detached Vitest commands. The store ingests
    * missing file rows on close or after observer loss; its run-group lock and
@@ -1643,6 +1645,7 @@ function prepareRun(
     workItemId: req.workItemId ?? null,
     detail: {
       runId,
+      ...(req.originRunId ? { originRunId: req.originRunId } : {}),
       kind: req.kind,
       ...(req.requestedFiles ? { requestedFiles: [...req.requestedFiles] } : {}),
       ...(detachedReportArtifacts.length > 0 ? {
@@ -2077,18 +2080,30 @@ export async function startRunAsync(req: SpawnRequest): Promise<RunSnapshot> {
 export async function startRunDurable(
   req: SpawnRequest,
   sqlOverride?: SqlLike,
-): Promise<{ snapshot: RunSnapshot; durable: boolean }> {
+): Promise<{ snapshot: RunSnapshot; durable: boolean; originAliasDurable?: boolean }> {
   const prepared = await prepareRunAsync(req);
   const snapshot = launchPreparedRun(prepared, { persistInitialSnapshot: false, snapshotSql: sqlOverride });
   const persistence = persistRunSnapshotWithRetry(snapshot, sqlOverride);
+  const originAliasReady = req.originRunId
+    ? prepared.enrolment.registrationReady?.then(() => true, () => false) ?? Promise.resolve(false)
+    : null;
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<boolean>((resolve) => {
     deadlineTimer = setTimeout(() => resolve(false), DETACHED_RUN_DURABILITY_RESPONSE_BUDGET_MS);
     deadlineTimer.unref?.();
   });
   const durable = await Promise.race([persistence, deadline]);
+  // Keep snapshot durability separate from origin-alias durability: a caller
+  // can always poll detachedRunId, while originRunId is safe only after the
+  // task-ledger relation and its snapshot are both durable.
+  const originAliasDurable = originAliasReady
+    ? await Promise.race([
+        persistence.then((snapshotReady) => snapshotReady ? originAliasReady : false),
+        deadline,
+      ])
+    : undefined;
   if (deadlineTimer) clearTimeout(deadlineTimer);
-  return { snapshot, durable };
+  return { snapshot, durable, ...(originAliasDurable === undefined ? {} : { originAliasDurable }) };
 }
 
 /**
@@ -2293,7 +2308,35 @@ export async function getRunAsync(
     return snapshot;
   }
   const persisted = await readPersistedRunSnapshotWithRetry(runId, sqlOverride, recoveryScope, environment);
-  return persisted ? withholdUnverifiedVitestPass(persisted, sqlOverride) : null;
+  if (persisted) return withholdUnverifiedVitestPass(persisted, sqlOverride);
+
+  const detachedRunId = await readDetachedRunIdForOrigin(runId, sqlOverride);
+  if (!detachedRunId || detachedRunId === runId) return null;
+  return getRunAsync(detachedRunId, sqlOverride, recoveryScope, environment);
+}
+
+/** Resolve the foreground ID emitted by testing:run to its detached recovery handle. */
+async function readDetachedRunIdForOrigin(originRunId: string, sqlOverride?: SqlLike): Promise<string | null> {
+  const sql = await snapshotSql(sqlOverride);
+  if (!sql) throw new TestingRunSnapshotUnavailableError();
+  let query: PromiseLike<unknown>;
+  try {
+    query = sql`
+      SELECT detail->>'runId' AS detached_run_id
+        FROM harness_shared.task_ledger
+       WHERE class = 'test-run'
+         AND launched_by = 'testing-run-store'
+         AND detail->>'originRunId' = ${originRunId}
+       ORDER BY started_at DESC
+       LIMIT 1
+    `;
+  } catch {
+    throw new TestingRunSnapshotUnavailableError();
+  }
+  const rows = await boundedSnapshotQuery<Array<{ detached_run_id: string | null }>>(query);
+  if (rows === null) throw new TestingRunSnapshotUnavailableError();
+  const detachedRunId = rows[0]?.detached_run_id?.trim();
+  return detachedRunId || null;
 }
 
 export function cancelRun(runId: string): boolean {

@@ -906,11 +906,22 @@ export interface ScorecardGradingAudit {
     at: string;
     reason: string;
   };
+  /** Operational refusal marker for an exact replay basis already rejected by this auditor. */
+  replayRefusal?: ScorecardGradingAuditReplayRefusal;
   /** The audit scorecard's issue id, once audited. */
   auditIssueId?: string;
   /** The auditor's ownerId (verified ≠ the graded card's author at emit). */
   auditor?: string;
   auditedAt?: string;
+}
+
+/** A deterministic grading-audit refusal, without copying human findings onto the source card. */
+export interface ScorecardGradingAuditReplayRefusal {
+  code: 'grading_audit_replay_consistent';
+  at: string;
+  basisFingerprint: string;
+  reservation: { key: string; reservedAt: string };
+  responderOwnerId: string;
 }
 
 /** Read-time identity verdict for a grading-integrity stamp. */
@@ -1861,6 +1872,38 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
               reason: rawReemitRequired.reason,
             }
           : undefined;
+      const rawReplayRefusal =
+        g.replayRefusal && typeof g.replayRefusal === 'object' && !Array.isArray(g.replayRefusal)
+          ? (g.replayRefusal as Record<string, unknown>)
+          : undefined;
+      const refusalReservation =
+        rawReplayRefusal?.reservation && typeof rawReplayRefusal.reservation === 'object' &&
+        !Array.isArray(rawReplayRefusal.reservation)
+          ? rawReplayRefusal.reservation as Record<string, unknown>
+          : undefined;
+      const replayRefusal =
+        rawReplayRefusal?.code === 'grading_audit_replay_consistent' &&
+        typeof rawReplayRefusal.at === 'string' &&
+        rawReplayRefusal.at.trim() &&
+        typeof rawReplayRefusal.basisFingerprint === 'string' &&
+        /^[a-f0-9]{64}$/.test(rawReplayRefusal.basisFingerprint) &&
+        typeof rawReplayRefusal.responderOwnerId === 'string' &&
+        rawReplayRefusal.responderOwnerId.trim() &&
+        typeof refusalReservation?.key === 'string' &&
+        refusalReservation.key.trim() &&
+        typeof refusalReservation.reservedAt === 'string' &&
+        refusalReservation.reservedAt.trim()
+          ? {
+              code: 'grading_audit_replay_consistent' as const,
+              at: rawReplayRefusal.at,
+              basisFingerprint: rawReplayRefusal.basisFingerprint,
+              reservation: {
+                key: refusalReservation.key,
+                reservedAt: refusalReservation.reservedAt,
+              },
+              responderOwnerId: rawReplayRefusal.responderOwnerId,
+            }
+          : undefined;
       out.gradingAudit = {
         state: g.state,
         metaRubricRef: g.metaRubricRef,
@@ -1872,6 +1915,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           ? { criteriaHash: g.criteriaHash }
           : {}),
         ...(reemitRequired ? { reemitRequired } : {}),
+        ...(replayRefusal ? { replayRefusal } : {}),
         ...(reservationKey &&
         reservationKey.trim() &&
         reservationTimestamp &&

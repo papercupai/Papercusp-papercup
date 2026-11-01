@@ -19,6 +19,7 @@ const captureImprovement = vi.fn();
 const getIssue = vi.fn();
 const recordGradingAudit = vi.fn();
 const markGradingAuditAwaitingReemit = vi.fn();
+const markGradingAuditReplayRefused = vi.fn();
 const isCurrentSourceAuditResponder = vi.fn();
 const closeSourceAuditConsults = vi.hoisted(() => vi.fn());
 vi.mock('../../grading-audit-routing', () => ({ closeSourceAuditConsults }));
@@ -76,6 +77,7 @@ vi.mock('../../scorecards', async (importOriginal) => {
     listScorecards: (...a: unknown[]) => listScorecards(...a),
     recordGradingAudit: (...a: unknown[]) => recordGradingAudit(...a),
     markGradingAuditAwaitingReemit: (...a: unknown[]) => markGradingAuditAwaitingReemit(...a),
+    markGradingAuditReplayRefused: (...a: unknown[]) => markGradingAuditReplayRefused(...a),
     isCurrentSourceAuditResponder: (...a: unknown[]) => isCurrentSourceAuditResponder(...a),
   };
 });
@@ -384,6 +386,7 @@ beforeEach(() => {
     gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: 'x' },
   });
   markGradingAuditAwaitingReemit.mockReset().mockResolvedValue(true);
+  markGradingAuditReplayRefused.mockReset().mockResolvedValue(true);
   isCurrentSourceAuditResponder.mockReset().mockResolvedValue(true);
   gateEnabled.mockReset().mockResolvedValue(true);
   dispatchPendingGradingAudits.mockReset().mockResolvedValue({ requestedTargetIds: [], receipts: [] });
@@ -1432,6 +1435,52 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(replaySpecTestAdequacyForHistoricalAudit).toHaveBeenCalledOnce();
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('records a deterministic refusal against the exact reservation without storing finding prose', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    const graded = replayConsistencyGradedCard() as unknown as {
+      payload: { observation: { gradingAudit: Record<string, unknown> } };
+    };
+    const reservation = {
+      key: 'grading-audit:EI-CARD',
+      reservedAt: '2026-10-02T03:00:00.000Z',
+      snapshot: {
+        evidenceFingerprint: 'evidence-fingerprint',
+        evaluatorBuild: { sha: 'a'.repeat(40), version: '1.2.3' },
+        bindingIds: [],
+        bindingCurrentness: null,
+      },
+    };
+    graded.payload.observation.gradingAudit = {
+      ...graded.payload.observation.gradingAudit,
+      dispatchReservation: reservation,
+      lastDispatchReservation: reservation,
+    };
+    getIssue.mockResolvedValue(graded);
+
+    const res = await emitScorecard(
+      {
+        ...auditArgs,
+        ratings: REPLAY_SPLIT_RATINGS,
+        gradingAuditReservation: { key: reservation.key, reservedAt: reservation.reservedAt },
+      },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool: vi.fn().mockResolvedValue(targetReplay('pass')) },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
+    expect(markGradingAuditReplayRefused).toHaveBeenCalledOnce();
+    expect(markGradingAuditReplayRefused).toHaveBeenCalledWith(
+      'EI-CARD',
+      expect.objectContaining({ state: 'pending', dispatchReservation: reservation }),
+      expect.objectContaining({
+        basisFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        reservation: { key: reservation.key, reservedAt: reservation.reservedAt },
+        responderOwnerId: 'su-auditor',
+      }),
+    );
+    expect(markGradingAuditReplayRefused.mock.calls[0]?.[2]).not.toHaveProperty('reason');
   });
 
   it.each(['pass', 'fail'] as const)(

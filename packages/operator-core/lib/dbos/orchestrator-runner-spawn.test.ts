@@ -152,8 +152,23 @@ describe('spawnInvokeOnce', () => {
     vi.stubEnv('PAPERCUSP_OPERATOR_URL', 'http://localhost:3070/api/mcp');
     H.cmd = node('process.stdout.write("ok")');
     await spawnInvokeOnce(process.cwd(), 'mug', [], {});
-    expect(H.inputs.at(-1)?.extraEnv.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:3170/api/mcp');
+    expect(H.inputs.at(-1)?.extraEnv.PAPERCUSP_OPERATOR_URL).toBe('http://localhost:3170/api/mcp');
     vi.unstubAllEnvs();
+  });
+
+  it('routes orchestrator children through the same-vintage bg-host proxy, not the sessions proxy', async () => {
+    try {
+      vi.stubEnv('PAPERCUSP_HONO_PORT', '3271');
+      vi.stubEnv('PAPERCUSP_OPERATOR_URL', 'http://localhost:3070/api/mcp');
+      vi.stubEnv('PAPERCUSP_MCP_PROXY_BASE', 'http://127.0.0.1:9271');
+      vi.stubEnv('PAPERCUSP_MCP_PROXY_TARGET_PORT', '3271');
+      vi.stubEnv('PAPERCUSP_BG_HOST_AGENTS_MCP_BASE', 'http://127.0.0.1:9071');
+      H.cmd = node('process.stdout.write("ok")');
+      await spawnInvokeOnce(process.cwd(), 'release-fixer', [], {});
+      expect(H.inputs.at(-1)?.extraEnv.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9271/api/mcp');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('respects a caller-pinned PAPERCUSP_OPERATOR_URL (no override)', async () => {

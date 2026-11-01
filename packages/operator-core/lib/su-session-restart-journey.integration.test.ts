@@ -75,6 +75,27 @@ const [snapshotRoute] = suSessionRoutes;
 
 const WORKSPACE = 'papercusp-workspace';
 const HARNESS = 'papercusp';
+type DescriptorMutation = (descriptor: SuSessionDescriptor) => unknown;
+const descriptorIdentityMismatches: ReadonlyArray<[string, DescriptorMutation]> = [
+  ['agentChatId', descriptor => ({
+    ...descriptor, identity: { ...descriptor.identity, agentChatId: 'chat-restart-foreign' },
+  })],
+  ['advSessionId', descriptor => ({
+    ...descriptor, identity: { ...descriptor.identity, advSessionId: descriptor.identity.advSessionId + 1 },
+  })],
+  ['workspaceId', descriptor => ({
+    ...descriptor, identity: { ...descriptor.identity, workspaceId: 'other-workspace' },
+  })],
+  ['backend', descriptor => ({
+    ...descriptor, identity: { ...descriptor.identity, backend: 'omp' },
+  })],
+  ['ownerId', descriptor => ({
+    ...descriptor, identity: { ...descriptor.identity, ownerId: 'su-restart-journey-foreign' },
+  })],
+  ['nativeSessionId', descriptor => ({
+    ...descriptor, identity: { ...descriptor.identity, nativeSessionId: 'foreign-native-session' },
+  })],
+];
 
 let db: OrgTestDb;
 let sql: Sql;
@@ -186,9 +207,11 @@ async function seedBoundSession(input: {
 }): Promise<number> {
   const rows = await sql<{ id: number }[]>`
     INSERT INTO harness_shared.adv_sessions
-      (workspace_id, mode, agent, session_id, coord_owner_id, pid, ended_at)
+      (workspace_id, mode, agent, session_id, omp_thread_id, coord_owner_id, pid, ended_at)
     VALUES (
-      ${WORKSPACE}, 'omp', ${input.backend}, ${input.nativeSessionId},
+      ${WORKSPACE}, 'omp', ${input.backend},
+      ${input.backend === 'omp' ? null : input.nativeSessionId},
+      ${input.backend === 'omp' ? input.nativeSessionId : null},
       ${`su-restart-journey-${input.backend}`}, ${input.pid}, ${input.endedAt}
     )
     RETURNING id`;
@@ -517,8 +540,8 @@ describe('binding faults', () => {
 
   it('reports the FIRST descriptor bind as bound and only a repeat as already_bound', async () => {
     const rows = await sql<{ id: number }[]>`
-      INSERT INTO harness_shared.adv_sessions (workspace_id, mode, agent, session_id)
-      VALUES (${WORKSPACE}, 'omp', 'claude', 'claude-native-first-bind') RETURNING id`;
+      INSERT INTO harness_shared.adv_sessions (workspace_id, mode, agent, session_id, coord_owner_id)
+      VALUES (${WORKSPACE}, 'omp', 'claude', 'claude-native-first-bind', 'su-restart-journey-claude') RETURNING id`;
     const advSessionId = Number(rows[0].id);
     const descriptor = descriptorFor({
       backend: 'claude',
@@ -545,6 +568,101 @@ describe('binding faults', () => {
     // first bind of a descriptor is indistinguishable from a re-bind.
     expect(first.status).toBe('bound');
     expect(second.status).toBe('already_bound');
+    const [saved] = await sql<{ su_runtime_generation: number }[]>`
+      SELECT su_runtime_generation FROM harness_shared.adv_sessions WHERE id = ${advSessionId}`;
+    expect(saved!.su_runtime_generation).toBe(3);
+  });
+
+  it.each(descriptorIdentityMismatches)(
+    'refuses a %s descriptor mismatch without changing the target row',
+    async (_identityField, mutate) => {
+      const agentChatId = 'chat-restart-identity-mismatch';
+      const nativeSessionId = 'codex-native-identity-mismatch';
+      const ownerId = 'su-restart-journey-codex';
+      const rows = await sql<{ id: number }[]>`
+        INSERT INTO harness_shared.adv_sessions
+          (workspace_id, mode, agent, session_id, coord_owner_id, su_runtime_generation)
+        VALUES (${WORKSPACE}, 'omp', 'codex', ${nativeSessionId}, ${ownerId}, 4)
+        RETURNING id`;
+      const advSessionId = Number(rows[0]!.id);
+      const descriptor = descriptorFor({
+        backend: 'codex', agentChatId, advSessionId, nativeSessionId,
+        lifecycle: 'ready', runtimeGeneration: 5,
+      });
+
+      const result = await bindSuSessionToAdvSession({
+        advSessionId, agentChatId, workspaceId: WORKSPACE, descriptor: mutate(descriptor) as SuSessionDescriptor,
+      });
+
+      expect(result).toEqual({ status: 'conflict', reason: 'identity_mismatch' });
+      const [unchanged] = await sql<{
+        su_agent_chat_id: string | null;
+        su_session_descriptor: SuSessionDescriptor | null;
+        su_session_state: SuSessionLifecycleState | null;
+        su_runtime_generation: number;
+      }[]>`
+        SELECT su_agent_chat_id, su_session_descriptor, su_session_state, su_runtime_generation
+          FROM harness_shared.adv_sessions WHERE id = ${advSessionId}`;
+      expect(unchanged).toMatchObject({
+        su_agent_chat_id: null, su_session_descriptor: null, su_session_state: null, su_runtime_generation: 4,
+      });
+    },
+  );
+
+  it('rejects a stale runtime generation without replacing the current descriptor', async () => {
+    const agentChatId = 'chat-restart-generation-guard';
+    const nativeSessionId = 'codex-native-generation-guard';
+    const ownerId = 'su-restart-journey-codex';
+    const rows = await sql<{ id: number }[]>`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, mode, agent, session_id, coord_owner_id, su_runtime_generation)
+      VALUES (${WORKSPACE}, 'omp', 'codex', ${nativeSessionId}, ${ownerId}, 5)
+      RETURNING id`;
+    const advSessionId = Number(rows[0]!.id);
+    const current = descriptorFor({
+      backend: 'codex', agentChatId, advSessionId, nativeSessionId,
+      lifecycle: 'running', runtimeGeneration: 5,
+    });
+    const first = await bindSuSessionToAdvSession({ advSessionId, agentChatId, workspaceId: WORKSPACE, descriptor: current });
+    const stale = { ...current, lifecycle: 'ready', runtimeGeneration: 4 } as SuSessionDescriptor;
+    const second = await bindSuSessionToAdvSession({ advSessionId, agentChatId, workspaceId: WORKSPACE, descriptor: stale });
+
+    expect(first.status).toBe('bound');
+    expect(second).toEqual({ status: 'conflict', reason: 'identity_mismatch' });
+    const [saved] = await sql<{
+      su_session_descriptor: SuSessionDescriptor;
+      su_session_state: SuSessionLifecycleState;
+      su_runtime_generation: number;
+    }[]>`
+      SELECT su_session_descriptor, su_session_state, su_runtime_generation
+        FROM harness_shared.adv_sessions WHERE id = ${advSessionId}`;
+    expect(saved).toMatchObject({
+      su_session_descriptor: current, su_session_state: 'running', su_runtime_generation: 5,
+    });
+  });
+
+  it('checks an OMP descriptor native id against omp_thread_id', async () => {
+    const agentChatId = 'chat-restart-omp-native-guard';
+    const nativeSessionId = 'omp-thread-canonical';
+    const rows = await sql<{ id: number }[]>`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, mode, agent, session_id, omp_thread_id, coord_owner_id)
+      VALUES (
+        ${WORKSPACE}, 'omp', 'omp', 'legacy-generic-session', ${nativeSessionId}, 'su-restart-journey-omp'
+      )
+      RETURNING id`;
+    const advSessionId = Number(rows[0]!.id);
+    const descriptor = descriptorFor({
+      backend: 'omp', agentChatId, advSessionId, nativeSessionId: 'legacy-generic-session',
+      lifecycle: 'ready', runtimeGeneration: 4,
+    });
+
+    const result = await bindSuSessionToAdvSession({ advSessionId, agentChatId, workspaceId: WORKSPACE, descriptor });
+
+    expect(result).toEqual({ status: 'conflict', reason: 'identity_mismatch' });
+    const [unchanged] = await sql<{ su_agent_chat_id: string | null; su_session_descriptor: SuSessionDescriptor | null }[]>`
+      SELECT su_agent_chat_id, su_session_descriptor FROM harness_shared.adv_sessions WHERE id = ${advSessionId}`;
+    expect(unchanged).toMatchObject({ su_agent_chat_id: null, su_session_descriptor: null });
   });
 
   it('refuses to bind a chat that another adv row already owns', async () => {

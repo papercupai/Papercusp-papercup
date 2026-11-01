@@ -2046,6 +2046,27 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         source: memberSource,
       }),
     ).toMatchObject({ state: 'independently-led', reconciliation: { action: 'none', consistent: true } });
+    const futureSpecPlacement = compileGoalPlanPlacement({
+      ...base,
+      source: {
+        ...memberSource,
+        fleet: {
+          ...memberSource.fleet,
+          claimSpec: {
+            ...DEFAULT_CLAIM_SPEC,
+            futureLane: 'verification',
+            view: { filter: { field: 'plan', op: '=', value: 'alpha' } },
+          },
+        },
+      },
+    });
+    expect(futureSpecPlacement).toMatchObject({
+      fleet: {
+        planScoped: true,
+        planAdmitted: true,
+        claimSpecWarnings: [expect.stringContaining('futureLane')],
+      },
+    });
     expect(
       compileGoalPlanPlacement({
         ...base,

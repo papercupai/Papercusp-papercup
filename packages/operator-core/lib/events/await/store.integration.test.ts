@@ -72,6 +72,7 @@ const {
   listActiveAwaits,
   listLifecycleBoundAwaits,
   listActiveAwaitsForKey,
+  findSupersededTimeoutAwaitIds,
   refreshStandingClaimableAwaitPayloadFilters,
   fireAwaitsForKey,
   listParkedAwaitsForSubscribers,
@@ -456,6 +457,50 @@ describe('await-event store (PG)', () => {
     expect(second.map((a) => a.subscriberId)).toEqual(['standing']); // one-shot NOT re-fired; standing still matches
     // listActiveAwaitsForKey now sees only the standing one (the one-shot has fired_at)
     expect((await listActiveAwaitsForKey('k:fire')).map((a) => a.subscriberId)).toEqual(['standing']);
+  });
+
+  it('finds only timed-out awaits replaced by a newer active exact-key wait for the same subscriber', async () => {
+    const subscriberId = 'timeout-supersession-owner';
+    const eventKey = 'conversation:answered:timeout-supersession';
+    const timedOut = await registerAwait({
+      subscriberId,
+      eventKey,
+      timeoutSec: 60,
+      timeoutBehavior: 'wake',
+    });
+    const differentKeyTimedOut = await registerAwait({
+      subscriberId,
+      eventKey: 'conversation:answered:different-key',
+      timeoutSec: 60,
+      timeoutBehavior: 'wake',
+    });
+    const peerTimedOut = await registerAwait({
+      subscriberId: 'timeout-supersession-peer',
+      eventKey,
+      timeoutSec: 60,
+      timeoutBehavior: 'wake',
+    });
+    const timedOutIds = [timedOut.id, differentKeyTimedOut.id, peerTimedOut.id];
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET expires_ts = now() - interval '1 second'
+       WHERE id = ANY(${rootSql.array(timedOutIds)}::bigint[])
+    `;
+    const fired = await fireTimedOutAwaits();
+    expect(fired.map((row) => row.id)).toEqual(expect.arrayContaining(timedOutIds));
+
+    await registerAwait({ subscriberId, eventKey });
+    await registerAwait({ subscriberId: 'timeout-supersession-peer', eventKey });
+    const cancelledReplacement = await registerAwait({
+      subscriberId,
+      eventKey: 'conversation:answered:different-key',
+    });
+    await cancelAwait({ awaitId: cancelledReplacement.id, subscriberId });
+
+    await expect(findSupersededTimeoutAwaitIds(subscriberId, [...timedOutIds, 9_999_999]))
+      .resolves.toEqual([timedOut.id]);
+    await expect(findSupersededTimeoutAwaitIds(subscriberId, []))
+      .resolves.toEqual([]);
   });
 
   it('recovers a consumed wake after a producer dies before delivery insertion, once only', async () => {

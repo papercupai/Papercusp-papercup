@@ -125,7 +125,7 @@ export function renderWallNagLine(nag: LoopWallNag): string {
   return (
     `⚠ TURN-SETTLE NAG: your previous turn ended with an owner-ask — "${nag.excerpt}" — but you hold ` +
     'NO wall row, so that commitment dissolves at the next context boundary. Commitments are rows, never ' +
-    'prose: park it NOW via loop:checkpoint { walls: [{ claim, recheck }] } (or file a blocked work_item), ' +
+    "prose: park it NOW via loop:checkpoint { walls: [{ claim, origin: 'owner', recheck }] } (or file a blocked work_item), " +
     'before anything else this wake.'
   );
 }

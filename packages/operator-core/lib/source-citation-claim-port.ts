@@ -172,9 +172,31 @@ export async function getClaimTimeSourceCitation(ref: {
   family?: ClaimTimeSourceCitationFamily | null;
   /** Injected relation reader (tests); production defaults to coord_links. */
   resolveEquivalentIds?: DuplicateEquivalentIdResolver;
+  /** Optional per-invocation phase timings; failures here never affect the advisory result. */
+  onTiming?: (timing: {
+    phase: 'duplicate-link-read' | 'tree-grep';
+    elapsedMs: number;
+    outcome: 'ok' | 'unknown' | 'error';
+  }) => void;
 }): Promise<ClaimTimeSourceCitationHint | null> {
   const workItemId = ref.workItemId?.trim();
   if (!workItemId) return null;
+
+  const reportTiming = (
+    phase: 'duplicate-link-read' | 'tree-grep',
+    startedAt: number,
+    outcome: 'ok' | 'unknown' | 'error',
+  ): void => {
+    try {
+      ref.onTiming?.({
+        phase,
+        elapsedMs: Math.min(300_000, Math.round(Math.max(0, performance.now() - startedAt) * 10) / 10),
+        outcome,
+      });
+    } catch {
+      // Optional telemetry must not change this fail-open advisory.
+    }
+  };
 
   try {
     const deps = ref.deps ?? createGitGrepDeps({ cwd: ref.cwd ?? defaultCwd() });
@@ -185,6 +207,8 @@ export async function getClaimTimeSourceCitation(ref: {
       family: ref.family,
     };
     let equivalentIds: string[] = [workItemId];
+    const linkReadStartedAt = performance.now();
+    let linkReadOutcome: 'ok' | 'error' = 'ok';
     try {
       const resolved = await (ref.resolveEquivalentIds ?? resolveDuplicateEquivalentIds)(identity);
       equivalentIds = [...new Set([workItemId, ...resolved.map((id) => id.trim()).filter(Boolean)])].slice(
@@ -192,12 +216,26 @@ export async function getClaimTimeSourceCitation(ref: {
         MAX_DUPLICATE_EQUIVALENTS,
       );
     } catch {
+      linkReadOutcome = 'error';
       // Relation reads are advisory. Preserve the direct-id probe when the coord
       // store is unavailable or the caller lacks family-specific identity context.
     }
+    reportTiming('duplicate-link-read', linkReadStartedAt, linkReadOutcome);
     // Empty text + maxTerms:0 => the selfId leg ONLY. See the module docblock.
-    const reports = await Promise.all(
-      equivalentIds.map((id) => probeCodeExistence('', deps, { selfId: id, maxTerms: 0 })),
+    const grepStartedAt = performance.now();
+    let reports: Awaited<ReturnType<typeof probeCodeExistence>>[];
+    try {
+      reports = await Promise.all(
+        equivalentIds.map((id) => probeCodeExistence('', deps, { selfId: id, maxTerms: 0 })),
+      );
+    } catch (error) {
+      reportTiming('tree-grep', grepStartedAt, 'error');
+      throw error;
+    }
+    reportTiming(
+      'tree-grep',
+      grepStartedAt,
+      reports.some((report) => !Array.isArray(report.selfIdHits)) ? 'unknown' : 'ok',
     );
     const matches = reports.flatMap((report, index) =>
       report.selfIdHits && report.selfIdHits.length > 0

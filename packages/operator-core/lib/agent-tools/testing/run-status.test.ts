@@ -107,6 +107,14 @@ describe('testing:run-status handler', () => {
 
     expect(out.data).toMatchObject({ ok: false, error: 'unknown_run', runId: 'missing-run' });
     expect(String(out.data.message)).toContain('not evidence that the test passed');
+    expect(String(out.data.message)).toContain('detachedRunId');
+    expect(String(out.data.message)).toContain('foreground origin');
+  });
+
+  it('documents the detachedRunId value as the runId status argument', () => {
+    const guidance = (tool as unknown as { guidance?: { when?: string; chaining?: string } }).guidance;
+    expect(guidance?.when).toContain('Pass that value as this tool\'s runId');
+    expect(guidance?.chaining).toContain('runId: detachedRunId');
   });
 
   it('bounds repeated provenance output and recovers the stored output without rerunning tests', async () => {
@@ -190,7 +198,7 @@ describe('testing:run-status handler', () => {
   it('documents the callable timeout recovery poll surface', () => {
     expect(tool.description).toContain('testing:run-status { runId }');
     expect(tool.description).toContain('ledgerRecovery');
-    expect(tool.guidance?.chaining).toContain('testing:run-status { runId }');
+    expect(tool.guidance?.chaining).toContain('testing:run-status { runId: detachedRunId }');
     expect(detachedTestTimeoutHint(['packages/operator-core/lib/example.test.ts'])).toContain('testing:run-status { runId }');
     expect(detachedTestTimeoutHint(['packages/operator-core/lib/example.integration.test.ts'])).toContain(
       'testing:run-status { runId }',

@@ -1253,6 +1253,25 @@ describe('applyResultProjection — keyed-envelope pick repair (WI-10002073)', (
     expect(footerOf(out)).toContain('results[].id → evidence[].id');
   });
 
+  it('does not re-root a missing leaf away from an existing explicit array root', () => {
+    const body = {
+      servingRuntimes: [{ buildSha: 'staging' }],
+      serving: { unit: 'papercup-dev-api', host: ':3070' },
+    };
+    const out = applyResultProjection(
+      textResult(JSON.stringify(body)),
+      spec({ pick: ['servingRuntimes[].unit'] }),
+    );
+
+    // The explicit array root exists, but its rows have no `unit`. A same-named
+    // field under another object must not be mistaken for runtime data.
+    expect(JSON.parse(bodyText(out))).toEqual(body);
+    const footer = footerOf(out);
+    expect(footer).toContain('matched NOTHING');
+    expect(footer).toContain('servingRuntimes[].unit');
+    expect(footer).not.toContain('auto-adjusted');
+  });
+
   it('repairs a bare [].key path used against a keyed envelope', () => {
     const out = applyResultProjection(textResult(SPEC_EVIDENCE), spec({ pick: ['[].kind'] }));
     expect(JSON.parse(bodyText(out))).toEqual({ evidence: [{ kind: 'code' }] });

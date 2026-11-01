@@ -46,6 +46,27 @@ describe('getClaimTimeSourceCitation', () => {
     expect(hint?.summary).toContain('cites this item');
   });
 
+  it('reports bounded link-read and tree-grep timings without changing the hint', async () => {
+    const deps = searcher(['packages/operator-core/lib/scheduler/claim-spec-store.ts']);
+    const timings: Array<{ phase: string; elapsedMs: number; outcome: string }> = [];
+
+    const hint = await getClaimTimeSourceCitation({
+      workItemId: 'WI-6007',
+      family: 'issue',
+      deps,
+      resolveEquivalentIds: vi.fn(async () => ['WI-canonical']),
+      onTiming: (timing) => timings.push(timing),
+    });
+
+    expect(hint?.citations).toContain('packages/operator-core/lib/scheduler/claim-spec-store.ts');
+    expect(timings.map(({ phase }) => phase)).toEqual(['duplicate-link-read', 'tree-grep']);
+    expect(timings).toEqual([
+      expect.objectContaining({ outcome: 'ok', elapsedMs: expect.any(Number) }),
+      expect.objectContaining({ outcome: 'ok', elapsedMs: expect.any(Number) }),
+    ]);
+    expect(timings.every(({ elapsedMs }) => Number.isFinite(elapsedMs) && elapsedMs >= 0 && elapsedMs <= 300_000)).toBe(true);
+  });
+
   it('probes a bounded canonical duplicate equivalent while retaining the direct id', async () => {
     const deps = { search: vi.fn(async (term: string) => (term === 'WI-canonical' ? ['canonical.ts'] : [])) };
     const resolveEquivalentIds = vi.fn(async (ref: { workItemId: string; workspaceId?: string | null; harness?: string | null; family?: string | null }) => {

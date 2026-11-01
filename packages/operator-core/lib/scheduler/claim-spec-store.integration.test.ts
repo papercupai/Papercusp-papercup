@@ -566,6 +566,41 @@ describe('getClaimSpecRecord (EI-7678 — the READ verb behind scheduler:get_cla
     expect(rec.fleetSlug).toBeUndefined();
   });
 
+  it('reads future top-level fields with a warning without mutating the stored spec', async () => {
+    const cupId = 'su-rec-forward-read';
+    await setClaimSpec({ cupId, spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    await db.sql.unsafe(
+      "UPDATE harness_shared.cup_claim_specs SET spec = spec || '{\"futureLane\":\"verification\"}'::jsonb " +
+        "WHERE workspace_id = 'default' AND bee_id = 'su-rec-forward-read'",
+    );
+
+    const rec = await getClaimSpecRecord({ cupId }, db.sql);
+    expect(rec.spec.specId).toBe(DEFAULT_CLAIM_SPEC.specId);
+    expect(rec.spec).not.toHaveProperty('futureLane');
+    expect(rec.warnings?.some((warning) => warning.includes('futureLane'))).toBe(true);
+    const storedRows = (await db.sql.unsafe(
+      "SELECT spec FROM harness_shared.cup_claim_specs WHERE workspace_id = 'default' AND bee_id = 'su-rec-forward-read'",
+    )) as Array<{ spec: Record<string, unknown> }>;
+    expect(storedRows[0]?.spec.futureLane).toBe('verification');
+
+    const rejectedWrite = await setClaimSpec({
+      cupId: 'su-rec-forward-write',
+      spec: { ...DEFAULT_CLAIM_SPEC, futureLane: 'verification' },
+    }, db.sql);
+    expect(rejectedWrite.ok).toBe(false);
+
+    const fleetSlug = 'forward-read-fleet';
+    const fleetKey = fleetSpecBeeKey(fleetSlug);
+    await setClaimSpec({ cupId: fleetKey, spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    await db.sql.unsafe(
+      "UPDATE harness_shared.cup_claim_specs SET spec = spec || '{\"futureLane\":\"verification\"}'::jsonb " +
+        "WHERE workspace_id = 'default' AND bee_id = 'fleet:forward-read-fleet'",
+    );
+    const resolved = await resolveFleetClaimSpec({ spec: fleetSlug }, db.sql);
+    expect(resolved?.record.spec.specId).toBe(DEFAULT_CLAIM_SPEC.specId);
+    expect(resolved?.record.warnings?.some((warning) => warning.includes('futureLane'))).toBe(true);
+  });
+
   it('the revision bumps are visible on re-read (confirms a re-steer landed)', async () => {
     await setClaimSpec({ cupId: 'su-rec-2', spec: DEFAULT_CLAIM_SPEC }, db.sql);
     const before = await getClaimSpecRecord({ cupId: 'su-rec-2' }, db.sql);

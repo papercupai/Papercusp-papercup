@@ -39,10 +39,13 @@ export const AUTO_MODE_DIRECTIVE =
   'AUTO mode is ON for this session — act on your judgment, do not stop to ask, ' +
   'loop continuously until the work is done. You are a fleet member with no human at your ' +
   'keyboard, so to persist across turns instead of PARKING after turn 1 you MUST ARM A ' +
-  'SELF-SUSTAINING LOOP: call loop:arm { intervalSec, goal } toward your assigned work; each ' +
-  'wake self-assign + advance a work_item; loop:end ONLY when the goal is done or you are ' +
-  "blocked. (The persona's AUTO-mode section governs; the narrow irreversible-high-stakes " +
-  'brakes still apply.)';
+  'SELF-SUSTAINING LOOP when no loop is active and no persisted stop applies. Before a fallback ' +
+  'loop:arm, inspect loop:status and your fleet status: preserve an active loop, do not rearm when ' +
+  'loop:status reports explicitlyEnded, and do not arm or pull work while fleet:status reports ' +
+  'controlState=winding-down. An explicit later owner/leader rearm or fleet:resume lifts those ' +
+  'stops. When a loop is running, each wake self-assigns + advances a work_item; loop:end ONLY ' +
+  'when the goal is done or you are blocked. (The persona\'s AUTO-mode section governs; the narrow ' +
+  'irreversible-high-stakes brakes still apply.)';
 
 /**
  * kickoff-prompt-absorption-2026-07-17 P-004: the AUTO activation for a member
@@ -56,9 +59,12 @@ export const AUTO_MODE_DIRECTIVE =
 export const AUTO_MODE_DIRECTIVE_LOOP_ARMED =
   'AUTO mode is ON for this session — act on your judgment, do not stop to ask, ' +
   'loop continuously until the work is done. You are a fleet member with no human at your ' +
-  'keyboard; your self-sustaining engine loop is ALREADY ARMED server-side, so each wake ' +
-  're-invokes you: self-assign + advance a work_item every wake (loop:status inspects it; ' +
-  'loop:end + loop:arm retunes it; loop:end ONLY when the goal is done or you are blocked). ' +
+  'keyboard; the server successfully armed your engine loop at bootstrap. This is a launch-time ' +
+  'fact, not a guarantee that it remains active: a later loop:end or fleet wind-down can stop it. ' +
+  '`loop:status` is authoritative before relying on a future wake; honor explicitlyEnded and ' +
+  'fleet winding-down, and re-arm only after explicit owner/leader authorization. While the loop ' +
+  'is active, each wake re-invokes you: self-assign + advance a work_item every wake (loop:end ' +
+  'ONLY when the goal is done or you are blocked). ' +
   "(The persona's AUTO-mode section governs; the narrow irreversible-high-stakes brakes " +
   'still apply.)';
 
@@ -93,7 +99,10 @@ export const DRAIN_MODE_DIRECTIVE =
   '+ member scheduler:get_next — never id-pins or hand-assignment); (5) run the lean LEADER ' +
   'LOOP each wake (burn-down delta, member liveness, completion-integrity spot-audits, ' +
   'orphan/stall reclaim, blocked triage); (6) WIND DOWN with loop:end + a final residue ' +
-  'report when only owner-gated/live-dep residue remains. NOT licensed: skipping ' +
+  'report when only owner-gated/live-dep residue remains. Persisted stop guard: ' +
+  'loop:status.explicitlyEnded and fleet:status controlState=winding-down override the default ' +
+  'drain cadence; do not rearm or pull new work until an explicit owner/leader rearm or ' +
+  'fleet:resume. NOT licensed: skipping ' +
   'spawn-announcements (account + model), force-deploying past a red gate, or trading ' +
   'completion integrity for speed.';
 

@@ -36,6 +36,14 @@ describe('ACKNOWLEDGED_CONTENT_DRIFT (WI-10004651)', () => {
     );
   });
 
+  it('1590 is acknowledged because its split index work was applied and verified by 1591', () => {
+    const filename = '1590-cleanup-issue-family-kind.sql';
+    expect(ACKNOWLEDGED_CONTENT_DRIFT.get(filename)).toMatch(
+      /repaired by the applied 1591-cleanup-issue-family-index-build\.sql/,
+    );
+    expect(selectNewContentDrift([entry(filename, 'executable')])).toEqual([]);
+  });
+
   it('1398 is acknowledged because its executable SQL matches the applied blob', () => {
     const filename = '1398-retire-probation-freshness-readiness-reasons.sql';
     expect(ACKNOWLEDGED_CONTENT_DRIFT.get(filename)).toMatch(/comments-only.*db:check_drift/i);

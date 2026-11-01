@@ -93,7 +93,11 @@ import {
 import { DEFAULT_INBOX_BODY_CAP } from './agent-tools/coordination/tools/inbox-content-bounds';
 import { openOwnerWallPredicateSql, ownerWallActionSql } from './goal-owner-report-truth';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
-import { claimSpecFilterAdmitsTarget, claimSpecFilterPositivelyTargets, validateClaimSpec } from './scheduler/claim-spec';
+import {
+  claimSpecFilterAdmitsTarget,
+  claimSpecFilterPositivelyTargets,
+  validateClaimSpecForRead,
+} from './scheduler/claim-spec';
 // Type-only: the placement compiler reads a closure VERDICT, it never resolves
 // one. Keeping this erased leaves the acceptance gate out of the portfolio
 // read's runtime graph.
@@ -822,6 +826,7 @@ export interface GoalPlanPlacement {
     planScoped?: boolean;
     /** Some OR arm admits the plan/plan_item (D-033); gates placement, never credits pickup on its own. */
     planAdmitted?: boolean;
+    claimSpecWarnings?: string[];
   } | null;
   activeLane: {
     itemId: string;
@@ -1215,7 +1220,7 @@ export function compileGoalPlanPlacement(args: {
     : null;
   const fleetRaw = portfolioObject(source.fleet);
   const fleetSlug = portfolioString(fleetRaw?.slug);
-  const claimSpec = validateClaimSpec(portfolioJsonObject(fleetRaw?.claimSpec));
+  const claimSpec = validateClaimSpecForRead(portfolioJsonObject(fleetRaw?.claimSpec));
   const planScoped = claimSpec.ok && Boolean(claimSpec.spec) && (
     claimSpecFilterPositivelyTargets(claimSpec.spec!.view.filter, 'plan', args.plan.slug) ||
     (args.actionableItemId !== null && claimSpecFilterPositivelyTargets(claimSpec.spec!.view.filter, 'plan_item', args.actionableItemId))
@@ -1237,6 +1242,7 @@ export function compileGoalPlanPlacement(args: {
             target: fleetRaw.target == null ? null : portfolioNumber(fleetRaw.target),
             planScoped,
             planAdmitted,
+            ...(claimSpec.warnings.length ? { claimSpecWarnings: claimSpec.warnings } : {}),
         }
       : null;
   const transactionRaw = portfolioJsonObject(fleetRaw?.launchTransaction);

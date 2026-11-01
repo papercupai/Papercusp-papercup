@@ -114,6 +114,8 @@ export interface HarnessScopeCandidate {
 export interface HarnessBindingRead {
   harnesses?: readonly (string | null | undefined)[];
   refs?: readonly string[];
+  /** Non-fatal read warnings from a valid stored binding. */
+  warnings?: readonly string[];
   /** A binding exists but is no longer trustworthy (expired/missing/moved). */
   stale?: boolean;
   detail?: string;
@@ -250,6 +252,7 @@ type ClaimSpecHarnessBinding = {
   source: 'cup' | 'fleet' | 'default';
   harnessSlug?: string | null;
   fleetSlug?: string;
+  warnings?: readonly string[];
 };
 
 export async function readFleetHarnessBinding(
@@ -271,7 +274,9 @@ export async function readFleetHarnessBinding(
   // An unbound fleet contributes no harness; resolution continues to the next source.
   // (WI-10000280. Taking LEADERSHIP still requires a concrete harness — enforced
   // separately by takeFleetLeadership's own fleet_harness_binding_required check.)
-  if (record.source === 'default') return {};
+  if (record.source === 'default') {
+    return record.warnings?.length ? { warnings: record.warnings } : {};
+  }
   const harnessSlug = concreteHarness(record.harnessSlug);
   if (!harnessSlug) {
     return record.source === 'fleet'
@@ -279,10 +284,17 @@ export async function readFleetHarnessBinding(
           refs: record.fleetSlug ? [record.fleetSlug] : [],
           stale: true,
           detail: 'fleet claim spec has no concrete harness binding',
+          ...(record.warnings?.length ? { warnings: record.warnings } : {}),
         }
-      : {};
+      : record.warnings?.length
+        ? { warnings: record.warnings }
+        : {};
   }
-  return { harnesses: [harnessSlug], refs: record.fleetSlug ? [record.fleetSlug] : [] };
+  return {
+    harnesses: [harnessSlug],
+    refs: record.fleetSlug ? [record.fleetSlug] : [],
+    ...(record.warnings?.length ? { warnings: record.warnings } : {}),
+  };
 }
 
 type SessionBriefHarnessBinding = {
@@ -318,12 +330,14 @@ export type InheritedHarnessScope =
       source: InheritedHarnessSource;
       candidates: HarnessScopeCandidate[];
       conflictingBindings: HarnessScopeCandidate[];
+      warnings?: string[];
     }
   | {
       kind: 'all';
       source: 'explicit';
       candidates: HarnessScopeCandidate[];
       conflictingBindings: HarnessScopeCandidate[];
+      warnings?: string[];
     }
   | {
       kind: 'none';
@@ -332,6 +346,7 @@ export type InheritedHarnessScope =
       candidates: HarnessScopeCandidate[];
       conflictingBindings: HarnessScopeCandidate[];
       detail?: string;
+      warnings?: string[];
     };
 
 function concreteHarness(value: string | null | undefined): string | null {
@@ -448,6 +463,11 @@ export async function resolveInheritedHarnessScope(
   }
 
   const candidates: HarnessScopeCandidate[] = [];
+  const accumulatedWarnings: string[] = [];
+  const warningFields = () => {
+    const unique = [...new Set(accumulatedWarnings)];
+    return unique.length > 0 ? { warnings: unique } : {};
+  };
   for (const source of ['claim', 'plan', 'fleet', 'brief'] as const) {
     let read: HarnessBindingRead;
     try {
@@ -460,8 +480,10 @@ export async function resolveInheritedHarnessScope(
         candidates,
         conflictingBindings: [],
         detail: error instanceof Error ? error.message : String(error),
+        ...warningFields(),
       };
     }
+    accumulatedWarnings.push(...(read.warnings ?? []));
     const refs = [...new Set((read.refs ?? []).map((ref) => ref.trim()).filter(Boolean))];
     const sourceCandidates = [
       ...new Set((read.harnesses ?? []).map(concreteHarness).filter((v): v is string => Boolean(v))),
@@ -485,6 +507,7 @@ export async function resolveInheritedHarnessScope(
         candidates,
         conflictingBindings: sourceCandidates,
         ...(read.detail ? { detail: read.detail } : {}),
+        ...warningFields(),
       };
     }
     if (sourceCandidates.length > 1) {
@@ -495,6 +518,7 @@ export async function resolveInheritedHarnessScope(
         candidates,
         conflictingBindings: sourceCandidates,
         detail: `${source} binding resolves to multiple harnesses: ${sourceCandidates.map((c) => c.harnessSlug).join(', ')}`,
+        ...warningFields(),
       };
     }
     if (sourceCandidates.length === 1) {
@@ -505,6 +529,7 @@ export async function resolveInheritedHarnessScope(
         source,
         candidates,
         conflictingBindings: [],
+        ...warningFields(),
       };
     }
   }
@@ -519,9 +544,10 @@ export async function resolveInheritedHarnessScope(
       source: 'session',
       candidates,
       conflictingBindings: [],
+      ...warningFields(),
     };
   }
-  return { kind: 'none', reason: 'missing', candidates, conflictingBindings: [] };
+  return { kind: 'none', reason: 'missing', candidates, conflictingBindings: [], ...warningFields() };
 }
 
 /**

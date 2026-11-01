@@ -151,6 +151,8 @@ describe('psu-pty-host reset delivery wiring', () => {
     const source = readFileSync(fileURLToPath(new URL('../scripts/psu-pty-host.mjs', import.meta.url)), 'utf8');
     const wired = source.match(/if \(msg\.mode === 'reset'\) scheduleResetReanchor\(marker, turnWriteStartedAt, (target|child)\);/g) ?? [];
     expect(wired).toHaveLength(2);
-    expect(source).toContain('onRespawn: (nativeId) => onRespawn(nativeId),');
+    expect(source).toContain(
+      'onRespawn: (nativeId) => onRespawn(nativeId, childLaunchSessionId ? { childLaunchSessionId } : undefined),',
+    );
   });
 });

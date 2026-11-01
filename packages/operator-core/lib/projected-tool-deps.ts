@@ -2410,6 +2410,7 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
           detectorSessionKey: event.ctx.failureLoopSessionKey,
           toolName: event.toolName,
           args: event.args,
+          sourceProjection: event.ctx.sourceProjection,
           result: event.result,
         });
       }

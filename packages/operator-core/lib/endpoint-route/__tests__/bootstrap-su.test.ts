@@ -3163,7 +3163,7 @@ describe('deriveKickoffPrompt (EI-5503 + WI-1962 + WI-1356 — the turn-1 kickof
 });
 
 describe('deriveKickoffPrompt — kickoff-prompt-absorption P-004 (guard profile + auto-arm notice)', () => {
-  it("loopAutoArmed swaps the AUTO activation's MUST-ARM clause for the already-armed notice", async () => {
+  it('a successful bootstrap auto-arm is described as historical state, with current status left to loop:status', async () => {
     const { deriveKickoffPrompt, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED } =
       await import('../routes/agent-mcp/bootstrap-su');
     const armed = deriveKickoffPrompt({
@@ -3174,7 +3174,13 @@ describe('deriveKickoffPrompt — kickoff-prompt-absorption P-004 (guard profile
     });
     expect(armed).toContain(AUTO_MODE_DIRECTIVE_LOOP_ARMED);
     expect(armed).not.toContain('MUST ARM');
-    expect(armed).toContain('ALREADY ARMED');
+    expect(armed).toContain('successfully armed your engine loop at bootstrap');
+    expect(armed).toContain('not a guarantee that it remains active');
+    expect(armed).toContain('`loop:status` is authoritative');
+    expect(armed).toContain('honor explicitlyEnded and fleet winding-down');
+    expect(armed).toContain('re-arm only after explicit owner/leader authorization');
+    expect(armed).toContain('While the loop is active, each wake re-invokes you');
+    expect(armed).not.toContain('ALREADY ARMED server-side');
     // Omitted / false ⇒ the full self-arm instruction (the fallback path).
     const fallback = deriveKickoffPrompt({ planSlug: 'p1', autoMode: true, launchContextPath: null });
     expect(fallback).toContain(AUTO_MODE_DIRECTIVE);

@@ -1056,6 +1056,11 @@ const closeAssumptionsField = z
   .describe('Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.')
   .meta({ id: 'wi-assumptions' });
 
+const outputPayloadField = z
+  .unknown()
+  .optional()
+  .describe('Stored best-effort at `workItem.payload.out`; verify via the returned `outputPayloadReadPath`.');
+
 const itemSpec = z.object({
   id: z.string().min(1),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
@@ -1079,7 +1084,7 @@ const itemSpec = z.object({
    * `oddsmith:bet-signal` reaction (decision-ledger/bet-signal-rule.ts) emits a
    * decision-ledger disposition from it. Stays out of the fixed `completion` record.
    */
-  outputPayload: z.unknown().optional(),
+  outputPayload: outputPayloadField,
   /** Current proof attestation for a terminal close covering first-class spec clauses. */
   specAdequacy: specAdequacyCompletionField,
   /** Evaluate the complete versioned close contract without recording evidence or changing lifecycle. */
@@ -6612,7 +6617,12 @@ async function completeOneTracked(
     completion,
     reflect,
     ...(deferredContributions?.length ? { deferredContributions } : {}),
-    ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),
+    ...(it.outputPayload !== undefined
+      ? {
+          outputPayload: it.outputPayload,
+          outputPayloadReadPath: 'work_items:get results[].workItem.payload.out',
+        }
+      : {}),
     ...(specAdequacyChecked || specAdequacyImpactReport || specAdequacyExempted?.length
       ? {
           specAdequacy: {
@@ -6677,7 +6687,7 @@ const workItemsCompleteTool = defineTool({
     'Complete work-items with evidence. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`"none"` or fact keys); deliberate record-only calls pass `recordOnly:true`.',
   guidance: {
     returns: 'Check `finish.complete`/`stateWarning`.',
-    when: 'Pass `completion`, terminal `state`, required `assumptions`. Use discard states only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (auto-hoisted); read `results[].workItem.payload.out` from `work_items:get` (`payloadTier:"full"`). Universal claims require `completion.verification.coverage`: partition each entry exactly once across checked/notChecked/notApplicable; residue is separate (`[]` or `["none"]` means zero). Keep deferred/coordNotes at completion level, not inside verification. Put `testsRun`, `testResult`, `verifiedHow`, and `filesChanged` at the root of `completion`; the single-item call also accepts those fields at the argument root as legacy aliases. Keep `verification.tests`, `verification.typecheck`, `verification.diff` out of `completion.verification`. Removals: `filesDeleted`; dupes: `completion.duplicateOf`.',
+    when: 'Pass `completion` and `state`; required `assumptions`. Use discard states only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (auto-hoisted). `outputPayloadReadPath` points to `results[].workItem.payload.out` via `work_items:get` (`payloadTier:"full"`); writes are best-effort. Universal `completion.verification.coverage`: partition each entry exactly once across checked/notChecked/notApplicable; residue is separate (`[]` or `["none"]` means zero). Keep deferred/coordNotes at completion level, not inside verification. Put `testsRun`, `testResult`, `verifiedHow`, and `filesChanged` at the root of `completion`; the single-item call also accepts those fields at the argument root as legacy aliases. Do not pass `verification.tests`, `verification.typecheck`, or `verification.diff`. Removals: `filesDeleted`; dupes: `completion.duplicateOf`.',
     notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize; never non-work/human-audience rows.',
     chaining:
       'work_items:claim { changeKinds } → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
@@ -6888,7 +6898,7 @@ const workItemsCompleteTool = defineTool({
             /** The structured completion record (single-complete shorthand). */
             completion: completionSpec.optional(),
             /** Optional kind-specific structured output (single-complete shorthand). */
-            outputPayload: z.unknown().optional(),
+            outputPayload: outputPayloadField,
             /** Current per-clause proof attestation for spec-covered terminal closes. */
             specAdequacy: specAdequacyCompletionField,
             /** Read-only preflight: evaluate every applicable completion requirement without writing. */
@@ -6937,7 +6947,7 @@ const workItemsCompleteTool = defineTool({
               ),
             /** Optional single-item fields are retained for backwards-compatible bulk envelopes. */
             completion: completionSpec.optional(),
-            outputPayload: z.unknown().optional(),
+            outputPayload: outputPayloadField,
             /** Read-only preflight for every item in this envelope unless an item overrides it. */
             validateOnly: z.boolean().optional(),
             assumptions: closeAssumptionsField,

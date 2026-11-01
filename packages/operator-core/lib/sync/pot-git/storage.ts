@@ -320,48 +320,82 @@ export type RunGitStdin = (
  */
 export const runGitStdinLocal: RunGitStdin = (args, cwd, stdin, opts) =>
   new Promise((resolve) => {
+    if (opts?.signal?.aborted) {
+      resolve({ code: -1, stdout: Buffer.alloc(0), stderr: 'git aborted before spawn' });
+      return;
+    }
     const refusal = localSpawnRefusalFor(potGitLocalSpawnAdmission(process.memoryUsage().rss));
     if (refusal) {
       resolve({ code: -1, stdout: Buffer.alloc(0), stderr: refusal });
       return;
     }
-    const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
+    const child = spawn('git', args, {
+      cwd,
+      detached: process.platform !== 'win32',
+      env: { ...process.env, ...opts?.env, LC_ALL: 'C', LANG: 'C', GIT_TERMINAL_PROMPT: '0' },
+    });
     // stdout stays RAW BUFFERS here on purpose: this is the `cat-file --batch`
     // seam, whose frames are `<oid> SP <type> SP <size> LF <contents> LF` — the
     // byte offsets are load-bearing, so it must never be decoded to text.
     // Only stderr is human-readable, and only it needs the text collector.
     const chunks: Buffer[] = [];
     const errOut = createTextCollector(child.stderr);
+    const reportOutputActivity = (): void => {
+      try {
+        opts?.onProgress?.();
+      } catch {
+        // Progress accounting is diagnostic-only and must never break Git.
+      }
+    };
+    child.stdout.on('data', (d) => {
+      chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(String(d)));
+      reportOutputActivity();
+    });
+    child.stderr.on('data', reportOutputActivity);
+    const lifetime = processGroupLifetime(child, (message) => errOut.append(`\n${message}`));
     let settled = false;
+    let terminating = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let removeAbortListener = (): void => {};
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
-      resolve({ code, stdout: Buffer.concat(chunks), stderr: errOut.text() });
+      clearTimeout(t);
+      clearTimeout(killTimer);
+      removeAbortListener();
+      reportOutputActivity();
+      resolve({ code: terminating ? -1 : code, stdout: Buffer.concat(chunks), stderr: errOut.text() });
+    };
+    const terminate = (reason: string): void => {
+      if (settled || terminating) return;
+      terminating = true;
+      errOut.append(`\ngit ${reason}`);
+      lifetime.signal('SIGTERM');
+      killTimer = setTimeout(() => lifetime.signal('SIGKILL'), 5_000);
+      killTimer.unref?.();
     };
     const timeoutMs = opts?.timeoutMs ?? 60_000;
-    const t = setTimeout(() => {
-      errOut.append(`\ngit ${args.join(' ')} timed out`);
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 5_000).unref?.();
-      setTimeout(() => finish(-1), 10_000).unref?.();
-    }, timeoutMs);
+    const t = setTimeout(() => terminate(`${args.join(' ')} timed out`), timeoutMs);
     t.unref?.();
-    child.stdout.on('data', (d) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(String(d))));
+    if (opts?.signal) {
+      const abort = (): void => terminate('aborted');
+      removeAbortListener = () => opts.signal?.removeEventListener('abort', abort);
+      opts.signal.addEventListener('abort', abort, { once: true });
+      if (opts.signal.aborted) abort();
+    }
     child.on('error', (e) => {
-      clearTimeout(t);
       errOut.append(String(e));
-      finish(-1);
+      if (child.pid === undefined) finish(-1);
     });
-    child.on('close', (code) => {
-      clearTimeout(t);
+    child.on('close', async (code) => {
+      await lifetime.waitForExit();
       finish(code ?? -1);
     });
     child.stdin.on('error', () => {
       /* EPIPE when git exits before consuming the whole oid list — the close
          handler above still reports the real exit code. */
     });
-    child.stdin.write(stdin);
-    child.stdin.end();
+    child.stdin.end(stdin);
   });
 
 /**
@@ -392,6 +426,7 @@ export const defaultRunGitStdin: RunGitStdin = async (args, cwd, stdin, opts) =>
     try {
       return await runGitStdinViaSpawnerSidecar(args, cwd, stdin, timeoutMs, {
         ...process.env,
+        ...opts?.env,
         LC_ALL: 'C',
         LANG: 'C',
       });

@@ -176,9 +176,23 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
     const j = (await res.json()) as { ok: boolean; promptFile: string };
     const text = readFileSync(j.promptFile, 'utf8');
     expect(text).toContain('## AUTO mode');
+    expect(text).toContain('loop:status reports explicitlyEnded');
+    expect(text).toContain('controlState=winding-down');
+    expect(text).toContain('fleet:resume');
     expect(text).toContain('## Provenance — who launched this session');
     expect(text).toContain('su-leader-9');
     expect(text).toContain('## Effective instruction precedence');
+  });
+
+  it('replays the DRAIN overlay with the persisted stop guard', async () => {
+    readLaunchSpecMock.mockResolvedValue(spec({ autoMode: true, drainMode: true }));
+    const res = await refresh({ coordOwnerId: OWNER });
+    const j = (await res.json()) as { ok: boolean; promptFile: string };
+    const text = readFileSync(j.promptFile, 'utf8');
+    expect(text).toContain('## DRAIN mode');
+    expect(text).toContain('loop:status.explicitlyEnded');
+    expect(text).toContain('controlState=winding-down');
+    expect(text).toContain('fleet:resume');
   });
 
   it('passes the STORED resolved inputs to buildLaunchSpec rather than re-deriving them', async () => {

@@ -29,10 +29,10 @@ const itemSpec = z.object({
 export default defineTool({
   name: 'conversations:answer',
   description:
-    'Answer one OR many question conversations. Appends an answer to each thread and notifies subscribers (the asker gets it in their inbox). The asker/resolver accepts an answer with conversations:resolve. Single: { id, body, mentions? }. Many same body: { ids:[…], body }. Many heterogeneous: items:[{ id, body, mentions? }] (each carries its own answer). Returns { ok, results:[{ ok, id, post_id? | error }], counts } — correlate by id; one not-found item never fails the rest.',
+    'Answer one OR many question conversations. Appends an answer to each thread and notifies subscribers (the asker gets it in their inbox). Results include author_origin. On a coord:ask-owner question, an agent answer is a peer opinion, not the owner decision; only an owner-typed reply answers that gate. The asker/resolver accepts an answer with conversations:resolve. Single: { id, body, mentions? }. Many same body: { ids:[…], body }. Many heterogeneous: items:[{ id, body, mentions? }] (each carries its own answer). Returns { ok, results:[{ ok, id, post_id?, author_origin?, owner_decision_effect? | error }], counts } — correlate by id; one not-found item never fails the rest.',
   guidance: {
     when:
-      'You can answer an open question (you saw it via a topic subscription or conversations:list). Post the answer here so the asker is notified and the answer is captured on resolve. Answer several at once via items:[…] (each item supplies its own body).',
+      'You can answer an open question (you saw it via a topic subscription or conversations:list). Post the answer here so the asker is notified and the answer is captured on resolve. For coord:ask-owner questions, your result and the notification explicitly mark agent replies as peer opinions; they do not count as the owner’s answer. Answer several at once via items:[…] (each item supplies its own body).',
     notWhen:
       'For a non-answer comment/clarification, use conversations:post. To accept your own/another answer and close the question, use conversations:resolve.',
     chaining:
@@ -82,7 +82,11 @@ export default defineTool({
           id: it.id,
           post_id: res.post.id,
           notified_subscribers: res.delivered,
-          hint: `Answer posted. The asker can accept it with conversations:resolve { accepted_post_id: ${res.post.id} }.`,
+          author_origin: res.author_origin,
+          ...(res.owner_decision_effect ? { owner_decision_effect: res.owner_decision_effect } : {}),
+          hint: res.owner_decision_effect === 'peer-opinion'
+            ? 'Peer opinion posted. This does not answer the coord:ask-owner question; only an owner-typed reply can resolve that decision gate.'
+            : `Answer posted. The asker can accept it with conversations:resolve { accepted_post_id: ${res.post.id} }.`,
         };
       },
       { keyOf: (it) => ({ id: it.id }) },

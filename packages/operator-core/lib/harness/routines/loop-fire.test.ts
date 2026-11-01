@@ -1963,19 +1963,40 @@ describe('walls + turn-settle nag in the wake text (compaction-continuity-harden
     'ship P-006',
     '',
     '## Walls',
-    '- 3 zombie PIDs await owner OK to kill — re-check: ps -p 95902 (since 2026-07-07T12:00:00.000Z)',
+    '- [origin:owner] 3 zombie PIDs await owner OK to kill — re-check: ps -p 95902 (since 2026-07-07T12:00:00.000Z)',
   ].join('\n');
 
   it('renderLoopWakeText renders the walls block in BOTH forms, outside the truncatable note', () => {
-    const walls = [{ claim: 'zombie PIDs await owner OK', recheck: 'ps -p 95902', sinceMs: Date.now() - 3_600_000 }];
+    const walls = [{
+      claim: 'zombie PIDs await owner OK',
+      origin: 'owner' as const,
+      recheck: 'ps -p 95902',
+      sinceMs: Date.now() - 3_600_000,
+    }];
     const short = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 5, checkpoint: '## Next action\ngo', walls });
     expect(short).toContain('⛔ OPEN WALLS');
-    expect(short).toContain('  • zombie PIDs await owner OK — re-check: ps -p 95902 (standing 60m)');
+    expect(short).toContain('  • [origin:owner] zombie PIDs await owner OK — re-check: ps -p 95902 (standing 60m)');
     const full = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 1, checkpoint: '## Next action\ngo', walls });
     expect(full).toContain('⛔ OPEN WALLS');
     expect(full).toContain('line 2 of the contract.'); // still the full kickoff
     // No walls ⇒ no block.
     expect(renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 1, checkpoint: null })).not.toContain('OPEN WALLS');
+  });
+
+  it('legacy and self-imposed walls require revalidation instead of becoming unconditional blockers', () => {
+    const legacy = renderLoopWallsBlock([{ claim: 'Do not rerun the gate' }], NOW)!;
+    expect(legacy).toContain('⚠ CARRIED WALLS TO REVALIDATE');
+    expect(legacy).not.toContain('⛔ OPEN WALLS');
+    const conditional = renderLoopWallsBlock([{
+      claim: 'Do not mutate the repair queue',
+      origin: 'self',
+      appliesWhile: 'gate run rr-123 is active',
+      recheck: 'release:repair-queue status rr-123',
+    }], NOW)!;
+    expect(conditional).toContain('gate run rr-123 is active');
+    expect(conditional).toContain('release:repair-queue status rr-123');
+    expect(conditional).not.toContain('⛔ OPEN WALLS');
+    expect(renderLoopWallsBlock([{ claim: 'Owner approval pending', origin: 'owner' }], NOW)).toContain('⛔ OPEN WALLS');
   });
 
   it('renderLoopWakeText splices the nag line in BOTH forms, ahead of the checkpoint block', () => {
@@ -2001,7 +2022,7 @@ describe('walls + turn-settle nag in the wake text (compaction-continuity-harden
     expect(res).toMatchObject({ fired: true });
     const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(opts.summary).toContain('⛔ OPEN WALLS');
-    expect(opts.summary).toContain('  • 3 zombie PIDs await owner OK to kill — re-check: ps -p 95902');
+    expect(opts.summary).toContain('  • [origin:owner] 3 zombie PIDs await owner OK to kill — re-check: ps -p 95902');
     expect(opts.summary).not.toContain('## Walls'); // the section never rides the truncatable body
     expect(opts.summary).toContain('ship P-006'); // the narrative body still renders
   });
@@ -2038,7 +2059,7 @@ describe('walls + turn-settle nag in the wake text (compaction-continuity-harden
     const deps = mkDeps({
       readFireCount: vi.fn(async () => 4) as never,
       getLoopCarryNoteWithMeta: vi.fn(async () => ({
-        note: '## Walls\n- zombie PIDs await owner OK',
+        note: '## Walls\n- [origin:owner] zombie PIDs await owner OK',
         updatedAtMs: Date.now(),
       })) as never,
     });
@@ -2046,7 +2067,7 @@ describe('walls + turn-settle nag in the wake text (compaction-continuity-harden
     const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(opts.summary).toContain('line 2 of the contract.'); // full form — no narrative checkpoint to shorten on
     expect(opts.summary).toContain('⛔ OPEN WALLS');
-    expect(opts.summary).toContain('  • zombie PIDs await owner OK');
+    expect(opts.summary).toContain('  • [origin:owner] zombie PIDs await owner OK');
   });
 });
 

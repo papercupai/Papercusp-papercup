@@ -439,6 +439,69 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
     expect(update.text).toContain("'{repair_queue,qualificationAttemptId}'");
   });
 
+  it('preserves the unmarked unmeasured retest from a terminal inconclusive row in the successor CAS', async () => {
+    const begun = beginQualificationTransaction(null, {
+      attemptId: 'attempt-1',
+      requiredAncestorSha: 'candidate-1',
+      candidate: 'candidate-1',
+      nowMs: 100,
+    }).transaction;
+    const current = settleQualificationTransaction(begun, {
+      attemptId: 'attempt-1',
+      runId: 'run-1',
+      candidate: 'candidate-1',
+      reason: 'error',
+      green: null,
+      nowMs: 200,
+    }).transaction;
+    expect(current.outcome.kind).toBe('code-inconclusive');
+
+    const unmarkedRetest = {
+      ...safeQueue(),
+      phase: 'ready-to-verify' as const,
+      unmeasuredRetestHead: 'candidate-1',
+      attempts: 0,
+      fixerSpawnId: null,
+      dispatchReservation: null,
+      convergenceRounds: [],
+      retestRequested: undefined,
+    };
+    expect(unmarkedRetest).toMatchObject({
+      phase: 'ready-to-verify',
+      repairHead: 'candidate-1',
+      unmeasuredRetestHead: 'candidate-1',
+      attempts: 0,
+      fixerSpawnId: null,
+      dispatchReservation: null,
+      convergenceRounds: [],
+    });
+    expect(unmarkedRetest.retestRequested).toBeUndefined();
+
+    const { statements } = transactionHarness({
+      qualificationTransaction: current,
+      repair_queue: unmarkedRetest,
+    });
+    const result = await beginStoredQualification(target, successor, {
+      reconcileTerminalRepairQueueForSuccessor: true,
+    });
+
+    expect(result).toMatchObject({
+      status: 'updated',
+      transaction: { attemptId: 'attempt-2', previousAttemptId: 'attempt-1' },
+      repairQueueReconciliation: {
+        status: 'preserved',
+        reason: 'matching-untested-repair-head',
+        predecessorAttemptId: 'attempt-1',
+        successorAttemptId: 'attempt-2',
+        candidate: 'candidate-1',
+      },
+    });
+    expect(statements[0]!.text).toContain('FOR UPDATE');
+    const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
+    expect(update.text).toContain("metadata->'repair_queue' =");
+    expect(update.text).toContain("'{repair_queue,qualificationAttemptId}'");
+  });
+
   // WI-6554700010030197: every queue writer CASes on repair_queue.updatedAtMs and writes its
   // whole snapshot back. A re-stamp that left the version unchanged let a writer holding a
   // pre-begin snapshot pass its CAS and restore the predecessor id (measured 2026-10-27).

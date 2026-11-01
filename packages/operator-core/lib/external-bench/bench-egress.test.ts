@@ -418,6 +418,56 @@ describe('startBenchEgress', () => {
     expect((await import('node:fs')).readdirSync(workRoot).filter((n) => !before.has(n))).toEqual([]);
   });
 
+  it('reclaims only old unattached labelled networks after IPAM exhaustion, then retries creation', async () => {
+    const now = Date.now();
+    const label = 'papercusp.bench-egress';
+    const network = (id: string, ageMs: number, containers: Record<string, unknown>) => [{
+      Id: id,
+      Created: new Date(now - ageMs).toISOString(),
+      Labels: { [label]: `run-${id}` },
+      Containers: containers,
+    }];
+    const inspections: Record<string, unknown> = {
+      old: network('old', 48 * 60 * 60 * 1000, {}),
+      recent: network('recent', 60 * 60 * 1000, {}),
+      attached: network('attached', 48 * 60 * 60 * 1000, { sidecar: { Name: 'active-sidecar' } }),
+    };
+    const calls: string[][] = [];
+    let creates = 0;
+    const exec: ProcExec = async (_cmd, args) => {
+      calls.push(args);
+      if (args[0] === 'network' && args[1] === 'create') {
+        creates++;
+        if (creates === 1) return { stdout: '', stderr: 'all predefined address pools have been fully subnetted', code: 1 };
+        return { stdout: 'base-network\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'network' && args[1] === 'ls') return { stdout: 'old\nrecent\nattached\n', stderr: '', code: 0 };
+      if (args[0] === 'network' && args[1] === 'inspect') {
+        return { stdout: JSON.stringify(inspections[args[2]!]), stderr: '', code: 0 };
+      }
+      if (args[0] === 'run') return { stdout: 'sidecar-123\n', stderr: '', code: 0 };
+      if (args[0] === 'exec') return { stdout: procNet([8788]), stderr: '', code: 0 };
+      return { stdout: '', stderr: '', code: 0 };
+    };
+
+    const egress = await startBenchEgress({
+      runId: 'ipam-recovery',
+      endpoints: [{ name: 'gw', listenPort: 8788, targetPort: upstreamPort }],
+      exec,
+      workRoot,
+      readyTimeoutMs: 100,
+      readyPollMs: 1,
+    });
+    started.push(egress);
+
+    expect(creates).toBe(2);
+    expect(calls.filter((args) => args[0] === 'network' && args[1] === 'rm').map((args) => args[2])).toEqual(['old']);
+    const createIndices = calls.map((args, index) => args[0] === 'network' && args[1] === 'create' ? index : -1).filter((index) => index >= 0);
+    const removeIndex = calls.findIndex((args) => args[0] === 'network' && args[1] === 'rm');
+    expect(createIndices).toHaveLength(2);
+    expect(removeIndex).toBeLessThan(createIndices[1]!);
+  });
+
   it('a failed sidecar start removes the base network and the work dir', async () => {
     const fake = fakeDocker({ fail: ['run'] });
     await expect(

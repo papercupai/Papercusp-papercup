@@ -21,6 +21,7 @@ import {
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as Sql,
   denied: false, revoked: false,
+  revokedReviewers: new Set<string>(),
   wake: vi.fn(), model: vi.fn(), claim: vi.fn(), dispatches: vi.fn(),
   denyPickupClaim: false,
   kernelDenied: false, kernelUnavailable: false, suToken: 'test-only-original-bearer-not-a-real-credential',
@@ -50,7 +51,9 @@ vi.mock('./harness/routines/system-actions', async (orig) => ({
 }));
 vi.mock('./agent-tools/coordination/presence', async (orig) => ({
   ...await orig<typeof import('./agent-tools/coordination/presence')>(),
-  getPresence: async (actor: string) => ({ workspaceId: 'default', revoked: actor === 'reviewer-session' && h.revoked }),
+  getPresence: async (actor: string) => ({
+    workspaceId: 'default', revoked: (actor === 'reviewer-session' && h.revoked) || h.revokedReviewers.has(actor),
+  }),
 }));
 vi.mock('./modes/store', async (orig) => ({
   ...await orig<typeof import('./modes/store')>(), getModes: async () => [],
@@ -221,6 +224,7 @@ afterAll(async () => db?.cleanup());
 beforeEach(async () => {
   h.denied = false;
   h.revoked = false;
+  h.revokedReviewers.clear();
   h.denyPickupClaim = false;
   h.kernelDenied = false;
   h.kernelUnavailable = false;
@@ -859,6 +863,39 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
     expect(ledger!.detail.status).toBe('complete');
     expect(ledger!.detail.guardRefusals).toContainEqual(refusal);
     expect(h.model).not.toHaveBeenCalled();
+  });
+
+  it('isolates a revoked earlier review request and completes the later valid review', async () => {
+    const ordered = [
+      await create('Earlier revoked review'),
+      await create('Later valid review'),
+    ].sort((a, b) => a.id.localeCompare(b.id));
+    const [revokedItem, validItem] = ordered;
+    await claimOriginal(revokedItem.id);
+    await claimOriginal(validItem.id);
+    await placeReview(revokedItem.id);
+    await placeReview(validItem.id);
+    const revokedRequest = await review(revokedItem.id);
+    const validRequest = await review(validItem.id, reviewLeader);
+    const revokedBefore = await row(revokedItem.id);
+    h.revokedReviewers.add(reviewerOwnerId);
+
+    const result = await tick();
+    expect(result.guardRefusals).toContainEqual(expect.objectContaining({
+      itemId: revokedItem.id,
+      canonicalId: null,
+      reason: 'review-gated',
+      detail: expect.stringContaining('review requester absent, revoked or foreign'),
+    }));
+    expect(await row(revokedItem.id)).toEqual(revokedBefore);
+    expect(await row(validItem.id)).toMatchObject({
+      admission: 'admitted',
+      taken_by: reviewerOwnerId,
+      payload: { _admissionReviewReceipt: { requestId: validRequest.requestId, pickupConfirmed: false } },
+    });
+    expect(revokedRequest.requestId).not.toBe(validRequest.requestId);
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
   });
 
   it('enforces the actual review write policy independently of dispatch and claim permissions', async () => {

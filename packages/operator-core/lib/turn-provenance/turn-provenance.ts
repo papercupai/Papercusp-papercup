@@ -612,6 +612,7 @@ export async function tagTurnForInjection(args: {
       origin,
       sha256: payloadSha256(args.text),
       ts: nowMs,
+      ...(args.ttlMs !== undefined ? { ttlMs: args.ttlMs } : {}),
       ...(args.loopFire ? { loopFire: args.loopFire } : {}),
     },
     { dir: args.dir, nowMs, ttlMs: args.ttlMs },

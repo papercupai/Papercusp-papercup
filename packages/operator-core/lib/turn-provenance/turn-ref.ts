@@ -893,11 +893,21 @@ export interface CurrentTurnStamp {
  */
 export async function resolveCurrentTurnStamp(
   ownerId: string,
-  opts: { filePath?: string; sessionId?: string } = {},
+  opts: {
+    filePath?: string;
+    sessionId?: string;
+    selfSessionOptions?: ResolveSelfSessionOptions;
+  } = {},
 ): Promise<CurrentTurnStamp | null> {
   let { filePath, sessionId } = opts;
   if (!filePath || !sessionId) {
-    const self = await resolveSelfSession(ownerId).catch(() => null);
+    // A stale discovery record is useful for best-effort self-search, but it
+    // cannot establish which client turn drove a write. Authority-bearing
+    // stamps require exactly one recognized active adv-session binding.
+    const self = await resolveSelfSession(ownerId, {
+      ...opts.selfSessionOptions,
+      requireUniqueActiveBinding: true,
+    }).catch(() => null);
     if (!self) return null;
     filePath = filePath ?? self.filePath;
     sessionId = sessionId ?? self.sessionId;

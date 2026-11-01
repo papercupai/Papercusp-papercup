@@ -41,6 +41,7 @@ import {
   acquireGradingAuditSubjectMutex,
   cancelSupersededPendingGradingAuditAtomically,
   cancelStaleEvidencePendingGradingAuditAtomically,
+  gradingAuditReplayBasisFingerprint,
   isCurrentSourceAuditResponder,
   listScorecards,
   readScorecardEvidence,
@@ -1066,6 +1067,7 @@ export async function notifyRetainedGradingAuditor(
     card: ScorecardRow;
     task: TaskRow;
     reservation: GradingAuditReservationLease;
+    replayBasisFingerprint?: string;
     workspaceId: string;
     harness?: string;
     /** Exact endpoint already validated by the canonical runtime recovery. */
@@ -1095,13 +1097,25 @@ export async function notifyRetainedGradingAuditor(
     return { state: 'skipped', reason: 'retained auditor target/owner/fingerprint provenance is missing or mismatched' };
   }
   const notificationIdentity: unknown[] = [workspaceId, card.issueId, card.evidenceFingerprint, ownerId, reservation];
+  if (input.replayBasisFingerprint && card.gradingAudit?.replayRefusal) {
+    notificationIdentity.push(input.replayBasisFingerprint);
+  }
   // A restored endpoint needs a new handoff even when the audit lease did not
   // change. Legacy notices keep their original replay identity.
   if (input.runtime) notificationIdentity.push(input.runtime);
   const msgId = `${input.resumeParked ? 'grading-audit-resume' : 'grading-audit-renewal'}:${createHash('sha256')
     .update(JSON.stringify(notificationIdentity))
     .digest('hex')}`;
+  const replayRefusalGuidance = card.gradingAudit?.replayRefusal
+    ? [
+        'The previous emit was refused with ' + card.gradingAudit.replayRefusal.code +
+          ' for replay basis ' + card.gradingAudit.replayRefusal.basisFingerprint +
+          '. To challenge a reproduced rating, put both evidenceKind and evidenceRef on ratings[<criterion>] ' +
+          'and cite evidence outside the exact replay selection; free-form evidence text is explanation only.',
+      ]
+    : [];
   const body = [
+    ...replayRefusalGuidance,
     `${input.resumeParked ? 'Resume retained audit under existing lease' : 'Renewed lease'}: key '${key}', reservedAt '${reservation.reservedAt}'. Your existing independent audit task '${task.taskId}' is retained.`,
     ...(input.runtime ? [
       `Current retained evaluator: '${input.runtime.baseUrl}' (build '${input.runtime.evaluatorBuild.sha}', version '${input.runtime.evaluatorBuild.version}', runtime task '${input.runtime.taskId}'). Use this endpoint's /api/mcp for scorecards:get and the audit; the task's gradingAuditRuntimeBinding is updated with this notice. Require its exact build and the target/lease/currentness checks below. If this route cannot be used, stop and report the route failure; do not substitute a default operator.`,
@@ -2040,14 +2054,16 @@ function gradingAuditBrief(
     'Evidence completeness: follow rerunRecipeRead.read and every rerunRecipeRead.next, concatenate the exact JSON chunks in offset order, and parse only when rerunRecipeRead.complete is true. Follow evidenceRead.next through the entire criterion index, then read every indexed criterion through its final evidence page; evidenceRead.complete on a selected criterion applies only to that criterion. An incomplete page with a valid continuation is recoverable evidence, not a missing or unre-runnable recipe. Do not rate re-runnable-evidence from the first page. If a continuation fails, preserve the exact cursor request and returned failure; distinguish that retrieval failure from absent stored evidence.',
     'Do not modify implementation files, run shell commands, recruit peers, emit an ordinary same-rubric scorecard, or broaden scope.',
     `If the ordinary MCP tools are unavailable and you must use the documented scripts/mcp-call.mjs recovery path, use \`${recoveryCommand}\` and stream each JSON payload through quoted stdin (--json -). ${runtime ? `The explicit --port pins the validated evaluator at '${runtime.baseUrl}'; retain it on every recovery call, even if PAPERCUSP_HONO_PORT is set. If that endpoint is unreachable, stop without grading or emitting and report the exact route failure so the pending-audit dispatcher can restore it through canonical runtime recovery. Never remove the pin or substitute a default operator or proxy. ` : ''}If an intermediate file is unavoidable, first create a private directory with \`mktemp -d ${scratchTemplate}\` and keep every file inside it. Never read or write shared fixed names such as /tmp/eval-args.json or /tmp/eval.json: other grading auditors run concurrently and can overwrite them.`,
-    `Emit exactly one COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...}, gradingAuditReservation:{ key:'<effective key>', reservedAt:'<effective reservedAt>' } }. Include concrete evidence for every criterion in the grading-integrity rubric. The gradingAuditReservation field is required for this active lease; copy both values exactly from the lease you confirmed. If you verified a renewal at start or pre-emit, use its renewed key and reservedAt.`,
+    `Submit a COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...}, gradingAuditReservation:{ key:'<effective key>', reservedAt:'<effective reservedAt>' } }. This describes one successful audit result; a refused call may use only the single corrective retry below to resubmit this same audit. Include concrete evidence for every criterion in the grading-integrity rubric. The gradingAuditReservation field is required for this active lease; copy both values exactly from the lease you confirmed. If you verified a renewal at start or pre-emit, use its renewed key and reservedAt.`,
     `Before emitting, re-read the target with scorecards:get { issueId: '${card.issueId}' } and check scorecard.gradingAudit.state plus scorecard.auditTarget (current, superseded/supersededBy, retracted, subjectRubricCurrentness — read-time relations, not observation stamps): this dispatch brief may be stale after the reservation lease expires. Emit only when the exact target is still current and its gradingAudit.state is exactly 'pending'. If the state is not 'pending' (including 'passed', 'failed', or 'cancelled'), the rubric subject is no longer current, or the target is superseded or retracted, do not emit any audit; report the current state and any auditIssueId, then stop.`,
     // WI-10006794: the start-of-audit lease check above is strict, but at EMIT time an absent
     // reservation only means this lease lapsed while the audit ran (a full audit of a large card
     // outlasts GRADING_AUDIT_RESERVATION_TTL_MS). scorecards:emit admits a lapsed lease's own
     // auditor (EI-25246208524832409); an auditor that stops here throws the finished audit away.
-    `At this pre-emit re-read, a dispatchReservation that is ABSENT means only that your lease lapsed while you audited; it is NOT a reason to stop. If gradingAudit.state is still exactly 'pending', emit with your original gradingAuditReservation unchanged: scorecards:emit admits the auditor that held a lapsed lease and refuses anyone else. A present reservation with a different key or reservedAt is a renewal only if your direct coord inbox contains a message from system:grading-audit-dispatch with summary "Renewed grading-audit lease for ${card.issueId}", and the message says your existing independent audit task is retained. Require the notice to identify this exact target '${card.issueId}', the current evidence fingerprint '${card.evidenceFingerprint ?? 'not recorded'}', the expected key 'grading-audit:${card.issueId}', and a renewed reservedAt that matches the target's current dispatchReservation exactly. Re-read scorecards:get and require the target is still current and pending with that exact target, fingerprint, key, and reservedAt; then emit using the renewed key and reservedAt in gradingAuditReservation. Without that direct matching renewal, stop without emitting: an unrelated reservation change or a notice for another task, target, fingerprint, key, or reservedAt is not authority to continue. If the emit is refused, report the refusal code and stop.`,
-    'A successful audit emission settles the target scorecard; do not emit any second audit or other scorecard.',
+    `At this pre-emit re-read, a dispatchReservation that is ABSENT means only that your lease lapsed while you audited; it is NOT a reason to stop. If gradingAudit.state is still exactly 'pending', emit with your original gradingAuditReservation unchanged: scorecards:emit admits the auditor that held a lapsed lease and refuses anyone else. A present reservation with a different key or reservedAt is a renewal only if your direct coord inbox contains a message from system:grading-audit-dispatch with summary "Renewed grading-audit lease for ${card.issueId}", and the message says your existing independent audit task is retained. Require the notice to identify this exact target '${card.issueId}', the current evidence fingerprint '${card.evidenceFingerprint ?? 'not recorded'}', the expected key 'grading-audit:${card.issueId}', and a renewed reservedAt that matches the target's current dispatchReservation exactly. Re-read scorecards:get and require the target is still current and pending with that exact target, fingerprint, key, and reservedAt; then emit using the renewed key and reservedAt in gradingAuditReservation. Without that direct matching renewal, stop without emitting: an unrelated reservation change or a notice for another task, target, fingerprint, key, or reservedAt is not authority to continue. Follow the refusal-specific handling below.`,
+    `For a scorecards:emit refusal with code 'grading_audit_replay_consistent', use the returned error as a bounded correction path. Preserve a semantic finding only when independently verified evidence outside the exact replay selection supports it; add both evidenceKind and evidenceRef to the affected ratings[criterion] using the actual external source. Before retrying, re-read scorecards:get and repeat the exact target, currentness, pending-state, and lease checks above. Then retry this same audit at most once. Do not invent citations, reuse evidence from the exact replay selection, or retry if no independent evidence supports the finding.`,
+    `If no qualifying evidence supports the finding, or the one retry is refused, do not retry again. Add work_items:comment { id:'${card.issueId}', body:'...' } to this same target work-item with the refusal code, affected criterion(s), semantic finding, and verified external evidence refs (or state that none could be verified). Do not claim that an audit was recorded. For any other emit refusal, report its code and stop.`,
+    'A successful emission settles the target scorecard. The bounded correction above retries the same audit after a refusal; after a successful emission, do not emit another audit or any other scorecard.',
   ].join('\n\n');
 }
 
@@ -2647,6 +2663,9 @@ export async function dispatchPendingGradingAudits(
 
     const idempotencyKey = `grading-audit:${issueId}`;
     const reservationSnapshot = gradingAuditReservationSnapshot(card, evidenceById.get(issueId));
+    const replayBasisFingerprint = card.gradingAudit
+      ? gradingAuditReplayBasisFingerprint(issueId, card.gradingAudit, reservationSnapshot)
+      : undefined;
     const harness = input.harness?.trim();
     // EI-23414612968722239: `role:'judge'` is a HARNESS-SCOPED persona — launch-agent
     // refuses it outright ("no harness resolved") when no harness accompanies it, so the
@@ -2860,9 +2879,30 @@ export async function dispatchPendingGradingAudits(
             } catch { /* Unknown responder identity cannot authorize a handoff. */ }
           }
           if (currentResponder && retainedTask) {
+            const replayRefusal = card.gradingAudit?.replayRefusal;
+            if (
+              replayRefusal &&
+              replayBasisFingerprint &&
+              replayRefusal.responderOwnerId === ownerId &&
+              replayRefusal.basisFingerprint === replayBasisFingerprint
+            ) {
+              return {
+                issueId,
+                rubricRef: card.rubricRef,
+                state: 'deduped',
+                idempotencyKey,
+                dispatchReservation: heldReservation,
+                renewalNotification: {
+                  state: 'skipped',
+                  reason: 'retained auditor already refused this unchanged replay basis',
+                },
+                ...recoveryFields(),
+              };
+            }
             markPhase('retained-auditor-notification');
             const renewalNotification = await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
               card, task: retainedTask, reservation: heldReservation, runtime: retainedRuntime,
+              ...(replayBasisFingerprint ? { replayBasisFingerprint } : {}),
               workspaceId: workspaceId!, ...(harnessResolved ? { harness } : {}),
             });
             return { issueId, rubricRef: card.rubricRef, state: 'deduped', idempotencyKey,
@@ -3187,13 +3227,27 @@ export async function dispatchPendingGradingAudits(
             // permits the durable renewal notice below.
           }
         }
+        const replayRefusal = card.gradingAudit?.replayRefusal;
+        const unchangedReplayRefusal = Boolean(
+          retainedTask &&
+          retainedOwnerId &&
+          replayBasisFingerprint &&
+          replayRefusal?.responderOwnerId === retainedOwnerId &&
+          replayRefusal.basisFingerprint === replayBasisFingerprint,
+        );
         markPhase('retained-auditor-notification');
         const retainedRuntime = retainedRuntimes.get(issueId);
-        const renewalNotification = !priorReservation
+        const renewalNotification = unchangedReplayRefusal
+          ? {
+              state: 'skipped' as const,
+              reason: 'retained auditor already refused this unchanged replay basis',
+            }
+          : !priorReservation
           ? viableLiveTasks.length !== 1
               ? { state: 'skipped' as const, reason: 'retained auditor task identity is ambiguous' }
               : await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
                   card, task: viableLiveTasks[0]!, reservation: retainedReservation,
+                  ...(replayBasisFingerprint ? { replayBasisFingerprint } : {}),
                   workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
                   ...(retainedRuntime ? { runtime: retainedRuntime } : {}),
                 })
@@ -3201,6 +3255,7 @@ export async function dispatchPendingGradingAudits(
             ? undefined
             : await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
                 card, task: retainedTask, reservation: retainedReservation,
+                ...(replayBasisFingerprint ? { replayBasisFingerprint } : {}),
                 workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
                 ...(retainedRuntime ? { runtime: retainedRuntime } : {}),
                 ...(resumeParked ? { resumeParked: true } : {}),

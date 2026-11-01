@@ -621,16 +621,17 @@ async function deliverTaskTerminalEvent(
  * at least once if the process dies after emitting but before acknowledging it.
  * Legacy terminal rows with no latch are included so existing lost exits recover. */
 export async function recoverPendingTaskTerminalEvents(
-  workspaceId?: string,
+  workspaceId?: string | null,
   inject?: Sql,
   emit: TaskTerminalEventEmitter = emitTaskTerminalEvent,
 ): Promise<number> {
   const sql = sqlOf(inject);
+  const workspaceFilter = workspaceId === null ? sql`TRUE` : sql`t.workspace_id = ${workspaceId ?? activeWorkspaceId()}`;
   const rows = await sql`
     SELECT t.task_id, t.workspace_id, t.harness_slug, t.class, t.launched_by,
            t.state, t.exit_code, t.exit_reason
       FROM harness_shared.task_ledger t
-     WHERE t.workspace_id = ${workspaceId ?? activeWorkspaceId()}
+     WHERE ${workspaceFilter}
        AND t.ended_at IS NOT NULL
        AND t.state IN ('exited', 'killed', 'timed_out', 'stranded', 'ended_unobserved')
        AND (t.detail -> 'terminalEventPending' = 'true'::jsonb OR (
@@ -977,6 +978,8 @@ export async function markRecoveredFromJobLog(
 
 export interface ListTasksFilter {
   workspaceId?: string;
+  /** Host-only reads such as task reconciliation may deliberately span logical workspaces. */
+  allWorkspaces?: boolean;
   states?: readonly TaskState[];
   classes?: readonly string[];
   launchedBy?: string;
@@ -1080,7 +1083,7 @@ async function queryTasks(filter: ListTasksFilter, inject: Sql | undefined, incl
   const rows = await sql`
     SELECT * ${includeTotal ? sql`, COUNT(*) OVER() AS matching_count` : sql``}
       FROM harness_shared.task_ledger
-     WHERE workspace_id = ${ws}
+     WHERE ${filter.allWorkspaces ? sql`TRUE` : sql`workspace_id = ${ws}`}
        ${filter.includeEnded ? sql`` : sql`AND ended_at IS NULL`}
        ${filter.states?.length ? sql`AND state = ANY(${sql.array(filter.states as string[])})` : sql``}
        ${filter.classes?.length ? sql`AND class = ANY(${sql.array(filter.classes as string[])})` : sql``}
@@ -1218,8 +1221,13 @@ export async function listLiveTasks(workspaceId?: string, inject?: Sql): Promise
 }
 
 /** Lost watchers may leave an unobserved close before their durable exit arrives. */
-export async function listReconcileTasks(workspaceId?: string, inject?: Sql): Promise<TaskRow[]> {
-  return listTasks({ workspaceId, states: ['pending', 'running', 'ended_unobserved'], includeEnded: true, limit: 2000 }, inject);
+export async function listReconcileTasks(workspaceId?: string | null, inject?: Sql): Promise<TaskRow[]> {
+  return listTasks({
+    ...(workspaceId === null ? { allWorkspaces: true } : { workspaceId }),
+    states: ['pending', 'running', 'ended_unobserved'],
+    includeEnded: true,
+    limit: 2000,
+  }, inject);
 }
 
 /**

@@ -9,6 +9,7 @@
  * the live round-trip against :3170.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { toArgsJsonSchema } from '@papercusp/tooldef';
 
 // P-012: default FALSE so the pre-existing exact-equality metadata assertions stay
 // byte-identical; the dispatch-wrapper describe flips it per-test.
@@ -30,6 +31,7 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 }));
 
 import toolInvoke, { NestedToolRefusalError, summarizeNestedToolOutcome } from './invoke';
+import { decodeToolsInvokeArgs } from './invoke-args';
 import dbMigrateTool from '../db/migrate';
 import { SCORECARD_EMIT_TIMEOUT_SEC } from '../scorecards/emit';
 
@@ -84,6 +86,22 @@ describe('tools:invoke registration', () => {
     expect(chaining).toContain('legacy callable schemas may reject');
   });
 
+  it('publishes record and JSON-string args inputs', () => {
+    const schema = toArgsJsonSchema('tools:invoke', toolInvoke.args);
+    const properties = schema.properties as Record<string, unknown>;
+    const argsSchema = properties.args as {
+      anyOf?: Array<Record<string, unknown>>;
+      oneOf?: Array<Record<string, unknown>>;
+    };
+    const alternatives = argsSchema.anyOf ?? argsSchema.oneOf;
+
+    expect(alternatives).toBeDefined();
+    expect(alternatives).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'object' }),
+      expect.objectContaining({ type: 'string' }),
+    ]));
+  });
+
   it('is advertised as a write and resolves each call to its target\'s effect (D-021)', () => {
     // readOnlyHint is derived from the static effect, so a delegator that can
     // reach capability:bash must never read as read-only.
@@ -100,14 +118,32 @@ describe('tools:invoke registration', () => {
   });
 
   it('tolerates a JSON-stringified args payload (EI-6681 client-serialization quirk)', () => {
+    const expected = { key: 'x', value: true, nested: { a: [1, 2, 3] } };
+    const encoded = JSON.stringify(expected);
     const r = def.args.safeParse({
       name: 'flags:set',
-      args: JSON.stringify({ key: 'x', value: true, nested: { a: [1, 2, 3] } }),
+      args: encoded,
     }) as { success: true; data: { args: unknown } } | { success: false };
     expect(r.success).toBe(true);
-    if (r.success) {
-      expect(r.data.args).toEqual({ key: 'x', value: true, nested: { a: [1, 2, 3] } });
-    }
+    if (r.success) expect(r.data.args).toBe(encoded);
+    expect(decodeToolsInvokeArgs(encoded)).toEqual(expected);
+  });
+
+  it('decodes a long multiline JSON-stringified work-item payload', () => {
+    const checkpoint = {
+      did: 'reproduced the nested args serialization',
+      left: 'first line\nsecond line\n'.repeat(40),
+      next: 'keep the nested string intact',
+    };
+    const args = { id: 'WI-123', harness: 'papercusp', checkpoint };
+    const r = def.args.safeParse({
+      name: 'work_items:checkpoint',
+      args: JSON.stringify(args),
+    }) as { success: true; data: { args: unknown } } | { success: false };
+
+    expect(r.success).toBe(true);
+    if (r.success) expect(typeof r.data.args).toBe('string');
+    expect(decodeToolsInvokeArgs(JSON.stringify(args))).toEqual(args);
   });
 
   it('recovers a long JSON record with one surplus closing brace (EI-25644994406425836)', () => {
@@ -122,7 +158,8 @@ describe('tools:invoke registration', () => {
       args: `${JSON.stringify(args)}}`,
     }) as { success: true; data: { args: unknown } } | { success: false };
     expect(r.success).toBe(true);
-    if (r.success) expect(r.data.args).toEqual(args);
+    if (r.success) expect(typeof r.data.args).toBe('string');
+    if (r.success) expect(decodeToolsInvokeArgs(r.data.args)).toEqual(args);
 
     const array = def.args.safeParse({
       name: 'flags:set',
@@ -156,7 +193,8 @@ describe('tools:invoke registration', () => {
       args: JSON.stringify(JSON.stringify(spec)),
     }) as { success: true; data: { args: unknown } } | { success: false };
     expect(r.success).toBe(true);
-    if (r.success) expect(r.data.args).toEqual(spec);
+    if (r.success) expect(typeof r.data.args).toBe('string');
+    if (r.success) expect(decodeToolsInvokeArgs(r.data.args)).toEqual(spec);
   });
 
   it('recovers a triple-encoded args payload too, bounded (EI-15360)', () => {
@@ -166,7 +204,8 @@ describe('tools:invoke registration', () => {
       args: JSON.stringify(JSON.stringify(JSON.stringify(obj))),
     }) as { success: true; data: { args: unknown } } | { success: false };
     expect(r.success).toBe(true);
-    if (r.success) expect(r.data.args).toEqual(obj);
+    if (r.success) expect(typeof r.data.args).toBe('string');
+    if (r.success) expect(decodeToolsInvokeArgs(r.data.args)).toEqual(obj);
   });
 
   it('does NOT un-string a target tool\'s legitimate nested string arg', () => {
@@ -182,6 +221,26 @@ describe('tools:invoke registration', () => {
 });
 
 describe('tools:invoke handler', () => {
+  it('decodes long multiline JSON-string args before dispatch', async () => {
+    const expected = {
+      id: 'WI-123',
+      harness: 'papercusp',
+      checkpoint: {
+        did: 'reproduced nested args serialization',
+        left: 'first line\nsecond line\n'.repeat(40),
+        next: 'retain the structured checkpoint',
+      },
+    };
+    const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }] }));
+
+    await def.handler({
+      name: 'work_items:checkpoint',
+      args: JSON.stringify(JSON.stringify(expected)),
+    }, { dispatchTool });
+
+    expect(dispatchTool).toHaveBeenCalledExactlyOnceWith('work_items:checkpoint', expected);
+  });
+
   it('dispatches only when the discovered serving generation matches', async () => {
     vi.mocked(readServingGeneration).mockResolvedValue({
       state: 'known',

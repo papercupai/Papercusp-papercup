@@ -31,8 +31,8 @@ afterEach(() => __resetFailureLoopCircuitBreakerForTests());
 describe('equivalent successful calls', () => {
   const settled = (data: unknown): DispatchProjectedResult => ({ ok: true,
     result: { content: [{ type: 'text', text: JSON.stringify(data) }] } });
-  const observe = (toolName: string, args: unknown, data: unknown, now = 1, ownerId = 'su-repeat') =>
-    observeFailureLoop({ toolName, args, result: settled(data), now, ownerId });
+  const observe = (toolName: string, args: unknown, data: unknown, now = 1, ownerId = 'su-repeat', sourceProjection?: unknown) =>
+    observeFailureLoop({ toolName, args, result: settled(data), now, ownerId, sourceProjection });
 
   it.each(['tools:find', 'work_items:get'])('warns once for identical %s data without treating changing elapsed time as progress', tool => {
     for (let i = 0; i < 3; i++) observe(tool, { id: 'WI-1' }, { state: 'open', elapsedMs: i }, i + 1);
@@ -51,6 +51,25 @@ describe('equivalent successful calls', () => {
     observe('work_items:get', { id: 'WI-1' }, { state: 'open' }, 2);
     observe('work_items:get', { id: 'WI-1' }, { state: 'done' }, 3);
     expect(takePendingFailureLoopHint('su-repeat', 4)).toBeNull();
+  });
+
+  it('does not combine distinct source projections of the same work-item result', () => {
+    const args = { id: 'WI-1' };
+    const rawResult = { state: 'open', posts: [{ id: 1191307, body: 'first' }, { id: 1191294, body: 'second' }] };
+    const projections = [
+      { pick: ['posts[]'] },
+      { pick: ['posts[?(@.id==1191307)]'] },
+      { pick: ['posts[?(@.id==1191294)]'] },
+    ];
+    for (const [index, sourceProjection] of projections.entries()) {
+      observe('work_items:get', args, rawResult, index + 1, 'su-repeat', sourceProjection);
+    }
+    expect(takePendingFailureLoopHint('su-repeat', 4)).toBeNull();
+
+    observe('work_items:get', args, rawResult, 4, 'su-repeat', projections[2]);
+    const repeated = observe('work_items:get', args, rawResult, 5, 'su-repeat', projections[2]);
+    expect(repeated).toMatchObject({ kind: 'repetition', category: 'status', count: 3 });
+    expect(JSON.stringify(repeated)).not.toContain('1191294');
   });
 
   it('requires measured test identity, ignores new run ids, and respects justified rechecks', () => {

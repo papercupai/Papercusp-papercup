@@ -80,10 +80,12 @@ const { getFlagSpy, armInboxWakeSpy, getClaimSpecRecordSpy } = vi.hoisted(() => 
   armInboxWakeSpy: vi.fn(async () => ({ awaitId: 1, eventKey: 'k', handleNote: 'n', minSleepSec: 60 })),
   getClaimSpecRecordSpy: vi.fn(),
 }));
+const { getFleetControlStatesSpy } = vi.hoisted(() => ({ getFleetControlStatesSpy: vi.fn() }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagSpy }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { LOOPS: 'papercusp-loops' } }));
 vi.mock('../../events/await/inbox-wake-arm', () => ({ armInboxWake: armInboxWakeSpy }));
 vi.mock('../../scheduler/claim-spec-store', () => ({ getClaimSpecRecord: getClaimSpecRecordSpy }));
+vi.mock('../../agent-fleets-store', () => ({ getFleetControlStates: getFleetControlStatesSpy }));
 
 const { recordLoopTransitionSpy } = vi.hoisted(() => ({
   recordLoopTransitionSpy: vi.fn(async (..._args: unknown[]) => undefined),
@@ -1407,6 +1409,13 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001)', 
 
   beforeEach(() => {
     getFlagSpy.mockReset().mockResolvedValue(true);
+    getFleetControlStatesSpy.mockReset().mockImplementation(async (_workspaceId: string, fleetSlugs: readonly string[]) =>
+      new Map(fleetSlugs.map((fleetSlug) => [fleetSlug, {
+        fleetSlug,
+        controlState: 'active' as const,
+        controlReason: null,
+      }] as const)),
+    );
     armInboxWakeSpy.mockReset().mockResolvedValue({ awaitId: 1, eventKey: 'k', handleNote: 'n', minSleepSec: 60 });
     getClaimSpecRecordSpy.mockReset().mockResolvedValue({
       source: 'fleet',
@@ -1554,6 +1563,31 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001)', 
 
     expect(result).toEqual({ armed: false, reason: 'explicit-loop-end', loopName: 'loop-su-member-1' });
     expect(upsertRoutineSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not re-arm an inactive member loop behind a fleet pause/takeover', async () => {
+    const pauseReason = 'fleet pause/takeover';
+    const sql = transactionalSql((strings) => /DISTINCT ON/.test(strings.join(' ')) ? [{
+      install_slug: 'papercusp', name: 'loop-su-member-1', active: false,
+      reschedule_interval_sec: 600, target_owner_id: 'su-member-1',
+      payload_template: { goal: 'stop during fleet takeover' }, fire_count: 3,
+      // A fleet pause is persisted on the fleet row, not with loop:end's
+      // owner-deliberate marker, so the recovery must check both control planes.
+      metadata: { pause: { reason: pauseReason, pausedAtMs: 1 } },
+    }] : []);
+    getFleetControlStatesSpy.mockResolvedValueOnce(new Map([[baseOpts.fleetSlug, {
+      fleetSlug: baseOpts.fleetSlug,
+      controlState: 'winding-down' as const,
+      controlReason: pauseReason,
+    }]]));
+
+    const result = await autoArmFleetMemberLoop({ ...baseOpts, sql: sql as unknown as Sql });
+
+    expect(result).toEqual({ armed: false, reason: 'fleet-winding-down', loopName: 'loop-su-member-1' });
+    expect(getFleetControlStatesSpy).toHaveBeenCalledWith(baseOpts.workspaceId, [baseOpts.fleetSlug], sql);
+    expect(upsertRoutineSpy).not.toHaveBeenCalled();
+    expect(recordLoopTransitionSpy).not.toHaveBeenCalled();
+    expect(armInboxWakeSpy).not.toHaveBeenCalled();
   });
 
   function inactiveMonitorSql(

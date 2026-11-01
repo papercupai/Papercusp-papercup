@@ -203,6 +203,15 @@ describe('walls — commitments as rows (compaction-continuity-hardening P-006)'
 
   it('a wall line round-trips through render + parse', () => {
     expect(parseWallLine(renderWallLine(WALL))).toEqual(WALL);
+    const conditional: WallEntry = {
+      id: 'repair-run',
+      origin: 'self',
+      claim: 'Do not mutate the repair queue',
+      appliesWhile: 'repair run rr-123 is active',
+      recheck: 'release:repair-queue status rr-123',
+      sinceMs: 1751892000000,
+    };
+    expect(parseWallLine(renderWallLine(conditional))).toEqual(conditional);
     // Minimal wall (claim only) round-trips too.
     expect(parseWallLine(renderWallLine({ claim: 'just a claim' }))).toEqual({ claim: 'just a claim' });
     // recheck-less but dated.
@@ -277,7 +286,13 @@ describe('walls — commitments as rows (compaction-continuity-hardening P-006)'
   });
 
   it('normalizeWallEntries preserves the ORIGINAL sinceMs for a standing claim, stamps now on new ones, dedups + caps', () => {
-    const prior: WallEntry[] = [{ claim: 'standing', recheck: 'old-cmd', sinceMs: 1000 }];
+    const prior: WallEntry[] = [{
+      claim: 'standing',
+      origin: 'self',
+      appliesWhile: 'repair run rr-123 is active',
+      recheck: 'old-cmd',
+      sinceMs: 1000,
+    }];
     const out = normalizeWallEntries(
       [
         { claim: '  standing  ' },
@@ -289,7 +304,13 @@ describe('walls — commitments as rows (compaction-continuity-hardening P-006)'
       5000,
     );
     expect(out).toEqual([
-      { claim: 'standing', recheck: 'old-cmd', sinceMs: 1000 }, // age + recheck inherited
+      {
+        claim: 'standing',
+        origin: 'self',
+        appliesWhile: 'repair run rr-123 is active',
+        recheck: 'old-cmd',
+        sinceMs: 1000,
+      }, // authority, predicate, age + recheck inherited
       { claim: 'brand new', recheck: 'check-it', sinceMs: 5000 },
     ]);
     const flood = normalizeWallEntries(

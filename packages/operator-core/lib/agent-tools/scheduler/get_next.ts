@@ -1294,6 +1294,109 @@ export function schedulerDispositionMetadata(
     : { kind: 'no-claim', reason: compactSchedulerNoClaimReason(payload), ...head };
 }
 
+function schedulerMetadataRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function schedulerMetadataCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(1_000_000_000, Math.max(0, Math.floor(value)))
+    : null;
+}
+
+function schedulerMetadataMs(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(300_000, Math.round(Math.max(0, value) * 10) / 10)
+    : null;
+}
+
+/** Keep the existing authority resolver's process-local pool sample on the same invocation row. */
+function compactControlAnchorPoolSnapshot(value: unknown): Record<string, unknown> | null {
+  const snapshot = schedulerMetadataRecord(value);
+  if (!snapshot) return null;
+  const counters = schedulerMetadataRecord(snapshot.counters);
+  const tickets = schedulerMetadataRecord(snapshot.tickets);
+  const ticketRows = Array.isArray(tickets?.tickets) ? tickets.tickets : [];
+  return {
+    observedAt: typeof snapshot.observedAt === 'string' ? snapshot.observedAt.slice(0, 64) : null,
+    counters: counters ? {
+      waiting: schedulerMetadataCount(counters.waiting),
+      oldestWaitMs: schedulerMetadataMs(counters.oldestWaitMs),
+      held: schedulerMetadataCount(counters.held),
+      oldestHeldMs: schedulerMetadataMs(counters.oldestHeldMs),
+      max: schedulerMetadataCount(counters.max),
+      totalAcquired: schedulerMetadataCount(counters.totalAcquired),
+      lastAcquiredAgoMs: schedulerMetadataMs(counters.lastAcquiredAgoMs),
+    } : null,
+    tickets: tickets ? {
+      capacity: schedulerMetadataCount(tickets.capacity),
+      active: schedulerMetadataCount(tickets.active),
+      omitted: schedulerMetadataCount(tickets.omitted),
+      // The source registry caps these at eight; re-cap before writing invocation metadata.
+      tickets: ticketRows.slice(0, 8).flatMap((value) => {
+        const ticket = schedulerMetadataRecord(value);
+        if (!ticket) return [];
+        const state = ticket.state === 'waiting' || ticket.state === 'held' ? ticket.state : 'unknown';
+        return [{
+          state,
+          ageMs: schedulerMetadataMs(ticket.ageMs),
+          ...(typeof ticket.operation === 'string' ? { operation: ticket.operation.slice(0, 96) } : {}),
+          // requestId is intentionally omitted; serving_process_id on tool_invocations
+          // correlates this snapshot without persisting another request identity.
+        }];
+      }),
+    } : null,
+  };
+}
+
+function schedulerControlAnchorTimingMetadata(ctx: {
+  kernelPreflight?: unknown;
+  kernelEnforcement?: unknown;
+}): Record<string, unknown> | undefined {
+  const phases = (['preflight', 'enforce'] as const).flatMap((phase) => {
+    const verdict = schedulerMetadataRecord(phase === 'preflight' ? ctx.kernelPreflight : ctx.kernelEnforcement);
+    const serverAudit = schedulerMetadataRecord(verdict?.serverAudit);
+    const authorityTimings = schedulerMetadataRecord(serverAudit?.authorityTimings);
+    const sample = schedulerMetadataRecord(authorityTimings?.controlAnchorSql);
+    if (!sample) return [];
+    const rawExecutions = Array.isArray(sample.executions) ? sample.executions : [];
+    const executions = rawExecutions.slice(0, 2).flatMap((value) => {
+      const execution = schedulerMetadataRecord(value);
+      if (!execution) return [];
+      const diagnostics = schedulerMetadataRecord(execution.acquisitionDiagnostics);
+      const outcome = execution.outcome === 'fulfilled' || execution.outcome === 'rejected'
+        ? execution.outcome
+        : 'unknown';
+      const backendPid = schedulerMetadataCount(execution.backendPid);
+      return [{
+        queryFingerprint: 'controlAnchorSql/v1',
+        ...(typeof execution.traceId === 'string' ? { traceId: execution.traceId.slice(0, 64) } : {}),
+        backendPid: backendPid && backendPid > 0 ? backendPid : null,
+        poolAcquisitionMs: schedulerMetadataMs(execution.poolAcquisitionMs),
+        clientQueryMs: schedulerMetadataMs(execution.clientQueryMs),
+        outcome,
+        acquisitionDiagnostics: diagnostics ? {
+          coverage: diagnostics.coverage === 'registered-acquisition-tickets-only'
+            ? 'registered-acquisition-tickets-only'
+            : 'unknown',
+          before: compactControlAnchorPoolSnapshot(diagnostics.before),
+          settled: diagnostics.settled == null ? null : compactControlAnchorPoolSnapshot(diagnostics.settled),
+        } : null,
+      }];
+    });
+    return [{
+      phase,
+      calls: schedulerMetadataCount(sample.calls),
+      totalMs: schedulerMetadataMs(sample.totalMs),
+      executions,
+      ...(rawExecutions.length > 2 ? { omittedExecutions: rawExecutions.length - 2 } : {}),
+    }];
+  });
+  return phases.length > 0 ? { schemaVersion: 1, phases } : undefined;
+}
+
 export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
@@ -1373,7 +1476,13 @@ export default defineTool({
       specHead?: SchedulerDispositionSpecHead,
     ): T => {
       const payload = JSON.parse(response.content[0]!.text) as Record<string, unknown>;
-      ctx.metadata?.({ schedulerDisposition: schedulerDispositionMetadata(null, payload, specHead) });
+      const controlAnchorSql = schedulerControlAnchorTimingMetadata(ctx);
+      ctx.metadata?.({
+        schedulerDisposition: schedulerDispositionMetadata(null, payload, specHead),
+        ...(controlAnchorSql ? {
+          schedulerTiming: { schemaVersion: 'scheduler-get-next-phase-timings-v1', unit: 'ms', controlAnchorSql },
+        } : {}),
+      });
       return response;
     };
     const handlerStartedAt = Date.now();
@@ -1989,17 +2098,90 @@ export default defineTool({
     let lastClaimStep = 'claim-start';
     let lastClaimStepStartedAtMs = performance.now();
     let lastClaimStepElapsedMs: number | undefined;
+    const MAX_SCHEDULER_TIMING_ROWS = 32;
+    const schedulerClaimStepTimings: Array<{
+      step: string;
+      elapsedMs: number;
+      endedBy: 'next-step' | 'callback-end' | 'claim-return';
+    }> = [];
+    const schedulerHintTimings: Array<{
+      hint: 'sourceCitation' | 'taskBrief';
+      phase: string;
+      elapsedMs: number;
+      outcome: 'ok' | 'unknown' | 'error';
+    }> = [];
+    let omittedClaimStepTimings = 0;
+    let omittedHintTimings = 0;
+    let activeClaimStep: { step: string; startedAtMs: number } | null = null;
+    const boundedElapsedMs = (elapsedMs: number): number =>
+      Math.min(300_000, Math.round(Math.max(0, elapsedMs) * 10) / 10);
+    const recordClaimStepTiming = (
+      step: string,
+      elapsedMs: number,
+      endedBy: 'next-step' | 'callback-end' | 'claim-return',
+    ): void => {
+      if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return;
+      if (schedulerClaimStepTimings.length >= MAX_SCHEDULER_TIMING_ROWS) {
+        omittedClaimStepTimings += 1;
+        return;
+      }
+      schedulerClaimStepTimings.push({ step: step.slice(0, 80), elapsedMs: boundedElapsedMs(elapsedMs), endedBy });
+    };
+    const recordHintTiming = (
+      hint: 'sourceCitation' | 'taskBrief',
+      phase: string,
+      elapsedMs: number,
+      outcome: 'ok' | 'unknown' | 'error',
+    ): void => {
+      if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return;
+      if (schedulerHintTimings.length >= MAX_SCHEDULER_TIMING_ROWS) {
+        omittedHintTimings += 1;
+        return;
+      }
+      schedulerHintTimings.push({ hint, phase: phase.slice(0, 80), elapsedMs: boundedElapsedMs(elapsedMs), outcome });
+    };
+    const schedulerTimingMetadata = (): Record<string, unknown> | undefined => {
+      const controlAnchorSql = schedulerControlAnchorTimingMetadata(ctx);
+      if (schedulerClaimStepTimings.length === 0 && schedulerHintTimings.length === 0
+        && omittedClaimStepTimings === 0 && omittedHintTimings === 0 && !controlAnchorSql) return undefined;
+      return {
+        schemaVersion: 'scheduler-get-next-phase-timings-v1',
+        unit: 'ms',
+        ...(controlAnchorSql ? { controlAnchorSql } : {}),
+        claimSteps: schedulerClaimStepTimings,
+        hintPhases: schedulerHintTimings,
+        ...(omittedClaimStepTimings > 0 ? { omittedClaimStepTimings } : {}),
+        ...(omittedHintTimings > 0 ? { omittedHintTimings } : {}),
+      };
+    };
+    const finishActiveClaimStep = (
+      endedAtMs: number,
+      endedBy: 'next-step' | 'callback-end' | 'claim-return',
+      elapsedMs?: number,
+    ): void => {
+      if (!activeClaimStep) return;
+      recordClaimStepTiming(
+        activeClaimStep.step,
+        elapsedMs ?? Math.max(0, endedAtMs - activeClaimStep.startedAtMs),
+        endedBy,
+      );
+      activeClaimStep = null;
+    };
     const onClaimStep = (
       step: string,
       event?: { phase: 'start'; startedAtMs: number } | { phase: 'end'; elapsedMs: number },
     ): void => {
       if (event?.phase === 'end') {
         if (step === lastClaimStep) lastClaimStepElapsedMs = event.elapsedMs;
+        if (activeClaimStep?.step === step) finishActiveClaimStep(performance.now(), 'callback-end', event.elapsedMs);
         return;
       }
+      const startedAtMs = event?.phase === 'start' ? event.startedAtMs : performance.now();
+      finishActiveClaimStep(startedAtMs, 'next-step');
       lastClaimStep = step;
-      lastClaimStepStartedAtMs = event?.startedAtMs ?? performance.now();
+      lastClaimStepStartedAtMs = startedAtMs;
       lastClaimStepElapsedMs = undefined;
+      activeClaimStep = { step, startedAtMs };
     };
     let timeoutMetadataForLateSettlement: {
       phase: 'claim';
@@ -2050,9 +2232,14 @@ export default defineTool({
           lateClaimSettlement = settlement;
           const timeoutMetadata = timeoutMetadataForLateSettlement;
           if (timeoutMetadata) {
+            const schedulerTiming = schedulerTimingMetadata();
             // The handler metadata writer is last-write-wins, so preserve the timeout
             // evidence when recording the later terminal observation.
-            ctx.metadata?.({ schedulerTimeout: timeoutMetadata, schedulerLateSettlement: settlement });
+            ctx.metadata?.({
+              schedulerTimeout: timeoutMetadata,
+              schedulerLateSettlement: settlement,
+              ...(schedulerTiming ? { schedulerTiming } : {}),
+            });
             if (timeoutMetadata.dispatchCallId) {
               void backfillToolInvocationMetadataByCallId({
                 workspaceId: ident.workspaceId,
@@ -2069,6 +2256,7 @@ export default defineTool({
       // NEVER read — we branch on `claim.degraded` before ever touching `claim.value`.
       { fallback: null, timeoutMs: claimBudgetMs, label: 'scheduler:get_next:claim', signal: ctx.signal },
     ));
+    if (!claim.degraded) finishActiveClaimStep(performance.now(), 'claim-return');
     // A genuine underlying error surfaces loudly (preserving today's behavior where a thrown
     // getNextForBee propagates), never degraded into a false "no claimable work" miss. Typed
     // PostgreSQL contention is the exception: it is a bounded, retryable condition and must
@@ -2076,6 +2264,7 @@ export default defineTool({
     if (claim.degraded && claim.reason === 'error') {
       if (claim.error instanceof OrgTxnTimeoutError) {
         const elapsedMs = lastClaimStepElapsedMs ?? Math.max(0, performance.now() - lastClaimStepStartedAtMs);
+        const schedulerTiming = schedulerTimingMetadata();
         ctx.metadata?.({
           schedulerTimeout: {
             phase: 'claim',
@@ -2087,6 +2276,7 @@ export default defineTool({
               ? { candidateWaitSnapshot: claim.error.candidateWaitSnapshot }
               : {}),
           },
+          ...(schedulerTiming ? { schedulerTiming } : {}),
         });
         return {
           content: [
@@ -2116,9 +2306,11 @@ export default defineTool({
         lastClaimStepElapsedMs: timedOutClaimStepElapsedMs,
         ...(ctx.dispatchCallId ? { dispatchCallId: ctx.dispatchCallId } : {}),
       };
+      const schedulerTiming = schedulerTimingMetadata();
       ctx.metadata?.({
         schedulerTimeout,
         ...(lateClaimSettlement ? { schedulerLateSettlement: lateClaimSettlement } : {}),
+        ...(schedulerTiming ? { schedulerTiming } : {}),
       });
       // EI-22737570207805341: withBoundedTimeout is a Promise.race and does not cancel the
       // abandoned claim. The resolver can therefore commit after this watchdog fires. Read the
@@ -2842,6 +3034,9 @@ export default defineTool({
                     workspaceId: ident.workspaceId ?? undefined,
                     harness: wi.harness ?? args.harness,
                     family: wi.family ?? familyOf(wi.kind ?? ''),
+                    onTiming: (timing) => recordHintTiming(
+                      'sourceCitation', timing.phase, timing.elapsedMs, timing.outcome,
+                    ),
                   });
                   const warning = m.sourceCitationWarning(hint, wi.id as string);
                   return hint && warning ? { sourceCitation: hint, sourceCitationWarning: warning } : null;
@@ -2851,6 +3046,7 @@ export default defineTool({
           trackPhase(ctx.phases, 'get_next:hint:taskBrief', () => import('../../code-intelligence/task-brief').then(m => m.getClaimTimeTaskBrief({
             workItem: wi, harness: wi?.harness ?? args.harness, workspaceId: ident.workspaceId,
             reuse,
+            onTiming: (timing) => recordHintTiming('taskBrief', timing.phase, timing.elapsedMs, timing.outcome),
           })).catch(() => null)),
           // EI-22344661292350991: preserve an explicit independence marker on the
           // successful claim response and add a warning only when the claimant is
@@ -3150,13 +3346,20 @@ export default defineTool({
               : "Run the task's payload.verification.check against payload.verification.subject, then complete the task with the result.",
         }
       : null;
+    const claimSpecWarnings = [...new Set([
+      ...(inheritedHarness.warnings ?? []),
+      ...(reconciliation.scope?.record.warnings ?? []),
+    ])];
+    const warningBasePayload = claimSpecWarnings.length > 0
+      ? { ...basePayload, claimSpecWarnings }
+      : basePayload;
     // D-011 B: an adopted content revision is REPORT revision, not implementation — say so in
     // the response the member acts on, with the brief's own next steps (D-008 ruling 5).
     const lanePayload = verification
-      ? { ...basePayload, verification }
+      ? { ...warningBasePayload, verification }
       : res?.revisionAdoption
-        ? { ...basePayload, revisionAdoption: res.revisionAdoption }
-        : basePayload;
+        ? { ...warningBasePayload, revisionAdoption: res.revisionAdoption }
+        : warningBasePayload;
     // P-017 / D-032: say when red-gate inflow control shaped this claim, so a member that
     // got a repair item (or fell back to backlog) can see why.
     const inflowPayload = res?.redInflow ? { ...lanePayload, redInflow: res.redInflow } : lanePayload;
@@ -3174,9 +3377,11 @@ export default defineTool({
       (reconciliation.scope
         ? { specId: reconciliation.scope.record.spec?.specId, revision: reconciliation.scope.record.revision }
         : null);
+    const schedulerTiming = schedulerTimingMetadata();
     ctx.metadata?.({
       schedulerDisposition: schedulerDispositionMetadata(res?.workItem, payload, dispositionSpecHead),
       ...(reuseBriefProviders.length ? { reuseBriefProviders } : {}),
+      ...(schedulerTiming ? { schedulerTiming } : {}),
     });
     // The claim committed before this response was rendered. Keep the existing
     // bounded text projection for ordinary model callers, but give programmatic

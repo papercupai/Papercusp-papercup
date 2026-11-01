@@ -48,6 +48,9 @@ interface ActiveSessionRow {
 export interface ResolveSelfSessionOptions {
   home?: string;
   loadActiveSessions?: (ownerId: string) => Promise<ActiveSessionRow[]>;
+  /** Provenance stamps may require one unambiguous live client binding. Ordinary
+   *  self-search remains fail-soft through the pty/discovery fallback. */
+  requireUniqueActiveBinding?: boolean;
   /** All recent sessions in this owner's carry/respawn chain. Unlike
    * loadActiveSessions, this deliberately includes ended predecessor rows so
    * a durable turn ref can resolve after a fresh successor gets a new
@@ -237,6 +240,10 @@ export async function resolveSelfSession(
   if (!ownerId) return null;
   const home = opts.home ?? HOME;
   const activeSessions = await (opts.loadActiveSessions ?? defaultActiveSessions)(ownerId);
+  if (opts.requireUniqueActiveBinding) {
+    const agent = activeSessions.length === 1 ? activeSessions[0].agent : null;
+    if (agent !== 'claude' && agent !== 'omp' && agent !== 'codex') return null;
+  }
 
   // 1. The psu-pty discovery record → hosted CLI + a session uuid when present,
   //    plus the live process pids (the WI-5681 coord-id-drift bridge).

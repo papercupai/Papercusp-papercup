@@ -2,9 +2,9 @@
  * A cheap, process-local circuit breaker for repeated failed tool calls.
  *
  * EI-6139: the shared dispatcher sees the settled result that client hooks do
- * not. Keep only privacy-preserving structural state here (owner, tool,
- * argument SHAPE, and error CLASS); raw arguments and error messages never
- * enter the detector or its pending hint.
+ * not. Keep only privacy-preserving state here (owner, tool, bounded error
+ * class, and hashes of arguments, source projections, and returned information);
+ * raw arguments and error messages never enter the detector or its pending hint.
  *
  * State is per detector session + tool. A successful call or a changed argument/error
  * shape resets that tool's streak, while unrelated tools do not interrupt it.
@@ -96,7 +96,11 @@ function repetitionSignature(input: Parameters<typeof observeFailureLoop>[0]) {
     if (typeof fingerprint !== 'string') return null;
     comparable = { fingerprint, passed: data.passed, failed: data.failed, skipped: data.skipped, byFile: data.byFile, error: data.error };
   }
-  const argsHash = valueFingerprint(input.args, false);
+  // Transport projections are withheld from the target tool's args, but they
+  // change which part of its result the agent sees. Include that effective
+  // source selection so distinct reads of one immutable result do not look like
+  // repeated unchanged information.
+  const argsHash = valueFingerprint({ args: input.args, sourceProjection: input.sourceProjection ?? null }, false);
   const resultHash = valueFingerprint(comparable, true);
   return argsHash && resultHash ? { category, fingerprint: `${argsHash}:${resultHash}` } : null;
 }
@@ -183,6 +187,8 @@ export function observeFailureLoop(input: {
   detectorSessionKey?: string | null;
   toolName: string;
   args: unknown;
+  /** Transport-level source selection, not present in the target's arguments. */
+  sourceProjection?: unknown;
   result: DispatchProjectedResult;
   now?: number;
 }): FailureLoopHint | null {

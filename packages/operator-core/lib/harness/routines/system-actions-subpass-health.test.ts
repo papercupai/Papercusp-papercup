@@ -102,6 +102,10 @@ describe('task-reconcile feeds every fail-soft sub-pass into subPassHealth', () 
     expect(source).toContain('return subPassHealth.result();');
   });
 
+  it('runs the host-level ledger sweep across workspaces and keeps residue under operator home', () => {
+    expect(source).toMatch(/reconcileTick\(\{\s*workspaceId:\s*null,\s*residueWorkspaceId:\s*ctx\.workspaceId,/s);
+  });
+
   it('control: the detector flags a catch that only logs', () => {
     const swallowOnly = `    } catch (err) {\n      console.warn('[new-pass] sweep failed', err);\n    }`;
     expect(unrecordedSweepFailures(swallowOnly)).toEqual(['new-pass']);

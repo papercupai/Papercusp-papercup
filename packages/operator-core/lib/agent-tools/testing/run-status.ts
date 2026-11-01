@@ -32,7 +32,7 @@ const argsSchema = z.object({
     .string()
     .min(1)
     .max(120)
-    .describe('Detached run id returned by testing:run after a foreground timeout.'),
+    .describe('Pass testing:run timeout detachedRunId; the foreground origin runId also resolves when its durable alias is present.'),
 });
 
 export default defineTool({
@@ -42,12 +42,12 @@ export default defineTool({
   // function rather than re-deriving it. A scalar registry cell would require one entry per
   // detached run and add a read door without removing one.
   description:
-    'Read detached testing:run recovery with testing:run-status { runId }. Returns the lifecycle snapshot when available; if it is missing or unreadable, terminal per-file test_runs rows for the exact run_group_id can return a ledgerRecovery verdict. An absent/expired id returns unknown_run, and an unreadable snapshot without a terminal ledger verdict returns retryable snapshot_unavailable.',
+    'Read detached testing:run recovery with testing:run-status { runId }. Pass the timeout response detachedRunId value; its top-level runId is the foreground origin and also resolves when the durable alias is present. Returns the lifecycle snapshot when available; if it is missing or unreadable, terminal per-file test_runs rows for the exact run_group_id can return a ledgerRecovery verdict. An absent/expired id returns unknown_run, and an unreadable snapshot without a terminal ledger verdict returns retryable snapshot_unavailable.',
   guidance: {
-    when: 'Poll the detachedRunId returned by testing:run after a foreground timeout until its snapshot reaches a terminal status.',
+    when: 'Poll the detachedRunId returned by testing:run after a foreground timeout until its snapshot reaches a terminal status. Pass that value as this tool\'s runId; the response\'s top-level runId is the foreground origin.',
     notWhen:
       'Start a test run (use testing:run), read persisted test history (use testing:runs), or poll a capability:bash job (use capability:bash_output). unknown_run means neither a snapshot nor a terminal ledger verdict was found; snapshot_unavailable means the lifecycle store and terminal ledger verdict were unavailable and is retryable. Neither is evidence that the test passed.',
-    chaining: 'testing:run → timeout with detachedRunId → testing:run-status { runId } until status is pass, fail, cancelled, or error.',
+    chaining: 'testing:run → timeout { runId: foreground origin, detachedRunId: poll handle } → testing:run-status { runId: detachedRunId } until status is pass, fail, cancelled, or error.',
     seeAlso: ['testing:run (start an exact-file run)', 'testing:runs (read persisted test-run history)'],
   },
   capability: 'operator:read',
@@ -104,7 +104,7 @@ export default defineTool({
         error: 'unknown_run',
         runId: args.runId,
         message:
-          'No detached test-run snapshot or terminal per-file ledger verdict is available for this runId; it may be unknown or evicted after the one-hour retention window. This is not evidence that the test passed.',
+          'No detached test-run snapshot or terminal per-file ledger verdict is available for this runId; it may be unknown or evicted after the one-hour retention window. If this came from a testing:run timeout response, try its detachedRunId value (the top-level runId is the foreground origin). This is not evidence that the test passed.',
       },
     };
   },

@@ -50,6 +50,7 @@ type TestClaimSpecRecord = {
   updatedBy: string | null;
   updatedAt: string | null;
   fleetSlug?: string;
+  warnings?: string[];
 };
 const getClaimSpecRecordM = vi.hoisted(() =>
   vi.fn(
@@ -465,6 +466,123 @@ describe('scheduler:get_next records early refusal dispositions (EI-258800743930
     expect(getNextM).not.toHaveBeenCalled();
     expect(metadata).toHaveBeenLastCalledWith({
       schedulerDisposition: { kind: 'no-claim', reason: 'missing' },
+    });
+  });
+
+  it('returns inherited stored claim-spec compatibility warnings with the pull result', async () => {
+    const warning = 'Ignored unsupported top-level claim-spec key(s) during stored read: futureLane.';
+    const record: TestClaimSpecRecord = {
+      source: 'fleet',
+      spec: {
+        specId: 'bugs-rev4', revision: 4,
+        view: { filter: { field: 'plan', op: '=', value: 'alpha' } },
+      },
+      revision: 4,
+      updatedBy: null,
+      updatedAt: null,
+      fleetSlug: 'bugs',
+      warnings: [warning],
+    };
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record,
+    };
+    getClaimSpecRecordM.mockResolvedValue(record);
+    getNextM.mockResolvedValue(null);
+
+    const out = await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+
+    expect(handlerPayload(out)).toMatchObject({ claimSpecWarnings: [warning] });
+  });
+
+  it('persists a bounded control-anchor acquisition snapshot on the invocation row', async () => {
+    const metadata = vi.fn();
+    const poolSnapshot = {
+      observedAt: '2026-11-01T11:00:00.000Z',
+      counters: {
+        pool: 'org-admin', waiting: 2, oldestWaitMs: 13_762, held: 3, oldestHeldMs: 9_000,
+        max: 12, totalAcquired: 400, lastAcquiredAgoMs: 20,
+      },
+      tickets: {
+        pool: 'org-admin', capacity: 8, active: 2, omitted: 0,
+        tickets: [
+          { state: 'waiting', ageMs: 13_762, requestId: 'private-request-id', operation: 'coord:read' },
+          { state: 'held', ageMs: 9_000, requestId: 'other-private-id', operation: 'work_items:get' },
+          ...Array.from({ length: 7 }, (_, index) => ({ state: 'held', ageMs: index, requestId: `id-${index}`, operation: 'read' })),
+        ],
+      },
+    };
+    const trace = {
+      traceId: 'control-anchor-trace', backendPid: 42, poolAcquisitionMs: 13_762, clientQueryMs: 265,
+      outcome: 'fulfilled',
+      acquisitionDiagnostics: {
+        coverage: 'registered-acquisition-tickets-only', before: poolSnapshot, settled: poolSnapshot,
+      },
+    };
+    const kernelEnforcement = {
+      serverAudit: { authorityTimings: { controlAnchorSql: {
+        calls: 1, totalMs: 14_027, executions: [trace, trace, trace],
+      } } },
+    };
+
+    await getNextTool.handler({}, { metadata, kernelEnforcement } as never);
+
+    const record = metadata.mock.calls[0]?.[0] as Record<string, any>;
+    const controlAnchorSql = record.schedulerTiming.controlAnchorSql;
+    const phase = record.schedulerTiming.controlAnchorSql.phases[0];
+    expect(controlAnchorSql.schemaVersion).toBe(1);
+    expect(controlAnchorSql.phases).toHaveLength(1);
+    expect(phase.phase).toBe('enforce');
+    expect(phase.calls).toBe(1);
+    expect(phase.totalMs).toBe(14_027);
+    expect(phase.omittedExecutions).toBe(1);
+    expect(phase.executions).toHaveLength(2);
+    const execution = phase.executions[0];
+    expect(execution.poolAcquisitionMs).toBe(13_762);
+    expect(execution.clientQueryMs).toBe(265);
+    expect(execution.acquisitionDiagnostics.coverage).toBe('registered-acquisition-tickets-only');
+    const before = execution.acquisitionDiagnostics.before;
+    expect(before.counters).toMatchObject({ waiting: 2, oldestWaitMs: 13_762 });
+    expect(before.tickets.tickets).toHaveLength(8);
+    expect(before.tickets.tickets).toContainEqual({ state: 'waiting', ageMs: 13_762, operation: 'coord:read' });
+    expect(JSON.stringify(record.schedulerTiming)).not.toContain('private-request-id');
+    expect(JSON.stringify(record.schedulerTiming)).not.toContain('other-private-id');
+  });
+
+  it('persists successful claim-step timings through the existing invocation metadata', async () => {
+    getNextM.mockImplementation((args: {
+      onClaimStep?: (
+        step: string,
+        event?: { phase: 'start'; startedAtMs: number } | { phase: 'end'; elapsedMs: number },
+      ) => void;
+    }) => {
+      args.onClaimStep?.('claim-setup-acquisition');
+      args.onClaimStep?.('claim-spec-read');
+      args.onClaimStep?.('candidate-resolution');
+      args.onClaimStep?.('candidate-ready-flag-read', { phase: 'start', startedAtMs: performance.now() });
+      args.onClaimStep?.('candidate-ready-flag-read', { phase: 'end', elapsedMs: 12.5 });
+      return Promise.resolve(null);
+    });
+    const metadata = vi.fn();
+
+    await getNextTool.handler({ harness: 'papercusp' } as never, { metadata } as never);
+
+    const timingCall = metadata.mock.calls
+      .map(([record]) => record as Record<string, unknown>)
+      .find(record => record.schedulerTiming) as { schedulerTiming?: {
+        schemaVersion: string;
+        unit: string;
+        claimSteps: Array<{ step: string; elapsedMs: number; endedBy: string }>;
+      } } | undefined;
+    expect(timingCall?.schedulerTiming).toMatchObject({
+      schemaVersion: 'scheduler-get-next-phase-timings-v1',
+      unit: 'ms',
+      claimSteps: expect.arrayContaining([
+        expect.objectContaining({ step: 'claim-setup-acquisition', endedBy: 'next-step' }),
+        expect.objectContaining({ step: 'candidate-ready-flag-read', elapsedMs: 12.5, endedBy: 'callback-end' }),
+      ]),
     });
   });
 

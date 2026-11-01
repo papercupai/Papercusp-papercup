@@ -9,10 +9,16 @@ import getClaimSpecTool from './get_claim_spec';
 import { fleetSpecBeeKey } from '../../scheduler/claim-spec-store';
 
 const getClaimSpecRecord = vi.hoisted(() => vi.fn());
+const latestFleetMembership = vi.hoisted(() => vi.fn());
 
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../scheduler/claim-spec-store')>()),
   getClaimSpecRecord: (...args: unknown[]) => getClaimSpecRecord(...args),
+}));
+
+vi.mock('../../fleet-membership-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet-membership-store')>()),
+  latestFleetMembership: (...args: unknown[]) => latestFleetMembership(...args),
 }));
 
 const args = (getClaimSpecTool as { args: ZodTypeAny }).args;
@@ -67,6 +73,7 @@ describe('scheduler:get_claim_spec — args', () => {
 
   it('executes a fleet selector without trimming an absent cupId', async () => {
     getClaimSpecRecord.mockReset();
+    latestFleetMembership.mockReset().mockResolvedValueOnce({ fleetSlug: 'my-fleet', fleetRole: 'leader' });
     getClaimSpecRecord.mockResolvedValue({
       source: 'fleet',
       spec: { specId: 'fleet-lane' },
@@ -91,7 +98,36 @@ describe('scheduler:get_claim_spec — args', () => {
       source: 'fleet',
       revision: 12,
       subject: { kind: 'fleet-sentinel', fleetSlug: 'my-fleet' },
+      appliesToCaller: false,
+      callerEffective: { fleetRole: 'leader' },
     });
+    expect(result.data.warning).toContain('you are the fleet leader');
+  });
+
+  it('reports a fleet sentinel as applicable to a caller with member role', async () => {
+    getClaimSpecRecord.mockReset();
+    latestFleetMembership.mockReset().mockResolvedValueOnce({ fleetSlug: 'my-fleet', fleetRole: 'member' });
+    getClaimSpecRecord.mockResolvedValue({
+      source: 'fleet',
+      spec: { specId: 'fleet-lane' },
+      revision: 12,
+      updatedBy: 'fleet-leader',
+      updatedAt: '2026-10-07T00:00:00.000Z',
+      harnessSlug: 'papercusp',
+      fleetSlug: 'my-fleet',
+    });
+    const ctx = { uiClientId: 'su-caller', isSuperuser: true, workspaceId: 'ws-1' };
+    const tool = getClaimSpecTool as unknown as {
+      handler: (input: unknown, context: unknown) => Promise<{ data: Record<string, any> }>;
+    };
+
+    const result = await tool.handler({ fleet: 'my-fleet' }, ctx);
+
+    expect(result.data).toMatchObject({
+      appliesToCaller: true,
+      callerEffective: { source: 'fleet', revision: 12, fleetSlug: 'my-fleet', fleetRole: 'member' },
+    });
+    expect(result.data.warning).toBeUndefined();
   });
 
   it('rejects neither cupId nor fleet', () => {

@@ -2534,6 +2534,18 @@ export function assessTerminalRepairQueueReconciliation(
     successor.assignedFixerLiveness?.spawnId === queue.fixerSpawnId &&
     successor.assignedFixerLiveness.liveness === 'dead';
 
+  // A terminal inconclusive attempt did not judge this head. If the one-time retest marker is
+  // absent but the queue still identifies this as its unmeasured retest and no convergence round
+  // records a verdict for the head, preserve the owed verification. A measured round or a red
+  // predecessor does not qualify for this recovery.
+  const unmarkedUnmeasuredRetestOwed =
+    current.phase === 'terminal' &&
+    current.outcome.kind === 'code-inconclusive' &&
+    queue.phase === 'ready-to-verify' &&
+    queue.unmeasuredRetestHead === queue.repairHead &&
+    !queue.retestRequested &&
+    !(queue.convergenceRounds ?? []).some((round) => round.head === queue.repairHead);
+
   switch (queue.phase) {
     case 'ready-to-test': {
       // No transition assigns a fixer or counts an attempt before the candidate is judged.
@@ -2556,7 +2568,7 @@ export function assessTerminalRepairQueueReconciliation(
       // (WI-10003213) is a pending verification too. A head that owes nothing would be declined
       // by the run's own unchanged-since-verdict short-circuit, so handing it forward trades one
       // verdictless outcome for another; refuse with the fence that names that state instead.
-      return frozenRepairHeadOwesVerification(queue)
+      return frozenRepairHeadOwesVerification(queue) || unmarkedUnmeasuredRetestOwed
         ? preserved('matching-untested-repair-head')
         : fenced('head-already-judged');
     case 'awaiting-fixer':

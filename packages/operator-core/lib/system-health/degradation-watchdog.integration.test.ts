@@ -231,8 +231,8 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
 
     await db.adminSql`
       INSERT INTO harness_shared.adv_sessions
-        (workspace_id, coord_owner_id, agent, session_id, started_at)
-      VALUES (${WS}, ${owner}, 'codex', ${`fixture-${owner}`}, ${sessionStartedAt})
+        (workspace_id, coord_owner_id, mode, agent, session_id, started_at)
+      VALUES (${WS}, ${owner}, 'omp', 'codex', ${`fixture-${owner}`}, ${sessionStartedAt})
     `;
     expect(observeFallback('compaction-force-respawn', {
       eligible: 1, applied: 1, reason: 'applied', scope: owner,
@@ -315,7 +315,7 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
         deps: {
           git: (_root, args) => args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : '',
           runnerIdentity: () => 'proof-v3 test-runner',
-          connect: async () => ({ end: async () => undefined }) as never,
+          connect: async () => ({ query: async () => ({ rows: [] }), end: async () => undefined }) as never,
           loadProofs: async () => new Promise(() => undefined),
           recordReuse: (label, decision, context) => recordGateReuseDecision(label, decision, { runContext: context.runContext, runGroupId: context.runGroupId, writer }),
         },

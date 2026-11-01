@@ -72,8 +72,25 @@ export function repairAdmissionSubmoduleRef(sha: string): string {
 
 export interface AdmissionGitResult {
   status: number | null;
+  /** Present when the child was terminated by a signal instead of producing an exit status. */
+  signal?: NodeJS.Signals | null;
   stdout: string;
   stderr: string;
+}
+
+/**
+ * Preserve the distinction Node exposes between a numeric exit, signal termination, and a
+ * spawn failure. `status === null` by itself discards the only useful diagnosis and previously
+ * surfaced live repair-queue failures as the unactionable phrase `exited null`.
+ */
+export function admissionGitFailureDetail(result: AdmissionGitResult): string {
+  const outcome = result.status !== null
+    ? `exited ${result.status}`
+    : result.signal
+      ? `terminated by signal ${result.signal}`
+      : 'failed before producing an exit status';
+  const detail = (result.stderr || result.stdout).trim().slice(0, 400);
+  return detail ? `${outcome}: ${detail}` : outcome;
 }
 
 /** Every git call goes through one runner so a test can observe or sabotage a step. */
@@ -93,7 +110,12 @@ export const realAdmissionGit: AdmissionGitRunner = (argv, opts) => {
     ...(opts.input !== undefined ? { input: opts.input } : {}),
   });
   const error = r.error ? `${'code' in r.error ? r.error.code : 'spawn-error'}: ${r.error.message}` : '';
-  return { status: r.status, stdout: r.stdout ?? '', stderr: [r.stderr, error].filter(Boolean).join('\n') };
+  return {
+    status: r.status,
+    signal: r.signal,
+    stdout: r.stdout ?? '',
+    stderr: [r.stderr, error].filter(Boolean).join('\n'),
+  };
 };
 
 export type AdmissionEntryKind = 'blob' | 'symlink' | 'gitlink' | 'absent';
@@ -375,7 +397,7 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     ok: false,
     code: 'git-failed',
     step,
-    detail: `${step} exited ${r.status}: ${(r.stderr || r.stdout).trim().slice(0, 400)}`,
+    detail: `${step} ${admissionGitFailureDetail(r)}`,
   });
 
   const repairHeadSha = revParse(`${input.repairHead}^{commit}`);

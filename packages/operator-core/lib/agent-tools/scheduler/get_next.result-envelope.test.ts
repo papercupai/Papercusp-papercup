@@ -180,14 +180,14 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
     // EI-7014: the mock's claimedUnder carries a specId/revision, so the enriched
     // disposition now attributes the claim to the spec that produced it (see the
     // dedicated attribution tests below) — this fixture's mock predates that field.
-    expect(metadata).toHaveBeenCalledWith({
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
       schedulerDisposition: {
         kind: 'claimed',
         workItemId: 'WI-38199',
         specId: 'envelope-spec',
         revision: 3,
       },
-    });
+    }));
   });
 
   it('builds a structured no-claim diagnosis instead of relying on result text', () => {

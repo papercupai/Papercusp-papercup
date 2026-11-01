@@ -143,6 +143,14 @@ export function isOwnerDecisionQuestion(conv: Pick<ConversationRow, 'kind' | 'pr
   return conv.kind === 'question' && (conv.producer === 'coord:ask-owner' || conv.producer == null);
 }
 
+export type ConversationAuthorOrigin = 'owner-typed' | 'agent';
+export type OwnerDecisionEffect = 'owner-typed-reply' | 'peer-opinion';
+
+/** Match the same authority boundary used by owner-question resolution. */
+export function conversationAuthorOrigin(authorId: string | null | undefined): ConversationAuthorOrigin {
+  return authorId === ADMIN_COORD_UI_OWNER ? 'owner-typed' : 'agent';
+}
+
 function truncate(s: string, n = 120): string {
   const t = s.trim().replace(/\s+/g, ' ');
   return t.length <= n ? t : `${t.slice(0, n - 1)}…`;
@@ -559,6 +567,9 @@ export async function withdrawConversationCore(
 export interface PostResult {
   post: ThreadPostRow;
   delivered: number;
+  author_origin: ConversationAuthorOrigin;
+  /** Present on owner-decision questions; an owner-typed reply is not auto-resolved. */
+  owner_decision_effect?: OwnerDecisionEffect;
 }
 
 async function resolveConversationRow(
@@ -631,17 +642,37 @@ async function appendPost(
   await selfSubscribe(deps, conversationId, identity.ownerId, now);
 
   const verb = opts.isAnswer ? '✅ answer' : '💬 reply';
+  const authorOrigin = conversationAuthorOrigin(identity.ownerId);
+  const ownerDecisionEffect = isOwnerDecisionQuestion(conv)
+    ? authorOrigin === 'owner-typed'
+      ? 'owner-typed-reply'
+      : 'peer-opinion'
+    : undefined;
+  const summary = ownerDecisionEffect === 'peer-opinion'
+    ? `🤖 Agent ${opts.isAnswer ? 'answer' : 'reply'} (peer opinion; not the owner's decision) on ${conv.kind} ${conversationId}: ${truncate(body)}`
+    : ownerDecisionEffect === 'owner-typed-reply'
+      ? `👤 Owner-typed ${opts.isAnswer ? 'answer' : 'reply'} on ${conv.kind} ${conversationId}: ${truncate(body)}`
+      : `${verb} on ${conv.kind} ${conversationId}: ${truncate(body)}`;
   const ev: InjectEvent = {
     from: identity.ownerId,
     subject: `conversation:${conversationId}`,
-    summary: `${verb} on ${conv.kind} ${conversationId}: ${truncate(body)}`,
+    summary,
     body,
     notify_kind: opts.isAnswer ? 'answer_posted' : 'conversation_post',
     mentions: opts.mentions,
     isResolution: false,
+    extra: {
+      author_origin: authorOrigin,
+      ...(ownerDecisionEffect ? { owner_decision_effect: ownerDecisionEffect } : {}),
+    },
   };
   const delivered = await fanout(deps, convRef(conversationId), ev, identity.ownerId);
-  return { post, delivered };
+  return {
+    post,
+    delivered,
+    author_origin: authorOrigin,
+    ...(ownerDecisionEffect ? { owner_decision_effect: ownerDecisionEffect } : {}),
+  };
 }
 
 /** The post/answer error union (P-004 widened it with the consult kind-gate refusal). */

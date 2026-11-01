@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 993,
+  "count": 994,
   "tools": [
     {
       "name": "ablation:report",
@@ -6200,6 +6200,26 @@
       }
     },
     {
+      "name": "consult:transfer",
+      "http": {
+        "path": "/api/agent-tools/consult/transfer",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Transfer a consult's plan-start follow-up authority to the current superuser session when its current requester/delegate is confirmed ended. The original requester_id and consult history remain unchanged; this does not reopen a settled consult.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "guidance": {
+        "when": "A saved consult follow-up must continue in this superuser session after the current follow-up owner is confirmed ended. Transfer authority before passing consult_id to plans:start.",
+        "notWhen": "The current requester is live, the consult is still routing, or the caller cannot establish the ended-session record. This is not a way to reopen a closed consult or transfer authority to a different target."
+      }
+    },
+    {
       "name": "conventions:governing",
       "http": {
         "path": "/api/agent-tools/conventions/governing",
@@ -6325,7 +6345,7 @@
           "POST"
         ]
       },
-      "description": "Answer one OR many question conversations. Appends an answer to each thread and notifies subscribers (the asker gets it in their inbox). The asker/resolver accepts an answer with conversations:resolve. Single: { id, body, mentions? }. Many same body: { ids:[…], body }. Many heterogeneous: items:[{ id, body, mentions? }] (each carries its own answer). Returns { ok, results:[{ ok, id, post_id? | error }], counts } — correlate by id; one not-found item never fails the rest.",
+      "description": "Answer one OR many question conversations. Appends an answer to each thread and notifies subscribers (the asker gets it in their inbox). Results include author_origin. On a coord:ask-owner question, an agent answer is a peer opinion, not the owner decision; only an owner-typed reply answers that gate. The asker/resolver accepts an answer with conversations:resolve. Single: { id, body, mentions? }. Many same body: { ids:[…], body }. Many heterogeneous: items:[{ id, body, mentions? }] (each carries its own answer). Returns { ok, results:[{ ok, id, post_id?, author_origin?, owner_decision_effect? | error }], counts } — correlate by id; one not-found item never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -6350,7 +6370,7 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "You can answer an open question (you saw it via a topic subscription or conversations:list). Post the answer here so the asker is notified and the answer is captured on resolve. Answer several at once via items:[…] (each item supplies its own body).",
+        "when": "You can answer an open question (you saw it via a topic subscription or conversations:list). Post the answer here so the asker is notified and the answer is captured on resolve. For coord:ask-owner questions, your result and the notification explicitly mark agent replies as peer opinions; they do not count as the owner’s answer. Answer several at once via items:[…] (each item supplies its own body).",
         "notWhen": "For a non-answer comment/clarification, use conversations:post. To accept your own/another answer and close the question, use conversations:resolve.",
         "chaining": "conversations:answer → the asker conversations:resolve (accepts it, captures it to the knowledge layer for the next asker)."
       }
@@ -6363,7 +6383,7 @@
           "POST"
         ]
       },
-      "description": "Read one or many conversations in full, or resolve a `thread-post:<positive-id>` citation to the post in the caller workspace. Conversation reads include seed, topics, thread, accepted answer, follower count, and consult lifecycle when applicable. Pass `id` (or `conversation_id`) for one or `ids` for 1–100; `id` wins when both single-item keys are supplied. Returns { ok, results:[{ ok, id, conversation? | post? | error }], counts }; correlate by id, and a missing id fails only its item. A unique-prefix fallback for a truncated conversation id returns `warning` with the real id; ambiguous or nonexistent ids return `not_found`. For consults, read `consult.state` — `conversation.state` may remain open after expiry, and empty posts do not prove a stall. `consult.outcome` is the canonical terminal result, `consult.result` is current advice, and `consult.routing_receipt` is the historical initial routing result.",
+      "description": "Read one or many conversations in full, or resolve a `thread-post:<positive-id>` citation to the post in the caller workspace. Conversation reads include seed, topics, thread, accepted answer, follower count, and consult lifecycle when applicable. Posts on owner-decision questions include author_origin (owner-typed or agent) and owner_decision_effect (owner-typed-reply or peer-opinion), so an agent reply cannot be mistaken for the owner’s decision. Pass `id` (or `conversation_id`) for one or `ids` for 1–100; `id` wins when both single-item keys are supplied. Returns { ok, results:[{ ok, id, conversation? | post? | error }], counts }; correlate by id, and a missing id fails only its item. A unique-prefix fallback for a truncated conversation id returns `warning` with the real id; ambiguous or nonexistent ids return `not_found`. For consults, read `consult.state` — `conversation.state` may remain open after expiry, and empty posts do not prove a stall. `consult.outcome` is the canonical terminal result, `consult.result` is current advice, and `consult.routing_receipt` is the historical initial routing result.",
       "capabilities": [
         "coord:read"
       ],
@@ -6478,7 +6498,7 @@
           "POST"
         ]
       },
-      "description": "Start a discussion (open-ended) or append a reply to an existing conversation. Omit conversation_id and its id alias to start a new discussion tagged with topics; pass either key to reply (conversation_id wins when both are supplied). Replies fan out to the conversation's subscribers. Consult threads require typed verbs: use consult:reply to respond, consult:decline to decline, or consult:close to close; conversations:post is refused for consult threads.",
+      "description": "Start a discussion (open-ended) or append a reply to an existing conversation. Omit conversation_id and its id alias to start a new discussion tagged with topics; pass either key to reply (conversation_id wins when both are supplied). Replies fan out to the conversation's subscribers and return author_origin. On a coord:ask-owner question, an agent reply is explicitly a peer opinion, not the owner decision. Consult threads require typed verbs: use consult:reply to respond, consult:decline to decline, or consult:close to close; conversations:post is refused for consult threads.",
       "capabilities": [
         "coord:write"
       ],

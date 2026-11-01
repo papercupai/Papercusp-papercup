@@ -15,6 +15,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_READ_ROLES } from '../roles';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
 import { getConversation, getConsultStates, getThreadPost, type ConsultLifecycleState } from '../conversations';
+import { conversationAuthorOrigin, isOwnerDecisionQuestion } from '../conversations-core';
 import { mergeIds, runBulk, bulkContent } from '../../_bulk';
 
 type ParsedRef = { kind: 'conversation' } | { kind: 'invalid-post' } | { kind: 'post'; postId: number };
@@ -44,7 +45,7 @@ function currentConsultResult(consult: ConsultLifecycleState): Record<string, un
 export default defineTool({
   name: 'conversations:get',
   description:
-    'Read one or many conversations in full, or resolve a `thread-post:<positive-id>` citation to the post in the caller workspace. Conversation reads include seed, topics, thread, accepted answer, follower count, and consult lifecycle when applicable. Pass `id` (or `conversation_id`) for one or `ids` for 1–100; `id` wins when both single-item keys are supplied. Returns { ok, results:[{ ok, id, conversation? | post? | error }], counts }; correlate by id, and a missing id fails only its item. A unique-prefix fallback for a truncated conversation id returns `warning` with the real id; ambiguous or nonexistent ids return `not_found`. For consults, read `consult.state` — `conversation.state` may remain open after expiry, and empty posts do not prove a stall. `consult.outcome` is the canonical terminal result, `consult.result` is current advice, and `consult.routing_receipt` is the historical initial routing result.',
+    'Read one or many conversations in full, or resolve a `thread-post:<positive-id>` citation to the post in the caller workspace. Conversation reads include seed, topics, thread, accepted answer, follower count, and consult lifecycle when applicable. Posts on owner-decision questions include author_origin (owner-typed or agent) and owner_decision_effect (owner-typed-reply or peer-opinion), so an agent reply cannot be mistaken for the owner’s decision. Pass `id` (or `conversation_id`) for one or `ids` for 1–100; `id` wins when both single-item keys are supplied. Returns { ok, results:[{ ok, id, conversation? | post? | error }], counts }; correlate by id, and a missing id fails only its item. A unique-prefix fallback for a truncated conversation id returns `warning` with the real id; ambiguous or nonexistent ids return `not_found`. For consults, read `consult.state` — `conversation.state` may remain open after expiry, and empty posts do not prove a stall. `consult.outcome` is the canonical terminal result, `consult.result` is current advice, and `consult.routing_receipt` is the historical initial routing result.',
   guidance: {
     when: 'You have conversation ids and need the full thread, or a `thread-post:<id>` citation and need its post body.',
     notWhen: 'Browsing many → conversations:list.',
@@ -120,6 +121,7 @@ export default defineTool({
         const detail = await getConversation(id, identity);
         if (!detail) return { ok: false as const, id, error: 'not_found' };
         const { conversation: c, topics, posts, subscriber_count, resolvedFromPrefix } = detail;
+        const ownerDecisionQuestion = isOwnerDecisionQuestion(c);
         const consult = consultStates.get(id);
         const consultResult = consult ? currentConsultResult(consult) : null;
         return {
@@ -195,7 +197,19 @@ export default defineTool({
           },
           topics,
           subscriber_count,
-          posts: posts.map((p) => ({ id: p.id, author_id: p.author_id, body: p.body, created_ts: p.created_ts })),
+          posts: posts.map((p) => {
+            const authorOrigin = conversationAuthorOrigin(p.author_id);
+            const ownerDecisionEffect = authorOrigin === 'owner-typed' ? 'owner-typed-reply' : 'peer-opinion';
+            return {
+              id: p.id,
+              author_id: p.author_id,
+              body: p.body,
+              created_ts: p.created_ts,
+              ...(ownerDecisionQuestion
+                ? { author_origin: authorOrigin, owner_decision_effect: ownerDecisionEffect }
+                : {}),
+            };
+          }),
         };
       },
       { keyOf: (id) => ({ id }) },

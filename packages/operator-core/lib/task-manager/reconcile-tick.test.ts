@@ -16,6 +16,7 @@ const store = vi.hoisted(() => ({
   recovered: [] as { taskId: string; state: string; exitCode: number | null; reason: string }[],
   upserted: [] as { taskId: string; metrics?: unknown }[],
   cleared: [] as string[][],
+  reconcileWorkspaceScopes: [] as Array<string | null | undefined>,
   touchGate: null as null | (() => Promise<void>),
   closeGate: null as null | (() => Promise<void>),
   refused: new Set<string>(),
@@ -29,7 +30,10 @@ vi.mock('./store', () => ({
       : null,
   recoverPendingTaskTerminalEvents: vi.fn(async () => 0),
   listLiveTasks: async () => [] as TaskRow[],
-  listReconcileTasks: async () => [] as TaskRow[],
+  listReconcileTasks: async (workspaceId?: string | null) => {
+    store.reconcileWorkspaceScopes.push(workspaceId);
+    return [] as TaskRow[];
+  },
   touchAlive: async (u: unknown[]) => {
     store.touched.push(...u);
     await store.touchGate?.();
@@ -242,6 +246,20 @@ describe('slow reconciliation phase evidence', () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(warn).not.toHaveBeenCalled();
     } finally { reporter.stop(); vi.useRealTimers(); }
+  });
+});
+
+describe('reconcileTick host-wide workspace scope', () => {
+  it('passes the explicit null host scope through to the ledger reader', async () => {
+    store.reconcileWorkspaceScopes.length = 0;
+    await reconcileTick({
+      workspaceId: null,
+      residueWorkspaceId: 'operator-home',
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      notify: async () => {},
+    });
+    expect(store.reconcileWorkspaceScopes).toEqual([null]);
   });
 });
 

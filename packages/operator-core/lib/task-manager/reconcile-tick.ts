@@ -92,20 +92,21 @@ const LIVE_SCOPE_ACTIVE_STATES = new Set(['active', 'activating', 'reloading', '
 // slow emitter cannot accumulate overlapping recovery batches.
 const terminalEventRecoveryByWorkspace = new Map<string, Promise<number>>();
 
-function queuePendingTerminalEventRecovery(workspaceId?: string): void {
-  const scope = workspaceId ?? activeWorkspaceId();
-  if (terminalEventRecoveryByWorkspace.has(scope)) return;
+function queuePendingTerminalEventRecovery(workspaceId?: string | null): void {
+  const scope = workspaceId === null ? null : workspaceId ?? activeWorkspaceId();
+  const recoveryKey = scope === null ? '@all-workspaces' : `@workspace:${scope}`;
+  if (terminalEventRecoveryByWorkspace.has(recoveryKey)) return;
 
   const recovery = recoverPendingTaskTerminalEvents(scope);
-  terminalEventRecoveryByWorkspace.set(scope, recovery);
+  terminalEventRecoveryByWorkspace.set(recoveryKey, recovery);
   void recovery
     .catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[task-manager] terminal event recovery failed for ${scope}: ${message}`);
+      console.warn(`[task-manager] terminal event recovery failed for ${scope ?? 'all workspaces'}: ${message}`);
     })
     .finally(() => {
-      if (terminalEventRecoveryByWorkspace.get(scope) === recovery) {
-        terminalEventRecoveryByWorkspace.delete(scope);
+      if (terminalEventRecoveryByWorkspace.get(recoveryKey) === recovery) {
+        terminalEventRecoveryByWorkspace.delete(recoveryKey);
       }
     });
 }
@@ -135,12 +136,15 @@ export interface ReconcileTickDeps {
   /** Existing closeTask stages, plus the phases before and after terminal writes. */
   stage?: (name: string, taskId?: string) => void;
   scan?: (opts: ScanOptions) => ScanResult | Promise<ScanResult>;
-  listLive?: (workspaceId?: string) => Promise<TaskRow[]>;
+  listLive?: (workspaceId?: string | null) => Promise<TaskRow[]>;
   fs?: CgroupFs;
   now?: () => number;
   notify?: (msg: { summary: string; kind: 'message' | 'escalation' }) => Promise<void>;
   scanOptions?: ScanOptions;
-  workspaceId?: string;
+  /** null selects the host-level task-ledger population across workspace partitions. */
+  workspaceId?: string | null;
+  /** Host-level unaccounted-process rows remain attributed to the operator-home workspace. */
+  residueWorkspaceId?: string;
   graceMs?: number;
   /** Persist nothing — used by the `processes:list { live: true }` read path, which
    *  wants a fresh verdict without a write on a read. */
@@ -525,10 +529,11 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       };
     });
     deps.stage?.('reconcile-residue-upsert');
-    const persisted = await upsertUnaccounted(groups, { workspaceId: deps.workspaceId });
+    const residueWorkspaceId = deps.residueWorkspaceId ?? (deps.workspaceId === null ? activeWorkspaceId() : deps.workspaceId);
+    const persisted = await upsertUnaccounted(groups, { workspaceId: residueWorkspaceId });
     unaccountedPersisted = persisted.length;
     deps.stage?.('reconcile-residue-clear');
-    residueCleared = await clearVanishedUnaccounted(persisted, { workspaceId: deps.workspaceId });
+    residueCleared = await clearVanishedUnaccounted(persisted, { workspaceId: residueWorkspaceId });
   }
 
   // A durable outbox retry can stall in the event engine. Start it only after

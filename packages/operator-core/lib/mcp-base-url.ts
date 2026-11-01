@@ -103,6 +103,21 @@ export function resolveBackgroundHostAgentsBase(env: NodeJS.ProcessEnv = process
 }
 
 /**
+ * Resolve the MCP base for orchestrator/blueprint agents such as release fixers.
+ * They must stay on the spawning host's runtime vintage, using its same-vintage
+ * proxy when configured. `PAPERCUSP_BG_HOST_AGENTS_MCP_BASE` is reserved for
+ * long-lived sessions and console-launched agents, so it must not redirect these
+ * jobs away from the background host's own proxy.
+ */
+export function resolveOrchestratorMcpBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const operatorBaseUrl = resolveSpawnHostOperatorBaseUrl(env);
+  return resolveAgentMcpBaseUrl(operatorBaseUrl, {
+    ...env,
+    PAPERCUSP_BG_HOST_AGENTS_MCP_BASE: undefined,
+  });
+}
+
+/**
  * `PAPERCUSP_OPERATOR_URL` for a long-lived CLI child that THIS process spawns or resumes (the SU
  * session engines and the resume path). Starts from the spawn host's own identity (WI-6154) and
  * applies the agent routing above: live and bg-host children use the resilient proxy, staging uses

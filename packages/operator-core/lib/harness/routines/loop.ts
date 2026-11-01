@@ -3096,6 +3096,18 @@ export async function autoArmFleetMemberLoop(opts: {
   }
   try {
     const existing = await getLoopStatus(opts.ownerId, { sql: opts.sql });
+    // A successor can inherit AUTO from its launch while the fleet's durable
+    // control row says it is winding down. That typed stop outranks the generic
+    // member-loop recovery; do not recreate the loop behind the pause cue.
+    const { getFleetControlStates } = await import('../../agent-fleets-store');
+    const fleetControl = (await getFleetControlStates(
+      opts.workspaceId,
+      [opts.fleetSlug],
+      opts.sql,
+    )).get(opts.fleetSlug);
+    if (fleetControl?.controlState === 'winding-down') {
+      return { armed: false, reason: 'fleet-winding-down', loopName: existing?.name };
+    }
     if (existing?.active) return { armed: false, reason: 'already-armed', loopName: existing.name };
     if (existing?.explicitlyEnded) return { armed: false, reason: 'explicit-loop-end', loopName: existing.name };
 

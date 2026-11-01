@@ -4515,6 +4515,10 @@ export function registerMcpHost(server: McpServer): void {
       const projected = lookupByMcpName(toolName);
       deadlineMs = effectiveMcpDeadlineMs(projected?.timeoutSec);
       requestDeadline?.setDurationMs(deadlineMs);
+      // Share the request's absolute deadline with result-door in both fresh
+      // and replayed calls; a slow handler may have consumed most of this budget.
+      const deadlineAt = requestDeadline?.deadlineAtMs ??
+        (deadlineMs > 0 ? callStartedAt + deadlineMs : null);
       // EI-9510: the replay-store round-trip (lookupStoredMcpResult /
       // storeMcpResult, both awaited on the hot path below) only matters for
       // a WRITE — a read-only tool has no mutation to double-apply, so
@@ -5291,6 +5295,7 @@ export function registerMcpHost(server: McpServer): void {
                   toolName,
                   nestedTargetToolName,
                   effect: effectiveCallEffect,
+                  responseDeadlineAtMs: deadlineAt,
                   workspaceId: dispatchSpawnCtx.workspaceId,
                   requestTraceId: traceId,
                     runId: dispatchSpawnCtx.runId ?? null,
@@ -5437,8 +5442,6 @@ export function registerMcpHost(server: McpServer): void {
         // handler. Keep one deadline result and one deadline origin for both
         // races so a slow pre-dispatch acquisition cannot start a handler
         // after the caller has already received a timeout.
-        const deadlineAt = requestDeadline?.deadlineAtMs ??
-          (deadlineMs > 0 ? callStartedAt + deadlineMs : null);
         const remainingDeadlineMs = () => requestDeadline?.remainingMs() ??
           (deadlineAt === null ? deadlineMs : Math.max(0, deadlineAt - Date.now()));
         const timeoutResult = (): McpCallResult => {
@@ -5659,6 +5662,7 @@ export function registerMcpHost(server: McpServer): void {
                   toolName,
                   nestedTargetToolName,
                   effect: effectiveCallEffect,
+                  responseDeadlineAtMs: deadlineAt,
                   workspaceId: dispatchSpawnCtx.workspaceId,
                   requestTraceId: traceId,
                   onScratchWritePending: (timeout) => backfillResultDoorOutputRef({

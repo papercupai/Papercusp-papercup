@@ -409,6 +409,17 @@ function isRecordedOwnerDirectiveExecution(line: string): boolean {
   return RECORDED_OWNER_DIRECTIVE_EXECUTION_RE.test(line);
 }
 
+/** A neutral administrative action can name directive records as its object
+ * without claiming that the surrounding prose came from the owner. Keep this
+ * limited to verbs that inspect or organize records; an attributed citation
+ * such as "Owner directive #17: ..." still reaches the provenance warning. */
+const OWNER_DIRECTIVE_RECORD_ACTION_REFERENCE_RE =
+  /^\s*(?:(?:[-*+]\s+)|(?:\d+[.)]\s+))?(?:reconcile|review|summari[sz]e|list|inspect|check|verify|retrieve|read|compare|audit)\s+(?:(?:the|all|any|existing|recorded|current|open)\s+)*owner\s+(?:directive|mandate)s?\b/i;
+
+function isOwnerDirectiveRecordActionReference(line: string): boolean {
+  return OWNER_DIRECTIVE_RECORD_ACTION_REFERENCE_RE.test(line);
+}
+
 /**
  * EI-20234090473445932: a status/evidence sentence can mention a recorded owner
  * directive without asserting that the current writer received owner authority.
@@ -504,7 +515,10 @@ function isOwnerDirectivePreservationRequirement(line: string): boolean {
  * third party's ("they"/"it"/a system noun's) behavior with zero owner
  * attribution — the false alarm trains agents to dismiss the real ones.
  */
-const BARE_GATE_IMPERATIVE_RE = /(?<![A-Za-z0-9]\s*)\bdo not\b.{0,80}\buntil\b/i;
+// EI-27076574392480618: an action word is required after "do not"; otherwise
+// descriptive notation such as "do not … until" is mistaken for a live gate.
+const BARE_GATE_IMPERATIVE_RE =
+  /(?<![A-Za-z0-9]\s*)\bdo not\s+[A-Za-z][A-Za-z0-9-]*\b.{0,80}\buntil\b/i;
 const INLINE_CODE_SEGMENT_RE = /`([^`\n]*)`/g;
 
 /**
@@ -927,6 +941,9 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       // directive as the object of an execution command. It is not an owner-attributed
       // assertion, so do not reject a loop goal that uses this durable reference.
       if (isRecordedOwnerDirectiveExecution(line)) continue;
+      // Administrative actions over directive records are references to stored
+      // data, not claims of owner provenance (EI-27084240250773286).
+      if (isOwnerDirectiveRecordActionReference(line)) continue;
       // EI-20234090473445932: factual status/runtime evidence about a recorded
       // directive is not an assertion of owner authority by the current writer.
       if (isOwnerDirectiveStatusReference(line)) continue;

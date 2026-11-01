@@ -3,8 +3,9 @@
  *
  * EI-10890. The system already MANDATES that an agent register anything it is
  * blocked on the owner for:
- *   - `loop:checkpoint { walls }` writes owner-gated commitments as rows into the
- *     loop carry-note, where they re-render into every wake until cleared;
+ *   - `loop:checkpoint { walls }` writes carried constraints into the loop note.
+ *     Only origin:owner/system rows are actionable owner gates; self/external and
+ *     legacy-unscoped rows need a current-source recheck;
  *   - a work-item parked in `needs-human` is, by definition, waiting on a human.
  *
  * Both are WRITTEN faithfully. Neither was READABLE. There was no query that
@@ -32,7 +33,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { COORD_ROLES } from '../roles';
-import { splitCarryNoteWalls } from '../../../carry-note';
+import { isCarryWallAuthoritative, splitCarryNoteWalls, type WallOrigin } from '../../../carry-note';
 import { WALL_KEY_PREFIX, type FactScope } from '../../../agent-facts/store';
 import {
   classifyReadActionability,
@@ -64,6 +65,9 @@ export interface WallRow {
   ownerId: string | null;
   harness: string | null;
   claim: string;
+  origin?: WallOrigin;
+  appliesWhile?: string;
+  requiresRevalidation?: boolean;
   recheck?: string;
   ref?: string;
   /** Present only for the `wall:` standing-fact leg. These are the exact
@@ -189,6 +193,9 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
         ownerId: parsed.ownerId,
         harness: parsed.harness,
         claim: w.claim,
+        ...(w.origin ? { origin: w.origin } : {}),
+        ...(w.appliesWhile ? { appliesWhile: w.appliesWhile } : {}),
+        requiresRevalidation: !isCarryWallAuthoritative(w),
         ...(w.recheck ? { recheck: w.recheck } : {}),
         sinceIso: sinceMs != null ? new Date(sinceMs).toISOString() : null,
         waitingHours: hoursSince(sinceMs, now),
@@ -298,7 +305,14 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
     });
   }
 
-  const ownerIds = [...new Set(walls.map((w) => w.ownerId).filter((id): id is string => Boolean(id)))];
+  const ownerIds = [
+    ...new Set(
+      walls
+        .filter((wall) => wall.source !== 'loop-carry-note' || !wall.requiresRevalidation)
+        .map((w) => w.ownerId)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
   const subjects: LivenessSubject[] = ownerIds.map((ownerId) => {
     const p = presenceByOwner.get(ownerId);
     return {
@@ -321,6 +335,11 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
     }
   }
   for (const wall of walls) {
+    if (wall.source === 'loop-carry-note' && wall.requiresRevalidation) {
+      wall.status = 'unknown';
+      wall.livenessState = null;
+      continue;
+    }
     const verdict = wall.ownerId ? verdicts.get(wall.ownerId) : undefined;
     const actionability = classifyReadActionability(verdict?.sessionState);
     wall.actionability = actionability;
@@ -379,7 +398,7 @@ export default defineTool({
       'coord:walls → answer the claim (coord:send to the ownerId), then the agent clears it via loop:checkpoint { walls: [...] } ' +
       '(pass the remaining set; [] clears all). A `stranded` row needs a respawn as well as an answer — the waiter is gone.',
     returns:
-      '{ ok, count, returned, truncatedByLimit, waiting, stranded, oldestWaitHours, walls: [{ source, ownerId, harness, claim, recheck?, ref?, factScope?, factScopeRef?, factKey?, sinceIso, waitingHours, status }] }. ' +
+      '{ ok, count, returned, truncatedByLimit, waiting, stranded, oldestWaitHours, walls: [{ source, ownerId, harness, claim, origin?, appliesWhile?, requiresRevalidation?, recheck?, ref?, factScope?, factScopeRef?, factKey?, sinceIso, waitingHours, status }] }. ' +
       '`count`/`waiting`/`stranded` are a census over the whole population; `returned` is the row-list size and `truncatedByLimit` says rows were omitted. ' +
       'status: waiting = agent alive and parked on you; stranded = its session died (answer AND respawn); unknown = no presence row.',
     seeAlso: ['coord:presence', 'coord:send', 'loop:checkpoint', 'work_items:list'],

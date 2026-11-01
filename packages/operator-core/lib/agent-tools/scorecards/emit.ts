@@ -68,8 +68,10 @@ import {
   resolveScorecardReleaseGateBinding,
   scorecardRatingsClaimPass,
   ratingVerdict,
+  gradingAuditReplayBasisFingerprint,
   recordGradingAudit,
   markGradingAuditAwaitingReemit,
+  markGradingAuditReplayRefused,
   isCurrentSourceAuditResponder,
   scorecardEvidenceFingerprint,
   parseGradedGeneration,
@@ -3309,6 +3311,27 @@ export async function emitScorecard(
             // compare-and-set to the trusted owner from the handler identity.
             responderOwnerId: input.createdBy,
           });
+        }
+        if (
+          replayConsistencyError.code === 'grading_audit_replay_consistent' &&
+          gradedObservation.gradingAudit.state === 'pending' &&
+          latestDispatchReservation
+        ) {
+          const basisFingerprint = gradingAuditReplayBasisFingerprint(
+            args.subject.ref,
+            gradedObservation.gradingAudit,
+            latestDispatchReservation.snapshot,
+          );
+          if (basisFingerprint) {
+            await markGradingAuditReplayRefused(args.subject.ref, gradedObservation.gradingAudit, {
+              basisFingerprint,
+              reservation: {
+                key: latestDispatchReservation.key,
+                reservedAt: latestDispatchReservation.reservedAt,
+              },
+              responderOwnerId: input.createdBy,
+            });
+          }
         }
         return { ok: false as const, ...replayConsistencyError };
       }

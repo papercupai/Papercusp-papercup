@@ -28,7 +28,7 @@ export interface CallerSpecResolution {
 }
 
 export interface FleetSentinelCallerView {
-  /** Whether the caller's OWN pulls actually resolve to the sentinel being read. */
+  /** Whether the caller's own member self-pulls are scoped by the sentinel being read. */
   appliesToCaller: boolean;
   callerEffective: {
     ownerId: string;
@@ -37,6 +37,7 @@ export interface FleetSentinelCallerView {
     source: 'cup' | 'fleet' | 'default' | null;
     revision: number | null;
     fleetSlug: string | null;
+    fleetRole: string | null;
   };
   /** Present only when the sentinel is NOT the caller's effective spec (or is unknown). */
   warning?: string;
@@ -53,8 +54,9 @@ export function fleetSentinelCallerView(args: {
   fleetSlug: string;
   callerId: string;
   callerRecord: CallerSpecResolution | null;
+  callerFleetRole: string | null;
 }): FleetSentinelCallerView {
-  const { fleetSlug, callerId, callerRecord } = args;
+  const { fleetSlug, callerId, callerRecord, callerFleetRole } = args;
   const subject = `fleet '${fleetSlug}'`;
   const preamble =
     `⚠ This is ${subject}'s OWN sentinel spec row, NOT your effective claim spec. `;
@@ -62,7 +64,14 @@ export function fleetSentinelCallerView(args: {
   if (!callerRecord) {
     return {
       appliesToCaller: false,
-      callerEffective: { ownerId: callerId, resolved: false, source: null, revision: null, fleetSlug: null },
+      callerEffective: {
+        ownerId: callerId,
+        resolved: false,
+        source: null,
+        revision: null,
+        fleetSlug: null,
+        fleetRole: callerFleetRole,
+      },
       warning:
         preamble +
         'Your own resolution could not be read, so whether YOUR pulls run under it is UNKNOWN — ' +
@@ -71,15 +80,20 @@ export function fleetSentinelCallerView(args: {
   }
 
   const callerFleet = callerRecord.fleetSlug ?? null;
-  const appliesToCaller = callerRecord.source === 'fleet' && callerFleet === fleetSlug;
+  const sentinelMatchesCaller = callerRecord.source === 'fleet' && callerFleet === fleetSlug;
+  // getClaimSpecRecord resolves the sentinel for any membership role, but the
+  // scheduler self-pull scope is deliberately member-only. A leader's store-level
+  // resolution is not proof that scheduler:get_next consumes the member lane.
+  const appliesToCaller = sentinelMatchesCaller && callerFleetRole === 'member';
   const callerEffective = {
     ownerId: callerId,
     resolved: true,
     source: callerRecord.source,
     revision: callerRecord.revision,
     fleetSlug: callerFleet,
+    fleetRole: callerFleetRole,
   };
-  if (appliesToCaller) return { appliesToCaller, callerEffective };
+  if (appliesToCaller && callerFleetRole === 'member') return { appliesToCaller, callerEffective };
 
   // Not the caller's lane. Name the CONCRETE remedy + call shape for the specific reason —
   // a mismatch a caller cannot act on is an alarm, not a rail.
@@ -89,6 +103,16 @@ export function fleetSentinelCallerView(args: {
       'you have your OWN per-bee spec, which always WINS over an inherited fleet spec' +
       (callerRecord.revision !== null ? ` (rev ${callerRecord.revision})` : '') +
       `. Your pulls will NOT use ${subject}'s spec until that override is replaced/cleared via scheduler:set_claim_spec { cupId: '${callerId}' }.`;
+  } else if (sentinelMatchesCaller && callerFleetRole === 'leader') {
+    because =
+      `you are the fleet leader. The fleet sentinel scopes member self-pulls only; ` +
+      `scheduler:get_next does not consume the leader's member lane. Your fleet assignment ` +
+      `is therefore not evidence that this sentinel governs a leader pull.`;
+  } else if (sentinelMatchesCaller) {
+    because =
+      `your spec-store resolution points at this fleet, but your fleet role could not be ` +
+      `confirmed as 'member'. The sentinel's member self-pull scope is UNKNOWN until the ` +
+      `membership role is verified with coord:presence.`;
   } else if (callerRecord.source === 'fleet') {
     because =
       `you inherit a DIFFERENT fleet's spec — '${callerFleet}'` +

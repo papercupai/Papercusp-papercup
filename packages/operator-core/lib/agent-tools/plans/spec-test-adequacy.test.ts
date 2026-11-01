@@ -4225,6 +4225,60 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('pass');
   });
 
+  it('explains operational fixture-calibration N/A as scope, not binder-authored fixture-free proof', () => {
+    const base = evidence();
+    const operational = (fixtureFree: boolean | undefined, id: number) => evidence({
+      id,
+      evidenceKind: 'operational',
+      evidenceRef: 'evidence/plan-shipping-friction-repair-20261026/r4-full-current-2150.json',
+      coverageEvidenceRef: null,
+      testRunId: null,
+      testRunExecution: null,
+      fingerprints: {
+        ...base.fingerprints,
+        testFingerprint: null,
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+      },
+      details: {
+        evidencePlane: 'live',
+        adequacy: {
+          fixtureFree,
+          fixtureCalibrated: undefined,
+          executed: true,
+          collected: true,
+          skipped: false,
+          outcome: 'pass',
+          testLayer: 'operational',
+        },
+      },
+    });
+    const spec = clause({
+      behavior: 'Each nonterminal recovery filing has an actionable continuation.',
+      behaviorClass: 'non-automated',
+      requiredEvidence: ['live'],
+      requiredTestLayers: [],
+      falsifier: { observation: 'A nonterminal recovery filing lacks an actionable continuation.' },
+    });
+    const attested = evaluateSpecTestAdequacy({
+      clause: spec,
+      evidence: [operational(true, 71500)],
+      classRef: 'plan-class-bugfix',
+    }).ratings['fixture-calibration'];
+    const unattested = evaluateSpecTestAdequacy({
+      clause: spec,
+      evidence: [operational(undefined, 71501)],
+      classRef: 'plan-class-bugfix',
+    }).ratings['fixture-calibration'];
+
+    expect(attested.rating).toBe('not-applicable');
+    expect(unattested.rating).toBe('not-applicable');
+    expect(attested.evidence).toContain('as a scope judgment');
+    expect(attested.evidence).toContain('Exact bindings inspected:');
+    expect(attested.evidence).toContain('Operational adequacy.fixtureFree=true metadata is not used');
+    expect(attested.evidence).not.toContain('Executable binding(s) explicitly attest fixtureFree=true');
+  });
+
   it('does not count evidence-kind and plane coverage as exercised layer reachability', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause({ behaviorClass: 'non-automated', requiredEvidence: ['tree', 'coverage-census'], requiredTestLayers: [] }),

@@ -469,6 +469,52 @@ export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanI
     };
   }
 
+  // A winding-down fleet cannot take a NEW plan-item lease. Read the current
+  // claim first so an already-held lease remains idempotent and a live peer
+  // conflict keeps its existing result; force-takeover still requires admission.
+  let prior: PlanItemClaim | null = null;
+  try {
+    prior = await getClaim(opts.workspaceId, opts.harnessSlug, opts.planSlug, opts.itemId);
+  } catch {
+    // If claim state is unavailable, admission still runs before any new lease.
+  }
+  const hasLiveClaim = Boolean(prior && !prior.expired);
+  const alreadyHeld = Boolean(hasLiveClaim && prior?.owner === opts.owner);
+  if (!alreadyHeld && (!hasLiveClaim || opts.forceTakeover)) {
+    const { admitSubjectForFleetTarget } = await import('../scheduler/fleet-scope-admission');
+    const admission = await admitSubjectForFleetTarget({
+      target: opts.owner,
+      workspaceId: opts.workspaceId,
+      subject: {
+        id: null,
+        title: null,
+        summary: null,
+        kind: 'feature',
+        priority: null,
+        tags: [],
+        paths: [],
+        plan: opts.planSlug,
+        planItem: [opts.itemId],
+        fleet: null,
+        triageGate: null,
+        itemClass: 'work',
+        age: Date.now(),
+        riskTier: null,
+        redundancy: null,
+        estCost: null,
+        assignee: assignment?.assigneeName ?? null,
+        severity: null,
+        goal: null,
+      },
+    });
+    if (!admission.allowed) {
+      return {
+        status: 'refused',
+        reason: admission.code + ': ' + admission.reason,
+      };
+    }
+  }
+
   // A force takeover is authorized by the tool layer, where the caller's
   // identity/liveness/authority can be checked. Assignment and work-group policy
   // was intentionally evaluated ABOVE this branch: force changes only the
@@ -504,13 +550,11 @@ export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanI
     };
   }
 
-  // EI-7189: peek at any prior claim BEFORE stealing it — best-effort, advisory
-  // only. A presence-check failure (or the prior claim simply not existing / not
-  // lapsed / same owner) never blocks anything; it only ever adds a warning field.
+  // EI-7189: a lapsed prior holder who still looks live gets an advisory warning;
+  // the same read above also preserves idempotent live claims and peer conflicts.
   let priorHolderWarning: PriorHolderWarning | undefined;
-  try {
-    const prior = await getClaim(opts.workspaceId, opts.harnessSlug, opts.planSlug, opts.itemId);
-    if (prior && prior.expired && prior.owner !== opts.owner) {
+  if (prior && prior.expired && prior.owner !== opts.owner) {
+    try {
       const state = await sessionStateForOwner(prior.owner);
       if (priorHolderStillLive(prior, opts.owner, state)) {
         priorHolderWarning = {
@@ -523,9 +567,9 @@ export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanI
             `continuing (they may be mid-build/mid-edit; a TTL lapse does not mean they stopped).`,
         };
       }
+    } catch {
+      /* advisory-only — never blocks the claim */
     }
-  } catch {
-    /* advisory-only — never blocks the claim */
   }
 
   const res = await acquireClaim({

@@ -108,6 +108,50 @@ beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.adv_sessions`;
 });
 
+describe('host-wide task reconciliation across workspace partitions', () => {
+  async function insertTask(taskId: string, workspaceId: string, state: 'running' | 'exited', pendingEvent = false) {
+    const endedAt = state === 'running' ? null : new Date();
+    const detail = pendingEvent ? { terminalEventPending: true, terminalEventRevision: 1 } : {};
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv,
+        launched_by, confined, state, ended_at, detail
+      ) VALUES (
+        ${taskId}, ${workspaceId}, ${taskId}, 'agent-session', ${taskId}, '[]'::jsonb,
+        'test', true, ${state}, ${endedAt}, ${JSON.stringify(detail)}::jsonb
+      )
+    `;
+  }
+
+  it('lists all workspace rows only when the explicit null host scope is used', async () => {
+    await insertTask('host-recon-default', 'default', 'running');
+    await insertTask('host-recon-handler', 'handler-workspace', 'running');
+
+    const hostRows = await store.listReconcileTasks(null);
+    const scopedRows = await store.listReconcileTasks('default');
+
+    expect(hostRows.map(({ workspaceId, taskId }) => [workspaceId, taskId]).sort()).toEqual([
+      ['default', 'host-recon-default'],
+      ['handler-workspace', 'host-recon-handler'],
+    ]);
+    expect(scopedRows.map(({ taskId }) => taskId)).toEqual(['host-recon-default']);
+  });
+
+  it('recovers pending terminal events across workspace partitions in host scope', async () => {
+    await insertTask('terminal-recon-default', 'default', 'exited', true);
+    await insertTask('terminal-recon-handler', 'handler-workspace', 'exited', true);
+    const emittedWorkspaces: string[] = [];
+
+    const delivered = await store.recoverPendingTaskTerminalEvents(null, db.sql, async (event) => {
+      emittedWorkspaces.push(event.workspaceId);
+      return true;
+    });
+
+    expect(delivered).toBe(2);
+    expect(emittedWorkspaces.sort()).toEqual(['default', 'handler-workspace']);
+  });
+});
+
 describe('dispatch correlation real SQL recovery', () => {
   async function insertDispatchTask(taskId: string, workspaceId: string, dispatchCallId: string | null, ageMinutes: number) {
     await db.sql`

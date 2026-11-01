@@ -92,19 +92,29 @@ export function loopScope(harness: string, ownerId: string): string {
 
 // ── The structured shape — a "note to my next self" ──────────────────────────
 
-/** An owner-gated / pending-decision COMMITMENT carried as a row, never prose
- *  (compaction-continuity-hardening-2026-07-07 P-006). Prose asks dissolve at a
- *  context boundary; a wall row survives it mechanically — rendered into every
- *  wake and every carry brief until explicitly cleared. */
+/** A carried constraint or pending decision. Only explicit owner/system origins
+ *  are unconditional gates; self/external rows carry a predicate + recheck, while
+ *  legacy rows without an origin are unscoped and require fresh authority. */
 export interface WallEntry {
   /** Stable identity, independent of wording (P-013) — see {@link carryRowKey}. */
   id?: string;
   /** The pending action / decision, stated concretely ("3 zombie PIDs await owner OK to kill"). */
   claim: string;
+  /** Who or what makes this a wall. Missing origin is legacy/unscoped, not authority by itself. */
+  origin?: WallOrigin;
+  /** For self/external walls, the condition under which the restriction still applies. */
+  appliesWhile?: string;
   /** A concrete re-check command a successor runs to test whether the wall still stands. */
   recheck?: string;
   /** Epoch ms the wall was first recorded — preserved across rewrites of the same claim. */
   sinceMs?: number;
+}
+
+export type WallOrigin = 'owner' | 'system' | 'external' | 'self';
+
+/** Only an explicit owner or system source is an unconditional carried gate. */
+export function isCarryWallAuthoritative(wall: Pick<WallEntry, 'origin'>): boolean {
+  return wall.origin === 'owner' || wall.origin === 'system';
 }
 
 /** A carried CLAIM about external state + the probe that falsifies it
@@ -1466,33 +1476,39 @@ export function resolveCarryRowRefs<
   return { priorWalls, priorChecks, walls, checks, retiredWalls, retiredChecks, unmatched };
 }
 
-/** One wall as a parseable single line: `- [#id] <claim> — re-check: <cmd> (since <ISO>)`.
- *  The `[#…]` prefix, " — re-check: " and trailing " (since …)" markers are the
- *  round-trip anchors. */
+/** One wall as a parseable line with optional identity, origin, predicate, probe and age. */
 export function renderWallLine(w: WallEntry): string {
   const recheck = (w.recheck ?? '').trim();
   const id = sanitizeCarryRowId(w.id);
+  const origin = w.origin ? '[origin:' + w.origin + '] ' : '';
+  const appliesWhile = (w.appliesWhile ?? '').trim();
+  const applies = appliesWhile ? ' — applies while: ' + appliesWhile : '';
   const since = w.sinceMs != null && Number.isFinite(w.sinceMs) ? ` (since ${new Date(w.sinceMs).toISOString()})` : '';
-  return `- ${id ? `[#${id}] ` : ''}${w.claim.trim()}${recheck ? ` — re-check: ${recheck}` : ''}${since}`;
+  return '- ' + (id ? '[#' + id + '] ' : '') + origin + w.claim.trim() + applies +
+    (recheck ? ' — re-check: ' + recheck : '') + since;
 }
 
 /** Parse one walls-section line back into a {@link WallEntry}; null for a
  *  non-row line (blank, prose, malformed). */
 export function parseWallLine(line: string): WallEntry | null {
   const m =
-    /^-\s+(?:\[#([A-Za-z0-9._:-]{1,40})\]\s+)?(.+?)(?:\s+—\s+re-check:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(
+    /^-\s+(?:\[#([A-Za-z0-9._:-]{1,40})\]\s+)?(?:\[origin:(owner|system|external|self)\]\s+)?(.+?)(?:\s+—\s+applies while:\s+(.+?))?(?:\s+—\s+re-check:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(
       line,
     );
   if (!m) return null;
-  const claim = (m[2] ?? '').trim();
+  const claim = (m[3] ?? '').trim();
   if (!claim) return null;
   const out: WallEntry = { claim };
   const id = sanitizeCarryRowId(m[1]);
   if (id) out.id = id;
-  const recheck = (m[3] ?? '').trim();
+  const origin = m[2] as WallOrigin | undefined;
+  if (origin) out.origin = origin;
+  const appliesWhile = (m[4] ?? '').trim();
+  if (appliesWhile) out.appliesWhile = appliesWhile;
+  const recheck = (m[5] ?? '').trim();
   if (recheck) out.recheck = recheck;
-  if (m[4]) {
-    const t = Date.parse(m[4]);
+  if (m[6]) {
+    const t = Date.parse(m[6]);
     if (Number.isFinite(t)) out.sinceMs = t;
   }
   return out;
@@ -1846,7 +1862,14 @@ export function withCarryNoteWalls(body: string, walls: WallEntry[]): string {
  *  stood (age is evidence — a rewrite must not reset it), stamp `nowMs` on new
  *  ones, cap at {@link CARRY_NOTE_MAX_WALLS}. */
 export function normalizeWallEntries(
-  entries: ReadonlyArray<{ id?: string; claim: string; recheck?: string; sinceMs?: number }>,
+  entries: ReadonlyArray<{
+    id?: string;
+    claim: string;
+    origin?: WallOrigin;
+    appliesWhile?: string;
+    recheck?: string;
+    sinceMs?: number;
+  }>,
   prior: ReadonlyArray<WallEntry>,
   nowMs: number = Date.now(),
 ): WallEntry[] {
@@ -1860,10 +1883,14 @@ export function normalizeWallEntries(
     seen.add(key);
     const existing = priorRowForIncoming(e, prior, priorByKey);
     const id = sanitizeCarryRowId(e.id) ?? existing?.id;
+    const origin = e.origin ?? existing?.origin;
+    const appliesWhile = (e.appliesWhile ?? existing?.appliesWhile ?? '').trim();
     const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
     out.push({
       ...(id ? { id } : {}),
       claim,
+      ...(origin ? { origin } : {}),
+      ...(appliesWhile ? { appliesWhile } : {}),
       ...(recheck ? { recheck } : {}),
       sinceMs: e.sinceMs ?? existing?.sinceMs ?? nowMs,
     });
@@ -2149,7 +2176,15 @@ export function mergeCarryRows(opts: {
   baseNote: string | null | undefined;
   /** An EXPLICIT walls arg — `[]` clears; `undefined` defers to the note/prior.
    *  P-025: a row's `replaces` names the carried row it edits (see {@link resolveCarryRowRefs}). */
-  walls?: ReadonlyArray<{ id?: string; claim: string; recheck?: string; sinceMs?: number; replaces?: string }>;
+  walls?: ReadonlyArray<{
+    id?: string;
+    claim: string;
+    origin?: WallOrigin;
+    appliesWhile?: string;
+    recheck?: string;
+    sinceMs?: number;
+    replaces?: string;
+  }>;
   /** An EXPLICIT checks arg — `[]` clears; `undefined` defers to the note/prior. */
   checks?: ReadonlyArray<{
     id?: string;

@@ -1075,7 +1075,7 @@ export class PgCoordLog implements CoordEventLog {
       SELECT body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
          ${kindPredicate(sql, kinds)}
-         ${sinceTs ? sql`AND body->>'ts' > ${sinceTs}` : sql``}
+         ${sinceTs ? sql`AND ts > ${sinceTs}::timestamptz` : sql``}
          ${planSlug ? sql`AND body->>'plan_slug' = ${planSlug}` : sql``}
        ORDER BY id DESC
        LIMIT ${limit}
@@ -1181,7 +1181,7 @@ export class PgCoordLog implements CoordEventLog {
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
          ${kindPredicate(sql, kinds)}
          ${from !== null ? sql`AND body->>'from' = ${from}` : sql``}
-         ${sinceTs ? sql`AND body->>'ts' > ${sinceTs}` : sql``}
+         ${sinceTs ? sql`AND ts > ${sinceTs}::timestamptz` : sql``}
          ${planSlug ? sql`AND body->>'plan_slug' = ${planSlug}` : sql``}
          ${beforeTsPredicate}
          ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}

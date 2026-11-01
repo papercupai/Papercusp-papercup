@@ -10,6 +10,7 @@ import {
   resolveChildSessionOperatorBaseUrl,
   resolveInheritedOperatorBaseUrl,
   resolveLongLivedSessionMcpBaseUrl,
+  resolveOrchestratorMcpBaseUrl,
   resolveResumedSessionOperatorBaseUrl,
   resolveSpawnHostOperatorBaseUrl,
 } from './mcp-base-url';
@@ -208,6 +209,18 @@ describe('resolveInheritedOperatorBaseUrl', () => {
   });
 });
 
+describe('resolveOrchestratorMcpBaseUrl', () => {
+  it('keeps orchestrator agents on the bg-host proxy, not the sessions/console endpoint', () => {
+    expect(resolveOrchestratorMcpBaseUrl({
+      PAPERCUSP_HONO_PORT: '3271',
+      PAPERCUSP_OPERATOR_URL: 'http://localhost:3070/api/mcp',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9271',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3271',
+      PAPERCUSP_BG_HOST_AGENTS_MCP_BASE: 'http://127.0.0.1:9071',
+    })).toBe('http://127.0.0.1:9271');
+  });
+});
+
 describe('resolveSpawnHostOperatorBaseUrl (WI-6154)', () => {
   it('uses the desktop sidecar dev port over an inherited staging Hono port', () => {
     expect(resolveSpawnHostOperatorBaseUrl({
@@ -329,9 +342,9 @@ describe('resolveResumedSessionOperatorBaseUrl (WI-6554700010008371)', () => {
     expect(resolveResumedSessionOperatorBaseUrl('http://localhost:3070/api/mcp')).toBe('http://localhost:3070');
   });
 
-  it('is the resolver both wake-executor resume sites use', () => {
+  it('is the resolver used by all wake-executor resume and repair sites', () => {
     const src = readFileSync(new URL('./events/await/wake-executor.ts', import.meta.url), 'utf8');
-    expect(src.match(/resolveResumedSessionOperatorBaseUrl\(process\.env\.PAPERCUSP_OPERATOR_URL\)/g)).toHaveLength(2);
+    expect(src.match(/resolveResumedSessionOperatorBaseUrl\(process\.env\.PAPERCUSP_OPERATOR_URL\)/g)).toHaveLength(3);
     expect(src).not.toMatch(/resolveInheritedOperatorBaseUrl\(process\.env/);
   });
 });

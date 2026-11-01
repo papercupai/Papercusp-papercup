@@ -381,12 +381,11 @@ describe('listScorecards (P-013) — real PG', () => {
     const ids = rows.map((r) => r.rubricRef);
     // complete + partial + generic + unknown-rubric + the 3 supersession fixtures
     // (06-19) + the 3 contract-reset fixtures (06-18); free-text excluded. NOTE
-    // listScorecards is the raw READ surface and is deliberately supersession-blind —
-    // the exclusion belongs to the TREND, so all 3 appear here even after the `revises`
-    // edge is filed. The SAME holds for the D-015 contract-generation boundary: it is a
-    // TREND-level exclusion, so a retired-contract grading is still readable here. That
-    // is deliberate — the raw read is how you audit what was excluded and why, which an
-    // exclusion applied at the read surface would make impossible.
+    // listScorecards excludes observation-level supersessions by default, but does not
+    // interpret issue-graph `revises` edges — all 3 appear here after those links are
+    // filed. The SAME holds for the D-015 contract-generation boundary: it is a
+    // TREND-level exclusion, so a retired-contract grading is still readable here.
+    // `includeSuperseded` keeps observation-level replacements auditable on demand.
     expect(rows.length).toBe(10);
     expect(ids.every((r) => typeof r === 'string' && r.length > 0)).toBe(true);
     // created_at DESC: complete(12:00) > generic(11:00) > partial(10:00) > unknown(09:00)
@@ -1265,6 +1264,74 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
         retractedBindingIds: [], unavailableBindingIds: [],
       },
     });
+  });
+
+  it('supersedes older spec-quality hashes only within the same class and plan on get and list', async () => {
+    const planKey = 'f'.repeat(16);
+    const otherPlanKey = 'e'.repeat(16);
+    const specRef = (classRef: string, hash: string, key = planKey) => `spec-set:${classRef}:${hash}:${key}`;
+    const ratings = { 'stable-revision-identity': { rating: 'pass', evidence: 'checked' } };
+    const records = [
+      ['EI-spec-quality-old', specRef('plan-class-feature-ship', 'a'.repeat(64)), '2026-06-21T11:00:00Z'],
+      ['EI-spec-quality-new', specRef('plan-class-feature-ship', 'b'.repeat(64)), '2026-06-21T11:01:00Z'],
+      // Same-hash duplicate stays current alongside the newer card.
+      ['EI-spec-quality-new-duplicate', specRef('plan-class-feature-ship', 'b'.repeat(64)), '2026-06-21T11:02:00Z'],
+      // Newer cards for another class or plan must not supersede this series.
+      ['EI-spec-quality-other-class', specRef('plan-class-bugfix', 'c'.repeat(64)), '2026-06-21T11:03:00Z'],
+      ['EI-spec-quality-other-plan', specRef('plan-class-feature-ship', 'd'.repeat(64), otherPlanKey), '2026-06-21T11:04:00Z'],
+    ] as const;
+    for (const [issueId, ref, at] of records) {
+      await db.adminSql`
+        INSERT INTO harness_shared.engineer_issues
+          (workspace_id, issue_id, kind, scope, title, body, severity, source,
+           state, payload, created_by, signal_origin, created_at, updated_at)
+        VALUES (
+          ${issuesScopeWorkspace()}, ${issueId}, 'change',
+          'harness:papercusp', 'spec-quality scorecard', '', 'minor', 'test',
+          'done',
+          ${JSON.stringify({ observation: {
+            rubricRef: 'spec-quality', sourceHive: 'papercusp', ratings,
+            subject: { kind: 'plan', ref },
+          } })}::text::jsonb,
+          'su-test', 'organic', ${at}::timestamptz, ${at}::timestamptz
+        )`;
+    }
+
+    const read = async (id: string) => {
+      const result = await readScorecardEvidence(id);
+      if (result.kind !== 'found') throw new Error(`${id}: ${result.kind}`);
+      return result.scorecard;
+    };
+    expect((await read('EI-spec-quality-old')).auditTarget).toMatchObject({
+      current: false,
+      superseded: true,
+      supersededBy: 'EI-spec-quality-new-duplicate',
+    });
+    expect((await read('EI-spec-quality-new')).auditTarget).toMatchObject({
+      current: true, superseded: false, supersededBy: null,
+    });
+    expect((await read('EI-spec-quality-new-duplicate')).auditTarget).toMatchObject({
+      current: true, superseded: false, supersededBy: null,
+    });
+    expect((await read('EI-spec-quality-other-class')).auditTarget).toMatchObject({
+      current: true, superseded: false,
+    });
+    expect((await read('EI-spec-quality-other-plan')).auditTarget).toMatchObject({
+      current: true, superseded: false,
+    });
+
+    const issueIds = records.map(([id]) => id);
+    const visibleByDefault = await listScorecards({ issueIds });
+    expect(visibleByDefault.map((card) => card.issueId)).not.toContain('EI-spec-quality-old');
+    expect(visibleByDefault.map((card) => card.issueId)).toEqual(expect.arrayContaining([
+      'EI-spec-quality-new',
+      'EI-spec-quality-new-duplicate',
+      'EI-spec-quality-other-class',
+      'EI-spec-quality-other-plan',
+    ]));
+    const all = await listScorecards({ issueIds, includeSuperseded: true });
+    expect(all.find((card) => card.issueId === 'EI-spec-quality-old')?.supersededBy)
+      .toBe('EI-spec-quality-new-duplicate');
   });
 });
 

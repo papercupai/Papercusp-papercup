@@ -579,6 +579,10 @@ export const claimSpecSchema = z
   })
   .strict();
 
+// Persisted readers may encounter a top-level field written by a newer build.
+// Strip only those root fields; nested policy objects remain strict.
+const claimSpecReadSchema = claimSpecSchema.strip();
+
 /**
  * The full claim spec type. The Zod schema keeps `view.filter` permissive (an
  * unvalidated record — see `viewSchema`) so leaf errors stay clear, but consumers
@@ -925,8 +929,9 @@ export function validateClaimSpec(input: unknown): ClaimSpecValidation {
 
   // (2a) WI-6050: expand a named `view.fence` macro into `view.filter`, HERE, at
   // validate time — which is also write time (setClaimSpec persists `v.spec`, this
-  // function's return value, never the caller's raw input) and read time (getClaimSpec
-  // re-validates the stored spec on every load). Expansion ANDs the macro's FilterNode
+  // function's return value, never the caller's raw input). Stored reads strip
+  // unsupported top-level fields before applying this same semantic walk.
+  // Expansion ANDs the macro's FilterNode
   // onto any existing filter and then DELETES `fence` from the returned view, so
   // re-validating an already-expanded stored spec is a no-op rather than compounding.
   if (spec.view.fence !== undefined) {
@@ -1003,6 +1008,44 @@ export function validateClaimSpec(input: unknown): ClaimSpecValidation {
   // The semantic walk above guarantees `view.filter` (when present) is a valid
   // `FilterNode` once there are no errors; surface the narrowed `ClaimSpec` type.
   return { ok: errors.length === 0, errors, warnings, spec: spec as ClaimSpec };
+}
+
+/**
+ * Validate a persisted spec on a read path. Unknown top-level fields are from a
+ * newer writer and are ignored for this read with an explicit warning. Known
+ * fields still receive the full semantic validation, and nested objects remain
+ * strict so an unknown nested constraint cannot silently widen a policy.
+ */
+export function validateClaimSpecForRead(input: unknown): ClaimSpecValidation {
+  const strict = claimSpecSchema.safeParse(input);
+  if (strict.success) return validateClaimSpec(input);
+
+  const unknownKeys = [
+    ...new Set(
+      strict.error.issues
+        .filter((issue) => issue.code === 'unrecognized_keys' && issue.path.length === 0)
+        .flatMap((issue) => ('keys' in issue && Array.isArray(issue.keys) ? issue.keys : []))
+        .filter((key): key is string => typeof key === 'string'),
+    ),
+  ].sort();
+  if (unknownKeys.length === 0) return validateClaimSpec(input);
+
+  const warning =
+    'Ignored unsupported top-level claim-spec key(s) during stored read: ' + unknownKeys.join(', ') + '.';
+  const parsed = claimSpecReadSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      errors: parsed.error.issues.map((issue) => {
+        const where = issue.path.join('.') || '(root)';
+        return where + ': ' + issue.message;
+      }),
+      warnings: [warning],
+    };
+  }
+
+  const validated = validateClaimSpec(parsed.data);
+  return { ...validated, warnings: [...validated.warnings, warning] };
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -92,6 +92,8 @@ export interface ConsoleEnvelope {
    * link. See packages/operator-core/lib/windows-desktop-windows.ts.
    */
   sessionId: string;
+  /** Workspace that owns this launch; headless task enrollment persists this provenance. */
+  workspaceId?: string;
   /** Stable coord identity resolved from the resumed adv_sessions row. Null for
    *  fresh/untracked launches. Headless spawners use this only as task-ledger
    *  metadata; it never changes the launched agent's identity. */
@@ -662,6 +664,7 @@ export async function buildConsoleEnvelope(
     greetingCmd,
     needsSuperuserBootstrap,
     sessionId: randomUUID(),
+    workspaceId: opts.workspaceId,
     coordOwnerId,
   };
 }

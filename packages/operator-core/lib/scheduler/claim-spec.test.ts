@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   validateClaimSpec,
+  validateClaimSpecForRead,
   claimSpecSchema,
   DEFAULT_CLAIM_SPEC,
   CURRENT_SPEC_VERSION,
@@ -473,6 +474,27 @@ describe('validateClaimSpec — invalid: version + structure', () => {
       bonusMutableQueryFragment: { sneaky: true },
     });
     expect(r.ok).toBe(false);
+  });
+
+  it('strips and warns on unknown top-level keys only for stored reads', () => {
+    const input = { ...DEFAULT_CLAIM_SPEC, futureLane: 'verification' };
+    const read = validateClaimSpecForRead(input);
+
+    expect(read.ok).toBe(true);
+    expect(read.spec).not.toHaveProperty('futureLane');
+    expect(read.warnings.some((warning) => warning.includes('futureLane'))).toBe(true);
+    expect(validateClaimSpec(input).ok).toBe(false);
+  });
+
+  it('keeps unknown nested policy keys fail-closed on stored reads', () => {
+    const input = {
+      ...DEFAULT_CLAIM_SPEC,
+      view: { ...DEFAULT_CLAIM_SPEC.view, futureConstraint: true },
+    };
+    const read = validateClaimSpecForRead(input);
+
+    expect(read.ok).toBe(false);
+    expect(read.errors.some((error) => error.includes('futureConstraint'))).toBe(true);
   });
 
   it('rejects a non-object input without throwing', () => {

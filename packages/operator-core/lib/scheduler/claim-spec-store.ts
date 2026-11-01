@@ -14,7 +14,14 @@
  */
 import { DbCallDeadlineError, getOrgPg, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, appendIdsToClaimSpec, type ClaimSpec } from './claim-spec';
+import {
+  DEFAULT_CLAIM_SPEC,
+  validateClaimSpec,
+  validateClaimSpecForRead,
+  isIdOnlySelector,
+  appendIdsToClaimSpec,
+  type ClaimSpec,
+} from './claim-spec';
 import { buildP2pLaneFence } from './p2p-lane-fence';
 import { getNextWorkItem, type GetNextResult, type ResolutionStepEvent } from './get-next';
 import { releaseWorkItem, type OrgSql, type WorkItem } from '../work-items';
@@ -1233,6 +1240,8 @@ export interface ClaimSpecRecord {
   updatedAt: string | null;
   /** The federation hive scope the row rides (null ⇒ operator-scope/local-only). Absent on 'default'. */
   harnessSlug?: string | null;
+  /** Unknown top-level fields ignored while reading a spec written by a newer build. */
+  warnings?: string[];
   /**
    * Set when `source === 'fleet'`: the fleet slug whose spec this bee inherited.
    * Also set on a default record while the bee's latest membership fact still
@@ -1299,7 +1308,7 @@ export async function getClaimSpecRecord(
   }>;
   if (rows.length > 0) {
     const row = rows[0]!;
-    const v = validateClaimSpec(row.spec);
+    const v = validateClaimSpecForRead(row.spec);
     if (!v.ok || !v.spec) {
       throw Object.assign(
         new Error(
@@ -1315,6 +1324,9 @@ export async function getClaimSpecRecord(
       updatedBy: row.updated_by,
       updatedAt: row.updated_at,
       harnessSlug: row.harness_slug,
+      ...(v.warnings.length
+        ? { warnings: v.warnings.map((warning) => args.cupId + ': ' + warning) }
+        : {}),
       ...(directFleetSlug ? { fleetSlug: directFleetSlug } : {}),
     };
   }
@@ -1348,7 +1360,7 @@ export async function getClaimSpecRecord(
       }>;
       if (frows.length > 0) {
         const frow = frows[0]!;
-        const fv = validateClaimSpec(frow.spec);
+        const fv = validateClaimSpecForRead(frow.spec);
         if (!fv.ok || !fv.spec) {
           throw Object.assign(
             new Error(
@@ -1365,6 +1377,9 @@ export async function getClaimSpecRecord(
           updatedAt: frow.updated_at,
           harnessSlug: frow.harness_slug,
           fleetSlug: membership.fleetSlug,
+          ...(fv.warnings.length
+            ? { warnings: fv.warnings.map((warning) => fleetSpecBeeKey(membership.fleetSlug!) + ': ' + warning) }
+            : {}),
         };
       }
     }
@@ -1437,7 +1452,7 @@ export async function resolveFleetClaimSpec(
   // matchedBy is set by each call site below (it knows which lookup produced the row);
   // this just builds the common record shape once validation passes.
   const toRecord = (row: Row, fleetSlug: string): Omit<ResolvedFleetClaimSpec, 'matchedBy'> | null => {
-    const v = validateClaimSpec(row.spec);
+    const v = validateClaimSpecForRead(row.spec);
     if (!v.ok || !v.spec) return null;
     return {
       fleetSlug,
@@ -1449,6 +1464,9 @@ export async function resolveFleetClaimSpec(
         updatedAt: row.updated_at,
         harnessSlug: row.harness_slug,
         fleetSlug,
+        ...(v.warnings.length
+          ? { warnings: v.warnings.map((warning) => row.bee_id + ': ' + warning) }
+          : {}),
       },
     };
   };

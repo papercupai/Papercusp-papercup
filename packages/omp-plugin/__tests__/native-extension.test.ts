@@ -12,10 +12,11 @@ let shutdown: (() => Promise<void>) | undefined;
 let tools: Tool[];
 let calls: Record<string, unknown>[];
 let nativeCall: Parameters<NativeExtensionApi['on']>[1] | undefined;
+let nativeResult: typeof nativeCall;
 let observeOriginal: ReturnType<typeof vi.fn>;
 
 beforeEach(async () => {
-  tools = []; calls = []; shutdown = undefined; nativeCall = undefined;
+  tools = []; calls = []; shutdown = undefined; nativeCall = undefined; nativeResult = undefined;
   observeOriginal = vi.fn(async () => undefined);
   const server = new Server({ name: 'native-call-fixture', version: '1' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'echo',
@@ -38,7 +39,8 @@ beforeEach(async () => {
   await registerNativeMcp({ registerTool: tool => { tools.push(tool); },
     on: (name, handler) => {
       if (name === 'session_shutdown') shutdown = handler as () => Promise<void>;
-      else nativeCall = handler as typeof nativeCall;
+      else if (name === 'tool_call') nativeCall = handler as typeof nativeCall;
+      else nativeResult = handler as typeof nativeResult;
     } }, {
     papercuspNativeMcp: { version: 1, mode: 'http',
       servers: { 'papercusp-su': { url: `http://127.0.0.1:${address.port}/mcp` } } },
@@ -74,6 +76,33 @@ describe('owned OMP native MCP call identity', () => {
     observeOriginal.mockRejectedValue(new Error('host no longer owns this input'));
     await expect(nativeCall!({ toolCallId: 'call', toolName: 'bash', input: {} },
       { sessionManager: { getSessionId: () => 'native-session' } })).resolves.toMatchObject({ block: true });
+  });
+
+  it('joins rewritten execution input to the detached original without replacing it', async () => {
+    const context = { sessionManager: { getSessionId: () => 'native-session' } };
+    const original = { toolCallId: 'shell-call', toolName: 'bash', input: { command: 'original' } };
+    await nativeCall!(original, context);
+    original.input.command = 'later mutation';
+    const executed = { ...original, input: { command: 'executed' } };
+    await nativeResult!(executed, context);
+    executed.input.command = 'later execution mutation';
+    expect(observeOriginal.mock.calls).toEqual([
+      [{ nativeSessionId: 'native-session', callId: 'shell-call', tool: 'bash', arguments: { command: 'original' } }],
+      [{ nativeSessionId: 'native-session', callId: 'shell-call', tool: 'bash', arguments: { command: 'original' },
+        executedArguments: { command: 'executed' } }],
+    ]);
+    await expect(nativeResult!(executed, context)).rejects.toThrow('execution_observation_refused');
+  });
+
+  it.each(['missing', 'session', 'tool', 'refused'] as const)('refuses an unjoined execution: %s', async reason => {
+    const event = { toolCallId: 'call', toolName: 'bash', input: { command: 'original' } };
+    let session = 'native-session';
+    const context = { sessionManager: { getSessionId: () => session } };
+    if (reason !== 'missing') await nativeCall!(event, context);
+    if (reason === 'session') session = 'other-session';
+    if (reason === 'tool') event.toolName = 'browser';
+    if (reason === 'refused') observeOriginal.mockRejectedValue(new Error('host closed'));
+    await expect(nativeResult!(event, context)).rejects.toThrow('execution_observation_refused');
   });
 
   it('sends the native callback call and live session on the SDK wire, outside model arguments', async () => {

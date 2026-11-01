@@ -16,9 +16,12 @@ const h = vi.hoisted(() => {
     assignments: [] as Array<{ itemId: string; assigneeName: string }>,
     claims: [] as Array<{ itemId: string; expired: boolean }>,
     implementing: new Map<string, unknown>(),
+    admission: { decision: null as unknown },
   };
   return {
     ...state,
+    admission: state.admission,
+    admitSubjectForFleetTarget: vi.fn(async () => state.admission.decision ?? { allowed: true, scoped: false }),
     findImplementingWorkItem: vi.fn(async (_planSlug: string, itemId: string) => state.implementing.get(itemId) ?? null),
   };
 });
@@ -52,6 +55,9 @@ vi.mock('./work-group', () => ({
   workGroupExists: async () => false,
   isWorkGroupMember: async () => true,
 }));
+vi.mock('../scheduler/fleet-scope-admission', () => ({
+  admitSubjectForFleetTarget: h.admitSubjectForFleetTarget,
+}));
 vi.mock('../work-items', () => ({
   isClaimHoldParked: (payload: unknown) => String((payload as { _claimHold?: unknown } | null)?._claimHold) === 'true',
   readWorkItemClaimHoldProvenance: (payload: unknown) => {
@@ -84,6 +90,8 @@ beforeEach(() => {
   h.assignments = [];
   h.claims = [];
   h.implementing.clear();
+  h.admission.decision = null;
+  h.admitSubjectForFleetTarget.mockClear();
 });
 
 describe('priorHolderStillLive (EI-7189)', () => {
@@ -206,5 +214,41 @@ describe('claimPlanItem linked claim-hold refusal', () => {
         provenance: { heldOpen: null, parked: null, attributed: false },
       },
     });
+  });
+});
+
+describe('claimPlanItem fleet admission', () => {
+  it('refuses a new plan-item lease while the target fleet is winding down', async () => {
+    h.admission.decision = {
+      allowed: false,
+      scoped: true,
+      code: 'fleet_winding_down',
+      reason: "fleet 'code-intel-reuse-signals' is winding-down (paused)",
+    };
+
+    const result = await claimPlanItem({
+      workspaceId: 'default',
+      harnessSlug: 'papercusp',
+      planSlug: 'plan',
+      itemId: 'P-001',
+      owner: 'su-paused-member',
+      ownerUser: 'member@example.com',
+      livenessMode: 'availability',
+    });
+
+    expect(result).toMatchObject({
+      status: 'refused',
+      reason: expect.stringContaining('fleet_winding_down: fleet'),
+    });
+    expect(h.admitSubjectForFleetTarget).toHaveBeenCalledWith(expect.objectContaining({
+      target: 'su-paused-member',
+      workspaceId: 'default',
+      subject: expect.objectContaining({
+        kind: 'feature',
+        plan: 'plan',
+        planItem: ['P-001'],
+        itemClass: 'work',
+      }),
+    }));
   });
 });

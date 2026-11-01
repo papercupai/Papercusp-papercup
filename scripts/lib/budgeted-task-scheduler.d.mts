@@ -14,15 +14,17 @@ export interface TaskBudgetInput {
 /** Bounded descriptor read shared by native receipt and continuation readers. */
 export function readNativeArtifactBytes(file: string, byteLength: number, byteLimit: number,
   recordRead?: (count: number) => void): Buffer;
-export interface NativeArtifactPin { ref: string; sha256: string; byteLength: number; }
+export interface NativeArtifactPin { ref: string; sha256: string; byteLength: number; segment?: number; }
 export interface NativeCustodyIdentity { workspace: string; harness: string; runId: string; }
 export interface NativeCustodyAuxiliary {
   role: string; state: 'produced' | 'not-requested' | 'not-produced' | 'not-applicable' | 'unavailable';
-  path?: string; reason?: string;
+  path?: string; reason?: string; captureError?: string;
 }
 export interface NativeCustodyGroup {
   id: string; attempt: 'primary' | 'detail'; selected: string[]; runner: 'vitest' | 'node' | 'unsupported';
   armed: boolean; out: string | null; cwd?: string; auxiliary: NativeCustodyAuxiliary[];
+  /** Inputs to the original Node load preload's termination-receipt producer. */
+  processSources?: { preload: string | null; workspace: string | null; root: string | null };
 }
 export interface NativeCustodyLocator {
   manifest: NativeArtifactPin; identity: NativeCustodyIdentity; expectedHash: string;
@@ -33,18 +35,32 @@ export interface NativeCustodyFamily {
   family: 'A' | 'B' | 'C' | 'D'; state: string; producer: string; reason?: string;
   entries: Array<{ original: string; artifact: NativeArtifactPin }>;
 }
+export interface NativeCustodyFamilyLimit { objects: number; bytes: number; }
+export interface NativeCustodyLimits {
+  objects: number; bytes: number; objectBytes: number; referenceOccurrences?: number;
+  families?: Record<'A' | 'B' | 'C' | 'D' | 'auxiliary', NativeCustodyFamilyLimit>;
+}
 export interface NativeCustodyRetainedGroup {
   id: string; attempt: 'primary' | 'detail'; families: NativeCustodyFamily[];
   captureComplete: boolean | null;
   references: Array<{ location: string; codeRef: string; sha256: string; byteLength: number }>;
+  referenceArtifacts?: Array<{ codeRef: string; sha256: string; byteLength: number }>;
+  referenceGaps?: string[];
   auxiliary: Array<NativeCustodyAuxiliary & { artifact?: NativeArtifactPin }>;
   protocol?: unknown;
 }
 export interface NativeCustodyManifest {
-  schemaVersion: 'native-proof-custody-v1'; identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
+  schemaVersion: 'native-proof-custody-v1' | 'native-proof-custody-v2' | 'native-proof-custody-v3';
+  identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
   expectedHash: string; groups: NativeCustodyRetainedGroup[]; gaps: string[]; predecessor: NativeCustodyLocator | null;
-  /** Bytes the capture read against the shared IO budget (retained AND rejected objects). */
-  bytesRead: number;
+  limits: NativeCustodyLimits;
+  /** Bytes and objects read against the capture budgets (retained AND rejected objects). */
+  bytesRead: number; bytesReadByFamily?: Record<'A' | 'B' | 'C' | 'D' | 'auxiliary', number>;
+  objectsRead?: number; objectsReadByFamily?: Record<'A' | 'B' | 'C' | 'D' | 'auxiliary', number>;
+  archiveLimits?: { segments: number; objects: number };
+  segments?: Array<{ index: number; artifact: NativeArtifactPin; bytesRead: number; objectsRead: number;
+    bytesReadByFamily: Record<'A' | 'B' | 'C' | 'D' | 'auxiliary', number>;
+    objectsReadByFamily: Record<'A' | 'B' | 'C' | 'D' | 'auxiliary', number> }>;
   verdicts: { custody: 'complete' | 'partial'; execution: unknown; protocol: 'unqualified';
     producerRetirement: 'not-performed'; cleanup: unknown; nativeProof: 'unqualified'; acceptance: 'unmeasured' };
 }

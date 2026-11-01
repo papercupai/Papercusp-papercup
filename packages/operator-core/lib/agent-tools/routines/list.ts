@@ -876,6 +876,12 @@ export function deriveGitSyncFreshness(
   const inFlightStuck =
     inFlightProgressAgeMs !== null && staleAfterMs !== null && inFlightProgressAgeMs > staleAfterMs;
   const inFlightPhase = typeof activity?.phase === 'string' ? activity.phase : null;
+  const inFlightOwnerPid = inFlightActive ? safeGitSyncInteger(activity?.owner_pid, 1) : null;
+  const inFlightWorkflowId =
+    inFlightActive && typeof activity?.workflow_id === 'string' && activity.workflow_id.length <= 256
+      ? activity.workflow_id
+      : null;
+  const gitCommandSnapshot = inFlightActive ? projectGitSyncCommandSnapshot(activity?.git_commands) : null;
 
   const status = !active
     ? 'inactive'
@@ -990,6 +996,9 @@ export function deriveGitSyncFreshness(
       age_ms: inFlightAgeMs,
       last_progress_at: isoAt(inFlightLastProgressAtMs),
       progress_age_ms: inFlightProgressAgeMs,
+      ...(inFlightOwnerPid !== null ? { owner_pid: inFlightOwnerPid } : {}),
+      ...(inFlightWorkflowId !== null ? { workflow_id: inFlightWorkflowId } : {}),
+      ...(gitCommandSnapshot !== null ? { git_commands: gitCommandSnapshot } : {}),
       holds_exclusive_locks: holdsExclusiveLocks,
       locks_reported: locksRaw !== null,
       owner_reconciliation: ownerReconciliation,
@@ -1026,6 +1035,106 @@ export function deriveGitSyncFreshness(
               'Keep the restart verdict unsafe until the marker is reconciled.'
             : `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals; ` +
               'the raw last_status may describe an older successful tick.',
+  };
+}
+
+const GIT_SYNC_COMMAND_SNAPSHOT_LIMIT = 16;
+
+function safeGitSyncInteger(value: unknown, minimum = 0): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum ? value : null;
+}
+
+function gitSyncRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function projectGitSyncCommandRow(value: unknown, completed: boolean): Record<string, unknown> | null {
+  const row = gitSyncRecord(value);
+  if (!row) return null;
+  const id = safeGitSyncInteger(row.id, 1);
+  const cwd = typeof row.cwd === 'string' && row.cwd.length > 0 && row.cwd.length <= 1024 ? row.cwd : null;
+  const startedAt = safeGitSyncInteger(row.started_at, 1);
+  if (id === null || cwd === null || startedAt === null) return null;
+
+  const subcommand =
+    row.subcommand === null
+      ? null
+      : typeof row.subcommand === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(row.subcommand)
+        ? row.subcommand
+        : null;
+  const command: Record<string, unknown> = {
+    id,
+    subcommand,
+    cwd,
+    ...(row.cwd_truncated === true ? { cwd_truncated: true } : {}),
+    started_at: startedAt,
+  };
+  if (!completed) return command;
+
+  const completedAt = safeGitSyncInteger(row.completed_at, 1);
+  const durationMs = safeGitSyncInteger(row.duration_ms);
+  const status = row.status;
+  if (
+    completedAt === null ||
+    durationMs === null ||
+    (status !== 'succeeded' && status !== 'failed' && status !== 'threw')
+  ) return null;
+
+  return {
+    ...command,
+    completed_at: completedAt,
+    duration_ms: durationMs,
+    status,
+    ...(typeof row.exit_code === 'number' && Number.isSafeInteger(row.exit_code) ? { exit_code: row.exit_code } : {}),
+  };
+}
+
+function projectGitSyncCommandRows(
+  value: unknown,
+  completed: boolean,
+): { rows: Record<string, unknown>[]; dropped: number } {
+  const candidates = Array.isArray(value) ? value : [];
+  const selected = candidates.slice(0, GIT_SYNC_COMMAND_SNAPSHOT_LIMIT);
+  const rows = selected
+    .map((candidate) => projectGitSyncCommandRow(candidate, completed))
+    .filter((row): row is Record<string, unknown> => row !== null);
+  return { rows, dropped: candidates.length - rows.length };
+}
+
+/**
+ * Expose the writer's already-bounded, argv/env-free Git command snapshot to the
+ * routine health reader. Never project arbitrary metadata keys into this public
+ * diagnostic surface; malformed rows are counted as omitted.
+ */
+function projectGitSyncCommandSnapshot(value: unknown): Record<string, unknown> | null {
+  const snapshot = gitSyncRecord(value);
+  if (!snapshot || snapshot.scope !== 'local-sync-runner') return null;
+
+  const active = projectGitSyncCommandRows(snapshot.active, false);
+  const completed = projectGitSyncCommandRows(snapshot.completed, true);
+  const activeCount = safeGitSyncInteger(snapshot.active_count);
+  const reportedActiveOmitted = safeGitSyncInteger(snapshot.omitted_count);
+  const completedCount = safeGitSyncInteger(snapshot.completed_count);
+  const reportedCompletedOmitted = safeGitSyncInteger(snapshot.completed_omitted_count);
+  const activeOmitted =
+    reportedActiveOmitted === null
+      ? (active.dropped > 0 ? active.dropped : null)
+      : reportedActiveOmitted + active.dropped;
+  const completedOmitted =
+    reportedCompletedOmitted === null
+      ? (completed.dropped > 0 ? completed.dropped : null)
+      : reportedCompletedOmitted + completed.dropped;
+
+  return {
+    scope: 'local-sync-runner',
+    active_count: activeCount ?? (activeOmitted === null ? null : active.rows.length + activeOmitted),
+    omitted_count: activeOmitted,
+    active: active.rows,
+    completed_count: completedCount ?? (completedOmitted === null ? null : completed.rows.length + completedOmitted),
+    completed_omitted_count: completedOmitted,
+    completed: completed.rows,
   };
 }
 

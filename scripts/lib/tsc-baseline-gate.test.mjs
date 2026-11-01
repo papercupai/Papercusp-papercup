@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import {
   formatMinePeerDriftBanner,
   formatUncoveredFilesBanner,
+  runCrossLegChecks,
   suggestTypecheckGate,
 } from './tsc-baseline-gate.mjs';
 
@@ -72,4 +75,46 @@ test('mixed-file typecheck routing offers an owning command for packages/backup 
     });
     assert.match(banner.join('\n'), /npm run --workspace packages\/backup typecheck/);
     assert.match(banner.join('\n'), /packages\/backup\/src\/hook\.test\.ts/);
+});
+
+test('cross-leg child timeout resets across queued service and fallback compiler progress', async (t) => {
+  const fixtureDir = mkdtempSync(join(tmpdir(), 'papercusp-cross-leg-progress-'));
+  t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
+  const scriptPath = join(fixtureDir, 'consumer.mjs');
+  writeFileSync(scriptPath, [
+    "console.log('TSC_SERVICE state=queued requestId=fixture resultOrigin=pending');",
+    "setTimeout(() => console.log('LINT_TSC_CROSS_LEG_PROGRESS leg=operator phase=program-start elapsedMs=400'), 400);",
+    "setTimeout(() => console.log('LINT_TSC_CROSS_LEG_PROGRESS leg=operator phase=diagnostics-start elapsedMs=900'), 900);",
+    "setTimeout(() => console.log('LINT_TSC_CROSS_LEG leg=operator status=clean members=1'), 1400);",
+  ].join('\n'));
+
+  const result = await runCrossLegChecks({
+    root: ROOT,
+    plans: [{ npmScript: 'lint:tsc:operator', scriptPath, files: ['packages/operator-core/lib/example.ts'] }],
+    childTimeoutMs: 1000,
+  });
+
+  assert.deepEqual(result, {
+    clean: ['lint:tsc:operator'],
+    notMember: [],
+    red: [],
+    undetermined: [],
+  });
+});
+
+test('cross-leg child with no compiler progress remains undetermined', async (t) => {
+  const fixtureDir = mkdtempSync(join(tmpdir(), 'papercusp-cross-leg-stall-'));
+  t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
+  const scriptPath = join(fixtureDir, 'stalled-consumer.mjs');
+  writeFileSync(scriptPath, 'setTimeout(() => {}, 5000);\n');
+
+  const result = await runCrossLegChecks({
+    root: ROOT,
+    plans: [{ npmScript: 'lint:tsc:operator', scriptPath, files: ['packages/operator-core/lib/example.ts'] }],
+    childTimeoutMs: 200,
+  });
+
+  assert.deepEqual(result.clean, []);
+  assert.equal(result.undetermined.length, 1);
+  assert.match(result.undetermined[0].reason, /made no compiler progress for 200ms/);
 });

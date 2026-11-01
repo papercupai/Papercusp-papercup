@@ -24,17 +24,31 @@ const CALLER = 'su-48bb5561-df80-42fc-8081-efc386412dae';
 /** The pre-fix reading: a sentinel row answered, so assume it governs the caller. */
 const naiveCallerView = () => ({ appliesToCaller: true, warning: undefined as string | undefined });
 
-const view = (callerRecord: CallerSpecResolution | null) =>
-  fleetSentinelCallerView({ fleetSlug: FLEET, callerId: CALLER, callerRecord });
+const view = (callerRecord: CallerSpecResolution | null, callerFleetRole: string | null = null) =>
+  fleetSentinelCallerView({ fleetSlug: FLEET, callerId: CALLER, callerRecord, callerFleetRole });
 
 describe('fleetSentinelCallerView', () => {
   it('CALIBRATION: a genuine member of THIS fleet gets agreement and no warning', () => {
-    const v = view({ source: 'fleet', revision: 7, fleetSlug: FLEET });
+    const v = view({ source: 'fleet', revision: 7, fleetSlug: FLEET }, 'member');
     expect(v.appliesToCaller).toBe(true);
     expect(v.warning).toBeUndefined();
-    expect(v.callerEffective).toMatchObject({ resolved: true, source: 'fleet', revision: 7 });
+    expect(v.callerEffective).toMatchObject({ resolved: true, source: 'fleet', revision: 7, fleetRole: 'member' });
     // The control is RIGHT here — which is what proves the cases below are not vacuous.
     expect(v.appliesToCaller).toBe(naiveCallerView().appliesToCaller);
+  });
+
+  it("a leader's inherited sentinel is not reported as the member self-pull lane", () => {
+    const v = view({ source: 'fleet', revision: 41, fleetSlug: FLEET }, 'leader');
+    expect(v.appliesToCaller).toBe(false);
+    expect(v.callerEffective).toMatchObject({ source: 'fleet', revision: 41, fleetRole: 'leader' });
+    expect(v.warning).toContain('you are the fleet leader');
+    expect(v.warning).toContain('scheduler:get_next does not consume the leader\'s member lane');
+  });
+
+  it('an unreadable membership role never produces a false applicability verdict', () => {
+    const v = view({ source: 'fleet', revision: 41, fleetSlug: FLEET });
+    expect(v.appliesToCaller).toBe(false);
+    expect(v.warning).toContain('could not be confirmed as \'member\'');
   });
 
   it('THE LIVE INCIDENT: no membership + no per-bee spec ⇒ does NOT apply, names fleet:join', () => {

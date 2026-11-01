@@ -23,7 +23,7 @@ export interface NativeExtensionApi {
       onUpdate?: unknown, context?: { sessionManager: { getSessionId(): string } }): Promise<unknown>;
   }): void;
   on(name: 'session_shutdown', handler: () => Promise<void>): void;
-  on(name: 'tool_call', handler: NativeToolCallHandler): void;
+  on(name: 'tool_call' | 'tool_result', handler: NativeToolCallHandler): void;
 }
 
 export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOmpConfig,
@@ -31,7 +31,10 @@ export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOm
   const native = config.papercuspNativeMcp;
   if (!native || native.version !== 1) return;
   const connections: Array<Awaited<ReturnType<typeof connectAgentMcp>>> = [];
+  const originals = new Map<string, SuNativeToolCall>();
+  const callKey = (call: SuNativeToolCall) => JSON.stringify([call.nativeSessionId, call.callId]);
   pi.on('session_shutdown', async () => {
+    originals.clear();
     nativeHook?.close();
     await Promise.allSettled(connections.map(x => x.client.close()));
   });
@@ -39,8 +42,12 @@ export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOm
     try {
       // Snapshot BEFORE yielding to another hook. Rewriters may change both
       // the returned input and OMP's later assistant-message snapshot.
-      await nativeHook.observe(structuredClone({ nativeSessionId: context.sessionManager.getSessionId(),
-        callId: event.toolCallId, tool: event.toolName, arguments: event.input }));
+      const call = structuredClone({ nativeSessionId: context.sessionManager.getSessionId(),
+        callId: event.toolCallId, tool: event.toolName, arguments: event.input });
+      const key = callKey(call);
+      if (originals.has(key) || originals.size >= 1000) throw new Error('native_hook_original_conflict');
+      await nativeHook.observe(call);
+      originals.set(key, call);
     } catch (error) {
       // Fixed error codes only: never echo native arguments or credentials.
       const code = error instanceof Error && /^native_hook_[a-z_]+$/.test(error.message)
@@ -48,6 +55,19 @@ export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOm
       console.error('[papercusp-native-hook] observation-refused', code);
       return { block: true, reason: 'The native host could not retain the original tool call.' };
     }
+  });
+  if (nativeHook) pi.on('tool_result', async (event, context) => {
+    const key = JSON.stringify([context.sessionManager.getSessionId(), event.toolCallId]);
+    const original = originals.get(key);
+    try {
+      if (!original || original.tool !== event.toolName) throw new Error('native_hook_original_missing');
+      // tool_result carries the actual input after other hooks have rewritten
+      // it. Keep it separate from the snapshot acknowledged before execution.
+      await nativeHook.observe(structuredClone({ ...original, executedArguments: event.input }));
+    } catch {
+      console.error('[papercusp-native-hook] execution-observation-refused');
+      throw new Error('native_hook_execution_observation_refused');
+    } finally { originals.delete(key); }
   });
   try {
     for (const [name, server] of Object.entries(native.servers)) {

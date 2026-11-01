@@ -15,7 +15,7 @@ import { issuesScopeWorkspace, issueMatchWhereSql, issueShapeWhereSql } from '..
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import * as intakePolicy from '../../harness/improvements/agent-review-policy';
 import type { ClaimSpec, FilterNode } from '../../scheduler/claim-spec';
-import { validateClaimSpec, positiveKindCohortKinds } from '../../scheduler/claim-spec';
+import { validateClaimSpecForRead, positiveKindCohortKinds } from '../../scheduler/claim-spec';
 import { matchesWorkItemClaimSpec } from '../../scheduler/claim-spec-match';
 import type { ResolvedFleetClaimSpec } from '../../scheduler/claim-spec-store';
 import { resolveFleetClaimSpec, fleetSpecBeeKey } from '../../scheduler/claim-spec-store';
@@ -55,6 +55,7 @@ type FleetMetricUnavailable = Extract<FleetMetricsResult, { ok: false }>;
 export interface FleetMetricSpecSegment {
   revision: number;
   spec: ClaimSpec;
+  warnings?: string[];
   startAt: string | null;
   endAt: string;
   source: 'current' | 'history';
@@ -70,6 +71,7 @@ export interface ResolvedFleetMetricScope {
   claimSpec: {
     current: ClaimSpec;
     segments: FleetMetricSpecSegment[];
+    warnings?: string[];
     historyReturned: number;
     historyMore: boolean;
   };
@@ -127,9 +129,11 @@ function iso(value: string | number): string | null {
   return Number.isFinite(time) ? new Date(time).toISOString() : null;
 }
 
-function historicalSpec(value: unknown, revision: number): ClaimSpec | null {
-  const parsed = validateClaimSpec(value);
-  return parsed.ok && parsed.spec ? { ...parsed.spec, revision } : null;
+function historicalSpec(value: unknown, revision: number): { spec: ClaimSpec; warnings: string[] } | null {
+  const parsed = validateClaimSpecForRead(value);
+  return parsed.ok && parsed.spec
+    ? { spec: { ...parsed.spec, revision }, warnings: parsed.warnings }
+    : null;
 }
 
 function buildSegments(args: {
@@ -150,6 +154,7 @@ function buildSegments(args: {
     segments.push({
       revision: currentRevision,
       spec: args.current.record.spec,
+      ...(args.current.record.warnings?.length ? { warnings: args.current.record.warnings } : {}),
       startAt: currentStart,
       endAt: args.windowEnd,
       source: 'current',
@@ -159,15 +164,16 @@ function buildSegments(args: {
 
   for (let index = 0; index < history.length; index += 1) {
     const row = history[index]!;
-    const spec = historicalSpec(row.spec, row.revision);
+    const parsed = historicalSpec(row.spec, row.revision);
     const endAt = iso(row.supersededAt);
-    if (!spec || !endAt) return null;
+    if (!parsed || !endAt) return null;
     const older = history[index + 1];
     const startAt = older ? iso(older.supersededAt) : args.history.more ? null : args.windowStart;
     if (startAt && Date.parse(startAt) >= Date.parse(endAt)) continue;
     segments.push({
       revision: row.revision,
-      spec,
+      spec: parsed.spec,
+      ...(parsed.warnings.length ? { warnings: parsed.warnings } : {}),
       startAt,
       endAt,
       source: 'history',
@@ -309,6 +315,10 @@ async function resolveFleetMetricScopeUnsafe(
   }).snapshot;
 
   const staleAfterMs = Math.max(1, Math.trunc(request.staleAfterMs ?? 60_000));
+  const claimSpecWarnings = [...new Set([
+    ...(resolved.record.warnings ?? []),
+    ...segments.flatMap((segment) => segment.warnings ?? []),
+  ])];
   return {
     ok: true,
     schemaVersion: FLEET_METRICS_SCHEMA_VERSION,
@@ -329,6 +339,7 @@ async function resolveFleetMetricScopeUnsafe(
     claimSpec: {
       current: resolved.record.spec,
       segments,
+      ...(claimSpecWarnings.length ? { warnings: claimSpecWarnings } : {}),
       historyReturned: history.returned,
       historyMore: history.more,
     },

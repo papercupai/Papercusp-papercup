@@ -19,7 +19,7 @@ import { hardText, LIMITS } from '../../limits';
 export default defineTool({
   name: 'conversations:post',
   description:
-    'Start a discussion (open-ended) or append a reply to an existing conversation. Omit conversation_id and its id alias to start a new discussion tagged with topics; pass either key to reply (conversation_id wins when both are supplied). Replies fan out to the conversation\'s subscribers. Consult threads require typed verbs: use consult:reply to respond, consult:decline to decline, or consult:close to close; conversations:post is refused for consult threads.',
+    'Start a discussion (open-ended) or append a reply to an existing conversation. Omit conversation_id and its id alias to start a new discussion tagged with topics; pass either key to reply (conversation_id wins when both are supplied). Replies fan out to the conversation\'s subscribers and return author_origin. On a coord:ask-owner question, an agent reply is explicitly a peer opinion, not the owner decision. Consult threads require typed verbs: use consult:reply to respond, consult:decline to decline, or consult:close to close; conversations:post is refused for consult threads.',
   guidance: {
     when:
       'Open-ended coordination with no single answer ("how should we approach X?"), or contributing to an existing thread via conversation_id (or its id alias). For a directed peer question, use coord:send with expects:"answer" or coord:message-agent for a durable thread.',
@@ -70,7 +70,14 @@ export default defineTool({
       return {
         content: [{
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, conversation_id: conversationId, post_id: res.post.id, notified_subscribers: res.delivered }),
+          text: JSON.stringify({
+            ok: true,
+            conversation_id: conversationId,
+            post_id: res.post.id,
+            notified_subscribers: res.delivered,
+            author_origin: res.author_origin,
+            ...(res.owner_decision_effect ? { owner_decision_effect: res.owner_decision_effect } : {}),
+          }),
         }],
       };
     }

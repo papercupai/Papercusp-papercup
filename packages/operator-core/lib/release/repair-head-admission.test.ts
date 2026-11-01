@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import {
   ADMISSION_GIT_IDENTITY,
   ADMISSION_GIT_DATE,
+  admissionGitFailureDetail,
   admitPathsOntoRepairHead,
   frozenLineageRef,
   normalizeAdmissionPath,
@@ -114,6 +115,17 @@ const admit = (
     nowMs: T0,
     ...extra,
   });
+
+describe('admission Git failure diagnostics', () => {
+  it('distinguishes signal termination from a numeric exit and a spawn failure', () => {
+    expect(admissionGitFailureDetail({ status: null, signal: 'SIGTERM', stdout: '', stderr: '' }))
+      .toBe('terminated by signal SIGTERM');
+    expect(admissionGitFailureDetail({ status: 128, signal: null, stdout: '', stderr: 'bad ref' }))
+      .toBe('exited 128: bad ref');
+    expect(admissionGitFailureDetail({ status: null, signal: null, stdout: '', stderr: 'ENOENT: spawn git' }))
+      .toBe('failed before producing an exit status: ENOENT: spawn git');
+  });
+});
 
 describe('proveAdmissionDiff — the pure proof (D-002)', () => {
   it('refuses a diff that names a path outside the allowlist, naming the stray', () => {

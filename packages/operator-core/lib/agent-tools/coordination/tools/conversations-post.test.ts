@@ -74,10 +74,15 @@ describe('conversations:post discovery', () => {
 
 describe('conversations:post reply path', () => {
   it('appends a reply and reports post_id + notified subscribers', async () => {
-    replyM.mockResolvedValue({ post: { id: 'p1' }, delivered: 3 } as never);
+    replyM.mockResolvedValue({
+      post: { id: 'p1' }, delivered: 3, author_origin: 'agent', owner_decision_effect: 'peer-opinion',
+    } as never);
     const b = body(await call({ conversation_id: 'c1', body: 'a reply' }));
     expect(replyM).toHaveBeenCalledWith({ ownerId: 'me' }, { conversation_id: 'c1', body: 'a reply' });
-    expect(b).toMatchObject({ ok: true, conversation_id: 'c1', post_id: 'p1', notified_subscribers: 3 });
+    expect(b).toMatchObject({
+      ok: true, conversation_id: 'c1', post_id: 'p1', notified_subscribers: 3,
+      author_origin: 'agent', owner_decision_effect: 'peer-opinion',
+    });
     expect(openM).not.toHaveBeenCalled();
   });
 
@@ -88,14 +93,14 @@ describe('conversations:post reply path', () => {
   });
 
   it('accepts id as the reply alias for conversation_id', async () => {
-    replyM.mockResolvedValue({ post: { id: 'p-alias' }, delivered: 1 } as never);
+    replyM.mockResolvedValue({ post: { id: 'p-alias' }, delivered: 1, author_origin: 'agent' } as never);
     const b = body(await call({ id: 'c-alias', body: 'a reply' }));
     expect(replyM).toHaveBeenCalledWith({ ownerId: 'me' }, { conversation_id: 'c-alias', body: 'a reply' });
     expect(b).toMatchObject({ ok: true, conversation_id: 'c-alias', post_id: 'p-alias' });
   });
 
   it('prefers canonical conversation_id when both reply keys are supplied', async () => {
-    replyM.mockResolvedValue({ post: { id: 'p-canonical' }, delivered: 1 } as never);
+    replyM.mockResolvedValue({ post: { id: 'p-canonical' }, delivered: 1, author_origin: 'agent' } as never);
     const b = body(await call({ conversation_id: 'c-canonical', id: 'c-alias', body: 'a reply' }));
     expect(replyM).toHaveBeenCalledWith({ ownerId: 'me' }, { conversation_id: 'c-canonical', body: 'a reply' });
     expect(replyM).not.toHaveBeenCalledWith({ ownerId: 'me' }, { conversation_id: 'c-alias', body: 'a reply' });

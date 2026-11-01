@@ -211,6 +211,17 @@ describe('pot-git defaultRunGit', () => {
   }, 30_000);
 });
 
+describe('pot-git local stdin runner environment forwarding', () => {
+  it('forwards a private GIT_INDEX_FILE to the Git child', async () => {
+    const privateIndex = join(repo, '.git', 'private-index');
+    const result = await runGitStdinLocal(['rev-parse', '--git-path', 'index'], repo, '', {
+      env: { GIT_INDEX_FILE: privateIndex },
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout.toString('utf8').trim()).toContain('private-index');
+  });
+});
+
 describe('pot-git local-spawn RSS admission (EI-20282995952031769)', () => {
   it('blocks the observed multi-GB parent band at and above the default ceiling', () => {
     const atLimit = potGitLocalSpawnAdmission(POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB * 1024 * 1024);

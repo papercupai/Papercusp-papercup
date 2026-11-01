@@ -507,6 +507,40 @@ describe('PROJECTED_DEPS.postInvoke — decision-ledger emit + never breaks its 
     expect(takePendingFailureLoopHint('system:repeat-test')).toMatchObject({ kind: 'repetition', category: 'test', count: 3 });
   });
 
+  it('includes the transport source projection when detecting repeated successful reads', () => {
+    const repeated = event();
+    repeated.toolName = 'work_items:get';
+    repeated.args = { id: 'WI-1' };
+    repeated.ctx = ctx({
+      principal: { slug: 'system:projected-repeat-test', workspaceId: 'default', capabilities: new Set<string>() },
+      sourceProjection: { pick: ['posts[]'] },
+    }) as PostInvokeEvent['ctx'];
+    repeated.result = { ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ state: 'open',
+      posts: [{ id: 1191307, body: 'first' }, { id: 1191294, body: 'second' }] }) }] } } as PostInvokeEvent['result'];
+
+    for (const sourceProjection of [
+      { pick: ['posts[]'] },
+      { pick: ['posts[?(@.id==1191307)]'] },
+      { pick: ['posts[?(@.id==1191294)]'] },
+    ]) {
+      repeated.ctx = ctx({
+        principal: { slug: 'system:projected-repeat-test', workspaceId: 'default', capabilities: new Set<string>() },
+        sourceProjection,
+      }) as PostInvokeEvent['ctx'];
+      PROJECTED_DEPS.postInvoke!(repeated);
+    }
+    expect(takePendingFailureLoopHint('system:projected-repeat-test')).toBeNull();
+
+    repeated.ctx = ctx({
+      principal: { slug: 'system:projected-repeat-test', workspaceId: 'default', capabilities: new Set<string>() },
+      sourceProjection: { pick: ['posts[?(@.id==1191294)]'] },
+    }) as PostInvokeEvent['ctx'];
+    PROJECTED_DEPS.postInvoke!(repeated);
+    PROJECTED_DEPS.postInvoke!(repeated);
+    expect(takePendingFailureLoopHint('system:projected-repeat-test'))
+      .toMatchObject({ kind: 'repetition', category: 'status', count: 3 });
+  });
+
   it('forwards the event to the installed reaction handler', () => {
     const seen: PostInvokeEvent[] = [];
     setReactionPostInvoke((e) => {

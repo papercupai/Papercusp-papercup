@@ -299,6 +299,103 @@ describe('verifyTurnRefs / resolveCurrentTurnStamp (tmp transcript)', () => {
     });
   });
 
+  it('does not grant owner provenance from a stale Claude discovery record without an active binding', async () => {
+    const staleClaude = '119f4fa9-4a09-78f2-8334-8e8a53001ea0';
+    const ptyDir = join(dir, '.papercusp', 'psu-pty');
+    const claudeDir = join(dir, '.claude', 'projects');
+    await mkdir(ptyDir, { recursive: true });
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(
+      join(ptyDir, 'owner-x.json'),
+      JSON.stringify({ command: 'claude', args: ['--session-id', staleClaude] }),
+    );
+    await writeFile(
+      join(claudeDir, `${staleClaude}.jsonl`),
+      `${userLine('what plan is this?', '2026-10-27T00:39:45.016Z')}\n`,
+    );
+
+    const stamp = await resolveCurrentTurnStamp('owner-x', {
+      selfSessionOptions: { home: dir, loadActiveSessions: async () => [] },
+    });
+
+    expect(stamp).toBeNull();
+  });
+
+  it('refuses current-turn provenance when multiple active client bindings are ambiguous', async () => {
+    const staleClaude = '119f4fa9-4a09-78f2-8334-8e8a53001ea0';
+    const ptyDir = join(dir, '.papercusp', 'psu-pty');
+    const rolloutDir = join(dir, '.papercusp', 'su-codex-homes', 'session-11801', 'sessions', '2026', '10', '27');
+    await mkdir(ptyDir, { recursive: true });
+    await mkdir(rolloutDir, { recursive: true });
+    await writeFile(
+      join(ptyDir, 'owner-x.json'),
+      JSON.stringify({ command: 'claude', args: ['--session-id', staleClaude] }),
+    );
+    await writeFile(
+      join(rolloutDir, `rollout-2026-10-27T01-30-00-${SID}.jsonl`),
+      `${JSON.stringify({
+        type: 'response_item',
+        timestamp: '2026-10-27T01:30:00.000Z',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '⟦turn-origin:loop-fire nonce:a1b2c3d4e5f60718⟧\ncontinue' }],
+        },
+      })}\n`,
+    );
+
+    const stamp = await resolveCurrentTurnStamp('owner-x', {
+      selfSessionOptions: {
+        home: dir,
+        loadActiveSessions: async () => [
+          { id: 11801, agent: 'codex', session_id: SID, omp_thread_id: null },
+          { id: 11802, agent: 'claude', session_id: staleClaude, omp_thread_id: null },
+        ],
+      },
+    });
+
+    expect(stamp).toBeNull();
+  });
+
+  it('uses the sole active Codex binding despite stale Claude discovery metadata', async () => {
+    const staleClaude = '119f4fa9-4a09-78f2-8334-8e8a53001ea0';
+    const ptyDir = join(dir, '.papercusp', 'psu-pty');
+    const rolloutDir = join(dir, '.papercusp', 'su-codex-homes', 'session-11801', 'sessions', '2026', '10', '27');
+    await mkdir(ptyDir, { recursive: true });
+    await mkdir(rolloutDir, { recursive: true });
+    await writeFile(
+      join(ptyDir, 'owner-x.json'),
+      JSON.stringify({ command: 'claude', args: ['--session-id', staleClaude] }),
+    );
+    await writeFile(
+      join(rolloutDir, `rollout-2026-10-27T01-30-00-${SID}.jsonl`),
+      `${JSON.stringify({
+        type: 'response_item',
+        timestamp: '2026-10-27T01:30:00.000Z',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '⟦turn-origin:loop-fire nonce:a1b2c3d4e5f60718⟧\ncontinue' }],
+        },
+      })}\n`,
+    );
+
+    const stamp = await resolveCurrentTurnStamp('owner-x', {
+      selfSessionOptions: {
+        home: dir,
+        loadActiveSessions: async () => [
+          { id: 11801, agent: 'codex', session_id: SID, omp_thread_id: null },
+        ],
+      },
+    });
+
+    expect(stamp).toEqual({
+      ref: `[turn:${SID.slice(0, 8)}@2026-10-27T01:30:00.000Z]`,
+      verdict: 'agent-injected',
+      origin: 'loop-fire',
+    });
+  });
+
   it('parseUserTurns keeps machine-injected turns (classification is per turn, not dropped)', () => {
     const turns = parseUserTurns(
       [userLine('hi', '2026-07-14T09:00:00Z'), userLine('⟦turn-origin:wake-pump nonce:aabbccdd00112233⟧\nwake', '2026-07-14T09:05:00Z')].join('\n'),

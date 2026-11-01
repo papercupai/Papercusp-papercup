@@ -220,6 +220,21 @@ describe('resolveInheritedHarnessScope (P-006)', () => {
     expect(readers.brief).toHaveBeenCalledOnce();
   });
 
+  it('preserves stored claim-spec warnings on the resolved fleet binding', async () => {
+    const readers = emptyReaders();
+    readers.fleet.mockResolvedValue({
+      harnesses: ['papercusp'],
+      refs: ['fleet-a'],
+      warnings: ['fleet:fleet-a: ignored future field'],
+    });
+
+    await expect(resolveInheritedHarnessScope({}, readers)).resolves.toMatchObject({
+      kind: 'harness',
+      slug: 'papercusp',
+      warnings: ['fleet:fleet-a: ignored future field'],
+    });
+  });
+
   it('lets the explicit stale-plan recovery path reach the current fleet binding', async () => {
     const stalePlanReaders = emptyReaders();
     stalePlanReaders.plan.mockResolvedValue({
@@ -294,10 +309,12 @@ describe('default inherited-scope readers (EI-22575830430557187)', () => {
       source: 'fleet',
       harnessSlug: 'fleet-harness',
       fleetSlug: 'fleet-a',
+      warnings: ['fleet:fleet-a: ignored future field'],
     });
     await expect(defaultHarnessScopeInheritanceReaders.fleet(input)).resolves.toEqual({
       harnesses: ['fleet-harness'],
       refs: ['fleet-a'],
+      warnings: ['fleet:fleet-a: ignored future field'],
     });
     expect(defaultReaderMocks.withWorkspace).toHaveBeenCalledOnce();
     expect(defaultReaderMocks.getClaimSpec).toHaveBeenCalledWith(

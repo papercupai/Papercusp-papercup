@@ -31,20 +31,44 @@ describe('conversations:answer handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, id: 'c1', error: 'not_a_question' });
   });
 
-  it('on success reports post_id, subscribers, and a resolve hint wired to the post_id', async () => {
-    answerM.mockResolvedValue({ post: { id: 42 }, delivered: 2 } as never);
+  it('reports owner origin and a resolve hint wired to the post_id', async () => {
+    answerM.mockResolvedValue({
+      post: { id: 42 },
+      delivered: 2,
+      author_origin: 'owner-typed',
+      owner_decision_effect: 'owner-typed-reply',
+    } as never);
     const b = await body({ id: 'c1', body: 'the answer' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     const r = b.results[0];
-    expect(r).toMatchObject({ ok: true, id: 'c1', post_id: 42, notified_subscribers: 2 });
+    expect(r).toMatchObject({
+      ok: true, id: 'c1', post_id: 42, notified_subscribers: 2,
+      author_origin: 'owner-typed', owner_decision_effect: 'owner-typed-reply',
+    });
     expect(String(r.hint)).toContain('accepted_post_id: 42');
+  });
+
+  it('does not present an agent peer opinion as an accept-able owner answer', async () => {
+    answerM.mockResolvedValue({
+      post: { id: 43 },
+      delivered: 1,
+      author_origin: 'agent',
+      owner_decision_effect: 'peer-opinion',
+    } as never);
+    const b = await body({ id: 'owner-question', body: 'CONTINUE' });
+    expect(b.results[0]).toMatchObject({
+      author_origin: 'agent',
+      owner_decision_effect: 'peer-opinion',
+      hint: expect.stringContaining('does not answer the coord:ask-owner question'),
+    });
+    expect(String(b.results[0].hint)).not.toContain('accepted_post_id');
   });
 
   it('items:[…] answers many — each carries its own body; one bad item never fails the rest', async () => {
     answerM.mockImplementation(async (_id, opts: { conversation_id: string; body: string }) =>
       opts.conversation_id === 'c2'
         ? ({ error: 'not_found' } as never)
-        : ({ post: { id: 7 }, delivered: 1 } as never),
+        : ({ post: { id: 7 }, delivered: 1, author_origin: 'agent' } as never),
     );
     const b = await body({
       items: [
@@ -53,7 +77,7 @@ describe('conversations:answer handler (bulk keyed-array)', () => {
       ],
     });
     expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
-    expect(b.results[0]).toMatchObject({ ok: true, id: 'c1', post_id: 7 });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'c1', post_id: 7, author_origin: 'agent' });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'c2', error: 'not_found' });
     expect(answerM.mock.calls[0]![1]).toMatchObject({ conversation_id: 'c1', body: 'answer one' });
   });

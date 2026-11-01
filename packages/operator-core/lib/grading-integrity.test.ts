@@ -14,6 +14,7 @@ import { poolVerdictByProvider, type AccountStatusRow } from './deployment/accou
 import type { Rubric } from './rubrics';
 import * as rubricStore from './rubrics';
 import type { ScorecardEvidenceRow, ScorecardRow } from './scorecards';
+import { gradingAuditReplayBasisFingerprint } from './scorecards';
 import type { TaskRow } from './task-manager/types';
 import type { CoordEnvelope } from '@papercusp/coordination';
 import type { OrgSql } from './work-items';
@@ -353,6 +354,30 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
     ]);
     expect(f.d.wake).toHaveBeenCalledTimes(1);
     expect(f.stored.size).toBe(1);
+  });
+
+  it('uses a changed replay basis as a new retained-auditor notice identity', async () => {
+    const f = fixture();
+    f.input.card.gradingAudit = {
+      ...f.input.card.gradingAudit!,
+      replayRefusal: {
+        code: 'grading_audit_replay_consistent',
+        at: '2026-10-07T04:01:00.000Z',
+        basisFingerprint: 'a'.repeat(64),
+        reservation: f.input.reservation,
+        responderOwnerId: 'su-independent',
+      },
+    };
+
+    await notifyRetainedGradingAuditor({ ...f.input, replayBasisFingerprint: 'b'.repeat(64) }, f.d);
+    await notifyRetainedGradingAuditor({ ...f.input, replayBasisFingerprint: 'c'.repeat(64) }, f.d);
+
+    const first = f.d.send.mock.calls[0]?.[1];
+    const second = f.d.send.mock.calls[1]?.[1];
+    expect(first?.msgId).not.toBe(second?.msgId);
+    expect(first?.body).toContain('evidenceKind and evidenceRef');
+    expect(first?.body).toContain('outside the exact replay selection');
+    expect(first?.body).not.toContain('human finding');
   });
 
   it('rebinds a retained auditor to its recovered evaluator without changing its target or lease', async () => {
@@ -2613,6 +2638,64 @@ describe('dispatchPendingGradingAudits', () => {
     expect(f.killTask).not.toHaveBeenCalled();
   });
 
+  it('suppresses a retained wake when the same auditor already refused the unchanged basis', async () => {
+    const f = parkedAuditorFixture();
+    const target = card('EI-parked', { evidenceFingerprint: 'exact-fingerprint' });
+    const basisFingerprint = gradingAuditReplayBasisFingerprint(target.issueId, target.gradingAudit!, {
+      evidenceFingerprint: 'exact-fingerprint',
+      evaluatorBuild: null,
+      bindingIds: [],
+      bindingCurrentness: null,
+    })!;
+    target.gradingAudit!.replayRefusal = {
+      code: 'grading_audit_replay_consistent',
+      at: '2026-09-08T00:01:00.000Z',
+      basisFingerprint,
+      reservation: f.prior,
+      responderOwnerId: 'su-independent',
+    };
+    f.d.listScorecards.mockResolvedValue([target]);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-parked'], ctx }, { ...f.d, ...f });
+
+    expect(result.receipts[0]).toMatchObject({
+      state: 'deduped',
+      renewalNotification: {
+        state: 'skipped',
+        reason: 'retained auditor already refused this unchanged replay basis',
+      },
+    });
+    expect(f.d.notifyRetainedAuditor).not.toHaveBeenCalled();
+    expect(f.d.launch).not.toHaveBeenCalled();
+  });
+
+  it('notifies the retained auditor when the replay basis changed', async () => {
+    const f = parkedAuditorFixture();
+    const target = card('EI-parked', { evidenceFingerprint: 'exact-fingerprint' });
+    const currentBasis = gradingAuditReplayBasisFingerprint(target.issueId, target.gradingAudit!, {
+      evidenceFingerprint: 'exact-fingerprint',
+      evaluatorBuild: null,
+      bindingIds: [],
+      bindingCurrentness: null,
+    })!;
+    target.gradingAudit!.replayRefusal = {
+      code: 'grading_audit_replay_consistent',
+      at: '2026-09-08T00:01:00.000Z',
+      basisFingerprint: 'a'.repeat(64),
+      reservation: f.prior,
+      responderOwnerId: 'su-independent',
+    };
+    f.d.listScorecards.mockResolvedValue([target]);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-parked'], ctx }, { ...f.d, ...f });
+
+    expect(result.receipts[0]).toMatchObject({ state: 'deduped', renewalNotification: { state: 'delivered' } });
+    expect(f.d.notifyRetainedAuditor).toHaveBeenCalledWith(expect.objectContaining({
+      replayBasisFingerprint: currentBasis,
+      task: expect.objectContaining({ taskId: 'retained' }),
+    }));
+  });
+
   it.each(['live', 'suspect', 'ended', 'unknown', 'unavailable'])
   ('delivers the retained lease notice when auditor liveness is %s', async (state) => {
     const f = parkedAuditorFixture();
@@ -3167,6 +3250,14 @@ describe('dispatchPendingGradingAudits', () => {
     expect(brief).toContain('then use the renewed key and reservedAt as your effective lease for the audit and eventual gradingAuditReservation');
     expect(brief).toContain('Without that direct matching renewal, report the current state and stop without grading or emitting');
     expect(brief).toContain('If you verified a renewal at start or pre-emit, use its renewed key and reservedAt');
+    expect(brief).toContain("For a scorecards:emit refusal with code 'grading_audit_replay_consistent'");
+    expect(brief).toContain('independently verified evidence outside the exact replay selection');
+    expect(brief).toContain('both evidenceKind and evidenceRef');
+    expect(brief).toContain('repeat the exact target, currentness, pending-state, and lease checks');
+    expect(brief).toContain('retry this same audit at most once');
+    expect(brief).toContain("work_items:comment { id:'EI-state-recheck'");
+    expect(brief).toContain('Do not claim that an audit was recorded');
+    expect(brief).not.toContain('If the emit is refused, report the refusal code and stop.');
     // WI-10006794: an auditor whose lease lapsed mid-audit must still emit. A renewed epoch
     // is accepted only through its direct retained-task notice; unrelated changes still stop.
     expect(brief).toContain('This strict check applies only at the START of the audit');

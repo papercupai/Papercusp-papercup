@@ -4431,6 +4431,12 @@ describe('mcp-call inline JSON quoting guard (EI-26073319721581332)', () => {
     expectAllow(runGate(bashCmd(command), CANON_ENV));
   });
 
+  it('allows a PostgreSQL arrow inside shell-spliced single-quoted SQL/JSON', () => {
+    const command = String.raw`node scripts/mcp-call.mjs dev:pg_query '{"sql":"SELECT sp.status||'\''':'\''||sp.source_backend||'\''->'\''||sp.target_backend"}' --client su-test`;
+    expect(spawnSync('bash', ['-n', '-c', command], { encoding: 'utf8' }).status).toBe(0);
+    expectAllow(runGate(bashCmd(command), CANON_ENV));
+  });
+
   it('allows balanced inline-JSON commands when quoted prose mentions the mcp-call executable', () => {
     const command = [
       "BODY='Recovery instructions mention node scripts/mcp-call.mjs <tool> <json> --client $PAPERCUSP_SID.'",

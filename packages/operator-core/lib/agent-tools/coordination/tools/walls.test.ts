@@ -61,6 +61,30 @@ describe('coord:walls handler', () => {
       walls: [],
     });
   });
+
+  it('does not report a legacy unscoped carry wall as an actionable owner wait', async () => {
+    h.sql.mockReset();
+    h.sql
+      .mockResolvedValueOnce([]) // coord_presence
+      .mockResolvedValueOnce([{
+        scope: 'loop:papercusp:su-legacy',
+        note: '## Walls\n- Do not rerun the gate',
+        updated_ts: new Date(),
+      }])
+      .mockResolvedValueOnce([]) // needs-human work_items
+      .mockResolvedValueOnce([]); // wall: standing facts
+
+    const out = (await tool.handler({}, { workspaceId: 'ws-test' } as never)) as Out;
+
+    expect(out.data.waiting).toBe(0);
+    expect(out.data.walls).toMatchObject([{
+      source: 'loop-carry-note',
+      claim: 'Do not rerun the gate',
+      requiresRevalidation: true,
+      status: 'unknown',
+    }]);
+    expect(h.resolveSessionStates).not.toHaveBeenCalled();
+  });
 });
 
 /**

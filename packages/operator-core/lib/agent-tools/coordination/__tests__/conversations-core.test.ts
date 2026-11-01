@@ -844,11 +844,19 @@ describe('resolveConversationCore', () => {
       producer: 'coord:ask-owner',
       body: 'May this role receive the additional IAM permissions?',
     });
+    sinkBox.clear();
     const agentAnswer = await answerQuestionCore(deps, ident('resolver'), {
       conversation_id: opened.conversation.id,
       body: 'Grant the extra permissions.',
     });
     if ('error' in agentAnswer) throw new Error(agentAnswer.error);
+    expect(agentAnswer.author_origin).toBe('agent');
+    expect(agentAnswer.owner_decision_effect).toBe('peer-opinion');
+    expect(sinkBox.inbox.asker[0]).toMatchObject({
+      author_origin: 'agent',
+      owner_decision_effect: 'peer-opinion',
+    });
+    expect(sinkBox.inbox.asker[0].summary).toContain('peer opinion; not the owner\'s decision');
 
     const result = await resolveConversationCore(deps, ident('resolver'), {
       conversation_id: opened.conversation.id,
@@ -875,6 +883,8 @@ describe('resolveConversationCore', () => {
       body: 'Keep the existing read-only scope.',
     });
     if ('error' in ownerAnswer) throw new Error(ownerAnswer.error);
+    expect(ownerAnswer.author_origin).toBe('owner-typed');
+    expect(ownerAnswer.owner_decision_effect).toBe('owner-typed-reply');
 
     const mismatch = await resolveConversationCore(deps, ident('resolver'), {
       conversation_id: opened.conversation.id,

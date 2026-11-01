@@ -55,6 +55,7 @@ import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/i
 export const DEFAULT_LIMIT = 2000;
 const MAX_LINE_CHARS = 2000;
 export const MAX_FILE_BYTES = 50 * 1024 * 1024; // refuse unbounded reads outright
+const STREAM_LINE_WINDOW_THRESHOLD_BYTES = 1024 * 1024;
 export const MAX_BYTE_PAGE = 4_096;
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
@@ -924,6 +925,32 @@ export const capabilityReadDefinition = {
 
     const byteMode = args.byte_offset !== undefined || args.byte_limit !== undefined;
     const boundedLineRead = args.offset !== undefined || args.limit !== undefined || args.tail !== undefined;
+    // Paging a multi-megabyte file must not read and decode the entire file for
+    // every requested window. The 50 MiB ceiling below protects huge files,
+    // but a 10 MiB log still crossed it 22 times during one incident window.
+    if (boundedLineRead && fileStat.size > STREAM_LINE_WINDOW_THRESHOLD_BYTES) {
+      try {
+        const scratchReference = await trackScratchAsync(
+          'large-reference-check',
+          () => startsWithScratchReference(abs),
+        );
+        if (!scratchReference) {
+          const streamedWindow = await trackScratchAsync(
+            'large-line-read',
+            () => readLargeLineWindow(abs, args as LineReadArgs, credentialBearingConfig),
+          );
+          return trackScratchSync('large-line-render', () => renderLargeLineWindow(
+            abs,
+            args as LineReadArgs,
+            ctx as ReadContext,
+            streamedWindow,
+          ));
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return err('read_failed', msg);
+      }
+    }
     if (fileStat.size > MAX_FILE_BYTES) {
       if (await trackScratchAsync('large-reference-check', () => startsWithScratchReference(abs))) {
         return err(

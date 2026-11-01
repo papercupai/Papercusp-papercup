@@ -138,7 +138,7 @@ describe('router native custody population (P002)', () => {
   let root: string;
   beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'router-native-custody-')); });
   afterEach(() => { rmSync(root, { recursive: true, force: true }); });
-  function setup() {
+  function setup(extraEnv: Record<string, string> = {}) {
     const producer = join(root, 'producer'), packets = join(root, 'packets');
     mkdirSync(producer);
     const groups = [0, 1].map(index => ({ cwd: producer, runner: 'vitest',
@@ -147,7 +147,7 @@ describe('router native custody population (P002)', () => {
     const session = createRouterProofCustody(groups, { PAPERCUSP_TEST_ARTIFACT_DIR: packets,
       PAPERCUSP_WORKSPACE_ID: 'custody-workspace', PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
       PAPERCUSP_TEST_RUN_GROUP: 'router-fixture', PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'custody-workspace',
-      PC_EXECUTED_SOURCE_MAP_OUT: out }, root);
+      PC_EXECUTED_SOURCE_MAP_OUT: out, ...extraEnv }, root);
     return { producer, session };
   }
   function produce(session: ReturnType<typeof createRouterProofCustody>, id: string) {
@@ -188,6 +188,39 @@ describe('router native custody population (P002)', () => {
       expect(JSON.parse(readFileSync(join(session.directory, 'expected.json'), 'utf8')).expected).toHaveLength(2);
     } finally { log.mockRestore(); }
   });
+
+  it.each(['enabled', 'disabled', 'missing-root', 'relative-root', 'missing-workspace'] as const)
+    ('derives process-source custody from the real preload producer (%s)', mode => {
+      const env = { PC_EXECUTED_SOURCE_MAP_PRELOAD: mode === 'disabled' ? '0' : '1',
+        PC_EXECUTED_SOURCE_MAP_ROOT: mode === 'missing-root' ? '' : mode === 'relative-root' ? 'relative' : root,
+        ...(mode === 'missing-workspace' ? { PC_EXECUTED_SOURCE_MAP_WORKSPACE: '' } : {}) };
+      const { producer, session } = setup(env);
+      const capture = resolve(REPO_ROOT, 'libs/test-config/src/executed-config-load-capture.ts');
+      for (const group of session.expected) {
+        produce(session, group.id);
+        rmSync(group.out + '.processes', { recursive: true });
+        const child = spawnSync(process.execPath, ['--import', capture, '--input-type=module', '-e', 'void 0'], {
+          cwd: producer, encoding: 'utf8', timeout: 30_000,
+          env: { ...process.env, NODE_OPTIONS: '', PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'custody-workspace',
+            ...env, PC_EXECUTED_SOURCE_MAP_OUT: group.out },
+        });
+        expect(child.status, child.stderr).toBe(0);
+        expect(existsSync(group.out + '.processes')).toBe(mode === 'enabled');
+      }
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        const result = session.finish();
+        expect(result.status).toBe('complete');
+        expect(result.manifest.groups[0].families.find((family: { family: string }) => family.family === 'D')!.state)
+          .toBe(mode === 'enabled' ? 'produced' : 'not-requested');
+        if (mode === 'enabled') {
+          rmSync(session.expected[0].out + '.processes', { recursive: true });
+          expect(session.finish().status).toBe('partial');
+          mkdirSync(session.expected[0].out + '.processes');
+          expect(session.finish().status).toBe('partial');
+        }
+      } finally { log.mockRestore(); }
+    });
 });
 
 // Tests of main() are harness-scoped even when a caller invokes test:file without
@@ -3804,7 +3837,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
       expect(output).toContain('status=passed');
       expect(output).toContain('finalizationError=true');
       const diagnosticPrefix = 'TEST_FILE_FINALIZATION_ERROR phase=native-proof-custody detail=';
-      const diagnosticLine = errors.split('\n').find(line => line.startsWith(diagnosticPrefix));
+      const diagnosticLine = errors.split('\n').find((line: string) => line.startsWith(diagnosticPrefix));
       expect(diagnosticLine).toBeDefined();
       expect(JSON.parse(diagnosticLine!.slice(diagnosticPrefix.length))).toMatchObject({
         status: 'partial', bytesRead: limits.bytes, limits, gapCount: gaps.length,

@@ -38,8 +38,10 @@ import {
   getLoopCarryNote as defaultGetLoopCarryNote,
   getLoopCarryNoteWithMeta as defaultGetLoopCarryNoteWithMeta,
   renderCheckLine,
+  renderWallLine,
   splitCarryNoteChecks,
   splitCarryNoteWalls,
+  isCarryWallAuthoritative,
   type CheckEntry,
   type WallEntry,
 } from '../../carry-note';
@@ -813,24 +815,38 @@ export function isLoopWakeFullForm(fireNumber: number, hasCheckpoint: boolean): 
   return fireNumber <= 1 || fireNumber % LOOP_WAKE_FULL_TEMPLATE_EVERY === 1 || !hasCheckpoint;
 }
 
-/** Render the OPEN-WALLS block (P-006): the carried owner-gated commitments, as
- *  rows, in EVERY wake form until cleared — rendered OUTSIDE the truncatable
- *  checkpoint body so a capped note can never clip a commitment off the end. */
+/** Render explicit owner/system walls and conditional/legacy rows separately in
+ *  EVERY wake form, outside the truncatable checkpoint body. */
 export function renderLoopWallsBlock(walls: ReadonlyArray<WallEntry>, nowMs: number = Date.now()): string | null {
   if (!walls.length) return null;
-  const lines = walls.map((w) => {
-    const recheck = w.recheck ? ` — re-check: ${w.recheck}` : '';
+  const renderRow = (w: WallEntry) => {
+    const line = renderWallLine({ ...w, sinceMs: undefined }).replace(/^-\s*/, '');
     const age =
       w.sinceMs != null && Number.isFinite(w.sinceMs)
         ? ` (standing ${humanAge(Math.max(0, nowMs - w.sinceMs))})`
         : '';
-    return `  • ${w.claim}${recheck}${age}`;
-  });
-  return (
-    '⛔ OPEN WALLS — owner-gated / pending decisions you are carrying (re-check, do not re-litigate or ' +
-    're-declare resolved; clear a resolved one via loop:checkpoint { walls }):\n' +
-    lines.join('\n')
-  );
+    return `  • ${line}${age}`;
+  };
+  const sections: string[] = [];
+  const authoritative = walls.filter(isCarryWallAuthoritative);
+  const conditional = walls.filter((wall) => !isCarryWallAuthoritative(wall));
+  if (authoritative.length > 0) {
+    sections.push(
+      '⛔ OPEN WALLS — explicit owner/system commitments you are carrying. Re-check the current source; ' +
+        'do not re-declare a resolved one. Clear a resolved wall via loop:checkpoint { walls }:\n' +
+        authoritative.map(renderRow).join('\n'),
+    );
+  }
+  if (conditional.length > 0) {
+    sections.push(
+      '⚠ CARRIED WALLS TO REVALIDATE — self/external predicates and legacy unscoped rows are not authority by themselves. ' +
+        'Check each current source now; a conditional wall blocks only while its appliesWhile predicate is verified. ' +
+        'Do not let an unscoped carried row block repair solely because it was copied into this wake; clear it or rewrite it ' +
+        'with an explicit, current source:\n' +
+        conditional.map(renderRow).join('\n'),
+    );
+  }
+  return sections.join('\n');
 }
 
 /** Render the CARRIED-CHECKS block (cold-carry-system-hardening P-001, delivery

@@ -2888,7 +2888,12 @@ describe('failed candidate cleanup deadline (EI-26814541123294753)', () => {
         'flock -u 7; exec 7>&-',
         'echo CLEANUP_RETURNED_AND_LEASE_RELEASED',
       ].join('\n')], { env, encoding: 'utf8', timeout: 8_000 });
-      expect(result.status, result.stderr).toBe(0);
+      const resultEvidence = [
+        `status=${result.status ?? 'null'} signal=${result.signal ?? 'none'} error=${result.error?.message ?? 'none'}`,
+        `stdout=${(result.stdout ?? '').slice(-1000)}`,
+        `stderr=${(result.stderr ?? '').slice(-1000)}`,
+      ].join('\n');
+      expect(result.status, resultEvidence).toBe(0);
       expect(result.stdout).toContain('CLEANUP_RETURNED_AND_LEASE_RELEASED');
       // WI-6554700010029246: the failed candidate leaves the generation
       // namespace immediately; its bytes go to the detached drain.

@@ -12,6 +12,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveClaimSpecWorkspace, getClaimSpecRecord, fleetSpecBeeKey } from '../../scheduler/claim-spec-store';
+import { latestFleetMembership } from '../../fleet-membership-store';
 import {
   readClaimSpecRevisions,
   claimSpecHistoryElsewhereHint,
@@ -189,6 +190,7 @@ export default defineTool({
       ? fleetSentinelCallerView({
           fleetSlug,
           callerId: ident.ownerId,
+          callerFleetRole: (await latestFleetMembership(workspaceId, ident.ownerId).catch(() => null))?.fleetRole ?? null,
           callerRecord: await getClaimSpecRecord({ cupId: ident.ownerId, workspaceId }).catch(
             () => null,
           ),

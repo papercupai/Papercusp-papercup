@@ -31,15 +31,18 @@ import type { AttentionNotifyInput } from '../attention-notify';
 import { currentRepairLimbExecutor, type RepairLimbExecutor } from './repair-limb-executor';
 import {
   CHECKPOINT_QUALIFICATION_METADATA_KEY,
+  classifyQualificationVerdict,
   isPostVerdictHang,
   parseCheckpointQualificationTransaction,
   probeRunnerLiveness,
   projectCheckpointQualificationState,
+  recordStoredQualificationVerdict,
   reconcileStoredSupersededRepairVerdict,
   type CheckpointQualificationTransaction,
   type RunnerLivenessProber,
 } from './checkpoint-qualification-transaction';
 import { GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine } from './checkpoint-log-tags';
+import type { CheckpointSystemdTerminalEvidence } from '../release-checkpoint-launch';
 import {
   describeAbandonedInFlightCandidate,
   isPidAlive,
@@ -113,12 +116,14 @@ export function resolveLostRunRoutes(input: {
   holderOwnerId: string | null;
   holderFleetSlug: string | null;
   hostFleetSlug: string | null;
-  condition?: 'lost-run' | 'stale-progress';
+  condition?: 'lost-run' | 'stale-progress' | 'terminal-no-verdict';
 }): SevereEventRoute[] {
   const routes: SevereEventRoute[] = [];
-  const condition = input.condition === 'stale-progress'
-    ? 'qualification progress is stale'
-    : 'in-flight run died';
+  const condition = input.condition === 'terminal-no-verdict'
+    ? 'qualification ended with a terminal no-verdict result'
+    : input.condition === 'stale-progress'
+      ? 'qualification progress is stale'
+      : 'in-flight run died';
   if (input.holderOwnerId) {
     routes.push({
       ownerSelector: input.holderOwnerId,
@@ -217,6 +222,8 @@ export interface LostRunSweepDeps {
   readQualificationRunLog?: (runner: NonNullable<CheckpointQualificationTransaction['currentPhysicalRunner']>) => Promise<string | null>;
   /** Row-locked reconciliation of a successful superseded red round; production uses the stored transaction writer. */
   reconcileSupersededRun?: typeof reconcileStoredSupersededRepairVerdict;
+  /** Reconcile an exact terminal non-verdict result before the dead-run retry path. */
+  reconcileTerminalNoVerdict?: typeof recordStoredQualificationVerdict;
   hostFleetSlug?: string | null;
   claim?: typeof claimLostRunAlarm;
   readHolder?: (installSlug: string) => Promise<string | null>;
@@ -253,44 +260,109 @@ async function requeueDeadQualification(
        AND (next_fire_at IS NULL OR next_fire_at > now() + interval '1 minute')`;
 }
 
-async function successfulSupersededRepairRound(
+interface BoundQualificationRunLog {
+  runId: string;
+  logPath: string;
+  log: string;
+  terminal: CheckpointSystemdTerminalEvidence | undefined;
+}
+
+interface TerminalQualificationNoVerdict {
+  runId: string;
+  candidate: string;
+  repairHead: string | null;
+  reason: string;
+  green: boolean | null;
+  evidenceRefs: string[];
+}
+
+async function readBoundQualificationRunLog(
   runner: NonNullable<CheckpointQualificationTransaction['currentPhysicalRunner']>,
   deps: LostRunSweepDeps,
-): Promise<{ runId: string; candidate: string; round: number } | null> {
+): Promise<BoundQualificationRunLog | null> {
   const boundRuns = runner.evidenceRefs.filter(ref => ref.startsWith('checkpoint-run:'));
-  if (boundRuns.length !== 1 || !runner.unit?.trim()) return null;
+  if (boundRuns.length !== 1 || !boundRuns[0]!.slice('checkpoint-run:'.length) || !runner.unit?.trim()) return null;
   try {
     const launch = await import('../release-checkpoint-launch');
     const unit = runner.unit.trim().replace(/\.service$/, '');
+    const logPath = launch.checkpointLatestLogPath(unit);
     const log = await (deps.readQualificationRunLog
       ? deps.readQualificationRunLog(runner)
-      : Promise.resolve(launch.defaultReadLogTail(launch.checkpointLatestLogPath(unit))));
+      : Promise.resolve(launch.defaultReadLogTail(logPath)));
     if (!log) return null;
-    const terminal = launch.parseCheckpointSystemdTerminalEvidence(log);
-    if (!terminal || terminal.abnormal || terminal.service_result !== 'success' ||
-        terminal.exit_code !== 'exited' || terminal.exit_status !== '0') return null;
-    const runId = boundRuns[0]!.slice('checkpoint-run:'.length);
-    const result = log.split(/\r?\n/).filter(line => !isFixtureLogLine(line)).flatMap(line => {
-      const trimmed = line.trimStart();
-      if (!trimmed.startsWith(GREEN_CHECKPOINT_RESULT_MARKER)) return [];
-      try {
-        const parsed: unknown = JSON.parse(trimmed.slice(GREEN_CHECKPOINT_RESULT_MARKER.length).trim());
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
-        const value = parsed as Record<string, unknown>;
-        return value.runId === runId && value.green === false && typeof value.candidate === 'string' &&
-          typeof value.reason === 'string' ? [value] : [];
-      } catch { return []; }
-    }).at(-1);
-    if (!result || typeof runner.candidate !== 'string' || result.candidate !== runner.candidate) return null;
-    const candidatePrefix = result.candidate.slice(0, 8);
-    const round = log.split(/\r?\n/).map(line => line.trim()).flatMap(line => {
-      const match = line.match(/^FROZEN_REPAIR_VERDICT_SUPERSEDED: (?:full-gate )?red at ([a-f0-9]{8}) recorded as round (\d+)\b/);
-      return match && match[1] === candidatePrefix ? [Number(match[2])] : [];
-    }).at(-1);
-    return Number.isSafeInteger(round) && round! > 0 ? { runId, candidate: result.candidate, round: round! } : null;
+    return {
+      runId: boundRuns[0]!.slice('checkpoint-run:'.length),
+      logPath,
+      log,
+      terminal: launch.parseCheckpointSystemdTerminalEvidence(log),
+    };
   } catch {
     return null;
   }
+}
+
+function terminalQualificationNoVerdict(
+  runner: NonNullable<CheckpointQualificationTransaction['currentPhysicalRunner']>,
+  source: BoundQualificationRunLog,
+): TerminalQualificationNoVerdict | null {
+  if (!source.terminal || typeof runner.candidate !== 'string') return null;
+  const result = source.log.split(/\r?\n/).filter(line => !isFixtureLogLine(line)).flatMap(line => {
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith(GREEN_CHECKPOINT_RESULT_MARKER)) return [];
+    try {
+      const parsed: unknown = JSON.parse(trimmed.slice(GREEN_CHECKPOINT_RESULT_MARKER.length).trim());
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+      const value = parsed as Record<string, unknown>;
+      return value.runId === source.runId && typeof value.candidate === 'string' &&
+        typeof value.reason === 'string' ? [value] : [];
+    } catch { return []; }
+  }).at(-1);
+  if (!result) return null;
+  const repairQueue = result.repairQueue && typeof result.repairQueue === 'object' && !Array.isArray(result.repairQueue)
+    ? result.repairQueue as Record<string, unknown>
+    : null;
+  const repairHead = typeof repairQueue?.repairHead === 'string' ? repairQueue.repairHead.trim() : null;
+  if (typeof result.candidate !== 'string' ||
+      (result.candidate !== runner.candidate && repairHead !== runner.candidate)) return null;
+  const green = typeof result.green === 'boolean' ? result.green : null;
+  const outcome = classifyQualificationVerdict({ reason: result.reason as string, green });
+  if (outcome.kind !== 'pre-suite-no-verdict') return null;
+  return {
+    runId: source.runId,
+    candidate: result.candidate,
+    repairHead,
+    reason: outcome.reason,
+    green,
+    evidenceRefs: [`checkpoint-terminal:${source.runId}`, `checkpoint-log:${source.logPath}`],
+  };
+}
+
+async function successfulSupersededRepairRound(
+  runner: NonNullable<CheckpointQualificationTransaction['currentPhysicalRunner']>,
+  source: BoundQualificationRunLog | null,
+): Promise<{ runId: string; candidate: string; round: number } | null> {
+  if (!source?.terminal || source.terminal.abnormal || source.terminal.service_result !== 'success' ||
+      source.terminal.exit_code !== 'exited' || source.terminal.exit_status !== '0' ||
+      typeof runner.candidate !== 'string') return null;
+  const { runId, log } = source;
+  const result = log.split(/\r?\n/).filter(line => !isFixtureLogLine(line)).flatMap(line => {
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith(GREEN_CHECKPOINT_RESULT_MARKER)) return [];
+    try {
+      const parsed: unknown = JSON.parse(trimmed.slice(GREEN_CHECKPOINT_RESULT_MARKER.length).trim());
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+      const value = parsed as Record<string, unknown>;
+      return value.runId === runId && value.green === false && typeof value.candidate === 'string' &&
+        typeof value.reason === 'string' ? [value] : [];
+    } catch { return []; }
+  }).at(-1);
+  if (!result || result.candidate !== runner.candidate) return null;
+  const candidatePrefix = result.candidate.slice(0, 8);
+  const round = log.split(/\r?\n/).map(line => line.trim()).flatMap(line => {
+    const match = line.match(/^FROZEN_REPAIR_VERDICT_SUPERSEDED: (?:full-gate )?red at ([a-f0-9]{8}) recorded as round (\d+)\b/);
+    return match && match[1] === candidatePrefix ? [Number(match[2])] : [];
+  }).at(-1);
+  return Number.isSafeInteger(round) && round! > 0 ? { runId, candidate: result.candidate, round: round! } : null;
 }
 
 /** The existing two-minute sweep also investigates missing qualification heartbeats. */
@@ -329,31 +401,66 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
     const qualification = transaction && transaction.phase !== 'terminal' && runner
       ? projectCheckpointQualificationState(transaction, nowMs, liveness)
       : null;
+    let terminalNoVerdict: (TerminalQualificationNoVerdict & { reconciliationStatus: string }) | null = null;
     if (transaction && runner && liveness === 'dead') {
-      const superseded = await successfulSupersededRepairRound(runner, deps);
-      if (superseded) {
+      const boundRunLog = await readBoundQualificationRunLog(runner, deps);
+      const terminalOutcome = boundRunLog ? terminalQualificationNoVerdict(runner, boundRunLog) : null;
+      if (terminalOutcome) {
+        const target = { installSlug: row.install_slug, workspaceId: row.workspace_id };
+        let reconciliation: Awaited<ReturnType<typeof recordStoredQualificationVerdict>> | null = null;
         try {
-          const target = { installSlug: row.install_slug, workspaceId: row.workspace_id };
-          await requeueDeadQualification(sql, target, transaction);
-          const reconciled = await (deps.reconcileSupersededRun ?? reconcileStoredSupersededRepairVerdict)(target, {
+          reconciliation = await (deps.reconcileTerminalNoVerdict ?? recordStoredQualificationVerdict)(target, {
             attemptId: transaction.attemptId,
-            runnerId: runner.id,
-            runId: superseded.runId,
-            candidate: superseded.candidate,
-            round: superseded.round,
+            reason: terminalOutcome.reason,
+            green: terminalOutcome.green,
+            candidate: terminalOutcome.candidate,
+            repairHead: terminalOutcome.repairHead,
+            runId: terminalOutcome.runId,
+            evidenceRefs: terminalOutcome.evidenceRefs,
             nowMs,
           });
-          if (reconciled.status === 'updated' || reconciled.status === 'idempotent') {
-            await resolveAlarm(`green-checkpoint-lost-run:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
-            await resolveAlarm(`green-checkpoint-run-progress:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
+        } catch {
+          console.warn(`[lost-gate-run-alarm] terminal no-verdict reconciliation failed for ${row.install_slug}`);
+        }
+        const noLongerCurrent = reconciliation && 'transaction' in reconciliation &&
+          (reconciliation.transaction.attemptId !== transaction.attemptId ||
+            reconciliation.transaction.phase !== 'running' ||
+            reconciliation.transaction.currentPhysicalRunner?.id !== runner.id);
+        if (reconciliation && (['updated', 'idempotent', 'terminal'].includes(reconciliation.status) || noLongerCurrent)) {
+          await resolveAlarm(`green-checkpoint-lost-run:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
+          await resolveAlarm(`green-checkpoint-run-progress:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
+          continue;
+        }
+        terminalNoVerdict = {
+          ...terminalOutcome,
+          reconciliationStatus: reconciliation?.status ?? 'failed',
+        };
+      } else {
+        const superseded = await successfulSupersededRepairRound(runner, boundRunLog);
+        if (superseded) {
+          try {
+            const target = { installSlug: row.install_slug, workspaceId: row.workspace_id };
+            await requeueDeadQualification(sql, target, transaction);
+            const reconciled = await (deps.reconcileSupersededRun ?? reconcileStoredSupersededRepairVerdict)(target, {
+              attemptId: transaction.attemptId,
+              runnerId: runner.id,
+              runId: superseded.runId,
+              candidate: superseded.candidate,
+              round: superseded.round,
+              nowMs,
+            });
+            if (reconciled.status === 'updated' || reconciled.status === 'idempotent') {
+              await resolveAlarm(`green-checkpoint-lost-run:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
+              await resolveAlarm(`green-checkpoint-run-progress:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
+              continue;
+            }
+            out.failed.push(row.install_slug);
+            continue;
+          } catch (e) {
+            console.warn(`[lost-gate-run-alarm] superseded qualification recovery failed for ${row.install_slug}: ${e instanceof Error ? e.message : String(e)}`);
+            out.failed.push(row.install_slug);
             continue;
           }
-          out.failed.push(row.install_slug);
-          continue;
-        } catch (e) {
-          console.warn(`[lost-gate-run-alarm] superseded qualification recovery failed for ${row.install_slug}: ${e instanceof Error ? e.message : String(e)}`);
-          out.failed.push(row.install_slug);
-          continue;
         }
       }
     }
@@ -409,7 +516,7 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
       continue;
     }
 
-    if (progressKey && liveness === 'dead' && transaction) {
+    if (progressKey && liveness === 'dead' && transaction && !terminalNoVerdict) {
       // This requests an ordinary scheduled attempt, which still passes all existing admission
       // and single-flight guards. It never stops a process or creates a code verdict.
       try {
@@ -429,7 +536,9 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
       : null;
     const routes = resolveLostRunRoutes({
       installSlug: row.install_slug,
-      condition: progressKey && liveness !== 'dead' ? 'stale-progress' : 'lost-run',
+      condition: terminalNoVerdict
+        ? 'terminal-no-verdict'
+        : progressKey && liveness !== 'dead' ? 'stale-progress' : 'lost-run',
       holderOwnerId: holder,
       holderFleetSlug,
       hostFleetSlug: deps.hostFleetSlug !== undefined ? deps.hostFleetSlug : (process.env.PAPERCUSP_FLEET_SLUG ?? null),
@@ -437,9 +546,13 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
     const { summary, body } = decision.action === 'alarm'
       ? lostRunAlarmBody({ installSlug: row.install_slug, decision, paged: routes.map((r) => r.ownerSelector) })
       : {
-          summary: `green-checkpoint qualification ${liveness === 'dead' ? 'LOST' : 'progress STALE'} on ${row.install_slug}`,
+          summary: terminalNoVerdict
+            ? `green-checkpoint qualification ended without a verdict on ${row.install_slug}`
+            : `green-checkpoint qualification ${liveness === 'dead' ? 'LOST' : 'progress STALE'} on ${row.install_slug}`,
           body: `Qualification ${transaction!.attemptId}, runner ${runner!.id}, candidate ${transaction!.candidate ?? 'unknown'}: ` +
-            (liveness === 'dead'
+            (terminalNoVerdict
+              ? `the exact run exited with terminal no-verdict reason '${terminalNoVerdict.reason}'. Stored-attempt reconciliation returned '${terminalNoVerdict.reconciliationStatus}'; no automatic retry was requested. Inspect this exact run and the qualification row before selecting the next action.`
+              : liveness === 'dead'
               ? 'the exact runner was proved dead without a terminal verdict; an ordinary guarded retry was requested.'
               : postVerdictHang
               ? `POST-VERDICT HANG: the live runner entered its final post-verdict steps ${Math.round((nowMs - (runner!.phaseEnteredAtMs ?? nowMs)) / 60_000)}m ago and never exited, although every post-verdict step is bounded to seconds. Its run-lock and checkpoint tree stay held, so no later tick can run. Read the run log's last "<step> started" line to name the stalled step. Preserve single flight: do not start a parallel run.`

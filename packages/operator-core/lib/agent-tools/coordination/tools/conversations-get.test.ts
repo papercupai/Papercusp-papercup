@@ -14,6 +14,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConversationDetail } from '../conversations-core';
 import type { ConversationRow } from '../conversations-store';
+import { ADMIN_COORD_UI_OWNER } from '../identity';
 
 vi.mock('../conversations', async (importActual) => ({
   getConversation: vi.fn(),
@@ -129,7 +130,7 @@ describe('conversations:get handler (bulk keyed-array)', () => {
   });
 
   it('projects the conversation fields, topics, count, and trims post fields', async () => {
-    getM.mockResolvedValue(detail('c1'));
+    getM.mockResolvedValue(detail('c1', { producer: 'coord:ask-owner' }));
     const b = await body({ id: 'c1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     const r = b.results[0];
@@ -140,8 +141,36 @@ describe('conversations:get handler (bulk keyed-array)', () => {
       topics: ['arch'],
       subscriber_count: 2,
     });
-    expect(r.posts).toEqual([{ id: 1, author_id: 'b1', body: 'reply', created_ts: 't2' }]);
+    expect(r.posts).toEqual([{
+      id: 1,
+      author_id: 'b1',
+      body: 'reply',
+      created_ts: 't2',
+      author_origin: 'agent',
+      owner_decision_effect: 'peer-opinion',
+    }]);
     expect(r.posts[0]).not.toHaveProperty('secret'); // extra store columns are not leaked
+  });
+
+  it('marks an owner-typed post as the only owner-origin reply on an owner question', async () => {
+    getM.mockResolvedValue({
+      ...detail('c-owner', { producer: 'coord:ask-owner' }),
+      posts: [
+        { id: 1, author_id: 'su-agent', body: 'CONTINUE', created_ts: 't1' },
+        { id: 2, author_id: ADMIN_COORD_UI_OWNER, body: 'RESCOPE', created_ts: 't2' },
+      ],
+    });
+    const b = await body({ id: 'c-owner' });
+    expect(b.results[0].posts).toEqual([
+      {
+        id: 1, author_id: 'su-agent', body: 'CONTINUE', created_ts: 't1',
+        author_origin: 'agent', owner_decision_effect: 'peer-opinion',
+      },
+      {
+        id: 2, author_id: ADMIN_COORD_UI_OWNER, body: 'RESCOPE', created_ts: 't2',
+        author_origin: 'owner-typed', owner_decision_effect: 'owner-typed-reply',
+      },
+    ]);
   });
 
   // EI-21914051456641891: when the core resolved a hand-truncated id via

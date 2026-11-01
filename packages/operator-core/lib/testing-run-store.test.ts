@@ -1338,6 +1338,78 @@ describe('durable detached snapshot lifecycle', () => {
     expect(readSql).toContain('WHERE snapshot.run_id =');
   });
 
+  it('resolves a foreground origin id to its detached snapshot through task-ledger metadata', async () => {
+    const originRunId = 'foreground-origin';
+    let durableRow: Record<string, unknown> | null = null;
+    let snapshotPersisted = false;
+    let resolveRegistrationReady!: () => void;
+    const registrationReady = new Promise<void>((resolve) => {
+      resolveRegistrationReady = resolve;
+    });
+    taskManagerMocks.begin.mockReturnValueOnce({
+      taskId: 'task-test-run',
+      confined: false,
+      scopeUnit: null,
+      enrolled: true,
+      registrationReady,
+      releaseEnvironmentTransport: vi.fn(),
+      wrap: vi.fn((binary: string, argv: string[]) => ({ binary, argv })),
+    });
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('INSERT INTO harness_shared.testing_run_snapshots')) {
+        snapshotPersisted = true;
+        durableRow = {
+          run_id: values[0],
+          kind: values[1],
+          label: values[2],
+          file_path: values[3],
+          command: values[4],
+          status: values[5],
+          exit_code: values[6],
+          started_at: values[7],
+          finished_at: values[8],
+          output: values[9],
+          truncated: values[10],
+          task_id: values[11],
+          task_state: 'running',
+          task_deadline_at: null,
+        };
+        return [];
+      }
+      if (statement.includes("detail->>'originRunId'")) {
+        const detail = taskManagerMocks.begin.mock.calls[0]![0].detail as Record<string, unknown>;
+        return detail.originRunId === values[0] ? [{ detached_run_id: detail.runId }] : [];
+      }
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+        return values[0] === durableRow?.run_id && durableRow ? [durableRow] : [];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const start = store.startRunDurable(req({ originRunId }), sql);
+    await vi.waitFor(() => expect(snapshotPersisted).toBe(true));
+    let startSettled = false;
+    void start.then(() => { startSettled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(startSettled).toBe(false);
+
+    resolveRegistrationReady();
+    const { snapshot, durable, originAliasDurable } = await start;
+    const detail = taskManagerMocks.begin.mock.calls[0]![0].detail as Record<string, unknown>;
+    expect(detail).toMatchObject({ originRunId, runId: snapshot.runId });
+    expect(durable).toBe(true);
+    expect(originAliasDurable).toBe(true);
+
+    // A sibling worker has no local snapshot; the origin alias resolves through the shared task ledger.
+    store._resetTestingRunStore();
+    await expect(store.getRunAsync(originRunId, sql)).resolves.toMatchObject({
+      runId: snapshot.runId,
+      taskId: 'task-test-run',
+      status: 'running',
+    });
+  });
+
   it('retries an empty sibling read until the confirmed snapshot becomes visible', async () => {
     let snapshotReads = 0;
     const durableRow = {

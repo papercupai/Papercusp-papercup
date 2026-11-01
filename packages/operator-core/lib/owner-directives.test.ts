@@ -239,7 +239,7 @@ describe('loop wake render (EI-11484) — directives ABOVE the loop contract', (
       kickoff: KICKOFF,
       fireNumber: 1,
       checkpoint: '## Next action\ndo the thing',
-      walls: [{ claim: 'a wall', sinceMs: NOW - 1000 }],
+      walls: [{ claim: 'a wall', origin: 'owner', sinceMs: NOW - 1000 }],
       ownerDirectivesBlock: block,
       nowMs: NOW,
     });

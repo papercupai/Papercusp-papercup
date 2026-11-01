@@ -195,7 +195,11 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
     progress.stage('task-reconcile-enabled-check');
     if (!(await isTaskManagerEnabled('routine:task-reconcile'))) return;
 
+    // This is one per-host cadence, but task rows are partitioned by workspace.
+    // Sweep the host's full ledger and keep host-only residue under operator home.
     const tick = await reconcileTick({
+      workspaceId: null,
+      residueWorkspaceId: ctx.workspaceId,
       stage: progress.stage,
       scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
       notify: async ({ summary, kind }) =>

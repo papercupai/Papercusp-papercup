@@ -570,6 +570,96 @@ describe('routines:list', () => {
     });
   });
 
+  it('projects bounded Git command diagnostics for a live fire without argv or environment data', () => {
+    const now = Date.parse('2026-08-29T16:58:00.000Z');
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    const verdict = deriveGitSyncFreshness(
+      {
+        last_status: 'synced',
+        last_synced_at: now - 10 * 60_000,
+        git_sync_activity: {
+          active: true,
+          phase: 'local-sync',
+          started_at: now - 5 * 60_000,
+          updated_at: now - 15_000,
+          owner_pid: 129472,
+          workflow_id: 'git-sync-workflow-7',
+          git_commands: {
+            scope: 'local-sync-runner',
+            active_count: 2,
+            omitted_count: 0,
+            active: [
+              {
+                id: 7,
+                subcommand: 'commit-tree',
+                cwd: '/repo/superproject',
+                cwd_truncated: true,
+                started_at: now - 20_000,
+                argv: ['--private-argument'],
+                env: { PRIVATE_TOKEN: 'active-secret' },
+              },
+              { id: 'invalid', cwd: '/repo/child', started_at: now - 1_000, argv: ['private'] },
+            ],
+            completed_count: 1,
+            completed_omitted_count: 0,
+            completed: [
+              {
+                id: 6,
+                subcommand: 'status',
+                cwd: '/repo/superproject',
+                started_at: now - 2_000,
+                completed_at: now - 1_500,
+                duration_ms: 500,
+                status: 'succeeded',
+                exit_code: 0,
+                env: { PRIVATE_TOKEN: 'completed-secret' },
+              },
+            ],
+          },
+        },
+      },
+      '0 */3 * * * *',
+      true,
+      now,
+    );
+
+    const execution = verdict.execution as Record<string, unknown>;
+    expect(execution).toMatchObject({
+      status: 'in-flight',
+      owner_pid: 129472,
+      workflow_id: 'git-sync-workflow-7',
+      git_commands: {
+        scope: 'local-sync-runner',
+        active_count: 2,
+        omitted_count: 1,
+        active: [{
+          id: 7,
+          subcommand: 'commit-tree',
+          cwd: '/repo/superproject',
+          cwd_truncated: true,
+          started_at: now - 20_000,
+        }],
+        completed_count: 1,
+        completed_omitted_count: 0,
+        completed: [{
+          id: 6,
+          subcommand: 'status',
+          cwd: '/repo/superproject',
+          started_at: now - 2_000,
+          completed_at: now - 1_500,
+          duration_ms: 500,
+          status: 'succeeded',
+          exit_code: 0,
+        }],
+      },
+    });
+    const projected = JSON.stringify(execution.git_commands);
+    expect(projected).not.toContain('PRIVATE_TOKEN');
+    expect(projected).not.toContain('private-argument');
+    expect(projected).not.toContain('active-secret');
+    expect(projected).not.toContain('completed-secret');
+  });
+
   it('CONTROL: the same row WITHOUT the in-flight marker reads fresh — proving the check above convicts on the wedged fire, not on the clock', () => {
     const now = Date.parse('2026-08-29T16:58:00.000Z');
     cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));

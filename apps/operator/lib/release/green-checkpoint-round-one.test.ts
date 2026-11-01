@@ -57,6 +57,38 @@ describe("P-016 environment-dominated infra fault", () => {
   });
 });
 
+describe("run-level Vitest errors without file failures", () => {
+  it("renders an inconclusive no-code verdict for a structured unhandled run error", () => {
+    const output = [
+      ">>> @papercusp/operator-core :: npm run test",
+      "Errors  1 error",
+      "Unhandled Errors",
+      "⎯⎯⎯ Unhandled Rejection ⎯⎯⎯",
+      "TypeError: fetch failed",
+    ].join("\n");
+    expect(classifyInfraFault(output)).toMatchObject({
+      kind: "run-level-unhandled",
+      occurrences: 1,
+      note: expect.stringContaining("no code verdict"),
+    });
+  });
+
+  it("does not infer a run-level fault from fetch text alone", () => {
+    expect(classifyInfraFault("fetch failed")).toBeNull();
+  });
+
+  it("keeps a measured file failure red when the same invocation has an unhandled error", () => {
+    const output = [
+      ">>> @papercusp/operator-core :: npm run test",
+      " FAIL  lib/known-failure.test.ts > real regression",
+      "AssertionError: expected 1 to be 2",
+      "Errors  1 error",
+      "Unhandled Errors",
+    ].join("\n");
+    expect(classifyInfraFault(output)).toBeNull();
+  });
+});
+
 // WI-41655's guard, now that only a repair-head round can skip the suite after an early red.
 describe("WI-41655 / P-016 confirmSuiteEstimateSeedMs", () => {
   const nowMs = 10_000_000;

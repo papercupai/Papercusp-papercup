@@ -3057,6 +3057,7 @@ describe('work_items:complete (keyed-array)', () => {
 
     expect(mergeWorkItemOutputPayload).toHaveBeenCalledWith('F-12', outputPayload, { harness: 'papercup' });
     expect(r.outputPayload).toEqual(outputPayload);
+    expect(r.outputPayloadReadPath).toBe('work_items:get results[].workItem.payload.out');
   });
 
   it('passes terminal outputPayload to the canonical state writer before the sidecar merge', async () => {
@@ -3821,6 +3822,28 @@ describe('work_items:complete (keyed-array)', () => {
         retryable: true,
         impactReport: 'other-plan/SPEC-900-01@1. Reported, not enforced.',
       });
+    });
+
+    it('publishes output-payload readback and work-outcome declaration paths', () => {
+      const json = z.toJSONSchema(complete.args as never) as JsonSchemaDocument & {
+        anyOf?: Array<{ properties?: Record<string, unknown> }>;
+        oneOf?: Array<{ properties?: Record<string, unknown> }>;
+      };
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      const single = branches.find((branch) => Boolean(branch.properties?.id));
+      const outputPayload = resolveLocalSchemaRef(json, single?.properties?.outputPayload) as {
+        description?: string;
+      };
+      const completion = resolveLocalSchemaRef(json, single?.properties?.completion);
+      const verification = resolveLocalSchemaRef(json, completion.properties?.verification);
+      const workOutcome = resolveLocalSchemaRef(json, verification.properties?.workOutcome) as {
+        description?: string;
+      };
+
+      expect(outputPayload.description).toContain('workItem.payload.out');
+      expect(outputPayload.description).toContain('outputPayloadReadPath');
+      expect(workOutcome.description).toContain('completion.verification.workOutcome');
+      expect(complete.guidance?.when).toContain('outputPayloadReadPath');
     });
 
     it('refuses before every completion/state write when current proof is insufficient', async () => {

@@ -339,6 +339,74 @@ export async function sweepBenchEgress(runId: string, exec: ProcExec = liveProcE
   return { errors };
 }
 
+const STALE_EGRESS_NETWORK_AGE_MS = 24 * 60 * 60 * 1000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isMissingDockerNetwork(message: string): boolean {
+  return /no such network|network .+ not found/i.test(message);
+}
+
+/** Remove only old, unattached egress networks; ambiguous or active resources are left alone. */
+async function sweepStaleBenchEgressNetworks(exec: ProcExec, nowMs: number): Promise<EgressStopReport> {
+  const errors: string[] = [];
+  const listed = await docker(exec, ['network', 'ls', '-q', '--filter', `label=${BENCH_EGRESS_LABEL}`]);
+  if (!listed.ok) return { errors: [`list stale egress networks: ${listed.err}`] };
+
+  for (const id of listed.out.split('\n').map((value) => value.trim()).filter(Boolean)) {
+    const inspected = await docker(exec, ['network', 'inspect', id]);
+    if (!inspected.ok) {
+      if (!isMissingDockerNetwork(inspected.err)) errors.push(`inspect egress network ${id}: ${inspected.err}`);
+      continue;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(inspected.out);
+    } catch {
+      errors.push(`inspect egress network ${id}: Docker returned invalid JSON`);
+      continue;
+    }
+    if (!Array.isArray(parsed) || parsed.length !== 1 || !isRecord(parsed[0])) {
+      errors.push(`inspect egress network ${id}: expected exactly one network record`);
+      continue;
+    }
+
+    const network = parsed[0];
+    const labels = network.Labels;
+    if (!isRecord(labels) || typeof labels[BENCH_EGRESS_LABEL] !== 'string' || !labels[BENCH_EGRESS_LABEL]) continue;
+    if (typeof network.Id !== 'string' || !(network.Id === id || network.Id.startsWith(id))) {
+      errors.push(`inspect egress network ${id}: Docker returned a mismatched network id`);
+      continue;
+    }
+    if (typeof network.Created !== 'string') {
+      errors.push(`inspect egress network ${id}: creation time is missing`);
+      continue;
+    }
+    const createdAtMs = Date.parse(network.Created);
+    if (!Number.isFinite(createdAtMs)) {
+      errors.push(`inspect egress network ${id}: creation time is invalid`);
+      continue;
+    }
+    if (nowMs - createdAtMs < STALE_EGRESS_NETWORK_AGE_MS) continue;
+
+    const containers = network.Containers;
+    if (!isRecord(containers)) {
+      errors.push(`inspect egress network ${id}: attachment list is missing`);
+      continue;
+    }
+    if (Object.keys(containers).length > 0) continue;
+
+    const removed = await docker(exec, ['network', 'rm', id]);
+    if (!removed.ok && !isMissingDockerNetwork(removed.err) && !/active endpoints/i.test(removed.err)) {
+      errors.push(`remove stale egress network ${id}: ${removed.err}`);
+    }
+  }
+  return { errors };
+}
+
 /**
  * Start the per-run egress: relay servers, base network, sidecar; waits until the sidecar listens on every endpoint
  * port. On any failure everything already created is torn down before the error is rethrown.
@@ -419,7 +487,16 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
     const confPath = join(workDir, 'nginx.conf');
     writeFileSync(confPath, renderEgressNginxConf(endpoints), { mode: 0o644 });
 
-    const net = await docker(exec, ['network', 'create', '--internal', '--label', label, baseNetwork]);
+    let net = await docker(exec, ['network', 'create', '--internal', '--label', label, baseNetwork]);
+    if (!net.ok && /all predefined address pools have been fully subnetted/i.test(net.err)) {
+      const initialError = net.err;
+      const sweep = await sweepStaleBenchEgressNetworks(exec, Date.now());
+      if (sweep.errors.length) {
+        throw new Error(`bench-egress: address pools exhausted (${initialError}); stale egress cleanup failed — ${sweep.errors.join('; ')}`);
+      }
+      net = await docker(exec, ['network', 'create', '--internal', '--label', label, baseNetwork]);
+      if (!net.ok) net.err = `${net.err}; retry after stale egress cleanup (initial failure: ${initialError})`;
+    }
     if (!net.ok) throw new Error(`bench-egress: network create ${baseNetwork} failed — ${net.err}`);
     baseCreated = true;
 

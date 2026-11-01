@@ -321,6 +321,16 @@ const scorecardEvidenceSchema = z.object({
       at: z.string(),
       reason: z.string(),
     }).passthrough().optional(),
+    replayRefusal: z.object({
+      code: z.literal('grading_audit_replay_consistent'),
+      at: z.string(),
+      basisFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      reservation: z.object({
+        key: z.string(),
+        reservedAt: z.string(),
+      }).passthrough(),
+      responderOwnerId: z.string(),
+    }).passthrough().optional(),
     auditIssueId: z.string().optional(),
     auditor: z.string().optional(),
     auditedAt: z.string().optional(),
