@@ -678,6 +678,89 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
     ]));
   });
 
+  it('holds an automatic Codex top-up when the pool is exhausted even though the tier-one floor is positive', async () => {
+    mocks.claimAttempt.mockResolvedValue({
+      workspaceId: 'ws', fleetSlug: 'fleet-a', target: 1,
+      config: { ...baseConfig, account: 'auto' },
+      nextAttemptAt: null, backoffMs: 0, lastError: null, claimedAt: 1,
+    });
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a',
+      leaderOwnerId: 'su-leader',
+      lastLaunchTransaction: null,
+    });
+    mocks.liveMemberIds.mockResolvedValue([]);
+    mocks.capacity.mockResolvedValue({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: true,
+          reachable: true,
+          verdict: 'measured',
+          provider: 'codex',
+          poolExhausted: true,
+          dispatchBudget: 51,
+          recommendedHeadroom: 2,
+          advice: 'pool EXHAUSTED: zero routable Codex accounts',
+        }),
+      }],
+    });
+
+    await runFleetHeadcountGovernor({
+      installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+    });
+
+    expect(mocks.resolveGoalLaunch).toHaveBeenCalled();
+    expect(mocks.claimSlot).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.kill).not.toHaveBeenCalled();
+    const persisted = mocks.setTransaction.mock.calls.at(-1)?.[0].transaction;
+    expect(persisted.governor.capacity).toMatchObject({
+      provider: 'codex', requested: 1, allowance: 0, residualShortfall: 1,
+      measured: true,
+      wall: expect.stringContaining('pool is exhausted'),
+    });
+    expect(mocks.headcountEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'refusal', requested: 1, allowance: 0, residualShortfall: 1 }),
+    ]));
+  });
+
+  it('does not apply the exhausted gateway-pool gate to a direct system-credential top-up', async () => {
+    mocks.claimAttempt.mockResolvedValue({
+      workspaceId: 'ws', fleetSlug: 'fleet-a', target: 1,
+      config: { ...baseConfig, account: 'default' },
+      nextAttemptAt: null, backoffMs: 0, lastError: null, claimedAt: 1,
+    });
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a',
+      leaderOwnerId: 'su-leader',
+      lastLaunchTransaction: null,
+    });
+    mocks.liveMemberIds.mockResolvedValue([]);
+    mocks.capacity.mockResolvedValue({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: true,
+          reachable: true,
+          verdict: 'measured',
+          provider: 'codex',
+          poolExhausted: true,
+          dispatchBudget: 51,
+          recommendedHeadroom: 2,
+          advice: 'pool EXHAUSTED: zero routable Codex accounts',
+        }),
+      }],
+    });
+
+    await runFleetHeadcountGovernor({
+      installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+    });
+
+    expect(mocks.spawnHeadless).toHaveBeenCalledTimes(1);
+    expect(mocks.claimSlot).toHaveBeenCalledWith(expect.objectContaining({ count: 1 }));
+  });
+
   it('refreshes a late boot to productive and performs no duplicate launch', async () => {
     const transaction = {
       version: 1 as const,

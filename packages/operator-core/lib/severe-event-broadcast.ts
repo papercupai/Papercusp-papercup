@@ -1,5 +1,5 @@
 /**
- * severe-event-broadcast — a process-level watchdog's "tell every running agent" rail.
+ * severe-event-broadcast — a process-level watchdog's opt-in severe-event topic rail.
  *
  * The gap this closes: the pipeline stall watchdogs (green-stall-watchdog, git-sync-stall-
  * watchdog) alarmed only via `notifyAttention` — an OWNER-facing toast. If the owner isn't
@@ -32,11 +32,10 @@ const SEVERE_EVENT_IDENTITY: AgentIdentity = {
 
 /**
  * The ownership/routing leg (EI-10060, a follow-up to EI-9939's flap suppression):
- * ADDITIVE to the unconditional `to:['*']` broadcast below — it never replaces it.
+ * ADDITIVE to the `@topic:severe-events` notice below — it never replaces it.
  * When present, a SEPARATE directed message + best-effort wake also goes to the
  * resolved responsible party, so they get a full-fidelity, expected-to-act-or-ack
- * notice instead of relying on the ambient broadcast (which digest-suppresses after
- * EI-9939's flap threshold like everyone else's). Build via
+ * notice instead of relying on the opt-in topic. Build via
  * `resolveSevereEventOwner()` (severe-event-owner.ts) — this module never resolves
  * ownership itself, only routes to what the caller already resolved.
  */
@@ -267,8 +266,9 @@ async function recordConditionHeartbeat(
 }
 
 /**
- * Broadcast a SEVERE pipeline event to every running agent, inject-only (no wake). Seen on the
- * recipient's next turn so someone claims it. Never throws. A repeated condition summary is
+ * Publish a SEVERE pipeline event to subscribers of the stable severe-events topic, inject-only
+ * (no wake). It remains queryable by that audience even when it has no current subscribers.
+ * Never throws. A repeated condition summary is
  * not re-sent. One-shot alarms stay silent; level-triggered alarms append a durable, empty-
  * audience heartbeat so `coord:conditions.last_seen` remains fresh.
  */
@@ -282,10 +282,11 @@ export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<bo
       await recordConditionHeartbeat(ev, emitter, body);
       return true;
     }
-    // No `wake` option ⇒ plain inject (the owner-requested wake=false): lands in every agent's
-    // inbox for their next turn, no forced re-invoke storm.
+    // No `wake` option ⇒ plain inject: lands in severe-events subscribers' inboxes for their
+    // next turn, without a forced re-invoke storm. The original selector remains in audience
+    // history even when no subscribers resolve; coord:conditions reads the shared log.
     await sendMessage(SEVERE_EVENT_IDENTITY, {
-      to: ['*'],
+      to: ['@topic:severe-events'],
       summary: ev.summary,
       body,
       category: ev.category ?? 'severe-event',
@@ -321,15 +322,15 @@ export interface SevereEventResolution {
 }
 
 /**
- * Broadcast that a previously-alarmed severe condition has CLEARED (WI-1444). Every prior
- * broadcast carrying the same `condition_key` is annotated `resolved:true` at coord:inbox
- * read time, so stale alarms self-supersede instead of sending late readers chasing dead
- * conditions. Inject-only, same rail as the alarm. Never throws.
+ * Publish that a previously-alarmed severe condition has CLEARED (WI-1444). Every prior
+ * alarm carrying the same `condition_key` is annotated `resolved:true` at coord:inbox read
+ * time, including historical alarms whose audience differs from current topic subscribers.
+ * Inject-only, same topic as the alarm. Never throws.
  */
 export async function broadcastSevereEventResolved(res: SevereEventResolution): Promise<boolean> {
   try {
     await sendMessage(SEVERE_EVENT_IDENTITY, {
-      to: ['*'],
+      to: ['@topic:severe-events'],
       summary: res.summary,
       body: res.body,
       category: 'severe-event-resolved',
@@ -353,20 +354,19 @@ export interface SevereEventResolutionMany {
 }
 
 /**
- * Broadcast that SEVERAL previously-alarmed conditions have cleared in ONE message
- * (EI-9030b) — instead of one recovery notice per condition, which spams every
- * agent's inbox when a shared root-cause (e.g. a DBOS engine wedge) recovers many
- * harnesses at once. Carries `resolves_conditions` (plural array); coord:inbox's
+ * Publish that SEVERAL previously-alarmed conditions have cleared in ONE message
+ * (EI-9030b) — instead of one recovery notice per condition. Carries
+ * `resolves_conditions` (plural array); coord:inbox's
  * `annotateResolvedConditions` supersedes every listed condition's prior alarm.
  * A single key stays byte-equivalent to `broadcastSevereEventResolved` for readers
  * that key on the singular field (both `resolves_condition` + the plural are stamped).
- * Inject-only, same rail as the alarm. Never throws; a 0-key call is a no-op.
+ * Inject-only, same topic as the alarm. Never throws; a 0-key call is a no-op.
  */
 export async function broadcastSevereEventResolvedMany(res: SevereEventResolutionMany): Promise<boolean> {
   if (res.conditionKeys.length === 0) return true;
   try {
     await sendMessage(SEVERE_EVENT_IDENTITY, {
-      to: ['*'],
+      to: ['@topic:severe-events'],
       summary: res.summary,
       body: res.body,
       category: 'severe-event-resolved',

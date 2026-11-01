@@ -51,7 +51,7 @@ const STATED_UNPARK_CONDITION = /\b(?:unpark|unhold|release|resume|clear)\b|\b(?
 export type AuditAgeStatus = 'known' | 'missing' | 'invalid';
 export type AuditAgeBucket = 'under-1d' | '1-7d' | '7-30d' | '30d-plus' | 'unknown';
 export type UnparkConditionStatus = 'stated' | 'missing' | 'unresolved';
-export type DurableParkReleaseReachability = 'reachable' | 'blocked' | 'unreachable' | 'satisfied';
+export type DurableParkReleaseReachability = 'reachable' | 'blocked' | 'unknown' | 'unreachable' | 'satisfied';
 export type DurableParkReleaseLivenessStatus =
   | 'tracked'
   | 'unverified'
@@ -298,6 +298,7 @@ function textOrNull(value: unknown): string | null {
 const RELEASE_REACHABILITY = new Set<DurableParkReleaseReachability>([
   'reachable',
   'blocked',
+  'unknown',
   'unreachable',
   'satisfied',
 ]);
@@ -369,7 +370,9 @@ export function classifyDurableParkReleaseLiveness(
   if (contradiction) findings.push('condition-ambiguous');
   if (!owner) findings.push('owner-missing');
   if (!trigger) findings.push('trigger-missing');
-  if (!reachability || reachability === 'blocked') findings.push('reachability-unverified');
+  if (!reachability || reachability === 'blocked' || reachability === 'unknown') {
+    findings.push('reachability-unverified');
+  }
   if (!evidence) findings.push('evidence-missing');
   if (reachability === 'unreachable') findings.push('condition-unreachable');
   if (reachability === 'satisfied') findings.push('condition-satisfied-still-parked');

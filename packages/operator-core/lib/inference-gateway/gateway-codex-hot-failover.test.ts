@@ -415,6 +415,60 @@ describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
     expect(stats.codexServiceableByModel).toEqual({ 'gpt-5.5': expected });
   });
 
+  it('does not retry an auth-quarantined Codex account after a model refusal', async () => {
+    const accounts = await Promise.all(['chatgpt-a', 'chatgpt-b'].map(async accountId => ({ accountId, home: await codexHome(accountId) })));
+    const pool = createFailoverPool(accounts.map(({ accountId }) => ({ accountId, token: async () => '' })));
+    pool.onExhausted('chatgpt-b', Date.now() + 900_000, undefined, { cause: 'auth' });
+    const routed: string[] = [];
+    const refusal = `{"detail":"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."}`;
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      routed.push(new Headers(init?.headers).get('chatgpt-account-id') ?? '');
+      return new Response(refusal, { status: 400, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    gateway = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok',
+      codexCliAccounts: () => accounts, codexCliPool: pool,
+      codexOAuthProxy: true, fetchImpl, selfHeal: { enabled: false },
+    });
+    const port = await gateway.listen(0);
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST', headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'auth-parked-failover' },
+      body: JSON.stringify({ model: 'gpt-5.5', input: [], stream: true }),
+    });
+    const body = await response.json() as { error?: { message?: string } };
+    expect(response.status).toBe(503);
+    expect(body.error?.message).toMatch(/no Codex account can serve model 'gpt-5\.5'.*authentication quarantine/i);
+    expect(routed).toEqual(['chatgpt-a']);
+  });
+
+  it('fails fast on the next request after every Codex account refuses the model', async () => {
+    const accounts = await Promise.all(['chatgpt-a', 'chatgpt-b'].map(async accountId => ({ accountId, home: await codexHome(accountId) })));
+    const routed: string[] = [];
+    const refusal = `{"detail":"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."}`;
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      routed.push(new Headers(init?.headers).get('chatgpt-account-id') ?? '');
+      return new Response(refusal, { status: 400, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    gateway = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok',
+      codexCliAccounts: () => accounts,
+      codexCliPool: createFailoverPool(accounts.map(({ accountId }) => ({ accountId, token: async () => '' }))),
+      codexOAuthProxy: true, fetchImpl, selfHeal: { enabled: false },
+    });
+    const port = await gateway.listen(0);
+    const request = (owner: string) => fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST', headers: { 'content-type': 'application/json', [OWNER_HEADER]: owner },
+      body: JSON.stringify({ model: 'gpt-5.5', input: [], stream: true }),
+    });
+    const first = await request('model-refusal-learning');
+    expect(first.status).toBe(503);
+    const second = await request('model-refusal-fast-fail');
+    const secondBody = await second.json() as { error?: { message?: string } };
+    expect(second.status).toBe(503);
+    expect(secondBody.error?.message).toMatch(/no Codex account can serve model 'gpt-5\.5'.*refusing/i);
+    expect(routed).toEqual(['chatgpt-a', 'chatgpt-b']);
+  });
+
   // WI-6554700010030462: live 2026-10-27 — the per-model reading for gpt-5.6-sol vanished from /stats
   // when the 30-minute selection re-check lapsed, so psu and the consult router read the model as
   // "unknown", launched it, and paid a convert that 429-aborted. The reading must outlive the re-check.

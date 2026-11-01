@@ -46,11 +46,12 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  * at MAX_DEBOUNCE_MS) — so an unusually slow boot gets progressively more room instead of being re-killed
  * on the same fixed clock, and the strike counter resets the moment a poll observes the ticker genuinely
  * healthy again. From ALERT_AFTER_RESTARTS consecutive strikes — well before the MAX_RESTARTS_PER_HR
- * circuit breaker — `alertFleet()` best-effort broadcasts to every running agent via
- * `harness_shared.coord_event_log` (the same table `coord:send`/severe-event-broadcast write: to:['*'],
- * surface 'messages', so it lands in coord:inbox for every agent's next turn, journald-independent and
- * independent of THIS watchdog's own log file — the EI-2434 precedent showed a durable log nobody tails
- * is invisible for 44h; a running fleet that could actually intervene should see it).
+ * circuit breaker — `alertFleet()` best-effort publishes to the `severe-events` topic via
+ * `harness_shared.coord_event_log` (the same `messages` surface as `coord:send`). The insert
+ * resolves active topic subscribers into `to` and preserves the topic selector in `audience`,
+ * so only interested agents receive it and the audience history stays queryable. Delivery is
+ * journald-independent and independent of THIS watchdog's own log file — the EI-2434 precedent
+ * showed a durable log nobody tails is invisible for 44h.
  *
  * COLLATERAL REPORTING (EI-19485006080051257, 2026-08-04). The alert above is threshold-gated on
  * ALERT_AFTER_RESTARTS consecutive strikes, and the strike counter resets on the first healthy poll — so
@@ -1247,12 +1248,11 @@ async function maybeActivateCommittedHotPathCode() {
 }
 
 /**
- * Best-effort, fail-soft broadcast to every running agent (WI-3630) — the durable log file (LOG_FILE) is
+ * Best-effort, fail-soft alert to active severe-events topic subscribers (WI-3630) — the durable log file (LOG_FILE) is
  * journald-independent but nobody actively tails it (the EI-2434 precedent: a real freeze-storm sat
  * invisible for 44h). Writes DIRECTLY into `harness_shared.coord_event_log` — the same table
- * `coord:send`/`severe-event-broadcast.ts` write (verified shape: surface='messages', body is the
- * CoordEnvelope JSON `sendMessage` builds) — so it surfaces in every agent's `coord:inbox` on their next
- * turn via the EXISTING `coord_event_log_notify_trg` pg_notify wake rail, with zero new infrastructure.
+ * `coord:send`/`severe-event-broadcast.ts` write (surface='messages', body is a CoordEnvelope).
+ * The insert resolves active topic subscribers into `to` and preserves the selector in `audience`.
  * Uses psql `-v` bind-variables (never raw string interpolation) so the JSON payload is always safely
  * quoted. Never throws — a broadcast failure must not affect the restart decision it accompanies.
  */
@@ -1272,14 +1272,24 @@ export async function alertFleet(summary, deps = {}) {
       ts: new Date().toISOString(),
       msg_id: msgId,
       from: 'system-watchdog',
-      to: ['*'],
+      to: [],
+      audience: ['@topic:severe-events'],
       kind: 'message',
       summary,
       category: 'severe-event',
     });
     const sql =
+      "WITH recipients AS ( " +
+      "  SELECT COALESCE(jsonb_agg(subscriber_id ORDER BY created_at, id), '[]'::jsonb) AS ids " +
+      "    FROM harness_shared.coord_entity_subscriptions " +
+      "   WHERE workspace_id = 'default' AND target_kind = 'topic' " +
+      "     AND target_ref = 'severe-events' AND cancelled_at IS NULL " +
+      "     AND (expires_ts IS NULL OR expires_ts > now()) " +
+      ") " +
       "INSERT INTO harness_shared.coord_event_log (id, workspace_id, surface, writer_key, msg_id, body) " +
-      "VALUES (nextval('harness_shared.coord_event_log_id_seq'), 'default', 'messages', 'bghost-watchdog', :'msgid', :'jsonbody'::jsonb)";
+      "SELECT nextval('harness_shared.coord_event_log_id_seq'), 'default', 'messages', 'bghost-watchdog', :'msgid', " +
+      "       jsonb_set(:'jsonbody'::jsonb, '{to}', recipients.ids, true) " +
+      "  FROM recipients";
     // EI-9419 (2026-07-10 outage postmortem): the SQL MUST go via stdin, never `-c`. psql does
     // NOT interpolate -v variables inside -c command strings — :'msgid'/:'jsonbody' reached the
     // server literally ("syntax error at or near :"), so every alert since WI-3630 landed failed

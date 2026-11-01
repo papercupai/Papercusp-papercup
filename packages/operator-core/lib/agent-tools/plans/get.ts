@@ -38,6 +38,7 @@ import { cachedRead, type CachedReadCtx } from '../../cache';
 import { shapePlansGet } from './get-shape';
 import { decoratePlanNowBlock } from './liveness-decoration';
 import { reconcileNowNext, reconcileNowState, type NowStateReconciliation } from './now-next-derivation';
+import { BAR_READINESS_NOW_MARK } from './plan-scope-cascade';
 import { derivePlanLifecycleForRead, normalizeActivityTimestamp } from './plan-lifecycle-derivation';
 import { markGrindingItems, readGrindingItems } from '../../verification-attempts/plan-grinding';
 import { readIterationMetrics } from '../../verification-attempts/plan-iteration-metrics';
@@ -248,7 +249,7 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        "What blocks this plan's ship now, without the write: `shipReadiness` from the SAME evaluator plans:set-plan-status enforces (`satisfied`/`code` authoritative; the BAR snapshot's traces + `nextRepair` explain the rest). ⚠ ONE gate blocker at a time. ⚠ `satisfied:true` is not a clean pass until `skipped`, `forcedPast` and `unavailableReason` are read. Opt-in; not on heading/decisionId reads.",
+        "What blocks this plan's ship now, without the write: `shipReadiness` from the SAME evaluator plans:set-plan-status enforces (`satisfied`/`code` authoritative; the BAR snapshot's traces + `nextRepair` explain the rest). ⚠ ONE gate blocker at a time. ⚠ `satisfied:true` is not a clean pass until `skipped`, `forcedPast` and `unavailableReason` are read. Opt-in; may be combined with `heading:'Now'` to compare the current gate with the stored Now snapshot.",
       ),
     current: z
       .array(evidenceCurrentInputSchema)
@@ -456,17 +457,40 @@ export function narrowHeadingPayload(
   // A heading read omits `now`, so its raw Now section would otherwise bypass
   // the same current-item warning that protects the structured read. Preserve
   // the requested section verbatim beneath the warning and keep CAS unchanged.
-  const now = base.now as { raw?: string; stateDerivation?: Omit<NowStateReconciliation, 'state'> } | null | undefined;
+  const now = base.now as {
+    raw?: string;
+    stateDerivation?: Omit<NowStateReconciliation, 'state'>;
+    readinessSnapshotWarning?: string | null;
+  } | null | undefined;
   const isNow = sec?.heading.toLowerCase() === 'now';
-  const warning = isNow ? now?.stateDerivation?.warning : null;
+  const warnings = isNow
+    ? [now?.stateDerivation?.warning, now?.readinessSnapshotWarning].filter((warning): warning is string => Boolean(warning))
+    : [];
   // The content `## Now` is frozen once a structured note exists. The parsed
   // `now.raw` is already resolved from that note (or from content for legacy
   // plans), so use it for the narrowed section instead of returning stale prose.
   const sectionBody = isNow && typeof now?.raw === 'string' ? now.raw : sec?.body ?? '';
   out.section = sec
-    ? { heading: sec.heading, level: sec.level, body: warning ? `${warning}\n\n${sectionBody}` : sectionBody }
+    ? { heading: sec.heading, level: sec.level, body: warnings.length ? `${warnings.join('\n\n')}\n\n${sectionBody}` : sectionBody }
     : null;
   return out;
+}
+
+/**
+ * A BAR banner is persisted by scope writes, while rubric vetting and proof readiness can
+ * change without another plan edit. Label its repair advice as a stored snapshot and point
+ * readers at the existing uncached evaluator for the current ship blocker.
+ */
+export function storedBarReadinessSnapshotWarning(state: string | null | undefined, slug: string): string | null {
+  if (!state) return null;
+  const banner = state.split(/\n\s*\n/).find((paragraph) =>
+    paragraph.trimStart().startsWith(BAR_READINESS_NOW_MARK));
+  if (!banner) return null;
+  const lastEvaluated = banner.match(/\((\d{4}-\d{2}-\d{2})/)?.[1] ?? 'an unknown date';
+  return (
+    `⚠ Stored BAR readiness snapshot (last evaluated ${lastEvaluated}); its blocker codes and repair advice may be outdated. ` +
+    `Read current readiness with plans:get { slug: ${JSON.stringify(slug)}, shipReadiness: true }.`
+  );
 }
 
 /**
@@ -1204,11 +1228,15 @@ export default defineTool({
             // stored bytes verbatim, and nothing here mutates the plan.
             const nowNext = decoratedNow ? reconcileNowNext(decoratedNow.next, parsed.items, row.planSlug) : null;
             const nowState = decoratedNow ? reconcileNowState(decoratedNow.state, parsed.items, row.planSlug) : null;
+            const readinessSnapshotWarning = decoratedNow
+              ? storedBarReadinessSnapshotWarning(decoratedNow.state, row.planSlug)
+              : null;
             const nowWithDerivedNext =
               decoratedNow && nowNext && nowState
                 ? {
                     ...decoratedNow,
-                    state: nowState.state,
+                    state: [readinessSnapshotWarning, nowState.state].filter(Boolean).join('\n\n'),
+                    ...(readinessSnapshotWarning ? { readinessSnapshotWarning } : {}),
                     stateDerivation: {
                       storedState: nowState.storedState,
                       contradictions: nowState.contradictions,

@@ -167,6 +167,7 @@ describe('PTY host event classification for Blender', () => {
       'session-scope-cleanup-failed', 'session-port-failure-ack-failed',
       // EI-27244198558252718: a must-deliver re-poll pending past its stall interval.
       'respawn-rearm-still-pending', 'wake-rearm-still-pending',
+      'respawn-carry-binding-recovery-pending',
     ]) {
       expect(classifyPtyHostEvent(kind), kind).toBe('failure');
     }
@@ -311,6 +312,10 @@ describe('PTY host event classification for Blender', () => {
     expect(classifyPtyHostEvent('mcp-reconnect-completed')).toBe('recovered');
     expect(classifyPtyHostEvent('control-payload-rejected')).toBe('failure');
     expect(classifyPtyHostEvent('persona-refresh-skipped')).toBe('failure');
+    expect(classifyPtyHostEvent('respawn-carry-binding-recovery-pending')).toBe('failure');
+    // The original carry drop is separately failure-classified; cancellation is the
+    // terminal outcome of its optional binding-recovery retry, so it is routine.
+    expect(classifyPtyHostEvent('respawn-carry-binding-recovery-cancelled')).toBe('routine');
     expect(classifyPtyHostEvent('headless-codex-model-choice-select-existing')).toBe('routine');
     expect(classifyPtyHostEvent('hooks-observation-result')).toBe('routine');
     expect(classifyPtyHostEvent('kickoff-waiting-for-codex-startup')).toBe('routine');

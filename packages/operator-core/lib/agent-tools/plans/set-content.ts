@@ -10,7 +10,7 @@
  * human rewrite the free-prose sections (`## Background` etc.) that the
  * assisted verbs cannot reach.
  *
- * Three guards make it as safe as the structured verbs:
+ * Four guards make it as safe as the structured verbs:
  *
  *   1. Compare-and-swap. `expectedHash` is the `contentHash` from the
  *      `plans:get` that loaded the editor. Inside the lock the live
@@ -26,6 +26,8 @@
  *   3. Reject on lint errors. The proposed body is parsed + linted
  *      in-memory (`lintParsed`) before the write; errors reject and
  *      return the findings, warnings pass.
+ *   4. Decision preservation. Removing any existing decision ID is rejected
+ *      unless the caller explicitly passes `allowDecisionDrop: true`.
  *
  * Writes inside `withPlanLock`. Does not emit a plan_event — the
  * plan-event vocabulary covers the structured lifecycle (now / item /
@@ -98,6 +100,12 @@ export const argsSchema = z.object({
     .describe(
       'A body that shrinks the plan to under 20% of its current size is rejected as a probable mass deletion (`suspicious_shrink`) unless this is true. Pass it only when the shrink is intentional — e.g. archiving prose that moved elsewhere.',
     ),
+  allowDecisionDrop: z
+    .boolean()
+    .optional()
+    .describe(
+      'A whole-document write that removes an existing plan decision ID is rejected as `decisions_would_be_dropped`, even when the overall document remains large. Pass true only when removing the listed decisions is intentional.',
+    ),
   allowStatusRegression: z
     .boolean()
     .optional()
@@ -152,6 +160,7 @@ export type SetContentValue =
       droppedItems?: number;
       droppedDecisions?: number;
     }
+  | { ok: false; code: 'decisions_would_be_dropped'; droppedDecisionIds: string[] }
   | { ok: false; code: 'would_orphan_frontmatter' }
   | {
       ok: false;
@@ -333,6 +342,23 @@ function shrinkWarning(currentParsed: ParsedPlan, proposed: ParsedPlan): string 
   return `This write removed ${parts.join(' and ')}.`;
 }
 
+/** Existing plan decisions are durable rulings. A prose-heavy whole-document
+ * rewrite can remove every decision while staying below the broad structural
+ * shrink threshold, so compare decision identities independently. */
+function droppedDecisionIds(currentParsed: ParsedPlan, proposed: ParsedPlan): string[] {
+  const proposedCounts = new Map<string, number>();
+  for (const decision of proposed.decisions) {
+    proposedCounts.set(decision.id, (proposedCounts.get(decision.id) ?? 0) + 1);
+  }
+  const dropped: string[] = [];
+  for (const decision of currentParsed.decisions) {
+    const remaining = proposedCounts.get(decision.id) ?? 0;
+    if (remaining > 0) proposedCounts.set(decision.id, remaining - 1);
+    else dropped.push(decision.id);
+  }
+  return dropped;
+}
+
 /**
  * The pure CAS + legacy-boundary + lint decision for a set-content
  * write. Exported so it can be unit-tested without the SU lock
@@ -350,6 +376,7 @@ export async function evaluateSetContent(
     expectedVersion?: number;
     meta?: { version: number; contentHash: string; planStatus?: string | null } | null;
     allowShrink?: boolean;
+    allowDecisionDrop?: boolean;
     /**
      * EI-18756269998422483: opt this call into the item-status-regression
      * guard (detectStatusRegressions). Only the whole-document rewriters
@@ -420,7 +447,18 @@ export async function evaluateSetContent(
     }
   }
 
-  // 1b. Mass-deletion guard (EI-83 / audit P-040) — a body that shrinks the
+  // 1b. Decision preservation guard — generic shrink thresholds cannot protect
+  //     decisions in a prose-heavy plan. Require a dedicated opt-in to remove
+  //     any existing decision ID, even when allowShrink is true.
+  const removedDecisionIds = droppedDecisionIds(currentParsed, proposed);
+  if (removedDecisionIds.length > 0 && !opts.allowDecisionDrop) {
+    return {
+      newBody: null,
+      value: { ok: false, code: 'decisions_would_be_dropped', droppedDecisionIds: removedDecisionIds },
+    };
+  }
+
+  // 1c. Mass-deletion guard (EI-83 / audit P-040) — a body that shrinks the
   //     plan past the byte ratio OR drops most of its items/decisions is far
   //     more often a truncated paste or a wrong-plan write than an intentional
   //     rewrite. Require the caller to say so explicitly via allowShrink.
@@ -429,7 +467,7 @@ export async function evaluateSetContent(
     if (shrink) return { newBody: null, value: shrink };
   }
 
-  // 1c. Status-regression guard (EI-18756269998422483) — a whole-document
+  // 1d. Status-regression guard (EI-18756269998422483) — a whole-document
   //     rewriter (set-content / set-content-chunk) with NO CAS baseline (no
   //     expectedVersion/expectedHash to prove the caller's copy is fresh) that
   //     moves an item BACKWARD off a terminal (done/dropped) status is almost
@@ -653,6 +691,7 @@ export default defineTool({
           expectedVersion: args.expectedVersion,
           meta,
           allowShrink: args.allowShrink,
+          allowDecisionDrop: args.allowDecisionDrop,
           wholeDocumentRewrite: true,
           allowStatusRegression: args.allowStatusRegression,
         }),
@@ -700,6 +739,11 @@ export default defineTool({
             `only the ${v.errors.length} error(s) above were INTRODUCED by this write — the plan already carried ` +
             `${v.preexistingErrors} unrelated lint error(s), which do not block it.`;
         }
+      } else if (v.code === 'decisions_would_be_dropped') {
+        payload.droppedDecisionIds = v.droppedDecisionIds;
+        payload.hint =
+          `This write would remove existing decision ID(s): ${v.droppedDecisionIds.join(', ')}. ` +
+          'Re-fetch the plan and retry with allowDecisionDrop: true only if that removal is intentional.';
       } else if (v.code === 'suspicious_shrink') {
         payload.reason = v.reason;
         payload.currentLength = v.currentLength;

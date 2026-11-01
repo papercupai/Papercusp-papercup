@@ -163,6 +163,28 @@ const run = async (args: Record<string, unknown>) =>
     }
   ).data;
 
+function installStoredBarReadinessSnapshot() {
+  const read = M.readPlanBySlug.getMockImplementation();
+  if (!read) throw new Error('plans:get fixture reader is unavailable');
+  M.readPlanBySlug.mockImplementationOnce(async (slug, opts, timings) => {
+    const plan = await read(slug, opts, timings);
+    if (!plan) return plan;
+    const state =
+      '⚠ BAR READINESS BLOCKED (2026-10-22, after decision-added): bar_snapshot_work_contract_missing, ' +
+      'bar_snapshot_vetting_missing. Next repair: Promote the BAR/spec revision into the relevant work-item contract.';
+    const next = 'Repair the server-owned adoption epoch/cohort seed on the subject plan.';
+    const raw = `**State:** ${state}\n\n**Next:** ${next}`;
+    return {
+      ...plan,
+      parsed: {
+        ...plan.parsed,
+        prose: `## Now\n\n${raw}\n`,
+        now: { state, next, raw, lineNumber: 1 },
+      },
+    };
+  });
+}
+
 beforeEach(async () => {
   resetOperatorCacheForTests();
   resetCachedReadStatsForTests();
@@ -328,6 +350,61 @@ describe('plans:get — shipReadiness', () => {
   it('rides on meta mode too, so a cheap read can still ask what is blocking', async () => {
     const result = await run({ slug: 'alpha', mode: 'meta', shipReadiness: true });
     expect(result.results[0].shipReadiness).toMatchObject({ code: 'audit_coverage_stale' });
+  });
+
+  it('labels the stored BAR repair as a dated snapshot in a Now heading read', async () => {
+    installStoredBarReadinessSnapshot();
+    const result = await run({ slug: 'stale-bar', heading: 'Now' });
+    const body = (result.results[0]!.section as { body: string }).body;
+
+    expect(body).toContain('Stored BAR readiness snapshot (last evaluated 2026-10-22)');
+    expect(body).toContain('its blocker codes and repair advice may be outdated');
+    expect(body).toContain('plans:get { slug: "stale-bar", shipReadiness: true }');
+    expect(body).toContain('Promote the BAR/spec revision into the relevant work-item contract');
+    expect(result.results[0]).not.toHaveProperty('shipReadiness');
+    expect(M.resolvePlanAcceptanceGateVerdict).not.toHaveBeenCalled();
+  });
+
+  it('keeps a stored Now snapshot distinct from a requested current proof-readiness verdict', async () => {
+    installStoredBarReadinessSnapshot();
+    const evaluate = M.resolvePlanAcceptanceGateVerdict.getMockImplementation();
+    if (!evaluate) throw new Error('acceptance gate fixture is unavailable');
+    const current = (await evaluate({ planSlug: 'stale-bar' }))[0]!;
+    const snapshot = current.acceptanceBarContractSnapshot as Record<string, unknown>;
+    M.resolvePlanAcceptanceGateVerdict.mockResolvedValueOnce([{
+      ...current,
+      acceptanceBarContractSnapshot: {
+        ...snapshot,
+        grading: { vetting: { state: 'current' } },
+        readiness: {
+          state: 'blocked',
+          codes: ['bar_snapshot_proof_missing'],
+          nextRepair: {
+            code: 'bar_snapshot_proof_missing',
+            barKey: 'R-1',
+            action: 'Bind evidence at the current spec revision on the declared evidence plane.',
+          },
+        },
+      },
+    } as never]);
+
+    const result = await run({ slug: 'stale-bar', heading: 'Now', shipReadiness: true });
+    const body = (result.results[0]!.section as { body: string }).body;
+    const shipReadiness = result.results[0]!.shipReadiness as {
+      acceptanceBarContractSnapshot: {
+        grading: { vetting: { state: string } };
+        readiness: { nextRepair: { code: string; barKey: string; action: string } };
+      };
+    };
+
+    expect(body).toContain('Stored BAR readiness snapshot (last evaluated 2026-10-22)');
+    expect(body).toContain('Promote the BAR/spec revision into the relevant work-item contract');
+    expect(shipReadiness.acceptanceBarContractSnapshot.grading.vetting.state).toBe('current');
+    expect(shipReadiness.acceptanceBarContractSnapshot.readiness.nextRepair).toEqual({
+      code: 'bar_snapshot_proof_missing',
+      barKey: 'R-1',
+      action: 'Bind evidence at the current spec revision on the declared evidence plane.',
+    });
   });
 
   it('evaluates the gate PER CALL even though the plan read is cached', async () => {

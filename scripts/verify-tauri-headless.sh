@@ -1290,7 +1290,7 @@ preflight_required_gpu_gl() {
       return 1
       ;;
   esac
-  log "GPU GL preflight passed before native preparation: $renderer"
+  printf '\n[verify-tauri-headless] GPU GL preflight passed before native preparation: %s\n' "$renderer" >&2
 }
 
 # EI-27529057401533862: a live Xvfb alone cannot activate native windows.

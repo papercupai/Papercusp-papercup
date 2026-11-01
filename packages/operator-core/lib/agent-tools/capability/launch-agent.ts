@@ -2926,12 +2926,10 @@ export default defineTool({
                   // fleet:kill's terminal_pids path.
               captureTerminalPid: true,
               displayOverride: memberSpecs[i]?.display ?? args.display,
-              // Resume/fork must stay on a process-per-window emulator even
-              // when TERMINAL explicitly names a client-server terminal such as
-              // gnome-terminal: its VTE handoff can drop the reattached managed
-              // pty host. Fresh launches still honor an explicit terminal and
-              // use process-per-window only as the auto-detection fallback.
-              preferProcessPerWindow: isResume || !process.env.TERMINAL?.trim(),
+              // Desktop resume/fork keeps the owner's standard GNOME Terminal
+              // placement. The process-per-window override is reserved for fresh
+              // launches with no explicit terminal preference.
+              preferProcessPerWindow: !isResume && !process.env.TERMINAL?.trim(),
             });
           },
           );

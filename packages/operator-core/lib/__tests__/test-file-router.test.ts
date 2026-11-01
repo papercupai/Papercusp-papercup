@@ -1021,6 +1021,9 @@ describe('test-files router', () => {
         for (const file of files) writeFileSync(join(root, file), '');
         const code = await main(files, {
           repoRoot: root,
+          // This test measures source-map routing with synthetic child outputs;
+          // those fixtures do not produce native custody evidence.
+          createRouterProofCustodyImpl: () => null,
           restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
           runVitestListImpl: async (_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
             expect(options.env.NODE_ENV).toBe('test');
@@ -1254,7 +1257,7 @@ describe('workspace test launcher — explicit paths use the owning-config guard
     const packageJson = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
       scripts?: { test?: string };
     };
-    expect(packageJson.scripts?.test).toBe('node ../../scripts/workspace-test.mjs --passWithNoTests');
+    expect(packageJson.scripts?.test?.split(' && ')[0]).toBe('node ../../scripts/workspace-test.mjs --passWithNoTests');
   });
 
   it('rewrites package-relative focused paths when npm runs the launcher from the workspace cwd', () => {

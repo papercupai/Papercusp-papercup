@@ -24,6 +24,9 @@ const NEW_TOPIC_DESC =
 /** The self-improvement loop's capture/triage lens (papercusp-self-improvement-loop-2026-06-04, D-003). */
 export const IMPROVEMENT_TOPIC = 'papercusp-improvement';
 
+/** Opt-in audience for shared severe-event alarms and recovery notices. */
+export const SEVERE_EVENTS_TOPIC = 'severe-events';
+
 /**
  * Code-seeded built-in topics. They exist on a fresh migrate (no manual create),
  * are idempotent (prefer-existing create), and never broadcast new_topic (the
@@ -36,6 +39,12 @@ const BUILTIN_TOPICS: ReadonlyArray<{ slug: string; title: string; description: 
     title: 'Papercusp improvement',
     description:
       'Captured papercusp DX / tooling / code improvements an agent discovered — the capture + triage lens for the self-improvement loop. File a work_item (issue today) here when you hit a papercusp friction.',
+  },
+  {
+    slug: SEVERE_EVENTS_TOPIC,
+    title: 'Severe events',
+    description:
+      'Shared system severe-event alarms and recovery notices. Subscribe for inbox delivery; coord:conditions remains the workspace-wide current-state view.',
   },
   {
     slug: 'coord-dx',

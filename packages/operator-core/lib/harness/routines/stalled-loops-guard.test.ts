@@ -10,6 +10,7 @@ import { turnsStalledFloorMs, type LoopStatus } from './loop';
 import { evaluateSilentHalt } from './silent-halt-reconcile';
 import type { StalledLoopHostReading } from '../../events/await/host-recovery-eligibility';
 import { findLiveHostAsync, type PsuPtyHost } from '../../events/await/psu-pty-discovery';
+import type { LatestLoopTransitionRead } from './loop-transition-log';
 
 const carryMocks = vi.hoisted(() => ({ build: vi.fn(), inject: vi.fn(), mark: vi.fn() }));
 vi.mock('../../carry-respawn', async (importOriginal) => ({
@@ -80,6 +81,7 @@ describe('stalled host native carry recovery', () => {
 // `broadcast.mock.calls[0][0]` below is a type error — and vitest is type-blind, so a green test
 // run cannot see it. It surfaces only at `lint:tsc`, i.e. at the fleet gate.
 type BroadcastFn = NonNullable<StalledLoopsSweepDeps['broadcast']>;
+type ReadTransitionCyclesFn = NonNullable<StalledLoopsSweepDeps['readTransitionCycles']>;
 // Same reason as BroadcastFn above: the re-arm assertions read `rearm.mock.calls[0][1]`, which
 // is a type error against a bare `vi.fn(async () => {})`'s zero-arg call tuple — invisible to a
 // green vitest run, red at lint:tsc i.e. at the fleet gate (EI-19406534159939583 hit exactly it).
@@ -108,6 +110,7 @@ function fakeSql(rows: Array<{ id: string; target_owner_id: string }>) {
     if (/WITH active_loops AS/i.test(query)) {
       return Promise.resolve([{ active_loops: 0, parked_loops: 0, parked_zero_tool_3h: 0, owner_sample: [] }]);
     }
+    if (/routine_loop_transitions/i.test(query)) return Promise.resolve([]);
     if (/SELECT/i.test(query)) return Promise.resolve(rows);
     return Promise.resolve([]);
   }) as unknown as {
@@ -380,6 +383,56 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     );
     expect(broadcast.mock.calls[0]?.[0].summary).toContain('advisory only');
   });
+
+  it.each([
+    { scheduledDelaySec: 60, postSettleDelaySec: 300, expected: true },
+    // The reported 59-minute cycle was scheduled as a gate backoff; its 36s excess is below
+    // the four-interval advisory floor and must remain quiet.
+    { scheduledDelaySec: 3_521, postSettleDelaySec: 3_557, expected: false },
+  ])(
+    'uses completed-cycle schedule evidence without flagging intentional backoff (%j)',
+    async ({ scheduledDelaySec, postSettleDelaySec, expected }) => {
+      const sql = fakeSql([{ id: 'rt-cycle', target_owner_id: 'su-cycle' }]);
+      const getStatuses = vi.fn(async () => new Map([
+        ['su-cycle', status({ ownerId: 'su-cycle', turnsStalled: false, firesSinceArm: 1,
+          armedAt: '2026-10-26T05:48:02.133Z' })],
+      ]));
+      const cycleRead: LatestLoopTransitionRead = {
+        status: 'found',
+        transition: {
+          at: '2026-10-26T14:16:10.315Z', event: 'parked', actor: 'claim-due-routine',
+          newNextFireAt: null, intervalSec: 60, detail: null,
+        },
+        cycle: {
+          phase: 'turn-in-flight', turnInFlightSec: 0,
+          lastTurn: {
+            parkedAt: '2026-10-26T13:16:35.296Z', settledAt: '2026-10-26T13:16:53.683Z',
+            turnSec: 18, settledBy: 'reconcile-loop-routines', settledVia: 'gate-backoff',
+            scheduledDelaySec, postSettleDelaySec,
+          },
+          basis: 'test cycle',
+        },
+      };
+      const readTransitionCycles = vi.fn<ReadTransitionCyclesFn>(
+        async () => new Map([['rt-cycle', cycleRead]]),
+      );
+      const autoPause = vi.fn(async () => {});
+      const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        { getStatuses, readTransitionCycles, autoPause, broadcast, probeReachability: reach(false) },
+      );
+
+      expect(res.cadenceDrift).toEqual(expected ? ['su-cycle'] : []);
+      expect(autoPause).not.toHaveBeenCalled();
+      expect(broadcast).toHaveBeenCalledTimes(expected ? 1 : 0);
+      if (expected) {
+        expect(broadcast.mock.calls[0]?.[0].body).toContain(`scheduledDelaySec=${scheduledDelaySec}`);
+        expect(broadcast.mock.calls[0]?.[0].body).toContain(`postSettleDelaySec=${postSettleDelaySec}`);
+      }
+    },
+  );
 
   it('keeps cadence-drift-only healthy owners advisory beside true turn-stalled owners', async () => {
     const stalledOwners = Array.from({ length: 5 }, (_, i) => `su-turn-stalled-${i + 1}`);

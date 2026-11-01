@@ -9,8 +9,9 @@
  * into current state: every key whose latest alarm is NEWER than its latest
  * resolution is OPEN; everything else is resolved.
  *
- * Read-only, low-tier (`coord:read`): the underlying rows are `to:['*']`
- * broadcasts every agent already sees in its inbox.
+ * Read-only, low-tier (`coord:read`): the underlying condition rows are read
+ * from the shared event log, independent of whether the caller subscribes to
+ * the severe-events topic or received a particular alarm in its inbox.
  */
 
 import { z } from "zod";

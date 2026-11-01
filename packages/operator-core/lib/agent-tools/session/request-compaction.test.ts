@@ -529,8 +529,11 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     it('reports a host REFUSAL with its reason, never as an unreachable socket', async () => {
       findLiveHost.mockReturnValue(carryHost);
       injectIntoHost.mockResolvedValue({ ok: false, confirmation: 'acked', reason: 'stale-carry-target' });
-      const b = body(await call({ focus: 'finish the fence fix' }));
+      const out = await call({ focus: 'finish the fence fix' });
+      expect(out.isError).toBe(true);
+      const b = body(out);
       expect(b.ok).toBe(false);
+      expect(b.error).toBe('carry_respawn_refused');
       expect(b.hostRefusalReason).toBe('stale-carry-target');
       expect(b.hostConfirmation).toBe('acked');
       expect(b.note).toContain('REFUSED');
@@ -545,8 +548,11 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
         confirmation: 'error',
         transportErrorCode: 'ECONNREFUSED',
       });
-      const b = body(await call({ focus: 'finish the fence fix' }));
+      const out = await call({ focus: 'finish the fence fix' });
+      expect(out.isError).toBe(true);
+      const b = body(out);
       expect(b.ok).toBe(false);
+      expect(b.error).toBe('carry_respawn_unreachable');
       expect(b.hostConfirmation).toBe('error');
       expect(b.hostTransportErrorCode).toBe('ECONNREFUSED');
       expect(b.note).toContain('failed before a host acknowledgement');
@@ -557,8 +563,11 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     it('reports the socket acknowledgement timeout and preserves the ambiguous outcome', async () => {
       findLiveHost.mockReturnValue(carryHost);
       injectIntoHost.mockResolvedValue({ ok: false, confirmation: 'timeout' });
-      const b = body(await call({ focus: 'finish the fence fix' }));
+      const out = await call({ focus: 'finish the fence fix' });
+      expect(out.isError).toBe(true);
+      const b = body(out);
       expect(b.ok).toBe(false);
+      expect(b.error).toBe('carry_respawn_ack_timeout');
       expect(b).not.toHaveProperty('hostRefusalReason');
       expect(b.hostConfirmation).toBe('timeout');
       expect(b.note).toContain('No acknowledgement arrived from the session TUI host socket');

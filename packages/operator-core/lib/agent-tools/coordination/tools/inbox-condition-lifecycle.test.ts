@@ -24,6 +24,7 @@ const M = vi.hoisted(() => ({
   getPresence: vi.fn(async (): Promise<unknown> => null),
   claims: vi.fn(async (): Promise<Array<{ workItemId: string }>> => []),
   fleets: vi.fn(async () => new Map<string, { fleetSlug: string }>()),
+  latestConditionEnvelope: vi.fn(async (_key: string) => null as Record<string, unknown> | null),
 }));
 
 vi.mock("../identity", async (importOriginal) => ({
@@ -42,6 +43,7 @@ vi.mock("../messages", () => ({
   readInbox: M.readInbox,
   drainAndDeliverUserMailbox: vi.fn(async () => {}),
 }));
+vi.mock("./conditions", () => ({ readLatestConditionEnvelope: M.latestConditionEnvelope }));
 vi.mock("../presence", () => ({
   heartbeatPresence: vi.fn(async () => {}),
   getPresence: M.getPresence,
@@ -120,6 +122,7 @@ beforeEach(() => {
   M.getPresence.mockImplementation(async () => null);
   M.claims.mockImplementation(async () => []);
   M.fleets.mockImplementation(async () => new Map());
+  M.latestConditionEnvelope.mockImplementation(async () => null);
 });
 
 describe('native notice scope preserves the public inbox view', () => {
@@ -240,6 +243,41 @@ describe("coord:inbox handler (end-to-end annotation)", () => {
     const gotRes = out.entries.find((e) => e.msg_id === r.msg_id)!;
     expect(gotAlarm).toMatchObject({ resolved: true, resolved_at: r.ts });
     expect(gotRes.resolved).toBeUndefined();
+    expect(M.latestConditionEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("annotates a historical alarm when its topic-only resolution was not delivered to this reader", async () => {
+    const key = "git-sync-stall:legacy-reader";
+    const a = alarm("2026-07-01T10:00:00.000Z", key, { to: ["owner-a"], audience: ["*"] });
+    const topicResolution = {
+      ...resolution("2026-07-01T12:00:00.000Z", key),
+      to: ["topic-subscriber"],
+      audience: ["@topic:severe-events"],
+    };
+    M.readInbox.mockResolvedValue([a]);
+    M.latestConditionEnvelope.mockResolvedValue(topicResolution);
+
+    const out = await callInbox();
+
+    expect(out.entries).toHaveLength(1);
+    expect(out.entries[0]).toMatchObject({ resolved: true, resolved_at: topicResolution.ts });
+    expect(M.latestConditionEnvelope).toHaveBeenCalledTimes(1);
+    expect(M.latestConditionEnvelope).toHaveBeenCalledWith(key);
+  });
+
+  it("keeps serving the inbox if the exact-key lifecycle lookup fails", async () => {
+    const a = alarm("2026-07-01T10:00:00.000Z", "git-sync-stall:lookup-failure", { to: ["owner-a"] });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    M.readInbox.mockResolvedValue([a]);
+    M.latestConditionEnvelope.mockRejectedValueOnce(new Error("pg unavailable"));
+    try {
+      const out = await callInbox();
+      expect(out.entries[0]).toMatchObject({ msg_id: a.msg_id });
+      expect(out.entries[0]!.resolved).toBeUndefined();
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("scans resolutions over the FULL read: alarm outside the limit window is not the annotated one, but an in-window alarm resolves against an in-window resolution with limit=1 keeping only the newest", async () => {

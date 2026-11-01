@@ -129,6 +129,25 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
     expect(instructions).toEqual([]);
   });
 
+  it('treats "at grade time" as a noun phrase while preserving an explicit time rating', () => {
+    const incidental = extractRubricRatingInstructions(
+      'timing',
+      'method',
+      'This bar grades broken while the share is below the floor at grade time, alarm or not.',
+    );
+    expect(incidental).toEqual([]);
+
+    const explicit = validateRubricRatingVocabulary(
+      [criterion({ key: 'time-rating', method: 'Grade time if the check runs in the requested window.' })],
+      ['time'],
+    );
+    expect(explicit).toMatchObject({
+      ok: true,
+      instructions: [{ rating: 'time' }],
+      violations: [],
+    });
+  });
+
   it('ignores ordinary prose using grade instead of a rating directive', () => {
     const method = 'Guarantee, and what to grade instead: it is STRUCTURAL.';
 

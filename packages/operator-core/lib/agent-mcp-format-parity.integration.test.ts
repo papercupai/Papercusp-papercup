@@ -114,6 +114,9 @@ afterEach(() => {
 describe('production native extension compact corpus over real HTTP and UDS', () => {
   it('keeps compact model text, metadata, schema validation and tokenizer counts equal', async () => {
     h.home = await mkdtemp(join(tmpdir(), 'native-format-'));
+    // Discovery's writer follows the instance home; the client below names
+    // this private user home explicitly. Keep both on the same fixture root.
+    vi.stubEnv('PAPERCUSP_HOME', join(h.home, '.papercusp'));
     vi.stubEnv('WSL_INTEROP', '');
     vi.stubEnv('WSL_DISTRO_NAME', '');
     vi.stubEnv('PAPERCUSP_IPC_TCP', '');
@@ -166,7 +169,7 @@ describe('production native extension compact corpus over real HTTP and UDS', ()
         const tools = new Map<string, Tool>();
         await registerNativeMcp({
           registerTool: tool => { tools.set(tool.name, tool); },
-          on: (_name, fn) => { shutdown.push(fn); },
+          on: (name, fn) => { if (name === 'session_shutdown') shutdown.push(fn as () => Promise<void>); },
         }, { papercuspNativeMcp: {
           version: 1, mode, home: h.home, servers: { fixture: { type: 'http', url } },
         } });

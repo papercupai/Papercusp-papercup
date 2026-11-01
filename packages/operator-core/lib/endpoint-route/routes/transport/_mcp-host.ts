@@ -2788,6 +2788,56 @@ export async function resolveMcpTargetAfterPluginHostWarm(
 
 type McpProgressNotification = { method: string; params: Record<string, unknown> };
 
+const MCP_PROGRESS_HEARTBEAT_INTERVAL_MS = 15_000;
+
+/**
+ * Keep a long MCP request visibly alive when the client opted into progress but
+ * the tool handler has no progress-aware phases of its own. The counter is a
+ * heartbeat sequence, not a completion percentage, so `total` is intentionally
+ * omitted. The request wrapper stops this as soon as it returns or times out.
+ */
+function startMcpProgressHeartbeat(args: {
+  toolName: string;
+  startedAtMs: number;
+  progressToken: string | number | undefined;
+  sendNotification: ((notification: McpProgressNotification) => Promise<void>) | undefined;
+}): () => void {
+  const sendNotification = args.sendNotification;
+  if (args.progressToken === undefined || !sendNotification) return () => {};
+
+  let progress = 0;
+  let stopped = false;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    if (timer !== undefined) clearInterval(timer);
+  };
+  timer = setInterval(() => {
+    progress += 1;
+    const elapsedSec = Math.max(1, Math.floor((Date.now() - args.startedAtMs) / 1_000));
+    const notification: McpProgressNotification = {
+      method: 'notifications/progress',
+      params: {
+        progressToken: args.progressToken,
+        progress,
+        message: `Tool "${args.toolName}" is still running (${elapsedSec}s elapsed).`,
+      },
+    };
+    try {
+      void sendNotification(notification).catch((error: unknown) => {
+        stop();
+        console.warn(`[mcp-tool] progress heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    } catch (error) {
+      stop();
+      console.warn(`[mcp-tool] progress heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, MCP_PROGRESS_HEARTBEAT_INTERVAL_MS);
+  (timer as { unref?: () => void }).unref?.();
+  return stop;
+}
+
 function nativeMcpProgressBridge(
   progressToken: string | number | undefined,
   sendNotification: ((notification: McpProgressNotification) => Promise<void>) | undefined,
@@ -6710,6 +6760,25 @@ function withMcpRequestDeadline<Req, Res>(
     const startedAtMs = Date.now();
     const startedAtMonotonicMs = performance.now();
     const traceId = resolveMcpRequestTraceId(extra);
+    const extraObject = extra !== null && typeof extra === 'object'
+      ? extra as Record<string, unknown>
+      : null;
+    const requestedProgressToken = (req as {
+      params?: { _meta?: { progressToken?: unknown } };
+    } | null)?.params?._meta?.progressToken;
+    const progressToken = typeof requestedProgressToken === 'string' ||
+      (typeof requestedProgressToken === 'number' && Number.isFinite(requestedProgressToken))
+      ? requestedProgressToken
+      : undefined;
+    const sendNotification = typeof extraObject?.sendNotification === 'function'
+      ? extraObject.sendNotification as (notification: McpProgressNotification) => Promise<void>
+      : undefined;
+    const stopProgressHeartbeat = startMcpProgressHeartbeat({
+      toolName,
+      startedAtMs,
+      progressToken,
+      sendNotification,
+    });
     const fallbackTimeoutResult = (): McpCallResult => {
       const deadlineMs = requestDeadline.durationMs;
       logMcpRequestTrace({
@@ -6735,7 +6804,6 @@ function withMcpRequestDeadline<Req, Res>(
       effectiveMcpDeadlineMs(lookupByMcpName(toolName)?.timeoutSec),
       () => timeoutFactory(),
     );
-    const extraObject = extra !== null && typeof extra === 'object' ? extra : null;
     if (extraObject) mcpRequestDeadlineByExtra.set(extraObject, requestDeadline);
     const work = Promise.resolve().then(() => handler(req, extra));
     let workSettled = false;
@@ -6754,6 +6822,7 @@ function withMcpRequestDeadline<Req, Res>(
     } finally {
       if (workSettled || !requestDeadline.didExpire) cleanup();
       requestDeadline.dispose();
+      stopProgressHeartbeat();
     }
   };
 }

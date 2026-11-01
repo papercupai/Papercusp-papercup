@@ -182,6 +182,31 @@ describe('plans:set-content-chunk — begin → append → commit round-trip', (
 });
 
 describe('plans:set-content-chunk — failure branches', () => {
+  it('requires an explicit decision-drop override and keeps the draft available for retry', async () => {
+    const before = seedBody().replace(
+      '## Decisions\n',
+      '## Decisions\n\n### D-001 — Preserve this ruling\nThis decision must not be silently removed.\n',
+    );
+    await cleanupPlans(admin, WS, HARNESS);
+    await seedPlan(admin, WS, HARNESS, SLUG, before);
+
+    const begin = await runChunk({ op: 'begin', chunk: NEW_HEAD + NEW_TAIL });
+    const draftId = String(begin.data.draftId);
+    const refused = await runChunk({ op: 'commit', draftId });
+
+    expect(refused.isError).toBe(true);
+    expect(failCode(refused.data)).toBe('decisions_would_be_dropped');
+    expect(refused.data.droppedDecisionIds).toEqual(['D-001']);
+    expect(await liveContent()).toBe(before);
+    expect(await revisionCount()).toBe(0);
+
+    const allowed = await runChunk({ op: 'commit', draftId, allowDecisionDrop: true });
+    expect(allowed.isError).toBe(false);
+    expect(allowed.data.ok).toBe(true);
+    expect(await liveContent()).not.toContain('D-001');
+    expect(await revisionCount()).toBe(1);
+  });
+
   it('commit rejects a raw terminal status transition without changing the plan', async () => {
     const before = await liveContent();
     const begin = await runChunk({ op: 'begin', chunk: NEW_HEAD.replace('status: active', 'status: shipped') });

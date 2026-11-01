@@ -246,7 +246,11 @@ export function makeProdParkDoorDeps(identity: import('../agent-tools/coordinati
           ...(input.requestKey ? { requestKey: input.requestKey } : {}),
         },
         identity,
-        ...(input.onAccepted ? { onAccepted: (accepted) => input.onAccepted!(accepted.conversation_id) } : {}),
+        {
+          ...(input.onAccepted
+            ? { onAccepted: (accepted) => input.onAccepted!(accepted.conversation_id) }
+            : {}),
+        },
       );
       if ('error' in res) throw new Error(`decision-review consult refused: ${res.error}`);
       const consultId = typeof res.conversation_id === 'string' ? res.conversation_id : null;

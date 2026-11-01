@@ -660,6 +660,60 @@ esac
     }
   });
 
+  it('trusts JOB END over a stale-active snapshot for a systemd unit marked not-found', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-missing-unit-end-marker-'));
+    const previousPath = process.env.PATH;
+    try {
+      const fakeBin = join(stateDir, 'bin');
+      mkdirSync(fakeBin, { recursive: true });
+      const fakeSystemctl = join(fakeBin, 'systemctl');
+      const serviceUnit = 'pc-tskcarry1234.service';
+      writeFileSync(
+        fakeSystemctl,
+        '#!/bin/sh\nfor unit; do :; done\nprintf \"Id=%s\\nLoadState=not-found\\nActiveState=active\\nResult=success\\nExecMainCode=0\\nExecMainStatus=0\\n\" \"$unit\"\n',
+      );
+      chmodSync(fakeSystemctl, 0o755);
+
+      const logPath = join(stateDir, 'terminal.log');
+      writeFileSync(
+        logPath,
+        'completed output\n' +
+          formatJobLogEndMarker('completed', 0, Date.UTC(2026, 9, 26, 16, 57, 48)),
+      );
+      store.getTask.mockResolvedValue(taskRow({
+        taskId: 'tskcarry1234',
+        rootTaskId: 'tskcarry1234',
+        pid: null,
+        processIdentity: null,
+        cgroupPath: null,
+        scopeUnit: serviceUnit,
+        logPath,
+      }));
+      jobs.getJob.mockReturnValue(null);
+      process.env.PATH = fakeBin + ':' + (previousPath ?? '');
+
+      const result = await bashOutput.handler({ task_id: 'tskcarry1234' }, ctx('ws-current', stateDir));
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+      expect(result.isError).toBeUndefined();
+      expect(payload).toMatchObject({
+        ok: true,
+        bash_id: 'bash-carry-1',
+        task_id: 'tskcarry1234',
+        status: 'completed',
+        exit_code: 0,
+        running: false,
+        recovered_from_log_marker: true,
+      });
+      expect(payload).not.toHaveProperty('recovered_from_scope');
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it('uses a failed JOB END marker to resolve a stale nonterminal ledger row as an error', async () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'bash-stale-marker-failure-'));
     const logPath = join(stateDir, 'stale.log');

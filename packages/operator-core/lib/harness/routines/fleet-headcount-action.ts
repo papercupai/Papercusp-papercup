@@ -807,6 +807,7 @@ async function measureFleetRefillCapacity(args: {
   fleetSlug: string;
   harness: string;
   requested: number;
+  gatewayRouted: boolean;
 }): Promise<FleetRefillCapacityDecision> {
   const requested = Math.max(0, Math.floor(args.requested));
   try {
@@ -858,6 +859,25 @@ async function measureFleetRefillCapacity(args: {
         reason: typeof payload.reason === 'string'
           ? payload.reason
           : 'fleet provider capacity is unknown; refusing an unmeasured refill',
+      };
+    }
+    // `recommendedHeadroom` deliberately preserves a small tier-one floor when
+    // the pool is exhausted, so a human placement round can still attempt the
+    // highest-priority work. An unattended headcount top-up must not inherit
+    // that floor: doing so repeatedly creates gateway-routed members that can
+    // only fail until an account becomes serviceable again. Keep the separate
+    // `dispatchBudget`/headroom meanings intact and bind this automated caller
+    // to the explicit pool-exhaustion verdict. Direct system credentials bypass
+    // the gateway pool and must remain eligible.
+    if (payload.poolExhausted === true && args.gatewayRouted) {
+      const advice = typeof payload.advice === 'string'
+        ? payload.advice
+        : 'the gateway has no serviceable account';
+      return {
+        allowance: 0,
+        measured: true,
+        provider,
+        reason: `${provider} gateway account pool is exhausted; automated refill is held until serviceability returns: ${advice}`,
       };
     }
     const recommended = Number(payload.recommendedHeadroom);
@@ -1307,6 +1327,27 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     const requestedWaveCount = pruneOwnerId ? 1 : assessment.spawnCount;
     let waveCount = requestedWaveCount;
 
+    // Resolve the actual future launch profile before measuring capacity. Goal
+    // profiles can override the fleet recipe's account route, and the pool
+    // exhaustion gate below only applies when those members use the gateway.
+    const goalRole = await resolveFleetHeadcountLaunchRoleForFleet(
+      workspaceId,
+      fleetSlug,
+      launcherOwnerId,
+    );
+    const requestedGoalLaunch = await resolveGoalLaunch({
+      workspaceId,
+      launcherOwnerId,
+      // D-016 (WI-38048): `config.role` is psu `--role`, a persona — NOT a launch
+      // slot, so it must not key the goal's profiles. The slot above is derived
+      // from durable goal context instead.
+      goalRole,
+      fleetSlug,
+      count: requestedWaveCount,
+    });
+    const requestedLaunchProfile = resolveGovernorMemberLaunchProfile(requestedGoalLaunch.effective, config);
+    const gatewayRouted = requestedLaunchProfile.account !== 'default' && requestedLaunchProfile.account !== 'system';
+
     // Capacity is measured before claiming the launch slot or pruning a member.
     // A respawn with no provider headroom must leave the existing member alive;
     // a bulk refill is reduced to the measured allowance rather than consuming
@@ -1316,6 +1357,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       fleetSlug,
       harness: config.harness,
       requested: requestedWaveCount,
+      gatewayRouted,
     });
     const residualShortfall = Math.max(0, requestedWaveCount - capacityDecision.allowance);
     const capacitySnapshot: FleetLaunchCapacitySnapshot = {
@@ -1395,21 +1437,17 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     // behalf, so the goal it serves is the leader's goal context (D-008). The
     // launch slot is inferred from the goal's durable drainFleet declaration;
     // it is not present on the fleet registry/config rows.
-    const goalRole = await resolveFleetHeadcountLaunchRoleForFleet(
-      workspaceId,
-      fleetSlug,
-      launcherOwnerId,
-    );
-    const goalLaunch = await resolveGoalLaunch({
-      workspaceId,
-      launcherOwnerId,
-      // D-016 (WI-38048): `config.role` is psu `--role`, a persona — NOT a launch
-      // slot, so it must not key the goal's profiles. The slot above is derived
-      // from durable goal context instead.
-      goalRole,
-      fleetSlug,
-      count: waveCount,
-    });
+    // Capacity can shrink a bulk wave. Re-resolve only in that case so a
+    // count-sensitive goal profile still matches the members actually opened.
+    const goalLaunch = waveCount === requestedWaveCount
+      ? requestedGoalLaunch
+      : await resolveGoalLaunch({
+          workspaceId,
+          launcherOwnerId,
+          goalRole,
+          fleetSlug,
+          count: waveCount,
+        });
     if (goalLaunch.refusal) {
       // Recorded as a failed attempt rather than thrown: the governor must keep
       // running (the fleet may shrink back under the ceiling on its own), and the

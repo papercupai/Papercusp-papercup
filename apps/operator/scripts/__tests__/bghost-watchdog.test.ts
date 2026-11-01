@@ -631,7 +631,7 @@ describe('bghost-watchdog — journald-independent freeze signal (EI-2434)', () 
   });
 
   describe('alertFleet — best-effort fleet-wide broadcast (WI-3630)', () => {
-    it('inserts into coord_event_log via psql -v bind-variables with the SQL on STDIN (never raw string interpolation)', async () => {
+    it('inserts a topic-routed coord_event_log row with active subscribers resolved in the same SQL statement', async () => {
       const calls: Array<{ cmd: string; args: string[]; opts?: { stdin?: string } }> = [];
       const sh = async (cmd: string, args: string[], opts?: { stdin?: string }) => {
         calls.push({ cmd, args, opts });
@@ -647,9 +647,21 @@ describe('bghost-watchdog — journald-independent freeze signal (EI-2434)', () 
       const jsonBodyArg = calls[0].args.find((a) => a.startsWith('jsonbody='));
       expect(jsonBodyArg).toBeDefined();
       const parsed = JSON.parse(jsonBodyArg!.slice('jsonbody='.length));
-      expect(parsed).toMatchObject({ from: 'system-watchdog', to: ['*'], kind: 'message', summary: 'test alert body', category: 'severe-event' });
+      expect(parsed).toMatchObject({
+        from: 'system-watchdog',
+        to: [],
+        audience: ['@topic:severe-events'],
+        kind: 'message',
+        summary: 'test alert body',
+        category: 'severe-event',
+      });
       const sql = calls[0].opts?.stdin ?? '';
       expect(sql).toContain('harness_shared.coord_event_log');
+      expect(sql).toContain('harness_shared.coord_entity_subscriptions');
+      expect(sql).toContain("target_ref = 'severe-events'");
+      expect(sql).toContain('cancelled_at IS NULL');
+      expect(sql).toContain('expires_ts IS NULL OR expires_ts > now()');
+      expect(sql).toContain("jsonb_set(:'jsonbody'::jsonb, '{to}', recipients.ids, true)");
       expect(sql).not.toContain('test alert body'); // never raw-interpolated into the SQL text itself
     });
 

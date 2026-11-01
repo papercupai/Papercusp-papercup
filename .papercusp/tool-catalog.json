@@ -23633,7 +23633,7 @@
           "POST"
         ]
       },
-      "description": "Edit a plan in place by exact string replace (old_string → new_string), like the file Edit tool — the surgical way to fix a citation, a line, or a paragraph without resending the whole document. old_string must match exactly once (or pass replace_all). Rejects unmatched text, lifecycle status changes, frontmatter loss, and lint failures. Records a plan revision. expectedHash is optional — the exact match is the concurrency guard.",
+      "description": "Edit a plan in place by exact string replace (old_string → new_string), like the file Edit tool — the surgical way to fix a citation, a line, or a paragraph without resending the whole document. old_string must match exactly once (or pass replace_all). Rejects unmatched text, lifecycle status changes, unapproved decision deletion, frontmatter loss, and lint failures. Records a plan revision. expectedHash is optional — the exact match is the concurrency guard.",
       "capabilities": [
         "plans:write"
       ],
@@ -25222,7 +25222,7 @@
           "POST"
         ]
       },
-      "description": "Stage a large plans:set-content rewrite through small chunks. Use begin with expectedHash, append each markdown chunk, then commit. Commit validates/lints/CAS-writes exactly like plans:set-content, refuses lifecycle status changes, and records one revision. Use this instead of plans:set-content for large plan bodies that may trip provider/tool-call limits.",
+      "description": "Stage a large plans:set-content rewrite through small chunks. Use begin with expectedHash, append each markdown chunk, then commit. Commit validates/lints/CAS-writes exactly like plans:set-content, refuses lifecycle status changes and unapproved decision deletion, and records one revision. Use this instead of plans:set-content for large plan bodies that may trip provider/tool-call limits.",
       "capabilities": [
         "plans:write"
       ],

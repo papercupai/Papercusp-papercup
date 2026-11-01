@@ -181,6 +181,8 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     // The carry-respawn sibling of launch-role-mcp-unavailable (computed kind in
     // psu-pty-host.mjs: result.ok ? 'respawn-carry-mcp-ready' : '...-unavailable').
     kind === 'respawn-carry-mcp-unavailable' ||
+    // A dropped carry is waiting on exact-child native-binding recovery; it is not delivered yet.
+    kind === 'respawn-carry-binding-recovery-pending' ||
     kind === 'busy-gate-expired' ||
     // EI-27244198558252718: an unbounded production re-arm still pending past its
     // stall interval. While a carry is pending every wake is deferred behind it, so
@@ -198,6 +200,9 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
   ) return 'failure';
 
   if (
+    // The original carry drop is already failure-classified; this is the
+    // terminal cancellation of its optional binding-recovery retry.
+    kind === 'respawn-carry-binding-recovery-cancelled' ||
     /(?:^|-)(?:delivered|written|observed|queued|scheduled|started|ready|cleared|confirmed|adopting|respawned|folded)$/.test(kind)
   ) return 'routine';
   return 'unclassified';

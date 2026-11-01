@@ -59,6 +59,12 @@ const argsSchema = z.object({
     .describe(
       'Commit rejects a body under 20% of the live plan as a probable mass deletion (`suspicious_shrink`) unless this is true. Provide on begin or commit; commit prefers the explicit value. On a suspicious_shrink rejection the draft is KEPT — re-commit with allowShrink: true if the shrink is intentional.',
     ),
+  allowDecisionDrop: z
+    .boolean()
+    .optional()
+    .describe(
+      'Commit rejects removal of an existing plan decision ID as `decisions_would_be_dropped`. Pass true only when removing the listed decisions is intentional; provide on begin or commit, with commit taking precedence.',
+    ),
   allowStatusRegression: z
     .boolean()
     .optional()
@@ -76,6 +82,7 @@ interface DraftMeta {
   expectedHash?: string;
   rationale?: string;
   allowShrink?: boolean;
+  allowDecisionDrop?: boolean;
   allowStatusRegression?: boolean;
   createdAt: string;
   updatedAt: string;
@@ -106,6 +113,7 @@ type ChunkValue =
         | 'not_found'
         | 'stale'
         | 'suspicious_shrink'
+        | 'decisions_would_be_dropped'
         | 'would_orphan_frontmatter'
         | 'lint_failed'
         | 'item_status_regression';
@@ -119,6 +127,8 @@ type ChunkValue =
       priorDecisions?: number;
       droppedItems?: number;
       droppedDecisions?: number;
+      droppedDecisionIds?: string[];
+      hint?: string;
       errors?: unknown[];
       regressions?: { id: string; from: string; to: string }[];
     }
@@ -247,6 +257,7 @@ async function createDraft(args: z.infer<typeof argsSchema>, harnessSlug: string
     ...(args.expectedHash ? { expectedHash: args.expectedHash } : {}),
     ...(args.rationale ? { rationale: args.rationale } : {}),
     ...(args.allowShrink !== undefined ? { allowShrink: args.allowShrink } : {}),
+    ...(args.allowDecisionDrop !== undefined ? { allowDecisionDrop: args.allowDecisionDrop } : {}),
     ...(args.allowStatusRegression !== undefined ? { allowStatusRegression: args.allowStatusRegression } : {}),
     createdAt: nowISO(),
     updatedAt: nowISO(),
@@ -295,6 +306,18 @@ function domainFailurePayload(v: SetContentValue, slug: string, draftId: string)
   }
   if (v.code === 'stale') {
     return { ok: false, code: 'stale', slug, draftId, currentHash: v.currentHash };
+  }
+  if (v.code === 'decisions_would_be_dropped') {
+    return {
+      ok: false,
+      code: v.code,
+      slug,
+      draftId,
+      droppedDecisionIds: v.droppedDecisionIds,
+      hint:
+        `This write would remove existing decision ID(s): ${v.droppedDecisionIds.join(', ')}. ` +
+        'Re-fetch the plan and retry with allowDecisionDrop: true only if that removal is intentional.',
+    };
   }
   if (v.code === 'lint_failed') {
     return { ok: false, code: 'lint_failed', slug, draftId, errors: v.errors };
@@ -356,8 +379,9 @@ function domainFailurePayload(v: SetContentValue, slug: string, draftId: string)
  * re-stream anyway) and not_found (no such plan to target).
  *
  * Keep it for every retryable outcome: `busy` (transient), `stale`
- * (re-commit the SAME draft with the fresh expectedHash), and
- * `suspicious_shrink` (re-commit with allowShrink: true). Abandoned
+ * (re-commit the SAME draft with the fresh expectedHash), `suspicious_shrink`
+ * (re-commit with allowShrink: true), and `decisions_would_be_dropped`
+ * (re-commit with allowDecisionDrop: true). Abandoned
  * drafts are bounded by the TTL janitor either way.
  */
 export function shouldRemoveDraftOnFailure(code: Extract<ChunkValue, { ok: false }>['code']): boolean {
@@ -367,7 +391,7 @@ export function shouldRemoveDraftOnFailure(code: Extract<ChunkValue, { ok: false
 export default defineTool({
   name: 'plans:set-content-chunk',
   description:
-    'Stage a large plans:set-content rewrite through small chunks. Use begin with expectedHash, append each markdown chunk, then commit. Commit validates/lints/CAS-writes exactly like plans:set-content, refuses lifecycle status changes, and records one revision. Use this instead of plans:set-content for large plan bodies that may trip provider/tool-call limits.',
+    'Stage a large plans:set-content rewrite through small chunks. Use begin with expectedHash, append each markdown chunk, then commit. Commit validates/lints/CAS-writes exactly like plans:set-content, refuses lifecycle status changes and unapproved decision deletion, and records one revision. Use this instead of plans:set-content for large plan bodies that may trip provider/tool-call limits.',
   guidance: {
     when:
       'Writing or rewriting a large plan body. If the plan markdown is more than a few screens, use begin → append* → commit with chunks under 24k characters instead of sending one huge plans:set-content call.',
@@ -440,6 +464,7 @@ export default defineTool({
         evaluateSetContent(current, draft.content, args.slug, args.expectedHash ?? draft.meta.expectedHash, {
           meta,
           allowShrink: args.allowShrink ?? draft.meta.allowShrink,
+          allowDecisionDrop: args.allowDecisionDrop ?? draft.meta.allowDecisionDrop,
           wholeDocumentRewrite: true,
           allowStatusRegression: args.allowStatusRegression ?? draft.meta.allowStatusRegression,
         }),

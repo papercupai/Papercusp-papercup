@@ -84,6 +84,8 @@ const h = vi.hoisted(() => {
     resultDoorGate: null as Promise<void> | null,
     resultDoorEntered: null as (() => void) | null,
     progressCalls: 0,
+    pendingEntered: null as (() => void) | null,
+    pendingResolve: null as (() => void) | null,
     resultDoorDelayMs: 0,
     resultDoorCalls: 0,
     resultDoorRequestTraceIds: [] as Array<string | null>,
@@ -354,6 +356,22 @@ registerProjectedTool({
   },
 });
 
+registerProjectedTool({
+  pluginName: 'mcp-deadline-receipt-test',
+  description: 'test-only probe: remains pending until resolved, for progress-heartbeat coverage',
+  inputSchema: { type: 'object', additionalProperties: true },
+  capabilities: [],
+  agentRoles: ['scoper'],
+  timeoutSec: 60,
+  expose: { mcp: { name: 'deadlinetest:pending' } },
+  fn: async () => {
+    h.pendingEntered?.();
+    return await new Promise<{ content: Array<{ type: 'text'; text: string }> }>((resolve) => {
+      h.pendingResolve = () => resolve({ content: [{ type: 'text', text: 'pending-fixture-settled' }] });
+    });
+  },
+});
+
 const SPILL_CHECKPOINT = 'mcp-real-spill-checkpoint-evidence\n'.repeat(2_000);
 registerProjectedTool({
   pluginName: 'mcp-deadline-receipt-test',
@@ -484,6 +502,8 @@ beforeEach(() => {
   h.resultDoorGate = null;
   h.resultDoorEntered = null;
   h.progressCalls = 0;
+  h.pendingEntered = null;
+  h.pendingResolve = null;
   h.unsafeCalls.length = 0;
   h.resultDoorDelayMs = 0;
   h.scratchWriteTimings = [];
@@ -809,6 +829,49 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     expect(h.resultDoorCalls).toBe(1);
   });
 
+  it('sends bounded progress heartbeats for a pending MCP call and stops them on settlement', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    let entered!: () => void;
+    const handlerEntered = new Promise<void>((resolve) => { entered = resolve; });
+    h.pendingEntered = entered;
+    const notifications: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const progressToken = 'mcp-heartbeat-progress';
+    const extra = {
+      ...superuserExtra('&workspace=ws-test'),
+      sendNotification: async (notification: { method: string; params: Record<string, unknown> }) => {
+        notifications.push(notification);
+      },
+    };
+    const response = callTool('deadlinetest:pending', {}, extra, { progressToken });
+
+    try {
+      await handlerEntered;
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(notifications.filter((notification) => notification.method === 'notifications/progress')).toEqual([
+        expect.objectContaining({
+          method: 'notifications/progress',
+          params: expect.objectContaining({
+            progressToken,
+            progress: 1,
+            message: expect.stringContaining('still running (15s elapsed)'),
+          }),
+        }),
+      ]);
+
+      h.pendingResolve?.();
+      const result = await response;
+      expect(result.isError).not.toBe(true);
+      expect(textOf(result)).toContain('pending-fixture-settled');
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(notifications.filter((notification) => notification.method === 'notifications/progress')).toHaveLength(1);
+    } finally {
+      h.pendingResolve?.();
+      await response.catch(() => {});
+      vi.useRealTimers();
+    }
+  });
+
   it('forwards synthetic scratch progress to MCP clients that supplied a progress token', async () => {
     const progressToken = 'mcp-spill-progress';
     const traceId = '7c6a1e48-6764-4937-8b8e-f35fef8ea93d';
@@ -1057,8 +1120,8 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
         { idempotencyKey: 'idem-late-scratch-settlement' });
       await waitForSignal(enteredWrite, 'nested scratch spill write entry');
-      // Keep the real scratch write blocked until applyResultDoorAsync's 30s bounded wait expires.
-      await vi.advanceTimersByTimeAsync(30_001);
+      // Keep the real scratch write blocked until applyResultDoorAsync's 20s bounded wait expires.
+      await vi.advanceTimersByTimeAsync(20_001);
       await waitForSignal(pendingBackfillStarted, 'pending spill timeout backfill');
       expect(backfillOrder).toEqual(['timeout-start']);
 
@@ -1075,7 +1138,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       });
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(
-        '[bounded-timeout] result-door scratch spill write exceeded 30000ms',
+        '[bounded-timeout] result-door scratch spill write exceeded 20000ms',
       ));
       const initialInvocation = h.invocations.find((candidate) =>
         Boolean(candidate && typeof candidate === 'object' &&
@@ -1101,7 +1164,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         spillPending: true,
         spillErrorCode: 'ETIMEDOUT',
         spillTimeoutCount: 1,
-        spillTimeoutMs: 30_000,
+        spillTimeoutMs: 20_000,
         spillTimeoutAt: expect.any(String),
       }));
       expect(backfillOrder).toEqual(['timeout-start', 'timeout-finished']);

@@ -43,6 +43,33 @@ describe('claimability supervision delivery', () => {
   });
 });
 
+describe('member directive actuation delivery (P-030)', () => {
+  it('preserves the selected member and actuation summary through emergency shaping', () => {
+    const directiveActuation = {
+      total: 1,
+      satisfied: 0,
+      notYet: 1,
+      unprovable: 0,
+      outstanding: ['✗ NOT ACTED ON — expected `checkpoint` on EI-26022616555506152: no checkpoint receipt yet'],
+    };
+    const input = largeBrief() as Record<string, any>;
+    input.memberOwnerId = 'su-52';
+    input.members[52].directiveActuation = directiveActuation;
+    input.admissionBlocked = [{
+      itemId: 'EI-1', member: 'su-01', specId: 'fleet-spec', specRevision: 1,
+      code: 'fleet_scope_violation', occurrences: 1, action: 'revise-spec', reason: 'Member excluded.',
+    }];
+
+    const out = shapeLeaderBrief(input, 'trimmed') as Record<string, any>;
+
+    expect(out.leaderBriefProjection.emergency).toBe(true);
+    expect(out).toMatchObject({
+      memberOwnerId: 'su-52',
+      members: [{ agentId: 'su-52', directiveActuation }],
+    });
+  });
+});
+
 describe('leader checkpoint progress delivery (P-005)', () => {
   it('keeps source identity, unknown state and truncation/recovery markers in the default tier', () => {
     const recovery = { tool: 'work_items:get', args: { id: 'WI-A', harness: 'fixture' } };

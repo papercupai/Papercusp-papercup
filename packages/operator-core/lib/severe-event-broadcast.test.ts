@@ -1,8 +1,8 @@
 /**
- * severe-event-broadcast — the fleet "tell every running agent" rail + the
+ * severe-event-broadcast — the opt-in severe-events topic rail + the
  * WI-1444 condition lifecycle (conditionKey stamping + resolution supersede).
  * sendMessage mocked. Pins:
- *   • broadcastSevereEvent → to:['*'], default category 'severe-event';
+ *   • broadcastSevereEvent → to:['@topic:severe-events'], default category 'severe-event';
  *   • conditionKey stamps extra.condition_key (the inbox-annotation join key);
  *   • WI-7309: extra.emitter (pid / startedAt / uptimeSec / cwd) is stamped
  *     UNCONDITIONALLY, and the body carries a rendered trailer — so "which
@@ -51,7 +51,7 @@ beforeEach(() => {
 });
 
 describe('broadcastSevereEvent', () => {
-  it('broadcasts to every agent with the default severe-event category', async () => {
+  it('routes to the stable severe-events topic with the default category', async () => {
     const ok = await broadcastSevereEvent({ summary: 's', body: 'b' });
     expect(ok).toBe(true);
     expect(M.sendMessage).toHaveBeenCalledTimes(1);
@@ -60,7 +60,7 @@ describe('broadcastSevereEvent', () => {
       Record<string, unknown>,
     ];
     expect(identity.ownerId).toBe('system-watchdog');
-    expect(opts).toMatchObject({ to: ['*'], summary: 's', category: 'severe-event' });
+    expect(opts).toMatchObject({ to: ['@topic:severe-events'], summary: 's', category: 'severe-event' });
     // The caller's body is preserved verbatim as the PREFIX; WI-7309 appends the
     // emitter trailer after it.
     expect(String(opts.body)).toMatch(/^b/);
@@ -147,15 +147,15 @@ describe('broadcastSevereEvent', () => {
 });
 
 describe('broadcastSevereEvent — EI-10060 route leg (additive, opt-in)', () => {
-  it('no route ⇒ only the broadcast fires; no directed send, no wake', async () => {
+  it('no route ⇒ only the topic notice fires; no directed send, no wake', async () => {
     await broadcastSevereEvent({ summary: 's' });
     expect(M.sendMessage).toHaveBeenCalledTimes(1); // the broadcast alone
     expect(M.wakeRecipients).not.toHaveBeenCalled();
   });
 
-  it('a route ⇒ a SEPARATE directed send to the owner selector, in ADDITION to the unchanged broadcast', async () => {
+  it('a route ⇒ a SEPARATE directed send to the owner selector, in ADDITION to the topic notice', async () => {
     M.sendMessage
-      .mockImplementationOnce(async () => ({ to: ['*'] })) // the broadcast call
+      .mockImplementationOnce(async () => ({ to: ['topic-subscriber'] })) // the topic delivery
       .mockImplementationOnce(async () => ({ to: ['su-mug-1'] })); // the directed route call
 
     await broadcastSevereEvent({
@@ -165,7 +165,7 @@ describe('broadcastSevereEvent — EI-10060 route leg (additive, opt-in)', () =>
 
     expect(M.sendMessage).toHaveBeenCalledTimes(2);
     const [, broadcastOpts] = M.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
-    expect(broadcastOpts).toMatchObject({ to: ['*'], summary: 'health tick frozen' }); // untouched
+    expect(broadcastOpts).toMatchObject({ to: ['@topic:severe-events'], summary: 'health tick frozen' });
     const [, routeOpts] = M.sendMessage.mock.calls[1] as [unknown, Record<string, unknown>];
     // WI-37625: with the Mug tier retired (the default), a `@role:mug` route is redirected
     // to the owner — that slot is drained only by a Mug spawn, so the routed "you are on
@@ -188,7 +188,7 @@ describe('broadcastSevereEvent — EI-10060 route leg (additive, opt-in)', () =>
   it('preserves the legacy @role:mug slot when the tier is switched ON (WI-37625)', async () => {
     M.mugKettleSystemEnabled.mockResolvedValueOnce(true);
     M.sendMessage
-      .mockImplementationOnce(async () => ({ to: ['*'] }))
+      .mockImplementationOnce(async () => ({ to: ['topic-subscriber'] }))
       .mockImplementationOnce(async () => ({ to: ['su-mug-1'] }));
 
     await broadcastSevereEvent({
@@ -208,7 +208,7 @@ describe('broadcastSevereEvent — EI-10060 route leg (additive, opt-in)', () =>
    */
   it('leaves a non-Mug owner selector untouched (WI-37625)', async () => {
     M.sendMessage
-      .mockImplementationOnce(async () => ({ to: ['*'] }))
+      .mockImplementationOnce(async () => ({ to: ['topic-subscriber'] }))
       .mockImplementationOnce(async () => ({ to: ['su-leader-2'] }));
 
     await broadcastSevereEvent({
@@ -224,7 +224,7 @@ describe('broadcastSevereEvent — EI-10060 route leg (additive, opt-in)', () =>
 
   it('wakes whoever the route resolved to LIVE (env.to from sendMessage), not the raw selector', async () => {
     M.sendMessage
-      .mockImplementationOnce(async () => ({ to: ['*'] }))
+      .mockImplementationOnce(async () => ({ to: ['topic-subscriber'] }))
       .mockImplementationOnce(async () => ({ to: ['su-live-mug-session'] }));
 
     await broadcastSevereEvent({
@@ -239,7 +239,7 @@ describe('broadcastSevereEvent — EI-10060 route leg (additive, opt-in)', () =>
 
   it('a role slot with NO live holder (env.to empty — durable park only) skips the wake, no error', async () => {
     M.sendMessage
-      .mockImplementationOnce(async () => ({ to: ['*'] }))
+      .mockImplementationOnce(async () => ({ to: ['topic-subscriber'] }))
       .mockImplementationOnce(async () => ({ to: [] })); // parked, nobody live
 
     await expect(
@@ -252,7 +252,7 @@ describe('broadcastSevereEvent — EI-10060 route leg (additive, opt-in)', () =>
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       M.sendMessage
-        .mockImplementationOnce(async () => ({ to: ['*'] })) // the broadcast succeeds
+        .mockImplementationOnce(async () => ({ to: ['topic-subscriber'] })) // the topic notice succeeds
         .mockImplementationOnce(async () => {
           throw new Error('route send failed');
         });
@@ -279,7 +279,7 @@ describe('broadcastSevereEventResolved (WI-1444)', () => {
     ];
     expect(identity.ownerId).toBe('system-watchdog');
     expect(opts).toMatchObject({
-      to: ['*'],
+      to: ['@topic:severe-events'],
       category: 'severe-event-resolved',
       extra: {
         resolves_condition: 'green-stall:papercusp',
@@ -313,7 +313,7 @@ describe('broadcastSevereEventResolvedMany (EI-9030b — one coalesced all-clear
     expect(M.sendMessage).toHaveBeenCalledTimes(1); // ONE message, not one per harness
     const [, opts] = M.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
     expect(opts).toMatchObject({
-      to: ['*'],
+      to: ['@topic:severe-events'],
       category: 'severe-event-resolved',
       extra: {
         resolves_conditions: keys,

@@ -102,6 +102,12 @@ function isGradeArtifactNounPhrase(text: string, directiveStart: number, input: 
   return precedingWord !== undefined && GRADE_ARTIFACT_NOUN_MODIFIERS.has(precedingWord);
 }
 
+function isAtGradeTimeNounPhrase(text: string, directiveStart: number, input: string): boolean {
+  if (!/^time\b/i.test(input.trimStart())) return false;
+  const prefix = text.slice(Math.max(0, directiveStart - 80), directiveStart);
+  return /\bat\s+$/i.test(prefix);
+}
+
 function isRatingAllowanceNounPhrase(text: string, directiveStart: number, input: string): boolean {
   // "no healthy rating is allowed unless ..." restricts an already named
   // rating. "allowed" is its predicate, not the value to emit. Require the
@@ -315,7 +321,8 @@ export function extractRubricRatingInstructions(
     if (
       directive.toLowerCase() === 'grade' &&
       (isInspectedGradeMetadata(text, directiveStart, input) ||
-        isGradeArtifactNounPhrase(text, directiveStart, input))
+        isGradeArtifactNounPhrase(text, directiveStart, input) ||
+        isAtGradeTimeNounPhrase(text, directiveStart, input))
     ) {
       continue;
     }

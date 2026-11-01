@@ -718,6 +718,63 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
     });
   });
 
+  it('persists unknown reachability and resolver evidence when the contract read times out after admission', async () => {
+    const evidence = 'event ledger resolver timed out while building the release contract';
+    reachabilityM
+      .mockResolvedValueOnce({
+        verdict: 'reachable', basis: 'live-resolver', authoritative: true,
+        evidence: 'catalogued producer is live', checkedAt: '2026-09-01T12:00:00.000Z',
+      })
+      .mockResolvedValueOnce({
+        verdict: 'unknown', basis: 'unmeasured', authoritative: false,
+        evidence, checkedAt: '2026-09-01T12:00:01.000Z',
+      });
+
+    const b = await body({
+      id: 'WI-1', claimHold: true, reason: 'wait for deploy',
+      claimHoldRelease: {
+        condition: 'deployment finishes', trigger: 'deploy:ready:staging', owner: 'release-owner',
+      },
+    });
+
+    expect(reachabilityM).toHaveBeenCalledTimes(2);
+    expect(holdM).toHaveBeenCalledWith('WI-1', true, {
+      harness: undefined,
+      parkedBy: 'me',
+      parkedReason: 'wait for deploy',
+      releaseContract: {
+        condition: 'deployment finishes', owner: 'release-owner', trigger: 'deploy:ready:staging',
+        reachability: 'unknown', evidence,
+      },
+    });
+    expect(b.results[0].claimHoldRelease).toMatchObject({ reachability: 'unknown', evidence });
+  });
+
+  it('keeps an uncertified resolver result blocked with its diagnostic evidence', async () => {
+    const evidence = 'trigger is uncertified because it has no producer';
+    reachabilityM
+      .mockResolvedValueOnce({
+        verdict: 'reachable', basis: 'live-resolver', authoritative: true,
+        evidence: 'catalogued producer is live', checkedAt: '2026-09-01T12:00:00.000Z',
+      })
+      .mockResolvedValueOnce({
+        verdict: 'unknown', basis: 'unmeasured', authoritative: false,
+        evidence, checkedAt: '2026-09-01T12:00:01.000Z', uncertifiedReason: 'uncatalogued',
+      });
+
+    const b = await body({
+      id: 'WI-1', claimHold: true, reason: 'wait for deploy',
+      claimHoldRelease: {
+        condition: 'deployment finishes', trigger: 'deploy:ready:staging', owner: 'release-owner',
+      },
+    });
+
+    expect(holdM).toHaveBeenCalledWith('WI-1', true, expect.objectContaining({
+      releaseContract: expect.objectContaining({ reachability: 'blocked', evidence }),
+    }));
+    expect(b.results[0].claimHoldRelease).toMatchObject({ reachability: 'blocked', evidence });
+  });
+
   // event-wait-settlement-2026-10-20 P-006 (D-001 item 2; R-11, R-20): a durable park's trigger
   // is refused at write when no fire can prove it, or when it already fired — before anything
   // is released. (Previously both were accepted and only stamped reachability:'blocked'.)

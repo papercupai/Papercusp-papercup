@@ -43,7 +43,10 @@ vi.mock('../../events/await/store', () => ({
   listWakeAwaitsForSubscriber: vi.fn(async () => ({ totalCount: 0, sample: [] })),
 }));
 
-vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: vi.fn() }));
+vi.mock('../../harness/routines/loop', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness/routines/loop')>()),
+  getLoopStatus: vi.fn(),
+}));
 vi.mock('../../harness/routines/loop-transition-log', () => ({
   readLatestLoopTransition: vi.fn(async () => ({ status: 'none' })),
 }));
@@ -597,6 +600,35 @@ describe('loop:status latest transition diagnostics (EI-21573850378423298)', () 
     });
     expect(String((out.awaitSuppression as { summary: string }).summary)).toContain('events:cancel');
   });
+
+  it('includes a completed late cycle in cadenceDrift even after its next wake parks', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      name: 'loop-su-caller-own-id', ownerId: 'su-caller-own-id', harnessSlug: 'papercusp',
+      active: true, intervalSec: 60, armedAt: '2026-10-26T05:48:02.133Z',
+      firesSinceArm: 1, expectedFiresSinceArm: null, cadenceRatio: null,
+      longestObservedGapSec: null, parked: true, nextFireAt: null, cadenceDrift: false,
+    });
+    readLatestLoopTransitionMock.mockResolvedValue({
+      status: 'found',
+      transition: {
+        at: '2026-10-26T14:16:10.315Z', event: 'parked', actor: 'claim-due-routine',
+        newNextFireAt: null, intervalSec: 60, detail: null,
+      },
+      cycle: {
+        phase: 'turn-in-flight', turnInFlightSec: 0,
+        lastTurn: {
+          parkedAt: '2026-10-26T13:16:35.296Z', settledAt: '2026-10-26T13:16:53.683Z',
+          turnSec: 18, settledBy: 'reconcile-loop-routines', settledVia: 'lifecycle',
+          scheduledDelaySec: 60, postSettleDelaySec: 360,
+        },
+        basis: 'test cycle',
+      },
+    });
+
+    const out = await run();
+
+    expect(out.loop.cadenceDrift).toBe(true);
+  });
 });
 
 describe('deriveActiveAwaitSuppression (WI-10004466)', () => {
@@ -697,7 +729,7 @@ describe('loop:status store-identity delivery', () => {
     const out = await run();
 
     // A found row is trustworthy regardless — only the null/negative path is annotated.
-    expect(out.loop).toEqual({ active: false, intervalSec: 60 });
+    expect(out.loop).toEqual({ active: false, intervalSec: 60, cadenceDrift: false });
     expect(out).not.toHaveProperty('storeIdentityWarning');
   });
 

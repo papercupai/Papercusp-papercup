@@ -711,42 +711,70 @@ try:
             segments.append(tail)
         return segments
 
-    def _mcp_call_has_unterminated_single_quote(text):
-        quote, escaped = None, False
-        for char in text:
-            if escaped:
-                escaped = False
+    def _mcp_call_argvs(text):
+        # shlex keeps a quoted prose example in one word. Match only an actual
+        # command-position executable, not text that merely names this script.
+        lexer = shlex.shlex(text, posix=True, punctuation_chars=';&|(){}')
+        lexer.whitespace_split = True
+        commands, current = [], []
+        while True:
+            try:
+                token = lexer.get_token()
+            except ValueError:
+                if current:
+                    commands.append((current, True))
+                break
+            if token == lexer.eof:
+                break
+            if token and all(char in ';&|' for char in token):
+                if current:
+                    commands.append((current, False))
+                    current = []
                 continue
-            if quote == "'":
-                if char == "'":
-                    quote = None
+            if token in ('(', ')', '{', '}'):
+                if current:
+                    commands.append((current, False))
+                    current = []
                 continue
-            if quote == '"':
-                if char == '\\':
-                    escaped = True
-                elif char == '"':
-                    quote = None
+            current.append(token)
+        if current:
+            commands.append((current, False))
+
+        assignment = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
+        for argv, malformed in commands:
+            index = 0
+            while index < len(argv) and assignment.match(argv[index]):
+                index += 1
+            while index < len(argv) and argv[index] in ('command', 'exec', 'env', 'time', 'nohup', 'sudo'):
+                wrapper = argv[index]
+                index += 1
+                if wrapper == 'env':
+                    while index < len(argv) and (argv[index].startswith('-') or assignment.match(argv[index])):
+                        if argv[index] in ('-u', '--unset', '-S', '--split-string') and index + 1 < len(argv):
+                            index += 1
+                        index += 1
+                else:
+                    while index < len(argv) and argv[index].startswith('-'):
+                        index += 1
+                while index < len(argv) and assignment.match(argv[index]):
+                    index += 1
+            if index < len(argv) and argv[index] == 'node':
+                index += 1
+            if index >= len(argv) or not re.fullmatch(r'(?:\S+/)?scripts/mcp-call\.mjs', argv[index]):
                 continue
-            if char == '\\':
-                escaped = True
-            elif char in ("'", '"'):
-                quote = char
-        # An apostrophe can close the positional single-quoted JSON and expose
-        # a later JSON double quote, leaving the shell with an unterminated
-        # double-quoted span instead. Any live quote at the end is therefore
-        # the same pre-dispatch syntax failure.
-        return quote is not None
+            args = argv[index + 1:]
+            # --json - and --json-file are the documented shell-safe payload routes.
+            if any(arg in ('--json', '--json-file') or arg.startswith('--json=') or arg.startswith('--json-file=') for arg in args):
+                continue
+            return args, malformed
+        return None, False
 
     _mcp_quote_error = None
     for _mcp_segment in _mcp_call_segments(command):
-        _mcp_marker = re.search(r'(?:^|\s)(?:node\s+)?(?:\S+/)?scripts/mcp-call\.mjs\b', _mcp_segment)
-        if not _mcp_marker:
+        _mcp_args, _mcp_malformed = _mcp_call_argvs(_mcp_segment)
+        if _mcp_args is None:
             continue
-        _mcp_tail = _mcp_segment[_mcp_marker.end():]
-        # --json - and --json-file are the documented shell-safe payload routes.
-        if re.search(r'--json(?:-file)?(?:\s|=|$)', _mcp_tail):
-            continue
-        if _mcp_call_has_unterminated_single_quote(_mcp_tail):
+        if _mcp_malformed:
             _mcp_quote_error = (
                 'mcp-call inline JSON quoting guard (EI-26073319721581332): this '
                 'command leaves a single-quoted payload open, usually because '

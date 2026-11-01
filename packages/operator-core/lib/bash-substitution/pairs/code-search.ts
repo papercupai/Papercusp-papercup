@@ -558,13 +558,13 @@ export const lspDefinitionLookup: BashSubstitutionPair = {
     '(libs/generic) is refused, so anchor the package you mean. To read the body, follow with capability:read ' +
     '{ file_path, offset: line1, limit }. Searches across several projects, symbols in files a tsconfig excludes, ' +
     'and exact-text matching remain grep\'s job.',
-  // Kept within a few bytes of the row it replaced: this table is spliced into
-  // launch-prose surfaces that sit at their ceilings (lint:launch-prose-budget).
+  // Keep concise: this table is spliced into launch-prose surfaces with strict
+  // ceilings (lint:launch-prose-budget).
   routing: {
     want: 'to find where a symbol is DEFINED',
     use: '`lsp:query { op: "workspace_symbols", name: "X", file: "<grep root>" }`; body: `capability:read`',
     insteadOf:
-      '`grep -rn "export function X" <one project dir>` (repo-wide: add `--exclude-dir={node_modules,.vitest-tmp,dist,coverage} --exclude-dir=sidecar` — generated bundles/caches are not source evidence; exhaustive exact-text search remains grep\'s job)',
+      '`rg -n --max-count 60 --max-columns 256 --max-columns-preview -F "export function X" <one project dir>` (caps matching lines per file and long lines; repo-wide: add `--exclude-dir={node_modules,.vitest-tmp,dist,coverage} --exclude-dir=sidecar` — generated bundles/caches are not source evidence; exhaustive exact-text search remains grep/rg\'s job)',
   },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {

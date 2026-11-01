@@ -10,6 +10,8 @@ import { decodeNativeBridgeJson } from './_native-bridge-json';
 
 const exec = promisify(execFile);
 
+test.describe.configure({ mode: 'serial' });
+
 test('P010 native converse parity', async ({}, info) => {
   test.setTimeout(180_000);
   expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');

@@ -3178,6 +3178,88 @@ describe('ptool result formatting', () => {
 });
 
 describe('ptool --json output-envelope unwrap (EI-22212780570913684)', () => {
+  it('prints a complete durable code:run admission as a successful actionable receipt', async () => {
+    const workflowId = 'orchestrate-durable:ws-code:admission-1';
+    const next = 'Read status/output with orchestrate:inspect { durableRun:{workflowId} }';
+    const envelope = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      state: 'complete',
+      summaryProvenance: 'authored',
+      summary: JSON.stringify({ durableRun: { workflowId, status: 'admitted' } }),
+      next,
+      content: [],
+    };
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const code = await printResult(
+        { content: [{ type: 'text', text: JSON.stringify(envelope) }] },
+        { raw: true },
+      );
+      expect(code).toBe(0);
+      expect(JSON.parse(String(printed.mock.calls.at(-1)?.[0]))).toEqual({
+        ok: true,
+        durableRun: { workflowId, status: 'admitted' },
+        next,
+      });
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      printed.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
+  it('does not treat a failed durable admission as accepted', async () => {
+    const envelope = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      state: 'error',
+      summaryProvenance: 'authored',
+      summary: JSON.stringify({ ok: false, error: 'durable admission refused' }),
+      content: [],
+    };
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await printResult(
+        { content: [{ type: 'text', text: JSON.stringify(envelope) }] },
+        { raw: true },
+      )).toBe(1);
+      expect(JSON.parse(String(printed.mock.calls.at(-1)?.[0]))).toEqual(envelope);
+      expect(errors.mock.calls.flat().join(' ')).toContain('outcome unknown');
+    } finally {
+      printed.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
+  it.each(['failed', 'uncertain'])(
+    'does not reinterpret a later durable workflow state of %s as admission success',
+    async (status) => {
+      const envelope = {
+        schemaVersion: 'papercusp.output-envelope/v1',
+        state: 'complete',
+        summaryProvenance: 'authored',
+        summary: JSON.stringify({
+          durableRun: { workflowId: 'orchestrate-durable:ws-code:admission-1', status },
+        }),
+        content: [],
+      };
+      const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await printResult(
+          { content: [{ type: 'text', text: JSON.stringify(envelope) }] },
+          { raw: true },
+        )).toBe(1);
+        expect(JSON.parse(String(printed.mock.calls.at(-1)?.[0]))).toEqual(envelope);
+        expect(errors.mock.calls.flat().join(' ')).toContain('outcome unknown');
+      } finally {
+        printed.mockRestore();
+        errors.mockRestore();
+      }
+    },
+  );
+
   it.each(['scratch-memory', 'scratch-spool'])(
     'recovers a release response from %s byte pages after the primary spill failed', async (scheme) => {
       const uri = `papercusp://${scheme}/release-result`;

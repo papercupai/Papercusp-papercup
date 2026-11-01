@@ -4410,6 +4410,7 @@ describe('mcp-call inline JSON quoting guard (EI-26073319721581332)', () => {
 
   it('allows the quoted-stdin heredoc form for the same apostrophe payload', () => {
     const command = `node scripts/mcp-call.mjs loop:checkpoint --json - <<'JSON'\n{"note":"it's safe"}\nJSON`;
+    expect(spawnSync('bash', ['-n', '-c', command], { encoding: 'utf8' }).status).toBe(0);
     expectAllow(runGate(bashCmd(command), CANON_ENV));
   });
 
@@ -4427,6 +4428,16 @@ describe('mcp-call inline JSON quoting guard (EI-26073319721581332)', () => {
 
   it('allows a positional JSON payload without shell-hostile prose', () => {
     const command = `node scripts/mcp-call.mjs loop:checkpoint '{"note":"safe"}' --client su-test`;
+    expectAllow(runGate(bashCmd(command), CANON_ENV));
+  });
+
+  it('allows balanced inline-JSON commands when quoted prose mentions the mcp-call executable', () => {
+    const command = [
+      "BODY='Recovery instructions mention node scripts/mcp-call.mjs <tool> <json> --client $PAPERCUSP_SID.'",
+      `args=$(node -e 'console.log(JSON.stringify({ id: "EI-TEST", body: process.argv[1] }))' "$BODY")`,
+      'node scripts/mcp-call.mjs work_items:comment "$args" --client su-test',
+    ].join('; ');
+    expect(spawnSync('bash', ['-n', '-c', command], { encoding: 'utf8' }).status).toBe(0);
     expectAllow(runGate(bashCmd(command), CANON_ENV));
   });
 });

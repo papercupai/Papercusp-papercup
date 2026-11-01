@@ -88,6 +88,16 @@ export type LatestLoopTransitionRead =
   | { status: 'none' }
   | { status: 'unknown' };
 
+type LoopTransitionReadRow = {
+  routine_id?: string;
+  at: Date | string | null;
+  event: string | null;
+  actor: string | null;
+  new_next_fire_at: Date | string | null;
+  interval_sec: string | number | null;
+  detail: unknown;
+};
+
 /**
  * One loop cycle, derived from the newest transition rows (EI-24709926664545964).
  *
@@ -189,6 +199,37 @@ function transitionTimestamp(value: Date | string | null | undefined): string | 
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
 }
 
+function readTransitionWindow(rows: readonly LoopTransitionReadRow[], nowMs: number): LatestLoopTransitionRead {
+  if (rows.length === 0) return { status: 'none' };
+  const snapshots: LoopTransitionSnapshot[] = [];
+  for (const row of rows) {
+    const at = transitionTimestamp(row.at);
+    // The newest row is the contract (`found` needs it well-formed); an older malformed row
+    // only narrows the cycle window, it must not turn a good latest read into `unknown`.
+    if (!at || !row.event || !row.actor) {
+      if (snapshots.length === 0) return { status: 'unknown' };
+      break;
+    }
+    const interval = row.interval_sec == null ? NaN : Number(row.interval_sec);
+    snapshots.push({
+      at,
+      event: row.event,
+      actor: row.actor,
+      newNextFireAt: transitionTimestamp(row.new_next_fire_at),
+      intervalSec: Number.isFinite(interval) ? interval : null,
+      detail:
+        row.detail && typeof row.detail === 'object' && !Array.isArray(row.detail)
+          ? (row.detail as Record<string, unknown>)
+          : null,
+    });
+  }
+  return {
+    status: 'found',
+    transition: snapshots[0],
+    cycle: deriveLoopCycle(snapshots, nowMs),
+  };
+}
+
 /**
  * Read the newest transition for the targeted loop. This is diagnostic-only and
  * fails soft for the same reason the writer does: missing/temporarily unavailable
@@ -211,16 +252,7 @@ export async function readLatestLoopTransition(
     // The newest CYCLE_WINDOW_ROWS rows, newest first: row 0 is the latest transition (the
     // long-standing `transition` field); the rest feed `deriveLoopCycle` so one read answers
     // "how long was the turn" and "how long did the re-arm take" separately.
-    const rows = await sql<
-      Array<{
-        at: Date | string | null;
-        event: string | null;
-        actor: string | null;
-        new_next_fire_at: Date | string | null;
-        interval_sec: string | number | null;
-        detail: unknown;
-      }>
-    >`
+    const rows = await sql<Array<LoopTransitionReadRow>>`
       SELECT t.at, t.event, t.actor, t.new_next_fire_at, t.interval_sec, t.detail
         FROM harness_shared.routines r
         JOIN LATERAL (
@@ -238,36 +270,59 @@ export async function readLatestLoopTransition(
        ORDER BY t.at DESC
        LIMIT ${CYCLE_WINDOW_ROWS}
     `;
-    if (rows.length === 0) return { status: 'none' };
-    const snapshots: LoopTransitionSnapshot[] = [];
-    for (const row of rows) {
-      const at = transitionTimestamp(row.at);
-      // The newest row is the contract (`found` needs it well-formed); an older malformed row
-      // only narrows the cycle window, it must not turn a good latest read into `unknown`.
-      if (!at || !row.event || !row.actor) {
-        if (snapshots.length === 0) return { status: 'unknown' };
-        break;
-      }
-      const interval = row.interval_sec == null ? NaN : Number(row.interval_sec);
-      snapshots.push({
-        at,
-        event: row.event,
-        actor: row.actor,
-        newNextFireAt: transitionTimestamp(row.new_next_fire_at),
-        intervalSec: Number.isFinite(interval) ? interval : null,
-        detail:
-          row.detail && typeof row.detail === 'object' && !Array.isArray(row.detail)
-            ? (row.detail as Record<string, unknown>)
-            : null,
-      });
-    }
-    return {
-      status: 'found',
-      transition: snapshots[0],
-      cycle: deriveLoopCycle(snapshots, opts.nowMs ?? Date.now()),
-    };
+    return readTransitionWindow(rows, opts.nowMs ?? Date.now());
   } catch {
     return { status: 'unknown' };
+  }
+}
+
+/**
+ * Batch the same fail-soft transition read for a roster of loops. The stalled-loop advisory
+ * needs each owner's completed-cycle schedule/actual pair without issuing one query per owner.
+ */
+export async function readLatestLoopTransitionCycles(
+  input: { workspaceId: string | null | undefined; routineIds: readonly string[] },
+  opts: { sql?: Sql; nowMs?: number } = {},
+): Promise<Map<string, LatestLoopTransitionRead>> {
+  const routineIds = [...new Set(input.routineIds.filter((id) => typeof id === 'string' && id.length > 0))];
+  const out = new Map<string, LatestLoopTransitionRead>();
+  if (routineIds.length === 0) return out;
+  if (!input.workspaceId) {
+    for (const id of routineIds) out.set(id, { status: 'unknown' });
+    return out;
+  }
+
+  const sql = opts.sql ?? getOrgPg().sql;
+  try {
+    const rows = await sql<Array<LoopTransitionReadRow>>`
+      SELECT routine_id, at, event, actor, new_next_fire_at, interval_sec, detail
+        FROM (
+          SELECT routine_id, at, event, actor, new_next_fire_at, interval_sec, detail,
+                 row_number() OVER (PARTITION BY routine_id ORDER BY at DESC) AS rn
+            FROM harness_shared.routine_loop_transitions
+           WHERE workspace_id = ${input.workspaceId}
+             AND routine_id = ANY(${routineIds}::text[])
+        ) newest
+       WHERE rn <= ${CYCLE_WINDOW_ROWS}
+       ORDER BY routine_id, at DESC
+    `;
+    const wanted = new Set(routineIds);
+    const rowsByRoutine = new Map<string, LoopTransitionReadRow[]>();
+    for (const row of rows) {
+      if (typeof row.routine_id !== 'string' || !wanted.has(row.routine_id)) {
+        for (const id of routineIds) out.set(id, { status: 'unknown' });
+        return out;
+      }
+      const group = rowsByRoutine.get(row.routine_id) ?? [];
+      group.push(row);
+      rowsByRoutine.set(row.routine_id, group);
+    }
+    const nowMs = opts.nowMs ?? Date.now();
+    for (const id of routineIds) out.set(id, readTransitionWindow(rowsByRoutine.get(id) ?? [], nowMs));
+    return out;
+  } catch {
+    for (const id of routineIds) out.set(id, { status: 'unknown' });
+    return out;
   }
 }
 

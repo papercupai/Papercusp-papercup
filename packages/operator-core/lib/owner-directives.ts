@@ -292,6 +292,16 @@ export async function recordOwnerDirective(
   // Insertion and supersession share a transaction: once a verified owner
   // resume is visible to agents, its lifted pause must already read as closed.
   return await s.begin(async (tx) => {
+    // The existence check below is not sufficient under READ COMMITTED: two
+    // concurrent captures of one turn can both observe no row and insert twins.
+    // Serialize writes by the same scoped idempotency key before checking it.
+    // Hash collisions only serialize unrelated keys; the row lookup still uses
+    // the full tuple.
+    if (input.sourceTurnRef != null) {
+      const idempotencyKey = `owner-directive-turn:${JSON.stringify([ws, ownerId, input.sourceTurnRef])}`;
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${idempotencyKey}, 0))`;
+    }
+
     // WI-10003691: a carry-respawn re-delivers an OPEN owner message to the
     // successor as its first prompt, and that successor runs under a NEW native
     // session id — so the capture below keys it on a new source_turn_ref and

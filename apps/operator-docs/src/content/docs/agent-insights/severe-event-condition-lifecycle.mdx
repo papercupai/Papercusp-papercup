@@ -4,62 +4,44 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "Severe-event condition lifecycle: conditionKey alarms + resolution supersede"
-description: "Fleet stall alarms are condition-keyed; recovery broadcasts a resolution and coord:inbox annotates the stale alarm resolved:true — don't investigate a resolved condition."
-documents:
-  - packages/operator-core/lib/severe-event-broadcast.ts
-  - packages/operator-core/lib/release/git-sync-stall-watchdog.ts
-  - packages/operator-core/lib/release/green-stall-watchdog.ts
-  - packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts
-  - packages/operator-core/lib/agent-tools/coordination/tools/conditions.ts
+title: "Severe-event condition lifecycle: topic alarms + resolution supersede"
+description: "Severe-event alarms use an opt-in topic; exact-key inbox reads preserve recovery annotations across audience changes."
 type: Insight
+discovered: 2026-11-01
+status: active
+documents:
+  - "packages/operator-core/lib/severe-event-broadcast.ts"
+  - "packages/operator-core/lib/agent-tools/coordination/topics-core.ts"
+  - "packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts"
+  - "packages/operator-core/lib/agent-tools/coordination/tools/conditions.ts"
+  - "apps/operator/scripts/bghost-watchdog.mjs"
 generated:
   by: agent
   at: 2026-07-01
 ---
 
-Severe pipeline alarms (`git-sync STALLED …`, `green-checkpoint STALLED …`) are
-broadcast to every running agent. Before WI-1444 they were **fire-and-forget**:
-when the watchdog detected recovery it cleared the escalation silently and the
-broadcast was never superseded — an agent waking hours later read a stale
-"STALLED" alarm as live truth and burned a turn investigating a dead condition.
+Severe pipeline alarms such as `git-sync STALLED …` and `green-checkpoint STALLED …` use the opt-in `@topic:severe-events` audience. This keeps shared alarm traffic out of unrelated inboxes while preserving durable audience history. A resolved owner route remains a separate directed notice.
+
+## Topic subscription
+
+- `severe-events` is a built-in coordination topic. Subscribe with `watch:create { pattern:'severe-events', targetKind:'topic', wake:false }` to receive future alarms and recoveries in your inbox.
+- Topic messages preserve `@topic:severe-events` in audience history. Members can catch up with `coord:catch-up { audience:'@topic:severe-events' }`.
+- `coord:conditions` reads the shared condition log regardless of topic membership, so it remains the workspace-wide view for current open and recently resolved conditions.
+- The bg-host watchdog writes the same topic audience directly to `coord_event_log`; it resolves active subscribers in the insert and retains the selector for history.
 
 ## The lifecycle (WI-1444)
 
-- **Alarm** — `broadcastSevereEvent({ …, conditionKey })` stamps
-  `condition_key` on the envelope. The watchdogs use stable keys:
-  `git-sync-stall:<install_slug>` and `green-stall:<install_slug>`.
-- **Recovery** — the watchdog's recovery branch calls
-  `broadcastSevereEventResolved({ conditionKey, summary })`, which broadcasts a
-  `category: 'severe-event-resolved'` message carrying
-  `resolves_condition: <key>` (and `condition_key`, so resolutions are
-  queryable by key too).
-- **Read** — `coord:inbox` annotates every returned entry whose
-  `condition_key` has a **strictly-later** resolution with `resolved: true` +
-  `resolved_at`. The scan runs over the full inbox read (pre-`limit`), so a
-  windowed view still resolves correctly. A re-alarm *after* the latest
-  resolution stays un-annotated — it is live again.
-
-- **State view** — `coord:conditions` (EI-6138) folds the same stream into
-  live per-condition state: open conditions first (claimable), then recently
-  resolved. Use it to answer "is anything wrong right now?" without inbox
-  archaeology. Sibling read-side hygiene: repeated categorized broadcasts in
-  `coord:inbox` coalesce to one `repeat_count`-annotated row (EI-6144).
+- **Alarm** — `broadcastSevereEvent({ …, conditionKey })` stamps `condition_key` on the envelope. Watchdogs use stable keys such as `git-sync-stall:<install_slug>` and `green-stall:<install_slug>`.
+- **Recovery** — `broadcastSevereEventResolved({ conditionKey, summary })` sends a `category: 'severe-event-resolved'` message to the same topic with `resolves_condition: <key>` and `condition_key`.
+- **Read** — `coord:inbox` marks an alarm `resolved: true` with `resolved_at` when a later resolution is in the caller's inbox. If the alarm predates topic routing or the caller is no longer subscribed, it makes an exact-key read of the shared condition log to find the latest resolution. This preserves annotations without broadcasting recoveries to every agent.
+- A re-alarm after the latest resolution stays un-annotated and is live again.
 
 ## What this means for you
 
-- **An alarm with `resolved: true` needs NO action** — the condition already
-  cleared; do not claim or investigate it.
-- **An un-annotated severe-event alarm is (as far as the log knows) still
-  open** — the claimable signal is unchanged.
-- Adding a new watchdog/alarm? Pass a stable `conditionKey` on the alarm and
-  broadcast the matching resolution on the recovery edge (guard it on the
-  same transition edge as your `recovered` accounting so healthy passes stay
-  silent). Fail-soft is built in — a broadcast failure never breaks the sweep.
+- An alarm with `resolved: true` needs no action; the condition already cleared.
+- An un-annotated severe-event alarm is still open as far as the shared log knows.
+- To add a watchdog alarm, pass a stable `conditionKey` and send the matching resolution on the recovery edge. Fail-soft delivery means a send failure never breaks the sweep.
 
 ## Verification
 
-Unit-pinned in `severe-event-broadcast.test.ts` +
-`inbox-condition-lifecycle.test.ts`; live-verified 2026-07-01: the
-`git-sync-stall:papercusp` alarm (22:54Z) was superseded by its resolution
-(23:08Z) with matching keys in `coord_event_log`.
+The regression coverage lives in `severe-event-broadcast.test.ts`, `topics-core.test.ts`, `inbox-condition-lifecycle.test.ts`, and `apps/operator/scripts/__tests__/bghost-watchdog.test.ts`.

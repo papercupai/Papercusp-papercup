@@ -239,6 +239,14 @@ describe('taskScopeIsActive (EI-21238945235772551)', () => {
     },
   );
 
+  it('does not treat a not-found unit as live when ActiveState is stale-active', async () => {
+    const exec = vi.fn(async () => ({
+      stdout: 'Id=' + serviceUnit + '\nLoadState=not-found\nActiveState=active\n',
+    }));
+
+    await expect(taskScopeIsActive(base, exec)).resolves.toBe(false);
+  });
+
   it('rejects an inactive service, a scope-shaped unit, and non-bash or unconfined rows without probing', async () => {
     const exec = vi.fn(async () => ({ stdout: `Id=${serviceUnit}\nLoadState=loaded\nActiveState=active\n` }));
 

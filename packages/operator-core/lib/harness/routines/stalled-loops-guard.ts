@@ -174,6 +174,11 @@ import {
   computeCadenceDrift,
   type LoopStatus,
 } from './loop';
+import {
+  readLatestLoopTransitionCycles,
+  type LatestLoopTransitionRead,
+  type LoopCycleTurn,
+} from './loop-transition-log';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
 import { RESUMABLE_DEAD_PAUSE_PREFIX } from './loop-unreachable-guard';
 import { probeWakeReachability, type WakeReachabilityVerdict } from '../../events/await/wake-reachability';
@@ -455,6 +460,8 @@ export function isProgressingToolActivity(activity: OwnerToolActivity | undefine
 export interface StalledLoopsSweepDeps {
   /** Injectable for tests; defaults to the real batch status read. */
   getStatuses?: typeof getLoopStatuses;
+  /** One fail-soft batch transition read for completed-cycle cadence evidence. */
+  readTransitionCycles?: typeof readLatestLoopTransitionCycles;
   /** Injectable for tests; defaults to the real auto-pause write. */
   autoPause?: typeof autoPauseLoopRoutine;
   /** Injectable for tests; defaults to the real re-arm write (EI-19406534159939583). */
@@ -1167,16 +1174,39 @@ export async function sweepStalledLoops(
     ? await getStatuses([...routineIdByOwner.keys()], { sql })
     : new Map<string, LoopStatus>();
 
+  // The latest fire/transition snapshots are overwritten independently. Read the append-only
+  // cycle ledger once for the active roster so a completed late wake remains detectable after it
+  // has parked again; missing instrumentation stays unknown and cannot fail the guard.
+  const readTransitionCycles = deps.readTransitionCycles ?? readLatestLoopTransitionCycles;
+  let transitionCycles = new Map<string, LatestLoopTransitionRead>();
+  if (routineIdByOwner.size > 0) {
+    try {
+      transitionCycles = await readTransitionCycles(
+        { workspaceId: ws, routineIds: [...new Set(routineIdByOwner.values())] },
+        { sql },
+      );
+    } catch {
+      // The transition ledger is diagnostic-only; an unavailable read preserves the old guard.
+    }
+  }
+
   // Cadence is observational: a pure loop re-arms after its turn settles, so a long turn can
   // legitimately inflate the ratio. Keep this verdict independent from turnsStalled and use it
   // only for a one-shot advisory below; the irreversible action loop still checks turnsStalled.
   const cadenceDriftDetails = [...routineIdByOwner.keys()]
     .map((ownerId) => {
       const status = statuses.get(ownerId);
-      if (!status || !computeCadenceDrift(status)) return null;
-      return { ownerId, status };
+      if (!status) return null;
+      const routineId = routineIdByOwner.get(ownerId);
+      const transitionRead = routineId ? transitionCycles.get(routineId) : undefined;
+      const lastTurn = transitionRead?.status === 'found' ? transitionRead.cycle.lastTurn : null;
+      if (!computeCadenceDrift({ ...status, lastTurn })) return null;
+      return { ownerId, status, lastTurn };
     })
-    .filter((value): value is { ownerId: string; status: LoopStatus } => value != null);
+    .filter(
+      (value): value is { ownerId: string; status: LoopStatus; lastTurn: LoopCycleTurn | null } =>
+        value != null,
+    );
   const cadenceDrift = cadenceDriftDetails.map(({ ownerId }) => ownerId);
 
   // EI-19966210024116714: one batch read of the owners' OWN session scopes, for the disarm reason
@@ -2198,13 +2228,17 @@ export async function sweepStalledLoops(
       body:
         cadenceDriftDetails
           .map(
-            ({ ownerId, status }) =>
+            ({ ownerId, status, lastTurn }) =>
               `${ownerId}: ratio=${status.cadenceRatio}, firesSinceArm=${status.firesSinceArm}, ` +
-              `expected=${status.expectedFiresSinceArm}, longestGapSec=${status.longestObservedGapSec}`,
+              `expected=${status.expectedFiresSinceArm}, longestGapSec=${status.longestObservedGapSec}, ` +
+              `scheduledDelaySec=${lastTurn?.scheduledDelaySec ?? 'unknown'}, ` +
+              `postSettleDelaySec=${lastTurn?.postSettleDelaySec ?? 'unknown'}`,
           )
           .join('\n') +
         `\n\nThis signal requires multiple fires plus a large observed gap. Pure loops re-arm after ` +
-        `turn completion, so a long-running turn can inflate the ratio; inspect scheduler and ` +
+        `turn completion, so a long-running turn can inflate the ratio. Completed-cycle drift ` +
+        `requires postSettleDelaySec to exceed its recorded scheduledDelaySec by at least four ` +
+        `configured intervals; intentional fire-gate backoff stays quiet. Inspect scheduler and ` +
         `turn duration before treating it as a defect. Cadence drift never disarms or re-arms a loop.`,
       category: 'loop-cadence-advisory',
       conditionKey: `loop-cadence-drift:${ws}`,

@@ -991,9 +991,16 @@ export function coalesceDeliveries(group: DeliveryWork[]): DeliveryWork {
         payload: d.payload,
         urgent: d.urgent,
         delivery_id: d.id,
+        await_id: d.awaitId,
         createdAt: d.createdAt,
       })),
-      latest: { event: headline.eventKey, payload: headline.payload, createdAt: headline.createdAt, delivery_id: headline.id },
+      latest: {
+        event: headline.eventKey,
+        payload: headline.payload,
+        createdAt: headline.createdAt,
+        delivery_id: headline.id,
+        await_id: headline.awaitId,
+      },
     },
     coalescedCount: group.length,
   };

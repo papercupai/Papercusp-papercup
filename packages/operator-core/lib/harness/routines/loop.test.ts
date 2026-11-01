@@ -1849,6 +1849,40 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     expect(out.get('su-x')!.cadenceDrift).toBe(true);
   });
 
+  it('EI-27055183150141935: compares completed-cycle delay to schedule and ignores intentional backoff', () => {
+    const input = {
+      active: true,
+      intervalSec: 60,
+      firesSinceArm: 1,
+      expectedFiresSinceArm: null,
+      cadenceRatio: null,
+      longestObservedGapSec: null,
+      parked: true,
+      nextFireAt: null,
+      armedAt: '2026-10-26T05:48:02.133Z',
+    };
+    const historicalGateBackoff = {
+      settledAt: '2026-10-26T13:16:53.683Z',
+      scheduledDelaySec: 3_521,
+      postSettleDelaySec: 3_557,
+    };
+
+    expect(computeCadenceDrift({ ...input, lastTurn: historicalGateBackoff })).toBe(false);
+    expect(
+      computeCadenceDrift({
+        ...input,
+        lastTurn: { ...historicalGateBackoff, scheduledDelaySec: 60, postSettleDelaySec: 300 },
+      }),
+    ).toBe(true);
+    expect(
+      computeCadenceDrift({
+        ...input,
+        armedAt: '2026-10-26T14:00:00.000Z',
+        lastTurn: { ...historicalGateBackoff, scheduledDelaySec: 60, postSettleDelaySec: 300 },
+      }),
+    ).toBe(false);
+  });
+
   it('EI-22457624472620001: an active provider backoff is not reported as turnsStalled', async () => {
     const now = Date.now();
     const out = await getLoopStatuses(['su-x'], {

@@ -12,7 +12,7 @@ import { getServingBuild } from '../../serving-build';
 import { readServingGeneration } from '../../serving-generation';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
-import { getLoopStatus } from '../../harness/routines/loop';
+import { computeCadenceDrift, getLoopStatus } from '../../harness/routines/loop';
 import {
   readLatestLoopTransition,
   type LatestLoopTransitionRead,
@@ -89,7 +89,7 @@ export default defineTool({
     when: "Check whether your loop is still armed + when it next fires, or inspect another agent's loop. Pass `ownerId` for another session; this owner-scoped read ignores `harness` if passed.",
     returns:
       'Each response includes servingBuild (main or staging) and servingGeneration (loaded build SHA, migration frontier, and tool-registry revision, or an explicit unknown reason) so you can identify the runtime that produced its loop verdict.\n\n' +
-      '`cadenceDrift` (EI-21276782387845111) is true only when sustained slow-cadence evidence is corroborated by a scheduled fire several intervals overdue. It stays false for a parked turn (the configured interval begins after turn settlement), missing cadence history, or a fire that is not demonstrably late; combine it with the raw cadence fields rather than treating false as proof of normal cadence.\n\n' +
+      '`cadenceDrift` (EI-21276782387845111) is true for a scheduled fire several intervals overdue or for a completed, current-arm cycle whose observed postSettleDelaySec exceeds its recorded scheduledDelaySec by at least four configured intervals. Intentional fire-gate backoff is included in scheduledDelaySec and stays quiet. Missing transition evidence fails quiet; combine this flag with the raw cadence fields rather than treating false as proof of normal cadence.\n\n' +
       "ROOT ENVELOPE: `{ ok, ownerId, loop, lastTransition, carryNote, reachability, pendingAwaits, storeIdentityWarning? }` — the loop RECORD is NESTED under `loop`: `{ active, intervalSec, parked, nextFireAt, lastFiredAt, fireCount, firesSinceArm, cost-cap, … }`, or null when no loop exists for the owner. `lastTransition` is null when no loop exists; otherwise it is a tri-state diagnostic read (`found`/`none`/`unknown`). A found transition preserves the scheduling cause — for example `actor:'await-suppression'` plus `detail.drivingEventKey` explains why a 60s loop was deliberately re-armed to an await deadline instead of firing each minute. A found transition also carries `cycle`: `parked` means the member's own TURN is in flight (next_fire_at is infinity), NOT a re-arm delay — read `cycle.lastTurn.turnSec` (parked→rearmed) and `postSettleDelaySec` (rearmed→next parked, ~intervalSec + <=30s tick) separately, because `loop.cadenceRatio`/`effectiveIntervalSec` include the turn by construction. `carryNote` is the routine-scoped read-back `{ note, contentHash, updatedAtMs }`, or null when no loop exists; use its hash to reconcile an uncertain `loop:checkpoint` transport result. jq / code:run reducers must descend through `.loop`; assuming root-level active/interval fields iterates null (EI-21197839138727609).\n\n" +
       "`rewake` uses the same loop/delivery classifier as loop:checkpoint, with the current owner wake-reachability probe included on both surfaces. `rewakeGuaranteed:false` on an ACTIVE loop names why the next turn is not guaranteed: `last-fire-parked` (the newest wake dispatched in the current arm epoch parked undelivered; failures dispatched before `armedAt` are historical), `last-fire-no-loop-turn` (the latest delivered fire has no loop-origin completion proof after `lastFiredAt`), `fire-starved`, `wake-unreachable` (the live probe found no owner wake route), or an exhausted maxFires/maxDurationSec bound. A later loop:arm does not clear `last-fire-no-loop-turn`; a delayed loop turn clears it only when `lastFailedFireLoopTurnCompletedAt` is strictly later than `lastFiredAt`. Do not settle a turn on an active loop whose rewake is false; inspect and repair the named failure before settling. Null when no loop exists.\n\n" +
       "REACHABILITY SCOPE (EI-21452056705704146): `reachability` reports the standing owner wake path even when `loop:null`, including the host-registered inbox-wake waiter. `pendingAwaits.scope:'non-inbox-wake'` deliberately excludes that always-armed host channel and measures only caller-authored park awaits; its `status:'none'` is NEVER evidence that the owner is globally unreachable.\n\n" +
@@ -271,6 +271,16 @@ export default defineTool({
     // scope on the wire so status:none can no longer be misread as global absence.
     const pendingAwaitsOut = { ...pendingAwaitsResult, scope: 'non-inbox-wake' as const };
 
+    const statusWithCadence = status
+      ? {
+          ...status,
+          cadenceDrift: computeCadenceDrift({
+            ...status,
+            lastTurn: lastTransition?.status === 'found' ? lastTransition.cycle.lastTurn : null,
+          }),
+        }
+      : null;
+
     // EI-19384072467112035: a `loop: null` here is the documented "no loop exists" signal,
     // and an agent reading it correctly re-arms. But `getLoopStatus` reads through
     // `getOrgPg()`, which can (per plan outage-must-not-be-silent-2026-08-02) be talking to
@@ -313,7 +323,7 @@ export default defineTool({
             ownerId,
             servingBuild: getServingBuild(),
             servingGeneration,
-            loop: status,
+            loop: statusWithCadence,
             // P-013 / EI-24023838400909760: an active loop is not a re-wake guarantee
             // when its last fire parked (or a dead-man bound is spent). One classifier,
             // shared with loop:checkpoint's continuation gate, so the two cannot disagree.

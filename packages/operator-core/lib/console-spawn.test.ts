@@ -2313,13 +2313,11 @@ describe('pickLinuxTerminal — preference is conditional on a detected desktop 
   });
 });
 
-// EI-11578: capability:launch-agent { resume } opened a gnome-terminal window
-// whose resumed dormant .papercusp-cwd session died within seconds (VTE pty drops
-// the reattached psu managed-pty host), while the same psu command under xterm
-// held the session >72s. The fix forces a process-per-window emulator for
-// resume/fork launches even on a detected desktop session — resolveTerminalPreference
-// is the pure decision, composed with pickLinuxTerminal (the WI-4718 injectable seam).
-describe('resolveTerminalPreference — force process-per-window for resume launches (EI-11578)', () => {
+// EI-11578 provides an explicit process-per-window override for callers that
+// need direct per-window ownership. Desktop resumes retain GNOME Terminal per
+// owner correction; the earlier VTE-drop hypothesis did not reproduce in 20
+// real resumes (2026-09-29, reverified 2026-10-21).
+describe('resolveTerminalPreference — explicit process-per-window override (EI-11578)', () => {
   const onlyOnPath = (...bins: string[]) => (bin: string) => bins.includes(bin);
 
   it('a detected desktop session normally prefers client-server (gnome-terminal) — unchanged for a fresh launch', () => {
@@ -2327,10 +2325,7 @@ describe('resolveTerminalPreference — force process-per-window for resume laun
     expect(resolveTerminalPreference(true, false)).toBe(true);
   });
 
-  it('a RESUME launch (preferProcessPerWindow) forces process-per-window even WITH a detected desktop session', () => {
-    // This is the bug: on the dev box a desktop session IS detected, so without
-    // the override gnome-terminal wins and the resumed session dies. The override
-    // flips the preference so a process-per-window emulator is chosen instead.
+  it('an explicit process-per-window requirement overrides client-server preference on a desktop', () => {
     expect(resolveTerminalPreference(true, true)).toBe(false);
   });
 
@@ -2339,10 +2334,10 @@ describe('resolveTerminalPreference — force process-per-window for resume laun
     expect(resolveTerminalPreference(false, true)).toBe(false);
   });
 
-  it('composed with pickLinuxTerminal: a resume on a desktop box picks xterm over gnome-terminal (the bug fix)', () => {
+  it('composed with pickLinuxTerminal: an explicit process-per-window requirement picks xterm over gnome-terminal', () => {
     vi.stubEnv('TERMINAL', '');
-    // desktopSessionDetected=true + resume(preferProcessPerWindow=true) → false →
-    // process-per-window ordering → xterm wins even though gnome-terminal is installed.
+    // An explicit process-per-window requirement → false → process-per-window
+    // ordering, so xterm wins even though gnome-terminal is installed.
     const preferClientServer = resolveTerminalPreference(true, true);
     const t = pickLinuxTerminal(onlyOnPath('gnome-terminal', 'xterm'), preferClientServer);
     expect(t?.bin).toBe('xterm');

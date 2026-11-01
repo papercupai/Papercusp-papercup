@@ -296,7 +296,6 @@ describe('required screenshot GPU preflight', () => {
     try {
       const result = spawnSync('bash', ['-c', [
         'set -euo pipefail',
-        'log() { printf "%s\\n" "$*" >&2; }',
         gpuPreflight,
         displayPreflight,
         'PREPARE_ONLY=0 preflight_native_display_dependencies',

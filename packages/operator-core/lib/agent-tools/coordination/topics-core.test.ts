@@ -18,6 +18,7 @@ import {
   mergeTopicsCore,
   NEW_TOPIC,
   IMPROVEMENT_TOPIC,
+  SEVERE_EVENTS_TOPIC,
   type TopicsStores,
 } from './topics-core';
 import type { InjectSink } from './fanout-delivery';
@@ -51,11 +52,11 @@ describe('ensureBuiltinTopics', () => {
     const stores = makeStores();
     await ensureBuiltinTopics(stores, NOW);
     await ensureBuiltinTopics(stores, NOW); // second call must not throw / duplicate
-    for (const slug of [NEW_TOPIC, IMPROVEMENT_TOPIC, 'coord-dx', 'db-tooling']) {
+    for (const slug of [NEW_TOPIC, IMPROVEMENT_TOPIC, SEVERE_EVENTS_TOPIC, 'coord-dx', 'db-tooling']) {
       expect((await stores.topics.get(slug))?.slug).toBe(slug);
     }
     const all = await stores.topics.list();
-    expect(all.length).toBe(4);
+    expect(all.length).toBe(5);
   });
 });
 

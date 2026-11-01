@@ -2111,6 +2111,7 @@ async function readLoopDeliverySupersession(
       summary?: unknown;
       payload?: unknown;
       delivery_id?: unknown;
+      await_id?: unknown;
       createdAt?: unknown;
     };
     const rawEvents = Array.isArray(record.events)
@@ -2150,6 +2151,14 @@ async function readLoopDeliverySupersession(
 
     const latest = survivors[survivors.length - 1];
     const eventKey = typeof latest.event === 'string' && latest.event.length > 0 ? latest.event : d.eventKey;
+    // The coalesced headline's awaitId may belong to a loop row removed above.
+    // Restore the ID paired with the surviving event key so timeout guidance
+    // names the registration that actually expired.
+    const latestAwaitId = latest.await_id;
+    const awaitId =
+      typeof latestAwaitId === 'number' && Number.isSafeInteger(latestAwaitId) && latestAwaitId > 0
+        ? latestAwaitId
+        : d.awaitId;
     const latestSummary = typeof latest.summary === 'string' ? latest.summary : null;
     const suppressionSummary =
       `${strippedLoopComponents} superseded loop ${strippedLoopComponents === 1 ? 'component was' : 'components were'} ` +
@@ -2194,6 +2203,7 @@ async function readLoopDeliverySupersession(
       delivery: {
         ...d,
         eventKey,
+        awaitId,
         payload,
         summary,
         // The coalescer does not persist sibling notes in its union. Keeping the

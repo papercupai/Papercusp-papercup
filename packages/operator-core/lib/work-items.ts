@@ -8225,7 +8225,7 @@ export async function setWorkItemClaimHold(
       condition: string;
       owner: string;
       trigger: string;
-      reachability: 'reachable' | 'blocked' | 'unreachable' | 'satisfied';
+      reachability: 'reachable' | 'blocked' | 'unknown' | 'unreachable' | 'satisfied';
       evidence: string;
     };
     /** Clear ONLY the `held_open_*` lease, preserving a coexisting durable park

@@ -4679,6 +4679,47 @@ export function createInferenceGateway(deps: GatewayDeps) {
       msSinceReadmit: (accountId, nowMs) => source.msSinceReadmit?.(accountId, nowMs),
     };
   };
+  const codexRequestAccountExcluded = (
+    source: AccountPool | null | undefined,
+    accountId: string,
+    model?: string | null,
+  ): boolean => source?.parkState?.(accountId)?.cause === 'auth' ||
+    (!!model && codexModelRefusals.isRefused(accountId, model));
+  const hasEligibleCodexRequestAccount = (
+    source: AccountPool | null | undefined,
+    model?: string | null,
+  ): boolean => (source?.entries?.() ?? []).some((account) =>
+    !codexRequestAccountExcluded(source, account.accountId, model));
+  const selectCodexRequestAccount = (source: AccountPool, model?: string | null): ActiveAccount | null => {
+    const candidates = (source.entries?.() ?? []).filter((account) =>
+      !codexRequestAccountExcluded(source, account.accountId, model));
+    if (candidates.length === 0) return null;
+    try {
+      const selected = healthAwareCodexPool(source, model).active();
+      if (candidates.some((account) => account.accountId === selected.accountId)) return selected;
+    } catch {
+      // A pool with no currently available account still gets the eligible fallback below.
+    }
+    const at = Date.now();
+    return candidates.reduce((best, candidate) =>
+      accountHealthKey(candidate, at) < accountHealthKey(best, at) ? candidate : best);
+  };
+  const codexNoServiceableAccountMessage = (
+    source: AccountPool | null | undefined,
+    model?: string | null,
+  ): string => {
+    const entries = source?.entries?.() ?? [];
+    const authParked = entries.filter((account) => source?.parkState?.(account.accountId)?.cause === 'auth').length;
+    const modelRefused = model
+      ? entries.filter((account) => codexModelRefusals.isRefused(account.accountId, model)).length
+      : 0;
+    const reasons = [
+      ...(modelRefused ? [`${modelRefused} account(s) marked as refusing '${model}'`] : []),
+      ...(authParked ? [`${authParked} account(s) in authentication quarantine`] : []),
+    ];
+    if (reasons.length === 0) reasons.push(entries.length ? 'no eligible account remains' : 'the Codex account pool is empty');
+    return `inference-gateway: no Codex account can serve${model ? ` model '${model}'` : ''}; ${reasons.join('; ')}.`;
+  };
   /** Resolve a Codex SOFT pin before the first upstream attempt.
    *
    * `AccountPool.select()` is intentionally strict: it resolves the named account even while that
@@ -9157,6 +9198,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
     acceptedOperation?: AcceptedCodexRequest,
   ) {
     const stageSpan = requestSpan(req);
+    const sendNoServiceableCodexAccount = (message: string): void => {
+      const wait = acceptedOperation?.policy.onUnavailable === 'wait';
+      sendJson(res, wait ? 429 : 503, {
+        type: 'error',
+        error: { type: wait ? 'rate_limit_error' : 'api_error', message },
+        gateway: true,
+      }, wait ? { 'retry-after': '30' } : acceptedOperation ? { 'x-should-retry': 'false' } : {});
+    };
     stageSpan?.setTransport('oauth-http');
     stageSpan?.beginStage('bodyRead');
     let bodyBuf: Buffer;
@@ -9387,22 +9436,31 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
         },
         selectAlternate: (exclude) => {
-          if (!codexCliPool || !bodyModel) return null;
+          if (!bodyModel) return null;
+          if (!codexCliPool) {
+            noServiceableAccountReason = codexNoServiceableAccountMessage(codexCliPool, bodyModel);
+            return null;
+          }
           const at = Date.now();
           let best: ActiveAccount | null = null;
           let bestParked = Infinity;
           let bestKey = Infinity;
           for (const account of codexCliPool.entries?.() ?? []) {
             if (exclude.has(account.accountId) || codexModelRefusals.isRefused(account.accountId, bodyModel)) continue;
+            const park = codexCliPool.parkState?.(account.accountId);
+            if (park?.cause === 'auth') continue;
             // Prefer an unparked, healthy account; a parked or saturated one is still better than
             // forwarding a false "model not supported" — its own 429 path then answers truthfully.
-            const parked = codexCliPool.parkState?.(account.accountId) ? 1 : 0;
+            const parked = park ? 1 : 0;
             const key = accountHealthKey(account, at);
             if (!best || parked < bestParked || (parked === bestParked && key < bestKey)) {
               best = account;
               bestParked = parked;
               bestKey = key;
             }
+          }
+          if (!best && !hasEligibleCodexRequestAccount(codexCliPool, bodyModel)) {
+            noServiceableAccountReason = codexNoServiceableAccountMessage(codexCliPool, bodyModel);
           }
           return best;
         },
@@ -9517,23 +9575,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     };
     let attemptsUsed = 0;
     let attemptsThisPass = 0;
+    let noServiceableAccountReason: string | null = null;
     const runOAuthRecovery = async (): Promise<void> => {
       let continuationActive = false;
       interception.taken = null;
       attemptsThisPass = 0;
-      // A resumed pass starts from the pool's CURRENT best account instead of
-      // blindly re-holding the account that just exhausted. Hard pins remain strict.
-      // First honour the freshest availability reading the system has (P-008): a store reading newer
-      // than a park that says the account is back clears the park BEFORE the re-pick.
-      if (attemptsUsed > 0) reconcileParksWithStore();
-      if (attemptsUsed > 0 && !routing.hardPin && codexCliPool) {
-        try {
-          const candidateId = healthAwareCodexPool(codexCliPool, bodyModel || null).active().accountId;
-          cli = codexCliAccounts().find((account) => account.accountId === candidateId) ?? cli;
-        } catch {
-          /* all accounts still exhausted — the adapter will make the truthful terminal decision */
-        }
-      }
+      noServiceableAccountReason = null;
       const kernelAdapter = makeKernelAdapter();
       try {
         await executeGatewayRequestKernel({
@@ -9665,6 +9712,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           inFlight: { register: () => ({ unregister: () => undefined }) },
           downstream: {
             start: ({ status, metadata }) => {
+              if (noServiceableAccountReason) {
+                sendNoServiceableCodexAccount(noServiceableAccountReason);
+                return;
+              }
               const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: metadata.accountId };
               for (const [key, value] of Object.entries(metadata.headers)) {
                 if (!STRIP_RESPONSE.has(key.toLowerCase())) outHeaders[key] = value;
@@ -9835,6 +9886,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               }
             },
             write: async (chunk) => {
+              if (noServiceableAccountReason) return;
               cacheProbe?.write(chunk);
               acceptedRelay?.push(chunk);
               if (aggregateSource) {
@@ -9858,6 +9910,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               }
             },
             end: async () => {
+              if (noServiceableAccountReason) return;
               endCacheProbe();
               if (acceptedRelay && pendingAcceptedHead) {
                 const chunks = await acceptedRelay.finish();
@@ -10418,6 +10471,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
         }
       }
+    }
+    if (cli && codexCliPool && !requestedHardPin &&
+        !(req.method === 'GET' && url.startsWith('/v1/models')) &&
+        codexRequestAccountExcluded(codexCliPool, cli.accountId, requestModel)) {
+      const previousAccountId = cli.accountId;
+      const candidate = selectCodexRequestAccount(codexCliPool, requestModel);
+      const selectedCli = candidate && cliList.find((account) => account.accountId === candidate.accountId);
+      if (!selectedCli) {
+        req.resume();
+        sendUnavailableCodexRoute(codexNoServiceableAccountMessage(codexCliPool, requestModel));
+        return;
+      }
+      cli = selectedCli;
+      if (cliPin && !cliInitialPinYieldedFrom) cliInitialPinYieldedFrom = previousAccountId;
     }
     if (req.method === 'GET' && url.startsWith('/v1/models')) {
       req.resume();

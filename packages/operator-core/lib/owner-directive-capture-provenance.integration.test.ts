@@ -76,6 +76,21 @@ describe('owner-directive capture provenance (migrations 1187 + 1198)', () => {
     expect(retry.sourceTurnRef).toBe(sourceTurnRef);
   });
 
+  it('concurrent captures with one sourceTurnRef create and return only one directive', async () => {
+    const sourceTurnRef = 'turn-concurrent-capture-1';
+    const captures = await Promise.all(Array.from({length: 8}, () => captureViaHook(sourceTurnRef)));
+
+    expect(new Set(captures.map((capture) => capture.id))).toEqual(new Set([captures[0]!.id]));
+    const [stored] = await db.adminSql<{ count: number }[]>`
+      SELECT count(*)::int AS count
+        FROM harness_shared.owner_directives
+       WHERE workspace_id = ${workspaceId}
+         AND owner_id = 'owner'
+         AND source_turn_ref = ${sourceTurnRef}
+    `;
+    expect(stored!.count).toBe(1);
+  });
+
   it('D-001: a hook capture lands OPEN — there is no pending triage step', async () => {
     const hooked = await captureViaHook('turn-open-1');
     expect(ownerDirectiveState(hooked)).toBe('open');

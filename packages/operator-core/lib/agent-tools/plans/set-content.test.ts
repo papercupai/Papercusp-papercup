@@ -151,6 +151,43 @@ describe('plans:set-content expectedVersion args (EI-21189868558705461)', () => 
     expect(json.properties?.expectedVersion?.minimum).toBe(0);
     expect(json.properties?.expectedVersion?.maximum).toBe(Number.MAX_SAFE_INTEGER);
   });
+
+  it('accepts the explicit decision-deletion override', () => {
+    expect(argsSchema.safeParse({ ...base, allowDecisionDrop: true }).success).toBe(true);
+  });
+});
+
+describe('evaluateSetContent — decision deletion guard', () => {
+  const itemRows = Array.from({ length: 6 }, (_, index) =>
+    `- **P-${String(index + 1).padStart(3, '0')}** \`todo\` Existing item ${index + 1}`,
+  ).join('\n');
+  const decisionRows = Array.from({ length: 4 }, (_, index) =>
+    `### D-${String(index + 1).padStart(3, '0')} — Decision ${index + 1}\nThe recorded decision remains authoritative.`,
+  ).join('\n\n');
+  const current = CURRENT
+    .replace('- [ ] P-001 First item', itemRows)
+    .replace('## Decisions', `## Decisions\n\n${decisionRows}`);
+  const proposed = current.replace(/\n## Decisions[\s\S]*$/, '\n');
+
+  it('refuses to erase existing decision IDs even when the broad structural threshold would pass', async () => {
+    const result = await evaluateSetContent(current, proposed, 'ei-1812-test', undefined);
+
+    expect(result.newBody).toBeNull();
+    expect(result.value).toMatchObject({
+      ok: false,
+      code: 'decisions_would_be_dropped',
+      droppedDecisionIds: ['D-001', 'D-002', 'D-003', 'D-004'],
+    });
+  });
+
+  it('permits an intentional decision removal only with the dedicated override', async () => {
+    const result = await evaluateSetContent(current, proposed, 'ei-1812-test', undefined, {
+      allowDecisionDrop: true,
+    });
+
+    expect(result.value.ok).toBe(true);
+    expect(result.newBody).toBe(proposed);
+  });
 });
 
 describe('evaluateSetContent — EI-1812 frontmatter re-attach', () => {

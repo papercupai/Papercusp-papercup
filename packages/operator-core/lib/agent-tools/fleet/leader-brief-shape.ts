@@ -796,6 +796,19 @@ function compactMember(value: unknown): unknown {
   if (source.doing && typeof source.doing === 'object') {
     out.doing = pick(source.doing, ['id', 'title', 'status', 'activity'], 140) ?? source.doing;
   }
+  const directiveActuation = asDict(source.directiveActuation);
+  if (directiveActuation) {
+    const compactActuation = pick(directiveActuation, ['total', 'satisfied', 'notYet', 'unprovable'], 60) ?? {};
+    if (Array.isArray(directiveActuation.outstanding)) {
+      compactActuation.outstanding = directiveActuation.outstanding
+        .slice(0, 3)
+        .map((entry) => clip(entry, 240) ?? entry);
+      if (directiveActuation.outstanding.length > 3) {
+        compactActuation.outstandingTruncated = directiveActuation.outstanding.length;
+      }
+    }
+    out.directiveActuation = compactActuation;
+  }
   const progress = asDict(source.checkpointProgress);
   if (progress) {
     const items = Array.isArray(progress.items) ? progress.items : [];
@@ -1021,7 +1034,17 @@ function compactEmergencyCampaign(value: unknown): unknown {
 function addCappedArray(out: Dict, source: Dict, key: string, cap: number, project: (value: unknown) => unknown): void {
   const rows = source[key];
   if (!Array.isArray(rows)) return;
-  out[key] = rows.slice(0, cap).map(project);
+  const memberOwnerId = key === 'members' && typeof source.memberOwnerId === 'string'
+    ? source.memberOwnerId
+    : undefined;
+  const selectedRows = memberOwnerId === undefined
+    ? rows.slice(0, cap)
+    : rows.filter((entry) => asDict(entry)?.agentId === memberOwnerId).slice(0, 1);
+  out[key] = selectedRows.map(project);
+  if (memberOwnerId !== undefined) {
+    out.memberOwnerId = memberOwnerId;
+    return;
+  }
   if (rows.length > cap)
     out[`${key}Truncated`] = {
       total: rows.length,
@@ -1201,7 +1224,12 @@ function buildProjection(
       ? { shown: data.repeatedRecovery.length, total: data.repeatedRecovery.length, complete: true }
       : undefined,
     members: Array.isArray(data.members)
-      ? { shown: Math.min(caps.members, data.members.length), total: data.members.length }
+      ? {
+          shown: typeof data.memberOwnerId === 'string'
+            ? (data.members.some((entry) => asDict(entry)?.agentId === data.memberOwnerId) ? 1 : 0)
+            : Math.min(caps.members, data.members.length),
+          total: data.members.length,
+        }
       : undefined,
     note: 'Default monitor projection keeps the decision core; use payloadTier:"full" or narrow follow-up reads for detail.',
   };

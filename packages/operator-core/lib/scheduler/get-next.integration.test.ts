@@ -1035,6 +1035,39 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
       .toEqual(['start', 'end']);
   });
 
+  it('tier 3 skips a promoter-held issue even when the spec selects it', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-held-admission', { kind: 'bug', createdTs: 100 });
+    await seedIssue('EI-actionable-after-held', { kind: 'bug', createdTs: 200 });
+    const hold = {
+      admissionReview: { state: 'pending' },
+      admissionHold: {
+        reason: 'protected-duplicate',
+        actor: 'system:work-item-admission-promoter',
+        screeningDeferred: false,
+      },
+    };
+    await db.sql`UPDATE harness_shared.work_items
+      SET admission = 'unreviewed', payload = ${db.sql.json(hold)}
+      WHERE workspace_id = ${WS} AND feature_id = 'EI-held-admission'`;
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'issue-kind-skips-admission-hold',
+      revision: 1,
+      view: { filter: { field: 'kind', op: '=', value: 'bug' } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('EI-actionable-after-held');
+    expect(r?.claimedUnder).toEqual({ specId: 'issue-kind-skips-admission-hold', revision: 1 });
+    const [held] = await db.sql<{ taken_by: string | null; payload: unknown }[]>`
+      SELECT taken_by, payload FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = 'EI-held-admission'`;
+    expect(held?.taken_by).toBeNull();
+    expect(held?.payload).toMatchObject(hold);
+  });
+
   it('reuses the bounded candidate authority read for the issue tier', async () => {
     setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
     await seedIssue('EI-one-authority-read', { state: 'open' });

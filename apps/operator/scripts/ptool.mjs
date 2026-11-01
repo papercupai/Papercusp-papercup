@@ -1742,6 +1742,31 @@ function mergeUnwrappedMetadata(result, ...metadataSources) {
 }
 
 /**
+ * A durable code:run call succeeds when its workflow is admitted, not when the workflow
+ * finishes. Preserve the authored workflow receipt as parseable JSON so callers can inspect
+ * or cancel it without mistaking admission for terminal execution.
+ */
+function durableAdmissionReceipt(envelope) {
+  if (
+    envelope?.schemaVersion !== OUTPUT_ENVELOPE_SCHEMA_VERSION ||
+    envelope.state !== 'complete' ||
+    envelope.summaryProvenance !== 'authored'
+  ) return null;
+  const summary = tryParseJsonObject(envelope.summary);
+  const durableRun = summary?.durableRun;
+  if (
+    !durableRun ||
+    typeof durableRun.workflowId !== 'string' ||
+    !durableRun.workflowId.trim() ||
+    durableRun.status !== 'admitted' ||
+    summary.ok === false
+  ) return null;
+  const receipt = { ...summary, ok: true };
+  if (typeof envelope.next === 'string') receipt.next = envelope.next;
+  return mergeUnwrappedMetadata(receipt, envelope._meta);
+}
+
+/**
  * The result door can splice its truncation notice into a text block before
  * ptool sees it. That leaves a JSON-looking prefix which is not a document;
  * never let that prefix reach a machine-readable stdout stream.
@@ -4703,6 +4728,11 @@ export async function printResult(result, { raw, deliveryProbe = stdoutDeliveryE
       const unwrapped = await unwrapOutputEnvelope(parsed, { env, readReference });
       if (unwrapped !== parsed) text = JSON.stringify(unwrapped);
     }
+  }
+  {
+    const parsed = tryParseJsonObject(text);
+    const admission = parsed ? durableAdmissionReceipt(parsed) : null;
+    if (admission) text = JSON.stringify(admission);
   }
   if (!text.trim()) {
     console.error('ptool: operator returned an empty MCP result; no content or structuredContent was received');

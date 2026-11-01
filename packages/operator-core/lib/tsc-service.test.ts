@@ -827,6 +827,26 @@ describe('focused service protocol', () => {
       });
   });
 
+  it('preserves the full-compile fallback for a >1500-file scope when named sources drift', async () => {
+    await withSocket((request, socket) => {
+      writeFileSync(join(request.root, 'a.ts'), 'export const a = 2;');
+      const changedIdentity = tscServiceIdentity(request);
+      socket.end(frame(request, {
+        ok: false,
+        reason: 'scope-too-wide',
+        detail: 'at least 1501 files (limit 1500); a full compile is cheaper',
+        identity: changedIdentity,
+      }));
+    }, async ({ call, lines }) => {
+      expect(await call()).toBeNull();
+      const output = lines.join('\n');
+      expect(output).toContain('declined (scope-too-wide: at least 1501 files (limit 1500)');
+      expect(output).toContain('state=scope-too-wide');
+      expect(output).toContain('resultOrigin=full-compile-required');
+      expect(output).not.toContain('identity-mismatch');
+    });
+  });
+
   it('refuses compiler and source identity mismatches', async () => {
     for (const key of ['compilerVersion', 'compilerArtifactsSha256', 'serviceSourceSha256', 'projectConfigSha256', 'namedSources']) {
       await withSocket((request, socket) => socket.end(frame(request, { ok: true,

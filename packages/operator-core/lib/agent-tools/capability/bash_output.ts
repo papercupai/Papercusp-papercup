@@ -334,7 +334,11 @@ export async function taskScopeIsActive(
   execFn: ScopeActiveExec = runScopeActiveExec,
 ): Promise<boolean> {
   const snapshot = await taskScopeSnapshot(row, execFn);
-  return Boolean(snapshot?.activeState && LIVE_SCOPE_ACTIVE_STATES.has(snapshot.activeState));
+  return Boolean(
+    snapshot?.loadState === 'loaded' &&
+      snapshot.activeState &&
+      LIVE_SCOPE_ACTIVE_STATES.has(snapshot.activeState),
+  );
 }
 
 /** Max length of an agent-supplied `filter` regex (ReDoS surface bound). */
@@ -1297,7 +1301,11 @@ export default defineTool({
 
         const scopeSnapshot =
           ledgerVerdict.kind === 'ledger_inconclusive' && ledgerRow ? await taskScopeSnapshot(ledgerRow) : null;
-        const scopeActive = Boolean(scopeSnapshot?.activeState && LIVE_SCOPE_ACTIVE_STATES.has(scopeSnapshot.activeState));
+        const scopeActive = Boolean(
+          scopeSnapshot?.loadState === 'loaded' &&
+            scopeSnapshot.activeState &&
+            LIVE_SCOPE_ACTIVE_STATES.has(scopeSnapshot.activeState),
+        );
         const currentTaskIsLive = ledgerVerdict.kind === 'confirmed_alive' || scopeActive;
 
         // The unit retains its own terminal result even when the watcher and

@@ -99,7 +99,7 @@ export function assertDurableParkReleaseContract(value: unknown): void {
   const missing = ['condition', 'owner', 'trigger', 'evidence'].filter(
     (key) => typeof contract[key] !== 'string' || !(contract[key] as string).trim(),
   );
-  if (!['reachable', 'blocked', 'unreachable', 'satisfied'].includes(String(contract.reachability))) {
+  if (!['reachable', 'blocked', 'unknown', 'unreachable', 'satisfied'].includes(String(contract.reachability))) {
     missing.push('reachability');
   }
   if (missing.length) {
@@ -124,14 +124,16 @@ export async function buildDurableParkReleaseContract(
   }
   const reachability = await readEventConditionReachability(input.trigger, { requireSpecificCondition: true });
   const parsedParkedAt = input.parkedAt ? parseEventInstantMs(input.parkedAt) ?? Date.parse(input.parkedAt) : NaN;
-  const uncertified = reachability.basis === 'fired'
-    ? firedTriggerCannotCertify({
-        trigger: input.trigger,
-        firedAt: reachability.firedAt,
-        parkedAtMs: Number.isFinite(parsedParkedAt) ? parsedParkedAt : Date.now(),
-      })
-    : null;
-  if (uncertified) {
+  const uncertified = reachability.uncertifiedReason
+    ? reachability.evidence
+    : reachability.basis === 'fired'
+      ? firedTriggerCannotCertify({
+          trigger: input.trigger,
+          firedAt: reachability.firedAt,
+          parkedAtMs: Number.isFinite(parsedParkedAt) ? parsedParkedAt : Date.now(),
+        })
+      : null;
+  if (uncertified !== null) {
     return {
       condition: input.condition.trim(), owner: input.owner?.trim() || defaultOwner,
       trigger: input.trigger.trim(), reachability: 'blocked', evidence: uncertified,
@@ -148,7 +150,9 @@ export async function buildDurableParkReleaseContract(
           ? 'reachable'
           : reachability.verdict === 'impossible'
             ? 'unreachable'
-            : 'blocked',
+            : reachability.verdict === 'unknown'
+              ? 'unknown'
+              : 'blocked',
     evidence: reachability.evidence,
   };
 }

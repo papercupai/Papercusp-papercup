@@ -945,12 +945,26 @@ export default defineTool({
       identity.ownerId,
     );
     return {
+      // The dispatcher records handler refusals from ToolResult.isError. Without
+      // this bit, the JSON body's ok:false is stored as a successful invocation.
+      ...(ok ? {} : { isError: true as const }),
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify({
             ok,
             requested: ok,
+            ...(!ok
+              ? {
+                  error: hostRefusalReason
+                    ? 'carry_respawn_refused'
+                    : injectResult.confirmation === 'error'
+                      ? 'carry_respawn_unreachable'
+                      : injectResult.confirmation === 'timeout'
+                        ? 'carry_respawn_ack_timeout'
+                        : 'carry_respawn_not_queued',
+                }
+              : {}),
             // EI-19326331501849713: 'queued', NOT `true`. This field only ever
             // meant "the socket write was accepted" (see the comment at the
             // readPriorRespawnOutcome call above) — the host still has to win the

@@ -74,6 +74,7 @@ import {
   type ContextGaugeReadingSource,
 } from "./inbox-context-usage";
 import { readFleetWindDownLoopEndAuthorization } from "./continuation-gate";
+import { readLatestConditionEnvelope } from "./conditions";
 import { readPriorRespawnOutcome, lostRespawnAmbientLine } from "../../../carry-respawn-outcome";
 import { classifyStaleClaims, renderFlushGateLine, FLUSH_GATE_PCT } from "./inbox-flush-gate";
 import { currentContextUsageForOwner } from "../../../compaction-usage";
@@ -720,6 +721,56 @@ export function annotateResolvedConditions<T extends Record<string, unknown>>(
     }
     return e;
   });
+}
+
+/**
+ * Resolutions can have a different audience from an alarm: the alarm may have
+ * been sent before severe-events topic routing, or a reader may have left that
+ * topic before recovery. Preserve the inbox annotation by consulting the exact
+ * latest condition envelope for visible alarms that have no later resolution in
+ * the caller's own inbox. Exact-key reads avoid replaying the shared log.
+ */
+async function readMissingConditionResolutions(
+  entries: readonly Record<string, unknown>[],
+  all: readonly Record<string, unknown>[],
+): Promise<Record<string, unknown>[]> {
+  const keys = new Set<string>();
+  for (const entry of entries) {
+    const key = entry["condition_key"];
+    const ts = entry["ts"];
+    if (
+      typeof key !== "string" ||
+      !key ||
+      typeof ts !== "string" ||
+      entry["condition_heartbeat"] === true ||
+      typeof entry["resolves_condition"] === "string" ||
+      Array.isArray(entry["resolves_conditions"])
+    ) continue;
+
+    const hasLaterInboxResolution = all.some((candidate) => {
+      const candidateTs = candidate["ts"];
+      if (typeof candidateTs !== "string" || candidateTs <= ts) return false;
+      const resolvesMany = candidate["resolves_conditions"];
+      return candidate["resolves_condition"] === key ||
+        (Array.isArray(resolvesMany) && resolvesMany.includes(key));
+    });
+    if (!hasLaterInboxResolution) keys.add(key);
+  }
+
+  if (keys.size === 0) return [];
+  let failures = 0;
+  const latest = await Promise.all([...keys].map(async (key) => {
+    try {
+      return await readLatestConditionEnvelope(key);
+    } catch {
+      failures += 1;
+      return null;
+    }
+  }));
+  if (failures > 0) {
+    console.warn(`[coord:inbox] exact condition lifecycle lookup failed for ${failures} key(s); serving the inbox without some resolved annotations`);
+  }
+  return latest.filter((envelope): envelope is Record<string, unknown> => envelope !== null);
 }
 
 /** WI-7222 (plan agent-epistemics-2026-08-02, P-004's read side): mark entries whose
@@ -2099,9 +2150,14 @@ export default defineTool({
     // WI-1444: mark superseded condition alarms (resolved:true) before bounding,
     // scanning resolutions over the FULL read (`all`) so the annotation sees
     // resolutions even when the alarm+resolution straddle the `limit` window.
+    const allConditionRows = all as unknown as Array<Record<string, unknown>>;
+    const missingConditionResolutions = await readMissingConditionResolutions(
+      entries as unknown as Array<Record<string, unknown>>,
+      allConditionRows,
+    );
     const annotatedEntries = annotateResolvedConditions(
       entries as unknown as Array<Record<string, unknown>>,
-      all as unknown as Array<Record<string, unknown>>,
+      [...allConditionRows, ...missingConditionResolutions],
     );
     // P-006: a bounded read keeps ONE copy of a sectioned message's prose (see
     // dropSectionTextDuplicatedInBody). An unbounded read (cap 0) is left whole.

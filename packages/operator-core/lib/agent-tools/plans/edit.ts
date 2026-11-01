@@ -62,6 +62,12 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe('Replace every occurrence instead of requiring a unique match. Default false.'),
+  allowDecisionDrop: z
+    .boolean()
+    .optional()
+    .describe(
+      'Removing an existing plan decision ID is rejected as `decisions_would_be_dropped`. Pass true only when removing the listed decisions is intentional.',
+    ),
   expectedHash: z
     .string()
     .optional()
@@ -107,6 +113,7 @@ export async function evaluatePlanEdit(
   opts: {
     expectedVersion?: number;
     meta?: { version: number; contentHash: string; planStatus?: string | null } | null;
+    allowDecisionDrop?: boolean;
   } = {},
 ): Promise<{ newBody: string | null; value: PlanEditValue }> {
   if (current === null) {
@@ -146,7 +153,7 @@ export async function evaluatePlanEdit(
 export default defineTool({
   name: 'plans:edit',
   description:
-    'Edit a plan in place by exact string replace (old_string → new_string), like the file Edit tool — the surgical way to fix a citation, a line, or a paragraph without resending the whole document. old_string must match exactly once (or pass replace_all). Rejects unmatched text, lifecycle status changes, frontmatter loss, and lint failures. Records a plan revision. expectedHash is optional — the exact match is the concurrency guard.',
+    'Edit a plan in place by exact string replace (old_string → new_string), like the file Edit tool — the surgical way to fix a citation, a line, or a paragraph without resending the whole document. old_string must match exactly once (or pass replace_all). Rejects unmatched text, lifecycle status changes, unapproved decision deletion, frontmatter loss, and lint failures. Records a plan revision. expectedHash is optional — the exact match is the concurrency guard.',
   guidance: {
     when: 'Correcting or rewriting a SPECIFIC part of a plan body the structured verbs cannot reach — a stale citation, a wrong line, a paragraph in `## Background` or a decision body. The default for small/targeted prose fixes.',
     notWhen:
@@ -186,8 +193,14 @@ export default defineTool({
       },
       async (current, meta) => {
         const evaluated = args.old_string !== undefined
-          ? await evaluatePlanEdit(current, args.old_string, args.new_string!, args.replace_all ?? false, args.slug, args.expectedHash, { meta })
-          : await evaluateSetContent(current, current ?? '', args.slug, args.expectedHash, { meta });
+          ? await evaluatePlanEdit(current, args.old_string, args.new_string!, args.replace_all ?? false, args.slug, args.expectedHash, {
+              meta,
+              allowDecisionDrop: args.allowDecisionDrop,
+            })
+          : await evaluateSetContent(current, current ?? '', args.slug, args.expectedHash, {
+              meta,
+              allowDecisionDrop: args.allowDecisionDrop,
+            });
         if (anchors !== undefined && evaluated.value.ok && evaluated.newBody !== null
           && !parsePlan(evaluated.newBody).items.some(item => item.id === args.itemId)) {
           return { newBody: null, value: { ok: false as const, code: 'anchor_item_not_found' as const, itemId: args.itemId! } };
@@ -243,6 +256,11 @@ export default defineTool({
         payload.parentStatus = v.parentStatus;
         payload.changes = v.changes;
         payload.message = v.message;
+      } else if (v.code === 'decisions_would_be_dropped') {
+        payload.droppedDecisionIds = v.droppedDecisionIds;
+        payload.hint =
+          `This edit would remove existing decision ID(s): ${v.droppedDecisionIds.join(', ')}. ` +
+          'Retry with allowDecisionDrop: true only if that removal is intentional.';
       } else if (v.code === 'string_not_unique') {
         payload.count = v.count;
         payload.hint = 'add surrounding context to old_string to make it unique, or pass replace_all: true';

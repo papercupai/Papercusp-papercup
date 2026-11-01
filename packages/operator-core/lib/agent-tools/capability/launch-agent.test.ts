@@ -3194,18 +3194,18 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(buildCarryBriefMock).not.toHaveBeenCalled();
   });
 
-  it('EI-11578: a RESUME keeps the process-per-window fallback when no terminal preference is set', async () => {
+  it('uses the standard desktop terminal on resume when TERMINAL is unset', async () => {
     vi.stubEnv('TERMINAL', '');
     resolveResumeTargetMock.mockResolvedValue(dead);
     await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }, ctx);
-    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: true });
+    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: false });
   });
 
-  it('forces process-per-window on resume even when TERMINAL names gnome-terminal', async () => {
+  it('preserves GNOME Terminal on resume when explicitly configured', async () => {
     vi.stubEnv('TERMINAL', 'gnome-terminal');
     resolveResumeTargetMock.mockResolvedValue(dead);
     await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }, ctx);
-    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: true });
+    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: false });
   });
 
   it('preserves an explicit terminal preference for fresh launches', async () => {

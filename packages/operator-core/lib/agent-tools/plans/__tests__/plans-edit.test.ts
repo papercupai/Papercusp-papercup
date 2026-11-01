@@ -129,6 +129,24 @@ describe('evaluatePlanEdit — CAS + lint inherited from evaluateSetContent', ()
     expect(r.value.ok).toBe(true);
   });
 
+  it('requires explicit permission to remove an existing decision ID', async () => {
+    const decision = '### D-001 — Keep the contract\nThis decision remains authoritative.\n';
+    const current = VALID.replace('## Decisions\n', `## Decisions\n\n${decision}`);
+    const refused = await evaluatePlanEdit(current, decision, '', false, SLUG, undefined);
+
+    expect(refused.newBody).toBeNull();
+    expect(refused.value).toMatchObject({
+      ok: false,
+      code: 'decisions_would_be_dropped',
+      droppedDecisionIds: ['D-001'],
+    });
+
+    const allowed = await evaluatePlanEdit(current, decision, '', false, SLUG, undefined, {
+      allowDecisionDrop: true,
+    });
+    expect(allowed.value.ok).toBe(true);
+  });
+
   it('routes plan lifecycle status changes through plans:set-plan-status', async () => {
     const r = await evaluatePlanEdit(VALID, 'status: active', 'status: shipped', false, SLUG, undefined);
     expect(r.newBody).toBeNull();

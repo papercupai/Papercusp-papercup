@@ -42,7 +42,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from './cron';
 import { stampLoopArmedAt } from './loop-dead-man';
 import { extractGoalWorkItemIds } from './loop-goal-staleness';
-import { recordLoopTransition } from './loop-transition-log';
+import { recordLoopTransition, type LoopCycleTurn } from './loop-transition-log';
 import { LOOP_TURN_START_MARKER, SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { boundedPgReadTxn } from '../../pg-read-query';
 // Import from the dependency-free automatic-tool-names.ts, NOT from
@@ -2045,10 +2045,36 @@ export function computeCadenceDrift(input: {
   parked?: boolean;
   /** ISO of the next scheduled fire (null when parked/unset). Overdue-ness is the drift evidence. */
   nextFireAt?: string | null;
+  /** Current arm boundary for rejecting a stale completed cycle from a previous arm. */
+  armedAt?: string | null;
+  /** Latest completed transition cycle, when the fail-soft transition instrument found one. */
+  lastTurn?: Pick<LoopCycleTurn, 'settledAt' | 'scheduledDelaySec' | 'postSettleDelaySec'> | null;
   nowMs?: number;
 }): boolean {
   const intervalSec = input.intervalSec;
   if (!input.active || intervalSec == null || !Number.isFinite(intervalSec) || intervalSec <= 0) return false;
+
+  // A completed cycle can already have parked its next turn, so the ordinary overdue-fire
+  // check below has gone quiet by then. Compare the scheduled re-arm delay with the observed
+  // post-settle delay while both belong to this arm. A deliberate fire-gate backoff is part of
+  // the schedule and stays quiet; only a material excess over that schedule is drift.
+  const scheduledDelaySec = input.lastTurn?.scheduledDelaySec;
+  const postSettleDelaySec = input.lastTurn?.postSettleDelaySec;
+  const armAtMs = input.armedAt == null ? NaN : Date.parse(input.armedAt);
+  const settledAtMs = input.lastTurn?.settledAt ? Date.parse(input.lastTurn.settledAt) : NaN;
+  if (
+    Number.isFinite(armAtMs) &&
+    Number.isFinite(settledAtMs) &&
+    settledAtMs >= armAtMs &&
+    scheduledDelaySec != null &&
+    Number.isFinite(scheduledDelaySec) &&
+    scheduledDelaySec >= 0 &&
+    postSettleDelaySec != null &&
+    Number.isFinite(postSettleDelaySec) &&
+    postSettleDelaySec - scheduledDelaySec >= intervalSec * CADENCE_DRIFT_OVERDUE_INTERVALS
+  ) {
+    return true;
+  }
 
   const firesSinceArm = Number.isFinite(input.firesSinceArm) ? Math.max(0, input.firesSinceArm) : 0;
   if (firesSinceArm < CADENCE_DRIFT_MIN_FIRES) return false;
@@ -2170,6 +2196,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     longestObservedGapSec: cadence.longestObservedGapSec,
     parked,
     nextFireAt: nextFireAtIso,
+    armedAt: r.armed_at ? new Date(r.armed_at).toISOString() : null,
   });
   const fireStarved = computeLoopFireStarvation({
     active: Boolean(r.active),

@@ -2407,17 +2407,19 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
     expect(d.getLoopCarryNoteWithMetaFn).not.toHaveBeenCalled();
   });
 
-  it('uses the surviving event delivery id for inbox replay after removing a stale loop headline', async () => {
+  it('uses the surviving event and await IDs for inbox replay after removing a stale loop headline', async () => {
     const { coalesceDeliveries } = await import('./engine');
     const awaitFire = work({
       id: 40,
-      eventKey: 'candidate:ready',
-      summary: 'candidate c-1 is ready for the parked waiter',
-      payload: { candidate: 'c-1', state: 'ready' },
+      awaitId: 901,
+      eventKey: 'work-item:done:WI-10006055',
+      summary: 'the work item has not completed',
+      payload: { timeout: true },
       createdAt: new Date(Date.now() - 60_000).toISOString(),
     });
     const endedLoopHeadline = work({
       id: 41,
+      awaitId: 373602,
       eventKey: 'coord:inbox-wake:su-abc',
       source: 'loop:rt-loop',
       payload: loopPayload,
@@ -2445,10 +2447,12 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({
       msgId: 'event-wake-inbox-40',
-      extra: { event_key: 'candidate:ready', wake_delivery_id: 40 },
+      extra: { event_key: 'work-item:done:WI-10006055', wake_delivery_id: 40 },
     });
     expect(sent[0]?.body).toContain('event-wake delivery #40');
-    expect(sent[0]?.body).toContain('candidate:ready');
+    expect(sent[0]?.body).toContain('work-item:done:WI-10006055');
+    expect(sent[0]?.body).toContain('await_id: 901');
+    expect(sent[0]?.body).not.toContain('await_id: 373602');
     expect(sent[0]?.body).not.toContain('STALE LOOP CHECKPOINT');
   });
 

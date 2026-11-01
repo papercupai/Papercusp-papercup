@@ -3810,16 +3810,18 @@ export function selectLeaderBriefMembers(
   entries: readonly DecoratedAgent[],
   fleet: string,
   includeStale = false,
+  memberOwnerId?: string,
 ): { rows: DecoratedAgent[]; census: FleetPopulationCensus } {
   const ofThisFleet = entries.filter((entry) => entry.fleetSlug === fleet);
   return selectFleetPopulation(
     ofThisFleet,
-    (entry) => includeStale || entry.claims.length > 0 || entry.alive,
+    (entry) => includeStale || entry.claims.length > 0 || entry.alive || entry.agentId === memberOwnerId,
     {
       population: `member(s) of fleet '${fleet}'`,
       basis:
         'A row is on the roster if presence records it in this fleet; it is shown here if it holds ' +
-        'a claim or is alive (heartbeat-fresh), or unconditionally under include_stale.',
+        'a claim or is alive (heartbeat-fresh), is the explicitly selected memberOwnerId, or is ' +
+        'unconditional under include_stale.',
       withheldReason:
         'idle AND not heartbeat-fresh (stale-idle) — note this hides members precisely when they ' +
         'are dying, which is when the count matters most',
@@ -4097,6 +4099,12 @@ export default defineTool({
       ),
     harness: z.string().max(80).optional(),
     workspace: z.string().max(120).optional(),
+    memberOwnerId: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe('Return detailed data for this one member ownerId, including a stale-idle roster row.'),
     include_stale: z
       .boolean()
       .optional()
@@ -4163,6 +4171,7 @@ export default defineTool({
       benchSuggestions: z.unknown().optional(),
       intentAttention: z.unknown().optional(),
       members: z.array(z.unknown()).optional(),
+      memberOwnerId: z.string().optional(),
       // The bounded shaper emits truncation metadata (`{ total, shown }`),
       // while the emergency fallback emits the compact boolean `true`.
       // Keep both representations in the registered result contract so the
@@ -4303,7 +4312,14 @@ export interface LeaderBriefCaller {
 export function boundLeaderBriefMembers<T>(
   rows: T[],
   payloadTierOverride?: LeaderBriefCaller['payloadTierOverride'],
+  memberOwnerId?: string,
 ): { kept: T[]; truncated: boolean } {
+  if (memberOwnerId !== undefined) {
+    const selected = rows.find(
+      (row) => typeof row === 'object' && row !== null && 'agentId' in row && row.agentId === memberOwnerId,
+    );
+    return { kept: selected === undefined ? [] : [selected], truncated: false };
+  }
   return payloadTierOverride === 'full'
     ? { kept: rows, truncated: false }
     : trimToByteBudget(rows, LEADER_BRIEF_MEMBER_DETAIL_BUDGET);
@@ -4426,6 +4442,7 @@ export async function buildLeaderBrief(
     fleet?: string;
     harness?: string;
     workspace?: string;
+    memberOwnerId?: string;
     include_stale?: boolean;
     include_mermaid?: boolean;
     unowned_critical_age_hours?: number;
@@ -4785,7 +4802,12 @@ export async function buildLeaderBrief(
     new Map(presence.map((p) => [p.ownerId, p.agentRole] as const)),
     (ownerId) => visibleHosts.get(ownerId) ?? null,
   );
-  const { rows: grouped, census: memberCensus } = selectLeaderBriefMembers(rosterEntries, fleet, args.include_stale);
+  const { rows: grouped, census: memberCensus } = selectLeaderBriefMembers(
+    rosterEntries,
+    fleet,
+    args.include_stale,
+    args.memberOwnerId,
+  );
   await boundedLeaderBriefRead('decorate-parked-on', () => decorateParkedOn(grouped), grouped);
   // Keep the parked-on → loop → member-verdict dependency chain intact. The
   // remaining decorations are independent read-only overlays and are batched
@@ -5610,7 +5632,9 @@ export async function buildLeaderBrief(
   const benchSuggestions = compactLeaderBriefBenchSuggestions(membersWithVerdict);
   const intentAttention = compactLeaderBriefIntentAttention(membersWithVerdict);
   const repeatedRecovery = compactLeaderBriefRepeatedRecovery(membersWithVerdict);
-  const detailMembers = prioritizeActionableMembers(membersWithVerdict);
+  const detailMembers = args.memberOwnerId
+    ? membersWithVerdict.filter((member) => member.agentId === args.memberOwnerId)
+    : prioritizeActionableMembers(membersWithVerdict);
   const claimsByOwner = new Map(grouped.map((agent) => [agent.agentId, agent.claims]));
   const activityByOwner = new Map(presence.map((agent) => [agent.ownerId, agent.lastActiveAt]));
   // Only the bounded reader's first three candidates cost a held-item read.
@@ -5628,6 +5652,7 @@ export async function buildLeaderBrief(
       ...(progress.has(member.agentId) ? { checkpointProgress: progress.get(member.agentId)! } : {}),
     })),
     payloadTierOverride,
+    args.memberOwnerId,
   );
   const boundedReservationMembers = trimToByteBudget(reservation.members, LEADER_BRIEF_RESERVATION_DETAIL_BUDGET);
   const reservationForResponse = {
@@ -5745,6 +5770,7 @@ export async function buildLeaderBrief(
   return {
     data: {
       ok: true,
+      ...(args.memberOwnerId ? { memberOwnerId: args.memberOwnerId } : {}),
       ...leaderBriefRosterDegradation(rosterResult.degradedLegs),
       ...(self ? { self } : {}),
       // P-004/D-096: the caller is acting on this fleet without holding its

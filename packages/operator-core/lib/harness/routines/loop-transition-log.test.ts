@@ -4,6 +4,7 @@ import {
   LOOP_CYCLE_BASIS,
   deriveLoopCycle,
   readLatestLoopTransition,
+  readLatestLoopTransitionCycles,
   recordLoopTransition,
   transitionRetentionDays,
   __resetPruneThrottleForTest,
@@ -156,6 +157,53 @@ describe('readLatestLoopTransition', () => {
         { sql: unavailable as any },
       ),
     ).resolves.toEqual({ status: 'unknown' });
+  });
+});
+
+describe('readLatestLoopTransitionCycles', () => {
+  it('reads bounded transition windows for a roster in one scoped query', async () => {
+    const sql = fakeSql({
+      rows: [
+        {
+          routine_id: 'rt-one', at: '2026-10-26T14:16:10.315Z', event: 'parked',
+          actor: 'claim-due-routine', new_next_fire_at: null, interval_sec: 60, detail: null,
+        },
+        {
+          routine_id: 'rt-one', at: '2026-10-26T13:16:53.683Z', event: 'rearmed',
+          actor: 'reconcile-loop-routines', new_next_fire_at: '2026-10-26T14:15:34.953Z',
+          interval_sec: 60, detail: { via: 'gate-backoff' },
+        },
+        {
+          routine_id: 'rt-one', at: '2026-10-26T13:16:35.296Z', event: 'parked',
+          actor: 'claim-due-routine', new_next_fire_at: null, interval_sec: 60, detail: null,
+        },
+      ],
+    });
+
+    const out = await readLatestLoopTransitionCycles(
+      { workspaceId: 'ws-1', routineIds: ['rt-one', 'rt-empty'] },
+      { sql: sql as any, nowMs: Date.parse('2026-10-26T14:20:00.000Z') },
+    );
+
+    expect(out.get('rt-one')).toMatchObject({
+      status: 'found',
+      cycle: { phase: 'turn-in-flight', lastTurn: { scheduledDelaySec: 3_521, postSettleDelaySec: 3_557 } },
+    });
+    expect(out.get('rt-empty')).toEqual({ status: 'none' });
+    expect(sql.statements).toHaveLength(1);
+    const statement = sql.statements[0];
+    expect(statement?.text).toContain('workspace_id = ?');
+    expect(statement?.text).toContain('routine_id = ANY(?::text[])');
+    expect(statement?.values).toEqual(['ws-1', ['rt-one', 'rt-empty'], CYCLE_WINDOW_ROWS]);
+  });
+
+  it('reports unknown rather than none when the transition instrument is unavailable', async () => {
+    const sql = fakeSql({ throwOn: /routine_loop_transitions/, code: '42P01' });
+    const out = await readLatestLoopTransitionCycles(
+      { workspaceId: 'ws-1', routineIds: ['rt-one'] },
+      { sql: sql as any },
+    );
+    expect(out.get('rt-one')).toEqual({ status: 'unknown' });
   });
 });
 

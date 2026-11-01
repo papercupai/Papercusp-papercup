@@ -1218,6 +1218,10 @@ const MAX_SHED_DRAIN_SAMPLES = 256;
 export const BOOT_WINDOW_STATUSES: ReadonlySet<number> = new Set([
   404, 405, 503,
 ]);
+// A recent successful response proves this exact upstream target has mounted its routes.
+// Keep the window short so an actual restart still gets the boot retry, while a missing
+// endpoint on a live build surfaces without paying the full retry window.
+const RECENT_UPSTREAM_2XX_WINDOW_MS = 5_000;
 /** Above this serialized size we do NOT rewrite the body to inject a key: re-stringifying a
  *  pathologically large tools/call would block the proxy loop, and that call is exactly the
  *  one we must not block on. Forgoing its key only drops it to 'opaque' (refused-only). */
@@ -3223,6 +3227,7 @@ export function isReservedControlPlaneCall(
 export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const log = opts.log ?? ((s: string) => console.log(`[mcp-proxy] ${s}`));
   let lastDataPlaneInstabilityAtMs = 0;
+  const recentUpstream2xxAtMs = new Map<string, number>();
   const backoff = opts.retryBackoffMs ?? 500;
   // P-001 (staging-build-tool-routing-2026-10-21): the port that identifies the staging
   // operator for a `build:'staging'` call (alongside the `static-fallback` candidate).
@@ -5933,6 +5938,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           let candidateIndex = 0;
           let candidateCount = 0;
           let noBuildTarget = false;
+          let attemptTargetKey: string | null = null;
           let last: ForwardOutcome | undefined;
           // Retry loop: refused → walk ordered candidates, then replay the last candidate
           // across the window (shouldRetry); post-connect →
@@ -5988,9 +5994,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               const candidates = buildCandidates;
               candidateCount = candidates.length;
               candidateIndex = Math.min(candidateIndex, candidates.length - 1);
+              const attemptTarget = candidates[candidateIndex]!;
+              attemptTargetKey = attemptTarget.host + ":" + attemptTarget.port;
               outcome = await forwardOnce(
                 opts,
-                candidates[candidateIndex]!,
+                attemptTarget,
                 req.method ?? "GET",
                 req.url ?? "/",
                 fwd.headers,
@@ -6069,6 +6077,18 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             if (outcome.ures) {
               const ures = outcome.ures;
               const status = ures.statusCode ?? 502;
+              const statusObservedAtMs = Date.now();
+              if (status >= 200 && status < 300 && attemptTargetKey) {
+                recentUpstream2xxAtMs.set(attemptTargetKey, statusObservedAtMs);
+              }
+              const lastTarget2xxAtMs = attemptTargetKey
+                ? recentUpstream2xxAtMs.get(attemptTargetKey)
+                : undefined;
+              const targetRecentlyServed2xx =
+                lastTarget2xxAtMs !== undefined &&
+                statusObservedAtMs >= lastTarget2xxAtMs &&
+                statusObservedAtMs - lastTarget2xxAtMs <=
+                  RECENT_UPSTREAM_2XX_WINDOW_MS;
               recordInitializeStage("slow_response", upstreamMs);
               // P-010: :3070 shed this tools/call (event loop critically saturated). The tool
               // NEVER dispatched (429 = not fulfilled) → replay is write-safe for any class.
@@ -6079,11 +6099,15 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // watchdog's liveness check) that yields 404/405 must surface INSTANTLY —
               // absorbing it would stall probes for the whole retry window and read as a
               // wedge (worst case: the watchdog restart-loops the proxy, flapping the fleet).
+              const missingRouteAfterRecentSuccess =
+                (status === 404 || status === 405) &&
+                targetRecentlyServed2xx;
               const bootAbsorbable =
                 workerRouting.kind !== 'worker' &&
                 req.method === "POST" &&
                 BOOT_WINDOW_STATUSES.has(status) &&
-                absorbBoot;
+                absorbBoot &&
+                !missingRouteAfterRecentSuccess;
               if (
                 ((isBackpressureStatus(status) && absorb429 && workerRouting.kind !== 'worker') ||
                   bootAbsorbable) &&
@@ -6322,7 +6346,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 else res.destroy();
               });
               ures.pipe(res);
-              if (attempts > 1) {
+              if (attempts > 1 && status >= 200 && status < 300) {
                 log(
                   `recovered after ${attempts} attempts (${Date.now() - started}ms) — upstream target came back`,
                 );

@@ -101,7 +101,14 @@ describe('code-search.definition-lookup — what it claims (D-010a)', () => {
     expect(guidance).toContain('--exclude-dir={node_modules,.vitest-tmp,dist,coverage}');
     expect(guidance).toContain('--exclude-dir=sidecar');
     expect(guidance).toMatch(/generated bundles\/caches are not source evidence/i);
-    expect(guidance).toMatch(/exhaustive exact-text search remains grep's job/i);
+    expect(guidance).toMatch(/exhaustive exact-text search remains grep\/rg's job/i);
+  });
+
+  it('uses ripgrep output caps per file and per matching line', () => {
+    const guidance = lspDefinitionLookup.routing.insteadOf;
+    expect(guidance).toContain('rg -n --max-count 60');
+    expect(guidance).toContain('--max-columns 256 --max-columns-preview');
+    expect(guidance).toMatch(/caps matching lines per file and long lines/i);
   });
 });
 

@@ -1671,6 +1671,11 @@ describe('computeFleetExecutionCollapseAlert (WI-583276)', () => {
 });
 
 describe('fleet:leader-brief — unowned critical age filter (EI-20228488170965112)', () => {
+  it('accepts a memberOwnerId selector and rejects an empty owner id', () => {
+    expect(leaderBriefTool.args.safeParse({ fleet: 'alpha', memberOwnerId: 'owner-1' }).success).toBe(true);
+    expect(leaderBriefTool.args.safeParse({ fleet: 'alpha', memberOwnerId: '' }).success).toBe(false);
+  });
+
   it('accepts zero as the immediate-triage age threshold', () => {
     expect(leaderBriefTool.args.safeParse({ fleet: 'alpha', unowned_critical_age_hours: 0 }).success).toBe(true);
   });
@@ -1983,6 +1988,22 @@ describe('selectLeaderBriefMembers (EI-11840)', () => {
     expect(selectLeaderBriefMembers([stale], 'p2p-git', true).rows).toEqual([stale]);
   });
 
+  it('includes the specifically selected stale member without revealing unrelated stale rows', () => {
+    const selected = baseAgent({ agentId: 'su-selected', alive: false, claims: [] });
+    const unrelated = baseAgent({ agentId: 'su-unrelated-stale', alive: false, claims: [] });
+    const live = baseAgent({ agentId: 'su-live', alive: true, claims: [] });
+
+    const { rows, census } = selectLeaderBriefMembers(
+      [selected, unrelated, live],
+      'p2p-git',
+      false,
+      'su-selected',
+    );
+
+    expect(rows.map((member) => member.agentId)).toEqual(['su-selected', 'su-live']);
+    expect(census).toMatchObject({ candidates: 3, counted: 2, withheld: 1 });
+  });
+
   // P-010 (fleet-lead-instrumentation-audit-2026-08-09): the same fleet read 11 /
   // 11 / 14 / 8 / 9 across leader-brief and fleet:assignments within minutes, each
   // number defensible and none reconciled. The census makes every count say what
@@ -2154,6 +2175,22 @@ describe('fleet:leader-brief full-tier member details', () => {
       expect(bounded.kept).toEqual([members[0]]);
       expect(bounded.truncated).toBe(true);
     }
+  });
+
+  it('selects the requested member before byte bounding, regardless of its default position', () => {
+    const rows = [
+      { agentId: 'earlier-member', detail: 'x'.repeat(4_000) },
+      {
+        agentId: 'requested-member',
+        detail: 'x'.repeat(4_000),
+        directiveActuation: { total: 1, satisfied: 0, notYet: 1, unprovable: 0, outstanding: ['expected checkpoint'] },
+      },
+    ];
+
+    expect(boundLeaderBriefMembers(rows, 'standard', 'requested-member')).toEqual({
+      kept: [rows[1]],
+      truncated: false,
+    });
   });
 });
 

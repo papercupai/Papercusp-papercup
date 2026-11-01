@@ -1004,10 +1004,21 @@ export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE
         buffer = buffer.slice(newline + 1);
         try {
           const response = JSON.parse(line);
-          if (response.requestId !== requestId || JSON.stringify(response.identity) !== JSON.stringify(identity)) {
-            // A correctly correlated refusal can carry a changed source/config
-            // identity. Retain the distinction from a reply for another request.
-            // Log field names, never source contents or the complete identity.
+          const identityMatches = JSON.stringify(response.identity) === JSON.stringify(identity);
+          // An explicit scope-too-wide refusal cannot certify a focused result. The server may
+          // observe named sources changing after capture, but that refusal safely routes callers
+          // to the full compile; preserve it only when request correlation and every other
+          // identity field still match.
+          const scopeTooWideFallbackWithSourceDrift =
+            response.requestId === requestId &&
+            response.kind === 'result' &&
+            response.ok === false &&
+            response.reason === 'scope-too-wide' &&
+            Array.isArray(response.identity?.namedSources) &&
+            JSON.stringify({ ...response.identity, namedSources: identity.namedSources }) === JSON.stringify(identity);
+          if (response.requestId !== requestId || (!identityMatches && !scopeTooWideFallbackWithSourceDrift)) {
+            // Retain the distinction between source drift and a reply for another request.
+            // Log field names and server context, never source contents or the complete identity.
             const changedIdentityFields = [...new Set([
               ...Object.keys(identity), ...Object.keys(response.identity ?? {}),
             ])].filter(key => JSON.stringify(identity[key]) !== JSON.stringify(response.identity?.[key]));

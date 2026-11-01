@@ -2428,6 +2428,80 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     ).toBeUndefined();
   });
 
+  it("surfaces a non-MCP 404 immediately after the target has served a 2xx", async () => {
+    let restrictedRouteCalls = 0;
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        if (req.url === "/api/agent-mcp/restricted-egress-check") {
+          restrictedRouteCalls++;
+          res.writeHead(404, { "content-type": "text/plain", "retry-after": "0" });
+          res.end("route missing");
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"result":"ok"}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 20,
+        log: (message) => logs.push(message),
+      }),
+    );
+    await listen(proxy);
+
+    const healthy = await request(port(proxy), '{"jsonrpc":"2.0"}', "/api/mcp");
+    expect(healthy.status).toBe(200);
+
+    const missing = await request(
+      port(proxy),
+      '{"probe":true}',
+      "/api/agent-mcp/restricted-egress-check",
+    );
+    expect(missing.status).toBe(404);
+    expect(restrictedRouteCalls).toBe(1);
+    expect(logs.some((message) => message.includes("recovered after"))).toBe(false);
+  });
+
+  it("does not log a retry-exhausted upstream 404 as recovered", async () => {
+    let calls = 0;
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((_req, res) => {
+        calls++;
+        res.writeHead(404, { "content-type": "text/plain", "retry-after": "0" });
+        res.end("route missing");
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 1,
+        log: (message) => logs.push(message),
+      }),
+    );
+    await listen(proxy);
+
+    const missing = await request(
+      port(proxy),
+      '{"probe":true}',
+      "/api/agent-mcp/restricted-egress-check",
+    );
+    expect(missing.status).toBe(404);
+    expect(calls).toBeGreaterThan(1);
+    expect(logs.some((message) => message.includes("recovered after"))).toBe(false);
+  });
+
   it("keeps a non-MCP upstream reset from marking later MCP requests degraded", async () => {
     const restPath = "/api/agent-mcp/transport-probe";
     let mcpDegradedAt: string | undefined;

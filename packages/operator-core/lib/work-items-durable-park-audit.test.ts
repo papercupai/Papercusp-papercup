@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assertDurableParkReleaseContract,
   buildDurableParkReleaseContract,
   firedTriggerCannotCertify,
   parseEventInstantMs,
@@ -198,6 +199,35 @@ describe('durable park audit classification', () => {
     } }, 'resume when producer finishes');
     expect(liveness.status).toBe('unverified');
     expect(liveness.findings).toContain('reachability-unverified');
+  });
+
+  it('preserves unknown reachability as unverified and retains resolver diagnostics', () => {
+    const evidence = 'event ledger resolver timed out';
+    const liveness = classifyDurableParkReleaseLiveness({ claim_hold_release: {
+      condition: 'dependency WI-1 reaches a terminal state', owner: 'plan:queue-cleanup',
+      trigger: 'work-item:done:WI-1', reachability: 'unknown', evidence,
+    } }, 'UNPARK when WI-1 is done');
+
+    expect(liveness).toEqual({
+      status: 'unverified',
+      contractPresent: true,
+      condition: 'dependency WI-1 reaches a terminal state',
+      owner: 'plan:queue-cleanup',
+      trigger: 'work-item:done:WI-1',
+      reachability: 'unknown',
+      evidence,
+      findings: ['reachability-unverified'],
+    });
+  });
+
+  it('accepts unknown reachability as a complete durable-park contract', () => {
+    expect(() => assertDurableParkReleaseContract({
+      condition: 'dependency WI-1 reaches a terminal state',
+      owner: 'plan:queue-cleanup',
+      trigger: 'work-item:done:WI-1',
+      reachability: 'unknown',
+      evidence: 'event ledger resolver timed out',
+    })).not.toThrow();
   });
 
   it('reports a completed pause task as unverified resume authority even with a fired latch', async () => {
