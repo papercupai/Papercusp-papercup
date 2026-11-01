@@ -479,10 +479,25 @@ describe('loop:status rewake verdict (P-013)', () => {
       nextFireAt: null,
       lastWakeStatus: 'delivered',
       lastWakeError: null,
+      lastFiredAt: '2026-10-31T10:00:00.000Z',
+      lastLoopTurnAt: null,
     });
     const out = await run();
     expect(out.loop).toMatchObject({ active: true, parked: true, nextFireAt: null });
     expect(out.rewake).toEqual({ rewakeGuaranteed: true, reason: null });
+  });
+
+  it('reports last-turn-unrearmed after the parked loop turn completed without a next fire', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      ...armed,
+      parked: true,
+      nextFireAt: null,
+      lastWakeStatus: 'delivered',
+      lastWakeError: null,
+      lastFiredAt: '2026-10-31T10:00:00.000Z',
+      lastLoopTurnAt: '2026-10-31T10:00:00.001Z',
+    });
+    expect((await run()).rewake).toEqual({ rewakeGuaranteed: false, reason: 'last-turn-unrearmed' });
   });
 
   it('is null when no loop exists', async () => {
@@ -496,6 +511,7 @@ describe('loop:status rewake verdict (P-013)', () => {
     expect(returns).toContain('servingBuild');
     expect(returns).toContain('servingGeneration');
     expect(returns).toContain('last-fire-parked');
+    expect(returns).toContain('last-turn-unrearmed');
     expect(returns).toContain('wake-unreachable');
     expect(returns).toContain('lastFailedFireLoopTurnCompletedAt');
   });

@@ -28,6 +28,7 @@ import {
   getConsultStates,
   getThreadPost,
   summarizeConsultDispatch,
+  type ConsultLifecycleState,
   type ConsultDispatchSummary,
 } from '../conversations';
 const getM = vi.mocked(getConversation);
@@ -206,7 +207,7 @@ describe('conversations:get handler (bulk keyed-array)', () => {
 
   // EI-21510601647367544 — the divergence that makes this necessary.
   describe('consult lifecycle state', () => {
-    const consultRow = (id: string) => ({
+    const consultRow = (id: string, over: Partial<ConsultLifecycleState> = {}) => ({
       conversation_id: id,
       state: 'expired',
       latency_contract: 'proceed',
@@ -214,6 +215,8 @@ describe('conversations:get handler (bulk keyed-array)', () => {
       expires_at: '2026-08-26T07:44:56.262Z',
       closed_at: '2026-08-26T07:48:28.261Z',
       wakes_used: 1,
+      request_result: null,
+      outcome: null,
       session_cost: {
         status: 'partial' as const,
         usd: 0.03,
@@ -223,6 +226,7 @@ describe('conversations:get handler (bulk keyed-array)', () => {
         unpriced_sample_count: 0,
       },
       dispatch: null as ConsultDispatchSummary | null,
+      ...over,
     });
 
     it('exposes an unmeasured routing result and remedy separately from the no-responder lifecycle', async () => {
@@ -230,12 +234,45 @@ describe('conversations:get handler (bulk keyed-array)', () => {
         hint: 'This does not prove no expert exists.', remaining_candidates: [] };
       getM.mockResolvedValue(detail('c-unmeasured', { kind: 'consult', state: 'open' }));
       consultM.mockResolvedValue(new Map([['c-unmeasured', {
-        ...consultRow('c-unmeasured'), state: 'no_qualified_responder', request_result: result,
+        ...consultRow('c-unmeasured'), state: 'no_qualified_responder', closed_at: null, request_result: result,
       }]]));
       const reply = (await body({ id: 'c-unmeasured' })).results[0];
       expect(reply.consult.state).toBe('no_qualified_responder');
       expect(reply.consult.result).toEqual(result);
+      expect(reply.consult.routing_receipt).toEqual(result);
       expect(reply.consult.result.verdict).not.toBe('no_qualified_responder');
+    });
+
+    it('surfaces a converted review outcome and keeps the old routing hint historical', async () => {
+      const routingReceipt = {
+        verdict: 'routed',
+        hint: 'Await the assigned responder for an answer.',
+      };
+      const outcome = {
+        disposition: 'converted_to_review_work_item',
+        work_item_id: 'WI-6554700010029584',
+        review_kind: 'grading-integrity',
+        silent_responder: 'su-silent-responder',
+      };
+      getM.mockResolvedValue(detail('c-converted', { kind: 'consult', state: 'open' }));
+      consultM.mockResolvedValue(new Map([['c-converted', consultRow('c-converted', {
+        request_result: routingReceipt,
+        outcome,
+      })]]));
+
+      const reply = (await body({ id: 'c-converted' })).results[0];
+
+      expect(reply.consult).toMatchObject({
+        state: 'expired',
+        outcome,
+        routing_receipt: routingReceipt,
+        result: {
+          disposition: 'converted_to_review_work_item',
+          work_item_id: 'WI-6554700010029584',
+          hint: expect.stringContaining('WI-6554700010029584 is now pullable'),
+        },
+      });
+      expect(reply.consult.result.hint).not.toBe(routingReceipt.hint);
     });
 
     it('surfaces WHY each answering-session launch failed once a dispatch walk is recorded (WI-10003197)', async () => {

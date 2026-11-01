@@ -6,15 +6,38 @@
  * (migration 407, the per-agent mirror of hive_slug). hive_slug rides the PresenceRecord
  * the @papercusp/coordination store reads; fleet_slug does NOT (the store's SELECT is
  * unchanged), so the coordination tools join it in HERE — the same per-owner enrichment
- * shape as `fetchPresenceTier1`: ONE batch query keyed by the roster's ownerIds, so
- * enriching N agents is a constant read, not N. Only rows that actually carry a
- * fleet_slug come back; a non-fleet agent is simply absent from the map (its surfaces
- * default to null/omitted).
+ * shape as `fetchPresenceTier1`: one batch query keyed by roster ownerIds, not an N+1.
+ * A narrowly scoped second batch can consult the latest ledger fact for session-log-only
+ * owners whose shared liveness verdict is live and who have no coord_presence row. Only
+ * memberships with a non-null fleet slug enter the map; a non-fleet agent remains absent
+ * (its surfaces default to null/omitted).
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { FleetMembership } from './identity';
 
 export type { FleetMembership };
+
+export interface PresenceFleetFetchOptions {
+  /** The one workspace whose append-only membership facts match this roster. */
+  workspaceId?: string | null;
+  /** Session-log-only owners whose shared liveness verdict is exactly `live`. */
+  liveSessionLogOwnerIds?: readonly string[];
+}
+
+/** Keep the ledger fallback scoped to the source and liveness verdict that justify it. */
+export function liveSessionLogFleetFallbackOwnerIds(
+  rows: readonly {
+    ownerId: string;
+    source?: string | null;
+    sessionState?: string | null;
+  }[],
+): string[] {
+  return [...new Set(
+    rows
+      .filter((row) => row.source === 'session-log' && row.sessionState === 'live')
+      .map((row) => row.ownerId),
+  )];
+}
 
 /**
  * IO seam: batch-read the fleet membership label for a set of ownerIds from
@@ -24,6 +47,7 @@ export type { FleetMembership };
  */
 export async function fetchPresenceFleet(
   ownerIds: string[],
+  options: PresenceFleetFetchOptions = {},
 ): Promise<Map<string, FleetMembership>> {
   const out = new Map<string, FleetMembership>();
   if (ownerIds.length === 0) return out;
@@ -36,6 +60,41 @@ export async function fetchPresenceFleet(
   `;
   for (const r of rows) {
     out.set(r.owner_id, { fleetSlug: r.fleet_slug, fleetRole: r.fleet_role });
+  }
+
+  // A session-log-only row can be visible before it writes coord_presence. Consult
+  // the append-only ledger only for those rows whose shared liveness verdict is
+  // exactly live. The NOT EXISTS check preserves every existing presence row,
+  // including rows whose current fleet label is null. Selecting the latest event
+  // before filtering null fleet_slug also makes a latest leave authoritative.
+  const workspaceId = options.workspaceId;
+  const fallbackOwnerIds = [...new Set(options.liveSessionLogOwnerIds ?? [])]
+    .filter((ownerId) => ownerIds.includes(ownerId) && !out.has(ownerId));
+  if (workspaceId && fallbackOwnerIds.length > 0) {
+    const fallbackRows = await sql<
+      { owner_id: string; fleet_slug: string | null; fleet_role: string | null }[]
+    >`
+      WITH latest AS (
+        SELECT DISTINCT ON (e.owner_id) e.owner_id, e.fleet_slug, e.fleet_role
+          FROM harness_shared.fleet_membership_events e
+         WHERE e.workspace_id = ${workspaceId}
+           AND e.owner_id = ANY(${fallbackOwnerIds}::text[])
+         ORDER BY e.owner_id, e.id DESC
+      )
+      SELECT latest.owner_id, latest.fleet_slug, latest.fleet_role
+        FROM latest
+       WHERE latest.fleet_slug IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1
+             FROM harness_shared.coord_presence p
+            WHERE p.owner_id = latest.owner_id
+         )
+    `;
+    for (const r of fallbackRows) {
+      if (r.fleet_slug && !out.has(r.owner_id)) {
+        out.set(r.owner_id, { fleetSlug: r.fleet_slug, fleetRole: r.fleet_role });
+      }
+    }
   }
   return out;
 }

@@ -1034,6 +1034,16 @@ function isUnstartedAncestryRefusal(current: CheckpointQualificationTransaction 
     !(current.consumedPhysicalRuns ?? []).some(run => run.outcome.kind !== 'pre-suite-no-verdict'));
 }
 
+function isSameHeadRepairWait(current: CheckpointQualificationTransaction | null): boolean {
+  return Boolean(
+    current &&
+    current.phase === 'waiting' &&
+    current.outcome.kind === 'pre-suite-no-verdict' &&
+    (current.outcome.reason === 'repair-in-progress' || current.outcome.reason === 'already-running') &&
+    current.currentPhysicalRunner === null,
+  );
+}
+
 function isRetryableUnownedWait(
   current: CheckpointQualificationTransaction | null,
   resumeUnownedRepairVerification = false,
@@ -1050,7 +1060,7 @@ function isRetryableUnownedWait(
     return false;
   if (current.outcome.reason === 'wait-for-eligibility-unavailable') return true;
   return resumeUnownedRepairVerification &&
-    (current.outcome.reason === 'repair-in-progress' || isUnstartedAncestryRefusal(current));
+    (isSameHeadRepairWait(current) || isUnstartedAncestryRefusal(current));
 }
 
 /**
@@ -2843,7 +2853,7 @@ export function beginStoredQualification(
         current && queue && queueOwnsUntestedRepairHead && (
           (current.phase === 'waiting' &&
             current.outcome.kind === 'pre-suite-no-verdict' &&
-            (current.outcome.reason === 'repair-in-progress' ||
+            (isSameHeadRepairWait(current) ||
               // A rejected ancestry request never launched a suite. Correct its
               // pin only to the untested head owned by this same locked queue,
               // retaining its attempt and declared-path policy.

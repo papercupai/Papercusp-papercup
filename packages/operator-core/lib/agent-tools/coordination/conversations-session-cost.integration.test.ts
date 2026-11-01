@@ -30,6 +30,7 @@ beforeAll(async () => {
     closed_at timestamptz,
     wakes_used integer,
     routing jsonb NOT NULL,
+    outcome jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL,
     PRIMARY KEY (workspace_id, conversation_id)
   )`);
@@ -73,6 +74,37 @@ describe('getConsultStates session cost projection (P-007)', () => {
     const states = await runWithWorkspace(WS, () => getConsultStates(['routing-result']));
     expect(states.get('routing-result')).toMatchObject({ state: 'no_qualified_responder', request_result: result });
     expect(states.get('routing-result')?.request_result?.verdict).not.toBe('no_qualified_responder');
+  });
+
+  it('reads terminal conversion outcome separately from the historical routing result', async () => {
+    const routingResult = { verdict: 'routed', hint: 'Await the assigned responder.' };
+    const outcome = {
+      disposition: 'converted_to_review_work_item',
+      work_item_id: 'WI-6554700010029584',
+      review_kind: 'grading-integrity',
+      silent_responder: 'su-silent-responder',
+      review: { state: 'pending', findings: [] },
+    };
+    await sql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, state, latency_contract, closed_at, routing, outcome, created_at)
+      VALUES (${WS}, 'converted-review', 'expired', 'proceed', NOW(),
+              ${sql.json({ request: { result: routingResult } } as never)},
+              ${sql.json(outcome as never)}, NOW())
+    `;
+
+    const states = await runWithWorkspace(WS, () => getConsultStates(['converted-review']));
+    expect(states.get('converted-review')).toMatchObject({
+      state: 'expired',
+      request_result: routingResult,
+      outcome: {
+        disposition: 'converted_to_review_work_item',
+        work_item_id: 'WI-6554700010029584',
+        review_kind: 'grading-integrity',
+        silent_responder: 'su-silent-responder',
+      },
+      review: { state: 'pending', findings: [] },
+    });
   });
 
   it('correlates post-consult native-session samples and keeps priced, estimated, unpriced, and pending distinct', async () => {

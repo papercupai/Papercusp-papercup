@@ -9,7 +9,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
-  maybeBatchNudge,
+  maybeBatchNudge as maybeBatchNudgeImpl,
+  type BatchNudgeInput,
   maybeOrientDedupNudge,
   maybeListFanoutPreempt,
   _resetBatchNudgeState,
@@ -30,9 +31,51 @@ import {
   advisorySessionKey,
 } from './code-run-batch-nudge';
 
+const maybeBatchNudge = (
+  input: Omit<BatchNudgeInput, 'effect'> & { effect?: BatchNudgeInput['effect'] },
+) => maybeBatchNudgeImpl({ ...input, effect: input.effect ?? 'read' });
+
 const cap = { sessionKey: 's1', toolName: 'work_items:get', args: {}, canCodeRun: true };
 
 beforeEach(() => _resetBatchNudgeState());
+
+describe('maybeBatchNudge — non-batchable lifecycle and checkpoint writes', () => {
+  it.each(['loop:checkpoint', 'work_items:checkpoint', 'loop:arm', 'loop:end'])(
+    'does not suggest parallel batching for %s across wake turns',
+    (toolName) => {
+      for (let turn = 0; turn < BATCH_NUDGE_THRESHOLD; turn++) {
+        expect(
+          maybeBatchNudge({
+            sessionKey: 'checkpoint-owner',
+            toolName,
+            effect: 'write',
+            args: { id: 'EI-27069602240637403', did: `checkpoint-${turn}` },
+            canCodeRun: true,
+            turnId: `wake-${turn}`,
+            now: turn * 100,
+          }),
+        ).toBeNull();
+      }
+    },
+  );
+
+  it('keeps batching advice for independent reads across explicit owner turns', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    for (let turn = 0; turn < BATCH_NUDGE_THRESHOLD; turn++) {
+      hit = maybeBatchNudge({
+        sessionKey: 'independent-read-owner',
+        toolName: 'work_items:get',
+        effect: 'read',
+        args: { id: `WI-${turn}` },
+        canCodeRun: true,
+        turnId: `read-turn-${turn}`,
+        now: turn * 100,
+      });
+    }
+    expect(hit?.kind).toBe('same-tool');
+    expect(hit?.text).toContain('Promise.all');
+  });
+});
 
 describe('maybeBatchNudge — same-tool trigger (windowed)', () => {
   it('stays silent below the threshold, fires exactly AT it with kind=same-tool', () => {
@@ -115,14 +158,20 @@ describe('maybeBatchNudge — same-tool trigger (windowed)', () => {
     expect(hit?.text).toContain('return out;');
   });
 
-  it('camelCases a hyphenated verb in the skeleton (set-status → setStatus)', () => {
+  it('does not offer parallel advice for writes without disjoint target evidence', () => {
     let hit: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
     for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
       t += 1000;
-      hit = maybeBatchNudge({ ...cap, toolName: 'plans:set-status', now: t });
+      hit = maybeBatchNudge({
+        ...cap,
+        toolName: 'plans:set-status',
+        effect: 'write',
+        args: { slug: 'one-plan', status: 'wip' },
+        now: t,
+      });
     }
-    expect(hit?.text).toContain('tools.plans.setStatus(a)');
+    expect(hit).toBeNull();
   });
 });
 
@@ -353,6 +402,7 @@ describe('maybeBatchNudge — same-object revision dependencies (EI-266087184756
     maybeBatchNudge({
       ...cap,
       toolName: 'recipes:revise',
+      effect: 'write',
       args: { id, expectedRevision, script: 'x', reason: 'Fix recipe.' },
       now,
       durationMs,
@@ -383,6 +433,7 @@ describe('maybeBatchNudge — same-object revision dependencies (EI-266087184756
       const hit = maybeBatchNudge({
         ...cap,
         toolName: 'tools:invoke',
+        effect: 'write',
         args: {
           name: 'recipes:revise',
           args: { id: 'same-recipe', expectedRevision, script: 'x'.repeat(300) },

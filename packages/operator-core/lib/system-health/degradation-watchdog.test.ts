@@ -65,6 +65,38 @@ describe('judgeDegradation — pinned defaults (R-2)', () => {
     expect(judgeDegradation(windowOf(10, 0), { mechanism: M }, { minEligible: 5 }).kind).toBe('collapsed');
   });
 
+  it('keeps retrieval degradation per caller and alerts after repeated semantic blocks', () => {
+    const mechanism = getDegradationMechanism('retrieval');
+    if (!mechanism) throw new Error('retrieval registration is missing');
+    expect(mechanism.scopeKeyed).toBe(true);
+
+    const target = { mechanism: 'retrieval', scope: 'docs:search' };
+    const oneAttempt = judgeDegradation(
+      windowOf(1, 0, { 'semantic-blocked': 1 }),
+      target,
+      mechanism.thresholds,
+    );
+    expect(oneAttempt).toMatchObject({ kind: 'insufficient', eligible: 1, minEligible: 2 });
+
+    const oneFailureInPair = judgeDegradation(
+      windowOf(2, 1, { 'semantic-blocked': 1 }),
+      target,
+      mechanism.thresholds,
+    );
+    expect(oneFailureInPair).toMatchObject({ kind: 'insufficient', eligible: 2, minEligible: 2 });
+
+    const repeatedBlocks = judgeDegradation(
+      windowOf(2, 0, { 'semantic-blocked': 2 }),
+      target,
+      mechanism.thresholds,
+    );
+    expect(repeatedBlocks).toMatchObject({
+      kind: 'collapsed',
+      reason: 'semantic-blocked',
+      conditionKey: degradationConditionKey('retrieval', 'docs:search', 'semantic-blocked'),
+    });
+  });
+
   it('the gate reuse registration lowers the floor only for hard fail-open reasons', () => {
     const mechanism = getDegradationMechanism('gate-pass-reuse');
     if (!mechanism) throw new Error('gate-pass-reuse registration is missing');

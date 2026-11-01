@@ -112,25 +112,26 @@ describe('retrieval samples on the durable degradation primitive (P-005)', () =>
       degraded: true, warning: 'semantic leg blocked',
     } as SearchLegs;
     const correlationId = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';
-    observeLegs(legs, 1000, correlationId);
-    observeLegs({ ...legs, semantic: leg, degraded: false } as SearchLegs, 1001);
+    observeLegs(legs, 1000, correlationId, 'docs:search');
+    observeLegs({ ...legs, semantic: leg, degraded: false } as SearchLegs, 1001, undefined, 'docs:search');
     expect(observe).toHaveBeenCalledTimes(2);
     expect(observe.mock.calls.map((call) => call.slice(0, 2))).toEqual([
-      ['retrieval', { eligible: 1, applied: 0, reason: 'semantic-blocked' }],
-      ['retrieval', { eligible: 1, applied: 1, reason: 'applied' }],
+      ['retrieval', { eligible: 1, applied: 0, reason: 'semantic-blocked', scope: 'docs:search' }],
+      ['retrieval', { eligible: 1, applied: 1, reason: 'applied', scope: 'docs:search' }],
     ]);
     expect(observe.mock.calls[0]?.[2]).toMatchObject({ correlationId });
   });
 
   it('does not double count a search when several legs degraded', () => {
     expect(retrievalSampleDecision({ atMs: 1, degraded: true, semanticBlocked: true, lexicalBlocked: true,
-      semanticSourceFailed: false, lexicalSourceFailed: false, semanticEmpty: false, lexicalEmpty: false })).toEqual({ eligible: 1, applied: 0, reason: 'mixed' });
+      semanticSourceFailed: false, lexicalSourceFailed: false, semanticEmpty: false, lexicalEmpty: false }))
+      .toEqual({ eligible: 1, applied: 0, reason: 'mixed', scope: 'unattributed' });
   });
 
   it('classifies partial source failures instead of collapsing them into mixed', () => {
     expect(retrievalSampleDecision({ atMs: 1, degraded: true, semanticBlocked: false, lexicalBlocked: false,
       semanticSourceFailed: true, lexicalSourceFailed: false, semanticEmpty: false, lexicalEmpty: false })).toEqual({
-      eligible: 1, applied: 0, reason: 'semantic-source-failed',
+      eligible: 1, applied: 0, reason: 'semantic-source-failed', scope: 'unattributed',
     });
   });
 

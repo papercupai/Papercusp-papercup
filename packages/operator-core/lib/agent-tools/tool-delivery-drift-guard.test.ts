@@ -22,7 +22,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { toolDeliveryDriftVerdict } from '../../../../scripts/gen-tool-delivery';
+import { toolDeliveryCheckVerdict, toolDeliveryDriftVerdict } from '../../../../scripts/gen-tool-delivery';
 import { dryTasks, HOST_WORKSPACE } from '../__tests__/affected-tests-repo-wide-invariant-guards.shared';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -76,6 +76,45 @@ describe('toolDeliveryDriftVerdict — the drift guard can actually FAIL', () =>
   });
 });
 
+describe('toolDeliveryCheckVerdict — mandatory floor bytes are checked before artifact freshness', () => {
+  it('rejects an over-budget floor even when the generated artifact is current', () => {
+    const text = 'export const TOOL_DELIVERY = {};\n';
+    expect(
+      toolDeliveryCheckVerdict(text, text, {
+        claude: {
+          budgetBytes: 100,
+          floors: ['tools:find'],
+          rows: [
+            { name: 'tools:find', compactBytes: 101 },
+            { name: 'capability:read', compactBytes: 900 },
+          ],
+        },
+      }),
+    ).toMatchObject({
+      ok: false,
+      reason: 'floor-overrun',
+      agentKind: 'claude',
+      headroom: { floorBytes: 101, headroomBytes: -1, status: 'overrun' },
+    });
+  });
+
+  it('accepts an in-budget floor and then checks artifact freshness', () => {
+    const text = 'export const TOOL_DELIVERY = {};\n';
+    expect(
+      toolDeliveryCheckVerdict(text, text, {
+        claude: {
+          budgetBytes: 100,
+          floors: ['tools:find'],
+          rows: [
+            { name: 'tools:find', compactBytes: 100 },
+            { name: 'capability:read', compactBytes: 900 },
+          ],
+        },
+      }),
+    ).toEqual({ ok: true, reason: 'current' });
+  });
+});
+
 describe('the drift guard is wired into the build, not merely runnable locally', () => {
   // R-5's falsifier names this explicitly: "the check runs only locally and is not
   // wired into the build". A guard nobody invokes cannot make drift impossible.
@@ -94,6 +133,9 @@ describe('the drift guard is wired into the build, not merely runnable locally',
     'libs/generic/tooldef/src/compact-schema.ts',
     'apps/operator/scripts/tool-delivery.generated.mjs',
     'packages/operator-core/lib/agent-tools/tool-demand-snapshot.json',
+    'packages/operator-core/lib/agent-tools/events/await.ts',
+    'packages/operator-core/lib/agent-tools/facts/assert.ts',
+    'packages/operator-core/lib/agent-tools/testing/run.ts',
   ])('the actual affected-tests router attaches the guard for %s', (changedPath) => {
     expect(dryTasks(changedPath)).toContain(`${HOST_WORKSPACE} :: gen:tool-delivery:check`);
   });

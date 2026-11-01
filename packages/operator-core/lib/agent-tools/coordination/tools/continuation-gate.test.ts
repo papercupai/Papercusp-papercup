@@ -224,6 +224,22 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
     expect(v.guidance).not.toContain('ARM A WAKE:');
   });
 
+  it('diagnoses a completed parked loop turn without a recorded re-arm', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 80,
+      unreadInbox: 0,
+      rewakeGuaranteed: false,
+      activeLoopRewakeBlockedReason: 'last-turn-unrearmed',
+      selfCompactionAvailable: false,
+    });
+
+    expect(v.guidance).toContain('completed after lastFiredAt');
+    expect(v.guidance).toContain('nextFireAt=null and no re-arm recorded');
+    expect(v.guidance).toContain('repair the re-arm on that same loop');
+    expect(v.guidance).toContain('confirm nextFireAt is recorded before settling');
+    expect(v.guidance).not.toContain('ARM A WAKE:');
+  });
+
   it('a CLOSED gate WITH a guarantee keeps the base settle guidance', () => {
     const v = evaluateContinuationGate({ contextPct: 80, unreadInbox: 0, rewakeGuaranteed: true });
     expect(v.shouldContinue).toBe(false);

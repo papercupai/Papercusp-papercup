@@ -35,9 +35,11 @@ import {
   parseCheckpointQualificationTransaction,
   probeRunnerLiveness,
   projectCheckpointQualificationState,
+  reconcileStoredSupersededRepairVerdict,
   type CheckpointQualificationTransaction,
   type RunnerLivenessProber,
 } from './checkpoint-qualification-transaction';
+import { GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine } from './checkpoint-log-tags';
 import {
   describeAbandonedInFlightCandidate,
   isPidAlive,
@@ -211,6 +213,10 @@ export interface LostRunSweepDeps {
     runner: Parameters<RunnerLivenessProber>[0],
     nowMs: number,
   ) => ReturnType<RunnerLivenessProber>;
+  /** Focused seam for the exact runner log used to distinguish a clean superseded round from a crash. */
+  readQualificationRunLog?: (runner: NonNullable<CheckpointQualificationTransaction['currentPhysicalRunner']>) => Promise<string | null>;
+  /** Row-locked reconciliation of a successful superseded red round; production uses the stored transaction writer. */
+  reconcileSupersededRun?: typeof reconcileStoredSupersededRepairVerdict;
   hostFleetSlug?: string | null;
   claim?: typeof claimLostRunAlarm;
   readHolder?: (installSlug: string) => Promise<string | null>;
@@ -245,6 +251,46 @@ async function requeueDeadQualification(
        AND metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY}->>'attemptId' = ${transaction.attemptId}
        AND metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY}->'currentPhysicalRunner'->>'id' = ${transaction.currentPhysicalRunner!.id}
        AND (next_fire_at IS NULL OR next_fire_at > now() + interval '1 minute')`;
+}
+
+async function successfulSupersededRepairRound(
+  runner: NonNullable<CheckpointQualificationTransaction['currentPhysicalRunner']>,
+  deps: LostRunSweepDeps,
+): Promise<{ runId: string; candidate: string; round: number } | null> {
+  const boundRuns = runner.evidenceRefs.filter(ref => ref.startsWith('checkpoint-run:'));
+  if (boundRuns.length !== 1 || !runner.unit?.trim()) return null;
+  try {
+    const launch = await import('../release-checkpoint-launch');
+    const unit = runner.unit.trim().replace(/\.service$/, '');
+    const log = await (deps.readQualificationRunLog
+      ? deps.readQualificationRunLog(runner)
+      : Promise.resolve(launch.defaultReadLogTail(launch.checkpointLatestLogPath(unit))));
+    if (!log) return null;
+    const terminal = launch.parseCheckpointSystemdTerminalEvidence(log);
+    if (!terminal || terminal.abnormal || terminal.service_result !== 'success' ||
+        terminal.exit_code !== 'exited' || terminal.exit_status !== '0') return null;
+    const runId = boundRuns[0]!.slice('checkpoint-run:'.length);
+    const result = log.split(/\r?\n/).filter(line => !isFixtureLogLine(line)).flatMap(line => {
+      const trimmed = line.trimStart();
+      if (!trimmed.startsWith(GREEN_CHECKPOINT_RESULT_MARKER)) return [];
+      try {
+        const parsed: unknown = JSON.parse(trimmed.slice(GREEN_CHECKPOINT_RESULT_MARKER.length).trim());
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+        const value = parsed as Record<string, unknown>;
+        return value.runId === runId && value.green === false && typeof value.candidate === 'string' &&
+          typeof value.reason === 'string' ? [value] : [];
+      } catch { return []; }
+    }).at(-1);
+    if (!result || typeof runner.candidate !== 'string' || result.candidate !== runner.candidate) return null;
+    const candidatePrefix = result.candidate.slice(0, 8);
+    const round = log.split(/\r?\n/).map(line => line.trim()).flatMap(line => {
+      const match = line.match(/^FROZEN_REPAIR_VERDICT_SUPERSEDED: (?:full-gate )?red at ([a-f0-9]{8}) recorded as round (\d+)\b/);
+      return match && match[1] === candidatePrefix ? [Number(match[2])] : [];
+    }).at(-1);
+    return Number.isSafeInteger(round) && round! > 0 ? { runId, candidate: result.candidate, round: round! } : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The existing two-minute sweep also investigates missing qualification heartbeats. */
@@ -283,6 +329,34 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
     const qualification = transaction && transaction.phase !== 'terminal' && runner
       ? projectCheckpointQualificationState(transaction, nowMs, liveness)
       : null;
+    if (transaction && runner && liveness === 'dead') {
+      const superseded = await successfulSupersededRepairRound(runner, deps);
+      if (superseded) {
+        try {
+          const target = { installSlug: row.install_slug, workspaceId: row.workspace_id };
+          await requeueDeadQualification(sql, target, transaction);
+          const reconciled = await (deps.reconcileSupersededRun ?? reconcileStoredSupersededRepairVerdict)(target, {
+            attemptId: transaction.attemptId,
+            runnerId: runner.id,
+            runId: superseded.runId,
+            candidate: superseded.candidate,
+            round: superseded.round,
+            nowMs,
+          });
+          if (reconciled.status === 'updated' || reconciled.status === 'idempotent') {
+            await resolveAlarm(`green-checkpoint-lost-run:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
+            await resolveAlarm(`green-checkpoint-run-progress:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
+            continue;
+          }
+          out.failed.push(row.install_slug);
+          continue;
+        } catch (e) {
+          console.warn(`[lost-gate-run-alarm] superseded qualification recovery failed for ${row.install_slug}: ${e instanceof Error ? e.message : String(e)}`);
+          out.failed.push(row.install_slug);
+          continue;
+        }
+      }
+    }
     // WI-6554700010009616: a live runner parked in `finalizing` keeps a fresh heartbeat (its interval
     // fires through an awaited hang), so runnerHealth reads `progressing`. Only the phase clock sees it.
     const postVerdictHang = !!transaction && transaction.phase !== 'terminal' && isPostVerdictHang(runner, liveness, nowMs);

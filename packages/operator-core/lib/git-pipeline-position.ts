@@ -1344,8 +1344,9 @@ export interface PipelinePosition {
    */
   positionsUnknown: string[];
   /**
-   * WI-6646 — the MARKER verdict for the two legs that lag (`inMain`, `deployed`),
-   * present only when the caller named a `marker`.
+   * WI-6646 / EI-27057968016442398 — marker evidence for the caller's change.
+   * Downstream refs are measured for onStaging/inMain/deployed; dirty paths
+   * additionally expose committedLocal and workingTree marker counts.
    *
    * WHY THE LEGS NEED IT AT ALL. With a `path`, `targetSha` is resolved as "the NEWEST
    * commit touching this path" (`git log -1 -- <path>`), and every leg is then answered
@@ -1369,6 +1370,8 @@ export interface PipelinePosition {
    */
   positionsMarker: {
     marker: string;
+    committedLocal?: MarkerContainment;
+    workingTree?: MarkerContainment;
     onStaging: MarkerContainment | null;
     inMain: MarkerContainment | null;
     deployed: MarkerContainment | null;
@@ -5995,6 +5998,9 @@ export async function gitPipelinePosition(
   if (workingTreeUnknown) positionsUnknown.push('workingTree');
   /** WI-6646 — legs whose false is a newer-commit artifact (see PipelinePosition). */
   const positionsNewerCommit: string[] = [];
+  let committedLocalMarker: MarkerContainment | null = null;
+  let workingTreeMarker: MarkerContainment | null = null;
+  let dirtyMarkerDelta: 'added' | 'removed' | null = null;
   /** WI-6646 — per-leg marker verdicts, populated only when a marker was supplied. */
   const markerLegs: {
     onStaging: MarkerContainment | null;
@@ -6191,8 +6197,64 @@ export async function gitPipelinePosition(
           refInternalBaselineSha: string | null;
           refInternalBaseline: MarkerContainment | null;
         };
+        if (marker && dirtyUncommitted && targetSha) {
+          const localMarkerReader = gitReadForRepo(git, gitDir);
+          const readBytes = deps.readFileBytes ?? realReadFileBytes;
+          const [committed, workingBytes] = await Promise.all([
+            markerAtCommit(localMarkerReader, targetSha, relPath, marker),
+            readBytes(path.join(gitDir, relPath)),
+          ]);
+          committedLocalMarker = committed;
+          if (workingBytes === null) {
+            workingTreeMarker = {
+              marker,
+              sha: 'working-tree',
+              present: null,
+              count: null,
+              pathPresent: null,
+              unknownReason: cellUnknown(
+                'resolver-failed',
+                'Could not read the dirty working-tree file, so its marker count is unknown.',
+              ),
+            };
+          } else {
+            const count = workingBytes.toString('utf8').split(marker).length - 1;
+            workingTreeMarker = {
+              marker,
+              sha: 'working-tree',
+              present: count > 0,
+              count,
+              pathPresent: true,
+              unknownReason: null,
+            };
+          }
+          dirtyMarkerDelta = markerNetChange(workingTreeMarker, committedLocalMarker);
+          if (dirtyMarkerDelta !== null) {
+            positions.committedLocal = false;
+            notes.push(
+              'committedLocal: marker occurrences changed from ' +
+                committed.count +
+                ' in the committed path to ' +
+                workingTreeMarker.count +
+                ' in the dirty working tree; this marker change is not committed yet.',
+            );
+          } else if (
+            committed.pathPresent !== true ||
+            workingTreeMarker.pathPresent !== true ||
+            typeof committed.count !== 'number' ||
+            typeof workingTreeMarker.count !== 'number'
+          ) {
+            notes.push('The dirty working-tree marker could not be measured; marker-specific positions remain unresolved.');
+          } else {
+            notes.push('The dirty working tree did not change this marker count; it cannot identify the dirty edit.');
+          }
+        }
         const markerLegsToRead = legs.flatMap(([leg, ref]) =>
-          ref && !positions[leg] && !positionsUnknown.includes(leg) ? [{ leg, ref }] : [],
+          ref &&
+          (!positions[leg] || dirtyMarkerDelta !== null) &&
+          !positionsUnknown.includes(leg)
+            ? [{ leg, ref }]
+            : [],
         );
         const markerReadByLeg = new Map<MarkerLeg, MarkerLegRead>();
         let targetMarkerBaseline: MarkerContainment | null = null;
@@ -6226,9 +6288,10 @@ export async function gitPipelinePosition(
 
         for (const [leg, ref] of legs) {
           if (!ref) continue;
-          // Only a leg reading FALSE can be a newer-commit artifact; a true leg is
-          // already the answer the caller wants and needs no second opinion.
-          if (positions[leg]) continue;
+          // A committed marker read only needs to explain false path ancestry.
+          // A measured dirty-marker delta above also checks true ancestry because
+          // it can belong to an older committed version of this path.
+          if (positions[leg] && dirtyMarkerDelta === null) continue;
           // A leg that is false BY DEGRADATION is already hoisted in positionsUnknown.
           // Re-labelling it as a newer-commit artifact would replace an honest "unknown"
           // with a confident wrong story about why.
@@ -6246,6 +6309,35 @@ export async function gitPipelinePosition(
           if (marker && markerRead) {
             const verdict = markerRead.verdict;
             markerLegs[leg] = verdict;
+            if (dirtyMarkerDelta !== null) {
+              const committedCount = committedLocalMarker?.count;
+              const workingCount = workingTreeMarker?.count;
+              if (
+                verdict.present === null ||
+                verdict.pathPresent === null ||
+                typeof verdict.count !== 'number' ||
+                typeof committedCount !== 'number' ||
+                typeof workingCount !== 'number'
+              ) {
+                notes.push(leg + ': the dirty-change marker comparison is unknown; the path-level position was not corrected.');
+                continue;
+              }
+              if (verdict.pathPresent === true && verdict.count === workingCount) {
+                positions[leg] = true;
+                notes.push(leg + ': the ref marker count matches the dirty working-tree change; this change is present there.');
+                continue;
+              }
+              const markerChangeAbsent =
+                (verdict.pathPresent === true && verdict.count === committedCount) ||
+                (dirtyMarkerDelta === 'added' && verdict.pathPresent === false);
+              if (markerChangeAbsent) {
+                positions[leg] = false;
+                notes.push(leg + ': the ref still has the committed marker count and does not contain the dirty marker change.');
+                continue;
+              }
+              notes.push(leg + ': the ref marker count differs from both the committed file and dirty working tree; its position for this change remains unresolved.');
+              continue;
+            }
             /* ------------------------------------------------------------------ *
              * EI-21443291930356119 — the two available baselines answer DIFFERENT
              * questions, and only ONE of them is sound in both directions.
@@ -7407,6 +7499,9 @@ export async function gitPipelinePosition(
     positionsMarker: marker
       ? {
           marker,
+          ...(dirtyMarkerDelta !== null && committedLocalMarker && workingTreeMarker
+            ? { committedLocal: committedLocalMarker, workingTree: workingTreeMarker }
+            : {}),
           onStaging: markerLegs.onStaging,
           inMain: markerLegs.inMain,
           deployed: markerLegs.deployed,

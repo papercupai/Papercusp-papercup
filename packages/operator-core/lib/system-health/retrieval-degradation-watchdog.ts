@@ -61,7 +61,8 @@ export function retrievalSampleDecision(sample: LegSample): FallbackDecision {
     sample.semanticEmpty && 'semantic-empty', sample.lexicalEmpty && 'lexical-empty',
   ].filter((reason): reason is string => typeof reason === 'string');
   return { eligible: 1, applied: sample.degraded ? 0 : 1,
-    reason: !sample.degraded ? 'applied' : reasons.length === 1 ? reasons[0] : 'mixed' };
+    reason: !sample.degraded ? 'applied' : reasons.length === 1 ? reasons[0] : 'mixed',
+    scope: sample.caller ?? 'unattributed' };
 }
 
 export type RetrievalVerdict =

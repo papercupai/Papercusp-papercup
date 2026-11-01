@@ -262,7 +262,11 @@ function fakeGit(opts: {
         return `160000 commit ${stagingPin.pinnedSha}\t${stagingPin.path}`;
       }
       if (args[1] === 'origin/staging' && opts.failSubmoduleStagingPin) return null;
-      if (args[1] === 'origin/staging' && _repo === root) return '';
+      if (
+        args[1] === 'origin/staging' &&
+        _repo === root &&
+        !(opts.blobAtRef && args[1] in opts.blobAtRef)
+      ) return '';
       if (opts.absentRefs?.includes(args[1])) return '';
       // WI-6646: a ref with a known blob genuinely HAS the path.
       if (opts.blobAtRef && args[1] in opts.blobAtRef) return `100644 blob deadbeef\t${args[3]}`;
@@ -1169,6 +1173,57 @@ describe('gitPipelinePosition (P-002)', () => {
    * legs shipped without either of its mitigations — and they are what `summary`,
    * `stages[]`, `blockedOn` and `nextAction` are all derived from.
    */
+  describe('dirty working-tree marker identity (EI-27057968016442398)', () => {
+    const PATH = 'apps/operator/app/dirty-marker.ts';
+    const TARGET = 'a'.repeat(40);
+    const MARKER = 'dirty-marker-ei-27057968016442398';
+
+    it('does not let committed path ancestry claim the dirty marker is committed or on staging', async () => {
+      const committed = 'export const base = true;\n';
+      const working = committed + '// ' + MARKER + '\n';
+      const git = fakeGit({
+        dirty: true,
+        pathCommit: TARGET,
+        contains: {
+          HEAD: [TARGET],
+          'origin/staging': [TARGET],
+          'origin/main': [TARGET],
+        },
+        blobAtRef: {
+          [TARGET]: committed,
+          'origin/staging': committed,
+          'origin/main': committed,
+        },
+        newestInRef: {
+          'origin/staging': TARGET,
+          'origin/main': TARGET,
+          [TARGET]: TARGET,
+        },
+      });
+      const res = await gitPipelinePosition(
+        { path: PATH, marker: MARKER },
+        {
+          git,
+          loadDeploy: async () => deploy({ deployed: { sha: TARGET } as DevDeployState['deployed'] }),
+          loadSnapshot: async () => snap(),
+          readFileBytes: async (absPath) =>
+            absPath === '/repo/' + PATH ? Buffer.from(working) : null,
+        },
+      );
+
+      expect(res.dirtyUncommitted).toBe(true);
+      expect(res.positions).toMatchObject({ committedLocal: false, onStaging: false });
+      expect(res.positionsMarker).toMatchObject({
+        committedLocal: { present: false, count: 0, pathPresent: true },
+        workingTree: { present: true, count: 1, pathPresent: true },
+        onStaging: { present: false, count: 0, pathPresent: true },
+      });
+      expect(res.blockedOn).toBe('committed');
+      expect(res.nextAction).toMatch(/git-sync:run/);
+      expect(res.notes.join('\n')).toMatch(/does not contain the dirty marker change/);
+    });
+  });
+
   describe('WI-6646: the newer-commit artifact in the inMain/deployed legs', () => {
     const P = 'apps/operator/app/x.ts';
     /** A peer's commit, newer than the caller's, is what `targetSha` resolves to. */

@@ -41,6 +41,7 @@ import type { EmitAwaitedEventOpts, EmitResult } from '../events/await/engine';
 import type { ExpirySweepDeps, SilentResponderCandidate } from './consult-expiry-core';
 import type { CascadeDispatch } from './cascade-core';
 import { DEAD_RESPONDER_STATES, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
+import type { PriorRespawn } from '../carry-respawn-outcome';
 import type { ThreadableStore } from '@papercusp/coordination/capabilities';
 import { runWithWorkspace } from '../workspace-als';
 import { consultAnswerFacts } from '../task-manager/reaper';
@@ -94,6 +95,10 @@ export interface SilentResponderDetectorDeps {
   >;
   /** Injectable clock for the bounded live-busy pickup window. */
   now?: () => Date;
+  /** Most recent durable host carry-respawn outcome for a logical responder. */
+  getCarryRespawnOutcome?: (
+    ownerId: string,
+  ) => Promise<Pick<PriorRespawn, 'outcome' | 'ts'>>;
 }
 
 /** `listRecentPosts` is a production-only bounded extension of the shared
@@ -109,6 +114,23 @@ export interface SilentResponderThreadStore {
 
 /** Bound the history we inspect. More posts than this are unknown, not silent. */
 const SILENT_THREAD_POST_LIMIT = 20;
+
+/** Give a newly carried responder a bounded window to resume before treating its
+ *  previous native-session death as a terminal consult failure. */
+export const CONSULT_CARRY_RESPAWN_GRACE_MS = 10 * 60_000;
+
+export function consultCarryRespawnInGrace(
+  prior: Pick<PriorRespawn, 'outcome' | 'ts'> | null | undefined,
+  routedAtMs: number,
+  nowMs: number,
+): boolean {
+  if (!prior || (prior.outcome !== 'pending' && prior.outcome !== 'delivered')) return false;
+  const respawnAtMs = typeof prior.ts === 'string' ? Date.parse(prior.ts) : Number.NaN;
+  return Number.isFinite(respawnAtMs) &&
+    respawnAtMs >= routedAtMs &&
+    respawnAtMs <= nowMs &&
+    nowMs - respawnAtMs < CONSULT_CARRY_RESPAWN_GRACE_MS;
+}
 
 /**
  * The per-row workspace SYSTEM identity the sweep acts under.
@@ -229,6 +251,21 @@ export function consultExpiryFindSilentResponders(
         ])
       : [[], new Map<string, { sessionState?: string | null }>()] as const;
     const presenceByOwner = new Map(presenceEntries);
+    const carryOutcomes = new Map<string, Promise<Pick<PriorRespawn, 'outcome' | 'ts'>>>();
+    const hasRecentCarryRespawn = async (ownerId: string, routedMs: number): Promise<boolean> => {
+      if (!deps.getCarryRespawnOutcome) return false;
+      let pending = carryOutcomes.get(ownerId);
+      if (!pending) {
+        pending = deps.getCarryRespawnOutcome(ownerId);
+        carryOutcomes.set(ownerId, pending);
+      }
+      try {
+        return consultCarryRespawnInGrace(await pending, routedMs, checkedAtMs);
+      } catch {
+        // A host-log read failure is not evidence of a carry in progress.
+        return false;
+      }
+    };
     const tasksByOwner = new Map<string, ReturnType<NonNullable<SilentResponderDetectorDeps['listAnsweringTasks']>>>();
     const endedLaunch = async (row: SilentResponderCandidate): Promise<boolean> => {
       if (!deps.listAnsweringTasks || !row.answeringOwnerId || !row.sourceOwnerId) return false;
@@ -287,6 +324,11 @@ export function consultExpiryFindSilentResponders(
             checkedAtMs - routedMs >= HARD_BLOCKED_EXPIRY_MS;
           const terminalLaunch = sessionState == null && await endedLaunch(row);
           if (!terminalAfterRoute && !reparkedAfterRoute && !inactivePastPickupWindow && !terminalLaunch) return;
+          // A context-death ends the old native child before the watchdog's fresh
+          // context is available. A recent accepted/delivered carry is positive
+          // evidence that the logical responder can still continue; don't advance
+          // the consult on the predecessor's terminal state.
+          if (await hasRecentCarryRespawn(row.answeringOwnerId, routedMs)) return;
         }
 
         const store = getStore(row.workspaceId);

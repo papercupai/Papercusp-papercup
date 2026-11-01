@@ -146,6 +146,14 @@ function hasCompletedLoopTurnAfterLastFire(
   return Number.isFinite(firedAtMs) && Number.isFinite(completedAtMs) && completedAtMs > firedAtMs;
 }
 
+function hasLoopTurnCompletedAfterLastFire(
+  loop: Partial<Pick<LoopStatus, 'lastFiredAt' | 'lastLoopTurnAt'>> | null | undefined,
+): boolean {
+  const firedAtMs = loop?.lastFiredAt == null ? Number.NaN : Date.parse(loop.lastFiredAt);
+  const completedAtMs = loop?.lastLoopTurnAt == null ? Number.NaN : Date.parse(loop.lastLoopTurnAt);
+  return Number.isFinite(firedAtMs) && Number.isFinite(completedAtMs) && completedAtMs > firedAtMs;
+}
+
 function latestFireWasAwaitBlocked(loop: LoopNextWakeInput): boolean {
   if (loop?.lastWithheldReason !== 'await-blocking') return false;
   const firedAtMs = loop.lastFiredAt == null ? Number.NaN : Date.parse(loop.lastFiredAt);
@@ -195,6 +203,18 @@ export function classifyLoopNextWake(
   // P-013 / EI-24023838400909760: the last fire parked undelivered — the next one on the
   // same delivery path is expected to park too, so this loop does not guarantee a wake.
   if (lastLoopFireParked(loop)) return { guaranteed: false, reason: 'last-fire-parked' };
+
+  // EI-27064444586113602: a loop-origin turn completed after its delivered fire, but the
+  // routine is still parked without a scheduled next fire. The turn can no longer be the
+  // in-flight work that explains the missing re-arm, so an active row is not a wake promise.
+  if (
+    loop.lastWakeStatus === 'delivered' &&
+    loop.parked &&
+    loop.nextFireAt == null &&
+    hasLoopTurnCompletedAfterLastFire(loop)
+  ) {
+    return { guaranteed: false, reason: 'last-turn-unrearmed' };
+  }
 
   // EI-25407823334233635: inbox-watermark suppression never runs a loop iteration.
   // A manual routine fire can replace the reconciler's failure with `queued` before

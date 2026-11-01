@@ -2,7 +2,7 @@ import type { ActivityRecord } from '@papercusp/activity-bridge';
 import { describe, expect, it, vi } from 'vitest';
 import { LOOP_TURN_START_MARKER, SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { indexedLoopTurnStartRecord, isLoopFirePrompt, loopTurnStartRecord, readLoopFireIdentityForCurrentTurn, recordLoopTurnStart, type IndexedNativeLoopTurn } from './loop-turn-start-stamp';
-import type { LedgerRow } from '../../turn-provenance/turn-provenance';
+import { LOOP_FIRE_PROVENANCE_TTL_MS, type LedgerRow } from '../../turn-provenance/turn-provenance';
 
 // EI-24791346664119438: the turn-start endpoint stamps a loop-fire turn start in real time so
 // reconcile-loop-routines can tell a long-running loop turn from a wake that never became one.
@@ -48,6 +48,19 @@ describe('indexed native producer validation', () => {
 
   it('keeps missing enrollment unknown', () => {
     expect(indexedLoopTurnStartRecord(turn, [])).toBeNull();
+  });
+
+  it('retains the loop fire identity when the client submits 615s after host acceptance', () => {
+    const acceptedAt = submitted;
+    const delayedTurn = { ...turn, ts: new Date(acceptedAt + 615_000).toISOString() };
+    const delayedEnrollment = { ...enrollment, ts: acceptedAt, ttlMs: LOOP_FIRE_PROVENANCE_TTL_MS };
+
+    // The global 10-minute TTL reproduces the reported failure: the bytes were
+    // accepted by the host, but the later client turn cannot be attributed.
+    expect(indexedLoopTurnStartRecord(delayedTurn, [{ ...delayedEnrollment, ttlMs: undefined }])).toBeNull();
+    expect(indexedLoopTurnStartRecord(delayedTurn, [delayedEnrollment])).toMatchObject({
+      detail: { loopFire: { routineId: 'routine-10', wakeCount: 10 } },
+    });
   });
 
   it('indexes a self-compaction turn only when its provenance row carries typed loop lineage', () => {

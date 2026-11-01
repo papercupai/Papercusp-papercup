@@ -63,10 +63,18 @@ export function turnProvenanceDir(env: NodeJS.ProcessEnv = process.env): string 
   return env.PAPERCUSP_TURN_PROVENANCE_DIR || TURN_PROVENANCE_DIR;
 }
 
-/** Rows older than this cannot authorize a current injection. Reclamation
- *  additionally retains bounded history for stale-turn classification and
+/** Default row lifetime for current-injection authorization. A bounded per-row
+ *  `ttlMs` override is available to injectors with longer delivery windows.
+ *  Reclamation additionally retains history for stale-turn classification and
  *  delayed transcript ingestion; see LEDGER_GC_GRACE_MS. */
 export const LEDGER_TTL_MS_DEFAULT = 10 * 60_000;
+
+/** Keep loop-fire provenance live after the host accepts a prompt: the client
+ *  can defer UserPromptSubmit while starting or draining its TUI. The 65-minute
+ *  per-row window covers the longest existing scheduled-wake horizon plus its
+ *  five-minute margin. The host still applies its separate 10-minute fence
+ *  before writing a wake, so this does not authorize stale host deliveries. */
+export const LOOP_FIRE_PROVENANCE_TTL_MS = 65 * 60_000;
 
 /** Env override for the TTL, clamped to ≥30s (a sub-30s TTL would expire a
  *  row while the host's idle-gate is still holding the injected turn). */

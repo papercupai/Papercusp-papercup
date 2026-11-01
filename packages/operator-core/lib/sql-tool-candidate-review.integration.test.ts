@@ -14,6 +14,7 @@ vi.mock('@papercusp/db-org', async orig => ({
   ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }),
 }));
 vi.mock('./sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+const fallbackObservations = await import('./degradation/fallback-observations');
 const { captureImprovement } = await import('./harness/improvements/capture-core');
 const { createIssue } = await import('./issues-engineer');
 const { enterAgentReview } = await import('./harness/improvements/agent-review');
@@ -254,4 +255,23 @@ it('production cadence carries real authorized search sources into canonical rev
     WHERE workspace_id=${WS} AND run_id=${failed.monitored!.runId}::uuid AND family='search-reformulation'`;
   expect(unknown!.review).toEqual(failed.monitoredReviewIntake!.reviews);
   expect(JSON.stringify(unknown)).not.toContain('private review failure');
+});
+it('flushes pending fallback observations before an org fixture closes its clients', async () => {
+  await fallbackObservations.flushFallbackObservations({ sql: db.adminSql });
+  const isolated = await createOrgTestDb();
+  const previousSql = h.sql;
+  h.sql = isolated.adminSql;
+  const failedBefore = fallbackObservations.fallbackObservationCounters().failed;
+  try {
+    expect(fallbackObservations.observeFallback('sql-review-fixture-cleanup', {
+      eligible: 1, applied: 0, reason: 'fixture-cleanup', scope: randomUUID(),
+    }, { correlationId: randomUUID() })).toBe(true);
+    await isolated.cleanup();
+    const lateFlush = await fallbackObservations.flushFallbackObservations({ sql: isolated.adminSql });
+    expect(lateFlush).toMatchObject({ written: 0, failed: 0 });
+    expect(fallbackObservations.fallbackObservationCounters().failed).toBe(failedBefore);
+  } finally {
+    h.sql = previousSql;
+    await isolated.cleanup().catch(() => undefined);
+  }
 });

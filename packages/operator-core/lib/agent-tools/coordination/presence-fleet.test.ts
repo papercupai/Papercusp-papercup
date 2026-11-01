@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { deriveFleetControlVisibility, resolvePresenceFleet, type FleetMembership } from './presence-fleet';
+import { getOrgPg } from '@papercusp/db-org';
+import {
+  deriveFleetControlVisibility,
+  fetchPresenceFleet,
+  liveSessionLogFleetFallbackOwnerIds,
+  resolvePresenceFleet,
+  type FleetMembership,
+} from './presence-fleet';
+
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
 
 const LAUNCH: FleetMembership = { fleetSlug: 'launch-fleet', fleetRole: 'member' };
 
@@ -33,6 +42,53 @@ describe('resolvePresenceFleet', () => {
     const fetcher = vi.fn(async () => new Map<string, FleetMembership>());
     await expect(resolvePresenceFleet(undefined, LAUNCH, fetcher)).resolves.toEqual(LAUNCH);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe('session-log fleet membership fallback', () => {
+  it('selects only unique session-log rows whose shared liveness verdict is live', () => {
+    expect(liveSessionLogFleetFallbackOwnerIds([
+      { ownerId: 'live', source: 'session-log', sessionState: 'live' },
+      { ownerId: 'live', source: 'session-log', sessionState: 'live' },
+      { ownerId: 'recorded', source: 'session-log', sessionState: 'recorded' },
+      { ownerId: 'ended', source: 'session-log-ended', sessionState: 'ended' },
+      { ownerId: 'unknown', source: 'session-log', sessionState: null },
+      { ownerId: 'other', source: 'coord_presence', sessionState: 'live' },
+    ])).toEqual(['live']);
+  });
+
+  it('uses the latest ledger fact only for live candidates with no coord_presence row', async () => {
+    const sql = vi.fn();
+    const queries: string[] = [];
+    sql.mockImplementation(async (strings: TemplateStringsArray) => {
+      const query = strings.join(' ');
+      queries.push(query);
+      if (query.includes('fleet_membership_events')) {
+        return [{ owner_id: 'live', fleet_slug: 'ledger-fleet', fleet_role: 'member' }];
+      }
+      return [{ owner_id: 'present', fleet_slug: 'presence-fleet', fleet_role: 'leader' }];
+    });
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+
+    const result = await fetchPresenceFleet(
+      ['present', 'unlabelled-present', 'live', 'recorded', 'ended'],
+      {
+        workspaceId: 'papercusp-workspace',
+        liveSessionLogOwnerIds: ['present', 'unlabelled-present', 'live'],
+      },
+    );
+
+    expect(result.get('present')).toEqual({ fleetSlug: 'presence-fleet', fleetRole: 'leader' });
+    expect(result.get('live')).toEqual({ fleetSlug: 'ledger-fleet', fleetRole: 'member' });
+    expect(result.has('unlabelled-present')).toBe(false);
+    expect(result.has('recorded')).toBe(false);
+    expect(result.has('ended')).toBe(false);
+    expect(queries).toHaveLength(2);
+    expect(queries[1]).toContain('DISTINCT ON (e.owner_id)');
+    expect(queries[1]).toContain('ORDER BY e.owner_id, e.id DESC');
+    expect(queries[1]).toContain('latest.fleet_slug IS NOT NULL');
+    expect(queries[1]).toContain('NOT EXISTS');
+    expect(queries[1]).toContain('harness_shared.coord_presence');
   });
 });
 

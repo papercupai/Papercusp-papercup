@@ -458,11 +458,7 @@ export function renderFloorHeadroomLine(
   kind: string,
   agent: Pick<GeneratedAgent, 'budgetBytes' | 'floors' | 'rows'>,
 ): string {
-  const floorSet = new Set(agent.floors);
-  const h = floorHeadroom(
-    agent.budgetBytes,
-    agent.rows.filter((r) => floorSet.has(r.name)).map((r) => r.compactBytes),
-  );
+  const h = deliveryFloorHeadroom(agent);
   return (
     `FLOOR_HEADROOM kind=${kind} floors=${h.floorCount} floorBytes=${h.floorBytes} budget=${h.budgetBytes} ` +
     `headroom=${h.headroomBytes} margin=${h.marginBytes} status=${h.status}\n`
@@ -628,6 +624,44 @@ export function toolDeliveryDriftVerdict(
   return current === built ? { ok: true, reason: 'current' } : { ok: false, reason: 'stale' };
 }
 
+export interface DeliveryFloorBudgetInput {
+  budgetBytes: number;
+  floors: readonly string[];
+  rows: readonly { name: string; compactBytes: number }[];
+}
+
+export function deliveryFloorHeadroom(agent: DeliveryFloorBudgetInput): ReturnType<typeof floorHeadroom> {
+  const floors = new Set(agent.floors);
+  return floorHeadroom(
+    agent.budgetBytes,
+    agent.rows.filter((row) => floors.has(row.name)).map((row) => row.compactBytes),
+  );
+}
+
+export type ToolDeliveryCheckVerdict =
+  | ToolDeliveryDriftVerdict
+  | {
+      ok: false;
+      reason: 'floor-overrun';
+      agentKind: string;
+      headroom: ReturnType<typeof floorHeadroom>;
+    };
+
+/** A current artifact cannot pass while any mandatory compact floor exceeds its budget. */
+export function toolDeliveryCheckVerdict(
+  current: string | null,
+  built: string,
+  agents: Readonly<Record<string, DeliveryFloorBudgetInput>>,
+): ToolDeliveryCheckVerdict {
+  for (const [agentKind, agent] of Object.entries(agents).sort(([a], [b]) => a.localeCompare(b))) {
+    const headroom = deliveryFloorHeadroom(agent);
+    if (headroom.status === 'overrun') {
+      return { ok: false, reason: 'floor-overrun', agentKind, headroom };
+    }
+  }
+  return toolDeliveryDriftVerdict(current, built);
+}
+
 async function main(): Promise<number> {
   const check = process.argv.includes('--check');
   const report = process.argv.includes('--report');
@@ -672,7 +706,15 @@ async function main(): Promise<number> {
     } catch {
       current = null;
     }
-    const verdict = toolDeliveryDriftVerdict(current, built.text);
+    const verdict = toolDeliveryCheckVerdict(current, built.text, built.agents);
+    if (!verdict.ok && verdict.reason === 'floor-overrun') {
+      process.stderr.write(
+        `✖ gen:tool-delivery:check — ${verdict.agentKind} compact floor set exceeds the ${verdict.headroom.budgetBytes} B budget by ${-verdict.headroom.headroomBytes} B ` +
+          `(${verdict.headroom.floorCount} floors use ${verdict.headroom.floorBytes} B).\n` +
+          '  Floor tools are mandatory; reduce their compact schema cost before regenerating.\n',
+      );
+      return 1;
+    }
     if (verdict.ok) {
       process.stdout.write(`GEN_TOOL_DELIVERY_CHECK ok ${OUT_PATH}\n`);
       return 0;

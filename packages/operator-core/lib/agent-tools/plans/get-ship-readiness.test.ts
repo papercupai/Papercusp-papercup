@@ -140,6 +140,12 @@ vi.mock('../../plan-audits', () => ({
 vi.mock('../../sync-resolver/plan-acceptance-gate-verdict', () => ({
   resolvePlanAcceptanceGateVerdict: M.resolvePlanAcceptanceGateVerdict,
 }));
+vi.mock('../../plan-items/anchor-store', () => ({
+  readPlanItemAnchors: vi.fn(async () => ({})),
+}));
+vi.mock('./plan-scope-cascade', () => {
+  throw new Error('plans:get must not import the write-side plan-scope-cascade module');
+});
 
 import tool from './get';
 import { resetOperatorCacheForTests, resetCachedReadStatsForTests, __setCachedReadEnabledForTests } from '../../cache';

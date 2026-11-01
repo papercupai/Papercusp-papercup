@@ -714,7 +714,7 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
   // a cold loop re-armed and was told rewakeGuaranteed:true while its previous fire had
   // parked "no injectable psu host"; the next fire parked identically and the session went
   // dark. An active in-bounds loop is not a guarantee when its delivery path is broken.
-  describe('a loop whose last fire PARKED undelivered is not a re-wake guarantee', () => {
+  describe('a loop with an unresolved delivery or re-arm state is not a re-wake guarantee', () => {
     const NO_HOST = 'eligible cold loop wake has no injectable psu host — parked without resume to preserve the fresh-context boundary';
 
     it('reports last-fire-parked for a parked no-host cold fire', () => {
@@ -779,6 +779,27 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
       ).toBe(true);
       // Legacy inputs without the wake fields keep their old verdict.
       expect(classifyLoopNextWake(loop()).guaranteed).toBe(true);
+    });
+
+    it('rejects a delivered parked loop after its turn completed but before any next fire was recorded', () => {
+      const lastFiredAt = '2026-10-31T10:00:00.000Z';
+      expect(classifyLoopNextWake(loop({
+        lastWakeStatus: 'delivered',
+        parked: true,
+        nextFireAt: null,
+        lastFiredAt,
+        lastLoopTurnAt: '2026-10-31T10:00:00.001Z',
+      }))).toEqual({ guaranteed: false, reason: 'last-turn-unrearmed' });
+
+      for (const lastLoopTurnAt of [null, lastFiredAt, '2026-10-31T09:59:59.999Z']) {
+        expect(classifyLoopNextWake(loop({
+          lastWakeStatus: 'delivered',
+          parked: true,
+          nextFireAt: null,
+          lastFiredAt,
+          lastLoopTurnAt,
+        }))).toEqual({ guaranteed: true, reason: null });
+      }
     });
 
     it('keeps a durable parked retry as a guarantee despite the sticky no-loop-turn outcome', () => {
@@ -1614,6 +1635,15 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       );
       expect(conditional.ok).toBe(true);
       expect(conditional.absenceLint).toBeUndefined();
+
+      const noMismatchResult = body(
+        await call({
+          left: "If the test fails on the 'tip' case precondition, drop 'tip' from it.each (the preflight then honoured the input, so there was no mismatch to test).",
+          next: 'continue the preflight check',
+        }),
+      );
+      expect(noMismatchResult.ok).toBe(true);
+      expect(noMismatchResult.absenceLint).toBeUndefined();
 
       const mainClause = body(
         await call({

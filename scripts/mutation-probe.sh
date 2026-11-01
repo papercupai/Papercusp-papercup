@@ -2085,8 +2085,18 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 const [noticeFile, outputFile, subjectInput, repoRootInput] = process.argv.slice(2);
-function fail(reason) {
-  console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES verdict=unclassified reason=' + reason);
+function fail(reason, record = null) {
+  const child = record && typeof record === 'object' ? {
+    kind: typeof record.kind === 'string' ? record.kind.slice(0, 80) : null,
+    via: typeof record.via === 'string' ? record.via.slice(0, 80) : null,
+    source: typeof record.top === 'string' && typeof record.rel === 'string'
+      ? resolve(record.top, record.rel).slice(0, 1024)
+      : null,
+    entry: typeof record.entry === 'string' ? record.entry.slice(0, 1024) : null,
+    pid: Number.isSafeInteger(record.pid) ? record.pid : null,
+  } : null;
+  console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES verdict=unclassified reason=' + reason
+    + (child ? ' child=' + JSON.stringify(child) : ''));
   process.exit(1);
 }
 function canonical(path) {
@@ -2199,12 +2209,12 @@ for (const record of records) {
   const sourcePath = canonical(resolve(top, record.rel));
   const entryPath = canonical(isAbsolute(record.entry) ? record.entry : resolve(top, record.entry));
   if (!within(repoRoot, top) || !within(top, sourcePath) || !within(repoRoot, entryPath)) {
-    fail('notice-path-outside-repository');
+    fail('notice-path-outside-repository', record);
   }
   const exactGitReader = record.kind === 'substituted' && record.via === 'esm'
     && top === testConfigRoot && sourcePath === expectedWorker && entryPath === expectedWorker
     && record.rel === 'src/git-read-worker.mjs' && record.entry === 'src/git-read-worker.mjs';
-  if (!exactGitReader) fail('subject-dependent-or-unknown-child');
+  if (!exactGitReader) fail('subject-dependent-or-unknown-child', record);
 }
 
 console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=' + records.length

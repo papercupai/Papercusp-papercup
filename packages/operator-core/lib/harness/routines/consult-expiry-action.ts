@@ -117,6 +117,10 @@ registerSystemAction('consult-expiry-sweep', async () => {
         const { resolveSessionStates } = await import('../../agent-tools/coordination/liveness-oracle');
         return resolveSessionStates(subjects, opts);
       },
+      getCarryRespawnOutcome: async (ownerId) => {
+        const { readPriorRespawnOutcome } = await import('../../carry-respawn-outcome');
+        return readPriorRespawnOutcome(ownerId);
+      },
       getThreadStore: (workspaceId) =>
         new PgThreadStore({
           getSql: () => getOrgPg().sql,

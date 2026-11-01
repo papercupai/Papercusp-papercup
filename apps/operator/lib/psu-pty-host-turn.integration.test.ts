@@ -1359,7 +1359,7 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
   // `{ ok: true, reason: 'pending-delivery-id' }` forever; now it is refused like
   // a first delivery, under phase `duplicate-pending`.
   it.each(['continuous', 'repaint-gap'] as const)('refuses a PENDING retry once the child crosses the unbound window, and keeps the completed answer: %s', async (outputMode) => {
-    const windowMs = 4_000;
+    const windowMs = 10_000;
     const root = mkdtempSync(join(tmpdir(), 'codex-unbindable-pending-'));
     const sessions = join(root, 'sessions');
     mkdirSync(sessions);
@@ -2350,6 +2350,30 @@ function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number
   );
 }
 
+function busyThenIdleChildCodeWithNativeProof(
+  busyMs: number,
+  intervalMs: number,
+  ttlMs: number,
+  transcriptPath: string,
+  releasePath?: string,
+): string {
+  const source = busyThenIdleChildCode(busyMs, intervalMs, ttlMs, releasePath);
+  const nativeListener =
+    "const nativePath=" + JSON.stringify(transcriptPath) +
+    ";const nativeFs=require('node:fs'),nativePathApi=require('node:path');let nativeBuffer='';" +
+    "process.stdin.on('data',data=>{nativeBuffer+=data;let i;while((i=nativeBuffer.indexOf(String.fromCharCode(10)))>=0){" +
+    "const line=nativeBuffer.slice(0,i);nativeBuffer=nativeBuffer.slice(i+1);if(!line.trim())continue;" +
+    "const turnId=String(Date.now()),timestamp=new Date().toISOString();nativeFs.mkdirSync(nativePathApi.dirname(nativePath),{recursive:true});" +
+    "const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:line.trim()}]}}," +
+    "{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:turnId}}," +
+    "{type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_complete',turn_id:turnId}}];" +
+    "nativeFs.appendFileSync(nativePath,rows.map(row=>JSON.stringify(row)+String.fromCharCode(10)).join(''));}});";
+  return source.replace(
+    "process.stdin.setEncoding('utf8');let b='';",
+    "process.stdin.setEncoding('utf8');let b='';" + nativeListener,
+  );
+}
+
 it('the busy fixture keeps emitting while its agent main thread is blocked', async () => {
   const ownerId = uniqueOwner('BUSY-WORKER-FORWARDING');
   const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
@@ -2883,6 +2907,9 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
   it(
     'refreshes a same-ID loop checkpoint after the busy gate hands delivery to native rearm',
     async () => {
+      const nativeRoot = mkdtempSync(join(tmpdir(), 'loop-rearm-refresh-native-'));
+      const nativeId = '55555555-5555-4555-8555-555555555555';
+      const transcript = join(nativeRoot, 'sessions', '2026', '09', '12', 'rollout-' + nativeId + '.jsonl');
       const ownerId = uniqueOwner('LOOP-REARM-REFRESH');
       const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
       const sock = socketPathFor(ownerId);
@@ -2890,11 +2917,12 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
       const { captured, io } = bridgedIo();
       const done = hostThroughPty({
         command: execPath,
-        args: ['-e', busyThenIdleChildCode(500, 50, 6_000, releaseBusy)],
+        args: ['-e', busyThenIdleChildCodeWithNativeProof(500, 50, 6_000, transcript, releaseBusy)],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),
-          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: nativeRoot,
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_IDLE_MS: '60',
@@ -2908,6 +2936,7 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
         advSessionId: 35_095,
         io,
         bridgeTty: true,
+        resolveRespawnNativeId: () => nativeId,
         onExit: () => {},
       });
       const envelope = {
@@ -2943,6 +2972,7 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
         writeFileSync(releaseBusy, 'release\n');
         await done;
         rmSync(releaseBusy, { force: true });
+        rmSync(nativeRoot, { recursive: true, force: true });
       }
       expect(existsSync(sock)).toBe(false);
     },
@@ -3081,6 +3111,9 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
     'keeps a same delivery ID pending until a busy-gate turn re-arm settles',
     async () => {
       const busyMs = 1_500;
+      const nativeRoot = mkdtempSync(join(tmpdir(), 'same-id-rearm-native-'));
+      const nativeId = '66666666-6666-4666-8666-666666666666';
+      const transcript = join(nativeRoot, 'sessions', '2026', '09', '12', 'rollout-' + nativeId + '.jsonl');
       const ownerId = uniqueOwner('DEDUP-SAME-ID-REARM');
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
@@ -3090,11 +3123,12 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
       let exitCode: number | null = null;
       const done = hostThroughPty({
         command: execPath,
-        args: ['-e', busyThenIdleChildCode(busyMs, 50, 5_000)],
+        args: ['-e', busyThenIdleChildCodeWithNativeProof(busyMs, 50, 5_000, transcript)],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),
-          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: nativeRoot,
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_IDLE_MS: '60',
@@ -3108,6 +3142,7 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
         advSessionId: 35_094,
         io,
         bridgeTty: true,
+        resolveRespawnNativeId: () => nativeId,
         onExit: (c: number) => {
           exitCode = c;
         },
@@ -3167,6 +3202,7 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
         await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
         await done;
         rmSync(meta, { force: true });
+        rmSync(nativeRoot, { recursive: true, force: true });
       }
       expect(exitCode).toBe(0);
       expect(existsSync(sock)).toBe(false);

@@ -385,19 +385,23 @@ const LOCK_LIFECYCLE_NORMALIZED: ReadonlySet<string> = new Set<string>([
   'locksheartbeatresource',
 ]);
 
-/** SESSION-LIFECYCLE tools — their calls change the session itself rather than advancing a
- * batchable tool flow. Replaying one from a ready-to-paste skeleton can end/respawn the session
- * again (most dangerously `session:request-compaction`), so exclude every session lifecycle call
- * before it enters the recent-call ring. */
-const SESSION_LIFECYCLE_NORMALIZED: ReadonlySet<string> = new Set<string>([
+/** Lifecycle and checkpoint mutations change session, loop, or work-item state rather than
+ * advancing a reorderable tool flow. Replaying one from a Promise.all skeleton can end/respawn the
+ * session or race a checkpoint, so exclude them before they enter the recent-call ring. */
+const NON_BATCHABLE_LIFECYCLE_OR_CHECKPOINT_NORMALIZED: ReadonlySet<string> = new Set<string>([
   'sessioncarrydrill',
   'sessionend',
   'sessionrequestcompaction',
+  'looparm',
+  'loopend',
+  'loopcheckpoint',
+  'workitemscheckpoint',
 ]);
 
 /** One recorded call in the sliding window. */
 interface RecentCall {
   tool: string;
+  effect: 'read' | 'write';
   at: number;
   /** Explicit request group from turn-aware clients; identical IDs are one inference turn. */
   turnId?: string | number;
@@ -825,6 +829,8 @@ export interface BatchNudgeInput {
   sessionKey: string;
   /** The tool just called (MCP or verb form). */
   toolName: string;
+  /** Canonical per-call effect from the tool registry. */
+  effect: 'read' | 'write';
   /** Request group from turn-aware clients (`outputGroupId`/`turnId`); absent on older clients. */
   turnId?: string | number;
   /** The call's raw arguments object — unwraps tools:invoke (P-001) and prefills skeletons (P-003). */
@@ -882,7 +888,7 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
     EXCLUDED_NORMALIZED.has(normalized) ||
     AMBIENT_NORMALIZED.has(normalized) ||
     LOCK_LIFECYCLE_NORMALIZED.has(normalized) ||
-    SESSION_LIFECYCLE_NORMALIZED.has(normalized)
+    NON_BATCHABLE_LIFECYCLE_OR_CHECKPOINT_NORMALIZED.has(normalized)
   )
     return null;
   const now = input.now ?? Date.now();
@@ -915,6 +921,7 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
 
   st.recent.push({
     tool: toolName,
+    effect: input.effect,
     at: now,
     ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
     argsRender: renderArgs(args),
@@ -985,6 +992,23 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   // before the budget gate so their sequential cost is the sum, not the parallel maximum.
   if (hasRevisionDependency(kind === 'same-tool' ? st.recent.filter((c) => c.tool === toolName) : st.recent)) {
     kind = 'pipeline';
+  }
+
+  // The unordered Promise.all skeleton is safe for reads. Writes are eligible only when the
+  // same-tool flow has an explicit, distinct CAS target for every call; chained writes stay in the
+  // sequential pipeline path. Unknown-target and mixed-effect writes are not reorderable evidence.
+  if (kind !== 'pipeline') {
+    const candidates = kind === 'same-tool' ? st.recent.filter((c) => c.tool === toolName) : st.recent;
+    const activeCandidates = candidates.filter((call) => !call.forced);
+    const writes = activeCandidates.filter((call) => call.effect === 'write');
+    if (writes.length > 0) {
+      const disjointCasWrites =
+        kind === 'same-tool' &&
+        writes.length === activeCandidates.length &&
+        writes.every((call) => typeof call.revisionTarget === 'string') &&
+        new Set(writes.map((call) => call.revisionTarget)).size === writes.length;
+      if (!disjointCasWrites) return null;
+    }
   }
 
   // BUDGET GATE (EI-21254965187146713) — before the backoff, deliberately. A fold we decline to

@@ -585,8 +585,10 @@ export interface ConsultLifecycleState {
   /** Original reviewer evidence and append-only requester dispositions. */
   review?: import('../../consult/review-findings').ConsultReviewState | null;
   state: string;
+  /** Canonical consult outcome, separate from the initial routing receipt. */
+  outcome?: Record<string, unknown> | null;
   /** Existing recoverable-request result JSON. Missing means unrecorded, not
-   * measured absence; state remains the independent conversation lifecycle. */
+   * measured absence; this is historical routing state, not terminal advice. */
   request_result?: Record<string, unknown> | null;
   latency_contract: string | null;
   responder_id: string | null;
@@ -704,6 +706,7 @@ export function getConsultStates(
         SELECT conversation_id, state, latency_contract, responder_id,
                expires_at, closed_at, wakes_used,
                routing #> '{request,result}' AS request_result,
+               outcome - 'review' AS outcome,
                outcome -> 'review' AS review
           FROM harness_shared.consult_state
          WHERE workspace_id = ${conversationsScopeWorkspace()}
@@ -790,6 +793,9 @@ export function getConsultStates(
           conversation_id: r.conversation_id,
           state: r.state,
           request_result: r.request_result ?? null,
+          outcome: r.outcome && typeof r.outcome === 'object' && Object.keys(r.outcome).length > 0
+            ? r.outcome
+            : null,
           review: typeof r.review === 'string' ? JSON.parse(r.review) : r.review ?? null,
           latency_contract: r.latency_contract ?? null,
           responder_id: r.responder_id ?? null,

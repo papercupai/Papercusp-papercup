@@ -317,12 +317,13 @@ const RHETORICAL_ABSENCE_SUBJECT = /^(?:(?:[a-z-]+\s+)?(?:excuse|reason)\s+(?:fo
 /**
  * A bounded verdict about LIVE execution state is also not a missing durable
  * surface. "There is no stall to remediate" describes the current process leg;
- * telling its author to grep the repository for `stall to remediate` is a category
- * error. Keep this exact-subject shaped so real surface claims such as "there is no
- * stall detector for affected tasks" still reach the absence guard.
+ * "there was no mismatch to test" describes a test outcome. Telling either author
+ * to grep the repository for that result is a category error. Keep this exact-subject
+ * shaped so real surface claims such as "there is no stall detector for affected
+ * tasks" or "there is no mismatch detector" still reach the absence guard.
  */
 const LIVE_STATE_ABSENCE_SUBJECT =
-  /^(?:(?:current|live|active|remaining|new|runtime|process|observed|visible)\s+)*(?:stall|blocker|failure|error|regression|issue|problem|incident)(?:\s+(?:left\s+)?to\s+(?:remediate|fix|clear|resolve|investigate|handle))?$/i;
+  /^(?:(?:current|live|active|remaining|new|runtime|process|observed|visible)\s+)*(?:stall|blocker|failure|error|regression|issue|problem|incident|mismatch(?:\s+to\s+test)?)(?:\s+(?:left\s+)?to\s+(?:remediate|fix|clear|resolve|investigate|handle))?$/i;
 
 /**
  * A bounded inbox census is another live-state result, not a missing durable
@@ -340,7 +341,10 @@ const ACTION_DISPOSITION_ABSENCE_SUBJECT =
   /^(?:action|step|operation|retry|request|call|command|change|reassignment|execution|invocation)\b(?:(?:[^.;\n]{0,60}\b(?:is|are|was|were)\s+(?:currently\s+)?(?:(?:not|never)\s+)?(?:being\s+)?(?:taken|made|performed|executed|invoked|called|run|issued|sent|attempted|started|applied|reassigned|continued)\b)|(?:[^.;\n]{0,60}\b(?:not|never)\s+(?:reassigning|executing|performing|running|calling|sending|issuing|attempting)\b))/i;
 
 function isNonSurfaceAbsenceSubject(subject: string): boolean {
-  const normalized = subject.trim();
+  // Absence-pattern captures can end inside parenthetical prose (for example,
+  // "there was no mismatch to test)"). Closing delimiters are not part of the
+  // subject and must not defeat an otherwise exact live-result classification.
+  const normalized = subject.trim().replace(/[)\]]+$/g, '').trim();
   return (
     RHETORICAL_ABSENCE_SUBJECT.test(normalized) ||
     LIVE_STATE_ABSENCE_SUBJECT.test(normalized) ||

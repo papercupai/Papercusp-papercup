@@ -3823,6 +3823,9 @@ fi
     ]);
     expect(code, out).toBe(2);
     expect(out).toContain('subject-dependent-or-unknown-child');
+    expect(out).toContain('"source":"' + resolve(top, 'packages/operator-core/lib/mutation-probe-script.test.ts') + '"');
+    expect(out).toContain('"entry":"scripts/test-files.mjs"');
+    expect(out).toContain('"pid":43');
     expect(out).toContain('verdict=harness-error');
     expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
     expect(out).not.toContain('VERDICT: MUTANT SURVIVED');

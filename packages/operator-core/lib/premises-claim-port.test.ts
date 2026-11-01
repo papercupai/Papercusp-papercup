@@ -76,6 +76,13 @@ describe('detectAbsencePremises', () => {
     expect(derive('The note says no such action, not reassigning or executing it.')).toEqual([]);
   });
 
+  it('does not treat a no-mismatch test outcome as a missing surface', () => {
+    const conditional =
+      "If the test fails on the 'tip' case precondition, drop 'tip' from it.each (the preflight then honoured the input, so there was no mismatch to test).";
+    expect(derive(conditional)).toEqual([]);
+    expect(derive('There is no mismatch detector for the it.each preflight.')).toHaveLength(1);
+  });
+
   it('still flags an actually missing action surface', () => {
     expect(derive('There is no action handler for this queue entry.')).toHaveLength(1);
   });

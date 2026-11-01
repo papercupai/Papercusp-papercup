@@ -1081,24 +1081,6 @@ export async function openAcceptanceBarAmendmentReview(
       `apply with the same patch plus approvalRef:'thread-post:<that answer post id>' (conversations:get { id:'${routed.conversationId}' } lists post ids).`;
     return { ...routed, previewPostRef, next };
   }
-  // A preview with an existing later reply already has review activity. A
-  // fresh reviewer must not be recruited for the same unchanged preview: an
-  // objection (or any other later reply worth preserving) requires explicit
-  // new requester evidence via reviewEvidencePost before re-review.
-  input.onPhase?.('review-thread-history');
-  if (!reviewEvidence && await (deps.hasLaterPost ?? previewThreadHasLaterPost)({
-    workspaceId: input.workspaceId,
-    previewPostRef,
-    excludeAuthorId: input.identity.ownerId,
-  })) {
-    const reason = `preview ${previewPostRef} already has a later thread reply; post new verification evidence on that thread and pass reviewEvidencePost to request a re-review`;
-    return {
-      ...routed,
-      previewPostRef,
-      next: `No reviewer was recruited because ${reason}. Do not post a duplicate preview.`,
-      freshReviewer: { state: 'not-launched', reason },
-    };
-  }
   // WI-10003299: nobody eligible is not a reason to stop. Launch one fresh
   // outside-lineage reviewer instead of telling the requester to wait for one.
   let freshReviewer: FreshAmendmentReviewerResult;
@@ -1122,6 +1104,32 @@ export async function openAcceptanceBarAmendmentReview(
       state: 'not-launched',
       reason: `fresh reviewer launch failed: ${error instanceof Error ? error.message : String(error)}`,
     };
+  }
+  // Only a response by the retained reviewer for this exact preview settles
+  // its review. A supplemental post by another participant may share the
+  // thread; scope the check to the idempotently retained reviewer and, when
+  // supplied, to replies posted after the new requester evidence.
+  if (freshReviewer.state === 'launched' && freshReviewer.deduped && freshReviewer.ownerId) {
+    input.onPhase?.('review-thread-history');
+    if (await (deps.hasLaterPost ?? previewThreadHasLaterPost)({
+      workspaceId: input.workspaceId,
+      previewPostRef,
+      authorId: freshReviewer.ownerId,
+      excludeAuthorId: input.identity.ownerId,
+      ...(reviewEvidence ? { afterPostRef: reviewEvidence.postRef } : {}),
+    })) {
+      const afterEvidence = reviewEvidence ? ' after evidence ' + reviewEvidence.postRef : '';
+      const reason = 'retained reviewer ' + freshReviewer.ownerId +
+        ' already replied' + afterEvidence + ' on preview ' + previewPostRef +
+        '; post new verification evidence on that thread and pass reviewEvidencePost to request a re-review';
+      const next = 'No new reviewer was recruited because ' + reason + '. Do not post a duplicate preview.';
+      return {
+        ...routed,
+        previewPostRef,
+        next,
+        freshReviewer: { state: 'not-launched', reason },
+      };
+    }
   }
   const next =
     freshReviewer.state === 'launched'

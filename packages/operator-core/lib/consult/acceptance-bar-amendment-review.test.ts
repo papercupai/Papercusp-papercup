@@ -453,15 +453,24 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(result.next).toContain('launcher screened out');
   });
 
-  it('does not recruit a fresh reviewer for a preview that already has later thread activity', async () => {
+  it('does not treat an unrelated later thread reply as the retained preview reviewer response', async () => {
     const route = vi.fn().mockResolvedValue({
       state: 'no-eligible-reviewer',
       conversationId: null,
       reason: 'no_available_responder',
       screenedOut: [],
     });
-    const launchFresh = vi.fn();
-    const hasLaterPost = vi.fn(async () => true);
+    const launchFresh = vi.fn().mockResolvedValue({
+      state: 'launched',
+      launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
+      taskId: 'task-review',
+      label: 'bar-amendment-review:existing',
+      idempotencyKey: 'review-key',
+      deduped: true,
+      answerOn: { workItemId: 'WI-7', harness: 'papercusp' },
+      ownerId: 'su-reviewer',
+    });
+    const hasLaterPost = vi.fn(async ({ authorId }: { authorId?: string }) => authorId === 'su-unrelated');
     const result = await openAcceptanceBarAmendmentReview(baseInput, {
       verifyPreviewPost: vi.fn(),
       route,
@@ -472,27 +481,36 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(hasLaterPost).toHaveBeenCalledWith({
       workspaceId: 'ws',
       previewPostRef: 'thread-post:42',
+      authorId: 'su-reviewer',
       excludeAuthorId: 'su-implementer',
     });
-    expect(launchFresh).not.toHaveBeenCalled();
+    expect(launchFresh).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       state: 'no-eligible-reviewer',
       previewPostRef: 'thread-post:42',
-      freshReviewer: { state: 'not-launched', reason: expect.stringContaining('later thread reply') },
+      freshReviewer: { state: 'launched', deduped: true, ownerId: 'su-reviewer' },
     });
-    expect(result.next).toContain('reviewEvidencePost');
+    expect(result.next).not.toContain('later reply');
   });
 
-  it('does not treat requester-authored persistence as a prior reviewer reply', async () => {
+  it('requires new evidence after the retained reviewer replies to this preview', async () => {
     const route = vi.fn().mockResolvedValue({
       state: 'no-eligible-reviewer',
       conversationId: null,
       reason: 'no_available_responder',
       screenedOut: [],
     });
-    const launchFresh = vi.fn().mockResolvedValue({ state: 'not-launched', reason: 'fresh launch attempted' });
-    const hasLaterPost = vi.fn(async (args: { excludeAuthorId?: string }) =>
-      args.excludeAuthorId !== 'su-implementer');
+    const launchFresh = vi.fn().mockResolvedValue({
+      state: 'launched',
+      launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
+      taskId: 'task-review',
+      label: 'bar-amendment-review:existing',
+      idempotencyKey: 'review-key',
+      deduped: true,
+      answerOn: { workItemId: 'WI-7', harness: 'papercusp' },
+      ownerId: 'su-reviewer',
+    });
+    const hasLaterPost = vi.fn().mockResolvedValue(true);
 
     const result = await openAcceptanceBarAmendmentReview(baseInput, {
       verifyPreviewPost: vi.fn(),
@@ -504,12 +522,14 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(hasLaterPost).toHaveBeenCalledWith({
       workspaceId: 'ws',
       previewPostRef: 'thread-post:42',
+      authorId: 'su-reviewer',
       excludeAuthorId: 'su-implementer',
     });
     expect(launchFresh).toHaveBeenCalledTimes(1);
     if (result.state === 'not-required') throw new Error('Expected a reviewer attempt');
-    expect(result.freshReviewer).toEqual({ state: 'not-launched', reason: 'fresh launch attempted' });
-    expect(result.next).not.toContain('later thread reply');
+    expect(result.freshReviewer).toEqual({ state: 'not-launched', reason: expect.stringContaining('reviewEvidencePost') });
+    expect(result.next).toContain('retained reviewer su-reviewer already replied');
+    expect(result.next).toContain('reviewEvidencePost');
   });
 
   // WI-10003299: an empty menu used to end the review ("re-request later"), so a

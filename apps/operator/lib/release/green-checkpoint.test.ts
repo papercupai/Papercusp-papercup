@@ -14929,17 +14929,21 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
     const { c3, c4 } = await chain();
     const logPath = join(repo, "candidate-red.log");
     writeFileSync(logPath, "CANDIDATE SUITE BODY\n");
-    const { deps } = partialDeps({
+    const { deps, calls } = partialDeps({
       candidateFailingTests: ["@ws/failing"],
       affected: { [c4]: ["@ws/failing"] }, // c3 is the clean prefix selected for confirmation
       commits: [c3, c4],
       confirmGreen: false,
       logPath,
     });
-
-    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    await runGreenCheckpoint(cfg(), deps, {
+      noPush: true,
+      // The harness may transport an already-spent task deadline; this test is about failed-confirm narration.
+      salvageDeadlineMs: Date.now() + 60 * 60_000,
+    });
 
     const body = readFileSync(logPath, "utf8");
+    expect(calls).toContain("runGreen:confirm");
     expect(body).toContain("CANDIDATE SUITE BODY");
     expect(body).toContain(
       `partial-green-gate: candidate ${c4.slice(0, 8)} red`,
@@ -14962,7 +14966,11 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
       logPath,
     });
 
-    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    await runGreenCheckpoint(cfg(), deps, {
+      noPush: true,
+      // The harness may transport an already-spent task deadline; this test is about successful-confirm narration.
+      salvageDeadlineMs: Date.now() + 60 * 60_000,
+    });
 
     const body = readFileSync(logPath, "utf8");
     expect(body).toContain("CANDIDATE SUITE BODY");

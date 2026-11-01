@@ -14,15 +14,37 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_READ_ROLES } from '../roles';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
-import { getConversation, getConsultStates, getThreadPost } from '../conversations';
+import { getConversation, getConsultStates, getThreadPost, type ConsultLifecycleState } from '../conversations';
 import { mergeIds, runBulk, bulkContent } from '../../_bulk';
 
 type ParsedRef = { kind: 'conversation' } | { kind: 'invalid-post' } | { kind: 'post'; postId: number };
 
+function currentConsultResult(consult: ConsultLifecycleState): Record<string, unknown> | null {
+  if (consult.closed_at == null) return consult.request_result ?? null;
+
+  const outcome = consult.outcome;
+  if (!outcome) return null;
+
+  if (outcome.disposition === 'converted_to_review_work_item') {
+    const workItemId = typeof outcome.work_item_id === 'string' ? outcome.work_item_id : null;
+    return {
+      ...outcome,
+      hint: workItemId
+        ? `Review work item ${workItemId} is now pullable; follow it instead of waiting on this consult.`
+        : 'This consult was converted to review work; inspect its outcome for the work-item id.',
+    };
+  }
+
+  return {
+    ...outcome,
+    hint: `This consult is terminal (${consult.state}); follow its recorded outcome instead of waiting on the responder.`,
+  };
+}
+
 export default defineTool({
   name: 'conversations:get',
   description:
-    'Read one or many conversations in full, or resolve a `thread-post:<positive-id>` citation to the post in the caller workspace. Conversation reads include seed, topics, thread, accepted answer, follower count, and consult lifecycle when applicable. Pass `id` (or `conversation_id`) for one or `ids` for 1–100; `id` wins when both single-item keys are supplied. Returns { ok, results:[{ ok, id, conversation? | post? | error }], counts }; correlate by id, and a missing id fails only its item. A unique-prefix fallback for a truncated conversation id returns `warning` with the real id; ambiguous or nonexistent ids return `not_found`. For consults, read `consult.state` — `conversation.state` may remain open after expiry, and empty posts do not prove a stall.',
+    'Read one or many conversations in full, or resolve a `thread-post:<positive-id>` citation to the post in the caller workspace. Conversation reads include seed, topics, thread, accepted answer, follower count, and consult lifecycle when applicable. Pass `id` (or `conversation_id`) for one or `ids` for 1–100; `id` wins when both single-item keys are supplied. Returns { ok, results:[{ ok, id, conversation? | post? | error }], counts }; correlate by id, and a missing id fails only its item. A unique-prefix fallback for a truncated conversation id returns `warning` with the real id; ambiguous or nonexistent ids return `not_found`. For consults, read `consult.state` — `conversation.state` may remain open after expiry, and empty posts do not prove a stall. `consult.outcome` is the canonical terminal result, `consult.result` is current advice, and `consult.routing_receipt` is the historical initial routing result.',
   guidance: {
     when: 'You have conversation ids and need the full thread, or a `thread-post:<id>` citation and need its post body.',
     notWhen: 'Browsing many → conversations:list.',
@@ -99,6 +121,7 @@ export default defineTool({
         if (!detail) return { ok: false as const, id, error: 'not_found' };
         const { conversation: c, topics, posts, subscriber_count, resolvedFromPrefix } = detail;
         const consult = consultStates.get(id);
+        const consultResult = consult ? currentConsultResult(consult) : null;
         return {
           ok: true as const,
           id,
@@ -139,9 +162,11 @@ export default defineTool({
                   closed_at: consult.closed_at,
                   wakes_used: consult.wakes_used,
                   session_cost: consult.session_cost,
-                  // Preserve the measured routing verdict and its remedy;
-                  // no-responder lifecycle state alone is not a no-expert finding.
-                  ...(consult.request_result ? { result: consult.request_result } : {}),
+                  ...(consult.outcome ? { outcome: consult.outcome } : {}),
+                  // The initial router result remains available for audit, but
+                  // terminal advice comes from the authoritative close outcome.
+                  ...(consult.request_result ? { routing_receipt: consult.request_result } : {}),
+                  ...(consultResult ? { result: consultResult } : {}),
                   // Why each answering-session launch failed (WI-10003197);
                   // present only once a dispatch walk has been recorded.
                   ...(consult.dispatch ? { dispatch: consult.dispatch } : {}),

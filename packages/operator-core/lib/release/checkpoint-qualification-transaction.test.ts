@@ -963,6 +963,39 @@ describe('logical checkpoint qualification transaction', () => {
     ).toBe('conflict');
   });
 
+  it('resumes a same-head repair attempt after an already-running collision releases its runner', () => {
+    const waiting = waitQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'already-running',
+      candidate: 'repair-1',
+      nowMs: 200,
+    }).transaction;
+    expect(waiting).toMatchObject({
+      phase: 'waiting',
+      outcome: { kind: 'pre-suite-no-verdict', reason: 'already-running' },
+      currentPhysicalRunner: null,
+    });
+
+    expect(beginQualificationTransaction(waiting, {
+      attemptId: 'attempt-1',
+      candidate: 'repair-1',
+      nowMs: 300,
+    }).status).toBe('idempotent');
+    expect(beginQualificationTransaction(waiting, {
+      attemptId: 'attempt-1',
+      candidate: 'repair-1',
+      resumeUnownedRepairVerification: true,
+      nowMs: 300,
+    })).toMatchObject({
+      status: 'updated',
+      transaction: {
+        phase: 'ready',
+        outcome: { kind: 'pending' },
+        currentPhysicalRunner: null,
+      },
+    });
+  });
+
   it('requires proven death before reclaiming even an expired physical runner', () => {
     const running = reserveQualificationRunner(begin(), {
       attemptId: 'attempt-1',

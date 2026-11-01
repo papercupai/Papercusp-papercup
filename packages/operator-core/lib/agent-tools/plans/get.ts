@@ -38,7 +38,7 @@ import { cachedRead, type CachedReadCtx } from '../../cache';
 import { shapePlansGet } from './get-shape';
 import { decoratePlanNowBlock } from './liveness-decoration';
 import { reconcileNowNext, reconcileNowState, type NowStateReconciliation } from './now-next-derivation';
-import { BAR_READINESS_NOW_MARK } from './plan-scope-cascade';
+import { BAR_READINESS_NOW_MARK } from './plan-now-markers';
 import { derivePlanLifecycleForRead, normalizeActivityTimestamp } from './plan-lifecycle-derivation';
 import { markGrindingItems, readGrindingItems } from '../../verification-attempts/plan-grinding';
 import { readIterationMetrics } from '../../verification-attempts/plan-iteration-metrics';

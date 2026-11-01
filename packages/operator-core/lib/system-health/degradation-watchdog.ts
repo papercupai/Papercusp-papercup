@@ -72,6 +72,8 @@ export interface DegradationThresholds {
   minEligible: number;
   /** Lower floors for named, high-confidence failure reasons; all other reasons use minEligible. */
   minEligibleByReason?: Readonly<Record<string, number>>;
+  /** Minimum failed units under named reasons before their scoped alarm is eligible. */
+  minFallbacksByReason?: Readonly<Record<string, number>>;
   collapseRate: number;
   recoverRate: number;
   dominantShare: number;
@@ -211,9 +213,17 @@ registerDegradationMechanism({
 registerDegradationMechanism({
   mechanism: 'retrieval',
   description: 'Searches whose authoritative leg verdict ran at full strength; each search contributes one eligible decision.',
-  // Preserve the existing alarm floor of half the searches degrading, with recovery
-  // hysteresis so a window at the alarm boundary cannot resolve its own episode.
-  thresholds: { minEligible: 20, collapseRate: 0.5, recoverRate: 0.75 },
+  // Keep callers separate so a quiet docs-search surface cannot be averaged away by
+  // unrelated healthy search traffic. Two semantic blocks are enough to flag a
+  // repeated failure; other degradation reasons retain the ordinary sample floor.
+  scopeKeyed: true,
+  thresholds: {
+    minEligible: 20,
+    minEligibleByReason: { 'semantic-blocked': 2 },
+    minFallbacksByReason: { 'semantic-blocked': 2 },
+    collapseRate: 0.5,
+    recoverRate: 0.75,
+  },
 });
 registerDegradationMechanism({
   mechanism: 'release-watchdog-pass', scopeKeyed: true,
@@ -522,6 +532,11 @@ function minEligibleForReason(t: DegradationThresholds, reason: string | null): 
     : t.minEligible;
 }
 
+function minFallbacksForReason(t: DegradationThresholds, reason: string | null): number {
+  const configured = reason ? t.minFallbacksByReason?.[reason] : undefined;
+  return Number.isSafeInteger(configured) && configured! > 0 ? configured! : 0;
+}
+
 /**
  * PURE: what one window says. No clock, no Postgres, no broadcast, so every threshold
  * edge (19 vs 20 eligible, 0.20 vs 0.21 applied, 0.49 vs 0.50 recovery, 0.79 vs 0.80
@@ -539,7 +554,8 @@ export function judgeDegradation(
   const t = resolveThresholds(thresholds);
   const top = window.reasons.find((r) => r.fellBack > 0) ?? null;
   const minEligible = minEligibleForReason(t, top?.reason ?? null);
-  if (window.appliedRate === null || window.eligible < minEligible) {
+  const minFallbacks = minFallbacksForReason(t, top?.reason ?? null);
+  if (window.appliedRate === null || window.eligible < minEligible || (top !== null && top.fellBack < minFallbacks)) {
     return { kind: 'insufficient', eligible: window.eligible, minEligible };
   }
   const rate = window.appliedRate;

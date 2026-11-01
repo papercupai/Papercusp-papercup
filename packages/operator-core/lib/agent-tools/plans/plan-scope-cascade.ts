@@ -32,9 +32,12 @@
  */
 
 import type { PlanNowBlock } from '@papercusp/plan-parser';
+import { BAR_READINESS_NOW_MARK } from './plan-now-markers';
 import { parsePlan } from './parser';
 import { replaceNowBlock } from './set-now';
 import type { ActivationAuditEditNotice } from '../../plan-audits';
+
+export { BAR_READINESS_NOW_MARK } from './plan-now-markers';
 
 /** Sentinel for the carrier-plan Now stamp. Keyed per subject so a re-run is a no-op. */
 export const MOOT_CARRIER_NOW_MARK = '⚠ MOOT CARRIER PARKED';
@@ -350,9 +353,6 @@ export async function propagatePlanScopeWrite(
 // keep ONE banner in the plan's `## Now`: stamped (or replaced) while readiness is blocked,
 // removed once it is ready. orient's planNow leg folds the Now block, so the codes reach
 // every agent oriented on the plan; the write's own response carries them as `barReadiness`.
-
-/** Sentinel for the BAR-readiness banner in a plan's `## Now`. One per plan, replaced in place. */
-export const BAR_READINESS_NOW_MARK = '⚠ BAR READINESS BLOCKED';
 
 export type BarReadinessWriteCause = 'item-dropped' | 'decision-added' | 'rubric-amended';
 

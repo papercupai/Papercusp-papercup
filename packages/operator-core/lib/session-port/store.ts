@@ -123,7 +123,11 @@ export async function sessionPortsNeedingCleanup(workspaceId: string): Promise<S
                  THEN idempotency_key || ':terminal:' || id::text
                ELSE idempotency_key
              END,
-             error = COALESCE(error, 'preparation expired before native persistence'),
+             error = CASE
+               WHEN metadata->>'bootstrapReceiptCommitted' = 'true'
+                 THEN 'delivery acknowledgement unknown after committed bootstrap receipt'
+               ELSE COALESCE(error, 'preparation expired before native persistence')
+             END,
              failed_at = COALESCE(failed_at, now())
        WHERE workspace_id = ${workspaceId}
          AND (
@@ -159,7 +163,11 @@ export async function findSessionPortByIdempotency(
                THEN idempotency_key || ':terminal:' || id::text
              ELSE idempotency_key
            END,
-           error = COALESCE(error, 'preparation expired before target persistence'),
+           error = CASE
+             WHEN metadata->>'bootstrapReceiptCommitted' = 'true'
+               THEN 'delivery acknowledgement unknown after committed bootstrap receipt'
+             ELSE COALESCE(error, 'preparation expired before target persistence')
+           END,
            failed_at = COALESCE(failed_at, now())
      WHERE workspace_id = ${workspaceId}
        AND (logical_request_key = ${idempotencyKey} OR (logical_request_key IS NULL AND idempotency_key = ${idempotencyKey}))

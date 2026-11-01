@@ -209,6 +209,20 @@ export async function createOrgTestDb(opts: CreateOrgTestDbOptions = {}): Promis
       catch (cause) { receiptErrors.push(cause); }
     };
     record('start');
+    // Fallback observations are enqueue-only and their debounce timer is
+    // unref'd. Drain them through this still-open fixture pool before ending
+    // either client, or teardown can turn a successful test into lost telemetry.
+    try {
+      const { flushFallbackObservations, fallbackObservationCounters } =
+        await import('../lib/degradation/fallback-observations');
+      const failedBefore = fallbackObservationCounters().failed;
+      const flush = await flushFallbackObservations({ sql: adminSql });
+      if (flush.failed > 0 || fallbackObservationCounters().failed > failedBefore) {
+        throw new Error('Org fixture cleanup lost fallback observations while draining telemetry');
+      }
+    } catch (cause) {
+      receiptErrors.push(cause);
+    }
     // The two clients are independent. Waiting for their five-second shutdown
     // ceilings serially can consume Vitest's entire default 10s afterAll budget
     // before db.drop() even starts, turning green integration assertions red at

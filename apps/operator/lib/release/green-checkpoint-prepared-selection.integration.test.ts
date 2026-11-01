@@ -43,7 +43,10 @@ import {
   markFrozenRepairFixerDispatched,
   markFrozenRepairFixerFinished,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
-import type { PreparedCheckpointSelectionRecord } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
+import {
+  isPreparedCheckpointSelectionRecord,
+  type PreparedCheckpointSelectionRecord,
+} from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import type { CheckpointCandidateSource } from "@papercusp/operator-core/lib/release/checkpoint-candidate-source";
 import type { FreezeCutRecord } from "@papercusp/operator-core/lib/release/known-good-freeze";
 
@@ -1203,13 +1206,15 @@ describe("recovery after the frozen repair head advances", () => {
 
   function prepared(f: Lineage, candidate: string, queue: FrozenCandidateRepairQueue): PreparedCheckpointSelectionRecord {
     const generation = candidate === f.knownGood ? f.knownGoodGeneration : f.tipGeneration;
-    return {
+    const record: PreparedCheckpointSelectionRecord = {
       schemaVersion: 1, attemptId: "attempt-1", integrationRoot: f.integration, checkpointRoot: f.cfg.checkpointRoot,
       candidate, tip: f.tip, base: f.ready, candidateSource: "frozen-repair-queue", quietCutApplied: false,
       freezeCut: null, carry: null, queue,
       generation: { candidate, identity: generation.identity, token: generation.token,
-        inputFingerprint: generation.inputFingerprint, reused: true, root: generation.root },
+        inputFingerprint: generation.inputFingerprint, reused: true, root: join(f.root, "generations") },
     };
+    expect(isPreparedCheckpointSelectionRecord(record)).toBe(true);
+    return record;
   }
 
   it("re-prepares at the newly admitted repairHead when the rest of the selection authority is unchanged", async () => {
@@ -1219,6 +1224,7 @@ describe("recovery after the frozen repair head advances", () => {
     const replacementCalls: unknown[][] = [];
     const deps: CheckpointDeps = {
       ...f.deps,
+      qualificationAttemptId: "attempt-1",
       runId: "run-1",
       readFrozenRepairQueue: async () => newQueue,
       readPreparedCheckpointSelection: async () => previous,
@@ -1254,6 +1260,7 @@ describe("recovery after the frozen repair head advances", () => {
     let superseded = 0;
     const deps: CheckpointDeps = {
       ...f.deps,
+      qualificationAttemptId: "attempt-1",
       runId: "run-1",
       readFrozenRepairQueue: async () => differentQueue,
       readPreparedCheckpointSelection: async () => previous,

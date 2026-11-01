@@ -24,6 +24,7 @@ import {
   type LostRunSweepDeps,
 } from './lost-gate-run-alarm';
 import { currentRepairLimbExecutor, type RepairLimbExecutor } from './repair-limb-executor';
+import { GREEN_CHECKPOINT_RESULT_MARKER } from './checkpoint-log-tags';
 
 const NOW = 1_750_000_000_000;
 const SELF_PID = 7;
@@ -455,6 +456,48 @@ describe('qualification progress in the existing lost-run sweep', () => {
       'you hold the papercusp gate and its in-flight run died',
       "the papercusp gate's in-flight run died; fleet gate-fleet leads it",
     ]);
+  });
+
+  it('requeues a run-bound clean superseded red round without paging it as a lost runner', async () => {
+    const candidate = 'a1b2c3d4'.repeat(5);
+    const tx = qualification(NOW - 60_000);
+    tx.candidate = candidate;
+    tx.runId = 'run-superseded-1';
+    tx.currentPhysicalRunner = {
+      ...tx.currentPhysicalRunner!, candidate, phase: 'finalizing',
+      unit: 'papercup-green-checkpoint-manual-run.service',
+      evidenceRefs: ['gate-fire:runner-1', 'checkpoint-run:run-superseded-1'],
+    };
+    const { sql, row } = fakeRoutineRow(null, tx);
+    const log = [
+      `FROZEN_REPAIR_VERDICT_SUPERSEDED: red at ${candidate.slice(0, 8)} recorded as round 1 at that head`,
+      `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify({
+        runId: 'run-superseded-1', candidate, reason: 'not-green', green: false,
+      })}`,
+      '__GREEN_CHECKPOINT_SYSTEMD_TERMINAL__ service_result=success exit_code=exited exit_status=0',
+    ].join('\n');
+    const reconcile = vi.fn(async () => {
+      const waiting: CheckpointQualificationTransaction = {
+        ...tx, phase: 'waiting', currentPhysicalRunner: null,
+        outcome: { kind: 'pre-suite-no-verdict', reason: 'repair-in-progress' },
+      };
+      row.qualification = waiting;
+      return { status: 'updated', transaction: waiting };
+    });
+    const d = Object.assign(progressDeps('dead'), {
+      readQualificationRunLog: vi.fn(async () => log),
+      reconcileSupersededRun: reconcile,
+    });
+
+    await expect(sweepLostGateRuns(sql, d)).resolves.toEqual({ alarmed: [], deduped: [], failed: [] });
+    expect(d.readQualificationRunLog).toHaveBeenCalledWith(tx.currentPhysicalRunner);
+    expect(row.retries).toBe(1);
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ installSlug: 'papercusp' }), {
+      attemptId: 'attempt-1', runnerId: 'runner-1', runId: 'run-superseded-1', candidate, round: 1, nowMs: NOW,
+    });
+    expect(d.broadcast).not.toHaveBeenCalled();
+    await sweepLostGateRuns(sql, d);
+    expect(d.broadcast).not.toHaveBeenCalled();
   });
 
   it('releases an undelivered stale-progress alarm for the next pass to retry', async () => {

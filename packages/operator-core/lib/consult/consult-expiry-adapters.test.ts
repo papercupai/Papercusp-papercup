@@ -20,6 +20,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   CONSULT_EXPIRY_SWEEP_OWNER_ID,
+  CONSULT_CARRY_RESPAWN_GRACE_MS,
   REVIEW_CONSULT_CONDITION_NAMESPACE,
   consultExpiryFileReviewWorkItem,
   consultExpiryEmitReplyEvent,
@@ -526,6 +527,71 @@ describe('consultExpiryFindSilentResponders', () => {
       expect(threadReads).toEqual(
         expect.arrayContaining([`thread-conv-${sessionState}`, `thread-conv-posted-${sessionState}`]),
       );
+    },
+  );
+
+  it.each(['pending', 'delivered'] as const)(
+    'preserves an ended responder while a recent %s carry-respawn can restore it',
+    async (outcome) => {
+      const now = new Date('2026-08-27T06:00:00.000Z');
+      const routedAt = new Date(now.getTime() - 60_000).toISOString();
+      const getCarryRespawnOutcome = vi.fn(async () => ({
+        outcome,
+        ts: new Date(now.getTime() - 30_000).toISOString(),
+      }));
+      const getThreadStore = vi.fn(() => {
+        throw new Error('a recent carry means the predecessor death is not terminal');
+      });
+
+      const found = await consultExpiryFindSilentResponders({
+        getPresence: async () => null,
+        resolveSessionStates: async () => new Map([['su-ended-carry', { sessionState: 'ended' }]]),
+        getCarryRespawnOutcome,
+        getThreadStore,
+        now: () => now,
+      })([{
+        workspaceId: ROW_WS,
+        conversationId: 'conv-ended-carry',
+        answeringOwnerId: 'su-ended-carry',
+        routedAt,
+      }]);
+
+      expect(found).toEqual(new Set());
+      expect(getCarryRespawnOutcome).toHaveBeenCalledExactlyOnceWith('su-ended-carry');
+      expect(getThreadStore).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['outside-grace', 'before-route'] as const)(
+    'advances a terminal responder when the carry is %s',
+    async (age) => {
+      const now = new Date('2026-08-27T06:00:00.000Z');
+      const routedAtMs = now.getTime() - 60_000;
+      const carryAtMs = age === 'outside-grace'
+        ? now.getTime() - CONSULT_CARRY_RESPAWN_GRACE_MS - 1
+        : routedAtMs - 1;
+      const getCarryRespawnOutcome = vi.fn(async () => ({
+        outcome: 'pending' as const,
+        ts: new Date(carryAtMs).toISOString(),
+      }));
+
+      const found = await consultExpiryFindSilentResponders({
+        getPresence: async () => null,
+        resolveSessionStates: async () => new Map([['su-old-carry', { sessionState: 'ended' }]]),
+        getCarryRespawnOutcome,
+        getThreadStore: () => ({
+          getThreadByParent: async (parent) => ({ thread_id: parent.ref }) as never,
+          listRecentPosts: async () => ({ total: 0 }),
+        }),
+        now: () => now,
+      })([{
+        workspaceId: ROW_WS,
+        conversationId: 'conv-old-carry',
+        answeringOwnerId: 'su-old-carry',
+        routedAt: new Date(routedAtMs).toISOString(),
+      }]);
+
+      expect(found).toEqual(new Set(['conv-old-carry']));
     },
   );
 

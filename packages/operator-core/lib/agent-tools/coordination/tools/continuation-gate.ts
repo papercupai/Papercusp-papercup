@@ -413,6 +413,8 @@ export type ActiveLoopRewakeBlockedReason =
   | 'fire-starved'
   /** The current owner wake-route probe found no channel that can deliver a fresh turn. */
   | 'wake-unreachable'
+  /** A delivered loop turn completed after its fire, but the routine stayed parked without re-arming. */
+  | 'last-turn-unrearmed'
   /** P-013 / EI-24023838400909760: the loop's most recent fire PARKED undelivered
    *  (e.g. a cold fire with no injectable psu host), so the next fire on the same
    *  path is expected to park too. */
@@ -554,6 +556,8 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
                 ? 'the current owner reachability probe found no delivery route for a fresh turn'
               : activeLoopRewakeBlockedReason === 'last-fire-parked'
                 ? 'its most recent fire PARKED undelivered (loop:status lastWakeStatus/lastWakeError), so the next fire on the same path is expected to park too'
+                : activeLoopRewakeBlockedReason === 'last-turn-unrearmed'
+                  ? 'a loop-origin turn completed after lastFiredAt, but the routine is still parked with nextFireAt=null and no re-arm recorded'
                 : activeLoopRewakeBlockedReason === 'last-fire-no-loop-turn'
                   ? "its latest delivered fire was re-armed after the bounded grace without a loop-origin assistant turn (lastDeliveryOutcome='loop-delivered-wake-no-loop-turn')"
                 : null;
@@ -576,6 +580,8 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
           ? 'restore an owner wake route (inbox-wake, injectable host, or resumable session) and re-check reachability before settling. '
           : activeLoopRewakeBlockedReason === 'fire-starved' || activeLoopRewakeBlockedReason === 'last-fire-parked'
             ? 'restore its routine/wake path and re-check delivery before settling. '
+            : activeLoopRewakeBlockedReason === 'last-turn-unrearmed'
+              ? 'inspect the latest loop transition and repair the re-arm on that same loop; confirm nextFireAt is recorded before settling. '
             : activeLoopRewakeBlockedReason === 'last-fire-no-loop-turn'
               ? 'inspect and repair the existing delivery-to-turn path, then confirm a loop-origin turn before settling. '
               : 'if continuation is still intended, deliberately re-arm that same owner loop with the intended cadence, goal, and dead-man bounds. ') +
