@@ -453,6 +453,20 @@ export function preparedCheckpointQueueMatches(
   return isDeepStrictEqual(parseFrozenCandidateRepairQueue(queue), parseFrozenCandidateRepairQueue(initial));
 }
 
+/** True only when a captured ready-to-verify queue changed its repair head and no selection input moved. */
+export function preparedSelectionQueueRepairHeadOnlyAdvanced(
+  record: PreparedCheckpointSelectionRecord,
+  queue: FrozenCandidateRepairQueue | null,
+): queue is FrozenCandidateRepairQueue {
+  if (!queue || !record.queue || record.carry !== null || !frozenRepairHeadAwaitsVerification(queue)) return false;
+  const captured = parseFrozenCandidateRepairQueue(record.queue);
+  return Boolean(captured && captured.phase === 'ready-to-verify' && queue.phase === captured.phase &&
+    captured.repairHead !== queue.repairHead && captured.candidate === queue.candidate &&
+    captured.openedAtMs === queue.openedAtMs &&
+    (captured.qualificationAttemptId ?? null) === (queue.qualificationAttemptId ?? null) &&
+    captured.base === queue.base);
+}
+
 /**
  * WI-6554700010010801: an attempt's write-once `preparedSelection` is reusable only while it
  * names the attempt's own `candidate`. A joined scheduled fire attaches its runner on the
@@ -566,6 +580,134 @@ export async function commitPreparedCheckpointSelection(
         AND target_role = 'system:green-checkpoint'`;
     return true;
   }, QUALIFICATION_STORE_TXN_OPTIONS);
+}
+
+/** Replace a stale queue-bound selection only while the same physical runner is still in preflight. */
+export async function replacePreparedSelectionAfterRepairHeadAdvance(
+  target: GateVerdictTarget,
+  previous: PreparedCheckpointSelectionRecord,
+  replacement: PreparedCheckpointSelectionRecord,
+  expectedQueue: FrozenCandidateRepairQueue,
+  runId: string,
+): Promise<boolean> {
+  if (!isPreparedCheckpointSelectionRecord(previous) || !isPreparedCheckpointSelectionRecord(replacement) ||
+      previous.carry !== null || replacement.carry !== null || previous.attemptId !== replacement.attemptId ||
+      previous.integrationRoot !== replacement.integrationRoot || previous.checkpointRoot !== replacement.checkpointRoot ||
+      !isDeepStrictEqual(replacement.queue, expectedQueue) || replacement.candidate !== expectedQueue.repairHead ||
+      !preparedSelectionQueueRepairHeadOnlyAdvanced(previous, expectedQueue)) return false;
+  return boundedOrgTxn(async tx => {
+    const rows = await tx<{ metadata: Record<string, unknown> }[]>`
+      SELECT metadata FROM harness_shared.routines
+      WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}
+        AND target_role = 'system:green-checkpoint' FOR UPDATE`;
+    if (!rows[0]) throw new Error('missing prepared selection qualification authority');
+    const metadata = rows[0].metadata ?? {};
+    const current = parseCheckpointQualificationTransaction(metadata[CHECKPOINT_QUALIFICATION_METADATA_KEY]);
+    if (!current) throw new Error('unreadable prepared selection qualification authority');
+    const runner = current.currentPhysicalRunner;
+    const queueRaw = metadata.repair_queue ?? null;
+    const queue = queueRaw === null ? null : parseFrozenCandidateRepairQueue(queueRaw);
+    if ((queueRaw !== null && !queue) || !queue) throw new Error('unreadable prepared selection queue authority');
+    if (current.attemptId !== previous.attemptId || current.phase !== 'running' || current.runId !== runId ||
+        current.continuation || current.candidate !== previous.candidate ||
+        !isDeepStrictEqual(current.preparedSelection, previous) || !runner || runner.id.length === 0 ||
+        runner.phase !== 'materializing' || runner.candidate !== previous.candidate ||
+        !runner.evidenceRefs.includes(`checkpoint-run:${runId}`) ||
+        !checkpointSelectionQueueAuthorityMatches(queue, expectedQueue) ||
+        !preparedSelectionQueueRepairHeadOnlyAdvanced(previous, queue)) return false;
+    const next: CheckpointQualificationTransaction = {
+      ...current,
+      candidate: replacement.candidate,
+      repairHead: replacement.candidate,
+      currentPhysicalRunner: { ...runner, candidate: replacement.candidate },
+      preparedSelection: replacement,
+      updatedAtMs: Date.now(),
+      evidenceRefs: uniqueStrings([...current.evidenceRefs,
+        `prepared-selection-replanned:${previous.candidate}:${replacement.candidate}`]),
+    };
+    const nextMetadata = { ...metadata, [CHECKPOINT_QUALIFICATION_METADATA_KEY]: next };
+    await tx`UPDATE harness_shared.routines SET metadata = ${JSON.stringify(nextMetadata)}::jsonb, updated_at = now()
+      WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}
+        AND target_role = 'system:green-checkpoint'`;
+    return true;
+  }, QUALIFICATION_STORE_TXN_OPTIONS);
+}
+
+/** Retire a stale preflight as a normal repair wait when the queue changed beyond a safe head-only replan. */
+export function supersedePreparedSelectionBeforeStart(
+  target: GateVerdictTarget,
+  input: {
+    previous: PreparedCheckpointSelectionRecord;
+    expectedQueue: FrozenCandidateRepairQueue | null;
+    runId: string;
+    nowMs?: number;
+  },
+): Promise<StoredQualificationMutation> {
+  const { previous, expectedQueue, runId } = input;
+  if (!isPreparedCheckpointSelectionRecord(previous) || previous.carry !== null) {
+    return Promise.resolve({ status: 'unreadable', error: 'stale prepared selection cannot be safely superseded' });
+  }
+  return mutateStoredQualification(target, (current, context) => {
+    if (!current) return { status: 'missing' };
+    const runner = current.currentPhysicalRunner;
+    const rawQueue = context.rawRepairQueue;
+    const queue = rawQueue === null ? null : parseFrozenCandidateRepairQueue(rawQueue);
+    if (rawQueue !== null && !queue) return { status: 'unreadable', error: 'prepared selection queue authority is unreadable' };
+    if (current.attemptId !== previous.attemptId || current.phase !== 'running' || current.runId !== runId ||
+        current.candidate !== previous.candidate || !isDeepStrictEqual(current.preparedSelection, previous) ||
+        !runner || runner.phase !== 'materializing' || runner.candidate !== previous.candidate ||
+        !runner.evidenceRefs.includes(`checkpoint-run:${runId}`) ||
+        !checkpointSelectionQueueAuthorityMatches(queue, expectedQueue) || preparedCheckpointQueueMatches(previous, queue))
+      return { status: 'conflict', transaction: current, refusalReason: 'prepared-selection-supersession-fence' };
+    const waiting = waitQualificationTransaction(current, {
+      attemptId: current.attemptId,
+      reason: 'repair-in-progress',
+      candidate: current.candidate,
+      runId,
+      evidenceRefs: [`prepared-selection-superseded-before-start:${previous.candidate}`],
+      nowMs: input.nowMs,
+    });
+    if (waiting.status !== 'updated') return waiting;
+    const { preparedSelection: _stale, ...transaction } = waiting.transaction;
+    return { ...waiting, transaction };
+  });
+}
+
+/** A clean successful run that recorded a red at a superseded repair head is a wait, not a lost runner. */
+export function reconcileStoredSupersededRepairVerdict(
+  target: GateVerdictTarget,
+  input: {
+    attemptId: string;
+    runnerId: string;
+    runId: string;
+    candidate: string;
+    round: number;
+    nowMs?: number;
+  },
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, (current, context) => {
+    if (!current) return { status: 'missing' };
+    const runner = current.currentPhysicalRunner;
+    const queue = parseFrozenCandidateRepairQueue(context.rawRepairQueue);
+    if (!runner || !queue || current.attemptId !== input.attemptId || current.phase !== 'running' ||
+        runner.id !== input.runnerId || current.runId !== input.runId || runner.candidate !== input.candidate ||
+        !runner.evidenceRefs.includes(`checkpoint-run:${input.runId}`) ||
+        !Number.isSafeInteger(input.round) || input.round < 1 ||
+        queue.qualificationAttemptId !== input.attemptId || queue.repairHead === input.candidate ||
+        !frozenRepairHeadAwaitsVerification(queue))
+      return { status: 'conflict', transaction: current, refusalReason: 'superseded-verdict-fence' };
+    return waitQualificationTransaction(current, {
+      attemptId: current.attemptId,
+      reason: 'repair-in-progress',
+      candidate: current.candidate,
+      runId: input.runId,
+      evidenceRefs: [
+        `checkpoint-terminal:${input.runId}`,
+        `checkpoint-superseded-round:${input.runId}:${input.round}:${input.candidate}`,
+      ],
+      nowMs: input.nowMs,
+    });
+  });
 }
 
 export interface QualificationWorkUnit {

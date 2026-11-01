@@ -8,11 +8,16 @@
  * R-14: an owner-authority topic is recorded on the consult's cascade.
  */
 import { describe, expect, it, vi } from 'vitest';
+const acceptFeedbackRequestProd = vi.hoisted(() => vi.fn());
+vi.mock('./get-feedback-prod', () => ({
+  acceptFeedbackRequestProd: (...args: unknown[]) => acceptFeedbackRequestProd(...args),
+}));
 import {
   PARK_DEADLINE_MAX_MINUTES,
   PARK_DEADLINE_MIN_MINUTES,
   PARK_WAKE_GRACE_SEC,
   isParkReassertion,
+  makeProdParkDoorDeps,
   openDecisionReviewPark,
   parkCascadeMeta,
   validateParkRequest,
@@ -108,7 +113,7 @@ describe('openDecisionReviewPark — R-13 accepted park', () => {
     const r = await openDecisionReviewPark(req(), d);
     expect(r.ok).toBe(true);
     expect(d.openConsult).toHaveBeenCalledTimes(1);
-    expect(d.openConsult).toHaveBeenCalledWith({
+    expect(d.openConsult).toHaveBeenCalledWith(expect.objectContaining({
       question: 'Ship the compact layout as the default?',
       originTaskRef: 'WI-1',
       cascade: {
@@ -119,7 +124,25 @@ describe('openDecisionReviewPark — R-13 accepted park', () => {
         deadlineAt: inMinutes(60),
         ownerAuthorityTopic: null,
       },
+      onAccepted: expect.any(Function),
+    }));
+  });
+
+  it('registers the verdict wake before the accepted-request continuation starts', async () => {
+    const order: string[] = [];
+    const d = deps({
+      openConsult: vi.fn(async (input) => {
+        order.push(`accepted:${input.requestKey}`);
+        await input.onAccepted?.('conv-abc');
+        order.push('dispatch');
+        return { consultId: 'conv-abc' };
+      }),
+      registerVerdictWake: vi.fn(async () => void order.push('wake')),
+      notifyOwner: vi.fn(async () => void order.push('notice')),
     });
+    const r = await openDecisionReviewPark(req({ requestKey: 'set-blocker-retry-key' }), d);
+    expect(r.ok).toBe(true);
+    expect(order).toEqual(['accepted:set-blocker-retry-key', 'wake', 'dispatch', 'notice']);
   });
 
   it('returns consult:<id> as the blocker ref and keeps the caller ref as evidence', async () => {
@@ -168,6 +191,41 @@ describe('openDecisionReviewPark — R-13 accepted park', () => {
     });
     await openDecisionReviewPark(req(), d);
     expect(order).toEqual(['consult', 'wake', 'notice']);
+  });
+});
+
+describe('makeProdParkDoorDeps — durable accepted consult identity', () => {
+  it('uses acceptFeedbackRequestProd and forwards the request key and pre-dispatch wake', async () => {
+    acceptFeedbackRequestProd.mockReset().mockResolvedValue({ conversation_id: 'conv-durable' });
+    const identity = { ownerId: 'su-setter', workspaceId: 'ws-1' } as never;
+    const request = req({ requestKey: 'work_items:set_blocker:park:retry' });
+    const validation = validateParkRequest(request, NOW);
+    if (!validation.ok) throw new Error('expected valid park');
+    const onAccepted = vi.fn(async () => undefined);
+    const result = await makeProdParkDoorDeps(identity).openConsult({
+      question: request.question,
+      originTaskRef: request.workItemId,
+      cascade: parkCascadeMeta(request, validation),
+      requestKey: request.requestKey!,
+      onAccepted,
+    });
+
+    expect(result).toEqual({ consultId: 'conv-durable' });
+    expect(acceptFeedbackRequestProd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws-1',
+        requesterId: 'su-setter',
+        requestKey: 'work_items:set_blocker:park:retry',
+        question: request.question,
+        originTaskRef: request.workItemId,
+        cascade: parkCascadeMeta(request, validation),
+      }),
+      identity,
+      { onAccepted: expect.any(Function) },
+    );
+    const forwarded = acceptFeedbackRequestProd.mock.calls[0]![2].onAccepted;
+    await forwarded({ conversation_id: 'conv-durable' });
+    expect(onAccepted).toHaveBeenCalledWith('conv-durable');
   });
 });
 

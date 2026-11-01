@@ -2383,6 +2383,72 @@ describe('getFeedbackCore — bar-critique records its plan (P-007 / SPEC-P-007-
     expect(row).toEqual({ origin_task_ref: planSlug, policy: 'bar-critique' });
   });
 
+  it('excludes source responders and answer-author parties from existing same-plan critiques', async () => {
+    const planSlug = 'bar-critique-lineage-' + randomBytes(5).toString('hex');
+    const activeConversation = 'prior-active-' + planSlug;
+    const closedConversation = 'prior-closed-' + planSlug;
+    await rootSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, owner)
+      VALUES (${WS}, 'papercusp', ${planSlug}, NULL)
+    `;
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         origin_task_ref, routing)
+      VALUES (${WS}, ${activeConversation}, 'prior-requester', 'critique-source-open',
+              'active', 'prior critique question', ${planSlug},
+              ${rootSql.json({ policy: 'bar-critique' })})
+    `;
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         origin_task_ref, routing, closed_at)
+      VALUES (${WS}, ${closedConversation}, 'prior-requester', 'critique-source-closed',
+              'closed_answered', 'prior critique question', ${planSlug},
+              ${rootSql.json({ policy: 'bar-critique' })}, ${NOW.toISOString()}::timestamptz)
+    `;
+    await rootSql`
+      INSERT INTO harness_shared.consult_post_meta
+        (workspace_id, post_id, conversation_id, author_id, kind, created_at)
+      VALUES (${WS}, 990101, ${activeConversation}, 'critique-open-fork', 'answer',
+              ${NOW.toISOString()}::timestamptz),
+             (${WS}, 990102, ${closedConversation}, 'critique-closed-fork', 'answer',
+              ${new Date(NOW.getTime() + 1000).toISOString()}::timestamptz)
+    `;
+
+    const route = routeOf([
+      cand('critique-open-fork'),
+      cand('critique-closed-fork'),
+      cand('critique-fresh'),
+    ]);
+    const fixture = makeDeps(route);
+    const partyByOwner = new Map([
+      ['critique-source-open', 'critique-open-party'],
+      ['critique-open-fork', 'critique-open-party'],
+      ['critique-source-closed', 'critique-closed-party'],
+      ['critique-closed-fork', 'critique-closed-party'],
+    ]);
+    fixture.deps.getPartyKeys = async (_workspaceId, ownerIds) =>
+      new Map(ownerIds.map((ownerId) => [ownerId, partyByOwner.get(ownerId) ?? ownerId]));
+
+    asOk(await getFeedbackCore({
+      ...baseReq,
+      policy: 'bar-critique',
+      originTaskRef: planSlug,
+      harnessSlug: 'papercusp',
+    }, fixture.deps));
+
+    expect(fixture.routeCalls[0]?.excludePartyOwners).toEqual(expect.arrayContaining([
+      'critique-source-open',
+      'critique-open-fork',
+      'critique-source-closed',
+      'critique-closed-fork',
+    ]));
+    expect(route.qualified.map((candidate) => candidate.ownerId)).toEqual(['critique-fresh']);
+    expect(route.snapshot.candidates.map((candidate) => candidate.ownerId)).toEqual(['critique-fresh']);
+  });
+
   it.each([
     ['omitted', undefined],
     ['null', null],

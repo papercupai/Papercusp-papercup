@@ -2,6 +2,7 @@
  * process still owns inference/tools/history; the existing task manager owns
  * its process tree. No terminal, shell quoting, or provider loop is involved. */
 import { randomUUID } from 'node:crypto';
+import type { Duplex } from 'node:stream';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { startSupervisorBeat } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { managedSpawn } from './task-manager/managed-spawn';
@@ -9,6 +10,8 @@ import { killTask } from './task-manager/control';
 import type { TaskSpec } from './task-manager/types';
 import { redactSensitiveText } from './sensitive-text';
 import { processMonotonicClock } from './process-monotonic-clock';
+import type { SuNativeToolCall } from './agent-mcp-client';
+export type { SuNativeToolCall } from './agent-mcp-client';
 
 export type RpcFrame = Record<string, unknown>;
 /** A correlated native refusal proves the request was rejected. Transport
@@ -56,6 +59,9 @@ export interface SuStdioPeerOptions {
   spec: TaskSpec;
   ownerId: string;
   onMessage(frame: RpcFrame): void;
+  /** Owned OMP extension only. Acknowledged before the hook returns; ordinary
+   * stdout/UI frames cannot enter this callback. No credential crosses it. */
+  onNativeToolCall?(call: SuNativeToolCall): Promise<void>;
   /** Optional synchronous evidence sink. Throwing fails the peer visibly;
    * callers must not dispatch again after an uncertain write. */
   onReceipt?(receipt: SuStdioReceipt): void;
@@ -65,7 +71,9 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
   const { child, taskId } = await managedSpawn(options.binary, options.args, options.spec, {
     stage: options.stage,
     workspaceId: options.workspaceId,
-    spawnOptions: { cwd: options.cwd, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] },
+    spawnOptions: { cwd: options.cwd,
+      env: { ...options.env, PAPERCUSP_NATIVE_HOOK_FD: options.onNativeToolCall ? '3' : undefined },
+      stdio: options.onNativeToolCall ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'] },
   });
   if (!child.stdin || !child.stdout || !child.stderr) throw new Error('Structured engine has no protocol pipes');
   const pending = new Map<string, { resolve(value: RpcFrame): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
@@ -111,6 +119,47 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
     rejectPending(error);
     rejectExit(error);
     void close().catch((failure) => console.warn('[su-session] protocol teardown failed', failure));
+  }
+  if (options.onNativeToolCall) {
+    const hook = child.stdio[3] as Duplex | null;
+    if (!hook) throw new Error('Native hook observation pipe is missing');
+    let hookBuffer = '', hookSequence = 0;
+    let hookTail = Promise.resolve();
+    hook.setEncoding('utf8');
+    hook.on('error', fail);
+    hook.on('data', (chunk: string) => {
+      hookBuffer += chunk;
+      if (Buffer.byteLength(hookBuffer) > 1_048_576) { fail(new Error('Native hook frame exceeds 1 MiB')); return; }
+      let end: number;
+      while ((end = hookBuffer.indexOf('\n')) >= 0) {
+        const line = hookBuffer.slice(0, end); hookBuffer = hookBuffer.slice(end + 1);
+        try {
+          const frame = JSON.parse(line);
+          const bounded = (value: unknown, max: number) => typeof value === 'string'
+            && value.length <= max && /^[A-Za-z0-9._:-]+$/.test(value);
+          if (!frame || typeof frame !== 'object' || Array.isArray(frame)
+            || Object.keys(frame).sort().join(',') !== 'arguments,callId,id,nativeSessionId,tool'
+            || frame.id !== hookSequence + 1 || !bounded(frame.nativeSessionId, 128)
+            || !bounded(frame.callId, 256) || !bounded(frame.tool, 256)
+            || !frame.arguments || typeof frame.arguments !== 'object' || Array.isArray(frame.arguments)) {
+            throw new Error('Invalid native hook observation');
+          }
+          hookSequence++;
+          const { id, ...call } = frame;
+          hookTail = hookTail.then(async () => {
+            try {
+              if (closed || exited) throw new Error('Native hook host closed');
+              await options.onNativeToolCall!(call);
+              if (closed || exited) throw new Error('Native hook host closed');
+              hook.write(JSON.stringify({ id, ok: true }) + '\n');
+            } catch {
+              // An observation failure cannot be treated as permission to run.
+              if (!hook.destroyed) hook.write(JSON.stringify({ id, ok: false }) + '\n');
+            }
+          });
+        } catch (error) { fail(error instanceof Error ? error : new Error(String(error))); return; }
+      }
+    });
   }
   function send(frame: RpcFrame): void {
     if (closed || exited || child.stdin!.destroyed) throw new Error('Structured engine connection is closed');

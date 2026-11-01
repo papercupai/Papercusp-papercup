@@ -2635,6 +2635,7 @@ describe('sweepStalledLoops — host-aware disarm (parked-agent-census P-007)', 
       readStalledHost: hostFor({ [ownerId]: {
         host: { ...recyclable, ownerId },
         events: [45, 30, 15].map(minutes => ({ kind: 'duplicate-delivery-id', state: 'pending',
+          mode: 'carry-respawn', routineId: 'rt_pending', fireNumber: 15,
           ts: new Date(now - minutes * 60_000).toISOString() })) as StalledLoopHostReading['events'],
       } }),
     });

@@ -238,12 +238,15 @@ function shortHash(text: string): string {
 
 type CheckpointPhase = { itemId: string; itemIndex: number; itemCount: number; phase: string };
 type CheckpointPhaseContext = { log?: (message: string) => void };
+type CheckpointTraceMode = 'full' | 'slow-only';
+const SINGLE_ITEM_SLOW_PHASE_THRESHOLD_MS = 2_000;
 
 function emitCheckpointPhase(
   ctx: CheckpointPhaseContext,
   detail: CheckpointPhase,
   state: 'started' | 'completed' | 'failed',
   elapsedMs?: number,
+  traceMode?: CheckpointTraceMode,
 ): void {
   if (typeof ctx.log !== 'function') return;
   try {
@@ -252,6 +255,9 @@ function emitCheckpointPhase(
         ...detail,
         state,
         ...(elapsedMs === undefined ? {} : { elapsedMs }),
+        ...(traceMode === 'slow-only'
+          ? { traceMode, thresholdMs: SINGLE_ITEM_SLOW_PHASE_THRESHOLD_MS }
+          : {}),
       })}`,
     );
   } catch {
@@ -266,28 +272,48 @@ async function observeCheckpointPhase<T>(
   ctx: CheckpointPhaseContext,
   detail: CheckpointPhase,
   run: () => Promise<T> | T,
+  traceMode: CheckpointTraceMode = 'full',
 ): Promise<T> {
+  if (traceMode === 'slow-only' && typeof ctx.log !== 'function') return Promise.resolve(run());
   const started = performance.now();
-  emitCheckpointPhase(ctx, detail, 'started');
+  if (traceMode === 'full') emitCheckpointPhase(ctx, detail, 'started');
   try {
     const result = await run();
-    emitCheckpointPhase(ctx, detail, 'completed', Math.round(performance.now() - started));
+    const elapsedMs = Math.round(performance.now() - started);
+    if (traceMode === 'full' || elapsedMs >= SINGLE_ITEM_SLOW_PHASE_THRESHOLD_MS) {
+      emitCheckpointPhase(ctx, detail, 'completed', elapsedMs, traceMode);
+    }
     return result;
   } catch (error) {
-    emitCheckpointPhase(ctx, detail, 'failed', Math.round(performance.now() - started));
+    const elapsedMs = Math.round(performance.now() - started);
+    if (traceMode === 'full' || elapsedMs >= SINGLE_ITEM_SLOW_PHASE_THRESHOLD_MS) {
+      emitCheckpointPhase(ctx, detail, 'failed', elapsedMs, traceMode);
+    }
     throw error;
   }
 }
 
-function observeCheckpointSyncPhase<T>(ctx: CheckpointPhaseContext, detail: CheckpointPhase, run: () => T): T {
+function observeCheckpointSyncPhase<T>(
+  ctx: CheckpointPhaseContext,
+  detail: CheckpointPhase,
+  run: () => T,
+  traceMode: CheckpointTraceMode = 'full',
+): T {
+  if (traceMode === 'slow-only' && typeof ctx.log !== 'function') return run();
   const started = performance.now();
-  emitCheckpointPhase(ctx, detail, 'started');
+  if (traceMode === 'full') emitCheckpointPhase(ctx, detail, 'started');
   try {
     const result = run();
-    emitCheckpointPhase(ctx, detail, 'completed', Math.round(performance.now() - started));
+    const elapsedMs = Math.round(performance.now() - started);
+    if (traceMode === 'full' || elapsedMs >= SINGLE_ITEM_SLOW_PHASE_THRESHOLD_MS) {
+      emitCheckpointPhase(ctx, detail, 'completed', elapsedMs, traceMode);
+    }
     return result;
   } catch (error) {
-    emitCheckpointPhase(ctx, detail, 'failed', Math.round(performance.now() - started));
+    const elapsedMs = Math.round(performance.now() - started);
+    if (traceMode === 'full' || elapsedMs >= SINGLE_ITEM_SLOW_PHASE_THRESHOLD_MS) {
+      emitCheckpointPhase(ctx, detail, 'failed', elapsedMs, traceMode);
+    }
     throw error;
   }
 }
@@ -1465,6 +1491,7 @@ export default defineTool({
           },
         ];
     const traceCheckpointPhases = args.items !== undefined;
+    const checkpointTraceMode: CheckpointTraceMode = traceCheckpointPhases ? 'full' : 'slow-only';
     let nextBatchItemIndex = 0;
     const env = await runBulk(
       items,
@@ -1477,7 +1504,7 @@ export default defineTool({
           phase,
         });
         const runPhase = <T>(phase: string, run: () => Promise<T> | T): Promise<T> =>
-          traceCheckpointPhases ? observeCheckpointPhase(ctx, phaseDetail(phase), run) : Promise.resolve(run());
+          observeCheckpointPhase(ctx, phaseDetail(phase), run, checkpointTraceMode);
         // `checkpointBodySpec` accepts the structured compatibility object as an
         // input shape, then its preprocess normalizes a valid object to the stored
         // string before this handler runs. `defineTool` types handler arguments from
@@ -2280,14 +2307,13 @@ export default defineTool({
                   : TRUNCATION_MARKER + body.slice(Math.min(overflow, body.length));
                 return enforceFrozenWorkItemCarry(withStableCarryRowIds(withCarryNoteChecks(trimmedBody, merged)), currentProvenanceText);
               };
-        const timedChecksTransform = traceCheckpointPhases
-          ? (priorNote: string | null, incoming: string | null | undefined) =>
-              observeCheckpointSyncPhase(
-                ctx,
-                phaseDetail('locked-check-row-transform'),
-                () => checksTransform(priorNote, incoming),
-              )
-          : checksTransform;
+        const timedChecksTransform = (priorNote: string | null, incoming: string | null | undefined) =>
+          observeCheckpointSyncPhase(
+            ctx,
+            phaseDetail('locked-check-row-transform'),
+            () => checksTransform(priorNote, incoming),
+            checkpointTraceMode,
+          );
         /**
          * EI-21228214077347799: the shrink guard and the checks-overflow guard protect
          * INDEPENDENT axes — the first the BODY being replaced, the second the check ROWS

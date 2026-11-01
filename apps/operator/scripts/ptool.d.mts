@@ -1028,7 +1028,7 @@ export const CODE_RUN_TOOL_NAME: "code:run";
  * uncertainty rather than inventing a query/jq pipeline that may not exist.
  */
 export const PTOOL_TRUNCATED_RESULT_MESSAGE: string;
-export const PTOOL_LIST_TOOLS_TIMEOUT_MS: 10000;
+export const PTOOL_LIST_TOOLS_TIMEOUT_MS: 30000;
 export const PTOOL_CONNECT_TIMEOUT_MS: number;
 export const PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS: 15000;
 export const PTOOL_CONNECT_RETRY_DELAY_MS: 1000;

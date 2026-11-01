@@ -11,6 +11,15 @@ import { AGENT_MCP_AUTH_META, readAgentMcpDiscoveryForPort } from './endpoint-ip
 
 export type AgentMcpMode = 'http' | 'uds' | 'auto';
 
+/** Original native hook input on a parent-owned process pipe. It is an
+ * observation only, not a resource ACL, capture receipt or funded turn. */
+export interface SuNativeToolCall {
+  nativeSessionId: string;
+  callId: string;
+  tool: string;
+  arguments: Record<string, unknown>;
+}
+
 export function agentMcpMode(value: string | undefined): AgentMcpMode {
   // P009 alone changes rollout policy after the pre-registered P008 budgets.
   if (value === undefined || value === '') return 'http';
@@ -179,9 +188,9 @@ export interface NativeOmpConfig {
 /** Only owned OMP launches call this. Never emit invented unix:// MCP config. */
 export function prepareNativeOmpConfig(
   text: string,
-  options: { mode: AgentMcpMode; home?: string; platform?: string; env?: NodeJS.ProcessEnv },
+  options: { mode: AgentMcpMode; home?: string; platform?: string; env?: NodeJS.ProcessEnv; observeNativeCalls?: boolean },
 ): string {
-  if (options.mode === 'http') return text;
+  if (options.mode === 'http' && !options.observeNativeCalls) return text;
   const config = JSON.parse(text) as NativeOmpConfig;
   const servers: Record<string, ServerConfig> = {};
   for (const [name, server] of Object.entries(config.mcpServers ?? {})) {
@@ -208,7 +217,9 @@ export function prepareNativeOmpConfig(
   }
   if (Object.keys(servers).length) {
     config.papercuspNativeMcp = {
-      version: 1, mode: options.mode, home: options.home, servers,
+      version: 1, mode: config.papercuspNativeMcp?.mode ?? options.mode,
+      home: config.papercuspNativeMcp?.home ?? options.home,
+      servers: { ...config.papercuspNativeMcp?.servers, ...servers },
     };
   }
   return JSON.stringify(config);

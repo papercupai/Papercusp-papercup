@@ -336,7 +336,8 @@ function visit(suites, parents = []) {
     const titles = [...parents, suite.title].filter(Boolean);
     for (const spec of suite.specs ?? []) {
       for (const test of spec.tests ?? []) selected.push({
-        project: test.projectName, title: [...titles, spec.title].join(' › '),
+        project: test.projectName, file: spec.file ?? suite.file ?? null,
+        title: [...titles, spec.title].join(' › '),
       });
     }
     visit(suite.suites, titles);
@@ -350,9 +351,32 @@ if (report.errors?.length || !selected.length) {
 fs.writeFileSync(file.replace(/\.json$/, '-proof.json'), JSON.stringify({
   sourceRef: process.env.VERIFY_TAURI_SOURCE_REF ?? null, count: selected.length, selected,
 }, null, 2) + '\n');
+const readySeedSpecs = new Set([
+  'adv-conversations-sessions.spec.ts',
+  'chat-streaming.spec.ts',
+  'cupboard-identity-statements-native.spec.mts',
+  'inbox-ack-persistence.native.spec.mts',
+  'owner-question-delivery.native.spec.mts',
+  'quick-access.native.spec.mts',
+  'reports-work-fullscreen.native.spec.mts',
+  'support-workflow-native.spec.mts',
+]);
+const selectedReadySeedSpecs = [...new Set(selected
+  .map(({ file: selectedFile }) => typeof selectedFile === 'string'
+    ? selectedFile.replaceAll('\\', '/').split('/').pop()
+    : null)
+  .filter(specFile => specFile && readySeedSpecs.has(specFile)))];
+if (selectedReadySeedSpecs.length && process.env.VERIFY_TAURI_ISOLATED_SEED !== 'ready') {
+  console.error(`run-operator-e2e-isolated: selected spec(s) ${selectedReadySeedSpecs.join(', ')} require VERIFY_TAURI_ISOLATED_SEED=ready`);
+  process.exit(3);
+}
 console.log(`OPERATOR_E2E_SELECTION count=${selected.length} report=${file}`);
 JS
 selection_status=$?
+if [ "$selection_status" -eq 3 ]; then
+  vh_fail selected-spec-preflight-failed
+  exit 2
+fi
 if [ "$selection_status" -ne 0 ]; then
   vh_fail selection-invalid
   echo "run-operator-e2e-isolated: invalid selection report; refusing native rig; evidence=$selection_report" >&2

@@ -1890,20 +1890,30 @@ export interface TestRunIdReadback {
   ids: number[] | null;
   /** Exact ledger IDs keyed by the public `byFile[path]` path. */
   idsByFile: Record<string, number> | null;
+  /** Persisted per-file wall durations keyed by the public `byFile[path]` path. */
+  ledgerDurationsByFile: Record<string, number | null> | null;
   degraded: boolean;
   reason?: BoundedTimeoutResult<number[]>['reason'];
   elapsedMs: number;
 }
 
+/** Keep the tool's elapsed duration distinct from the runner's report-derived measurement. */
+export function testingRunDurationFields(
+  runnerDurationMs: number | null | undefined,
+  handlerDurationMs: number | null,
+): { durationMs: number | null; runnerDurationMs: number | null } {
+  return { durationMs: handlerDurationMs, runnerDurationMs: runnerDurationMs ?? null };
+}
+
 /** Match scoped ledger rows to public byFile keys using measured root/path, never row order. */
-export function mapHarnessTestRunIdsByFile(
+export function mapHarnessTestRunEvidenceByFile(
   byFile: DistilledTestRun['byFile'],
   rows: readonly HarnessTestRunEvidence[],
   opts: { root: string; roots?: readonly string[]; workspaceId: string; harnessSlug: string; runGroupId: string },
-): Record<string, number> {
+): Record<string, HarnessTestRunEvidence> {
   const ambientRoot = resolve(opts.root);
   const rootCount = new Set((opts.roots ?? [ambientRoot]).map((root) => resolve(root))).size;
-  const candidates = new Map<string, number[]>();
+  const candidates = new Map<string, HarnessTestRunEvidence[]>();
 
   for (const row of rows) {
     if (row.workspace_id !== opts.workspaceId || row.harness_slug !== opts.harnessSlug
@@ -1922,16 +1932,41 @@ export function mapHarnessTestRunIdsByFile(
     }
 
     if (!Object.prototype.hasOwnProperty.call(byFile, publicPath)) continue;
-    const pathIds = candidates.get(publicPath) ?? [];
-    pathIds.push(row.id);
-    candidates.set(publicPath, pathIds);
+    const pathRows = candidates.get(publicPath) ?? [];
+    pathRows.push(row);
+    candidates.set(publicPath, pathRows);
   }
 
   return Object.fromEntries(
     [...candidates.entries()]
-      .filter(([, ids]) => ids.length === 1)
-      .map(([filePath, ids]) => [filePath, ids[0]!]),
+      .filter(([, pathRows]) => pathRows.length === 1)
+      .map(([filePath, pathRows]) => [filePath, pathRows[0]!]),
   );
+}
+
+/** Exact ledger IDs keyed by public file path, using the same scoped path match as duration readback. */
+export function mapHarnessTestRunIdsByFile(
+  byFile: DistilledTestRun['byFile'],
+  rows: readonly HarnessTestRunEvidence[],
+  opts: { root: string; roots?: readonly string[]; workspaceId: string; harnessSlug: string; runGroupId: string },
+): Record<string, number> {
+  return Object.fromEntries(Object.entries(mapHarnessTestRunEvidenceByFile(byFile, rows, opts))
+    .map(([filePath, row]) => [filePath, row.id]));
+}
+
+/** Persisted file durations keyed by public path; a missing or ambiguous row stays absent. */
+export function mapHarnessTestRunDurationsByFile(
+  byFile: DistilledTestRun['byFile'],
+  rows: readonly HarnessTestRunEvidence[],
+  opts: { root: string; roots?: readonly string[]; workspaceId: string; harnessSlug: string; runGroupId: string },
+): Record<string, number | null> {
+  return Object.fromEntries(Object.entries(mapHarnessTestRunEvidenceByFile(byFile, rows, opts))
+    .map(([filePath, row]) => {
+      const durationMs = row.duration_ms == null ? null : Number(row.duration_ms);
+      return [filePath, durationMs !== null && Number.isSafeInteger(durationMs) && durationMs >= 0
+        ? durationMs
+        : null];
+    }));
 }
 
 export async function readHarnessTestRunIdsBounded(
@@ -1957,6 +1992,7 @@ export async function readHarnessTestRunIdsBounded(
     return {
       ids: bounded.value,
       idsByFile: null,
+      ledgerDurationsByFile: null,
       degraded: bounded.degraded,
       ...(bounded.reason === undefined ? {} : { reason: bounded.reason }),
       elapsedMs: bounded.elapsedMs,
@@ -1977,6 +2013,9 @@ export async function readHarnessTestRunIdsBounded(
     idsByFile: rows === null || opts.root === undefined || opts.byFile === undefined
       ? null
       : mapHarnessTestRunIdsByFile(opts.byFile, rows, { ...query, root: opts.root, roots: opts.roots }),
+    ledgerDurationsByFile: rows === null || opts.root === undefined || opts.byFile === undefined
+      ? null
+      : mapHarnessTestRunDurationsByFile(opts.byFile, rows, { ...query, root: opts.root, roots: opts.roots }),
     degraded: bounded.degraded || rows === null,
     ...(bounded.reason === undefined ? {} : { reason: bounded.reason }),
     elapsedMs: bounded.elapsedMs,
@@ -4734,6 +4773,8 @@ export default defineTool({
             : {})
         : null;
     setTestingRunPhaseDuration(phaseTimingsMs, 'ledgerIdReadbackMs', ledgerReadbackStartedAt);
+    const testRunIdsByFile = testRunIdsReadback?.idsByFile ?? null;
+    const testRunDurationsByFile = testRunIdsReadback?.ledgerDurationsByFile ?? null;
     const finalizationStartedAt = performance.now();
     // Evidence needs to distinguish tests intentionally excluded by an explicit
     // name selector from tests that were actually skipped by the suite. Keep the
@@ -4748,12 +4789,17 @@ export default defineTool({
       ...result,
       ...(deadline ? { deadline } : {}),
       ...(testRunIdsReadback?.ids === null ? {} : { testRunIds: testRunIdsReadback?.ids }),
-      ...(result.error === undefined && testRunIdsReadback?.idsByFile !== null
-        && testRunIdsReadback?.idsByFile !== undefined
+      ...(result.error === undefined && (testRunIdsByFile !== null || testRunDurationsByFile !== null)
         ? {
             byFile: Object.fromEntries(Object.entries(result.byFile).map(([filePath, counts]) => {
-              const runId = testRunIdsReadback?.idsByFile?.[filePath];
-              return [filePath, runId === undefined ? counts : { ...counts, runId }];
+              const runId = testRunIdsByFile?.[filePath];
+              const hasLedgerDuration = testRunDurationsByFile !== null
+                && Object.prototype.hasOwnProperty.call(testRunDurationsByFile, filePath);
+              return [filePath, {
+                ...counts,
+                ...(runId === undefined ? {} : { runId }),
+                ...(hasLedgerDuration ? { ledgerDurationMs: testRunDurationsByFile[filePath] } : {}),
+              }];
             })),
           }
         : {}),
@@ -4841,7 +4887,12 @@ export default defineTool({
     const finalResult = remeasureReport ? { ...surfacedResult, remeasure: remeasureReport } : surfacedResult;
     setTestingRunPhaseDuration(phaseTimingsMs, 'finalizationMs', finalizationStartedAt);
     setTestingRunPhaseDuration(phaseTimingsMs, 'totalHandlerMs', handlerStartedAt);
-    const timedFinalResult = { ...finalResult, phaseTimingsMs: { ...phaseTimingsMs } };
+    const runnerDurationMs = 'durationMs' in finalResult ? finalResult.durationMs : null;
+    const timedFinalResult = {
+      ...finalResult,
+      ...testingRunDurationFields(runnerDurationMs, phaseTimingsMs.totalHandlerMs),
+      phaseTimingsMs: { ...phaseTimingsMs },
+    };
     // Keep the diagnostic seam durable even when the caller's MCP response budget
     // expires just before this handler settles. The dispatcher's invocation row
     // records handler status and wall time; this small metadata record lets a later

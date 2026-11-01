@@ -2584,7 +2584,7 @@ export interface DistilledTestRun {
   failures: DistilledTestFailure[];
   /** True when `failures` was capped; the counts above always remain complete. */
   failuresTruncated: boolean;
-  /** Wall-clock span of the run (max endTime - min startTime), null if unreported. */
+  /** Runner-reported span (max endTime - min startTime), null if unreported. */
   durationMs: number | null;
   /**
    * Per-FILE counts, keyed by the same repo-root-relative POSIX path `failures[].file`
@@ -3076,6 +3076,7 @@ export interface HarnessTestRunEvidence {
   framework?: string;
   file_path: string;
   status: string;
+  duration_ms?: number | string | null;
   finished_at: string | Date | null;
   workspace_id: string | null;
   harness_slug: string | null;
@@ -3099,7 +3100,8 @@ export async function readHarnessTestRunEvidence(params: HarnessTestRunIdQuery):
     const requestedTestRunIds = params.testRunIds === undefined ? null : params.testRunIds;
     const resultLimit = requestedTestRunIds === null ? 200 : Math.max(1, requestedTestRunIds.length);
     const rows = await sql`
-      SELECT id, framework, workspace_id, harness_slug, run_group_id, file_path, status, finished_at,
+      SELECT id, framework, workspace_id, harness_slug, run_group_id, file_path, status,
+             duration_ms::text AS duration_ms, finished_at,
              commit_sha, worktree_dirty,
              to_jsonb(test_runs)->'execution_details' AS execution_details,
              to_jsonb(test_runs)->'configuration_snapshot' AS configuration_snapshot

@@ -28555,7 +28555,7 @@
           "POST"
         ]
       },
-      "description": "Ledger-backed inventory of tasks this operator launched: provenance `ps` cannot give — launcher, work-item/plan, budget/deadline, log path, CPU/RSS/pid-count, and cgroup confinement. Also surfaces `unaccounted` rows — processes inside our slice with no registered chokepoint — and verifier-owned scopes in `live.verifierGroups`. Pass `live:true` to reconcile with the kernel (slower, authoritative).",
+      "description": "Ledger-backed inventory of tasks this operator launched: provenance `ps` cannot give — launcher, work-item/plan, budget/deadline, log path, CPU/RSS/pid-count, and cgroup confinement. Also surfaces `unaccounted` rows — processes inside our slice with no registered chokepoint — and verifier-owned scopes in `live.verifierGroups`. Pass `live:true` to reconcile with the kernel (slower, authoritative). `taskPage` reports ledger-page coverage separately from kernel scan bounds.",
       "capabilities": [
         "intel:read"
       ],
@@ -28571,7 +28571,7 @@
       "guidance": {
         "when": "You want to know WHAT IS RUNNING AND WHY — who started a job, what a work-item costs, which task uses CPU or memory, whether anything bypassed the spawn chokepoint, or whether a managedSpawn job is still alive.",
         "notWhen": "NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job's OUTPUT use `capability:bash_output`.",
-        "chaining": "Pass `taskId`, `scopeUnit`, `invocationId` or `dispatchCallId` for one exact ledger row (matched before the limit). Lost a capability:bash launch response? Pass its `dispatchCallId` with `includeEnded:true` instead of relaunching. Then `processes:kill { taskId }` (whole cgroup subtree), or `{ scopeUnit }` for a `live.unaccountedGroups` entry; `processes:freeze` pauses without losing work; `processes:limit` retunes the budget live."
+        "chaining": "Pass `taskId`, `scopeUnit`, `invocationId` or `dispatchCallId` for one exact ledger row (matched before the limit). Lost a capability:bash launch response? Pass its `dispatchCallId` with `includeEnded:true` instead of relaunching. Then `processes:kill { taskId }` (whole cgroup subtree), or `{ scopeUnit }` for a `live.unaccountedGroups` entry; `processes:freeze` pauses without losing work; `processes:limit` retunes the budget live. Check `taskPage.truncated` before treating a task missing from `tasks[]` as absent; `live.ownedTruncated` and `live.foreignTruncated` only describe the kernel scan."
       }
     },
     {

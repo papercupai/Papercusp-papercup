@@ -1064,13 +1064,22 @@ export async function listLatestStrandedByCoordOwners(
   }));
 }
 
-export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Promise<TaskRow[]> {
-  if (filter.taskIds?.length === 0) return [];
+export interface TaskListPage {
+  rows: TaskRow[];
+  /** Exact number of rows matching the filters, before the result limit. */
+  totalCount: number;
+  /** Effective SQL limit after applying the store's default and bounds. */
+  limit: number;
+}
+
+async function queryTasks(filter: ListTasksFilter, inject: Sql | undefined, includeTotal: boolean): Promise<TaskListPage> {
+  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 2000);
+  if (filter.taskIds?.length === 0) return { rows: [], totalCount: 0, limit };
   const sql = sqlOf(inject);
   const ws = filter.workspaceId ?? activeWorkspaceId();
-  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 2000);
   const rows = await sql`
-    SELECT * FROM harness_shared.task_ledger
+    SELECT * ${includeTotal ? sql`, COUNT(*) OVER() AS matching_count` : sql``}
+      FROM harness_shared.task_ledger
      WHERE workspace_id = ${ws}
        ${filter.includeEnded ? sql`` : sql`AND ended_at IS NULL`}
        ${filter.states?.length ? sql`AND state = ANY(${sql.array(filter.states as string[])})` : sql``}
@@ -1093,7 +1102,20 @@ export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Pro
      ORDER BY started_at DESC
      LIMIT ${limit}
   `;
-  return rows.map(toRow);
+  return {
+    rows: rows.map(toRow),
+    totalCount: includeTotal ? Number(rows[0]?.matching_count ?? 0) : rows.length,
+    limit,
+  };
+}
+
+export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Promise<TaskRow[]> {
+  return (await queryTasks(filter, inject, false)).rows;
+}
+
+/** Return one bounded task-ledger page plus the exact filtered population size. */
+export async function listTasksPage(filter: ListTasksFilter = {}, inject?: Sql): Promise<TaskListPage> {
+  return queryTasks(filter, inject, true);
 }
 
 /**

@@ -38,10 +38,11 @@ vi.mock('../../consult/park-door', async (importOriginal) => {
 
 import tool from './set_blocker';
 
-const ctx = { uiClientId: 'su-a', isSuperuser: true, workspaceId: 'default' } as never;
+const ctxBase = { uiClientId: 'su-a', isSuperuser: true, workspaceId: 'default' };
+const ctx = ctxBase as never;
 const parse = (value: unknown) => (tool.args as { parse: (v: unknown) => unknown }).parse(value);
-async function one(value: unknown) {
-  const result = (await tool.handler(parse(value) as never, ctx)) as { data: { results: unknown[] } };
+async function one(value: unknown, context: unknown = ctx) {
+  const result = (await tool.handler(parse(value) as never, context as never)) as { data: { results: unknown[] } };
   return result.data.results[0] as Record<string, any>;
 }
 
@@ -104,6 +105,42 @@ describe('work_items:set_blocker — product-decision park door wiring', () => {
     const written = JSON.stringify(mergeWorkItemPayload.mock.calls);
     expect(written).toContain('consult:conv-1');
     expect(out.park).toMatchObject({ consultId: 'conv-1', blockerRef: 'consult:conv-1' });
+  });
+
+  it('replays the same transport key to one consult identity and one active blocker', async () => {
+    const key = 'mcp-retry-1';
+    const consults = new Map<string, typeof opened>();
+    let consultCreations = 0;
+    openDecisionReviewPark.mockImplementation(async (request: { requestKey?: string }) => {
+      const requestKey = request.requestKey ?? '';
+      let park = consults.get(requestKey);
+      if (!park) {
+        consultCreations += 1;
+        park = { ...opened, consultId: `conv-${consultCreations}`, blockerRef: `consult:conv-${consultCreations}` };
+        consults.set(requestKey, park);
+      }
+      return { ok: true, park };
+    });
+
+    const first = await one(parkArgs, { ...ctxBase, idempotencyKey: key });
+    const firstBlockers = first.activeBlockers as Array<Record<string, unknown>>;
+    expect(firstBlockers).toHaveLength(1);
+
+    const item = { id: 'WI-1', family: 'issue', kind: 'bug', state: 'needs-human', harness: 'papercup' };
+    getWorkItem.mockReset().mockResolvedValue({
+      ...item,
+      payload: { externalBlockers: firstBlockers },
+    });
+    const replay = await one(parkArgs, { ...ctxBase, idempotencyKey: key });
+
+    expect(openDecisionReviewPark).toHaveBeenCalledTimes(2);
+    const firstRequestKey = openDecisionReviewPark.mock.calls[0]![0].requestKey;
+    const replayRequestKey = openDecisionReviewPark.mock.calls[1]![0].requestKey;
+    expect(firstRequestKey).toBe(replayRequestKey);
+    expect(firstRequestKey).toContain(key);
+    expect(consultCreations).toBe(1);
+    expect(replay.activeBlockers).toHaveLength(1);
+    expect(replay.activeBlockers[0]).toMatchObject({ ref: firstBlockers[0]!.ref, status: 'active' });
   });
 
   it('returns the door refusal and writes nothing', async () => {

@@ -35,6 +35,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
 import { logSpawnReadinessShadow } from '../inference-gateway/spawn-readiness';
 import { ensureStallWakerLoop } from '../inference-gateway/stall-waker-loop';
+import { backgroundWorkersEnabled } from '../background-workers';
 import { evaluateOpusBudgetForSpawn } from '../deployment/account-pool-store';
 import { classifyRoleCriticality, type WorkCriticality } from '../opus-budget-governor';
 import { inferBackendFromModelSpec, resolveSpawnBackendModel } from '../harness-invoke-once';
@@ -1596,9 +1597,9 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   // gets no account/gateway env until an OMP adapter exists.
   const gwOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
   Object.assign(extraEnv, resolvedGatewayEnv);
-  // Start the stall-waker poll loop once the gateway is in play (idempotent + unref'd): it watches the
-  // gateway for rate-limit sheds and wakes a stalled bee when its account recovers (P-003).
-  if (gwOn) ensureStallWakerLoop(input.workspaceId);
+  // Only a background-worker process may own the poll loop. Request-only hosts still serve
+  // spawns, but the dedicated background host boot-starts this process-local singleton.
+  if (gwOn && backgroundWorkersEnabled()) ensureStallWakerLoop(input.workspaceId);
 
   // capability:computer desktop lease (computer-tool-plan 2.4): if THIS hive holds a
   // leased sandbox desktop, thread its display into the bee's env so capability:computer

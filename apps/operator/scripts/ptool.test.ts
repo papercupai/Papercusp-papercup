@@ -100,6 +100,7 @@ import {
   PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
   PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS,
+  PTOOL_LIST_TOOLS_TIMEOUT_MS,
   PTOOL_RETRY_JITTER_MS,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS,
@@ -118,6 +119,10 @@ import {
   withPtoolConnectionPhaseTrace,
   createPtoolHttpTraceFetch,
 } from './ptool.mjs';
+import {
+  HANDSHAKE_UPSTREAM_TIMEOUT_MS,
+  MAX_HANDSHAKE_TIMEOUT_RETRIES,
+} from '../lib/mcp-proxy/proxy';
 import {
   AGENT_LAUNCH_CLIENT_TIMEOUT_MS,
   AGENT_LAUNCH_HANDLER_TIMEOUT_SEC,
@@ -3992,6 +3997,42 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
 
     expect(listTools).toHaveBeenCalledTimes(2);
     expect(sleeps).toEqual([2_400]);
+  });
+
+  it('lets the proxy finish its bounded tools/list handshake before ptool aborts', () => {
+    const proxyHandshakeAttemptCount = MAX_HANDSHAKE_TIMEOUT_RETRIES + 1;
+    expect(PTOOL_LIST_TOOLS_TIMEOUT_MS).toBeGreaterThan(
+      HANDSHAKE_UPSTREAM_TIMEOUT_MS * proxyHandshakeAttemptCount,
+    );
+  });
+
+  it('observes and caps repeated proxy 502s during tools/list discovery', async () => {
+    const proxyError = Object.assign(new Error('mcp_proxy_upstream_error'), { code: 502 });
+    const listTools = vi.fn().mockRejectedValue(proxyError);
+    const sleeps: number[] = [];
+
+    await expect(
+      listToolsWithLocalRetry(
+        { listTools },
+        {},
+        {
+          totalTimeoutMs: 120_000,
+          rand: () => 0,
+          sleep: async (ms: number) => {
+            sleeps.push(ms);
+          },
+        },
+      ),
+    ).rejects.toBe(proxyError);
+
+    expect(listTools).toHaveBeenCalledTimes(PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS);
+    expect(listTools.mock.calls.map(([, options]) => options)).toEqual(
+      Array.from({ length: PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS }, () => ({
+        timeout: PTOOL_LIST_TOOLS_TIMEOUT_MS,
+        maxTotalTimeout: PTOOL_LIST_TOOLS_TIMEOUT_MS,
+      })),
+    );
+    expect(sleeps).toHaveLength(PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS - 1);
   });
 
   it('does not retry before a server minimum that exhausts the remaining budget', () => {

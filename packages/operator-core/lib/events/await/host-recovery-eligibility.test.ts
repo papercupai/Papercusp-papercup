@@ -182,6 +182,16 @@ describe('classifyStalledLoopHost (P-007)', () => {
     expect(verdict.kind === 'needs-relaunch' && verdict.remedy).toContain('P-012');
   });
 
+  it('D-007: a cold loop carry-respawn retry is a stuck turn when its routineId is present', () => {
+    const events = [-45, -30, -15].map((min) => ({
+      kind: 'duplicate-delivery-id', state: 'pending', mode: 'carry-respawn',
+      routineId: 'rt-cold-loop', fireNumber: 15, ts: at(min),
+    }));
+    expect(classifyStalledLoopHost(reading(recyclable, events), OWNER, NOW, WINDOW)).toMatchObject({
+      kind: 'needs-relaunch', condition: 'pending-turn-stuck',
+    });
+  });
+
   it('D-007: the same pending tail on a visibly busy host is healthy (a long turn pends its wakes)', () => {
     expect(
       classifyStalledLoopHost(reading({ ...recyclable, lastOutputAt: NOW - MIN }, stuckTail), OWNER, NOW, WINDOW),

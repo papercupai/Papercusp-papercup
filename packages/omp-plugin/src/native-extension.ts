@@ -3,12 +3,16 @@
  * ptool uses; no stdio child, forked runtime, or HTTP intermediary on the UDS leg.
  */
 import { readFile } from 'node:fs/promises';
+import { closeSync, createReadStream, createWriteStream } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
-  connectAgentMcp, type NativeOmpConfig,
+  connectAgentMcp, type NativeOmpConfig, type SuNativeToolCall,
 } from '../../operator-core/lib/agent-mcp-client';
+
+type NativeToolCallHandler = (event: { toolCallId: string; toolName: string; input: Record<string, unknown> },
+  context: { sessionManager: { getSessionId(): string } }) => Promise<void | { block: true; reason: string }>;
 
 export interface NativeExtensionApi {
   registerTool(tool: {
@@ -19,14 +23,31 @@ export interface NativeExtensionApi {
       onUpdate?: unknown, context?: { sessionManager: { getSessionId(): string } }): Promise<unknown>;
   }): void;
   on(name: 'session_shutdown', handler: () => Promise<void>): void;
+  on(name: 'tool_call', handler: NativeToolCallHandler): void;
 }
 
-export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOmpConfig): Promise<void> {
+export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOmpConfig,
+  nativeHook?: { observe(call: SuNativeToolCall): Promise<void>; close(): void }): Promise<void> {
   const native = config.papercuspNativeMcp;
   if (!native || native.version !== 1) return;
   const connections: Array<Awaited<ReturnType<typeof connectAgentMcp>>> = [];
   pi.on('session_shutdown', async () => {
+    nativeHook?.close();
     await Promise.allSettled(connections.map(x => x.client.close()));
+  });
+  if (nativeHook) pi.on('tool_call', async (event, context) => {
+    try {
+      // Snapshot BEFORE yielding to another hook. Rewriters may change both
+      // the returned input and OMP's later assistant-message snapshot.
+      await nativeHook.observe(structuredClone({ nativeSessionId: context.sessionManager.getSessionId(),
+        callId: event.toolCallId, tool: event.toolName, arguments: event.input }));
+    } catch (error) {
+      // Fixed error codes only: never echo native arguments or credentials.
+      const code = error instanceof Error && /^native_hook_[a-z_]+$/.test(error.message)
+        ? error.message : error instanceof Error && error.name === 'DataCloneError' ? 'snapshot_failed' : 'unknown';
+      console.error('[papercusp-native-hook] observation-refused', code);
+      return { block: true, reason: 'The native host could not retain the original tool call.' };
+    }
   });
   try {
     for (const [name, server] of Object.entries(native.servers)) {
@@ -100,9 +121,71 @@ export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOm
       await refresh();
     }
   } catch (error) {
+    nativeHook?.close();
     await Promise.allSettled(connections.map(x => x.client.close()));
     throw error;
   }
+}
+
+/** The process parent supplies this descriptor, not MCP configuration/model
+ * arguments. Its ACK only proves host observation, never scope or execution. */
+function connectNativeHook(): { observe(call: SuNativeToolCall): Promise<void>; close(): void } | undefined {
+  const descriptor = process.env.PAPERCUSP_NATIVE_HOOK_FD;
+  delete process.env.PAPERCUSP_NATIVE_HOOK_FD;
+  if (descriptor === undefined) return;
+  if (descriptor !== '3') throw new Error('native_hook_descriptor_invalid');
+  // Bun 1.3 treats an inherited net.Socket({fd}) as read-only even when the
+  // descriptor is a duplex socket. Standard fd streams preserve both halves
+  // in Node and the installed Bun OMP runtime; the host still owns this pipe.
+  const input = createReadStream('', { fd: 3, autoClose: false });
+  const output = createWriteStream('', { fd: 3, autoClose: false });
+  let sequence = 0, buffer = '', stopped = false;
+  const pending = new Map<number, { resolve(): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
+  const close = (reason: 'shutdown' | 'pipe_error' | 'pipe_closed' | 'invalid_ack' | 'timeout' | 'write_failed' = 'shutdown') => {
+    if (stopped) return;
+    if (reason !== 'shutdown') console.error('[papercusp-native-hook] closed', reason);
+    stopped = true;
+    for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new Error('native_hook_closed')); }
+    pending.clear(); input.destroy(); output.destroy();
+    try { closeSync(3); } catch { /* The process owns this descriptor exclusively. */ }
+  };
+  input.setEncoding('utf8');
+  const pipeError = (error: NodeJS.ErrnoException) => {
+    if (stopped) return;
+    console.error('[papercusp-native-hook] pipe-error', /^[A-Z0-9_]+$/.test(error.code ?? '') ? error.code : 'unknown');
+    close('pipe_error');
+  };
+  input.on('error', pipeError); output.on('error', pipeError);
+  input.on('end', () => close('pipe_closed'));
+  input.on('data', chunk => {
+    buffer += chunk;
+    if (Buffer.byteLength(buffer) > 4096) { close('invalid_ack'); return; }
+    let end: number;
+    while ((end = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+      try {
+        const frame = JSON.parse(line), request = pending.get(frame.id);
+        if (!request || Object.keys(frame).sort().join(',') !== 'id,ok' || typeof frame.ok !== 'boolean') { close('invalid_ack'); return; }
+        pending.delete(frame.id); clearTimeout(request.timer);
+        if (frame.ok) request.resolve(); else request.reject(new Error('native_hook_refused'));
+      } catch { close('invalid_ack'); return; }
+    }
+  });
+  return { close, observe(call) {
+    if (stopped) return Promise.reject(new Error('native_hook_closed'));
+    const id = ++sequence, line = JSON.stringify({ id, ...call }) + '\n';
+    if (Buffer.byteLength(line) > 1_048_576) return Promise.reject(new Error('native_hook_frame_too_large'));
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => close('timeout'), 15_000);
+      pending.set(id, { resolve, reject, timer });
+      output.write(line, error => {
+        if (!error) return;
+        const code = (error as NodeJS.ErrnoException).code;
+        console.error('[papercusp-native-hook] write-error', typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? code : 'unknown');
+        close('write_failed');
+      });
+    });
+  } };
 }
 
 export default async function nativeExtension(pi: NativeExtensionApi): Promise<void> {
@@ -112,5 +195,7 @@ export default async function nativeExtension(pi: NativeExtensionApi): Promise<v
     ? join(isAbsolute(configRoot) ? configRoot : join(homedir(), configRoot), 'agent')
     : join(homedir(), '.omp', 'agent'));
   const raw = await readFile(join(agentDir, 'mcp.json'), 'utf8');
-  await registerNativeMcp(pi, JSON.parse(raw));
+  const hook = connectNativeHook();
+  try { await registerNativeMcp(pi, JSON.parse(raw), hook); }
+  catch (error) { hook?.close(); throw error; }
 }

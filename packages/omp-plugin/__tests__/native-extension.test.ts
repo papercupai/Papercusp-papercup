@@ -11,9 +11,12 @@ let http: HttpServer;
 let shutdown: (() => Promise<void>) | undefined;
 let tools: Tool[];
 let calls: Record<string, unknown>[];
+let nativeCall: Parameters<NativeExtensionApi['on']>[1] | undefined;
+let observeOriginal: ReturnType<typeof vi.fn>;
 
 beforeEach(async () => {
-  tools = []; calls = []; shutdown = undefined;
+  tools = []; calls = []; shutdown = undefined; nativeCall = undefined;
+  observeOriginal = vi.fn(async () => undefined);
   const server = new Server({ name: 'native-call-fixture', version: '1' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'echo',
     inputSchema: { type: 'object' as const, additionalProperties: true } }] }));
@@ -33,10 +36,13 @@ beforeEach(async () => {
   const address = http.address();
   if (!address || typeof address === 'string') throw new Error('fixture did not bind');
   await registerNativeMcp({ registerTool: tool => { tools.push(tool); },
-    on: (_name, handler) => { shutdown = handler; } }, {
+    on: (name, handler) => {
+      if (name === 'session_shutdown') shutdown = handler as () => Promise<void>;
+      else nativeCall = handler as typeof nativeCall;
+    } }, {
     papercuspNativeMcp: { version: 1, mode: 'http',
       servers: { 'papercusp-su': { url: `http://127.0.0.1:${address.port}/mcp` } } },
-  });
+  }, { observe: observeOriginal, close: () => {} });
   // Closing the SDK server also releases its SSE stream.
   const close = shutdown!;
   shutdown = async () => { await close(); await server.close(); };
@@ -50,6 +56,26 @@ afterEach(async () => {
 });
 
 describe('owned OMP native MCP call identity', () => {
+  it('awaits the parent with a detached original native input, including built-ins', async () => {
+    let release!: () => void;
+    observeOriginal.mockImplementation(() => new Promise<void>(resolve => { release = resolve; }));
+    const event = { toolCallId: 'shell-call', toolName: 'bash', input: { command: 'original' } };
+    let finished = false;
+    const result = nativeCall!(event, { sessionManager: { getSessionId: () => 'native-session' } })
+      .then(value => { finished = true; return value; });
+    event.input.command = 'rewritten';
+    await Promise.resolve(); expect(finished).toBe(false);
+    expect(observeOriginal).toHaveBeenCalledWith({ nativeSessionId: 'native-session', callId: 'shell-call',
+      tool: 'bash', arguments: { command: 'original' } });
+    release(); await expect(result).resolves.toBeUndefined();
+  });
+
+  it('blocks rather than executing when the private host refuses an observation', async () => {
+    observeOriginal.mockRejectedValue(new Error('host no longer owns this input'));
+    await expect(nativeCall!({ toolCallId: 'call', toolName: 'bash', input: {} },
+      { sessionManager: { getSessionId: () => 'native-session' } })).resolves.toMatchObject({ block: true });
+  });
+
   it('sends the native callback call and live session on the SDK wire, outside model arguments', async () => {
     const session = randomUUID();
     const args = { threadId: 'model-supplied-session', callId: 'model-supplied-call', value: 7 };

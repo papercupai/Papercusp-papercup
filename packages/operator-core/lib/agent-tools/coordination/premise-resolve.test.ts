@@ -199,15 +199,17 @@ describe('resolvePremiseStamps', () => {
         itemExists: slug === 'no-http-anywhere-2026-07-28' && id === 'P-020',
       }),
     };
-    const [ok, noItem, noPlan] = await resolvePremiseStamps(
+    const [ok, prefixedOk, noItem, noPlan] = await resolvePremiseStamps(
       [
         'no-http-anywhere-2026-07-28#P-020',
+        'plan:no-http-anywhere-2026-07-28#P-020',
         'no-http-anywhere-2026-07-28#P-999',
         'ghost-plan#P-001',
       ],
       probes,
     );
     expect(ok!.status).toBe('holds');
+    expect(prefixedOk!.status).toBe('holds');
     expect(noItem!.status).toBe('unresolvable');
     expect(noItem!.note).toContain('P-999');
     expect(noPlan!.status).toBe('unresolvable');
@@ -221,11 +223,12 @@ describe('resolvePremiseStamps', () => {
         decisionExists: slug === 'real-plan' && id === 'D-004',
       }),
     };
-    const [ok, noDecision, noPlan] = await resolvePremiseStamps(
-      ['real-plan#D-004', 'real-plan#D-999', 'ghost-plan#D-001'],
+    const [ok, prefixedOk, noDecision, noPlan] = await resolvePremiseStamps(
+      ['real-plan#D-004', 'plan:real-plan#D-004', 'real-plan#D-999', 'ghost-plan#D-001'],
       probes,
     );
     expect(ok!.status).toBe('holds');
+    expect(prefixedOk!.status).toBe('holds');
     expect(noDecision!.status).toBe('unresolvable');
     expect(noDecision!.note).toContain('D-999');
     expect(noPlan!.status).toBe('unresolvable');

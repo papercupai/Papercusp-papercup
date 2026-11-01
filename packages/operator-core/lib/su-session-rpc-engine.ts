@@ -2,15 +2,16 @@
  * owns an RPC session. Bootstrap/configuration, adapters, durable commands and
  * tracked process teardown are the same seams used by other SU launches. */
 import { homedir } from 'node:os';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { SuApprovalsMode, SuSessionInputPart, SuSessionJsonValue, SuSessionRefusal } from '@papercusp/chat-protocol';
 import { prepareSuSessionInput, SuInputRefusal } from './su-session-input';
 import {
   applyGithubTokenEnv, assertLaunchPersona, modelArgsFor, ompCoreToolNames,
   ompResponsesCompatibilityEnv, recordSessionOwner,
-  prepareSuLaunch, resolveOmpSessionModel, suLaunchArgs, writeOmpSessionConfigDir,
+  prepareSuLaunch, resolveOmpSessionModel, suLaunchArgs, writeOmpSessionConfigDir, nativeOmpExtensionArgs,
 } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { agentMcpMode, prepareNativeOmpConfig, type NativeOmpConfig } from './agent-mcp-client';
 import { splitModelSpec } from './agent-config-constants';
 import { setAdvSessionOmpThreadId } from './adv-sessions';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
@@ -28,7 +29,7 @@ import { codexAppServerTokenUsage, codexPlan, nativeToolArguments, ompMessageUsa
 export type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from './su-session-usage';
 import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { SuSessionStartupTimeoutError, type SuSessionEventInput, type SuSessionHost, type SuSessionServedAccountReader } from './su-session-host';
-import { startSuStdioPeer, SuStdioRequestRefusal, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
+import { startSuStdioPeer, SuStdioRequestRefusal, type RpcFrame, type SuStdioPeer, type SuNativeToolCall } from './su-session-stdio-peer';
 import { SuNativeCards } from './su-session-native-cards';
 import { readSuperuserToken } from './superuser-token';
 import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
@@ -204,6 +205,23 @@ export function startSuRpcEngine(
       // rpc-ui keeps structured stdio and installs OMP's native question
       // callbacks. Plain rpc deliberately omits that interactive capability.
       ...modelArgsFor('omp', selectedModel), '--mode', 'rpc-ui'];
+    if (su && options.resolveRequestPrincipal) {
+      // Both fresh and resumed profiles need the owned callback, including
+      // ordinary HTTP. Keep the saved MCP URL/credentials and transport; only
+      // this child receives the host-owned observation descriptor.
+      const extensionArgs = nativeOmpExtensionArgs('omp', { ...env, PAPERCUSP_NATIVE_HOOK_FD: '3' });
+      if (!extensionArgs.length) throw new Error('OMP original-call observation is unavailable on this runtime');
+      const configPath = join(agentHome, 'mcp.json');
+      const prepared = prepareNativeOmpConfig(readFileSync(configPath, 'utf8'), {
+        mode: agentMcpMode(env.PAPERCUSP_MCP_TRANSPORT), home: homedir(), env, observeNativeCalls: true,
+      });
+      const config = JSON.parse(prepared) as NativeOmpConfig;
+      if (config.papercuspNativeMcp?.version !== 1 || !config.papercuspNativeMcp.servers['papercusp-su']) {
+        throw new Error('OMP original-call observation requires the owned SU MCP connection');
+      }
+      writeFileSync(configPath, prepared, { mode: 0o600 });
+      if (!args.includes(extensionArgs[1]!)) args.push(...extensionArgs);
+    }
     if (options.toolApproval === 'prompt') {
       const approvalMode = args.indexOf('--approval-mode');
       if (approvalMode < 0 || args[approvalMode + 1] !== 'yolo') {
@@ -245,9 +263,12 @@ export function startSuRpcEngine(
   // root-input scope; its credential and principal resolver stay in this host.
   let ompRuntimeBearer: string | undefined;
   let ompInput: { id: string; ownerTurnId: string; text: string; principalId: string;
+    accepted: Promise<void>; releaseAcceptance(): void;
+    originalCalls: Map<string, SuNativeToolCall>;
     rootSeen: boolean; agentStarted: boolean; nativeTools: Readonly<Record<string, string>> } | undefined;
   let ompInputScope: ReturnType<typeof nativeInstalledPerUseTurns.registerNativeInput> | undefined;
   const withdrawOmpInput = () => {
+    ompInput?.releaseAcceptance();
     ompInput = undefined;
     const scope = ompInputScope;
     ompInputScope = undefined;
@@ -269,6 +290,7 @@ export function startSuRpcEngine(
         return !closed && ownsRuntime() && ompInput === input ? principal : null;
       },
       resolveRuntimeBearer: async () => !closed && ownsRuntime() && ompInput === input ? ompRuntimeBearer ?? null : null });
+    input.releaseAcceptance();
   };
   const unavailable = (message: string) => ({ ok: false as const, code: 'engine_delivery_unknown', message, retryable: false });
   const turnLifecycle = options.turnLifecycle ?? (su && backend === 'codex' ? attachedInstalledToolLifecycle({
@@ -411,7 +433,10 @@ export function startSuRpcEngine(
                   delete names[name]; collisions.add(name);
                 } else names[name] = canonical;
               }
-              ompInput = { id: `omp-input:${turnEpoch}`, ownerTurnId: turnId, text: content,
+              let releaseAcceptance!: () => void;
+              const accepted = new Promise<void>(resolve => { releaseAcceptance = resolve; });
+              ompInput = { id: `omp-input:${turnEpoch}`, ownerTurnId: turnId, text: content, accepted, releaseAcceptance,
+                originalCalls: new Map(),
                 principalId: principal.slug, rootSeen: false, agentStarted: false, nativeTools: Object.freeze(names) };
             }
           }
@@ -812,13 +837,9 @@ export function startSuRpcEngine(
         const message = object(frame.message);
         for (const [index, value] of (Array.isArray(message.content) ? message.content : []).entries()) {
           const block = object(value), channel = block.type === 'thinking' ? 'reasoning' : 'text';
-          if (block.type === 'toolCall' && ompInputScope && ompInput && !closed && ownsRuntime()) {
-            // observeToolCall records synchronously, before any await. The
-            // following MCP HTTP request must find this exact name/ID/args.
-            void ompInputScope.observeToolCall({ nativeSessionId: nativeId(), nativeInputId: ompInput.id,
-              server: 'papercusp-su', callId: string(block.id), tool: string(block.name), arguments: block.arguments })
-              .catch(error => { void withdrawOmpInput(); reportRuntimeFailure(error); void close(); });
-          }
+          // This snapshot already contains rewritten arguments. It is display/
+          // execution evidence, not an original-call scope observation. Only
+          // the owned hook pipe below can register the original native call.
           if (block.type === 'text' || block.type === 'thinking') {
             const key = `${channel}:${index}`;
             transcript(key, channel, streams.has(key) ? '' : string(block.text ?? block.thinking), true);
@@ -886,6 +907,25 @@ export function startSuRpcEngine(
     peer = await (options.peerFactory ?? startSuStdioPeer)({
       stage: options.stage,
       binary: resolvedBinary, args, cwd: boot.cwd, env, ownerId: binding.ownerId!, workspaceId: boot.workspaceId, onMessage,
+      ...(backend === 'omp' && su && options.resolveRequestPrincipal ? { onNativeToolCall: async (call: SuNativeToolCall) => {
+        const input = ompInput;
+        if (!input || call.nativeSessionId !== nativeId()) throw new Error('Native hook has no matching owner input');
+        // stdout and the private hook pipe are independent streams. Join the
+        // hook with the genuine root/agent-start observations before ACKing it.
+        await input.accepted;
+        if (closed || !ready || !ownsRuntime() || interruptInFlight || turnCompletionSettled
+          || ompInput !== input || !ompInputScope || call.nativeSessionId !== nativeId()) {
+          throw new Error('Native hook owner input is no longer active');
+        }
+        const previous = input.originalCalls.get(call.callId);
+        if (previous && canonicalJson(previous) !== canonicalJson(call)) throw new Error('Native hook changed its original call');
+        if (!previous && input.originalCalls.size >= 1000) throw new Error('Native hook call population exceeds the bound');
+        await ompInputScope.observeToolCall({ ...call, nativeInputId: input.id, server: 'papercusp-su' });
+        input.originalCalls.set(call.callId, structuredClone(call));
+        // Built-ins are deliberately absent from nativeTools. Their genuine
+        // original input is observed here but grants no canonical target,
+        // resource scope, protected capture receipt or funded turn.
+      } } : {}),
       spec: { class: 'agent-session', title: `PUI ${backend} structured engine`, launchedBy: 'pui-su-session',
         argv: [resolvedBinary, ...args],
         harnessSlug: binding.harnessSlug, planSlug: binding.planSlug, cwd: boot.cwd,

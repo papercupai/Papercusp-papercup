@@ -43,7 +43,7 @@ describe('native adapter leaves the negotiated model result intact', () => {
     let shutdown: (() => Promise<void>) | undefined;
     await registerNativeMcp({
       registerTool: value => { tool = value; },
-      on: (_event, fn) => { shutdown = fn; },
+      on: (event, fn) => { if (event === 'session_shutdown') shutdown = fn as () => Promise<void>; },
     }, { papercuspNativeMcp: {
       version: 1, mode: 'uds', servers: { fixture: { url: 'http://127.0.0.1:1234/api/mcp' } },
     } });

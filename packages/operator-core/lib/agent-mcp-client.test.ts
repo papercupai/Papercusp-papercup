@@ -15,7 +15,7 @@ vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', async original => 
     constructor(...args: unknown[]) { mock.transport(...args); }
   },
 }));
-import { AgentMcpConnectionError, connectAgentMcp } from './agent-mcp-client';
+import { AgentMcpConnectionError, connectAgentMcp, prepareNativeOmpConfig } from './agent-mcp-client';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -25,6 +25,23 @@ beforeEach(() => {
 });
 
 describe('owned MCP initialization failure evidence', () => {
+  it('moves an HTTP SU profile only for an owned original-call observer, preserving its connection', () => {
+    const server = { url: 'http://127.0.0.1:3170/api/mcp?client=private-owner',
+      headers: { Authorization: 'Bearer private-token' } };
+    const text = JSON.stringify({ mcpServers: { 'papercusp-su': server } });
+    expect(prepareNativeOmpConfig(text, { mode: 'http' })).toBe(text);
+    const prepared = prepareNativeOmpConfig(text, { mode: 'http', observeNativeCalls: true });
+    expect(JSON.parse(prepared)).toEqual({ mcpServers: {}, papercuspNativeMcp: {
+      version: 1, mode: 'http', servers: { 'papercusp-su': server },
+    } });
+    expect(prepareNativeOmpConfig(prepared, { mode: 'http', observeNativeCalls: true })).toBe(prepared);
+    const saved = JSON.stringify({ papercuspNativeMcp: { version: 1, mode: 'uds', home: '/saved-home',
+      servers: { 'papercusp-su': server } }, mcpServers: { other: { url: 'http://localhost:3170/api/mcp' } } });
+    expect(JSON.parse(prepareNativeOmpConfig(saved, { mode: 'http', observeNativeCalls: true })).papercuspNativeMcp)
+      .toEqual({ version: 1, mode: 'uds', home: '/saved-home', servers: {
+        'papercusp-su': server, other: { url: 'http://localhost:3170/api/mcp', headers: {} },
+      } });
+  });
   it.each([
     [new McpError(ErrorCode.RequestTimeout, 'secret timeout'), { category: 'request-timeout' }],
     [new McpError(ErrorCode.ConnectionClosed, 'secret close'), { category: 'connection-closed' }],

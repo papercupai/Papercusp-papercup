@@ -35,6 +35,8 @@ export const PARK_WAKE_GRACE_SEC = 3600;
 export interface ParkDoorRequest {
   workItemId: string;
   setterId: string;
+  /** Stable per-request identity from the transport, reused when a park call is retried. */
+  requestKey?: string | null;
   /** The decision being parked — the blocker summary. */
   question: string;
   /** What the parker will do if nobody objects (defaultIfUnanswered). */
@@ -115,7 +117,13 @@ export function parkCascadeMeta(
 
 export interface ParkDoorDeps {
   now(): number;
-  openConsult(input: { question: string; originTaskRef: string; cascade: DecisionReviewCascadeMeta }): Promise<{ consultId: string }>;
+  openConsult(input: {
+    question: string;
+    originTaskRef: string;
+    cascade: DecisionReviewCascadeMeta;
+    requestKey?: string;
+    onAccepted?: (consultId: string) => Promise<void> | void;
+  }): Promise<{ consultId: string }>;
   registerVerdictWake(input: { subscriberId: string; eventKey: string; timeoutSec: number; note: string }): Promise<void>;
   notifyOwner(input: { summary: string; body: string; workItemId: string }): Promise<void>;
 }
@@ -146,9 +154,32 @@ export async function openDecisionReviewPark(req: ParkDoorRequest, deps: ParkDoo
   const valid = validateParkRequest(req, nowMs);
   if (!valid.ok) return valid;
   const cascade = parkCascadeMeta(req, valid);
+  const timeoutSec = Math.max(60, Math.ceil((Date.parse(valid.deadlineAt) - nowMs) / 1000) + PARK_WAKE_GRACE_SEC);
+  let wakeRegistered = false;
+  let wakeRegistrationAttempted = false;
+  const registerVerdictWake = async (consultId: string) => {
+    wakeRegistrationAttempted = true;
+    try {
+      await deps.registerVerdictWake({
+        subscriberId: req.setterId,
+        eventKey: parkVerdictEventKey(consultId),
+        timeoutSec,
+        note: `park verdict for ${req.workItemId} (consult ${consultId})`,
+      });
+      wakeRegistered = true;
+    } catch {
+      wakeRegistered = false;
+    }
+  };
   let consultId: string;
   try {
-    ({ consultId } = await deps.openConsult({ question: req.question, originTaskRef: req.workItemId, cascade }));
+    ({ consultId } = await deps.openConsult({
+      question: req.question,
+      originTaskRef: req.workItemId,
+      cascade,
+      ...(req.requestKey ? { requestKey: req.requestKey } : {}),
+      onAccepted: registerVerdictWake,
+    }));
   } catch (err) {
     return {
       ok: false,
@@ -157,19 +188,10 @@ export async function openDecisionReviewPark(req: ParkDoorRequest, deps: ParkDoo
     };
   }
   const verdictEvent = parkVerdictEventKey(consultId);
-  const timeoutSec = Math.max(60, Math.ceil((Date.parse(valid.deadlineAt) - nowMs) / 1000) + PARK_WAKE_GRACE_SEC);
-  let wakeRegistered = false;
-  try {
-    await deps.registerVerdictWake({
-      subscriberId: req.setterId,
-      eventKey: verdictEvent,
-      timeoutSec,
-      note: `park verdict for ${req.workItemId} (consult ${consultId})`,
-    });
-    wakeRegistered = true;
-  } catch {
-    wakeRegistered = false;
-  }
+  // The production accepted-request helper calls this before it starts the
+  // async reviewer continuation. Lightweight/test bindings may omit it; keep
+  // the original best-effort fallback for those callers.
+  if (!wakeRegistrationAttempted) await registerVerdictWake(consultId);
   let ownerNotified = false;
   try {
     const authority = valid.ownerAuthorityTopic ? ` Owner-authority topic: ${valid.ownerAuthorityTopic} — this park waits for you.` : '';
@@ -212,17 +234,19 @@ export function makeProdParkDoorDeps(identity: import('../agent-tools/coordinati
   return {
     now: () => Date.now(),
     async openConsult(input) {
-      const { getFeedbackProd } = await import('./get-feedback-prod');
+      const { acceptFeedbackRequestProd } = await import('./get-feedback-prod');
       if (!identity.workspaceId) throw new Error('park needs a workspace-scoped caller to open its decision-review consult');
-      const res = await getFeedbackProd(
+      const res = await acceptFeedbackRequestProd(
         {
           workspaceId: identity.workspaceId,
           requesterId: identity.ownerId,
           question: input.question,
           originTaskRef: input.originTaskRef,
           cascade: input.cascade,
+          ...(input.requestKey ? { requestKey: input.requestKey } : {}),
         },
         identity,
+        ...(input.onAccepted ? { onAccepted: (accepted) => input.onAccepted!(accepted.conversation_id) } : {}),
       );
       if ('error' in res) throw new Error(`decision-review consult refused: ${res.error}`);
       const consultId = typeof res.conversation_id === 'string' ? res.conversation_id : null;

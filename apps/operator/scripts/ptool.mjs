@@ -1902,11 +1902,12 @@ export function requireServingGeneration(tool) {
   throw error;
 }
 
-// `tools/list` is a recovery prerequisite for every named ptool call, but it
-// is still a remote MCP request and can stall while the operator is under
-// pressure. Do not inherit the SDK's 60s default: a CLI that produces no
-// output for a minute looks indistinguishable from a dead operator.
-export const PTOOL_LIST_TOOLS_TIMEOUT_MS = 10_000;
+// The local MCP proxy can spend three 8s upstream attempts plus retry backoff
+// (~25s) on this write-free handshake. Let that bounded response reach ptool so
+// it can classify the proxy's 502 and apply its one-replay cap; a 10s client
+// timeout aborted the proxy attempt and restarted the full path. Keep this
+// below the SDK's 60s default while clearing the proxy's retry window.
+export const PTOOL_LIST_TOOLS_TIMEOUT_MS = 30_000;
 
 // The default dev-box endpoint is the resilient MCP proxy. It deliberately
 // holds an initialize request through a :3070 restart for up to 90s, then

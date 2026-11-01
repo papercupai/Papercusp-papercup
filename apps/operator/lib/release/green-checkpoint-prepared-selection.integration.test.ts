@@ -36,6 +36,14 @@ import { releaseConfig } from "./release-config";
 import { advanceReady } from "./git-ops";
 import type { FrozenRepairCarryRecord, FrozenRepairPendingCarry } from "@papercusp/operator-core/lib/release/frozen-repair-carry";
 import type { FrozenCandidateRepairQueue } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+import {
+  createFrozenCandidateQueue,
+  markFrozenCandidateVerificationRed,
+  markFrozenRepairAdmitted,
+  markFrozenRepairFixerDispatched,
+  markFrozenRepairFixerFinished,
+} from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+import type { PreparedCheckpointSelectionRecord } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import type { CheckpointCandidateSource } from "@papercusp/operator-core/lib/release/checkpoint-candidate-source";
 import type { FreezeCutRecord } from "@papercusp/operator-core/lib/release/known-good-freeze";
 
@@ -1174,5 +1182,91 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
     expect(state.pending).toBeNull();
     expect(state.consumed).toBe(1);
     expect(state.selection?.candidate).toBe(published);
+  }, 180_000);
+});
+
+describe("recovery after the frozen repair head advances", () => {
+  async function repairQueues(f: Lineage) {
+    const red = markFrozenCandidateVerificationRed(createFrozenCandidateQueue({
+      candidate: f.ready, qualificationAttemptId: "attempt-1", base: f.ready, nowMs: 10,
+      affectedTestProofGroup: "repair-head-replan",
+    }), { failingTests: ["package-lock.json"], nowMs: 20 });
+    const dispatched = markFrozenRepairFixerDispatched(red, { spawnId: "fixer-1", nowMs: 30 });
+    const oldQueue = markFrozenRepairFixerFinished(dispatched, {
+      spawnId: "fixer-1", repairHead: f.knownGood, nowMs: 40,
+    });
+    const newQueue = markFrozenRepairAdmitted(oldQueue, { atMs: 50, actor: "su-test",
+      source: { ref: "new-head", sha: f.tip }, fromRepairHead: f.knownGood, toRepairHead: f.tip,
+      paths: ["package-lock.json"], unchanged: [], blobs: { "package-lock.json": "blob-2" } });
+    return { oldQueue, newQueue };
+  }
+
+  function prepared(f: Lineage, candidate: string, queue: FrozenCandidateRepairQueue): PreparedCheckpointSelectionRecord {
+    const generation = candidate === f.knownGood ? f.knownGoodGeneration : f.tipGeneration;
+    return {
+      schemaVersion: 1, attemptId: "attempt-1", integrationRoot: f.integration, checkpointRoot: f.cfg.checkpointRoot,
+      candidate, tip: f.tip, base: f.ready, candidateSource: "frozen-repair-queue", quietCutApplied: false,
+      freezeCut: null, carry: null, queue,
+      generation: { candidate, identity: generation.identity, token: generation.token,
+        inputFingerprint: generation.inputFingerprint, reused: true, root: generation.root },
+    };
+  }
+
+  it("re-prepares at the newly admitted repairHead when the rest of the selection authority is unchanged", async () => {
+    const f = await lineage();
+    const { oldQueue, newQueue } = await repairQueues(f);
+    const previous = prepared(f, f.knownGood, oldQueue);
+    const replacementCalls: unknown[][] = [];
+    const deps: CheckpointDeps = {
+      ...f.deps,
+      runId: "run-1",
+      readFrozenRepairQueue: async () => newQueue,
+      readPreparedCheckpointSelection: async () => previous,
+      commitPreparedCheckpointSelection: async () => { throw new Error("head-only replan must replace the stale record"); },
+      replacePreparedSelectionAfterRepairHeadAdvance: async (...args) => {
+        replacementCalls.push(args);
+        return true;
+      },
+    };
+    const result = await beginCheckpointPreflight(f.cfg, f.tip, f.exec, {
+      target: null,
+      checkpointSelection: { deps, opts: { candidate: f.knownGood, candidateSource: "frozen-repair-queue",
+        noPush: true, runStartedAtMs: Date.now() } },
+    });
+    expect(result.kind).toBe("ready");
+    if (result.kind !== "ready") return;
+    expect(result.candidate).toBe(f.tip);
+    expect(result.preparedSelection?.candidate).toBe(f.tip);
+    expect(replacementCalls).toHaveLength(1);
+    expect(replacementCalls[0]).toEqual([previous, result.preparedSelection, newQueue, "run-1"]);
+    expect(f.events).not.toContain("select-known-good");
+    onTestFinished(() => { if (result.lock.acquired) result.lock.release(); });
+  }, 180_000);
+
+  it("returns a typed repair wait when other selection authority changed", async () => {
+    const f = await lineage();
+    const { oldQueue } = await repairQueues(f);
+    const previous = prepared(f, f.knownGood, oldQueue);
+    const differentQueue = createFrozenCandidateQueue({
+      candidate: f.tip, qualificationAttemptId: "attempt-1", base: f.ready, nowMs: 60,
+      affectedTestProofGroup: "different-candidate",
+    });
+    let superseded = 0;
+    const deps: CheckpointDeps = {
+      ...f.deps,
+      runId: "run-1",
+      readFrozenRepairQueue: async () => differentQueue,
+      readPreparedCheckpointSelection: async () => previous,
+      commitPreparedCheckpointSelection: async () => { throw new Error("superseded selection must not commit"); },
+      supersedePreparedSelectionBeforeStart: async () => { superseded += 1; return true; },
+    };
+    const result = await beginCheckpointPreflight(f.cfg, f.tip, f.exec, {
+      target: null,
+      checkpointSelection: { deps, opts: { candidate: f.knownGood, candidateSource: "frozen-repair-queue",
+        noPush: true, runStartedAtMs: Date.now() } },
+    });
+    expect(result).toMatchObject({ kind: "superseded", candidate: f.knownGood, repairHead: differentQueue.repairHead });
+    expect(superseded).toBe(1);
+    expect(f.events).not.toContain("select-known-good");
   }, 180_000);
 });

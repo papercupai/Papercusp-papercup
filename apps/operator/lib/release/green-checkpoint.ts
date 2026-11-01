@@ -203,6 +203,9 @@ import {
   recordStoredQualificationRunnerProgress,
   recordStoredQualificationNativeProducer,
   recoverStoredQualificationNativeCompletions,
+  replacePreparedSelectionAfterRepairHeadAdvance,
+  supersedePreparedSelectionBeforeStart,
+  preparedSelectionQueueRepairHeadOnlyAdvanced,
   reserveStoredQualificationRunner,
   readPreparedCheckpointSelection,
   commitPreparedCheckpointSelection,
@@ -1601,6 +1604,17 @@ export interface CheckpointDeps {
     "attemptId" | "integrationRoot" | "checkpointRoot">): Promise<PreparedCheckpointSelectionRecord | null>;
   commitPreparedCheckpointSelection?(record: PreparedCheckpointSelectionRecord,
     expected: { queue: FrozenCandidateRepairQueue | null; pendingCarry: FrozenRepairPendingCarry | null }): Promise<boolean>;
+  replacePreparedSelectionAfterRepairHeadAdvance?(
+    previous: PreparedCheckpointSelectionRecord,
+    replacement: PreparedCheckpointSelectionRecord,
+    expectedQueue: FrozenCandidateRepairQueue,
+    runId: string,
+  ): Promise<boolean>;
+  supersedePreparedSelectionBeforeStart?(
+    previous: PreparedCheckpointSelectionRecord,
+    expectedQueue: FrozenCandidateRepairQueue | null,
+    runId: string,
+  ): Promise<boolean>;
   writeFrozenRepairQueue?(
     queue: FrozenCandidateRepairQueue | null,
     options: WriteFrozenCandidateRepairQueueOptions,
@@ -19505,6 +19519,12 @@ export async function beginCheckpointPreflight(
       integrationRef: string;
       summary: string;
     }
+  | {
+      kind: "superseded";
+      candidate: string;
+      repairHead: string | null;
+      summary: string;
+    }
 > {
   let candidate: string;
   try {
@@ -19658,6 +19678,8 @@ async function beginPreparedCheckpointPreflight(
     (opts.totalRefires ?? opts.refireAttempts ?? 0) + replans >= refireAbsoluteCeiling(autoRefireCapFromEnv());
   if (Boolean(deps.readPreparedCheckpointSelection) !== Boolean(deps.commitPreparedCheckpointSelection))
     throw new Error("prepared selection durable authority requires both read and atomic commit hooks");
+  let staleRecovered: PreparedCheckpointSelectionRecord | null = null;
+  let staleQueue: FrozenCandidateRepairQueue | null = null;
   for (let replans = 0; ; replans++) {
     if (exhausted(replans)) throw new Error("prepared selection authority churn exhausted run deadline/refire budget");
     let recovered: PreparedCheckpointSelectionRecord | null | undefined;
@@ -19679,13 +19701,31 @@ async function beginPreparedCheckpointPreflight(
       const lock = acquireCheckpointRunLock(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot));
       try {
         await validatePreparedCheckpointSelection(cfg, recovered, exec);
-        if (!preparedCheckpointQueueMatches(recovered, await readCheckpointSelectionQueue(deps)))
+        const currentQueue = await readCheckpointSelectionQueue(deps);
+        if (preparedCheckpointQueueMatches(recovered, currentQueue)) {
+          return { kind: "ready", candidate: recovered.candidate, prewarmedDependencyGeneration: recovered.generation,
+            preparedSelection: recovered, lock };
+        }
+        if (preparedSelectionQueueRepairHeadOnlyAdvanced(recovered, currentQueue) &&
+            deps.replacePreparedSelectionAfterRepairHeadAdvance) {
+          staleRecovered = recovered;
+          staleQueue = currentQueue;
+          if (lock.acquired) lock.release();
+        } else {
+          const retired = await deps.supersedePreparedSelectionBeforeStart?.(recovered, currentQueue, deps.runId ?? "");
+          if (lock.acquired) lock.release();
+          if (retired) return {
+            kind: "superseded",
+            candidate: recovered.candidate,
+            repairHead: currentQueue?.repairHead ?? null,
+            summary: `prepared checkpoint selection at ${recovered.candidate.slice(0, 8)} was superseded before the suite started; ` +
+              `the current repair head is ${currentQueue?.repairHead?.slice(0, 8) ?? "retired"}, so the run was released for a fresh selection`,
+          };
           throw new Error("prepared selection queue authority changed after commit");
-        return { kind: "ready", candidate: recovered.candidate, prewarmedDependencyGeneration: recovered.generation,
-          preparedSelection: recovered, lock };
+        }
       } catch (error) { if (lock.acquired) lock.release(); throw error; }
     }
-    const queue = structuredClone(await readCheckpointSelectionQueue(deps));
+    const queue = structuredClone(staleQueue ?? await readCheckpointSelectionQueue(deps));
     const pendingCarry = structuredClone(await deps.readFrozenRepairPendingCarry?.() ?? null);
     const base = await refExists(cfg.integrationRoot, cfg.releaseRef) ? await revParse(cfg.integrationRoot, cfg.releaseRef) : null;
     const provenance = checkpointCandidateProvenance(opts);
@@ -19732,7 +19772,10 @@ async function beginPreparedCheckpointPreflight(
       };
       await validatePreparedCheckpointSelection(cfg, record, exec);
       if (exhausted(replans)) throw new Error("prepared selection run deadline/refire budget exhausted before commit");
-      if (deps.commitPreparedCheckpointSelection) {
+      if (staleRecovered) {
+        if (!queue || !deps.replacePreparedSelectionAfterRepairHeadAdvance || !deps.runId ||
+            !await deps.replacePreparedSelectionAfterRepairHeadAdvance(staleRecovered, record, queue, deps.runId)) continue;
+      } else if (deps.commitPreparedCheckpointSelection) {
         if (!await deps.commitPreparedCheckpointSelection(record, { queue, pendingCarry })) continue;
       } else if (carry && pendingCarry) {
         // Compatibility for old in-process callers. This path does not claim durable recovery.
@@ -23336,6 +23379,22 @@ export function realCheckpointDeps(
             commitPreparedCheckpointSelection: (record: PreparedCheckpointSelectionRecord,
               expected: { queue: FrozenCandidateRepairQueue | null; pendingCarry: FrozenRepairPendingCarry | null }) =>
               commitPreparedCheckpointSelection(repairTarget, record, expected),
+            replacePreparedSelectionAfterRepairHeadAdvance: (
+              previous: PreparedCheckpointSelectionRecord,
+              replacement: PreparedCheckpointSelectionRecord,
+              expectedQueue: FrozenCandidateRepairQueue,
+              runId: string,
+            ) => replacePreparedSelectionAfterRepairHeadAdvance(repairTarget, previous, replacement, expectedQueue, runId),
+            async supersedePreparedSelectionBeforeStart(
+              previous: PreparedCheckpointSelectionRecord,
+              expectedQueue: FrozenCandidateRepairQueue | null,
+              runId: string,
+            ) {
+              const result = await supersedePreparedSelectionBeforeStart(repairTarget, {
+                previous, expectedQueue, runId,
+              });
+              return result.status === "updated";
+            },
           } : {}),
           // P-012: the per-sync batch check's newest PASSED commit (sync_delta.lastPassed). Used
           // by the fresh cut and the P-021 re-cut, each under decideKnownGoodFreezeCut's rules.
@@ -27033,6 +27092,21 @@ if (require.main === module) {
           candidateSource, runStartedAtMs: processStartedAtMs,
         } } },
       );
+      if (preflight.kind === "superseded") {
+        await emitResult({
+          advanced: false,
+          candidate: preflight.candidate,
+          from: null,
+          green: null,
+          reason: "repair-in-progress",
+          summary: preflight.summary,
+          ...(preflight.repairHead ? { repairHead: preflight.repairHead } : {}),
+          candidateSource,
+          ...(diagnostic ? { diagnostic } : {}),
+          ...(gateFireId ? { gateFireId } : {}),
+        });
+        process.exit(0);
+      }
       if (preflight.kind === "not-applicable") {
         await emitResult({
           advanced: false,

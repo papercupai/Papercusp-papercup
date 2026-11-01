@@ -451,6 +451,8 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).toContain('only live.exactScopeUnitMatches entries with kind "unaccounted"');
     expect(summary).toContain('live.unaccountedCount ?? live.unaccounted');
     expect(summary).toContain('live.unaccountedPidCount ?? live.unaccountedPids');
+    expect(summary).toContain('require taskPage.truncated=false');
+    expect(summary).toContain('live.ownedTruncated and live.foreignTruncated do not cover tasks[]');
     expect(summary).toContain('If live.unaccountedGroups is missing or not an array, leave the result unknown');
     expect(summary).toContain('never coerce a missing group list to []');
     expect(summary).toContain('compare payload.processLifecycleCandidate.observedPids against the complete live.unaccountedGroups[].pids set');
@@ -585,6 +587,8 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).toContain('When an addressable control exists, require a known-present same-kind unaccounted control from the census, read it twice');
     expect(brief).toContain('compare payload.processLifecycleCandidate.observedPids with the complete live.unaccountedGroups[].pids set');
     expect(brief).toContain('live.ownedTruncated=false');
+    expect(brief).toContain('require taskPage.truncated=false');
+    expect(brief).toContain('taskPage.total is the exact matching ledger row count');
     expect(brief).toContain('live.unaccountedCount ?? live.unaccounted matching live.unaccountedGroups.length');
     expect(brief).toContain('live.unaccountedPidCount ?? live.unaccountedPids matching the sum of the listed group PIDs');
     expect(brief).toContain('If live.unaccountedGroups is missing or is not an array, leave the result unknown');
@@ -883,7 +887,7 @@ describe('runLifecycleJudgementSweep', () => {
 
   it('changes the launch key only when the one-hour interval changes', () => {
     const current = lifecycleJudgeIntervalKey('ws-1', NOW);
-    expect(current).toMatch(/^process-lifecycle-judge:v5:ws-1:/);
+    expect(current).toMatch(/^process-lifecycle-judge:v6:ws-1:/);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS - 1)).toBe(current);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS)).not.toBe(current);
   });

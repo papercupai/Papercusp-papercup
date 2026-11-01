@@ -119,7 +119,7 @@ describe('readToolFailureRate', () => {
     expect(roll.failing[0]!.calls).toBe(10);
   });
 
-  it('excludes CALLER errors from both numerator and denominator', () => {
+  it('excludes caller errors and stale MCP contracts from handler-health counts', () => {
     // Enforced in SQL, so assert the contract at the source: a strict validator
     // rejecting bad args must never read as a broken tool.
     expect(TOOL_FAILURE_RATE_SQL).toContain("status IN ('error','timeout')");
@@ -127,6 +127,10 @@ describe('readToolFailureRate', () => {
     expect(TOOL_FAILURE_RATE_SQL).not.toContain('role-not-allowed');
     // And the denominator is the same restricted set, not count(*).
     expect(TOOL_FAILURE_RATE_SQL).toContain("count(*) FILTER (WHERE status IN ('ok','error','timeout')) AS calls");
+    // stale_tool_contract can be logged as handler_error before the wrapper marks
+    // its telemetry row, so exclude by both the normalized code and message prefix.
+    expect(TOOL_FAILURE_RATE_SQL).toContain("error_code IS DISTINCT FROM 'stale_tool_contract'");
+    expect(TOOL_FAILURE_RATE_SQL).toContain("COALESCE(error_message, '') NOT ILIKE 'stale_tool_contract:%'");
   });
 
   it('P-012: excludes dispatch-wrapper rows — a tools:invoke wrapper failure duplicates its inner row', () => {

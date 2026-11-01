@@ -33,8 +33,45 @@ vh_bracket_trap
 vh_begin preflight
 
 capture_screenshot() {
-  local target="$1" status
-  "$T" screenshot --pid "$VERIFY_TAURI_PID" --output "$target" >"$target.stdout.log" 2>"$target.stderr.log"
+  local target="$1" status window_id
+  # tauri-agent-tools 0.9.3 accepts --pid as a bridge selector, but screenshot
+  # still requires a selector/title/window-id and its title fallback can target
+  # another process. Resolve the visible Tauri window from the verifier PID,
+  # then pass that exact OS window id to screenshot.
+  window_id="$(
+    "$T" list-windows --json |
+      node - "$VERIFY_TAURI_PID" 3<&0 <<'NODE'
+const fs = require('node:fs');
+
+const [pidText] = process.argv.slice(2);
+const pid = Number(pidText);
+let windows;
+try {
+  windows = JSON.parse(fs.readFileSync(3, 'utf8'));
+} catch (error) {
+  console.error(`window-inventory-json:${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+if (!Array.isArray(windows) || !Number.isInteger(pid)) {
+  console.error('window-inventory-shape');
+  process.exit(1);
+}
+const candidates = windows
+  .filter((window) => Number(window?.pid) === pid && window?.tauri === true)
+  .filter((window) => Number.isFinite(window?.width) && Number.isFinite(window?.height))
+  .filter((window) => window.width > 0 && window.height > 0)
+  .sort((a, b) => (b.width * b.height) - (a.width * a.height));
+if (candidates.length === 0 || !/^[0-9]+$/.test(String(candidates[0].windowId))) {
+  console.error(`no-owned-tauri-window:pid=${pidText}`);
+  process.exit(1);
+}
+process.stdout.write(String(candidates[0].windowId));
+NODE
+  )" || {
+    echo "Could not resolve a visible Tauri window for verifier PID $VERIFY_TAURI_PID" >&2
+    return 1
+  }
+  "$T" screenshot --window-id "$window_id" --output "$target" >"$target.stdout.log" 2>"$target.stderr.log"
   status=$?
   if [ "$status" -ne 0 ]; then
     cat "$target.stderr.log" >&2

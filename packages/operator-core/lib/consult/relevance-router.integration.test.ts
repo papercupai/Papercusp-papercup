@@ -571,6 +571,59 @@ describe('shared routing telemetry in the real invocation ledger', () => {
   });
 });
 
+describe('routeConsult — same-plan bar-critique party exclusions', () => {
+  const sourceOwner = 'bar-critique-source';
+  const forkOwner = 'bar-critique-fork';
+  const independentOwner = 'bar-critique-independent';
+  const question = 'bar critique lineage probe';
+  const lineageOwners = [forkOwner, independentOwner];
+  const partyKeyDeps: NonNullable<ConsultRouteDeps['getPartyKeys']> = async (_workspaceId, ownerIds) =>
+    new Map<string, string>(ownerIds.map((ownerId) =>
+      [ownerId, ownerId === forkOwner ? sourceOwner : ownerId] as const));
+
+  beforeEach(async () => {
+    await insertTurn(forkOwner, 0.01, DAY, { text: question });
+    await insertTurn(independentOwner, 0.15, DAY, { text: question });
+  });
+
+  afterEach(async () => {
+    await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${lineageOwners}::text[])`;
+  });
+
+  it('excludes a forked critic before qualified-candidate truncation', async () => {
+    const result = await routeConsult({
+      ...baseParams,
+      question,
+      subjectRef: question,
+      subjectRefs: [question],
+      excludePartyOwners: [sourceOwner],
+      turnLimit: 20,
+      maxQualified: 1,
+      maxCandidates: 1,
+    }, deps(0, { getPartyKeys: partyKeyDeps }));
+
+    expect(result.qualified.map((candidate) => candidate.ownerId)).toEqual([independentOwner]);
+    expect(result.snapshot.candidates.map((candidate) => candidate.ownerId)).toEqual([independentOwner]);
+  });
+
+  it('applies the same party exclusion to lexical fallback candidates', async () => {
+    const result = await routeConsult({
+      ...baseParams,
+      question,
+      subjectRef: question,
+      subjectRefs: [question],
+      excludePartyOwners: [sourceOwner],
+      turnLimit: 20,
+      maxQualified: 1,
+      maxCandidates: 1,
+    }, deps(null, { getPartyKeys: partyKeyDeps }));
+
+    expect(result.qualified).toEqual([]);
+    expect(result.snapshot.candidates.map((candidate) => candidate.ownerId)).toEqual([independentOwner]);
+    expect(result.snapshot.fallback).toBe('lexical');
+  });
+});
+
 describe('routeConsult — routing + blend', () => {
   it('routes to the similar+recent+verified owner; snapshot carries the D-008 shape', async () => {
     const r = await routeConsult(baseParams, deps(0));

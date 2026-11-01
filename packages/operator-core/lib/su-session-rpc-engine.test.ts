@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
 import { registerProjectedTool, unregisterProjectedToolsForPlugin, type ProjectedTool } from '@papercusp/tooldef';
@@ -58,6 +58,8 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => (
   modelArgsFor: (backend: string, model: string) => backend === 'codex' ? ['-m', model] : ['--model', model],
   ompCoreToolNames: () => ['tools:invoke'], ompResponsesCompatibilityEnv: () => ({}), recordSessionOwner: vi.fn(),
   resolveOmpInjectHookPath: () => '/configured/inject.ts', writeOmpSessionConfigDir: mocks.writeOmp,
+  nativeOmpExtensionArgs: (_backend: string, env: NodeJS.ProcessEnv) => env.PAPERCUSP_NATIVE_HOOK_FD === '3'
+    ? ['-e', '/owned/native-extension.mjs'] : [],
   suLaunchArgs: (backend: string) => ({ args: backend === 'codex'
     ? ['--dangerously-bypass-hook-trust']
     : ['--approval-mode', 'yolo', '--system-prompt', '/sealed/su.md'] }),
@@ -144,9 +146,18 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     return {};
   });
   const close = vi.fn(async () => { exit(); });
+  let authorityAgentHome: string | undefined;
+  if (backend === 'omp' && overrides.resolveRequestPrincipal) {
+    const dir = mkdtempSync(join(tmpdir(), 'pui-omp-owned-config-'));
+    nativeDirs.push(dir); authorityAgentHome = join(dir, 'agent'); mkdirSync(authorityAgentHome);
+    writeFileSync(join(authorityAgentHome, 'mcp.json'), JSON.stringify({ mcpServers: {
+      'papercusp-su': { url: 'http://127.0.0.1:3170/api/mcp', headers: { Authorization: 'Bearer private-config-token' } },
+    } }));
+    if (!overrides.resume) mocks.writeOmp.mockReturnValueOnce(relative(homedir(), dir));
+  }
   const nativeSession = backend === 'codex'
     ? { backend: 'codex' as const, source: 'adv_sessions' as const, ownerId: binding.ownerId, codexHome: '/configured/codex', rolloutId: 'native-codex', exactResumeSupported: true, missingReason: null }
-    : { backend: 'omp' as const, source: 'adv_sessions' as const, ownerId: binding.ownerId, agentHome: '/configured/omp', ompThreadId: 'native-omp', exactResumeSupported: true, missingReason: null };
+    : { backend: 'omp' as const, source: 'adv_sessions' as const, ownerId: binding.ownerId, agentHome: authorityAgentHome ?? '/configured/omp', ompThreadId: 'native-omp', exactResumeSupported: true, missingReason: null };
   const engine = startSuRpcEngine(boot, binding, {
     agentChatId: `chat-${backend}`, model: backend === 'codex' ? 'codex-model' : 'openai/omp-model',
     startupTimeoutMs: 500,
@@ -202,8 +213,25 @@ describe('OMP host-owned accepted-input authority', () => {
     await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn')).terminal;
     return f;
   }
+  it('upgrades the saved HTTP profile on resume without replacing the native identity', async () => {
+    const f = fixture('omp', { resume: true, resolveRequestPrincipal: async () => principal });
+    await f.engine.ready;
+    expect(f.engine.nativeSession()).toMatchObject({ backend: 'omp', ompThreadId: 'native-omp' });
+    expect(f.transport().args).toEqual(expect.arrayContaining(['--resume', 'native-omp', '-e', '/owned/native-extension.mjs']));
+    const config = JSON.parse(readFileSync(join(f.transport().env.PI_CODING_AGENT_DIR!, 'mcp.json'), 'utf8'));
+    expect(config.papercuspNativeMcp).toMatchObject({ mode: 'http', servers: { 'papercusp-su': {
+      headers: { Authorization: 'Bearer private-config-token' },
+    } } });
+    expect(mocks.writeOmp).not.toHaveBeenCalled();
+  });
   it('requires the exact root input and agent start, with a host-only credential and exact call', async () => {
     const f = await active();
+    expect(f.transport().args).toEqual(expect.arrayContaining(['-e', '/owned/native-extension.mjs']));
+    const config = JSON.parse(readFileSync(join(f.transport().env.PI_CODING_AGENT_DIR!, 'mcp.json'), 'utf8'));
+    expect(config).toMatchObject({ papercuspNativeMcp: { mode: 'http', servers: { 'papercusp-su': {
+      url: 'http://127.0.0.1:3170/api/mcp', headers: { Authorization: 'Bearer private-config-token' },
+    } } } });
+    expect(config.mcpServers).not.toHaveProperty('papercusp-su');
     f.emit(call); f.emit(root('another input')); f.emit({ type: 'agent_start' });
     expect(register).not.toHaveBeenCalled(); expect(observe).not.toHaveBeenCalled();
     f.emit(root());
@@ -215,10 +243,28 @@ describe('OMP host-owned accepted-input authority', () => {
     expect(input).not.toHaveProperty('admissions');
     await expect(input.resolveRuntimeBearer()).resolves.toBe('private-host-credential');
     f.emit(call);
+    expect(observe).not.toHaveBeenCalled(); // Rewritten stdout cannot supply original authority.
+    await f.transport().onNativeToolCall!({ nativeSessionId: 'native-omp', callId: 'exact-call',
+      tool: 'mcp__papercusp_su_omp_authority_fixture_read', arguments: { id: 'exact-report' } });
     expect(observe).toHaveBeenCalledWith({ nativeSessionId: 'native-omp', nativeInputId: input.nativeInputId,
       server: 'papercusp-su', callId: 'exact-call', tool: 'mcp__papercusp_su_omp_authority_fixture_read', arguments: { id: 'exact-report' } });
     expect(JSON.stringify({ env: f.transport().env, sent: f.sent, descriptor: f.engine.adapter.host.descriptor() }))
       .not.toContain('private-host-credential');
+  });
+  it('joins the private hook to accepted root input, and rejects changed originals and foreign sessions', async () => {
+    const f = await active();
+    const original = { nativeSessionId: 'native-omp', callId: 'hook-call',
+      tool: 'mcp__papercusp_su_omp_authority_fixture_read', arguments: { id: 'first' } };
+    const hook = f.transport().onNativeToolCall!;
+    const pending = hook(original);
+    await Promise.resolve(); expect(observe).not.toHaveBeenCalled();
+    f.emit(root()); f.emit({ type: 'agent_start' });
+    await pending; expect(observe).toHaveBeenCalledOnce();
+    await expect(hook({ ...original, arguments: { id: 'changed' } })).rejects.toThrow('changed its original');
+    await expect(hook({ ...original, nativeSessionId: 'other' })).rejects.toThrow('no matching owner input');
+    expect(observe).toHaveBeenCalledOnce();
+    f.emit({ type: 'agent_end' });
+    await expect(hook(original)).rejects.toThrow('no matching owner input');
   });
   it.each(['end', 'interrupt', 'close', 'exit'] as const)('withdraws on %s and ignores late calls', async end => {
     const f = await active(); f.emit(root()); f.emit({ type: 'agent_start' });

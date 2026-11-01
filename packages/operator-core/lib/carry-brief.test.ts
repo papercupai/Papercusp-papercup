@@ -589,6 +589,44 @@ describe('note-citation hydration + post-note delta (cold-carry-system-hardening
     ).toEqual([]);
   });
 
+  it('resolves a three-digit EI prefix to one held long id and leaves ambiguous aliases unresolved', () => {
+    const held = [
+      {
+        id: 'EI-25812519922184353',
+        title: 'Held item',
+        body: null,
+        harness: 'papercusp',
+        checkpoint: null,
+      },
+    ];
+    const fullId = { kind: 'work-item' as const, id: 'EI-25812519922184353' };
+
+    // The short token used to hydrate the separate literal EI-258 row, which
+    // was terminal even though the held long item remained blocked.
+    const refs = detectCarryNoteRefs('resume EI-258', held);
+    expect(refs).toEqual([fullId]);
+    expect(detectCarryNoteRefs('resume EI-258 (EI-25812519922184353)', held)).toEqual([fullId]);
+    const sections = renderCitedRefLivenessSections([
+      `${refs[0]!.id} [bug/blocked @su-abc]: "active runtime blocker"`,
+    ]);
+    expect(sections.join('\n')).toContain('EI-25812519922184353 [bug/blocked');
+    expect(sections.join('\n')).not.toContain('STALE-NOTE CONTRADICTION');
+    expect(sections.join('\n')).not.toContain('⚠ TERMINAL');
+
+    // A standalone short EI id remains literal when no held long id claims it.
+    expect(detectCarryNoteRefs('inspect EI-258', [])).toEqual([
+      { kind: 'work-item', id: 'EI-258' },
+    ]);
+
+    // Multiple held rows sharing the prefix do not authorize a guessed status.
+    expect(
+      detectCarryNoteRefs('resume EI-258', [
+        ...held,
+        { ...held[0]!, id: 'EI-25899999999999999' },
+      ]),
+    ).toEqual([]);
+  });
+
   it('P-002: hydrates the ids the note cites via the injected seam and renders them under the note', async () => {
     const brief = await buildCarryBrief(
       'su-abc',

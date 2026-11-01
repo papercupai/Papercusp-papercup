@@ -388,16 +388,35 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
       }
     }
     phase.current = 'scope-read';
+    let incompleteDeclaredScope = false;
     for (const path of [...new Set(requested)].slice(0, 8)) {
-      if (!safePath(path)) { brief.exclusions.push('Rejected unsafe, hidden, or unbounded stored task path.'); continue; }
+      if (!safePath(path)) {
+        brief.exclusions.push('Rejected unsafe, hidden, or unbounded stored task path.');
+        if (!scopeFromText) incompleteDeclaredScope = true;
+        continue;
+      }
       try {
         const abs = await realpath(join(root, path));
-        if (!inside(root, abs)) { brief.exclusions.push('Rejected task path escaping its registered repository.'); continue; }
+        if (!inside(root, abs)) {
+          brief.exclusions.push('Rejected task path escaping its registered repository.');
+          if (!scopeFromText) incompleteDeclaredScope = true;
+          continue;
+        }
         if ((await stat(abs)).isDirectory()) {
           const { stdout } = await effects.exec('rg', ['--files', '--', path], { cwd: root });
-          brief.scope.paths.push(...stdout.split(/\r?\n/).filter(Boolean));
+          const expanded = stdout.split(/\r?\n/).filter(Boolean);
+          if (expanded.length === 0 && !scopeFromText) incompleteDeclaredScope = true;
+          brief.scope.paths.push(...expanded);
         } else brief.scope.paths.push(path);
-      } catch { brief.exclusions.push('A stored task path is unavailable.'); }
+      } catch {
+        brief.exclusions.push('A stored task path is unavailable.');
+        if (!scopeFromText) incompleteDeclaredScope = true;
+      }
+    }
+    if (incompleteDeclaredScope) {
+      brief.scope.paths = [];
+      brief.exclusions.push('The declared task scope is incomplete; no partial file brief was emitted.');
+      return finish();
     }
     if (requested.length > 8 || brief.scope.paths.length > MAX_FILES) brief.exclusions.push('Additional task paths omitted by the bounded selection.');
     const candidates = [...new Set(brief.scope.paths)].filter(safePath).sort().slice(0, MAX_FILES);

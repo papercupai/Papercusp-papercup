@@ -7,6 +7,7 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { build, type BuildOptions } from 'esbuild';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -22,6 +23,7 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
   const calls: Frame[] = [];
   const frames: Frame[] = [];
   const observedAtCall: Frame[][] = [];
+  const hookCalls: Frame[] = [];
   const servers = new Set<Server>();
   const http = createServer((request, response) => {
     const server = new Server({ name: 'native-carrier', version: '1' }, { capabilities: { tools: {} } });
@@ -84,12 +86,26 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
     child = spawn(process.env.PAPERCUSP_OMP_BINARY || 'omp', ['--mode', 'rpc', '--no-extensions', '--no-skills',
       '--no-rules', '--no-session', '--extension', join(root, 'native-extension.mjs'), '--extension', provider,
       '--model', 'native-carrier-fixture/proof'], {
-      cwd: root, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: root, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
       env: { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8',
         PI_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_SESSION_DIR: join(root, 'sessions'),
         // A stale parent identity must never replace the live callback context.
         PAPERCUSP_NATIVE_SESSION_ID: 'inherited-parent', CODEX_SESSION_ID: 'unrelated-codex',
+        PAPERCUSP_NATIVE_HOOK_FD: '3',
       },
+    });
+    const hook = child.stdio[3] as Duplex;
+    let hookBuffer = '';
+    hook.setEncoding('utf8');
+    hook.on('data', (chunk: string) => {
+      hookBuffer += chunk;
+      let end: number;
+      while ((end = hookBuffer.indexOf('\n')) >= 0) {
+        const { id, ...call } = JSON.parse(hookBuffer.slice(0, end));
+        hookBuffer = hookBuffer.slice(end + 1);
+        hookCalls.push(call);
+        hook.write(JSON.stringify({ id, ok: true }) + '\n');
+      }
     });
     let stdout = '';
     let launchError: Error | undefined;
@@ -129,7 +145,9 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
     expect(routes).toContain('xd://mcp__papercusp_su_echo');
     child.stdin.write(`${JSON.stringify({ id: 'proof', type: 'prompt', message: 'Run the two local calls.' })}\n`);
     await waitFor(() => frames.find(frame => frame.type === 'agent_end'));
-    expect(frames.filter(frame => frame.type === 'tool_execution_end').map(frame => frame.isError)).toEqual([false, false]);
+    expect(frames.filter(frame => frame.type === 'tool_execution_end').map(frame => frame.isError), `${stderr}; hookCalls=${hookCalls.length}`).toEqual([false, false]);
+    expect(hookCalls).toEqual([1, 2].map(index => ({ nativeSessionId, callId: `native-call-${index}`,
+      tool: 'mcp__papercusp_su_echo', arguments: { value: `proof-${index}` } })));
     expect(calls.map(call => call.arguments)).toEqual([{ value: 'proof-1' }, { value: 'proof-2' }]);
     expect(calls.map(call => call._meta)).toEqual([
       expect.objectContaining({ threadId: nativeSessionId, callId: 'native-call-1' }),

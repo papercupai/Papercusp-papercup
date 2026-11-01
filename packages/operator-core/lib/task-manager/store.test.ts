@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { classifyTerminalClose, closeTask, getTask, listTasks, markEndedUnobserved, markRecoveredFromJobLog, markStranded,
+import { classifyTerminalClose, closeTask, getTask, listTasks, listTasksPage, markEndedUnobserved, markRecoveredFromJobLog, markStranded,
   reopenStrandedTask, type CloseTaskEffectsForTask } from './store';
 import type { TaskTerminalProvenance } from './types';
 
@@ -252,11 +252,11 @@ describe('closeTask terminal event', () => {
  * window of 200. These pin that the predicate actually reaches SQL, and that it uses
  * the operator that treats the prefix literally.
  */
-function recordingSql() {
+function recordingSql(results: Array<Record<string, unknown>> = []) {
   const calls: Array<{ text: string; args: unknown[] }> = [];
   const sql = ((strings: TemplateStringsArray, ...args: unknown[]) => {
     calls.push({ text: Array.from(strings).join('?'), args });
-    return Promise.resolve([]);
+    return Promise.resolve(results);
   }) as unknown as Sql;
   (sql as unknown as { array: (v: unknown) => unknown }).array = (v: unknown) => v;
   return { sql, calls, text: () => calls.map((c) => c.text).join('\n') };
@@ -376,5 +376,32 @@ describe('listTasks exact systemd identity filters', () => {
     expect(text()).toContain("detail #>> '{terminalProvenance,invocationId}' = ?");
     expect(calls.flatMap((c) => c.args)).toContain(invocationId);
     expect(text()).not.toContain(invocationId);
+  });
+});
+
+describe('listTasksPage completeness metadata', () => {
+  it('reports the exact filtered population separately from the capped rows', async () => {
+    const { sql, calls, text } = recordingSql([
+      {
+        task_id: 'task-page-row', workspace_id: 'ws-1', root_task_id: 'task-page-row',
+        class: 'bash-job', title: 'visible page row', argv: [], launched_by: 'su-test',
+        confined: true, state: 'running', detail: {}, matching_count: 231,
+      },
+    ]);
+
+    const page = await listTasksPage({ workspaceId: 'ws-1', includeEnded: true, limit: 200 }, sql);
+
+    expect(page).toMatchObject({ totalCount: 231, limit: 200 });
+    expect(page.rows).toHaveLength(1);
+    expect(text()).toContain('COUNT(*) OVER() AS matching_count');
+    expect(calls.at(-1)?.args.at(-1)).toBe(200);
+  });
+
+  it('reports zero matches when the bounded query returns no rows', async () => {
+    const { sql } = recordingSql();
+
+    await expect(listTasksPage({ workspaceId: 'ws-1', limit: 200 }, sql)).resolves.toMatchObject({
+      rows: [], totalCount: 0, limit: 200,
+    });
   });
 });

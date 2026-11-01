@@ -4731,7 +4731,23 @@ export async function main(
   // its terminal marker, and consume it once even if settlement throws.
   const settledCustody = proofCustody;
   proofCustody = null;
-  try { settledCustody?.finish(); }
+  try {
+    const custodyResult = settledCustody?.finish();
+    if (settledCustody && custodyResult?.status !== 'complete') {
+      summary.anyFinalizationError = true;
+      const manifest = custodyResult?.manifest;
+      const gaps = Array.isArray(manifest?.gaps) ? manifest.gaps : [];
+      const detail = {
+        status: custodyResult?.status ?? 'unknown',
+        bytesRead: Number.isSafeInteger(manifest?.bytesRead) ? manifest.bytesRead : null,
+        limits: manifest?.limits && typeof manifest.limits === 'object' ? manifest.limits : null,
+        gapCount: gaps.length,
+        gaps: gaps.slice(0, 20),
+        omittedGaps: Math.max(0, gaps.length - 20),
+      };
+      console.error(`TEST_FILE_FINALIZATION_ERROR phase=native-proof-custody detail=${JSON.stringify(detail)}`);
+    }
+  }
   catch (error) {
     summary.anyFinalizationError = true;
     console.error(`TEST_FILE_FINALIZATION_ERROR phase=native-proof-custody detail=${JSON.stringify(String(error?.stack ?? error))}`);

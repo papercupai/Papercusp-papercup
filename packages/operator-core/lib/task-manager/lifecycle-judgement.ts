@@ -764,10 +764,9 @@ export function lifecycleCandidateConditionKey(taskId: string): string {
 }
 
 export function lifecycleJudgeIntervalKey(workspaceId: string, nowMs: number): string {
-  // v5 teaches terminal-residue judges to use exact scope evidence rather than
-  // a taskId-filtered live read that excludes the terminal ledger row. Do not
-  // dedupe this guidance update onto a v4 judge.
-  return `process-lifecycle-judge:v5:${workspaceId}:${Math.floor(nowMs / LIFECYCLE_JUDGE_INTERVAL_MS)}`;
+  // v6 distinguishes task-ledger page completeness from kernel scan completeness.
+  // Do not dedupe this guidance update onto an older judge.
+  return `process-lifecycle-judge:v6:${workspaceId}:${Math.floor(nowMs / LIFECYCLE_JUDGE_INTERVAL_MS)}`;
 }
 
 const TERMINAL_RESIDUE_VERIFICATION_GUIDANCE =
@@ -777,6 +776,7 @@ const SYSTEMD_DBUS_ABSENCE_GUIDANCE =
   'systemctl --user show/list-units from capability:bash cannot reach the user manager D-Bus; a command may print "Failed to connect to bus: Operation not permitted", while wc -l or grep -c masks it as exit 0 with a false zero. Treat systemd readings from that sandbox as unknown, never unit-absence evidence. For any capability:bash probe used to prove absence, query a known-present positive control in the same call; if the control is missing or the command reports an error, discard every negative result and leave the verdict unknown.';
 
 const UNACCOUNTED_GONE_VERIFICATION_GUIDANCE = [
+  'Task-ledger page completeness is separate from the live kernel scan: live.ownedTruncated and live.foreignTruncated do not cover tasks[]. When using an unfiltered tasks[] list to infer that a ledger task is absent, require taskPage.truncated=false; if it is true or missing, use an exact taskId filter or leave absence unknown. taskPage.total is the exact matching ledger row count and taskPage.returned equals tasks.length.',
   'Before a gone verdict for unaccounted residue, validate the unfiltered census: require live.degraded=false, live.ownedTruncated=false, live.foreignTruncated=false, live.unaccountedCount ?? live.unaccounted matching live.unaccountedGroups.length, and live.unaccountedPidCount ?? live.unaccountedPids matching the sum of the listed group PIDs. The complete census must contain every listed unaccounted group and PID. Missing, unhealthy, truncated, or inconsistent census data leaves the result unknown; never coerce a missing group list to [].',
   'Select the same-kind control path by addressability, not by live.unaccountedGroups.length. A control is addressable only when the complete, self-consistent census contains at least one pc-*.scope entry with a non-empty scopeUnit; scopeUnit is the exact processes:list selector and cgroupPath is output metadata only.',
   'When an addressable control exists, require a known-present same-kind unaccounted control from the census, read it twice with processes:list { scopeUnit, live:true, includeEnded:true }, and confirm tasks[].ageSec advances by elapsed wall time. An unaccounted scope has no live owning ledger row, so the ageSec-bearing row is terminal and the default tasks[] filter would hide it. If that available control fails its two-read proof, leave the result unknown; do not use the cgroupfs path to work around a failed read.',

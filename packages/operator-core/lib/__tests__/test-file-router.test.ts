@@ -3774,6 +3774,47 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     }
   });
 
+  it('refuses green when native proof custody returns a partial packet and reports bounded limit details', async () => {
+    const keys = ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE'];
+    const saved = keys.map(key => [key, process.env[key]] as const);
+    for (const key of keys) delete process.env[key];
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const gaps = Array.from({ length: 21 }, (_, index) => `group-0:aux-${index}:custody limit`);
+    const limits = { objects: 16384, bytes: 64 * 1024 * 1024, objectBytes: 16 * 1024 * 1024 };
+    const finish = vi.fn(() => {
+      expect(logSpy.mock.calls.some(([line]: unknown[]) => String(line).startsWith('TEST_FILE_RESULT'))).toBe(false);
+      return { status: 'partial', manifest: { gaps, bytesRead: limits.bytes, limits } };
+    });
+    try {
+      const code = await main(['packages/operator-core/lib/__tests__/test-file-router.test.ts'], {
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        runVitestListImpl: async () => ({ status: 0, signal: null,
+          stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', error: null, timedOut: false }),
+        runCapturedTestProcessImpl: async () => ({ status: 0, signal: null,
+          stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n', stderr: '', error: null, timedOut: false }),
+        createRouterProofCustodyImpl: () => ({ childEvidence: () => [], declare() {}, observe() {}, finish }),
+      });
+      expect(code).toBe(3);
+      expect(finish).toHaveBeenCalledOnce();
+      const output = logSpy.mock.calls.map(([line]: unknown[]) => String(line)).join('\n');
+      const errors = errSpy.mock.calls.map(([line]: unknown[]) => String(line)).join('\n');
+      expect(output).toContain('status=passed');
+      expect(output).toContain('finalizationError=true');
+      const diagnosticPrefix = 'TEST_FILE_FINALIZATION_ERROR phase=native-proof-custody detail=';
+      const diagnosticLine = errors.split('\n').find(line => line.startsWith(diagnosticPrefix));
+      expect(diagnosticLine).toBeDefined();
+      expect(JSON.parse(diagnosticLine!.slice(diagnosticPrefix.length))).toMatchObject({
+        status: 'partial', bytesRead: limits.bytes, limits, gapCount: gaps.length,
+        gaps: gaps.slice(0, 20), omittedGaps: 1,
+      });
+    } finally {
+      stdout.mockRestore();
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
+
   it('refuses an overall green when Vitest reports a timed-out fork worker after passing tests', async () => {
     const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
     const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;

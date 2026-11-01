@@ -60,6 +60,7 @@
  */
 import type { Sql } from 'postgres';
 import { randomUUID } from 'node:crypto';
+import { lineagePartyKeys } from '../acceptance-author-identity';
 import { D006_TRANSCRIPT_RULE, restrictedOwnerSql, restrictedTranscriptSummary } from '../personal-vault/transcript-exclusion';
 import {
   proseProfilePredicateSql,
@@ -469,6 +470,8 @@ export interface ConsultRouteParams {
   /** Additional owners excluded from candidacy — D-007(7) manual cascade: a
    * decliner is excluded on the requester's re-call, never auto-cascaded. */
   excludeOwners?: string[];
+  /** Existing party owners; all related identities are removed before scoring and truncation. */
+  excludePartyOwners?: string[];
   /** Stage-1 floor on `relevance` (default DEFAULT_RELEVANCE_FLOOR). */
   relevanceFloor?: number;
   simFloor?: number;
@@ -498,6 +501,8 @@ export interface ConsultRouteDeps {
   monotonicNow?: () => number;
   measure?: <T>(stage: ExpertiseRoutingStage, work: () => Promise<T>) => Promise<T>;
   getSql: () => Sql;
+  /** Optional test seam; production defaults to the shared acceptance lineage mapper. */
+  getPartyKeys?: (workspaceId: string, ownerIds: string[]) => Promise<ReadonlyMap<string, string>>;
   /** null = no embedder available this host right now (honest degrade). */
   embed: ConsultEmbedder | null;
   embeddingProfile: ProseProfileSelection | null;
@@ -899,14 +904,40 @@ function annotateLiveness(
  */
 async function restrictedExpertsWithheld(
   sql: unknown,
-  params: Pick<ConsultRouteParams, 'workspaceId' | 'requesterId' | 'excludeOwners'>,
+  params: Pick<ConsultRouteParams, 'workspaceId' | 'requesterId' | 'excludeOwners' | 'excludePartyOwners'>,
 ): Promise<RoutingSnapshot['withheld']> {
   const summary = await restrictedTranscriptSummary(sql as Sql, {
     workspaceId: params.workspaceId,
-    excludeOwners: [params.requesterId, ...(params.excludeOwners ?? [])],
+    excludeOwners: [
+      params.requesterId,
+      ...(params.excludeOwners ?? []),
+      ...(params.excludePartyOwners ?? []),
+    ],
   });
   if (summary.owners === 0) return undefined;
   return { restricted_turns: summary.turns, restricted_owners: summary.owners, rule: D006_TRANSCRIPT_RULE };
+}
+
+/** Remove every candidate identity in the same party lineage as an excluded
+ * source before ranking, qualification, or either output bound is applied. */
+async function filterPartyLineageRows<T extends { owner: string }>(
+  rows: T[],
+  params: Pick<ConsultRouteParams, 'workspaceId' | 'excludePartyOwners'>,
+  sql: Sql,
+  deps: ConsultRouteDeps,
+): Promise<T[]> {
+  const excludedOwners = [...new Set(
+    (params.excludePartyOwners ?? []).map((owner) => owner.trim()).filter(Boolean),
+  )];
+  if (excludedOwners.length === 0 || rows.length === 0) return rows;
+  const ownerIds = [...new Set([...excludedOwners, ...rows.map((row) => row.owner)])];
+  const partyKeys = await (deps.getPartyKeys ??
+    ((workspaceId, ids) => lineagePartyKeys(ids, { sql, workspaceId })))(
+    params.workspaceId,
+    ownerIds,
+  );
+  const excludedParties = new Set(excludedOwners.map((owner) => partyKeys.get(owner) ?? owner));
+  return rows.filter((row) => !excludedParties.has(partyKeys.get(row.owner) ?? row.owner));
 }
 
 export type ExpertiseRoutingStage = 'disclosure' | 'embedding' | 'transcripts' | 'verification' | 'authorship' | 'liveness' | 'ranking' | 'evidence';
@@ -1076,7 +1107,11 @@ async function routeConsultCore(
           FROM harness_shared.session_turns
          WHERE (workspace_id = ${params.workspaceId} OR workspace_id = 'default')
            AND owner IS NOT NULL
-           AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
+           AND owner <> ALL(${[
+             params.requesterId,
+             ...(params.excludeOwners ?? []),
+             ...(params.excludePartyOwners ?? []),
+           ]}::text[])
            AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
            AND ${leg.match}
            AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
@@ -1092,7 +1127,6 @@ async function routeConsultCore(
         ts: string | Date | null;
         lexicalRank: number;
       }>;
-      lexicalRows = relativeLexicalRanks(lexicalRows);
     } catch {
       // A partially migrated host may not have text_tsv yet. The semantic
       // instrument is already degraded, so preserve an honest empty result and
@@ -1100,6 +1134,8 @@ async function routeConsultCore(
       // turning a recoverable fallback miss into a consult failure.
       lexicalRows = [];
     }
+    lexicalRows = await filterPartyLineageRows(lexicalRows, params, sql as Sql, deps);
+    lexicalRows = relativeLexicalRanks(lexicalRows);
 
     const byOwner = new Map<string, { ranks: number[]; newestTs: number | null; evidence: TurnEvidence[] }>();
     for (const r of lexicalRows) {
@@ -1201,7 +1237,11 @@ async function routeConsultCore(
        AND text_embedding IS NOT NULL
        AND ${proseProfilePredicateSql(tx, deps.embeddingProfile, 'text_embedding_profile', 'text_embedding_mode')}
        AND owner IS NOT NULL
-       AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
+       AND owner <> ALL(${[
+         params.requesterId,
+         ...(params.excludeOwners ?? []),
+         ...(params.excludePartyOwners ?? []),
+       ]}::text[])
        AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
        AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
        AND ${notRestricted}
@@ -1249,7 +1289,7 @@ async function routeConsultCore(
     sim: number;
     subjectText: string;
   }>;
-  const turnRows = fetchedTurnRows;
+  const turnRows = await filterPartyLineageRows(fetchedTurnRows, params, sql as Sql, deps);
 
   if (turnRows.length === 0) {
     return {

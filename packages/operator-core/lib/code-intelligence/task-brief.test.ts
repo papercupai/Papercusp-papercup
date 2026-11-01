@@ -369,6 +369,31 @@ describe('P018 scoped incident hypotheses', () => {
     expect(vi.mocked(deps.pack).mock.calls.length).toBe(packCallsBefore);
     expect(absent.exclusions.join(' ')).toContain('names no existing repository path');
   });
+  it('withholds a partial declared scope instead of publishing the same surviving files for different items', async () => {
+    const root = fixture();
+    const sharedPaths = [
+      'apps/operator/scripts/resume-spawn-live.ts',
+      'packages/operator-core/lib/events/await/resume-spawn-live.integration.test.ts',
+    ];
+    mkdirSync(join(root, 'apps/operator/scripts'), { recursive: true });
+    mkdirSync(join(root, 'packages/operator-core/lib/events/await'), { recursive: true });
+    writeFileSync(join(root, sharedPaths[0]!), 'export function resumeSpawnLive() { return true; }');
+    writeFileSync(join(root, sharedPaths[1]!), 'import { resumeSpawnLive } from "../../../scripts/resume-spawn-live"; resumeSpawnLive();');
+    const deps = depsFor(root);
+    const items = [
+      { id: 'WI-lint', missing: 'lib/agent-identities/identity-surface-lint.test.ts' },
+      { id: 'WI-census', missing: 'lib/agent-identities/identity-surface-census.test.ts' },
+    ];
+    for (const item of items) {
+      const result = await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: {
+        id: item.id, harness: 'h', payload: { paths: [item.missing, ...sharedPaths] },
+      } }, deps);
+      expect(result?.taskBrief).toMatchObject({ status: 'unknown', scope: { harness: 'h', paths: [] },
+        sourceFingerprint: null, files: [], excerpts: [] });
+      expect(result?.taskBrief.exclusions.join(' ')).toContain('declared task scope is incomplete');
+    }
+    expect(deps.pack).not.toHaveBeenCalled();
+  });
 });
 const fixture =() => { const dir = mkdtempSync(join(tmpdir(), 'task-brief-')); dirs.push(dir); return dir; };
 afterEach(() => dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })));

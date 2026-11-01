@@ -925,6 +925,15 @@ export default defineTool({
                 {
                   workItemId: input.id,
                   setterId: identity.ownerId,
+                  ...(ctx.idempotencyKey
+                    ? {
+                        requestKey: `work_items:set_blocker:park:${JSON.stringify([
+                          ctx.idempotencyKey,
+                          input.id,
+                          input.ref ?? '',
+                        ])}`,
+                      }
+                    : {}),
                   question: input.summary?.trim() || input.ref || input.id,
                   defaultIfUnanswered: input.defaultIfUnanswered,
                   decideBy: input.decideBy,

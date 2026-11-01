@@ -163,6 +163,10 @@ export function rollupToolFailures(
  *
  * `invalid-input` / `role-not-allowed` are excluded from BOTH numerator and
  * denominator: they are caller errors, not tool health.
+ * `stale_tool_contract` is also caller-side: the MCP host rejects the stale
+ * tools/list generation before the wrapper handler runs, so its telemetry row
+ * can lack the dispatch-wrapper marker and otherwise become a false 100% cohort
+ * after successful wrapper rows are excluded.
  */
 export const TOOL_FAILURE_RATE_SQL = `
 SELECT tool_name,
@@ -176,6 +180,8 @@ FROM harness_shared.tool_invocations
 WHERE workspace_id = $1
   AND invoked_at > now() - (($2)::int || ' minutes')::interval
   AND ${DISPATCH_WRAPPER_EXCLUSION_SQL}
+  AND error_code IS DISTINCT FROM 'stale_tool_contract'
+  AND COALESCE(error_message, '') NOT ILIKE 'stale_tool_contract:%'
 GROUP BY tool_name
 HAVING count(*) FILTER (WHERE status IN ('ok','error','timeout')) > 0
 `;

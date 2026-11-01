@@ -3201,10 +3201,16 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: true });
   });
 
-  it('honors a configured terminal preference on resume', async () => {
+  it('forces process-per-window on resume even when TERMINAL names gnome-terminal', async () => {
     vi.stubEnv('TERMINAL', 'gnome-terminal');
     resolveResumeTargetMock.mockResolvedValue(dead);
     await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }, ctx);
+    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: true });
+  });
+
+  it('preserves an explicit terminal preference for fresh launches', async () => {
+    vi.stubEnv('TERMINAL', 'gnome-terminal');
+    await launchAgent.handler({ brief: 'fresh work' }, ctx);
     expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: false });
   });
 

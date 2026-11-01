@@ -1,12 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sql = vi.hoisted(() => vi.fn());
+const boundedPgReadTxn = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql }),
 }));
+vi.mock('./pg-read-query', () => ({
+  boundedPgReadTxn: (...args: unknown[]) => boundedPgReadTxn(...args),
+}));
 
 import {
+  ACTION_PROOF_READ_ACQUIRE_TIMEOUT_MS,
+  ACTION_PROOF_READ_LOCK_TIMEOUT_MS,
+  ACTION_PROOF_READ_TIMEOUT_MS,
   hasPotentialActionClaim,
   normalizeActionToolName,
   provesActionClaim,
@@ -16,7 +23,14 @@ import {
 } from './carry-surface-action-proof';
 import { lintCarrySurfaceProvenance } from './carry-surface-provenance-lint';
 
-beforeEach(() => sql.mockReset());
+beforeEach(() => {
+  sql.mockReset();
+  boundedPgReadTxn.mockReset();
+  boundedPgReadTxn.mockImplementation(async (read: unknown) => {
+    if (typeof read !== 'function') throw new Error('expected bounded read callback');
+    return (read as (tx: unknown) => Promise<unknown>)(sql);
+  });
+});
 
 describe('carry-surface same-turn action proof', () => {
   it('normalizes telemetry tool names and extracts concrete targets only', () => {
@@ -69,7 +83,7 @@ describe('carry-surface same-turn action proof', () => {
     expect(filtered?.matches[0]?.kind).toBe('unverified-action-claim');
   });
 
-  it('reads bounded successful rows scoped to concrete workspace and spawn', async () => {
+  it('reads successful rows in a bounded transaction scoped to concrete workspace and spawn', async () => {
     sql.mockResolvedValue([{ tool_name: 'coord:send', args_json: { to: ['su-bce40c51'] } }]);
     const rows = await readSuccessfulActionInvocations({
       workspaceId: 'ws-1',
@@ -83,6 +97,16 @@ describe('carry-surface same-turn action proof', () => {
     expect(query).not.toContain('coord_owner_id =');
     expect(query).toContain("status = 'ok'");
     expect(query).toContain('LIMIT');
+    expect(boundedPgReadTxn).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        client: sql,
+        timeoutMs: ACTION_PROOF_READ_TIMEOUT_MS,
+        acquireTimeoutMs: ACTION_PROOF_READ_ACQUIRE_TIMEOUT_MS,
+        lockTimeoutMs: ACTION_PROOF_READ_LOCK_TIMEOUT_MS,
+        acquirePool: 'org-admin',
+      }),
+    );
   });
 
   it('falls back to the stable coordination owner when the spawn has no current rows', async () => {
@@ -117,7 +141,7 @@ describe('carry-surface same-turn action proof', () => {
 
   it('fails soft on missing scope and ledger errors', async () => {
     await expect(readSuccessfulActionInvocations({ workspaceId: 'ws-1' })).resolves.toBeNull();
-    sql.mockImplementationOnce(() => Promise.reject(new Error('ledger unavailable')));
+    boundedPgReadTxn.mockRejectedValueOnce(new Error('bounded ledger read expired'));
     await expect(
       readSuccessfulActionInvocations({ workspaceId: 'ws-1', spawnId: 'spawn-1', coordOwnerId: 'su-owner' }),
     ).resolves.toBeNull();

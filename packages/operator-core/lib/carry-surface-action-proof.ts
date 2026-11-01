@@ -16,9 +16,13 @@
  */
 
 import type { ProvenanceLintMatch, ProvenanceLintResult } from './carry-surface-provenance-lint';
+import { boundedPgReadTxn } from './pg-read-query';
 
 export const ACTION_PROOF_TOOL_NAMES = ['events:await', 'coord:send'] as const;
 export const ACTION_PROOF_SCAN_ROWS = 64;
+export const ACTION_PROOF_READ_TIMEOUT_MS = 5_000;
+export const ACTION_PROOF_READ_ACQUIRE_TIMEOUT_MS = 2_000;
+export const ACTION_PROOF_READ_LOCK_TIMEOUT_MS = 1_000;
 
 export interface SuccessfulActionInvocation {
   toolName: string | null | undefined;
@@ -162,44 +166,57 @@ export async function readSuccessfulActionInvocations(
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
-    const readRows = async (
-      scope: 'spawn' | 'owner',
-    ): Promise<Array<{ tool_name: string | null; args_json: unknown }>> => {
-      if (scope === 'spawn') {
-        const scopedSpawnId = spawnId;
-        if (!scopedSpawnId) return [];
-        return await sql<Array<{ tool_name: string | null; args_json: unknown }>>`
+    // This is optional provenance evidence; it must never hold the mandatory
+    // carry-note write behind an unbounded pool acquire, lock wait, or ledger
+    // scan. Keep both the narrow spawn lookup and owner fallback in one bounded
+    // read-only transaction. On deadline, callers receive null and retain the
+    // provenance warning instead of waiting on proof that may never arrive.
+    const scopedRows = await boundedPgReadTxn(async (tx) => {
+      const readRows = async (
+        scope: 'spawn' | 'owner',
+      ): Promise<Array<{ tool_name: string | null; args_json: unknown }>> => {
+        if (scope === 'spawn') {
+          const scopedSpawnId = spawnId;
+          if (!scopedSpawnId) return [];
+          return await tx<Array<{ tool_name: string | null; args_json: unknown }>>`
+            SELECT tool_name, args_json
+              FROM harness_shared.tool_invocations
+             WHERE workspace_id = ${workspaceId}
+               AND spawn_id = ${scopedSpawnId}
+               AND status = 'ok'
+               AND tool_name = ANY(${[...ACTION_PROOF_TOOL_NAMES]})
+             ORDER BY invoked_at DESC
+             LIMIT ${limit}
+          `;
+        }
+        const scopedOwnerId = coordOwnerId;
+        if (!scopedOwnerId) return [];
+        return await tx<Array<{ tool_name: string | null; args_json: unknown }>>`
           SELECT tool_name, args_json
             FROM harness_shared.tool_invocations
            WHERE workspace_id = ${workspaceId}
-             AND spawn_id = ${scopedSpawnId}
+             AND coord_owner_id = ${scopedOwnerId}
              AND status = 'ok'
              AND tool_name = ANY(${[...ACTION_PROOF_TOOL_NAMES]})
            ORDER BY invoked_at DESC
            LIMIT ${limit}
         `;
-      }
-      const scopedOwnerId = coordOwnerId;
-      if (!scopedOwnerId) return [];
-      return await sql<Array<{ tool_name: string | null; args_json: unknown }>>`
-        SELECT tool_name, args_json
-          FROM harness_shared.tool_invocations
-         WHERE workspace_id = ${workspaceId}
-           AND coord_owner_id = ${scopedOwnerId}
-           AND status = 'ok'
-           AND tool_name = ANY(${[...ACTION_PROOF_TOOL_NAMES]})
-         ORDER BY invoked_at DESC
-         LIMIT ${limit}
-      `;
-    };
+      };
 
-    // Prefer the narrow spawn key. An empty result means this continuation's
-    // action rows were stamped under another/ephemeral spawn, so consult the
-    // stable owner key before declaring the ledger empty. A non-empty result
-    // is authoritative for the current spawn and avoids widening the proof
-    // surface unnecessarily.
-    const rows = spawnId ? await readRows('spawn') : [];
-    const scopedRows = rows.length > 0 || !coordOwnerId ? rows : await readRows('owner');
+      // Prefer the narrow spawn key. An empty result means this continuation's
+      // action rows were stamped under another/ephemeral spawn, so consult the
+      // stable owner key before declaring the ledger empty. A non-empty result
+      // is authoritative for the current spawn and avoids widening the proof
+      // surface unnecessarily.
+      const rows = spawnId ? await readRows('spawn') : [];
+      return rows.length > 0 || !coordOwnerId ? rows : await readRows('owner');
+    }, {
+      client: sql,
+      timeoutMs: ACTION_PROOF_READ_TIMEOUT_MS,
+      acquireTimeoutMs: ACTION_PROOF_READ_ACQUIRE_TIMEOUT_MS,
+      lockTimeoutMs: ACTION_PROOF_READ_LOCK_TIMEOUT_MS,
+      acquirePool: 'org-admin',
+    });
     return scopedRows.map((row) => ({ toolName: row.tool_name, args: row.args_json }));
   } catch {
     return null;

@@ -15830,6 +15830,8 @@ export function hostThroughPty(o) {
         appendHostEvent(ownerId, 'duplicate-delivery-id', {
           state: duplicateState,
           mode: msg.mode,
+          ...(typeof msg.routineId === 'string' && msg.routineId ? { routineId: msg.routineId } : {}),
+          ...(Number.isFinite(msg.fireNumber) ? { fireNumber: msg.fireNumber } : {}),
           refreshedPendingTurn,
           refreshedPendingCarryRespawn,
         });

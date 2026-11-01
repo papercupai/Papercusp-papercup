@@ -1923,6 +1923,8 @@ describe("native OMP capability selection", () => {
       expect(nativeOmpExtensionArgs(backend, env, "linux", () => true)).toEqual([]);
     }
     expect(nativeOmpExtensionArgs("omp", {}, "linux", () => true)).toEqual([]);
+    expect(nativeOmpExtensionArgs("omp", { PAPERCUSP_NATIVE_HOOK_FD: "3" }, "linux", () => true)).toEqual(args);
+    expect(nativeOmpExtensionArgs("codex", { PAPERCUSP_NATIVE_HOOK_FD: "3" }, "linux", () => true)).toEqual([]);
     expect(nativeOmpExtensionArgs("omp", env, "win32", () => true)).toEqual([]);
     expect(nativeOmpExtensionArgs("omp", { ...env, WSL_INTEROP: "1" }, "linux", () => true)).toEqual([]);
     expect(() => nativeOmpExtensionArgs("omp", env, "linux", () => false)).toThrow("bundle missing");

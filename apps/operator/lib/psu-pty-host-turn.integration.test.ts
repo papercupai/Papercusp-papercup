@@ -882,6 +882,8 @@ it(
         mode: 'carry-respawn' as const,
         ownerId,
         deliveryId: 'loop-fire-checkpoint-retry-1',
+        routineId: 'rt-loop-checkpoint-retry',
+        fireNumber: 15,
       };
       expect(await injectIntoHostWithConfirmation(sock, {
         ...envelope,
@@ -905,7 +907,15 @@ it(
         data: freshText,
         systemPromptAddendum: freshAddendum,
       })).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
-      expect(readFileSync(eventLog, 'utf8')).toContain('"refreshedPendingCarryRespawn":true');
+      expect(readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)))
+        .toContainEqual(expect.objectContaining({
+        kind: 'duplicate-delivery-id',
+        state: 'pending',
+        mode: 'carry-respawn',
+        routineId: 'rt-loop-checkpoint-retry',
+        fireNumber: 15,
+        refreshedPendingCarryRespawn: true,
+      }));
 
       const respawnDeadline = Date.now() + 5000;
       while (mintedAddenda.length === 0 && Date.now() < respawnDeadline) await sleep(20);

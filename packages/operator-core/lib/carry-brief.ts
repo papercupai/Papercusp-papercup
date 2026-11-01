@@ -1140,13 +1140,26 @@ export function detectCarryNoteRefs(
   // this session's already-loaded held rows; require one unique suffix match,
   // and leave collisions unresolved rather than making a status claim.
   const heldWorkItemSuffixes = new Map<string, Set<string>>();
+  // EI snowflake ids are sometimes shortened to their first three digits in
+  // carry prose (for example EI-25812519922184353 → EI-258). The literal short
+  // id can name a different terminal issue, so use the held row only when the
+  // prefix identifies exactly one held long id; leave collisions unresolved.
+  const heldWorkItemPrefixes = new Map<string, Set<string>>();
   for (const held of heldItems) {
     const match = /^WI-(\d{12,})$/i.exec(held.id);
-    if (!match) continue;
-    const alias = `WI-${match[1]!.slice(-3)}`;
-    const ids = heldWorkItemSuffixes.get(alias) ?? new Set<string>();
-    ids.add(held.id.toUpperCase());
-    heldWorkItemSuffixes.set(alias, ids);
+    if (match) {
+      const alias = `WI-${match[1]!.slice(-3)}`;
+      const ids = heldWorkItemSuffixes.get(alias) ?? new Set<string>();
+      ids.add(held.id.toUpperCase());
+      heldWorkItemSuffixes.set(alias, ids);
+    }
+    const eiMatch = /^EI-(\d{12,})$/i.exec(held.id);
+    if (eiMatch) {
+      const alias = `EI-${eiMatch[1]!.slice(0, 3)}`;
+      const ids = heldWorkItemPrefixes.get(alias) ?? new Set<string>();
+      ids.add(held.id.toUpperCase());
+      heldWorkItemPrefixes.set(alias, ids);
+    }
   }
   for (const match of noteText.matchAll(CARRY_NOTE_REF)) {
     const token = match[0];
@@ -1156,6 +1169,11 @@ export function detectCarryNoteRefs(
         const suffixMatches = heldWorkItemSuffixes.get(id);
         if (suffixMatches?.size === 1) id = [...suffixMatches][0]!;
         else if (suffixMatches && suffixMatches.size > 1) continue;
+      }
+      if (/^EI-\d{1,3}$/i.test(id)) {
+        const prefixMatches = heldWorkItemPrefixes.get(id);
+        if (prefixMatches?.size === 1) id = [...prefixMatches][0]!;
+        else if (prefixMatches && prefixMatches.size > 1) continue;
       }
       const key = `work-item:${id}`;
       if (!seen.has(key)) {

@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
     value: { maxSimultaneousAgents: 16, concurrencyFloor: 1 } as Record<string, unknown>,
   },
   governorWindow: { value: null as number | null },
+  backgroundWorkers: { enabled: false },
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -24,12 +25,7 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   // 'overwatch' included so the B-10 flag-gate (which runs AFTER the known-role
   // check) is reachable in the gate tests below.
   AGENT_ROLES: ['scoper', 'worker', 'validator', 'reviewer', 'operator', 'cup', 'kettle', 'papercup-deep'],
-  // operator-spawn now transitively imports ../inference-gateway/stall-waker-loop
-  // (gateway-rate-limit-stall-autowake) → ../agent-tools/turn/interrupt, which calls
-  // defineTool() at module load. The full agent-mcp module is mocked away here, so this
-  // pass-through stub (the repo-standard pattern; cf. events/emit.test.ts) lets the
-  // tool module evaluate without pulling in the real tool registry. The test never
-  // invokes turn:interrupt — it only needs the import graph to load.
+  // Keep transitive agent-tool declarations inert in this focused spawn harness.
   defineTool: (def: unknown) => def,
 }));
 // @papercusp/flags itself stays REAL (FLAG_DEFAULTS / FLAGS); only the server-side
@@ -91,6 +87,13 @@ vi.mock('./spawn-tree', () => ({
   spawnAccountRouteFromLaunch: vi.fn(() => null),
 }));
 vi.mock('../inference-gateway/spawn-env', () => ({ resolveSpawnGatewayEnv: vi.fn(async () => ({})) }));
+vi.mock('../background-workers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../background-workers')>()),
+  backgroundWorkersEnabled: vi.fn(() => h.backgroundWorkers.enabled),
+}));
+vi.mock('../inference-gateway/stall-waker-loop', () => ({
+  ensureStallWakerLoop: vi.fn(),
+}));
 // Per-hive override resolver (P-012/P-013) is a PG-backed spawn dep like its siblings —
 // mock it to a no-op so the unit tests don't touch PG. vi.mock intercepts the dynamic
 // import operator-spawn uses, so the BLUEPRINT_LOCAL_ROOT producer is a clean no-op here.
@@ -154,6 +157,8 @@ import { resolveProject } from '../harness-core';
 import { loadHarnessRegistry } from '../harness-registry';
 import { spawnInvokeOnceWithFallback } from '../dbos/orchestrator-runner';
 import { resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
+import { backgroundWorkersEnabled } from '../background-workers';
+import { ensureStallWakerLoop } from '../inference-gateway/stall-waker-loop';
 import { emitAwaitedEvent } from '../events/await/engine';
 import { recordSpawn, finishSpawn } from './spawn-tree';
 import { superviseCrash } from './supervision';
@@ -205,6 +210,7 @@ beforeEach(() => {
   runningCount = 0;
   dupRows = [];
   h.ownerSteering.value = null;
+  h.backgroundWorkers.enabled = false;
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   // One template-tag fn answers every query by shape; `begin` (the atomic
   // admission tx, P-017/P-039) hands the same tag back as the tx.
@@ -952,6 +958,37 @@ describe('spawnAgentInHarness — backend-aware gateway account routing', () => 
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe('spawnAgentInHarness — stall-waker process ownership', () => {
+  beforeEach(() => {
+    vi.mocked(getFlag).mockImplementation(async (key: string) =>
+      key === FLAGS.INFERENCE_GATEWAY
+        ? true
+        : FLAG_DEFAULTS[key as keyof typeof FLAG_DEFAULTS] ?? false,
+    );
+  });
+
+  it('does not start the poll loop from a request-only spawn process', async () => {
+    h.backgroundWorkers.enabled = false;
+
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: FIXTURE_ROLE });
+
+    expect(res.ok).toBe(true);
+    expect(backgroundWorkersEnabled).toHaveBeenCalledTimes(1);
+    expect(ensureStallWakerLoop).not.toHaveBeenCalled();
+  });
+
+  it('allows the background-worker spawn fallback to start the poll loop', async () => {
+    h.backgroundWorkers.enabled = true;
+
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: FIXTURE_ROLE });
+
+    expect(res.ok).toBe(true);
+    expect(backgroundWorkersEnabled).toHaveBeenCalledTimes(1);
+    expect(ensureStallWakerLoop).toHaveBeenCalledTimes(1);
+    expect(ensureStallWakerLoop).toHaveBeenCalledWith('ws-1');
   });
 });
 

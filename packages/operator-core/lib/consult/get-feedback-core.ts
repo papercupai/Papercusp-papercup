@@ -42,6 +42,7 @@ import { selectConsultEvidenceSource } from './consult-dispatch';
 import { consultCurrentReviewContext, consultResponderVerbMenu } from './responder-verb-menu';
 import { sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, type SourceAuditCascadeMeta } from './grading-cascade';
 import { proseProfilePredicateSql } from '../search/prose-vector-dims';
+import { lineagePartyKeys } from '../acceptance-author-identity';
 
 /** P-006 archive-first retrieval floor: a closed_answered consult whose
  * question similarity clears this is served from the archive (create +
@@ -210,10 +211,46 @@ export async function validateBarCritiquePlanOrigin(
   return rows.length ? null : { error: 'bar_critique_requires_plan', hint };
 }
 
+/** Identities already reserved by a same-plan critique. plans:start reads the
+ * first answer author, while consult_state.responder_id is the source whose
+ * transcript may have been forked; retain both ends of that lineage. */
+async function priorBarCritiqueLineageOwners(
+  sql: Sql,
+  workspaceId: string,
+  planSlug: string,
+): Promise<string[]> {
+  const rows = await sql<Array<{ responder_id: string | null; author_id: string | null }>>`
+    SELECT cs.responder_id, ans.author_id
+      FROM harness_shared.consult_state cs
+      LEFT JOIN LATERAL (
+        SELECT m.author_id
+          FROM harness_shared.consult_post_meta m
+         WHERE m.workspace_id = cs.workspace_id
+           AND m.conversation_id = cs.conversation_id
+           AND m.kind = 'answer'
+         ORDER BY m.created_at ASC, m.post_id ASC
+         LIMIT 1
+      ) ans ON true
+     WHERE cs.workspace_id = ${workspaceId}
+       AND cs.origin_task_ref = ${planSlug}
+       AND cs.routing->>'policy' = ${BAR_CRITIQUE_POLICY}
+       AND (cs.state = 'active' OR (cs.state = 'closed_answered' AND cs.closed_at IS NOT NULL))
+     ORDER BY cs.conversation_id ASC
+  `;
+  const owners = rows.flatMap(({ responder_id, author_id }) =>
+    [responder_id, author_id]
+      .map((owner) => owner?.trim())
+      .filter((owner): owner is string => Boolean(owner)),
+  );
+  return [...new Set(owners)];
+}
+
 export interface GetFeedbackDeps {
   /** Internal recovery context, never an externally supplied conversation id. */
   acceptedRequest?: { conversation_id: string; thread_id: string; leaseToken: string };
   getSql: () => Sql;
+  /** Optional test seam; production defaults to the shared acceptance lineage mapper. */
+  getPartyKeys?: (workspaceId: string, ownerIds: string[]) => Promise<ReadonlyMap<string, string>>;
   route: (params: {
     workspaceId: string;
     requesterId: string;
@@ -225,6 +262,8 @@ export interface GetFeedbackDeps {
     /** Unexpanded public-manual document refs; candidates cannot clear the floor with these present. */
     unresolvedSubjectRefs?: string[];
     excludeOwners?: string[];
+    /** Existing party owners that must be excluded before router truncation. */
+    excludePartyOwners?: string[];
   }) => Promise<RouteResult>;
   /** Opens the kind='consult' conversation (bound to openConversation in prod). */
   open: (input: {
@@ -1188,12 +1227,21 @@ export async function getFeedbackCore(
   //    independence gate fold into ONE existing excludeOwners seam. The last
   //    leg closes EI-21469207548268721: familiarity is a disqualifier when the
   //    task is to critique an instrument the owner already graded against.
-  const [graderExclusions, priorNonHelpful] = await Promise.all([
+  const [graderExclusions, priorNonHelpful, priorCritiqueOwners] = await Promise.all([
     rubricGraderExclusions(sql, req.workspaceId, req.question),
     priorNonHelpfulResponders(sql, req.workspaceId, req.requesterId, req.question),
+    req.policy === BAR_CRITIQUE_POLICY && originRef
+      ? priorBarCritiqueLineageOwners(sql, req.workspaceId, originRef)
+      : Promise.resolve([]),
   ]);
   const excludeOwners = [
-    ...new Set([...(req.excludeOwners ?? []), ...lineageOwners, ...graderExclusions, ...priorNonHelpful]),
+    ...new Set([
+      ...(req.excludeOwners ?? []),
+      ...lineageOwners,
+      ...graderExclusions,
+      ...priorNonHelpful,
+      ...priorCritiqueOwners,
+    ]),
   ];
   // Only NEW exclusions this call contributed (vs. what the caller already
   // named) are worth a note — an explicit req.excludeOwners re-call should
@@ -1209,7 +1257,33 @@ export async function getFeedbackCore(
       : {}),
     ...(req.unresolvedSubjectRefs?.length ? { unresolvedSubjectRefs: req.unresolvedSubjectRefs } : {}),
     ...(excludeOwners.length ? { excludeOwners } : {}),
+    ...(priorCritiqueOwners.length ? { excludePartyOwners: priorCritiqueOwners } : {}),
   });
+  // The production router excludes these parties before qualification and
+  // truncation. Keep the same boundary around alternate route implementations.
+  if (priorCritiqueOwners.length > 0) {
+    const candidateOwners = [
+      ...new Set([
+        ...priorCritiqueOwners,
+        ...route.qualified.map((candidate) => candidate.ownerId),
+        ...route.snapshot.candidates.map((candidate) => candidate.ownerId),
+      ]),
+    ];
+    const partyKeys = await (deps.getPartyKeys ??
+      ((workspaceId, ownerIds) => lineagePartyKeys(ownerIds, { sql, workspaceId })))(
+      req.workspaceId,
+      candidateOwners,
+    );
+    const excludedParties = new Set(
+      priorCritiqueOwners.map((ownerId) => partyKeys.get(ownerId) ?? ownerId),
+    );
+    const isPriorCritiqueParty = (ownerId: string) =>
+      excludedParties.has(partyKeys.get(ownerId) ?? ownerId);
+    route.qualified = route.qualified.filter((candidate) => !isPriorCritiqueParty(candidate.ownerId));
+    route.snapshot.candidates = route.snapshot.candidates.filter(
+      (candidate) => !isPriorCritiqueParty(candidate.ownerId),
+    );
+  }
   // The production router applies these exclusions in SQL, but the core also
   // accepts alternate route implementations (for example a degraded or test
   // seam). Enforce the participant boundary here as well so a stale route

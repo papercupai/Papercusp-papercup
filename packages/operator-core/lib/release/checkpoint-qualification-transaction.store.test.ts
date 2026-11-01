@@ -29,6 +29,8 @@ import {
   waitQualificationTransaction,
   waitStoredQualification,
   commitPreparedCheckpointSelection,
+  replacePreparedSelectionAfterRepairHeadAdvance,
+  supersedePreparedSelectionBeforeStart,
   preparedSelectionNamesAttemptCandidate,
   type PreparedCheckpointSelectionRecord,
 } from './checkpoint-qualification-transaction';
@@ -38,6 +40,7 @@ import {
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
   markFrozenRepairFixerDispatched,
+  markFrozenRepairFixerFinished,
   parseFrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 
@@ -1348,6 +1351,68 @@ describe('committing a prepared selection honours the attempt candidate (WI-6554
     }).transaction });
     expect(await commitPreparedCheckpointSelection(target, selectionFor('repair-head-1'), expected)).toBe(true);
     expect(written(statements).preparedSelection).toEqual(selectionFor('repair-head-1'));
+  });
+
+  it('atomically replans a committed selection when only the ready repairHead advanced before the suite', async () => {
+    const initial = markFrozenCandidateVerificationRed(createFrozenCandidateQueue({
+      candidate: 'frozen-candidate-1', qualificationAttemptId: 'attempt-1', base: 'base-1', nowMs: 50,
+      affectedTestProofGroup: 'group-1' }), { failingTests: ['lib/a.test.ts'], nowMs: 60 });
+    const dispatched = markFrozenRepairFixerDispatched(initial, { spawnId: 'fixer-1', nowMs: 70 });
+    const oldQueue = markFrozenRepairFixerFinished(dispatched, {
+      spawnId: 'fixer-1', repairHead: 'repair-head-1', nowMs: 80,
+    });
+    const newQueue = markFrozenRepairAdmitted(oldQueue, { atMs: 90, actor: 'su-test',
+      source: { ref: 'head-2', sha: 'repair-head-2' }, fromRepairHead: oldQueue.repairHead,
+      toRepairHead: 'repair-head-2', paths: ['lib/a.test.ts'], unchanged: [], blobs: { 'lib/a.test.ts': 'blob-2' } });
+    const previous = { ...selectionFor('repair-head-1'), queue: oldQueue };
+    const replacement = { ...selectionFor('repair-head-2'), queue: newQueue };
+    const base = attachedOn('repair-head-1');
+    const runner = { ...base.currentPhysicalRunner!, phase: 'materializing' as const,
+      evidenceRefs: [...base.currentPhysicalRunner!.evidenceRefs, 'checkpoint-run:run-1'] };
+    const current = { ...base, runId: 'run-1', currentPhysicalRunner: runner, preparedSelection: previous };
+    const { statements } = transactionHarness({ qualificationTransaction: current, repair_queue: newQueue });
+
+    expect(await replacePreparedSelectionAfterRepairHeadAdvance(
+      target, previous, replacement, newQueue, 'run-1',
+    )).toBe(true);
+    const writtenTransaction = written(statements);
+    expect(writtenTransaction).toMatchObject({ candidate: 'repair-head-2', repairHead: 'repair-head-2',
+      preparedSelection: replacement,
+      currentPhysicalRunner: { candidate: 'repair-head-2', phase: 'materializing' } });
+    expect(writtenTransaction.evidenceRefs).toContain('prepared-selection-replanned:repair-head-1:repair-head-2');
+  });
+
+  it('retires a stale prepared selection as repair-in-progress when queue phase changed', async () => {
+    const initial = markFrozenCandidateVerificationRed(createFrozenCandidateQueue({
+      candidate: 'frozen-candidate-1', qualificationAttemptId: 'attempt-1', base: 'base-1', nowMs: 50,
+      affectedTestProofGroup: 'group-1' }), { failingTests: ['lib/a.test.ts'], nowMs: 60 });
+    const dispatched = markFrozenRepairFixerDispatched(initial, { spawnId: 'fixer-1', nowMs: 70 });
+    const oldQueue = markFrozenRepairFixerFinished(dispatched, {
+      spawnId: 'fixer-1', repairHead: 'repair-head-1', nowMs: 80,
+    });
+    const nextQueue = markFrozenRepairAdmitted(oldQueue, { atMs: 90, actor: 'su-test',
+      source: { ref: 'head-2', sha: 'repair-head-2' }, fromRepairHead: oldQueue.repairHead,
+      toRepairHead: 'repair-head-2', paths: ['lib/a.test.ts'], unchanged: [], blobs: { 'lib/a.test.ts': 'blob-2' } });
+    const waitingQueue = { ...nextQueue, phase: 'awaiting-fixer' as const };
+    const previous = { ...selectionFor('repair-head-1'), queue: oldQueue };
+    const base = attachedOn('repair-head-1');
+    const runner = { ...base.currentPhysicalRunner!, phase: 'materializing' as const,
+      evidenceRefs: [...base.currentPhysicalRunner!.evidenceRefs, 'checkpoint-run:run-1'] };
+    const current = { ...base, runId: 'run-1', currentPhysicalRunner: runner, preparedSelection: previous };
+    const { statements } = transactionHarness({ qualificationTransaction: current, repair_queue: waitingQueue });
+
+    const result = await supersedePreparedSelectionBeforeStart(target, {
+      previous, expectedQueue: waitingQueue, runId: 'run-1', nowMs: 100,
+    });
+    expect(result.status).toBe('updated');
+    const serialized = updates(statements)[0]!.values
+      .find((value): value is string => typeof value === 'string' && value.includes('"attemptId"'))!;
+    const updated = JSON.parse(serialized) as Record<string, unknown>;
+    expect(updated.phase).toBe('waiting');
+    expect(updated.outcome).toEqual({ kind: 'pre-suite-no-verdict', reason: 'repair-in-progress' });
+    expect(updated.currentPhysicalRunner).toBeNull();
+    expect(updated.preparedSelection).toBeUndefined();
+    expect(updated.evidenceRefs).toContain('prepared-selection-superseded-before-start:repair-head-1');
   });
 
   // WI-6554700010030147: a running admission pre-check rewrites the queue row every few seconds.

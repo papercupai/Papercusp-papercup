@@ -166,16 +166,17 @@ export interface HostTailVerdict {
 }
 
 /**
- * Only a pending TURN delivery can be a stuck turn. The host stamps every
- * `duplicate-delivery-id` with the delivery's `mode`; a `carry-respawn` or control delivery
- * (reset, recycle, mcp-reconnect, shutdown) that pends does not block the next wake turn, and
- * its own terminal events (`respawn-carry-dropped`/`-delivered`) never write `turn-delivered`.
- * Measured 2026-10-11 (P-012): su-ef6886ef's tail held 2 pending carry-respawn deliveries closed
- * by `respawn-carry-dropped`; it was judged pending-turn-stuck, yet its first wake turn was
- * delivered on poll 1. A missing `mode` predates the stamp and stays a turn.
+ * A pending TURN delivery can be a stuck turn. Cold loop wakes may use a lifecycle transport
+ * (`carry-respawn`, `reset`, or `recycle`) to create that turn, so the host also stamps duplicate
+ * delivery events with `routineId`; those loop-origin deliveries count regardless of transport.
+ * An ordinary carry-respawn/control delivery still does not block the next wake turn. Measured
+ * 2026-10-11 (P-012): su-ef6886ef's tail held 2 pending carry-respawn deliveries closed by
+ * `respawn-carry-dropped`; its first wake turn was delivered on poll 1. A missing `mode` predates
+ * the stamp and stays a turn.
  */
 function isTurnDelivery(e: HostTailEvent): boolean {
-  return e.mode === undefined || e.mode === null || e.mode === 'turn';
+  return e.mode === undefined || e.mode === null || e.mode === 'turn' ||
+    (typeof e.routineId === 'string' && e.routineId.trim().length > 0);
 }
 
 /**

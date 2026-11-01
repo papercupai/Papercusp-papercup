@@ -286,6 +286,35 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(events.every((event) => event.itemIndex === 1 && event.itemCount === 1)).toBe(true);
   });
 
+  it('records only slow phase markers for single-item writes', async () => {
+    const logs: string[] = [];
+    const ctx = { ...baseCtx, log: (message: string) => logs.push(message) } as never;
+    const body = 'Checkpoint write with a deliberately slow store phase.';
+
+    setWorkItemCheckpointWithPrior.mockImplementation(async (_ref: unknown, note: string | null | undefined, opts: unknown) => {
+      const transform = (opts as { transform?: (prior: string | null, incoming: string | null | undefined) => string | null | undefined })
+        .transform;
+      await new Promise((resolve) => setTimeout(resolve, 2_100));
+      return { stored: transform?.(null, note) ?? note ?? null, priorLength: 0 };
+    });
+
+    const result = await one({ id: 'WI-7', checkpoint: body }, ctx);
+    expect(result.ok).toBe(true);
+
+    const prefix = '[work_items:checkpoint:phase] ';
+    const events = logs
+      .filter((message) => message.startsWith(prefix))
+      .map((message) => JSON.parse(message.slice(prefix.length)) as Record<string, unknown>);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      phase: 'store-write-transaction',
+      state: 'completed',
+      traceMode: 'slow-only',
+      thresholdMs: 2_000,
+    });
+    expect(events[0].elapsedMs).toBeGreaterThanOrEqual(2_000);
+  });
+
   it('refuses the historical staging-candidate instruction before calling the checkpoint store', async () => {
     readFrozenRepairMarker.mockReturnValue({
       candidate: 'c'.repeat(40),

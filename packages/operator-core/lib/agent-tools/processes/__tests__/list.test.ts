@@ -12,8 +12,9 @@ import type { ReconcileTickResult } from '../../../task-manager/reconcile-tick';
 import { summarizeReconcile, type ReconcileResult } from '../../../task-manager/reconcile';
 import type { TaskRow } from '../../../task-manager/types';
 
-const { LOCAL_SUPERUSER_BEARER } = vi.hoisted(() => ({
+const { LOCAL_SUPERUSER_BEARER, listTasksMock } = vi.hoisted(() => ({
   LOCAL_SUPERUSER_BEARER: '8c91f74d2e6a4bbf90f44a71d142d095',
+  listTasksMock: vi.fn(async (_filter?: unknown) => []),
 }));
 
 vi.mock('../../../task-manager/enabled', () => ({
@@ -21,7 +22,11 @@ vi.mock('../../../task-manager/enabled', () => ({
 }));
 
 vi.mock('../../../task-manager/store', () => ({
-  listTasks: vi.fn(async () => []),
+  listTasks: listTasksMock,
+  listTasksPage: vi.fn(async (filter: { limit?: number } = {}) => {
+    const rows = await listTasksMock(filter);
+    return { rows, totalCount: rows.length, limit: filter.limit ?? 200 };
+  }),
   residueTaskId: vi.fn((path: string) => `residue:${path}`),
 }));
 
@@ -76,6 +81,36 @@ function tickResult(
 
 function makeTx() {
   return vi.fn(async () => []);
+}
+
+function pageTaskRow(taskId: string): TaskRow {
+  return {
+    taskId,
+    workspaceId: 'default',
+    rootTaskId: taskId,
+    class: 'bash-job',
+    title: taskId,
+    argv: [],
+    launchedBy: 'su-test',
+    workItemId: null,
+    planSlug: null,
+    parentTaskId: null,
+    confined: true,
+    state: 'running',
+    startedAt: '2026-10-31T00:00:00.000Z',
+    lastSeenAt: '2026-10-31T00:00:00.000Z',
+    lastMemoryBytes: null,
+    peakMemoryBytes: null,
+    cpuUsec: null,
+    pidsCurrent: 1,
+    scopeUnit: `${taskId}.scope`,
+    memoryMaxBytes: null,
+    deadlineAt: null,
+    exitCode: null,
+    exitReason: null,
+    logPath: null,
+    detail: {},
+  };
 }
 
 describe('processes:list structured output', () => {
@@ -292,6 +327,41 @@ describe('processes:list structured output', () => {
         sample: 'checkpoint target',
       },
     ]);
+  });
+
+  it('reports task-ledger pagination independently of a complete kernel scan', async () => {
+    const { listTasksPage } = await import('../../../task-manager/store');
+    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+    const rows = Array.from({ length: 200 }, (_, index) => pageTaskRow(`task-page-${index}`));
+    vi.mocked(listTasksPage).mockResolvedValueOnce({ rows, totalCount: 231, limit: 200 });
+    mockResolvedOnceTyped(vi.mocked(reconcileTick), tickResult());
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { live: true },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'processes-list-task-page-truncation-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: makeTx(),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(dispatched.result?.structuredContent).toMatchObject({
+      taskPage: { limit: 200, returned: 200, total: 231, truncated: true },
+      live: { ownedTruncated: false, foreignTruncated: false },
+    });
   });
 
   it('overlays dry-run terminal reconciliation verdicts without mutating ledger rows', async () => {

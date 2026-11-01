@@ -148,9 +148,9 @@ export function parseFactRef(ref: string): ParsedFactRef | null {
 export function parsePlanDecisionRef(ref: string): { slug: string; decisionId: string } | null {
   const idx = ref.lastIndexOf('#');
   if (idx <= 0) return null;
-  const slug = ref.slice(0, idx);
+  const slug = stripPlanEntityPrefix(ref.slice(0, idx));
   const decisionId = ref.slice(idx + 1);
-  if (!/^D-\d+$/.test(decisionId)) return null;
+  if (!slug || !/^D-\d+$/.test(decisionId)) return null;
   return { slug, decisionId };
 }
 
@@ -158,10 +158,15 @@ export function parsePlanDecisionRef(ref: string): { slug: string; decisionId: s
 export function parsePlanItemRef(ref: string): { slug: string; itemId: string } | null {
   const idx = ref.lastIndexOf('#');
   if (idx <= 0) return null;
-  const slug = ref.slice(0, idx);
+  const slug = stripPlanEntityPrefix(ref.slice(0, idx));
   const itemId = ref.slice(idx + 1);
-  if (!/^P-\d+$/.test(itemId)) return null;
+  if (!slug || !/^P-\d+$/.test(itemId)) return null;
   return { slug, itemId };
+}
+
+/** Plan citations may carry the entity prefix; storage keys contain only the slug. */
+function stripPlanEntityPrefix(slug: string): string {
+  return slug.startsWith('plan:') ? slug.slice('plan:'.length) : slug;
 }
 
 /**

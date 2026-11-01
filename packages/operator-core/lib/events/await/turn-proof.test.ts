@@ -176,7 +176,7 @@ describe('judgeHostTail (D-007: one tail judge for P-006 and P-007)', () => {
     expect(judge([delivered(5), delivered(10), delivered(20)]).stuckPending).toBeNull();
   });
 
-  it('counts only pending TURN deliveries: a pending carry-respawn or control delivery is not a stuck turn', () => {
+  it('counts pending loop-origin lifecycle deliveries but excludes unrelated carry-respawns and controls', () => {
     const pendingMode = (min: number, mode: string) => ({ ...pending(min), mode });
     // The measured false alarm (P-012, su-ef6886ef): two pending carry-respawn deliveries closed by
     // respawn-carry-dropped; the host's first wake turn was delivered on poll 1.
@@ -189,6 +189,14 @@ describe('judgeHostTail (D-007: one tail judge for P-006 and P-007)', () => {
     expect(judge(carryTail).stuckPending).toBeNull();
     for (const mode of ['reset', 'recycle', 'mcp-reconnect', 'shutdown']) {
       expect(judge([pendingMode(5, mode), pendingMode(20, mode), pendingMode(40, mode)]).stuckPending).toBeNull();
+    }
+    // A cold loop fire may travel through a lifecycle mode, but its routineId ties the pending
+    // host receipt to the turn that must follow it. Count those retries for every cold transport.
+    for (const mode of ['carry-respawn', 'reset', 'recycle']) {
+      const loopPending = [5, 20, 40].map((min) => ({
+        ...pendingMode(min, mode), routineId: 'rt-loop-cold', fireNumber: 15,
+      }));
+      expect(judge(loopPending).stuckPending).toEqual({ repolls: 3, oldestAtMs: START + 5 * MIN });
     }
     // Explicit turn deliveries still report; so does a tail predating the mode stamp (no mode).
     expect(judge([pendingMode(5, 'turn'), pendingMode(20, 'turn')]).stuckPending).toEqual({

@@ -20,6 +20,16 @@ const RUNNER = join(REPO_ROOT, 'scripts/run-operator-e2e-isolated.sh');
 const SHARED = 'postgresql://shared-user:pw@shared-host:5432/papercusp';
 const ISOLATED = 'postgresql://iso-user:pw@127.0.0.1:59999/throwaway';
 const ISOLATED_WS = 'verify-tauri-isolated-99';
+const READY_SEED_SPEC_FILES = [
+  'adv-conversations-sessions.spec.ts',
+  'chat-streaming.spec.ts',
+  'cupboard-identity-statements-native.spec.mts',
+  'inbox-ack-persistence.native.spec.mts',
+  'owner-question-delivery.native.spec.mts',
+  'quick-access.native.spec.mts',
+  'reports-work-fullscreen.native.spec.mts',
+  'support-workflow-native.spec.mts',
+];
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -118,7 +128,7 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
       '      malformed) printf \'%s\' \'invalid collection JSON\' > "$PLAYWRIGHT_JSON_OUTPUT_FILE"; exit 0 ;;',
       '      stdout-prefix) echo "CHROMIUM_NETLOG /tmp/fixture-netlog.json" ;;',
       '    esac',
-      '    node -e \'const fs=require("node:fs");fs.writeFileSync(process.env.E2E_FIXTURE_VITE_CWD+".selection.json",JSON.stringify({argv:process.argv.slice(1),cwd:process.cwd()}));if(!process.env.PLAYWRIGHT_JSON_OUTPUT_FILE)throw new Error("missing JSON output file");fs.writeFileSync(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE,JSON.stringify({suites:[{title:"fixture.spec.ts",specs:[{title:"fixture selected",tests:[{projectName:"chromium"}]}]}]}))\' -- "$@"',
+      '    node -e \'const fs=require("node:fs");fs.writeFileSync(process.env.E2E_FIXTURE_VITE_CWD+".selection.json",JSON.stringify({argv:process.argv.slice(1),cwd:process.cwd()}));if(!process.env.PLAYWRIGHT_JSON_OUTPUT_FILE)throw new Error("missing JSON output file");const file=process.env.E2E_FIXTURE_SPEC_FILE??"fixture.spec.ts";fs.writeFileSync(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE,JSON.stringify({suites:[{title:file,file,specs:[{title:"fixture selected",file,tests:[{projectName:"chromium"}]}]}]}))\' -- "$@"',
       '    exit 0',
       '  fi',
       'done',
@@ -478,6 +488,38 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(result.out).toContain('invalid tested input: ../outside-source');
     expect(existsSync(marker)).toBe(false);
     expect(result.recorded).toBeNull();
+  });
+
+  it('keeps every declared ready-seed E2E spec in the selected-spec preflight registry', () => {
+    const e2eDir = join(REPO_ROOT, 'apps/operator/e2e');
+    const readySeedDeclaration = /VERIFY_TAURI_ISOLATED_SEED=ready|VERIFY_TAURI_(?:ISOLATED_)?SEED[^\r\n]{0,120}\.toBe\(['"]ready['"]\)/;
+    const declared = readdirSync(e2eDir)
+      .filter(file => /\.spec\.[cm]?[jt]sx?$/.test(file))
+      .filter(file => readySeedDeclaration.test(readFileSync(join(e2eDir, file), 'utf8')))
+      .sort();
+    expect(declared).toEqual([...READY_SEED_SPEC_FILES].sort());
+    const runner = readFileSync(RUNNER, 'utf8');
+    for (const file of READY_SEED_SPEC_FILES) expect(runner).toContain(`'${file}'`);
+  });
+
+  it.each(READY_SEED_SPEC_FILES)('refuses selected ready-seed spec %s before starting the native rig', specFile => {
+    const f = fixture(0);
+    const marker = join(f.dir, 'rig-started');
+    writeFileSync(f.rig, `#!/usr/bin/env bash\ntouch "${marker}"\nexit 0\n`);
+    const result = run(f, [`e2e/${specFile}`], { E2E_FIXTURE_SPEC_FILE: specFile });
+    expect(result.status, result.out).toBe(2);
+    expect(result.out).toContain('VERIFY_TAURI_ISOLATED_SEED=ready');
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('admits a selected ready-seed spec when the isolated ready seed is configured', () => {
+    const f = fixture(0);
+    const result = run(f, ['e2e/chat-streaming.spec.ts'], {
+      VERIFY_TAURI_ISOLATED_SEED: 'ready',
+      E2E_FIXTURE_SPEC_FILE: 'chat-streaming.spec.ts',
+    });
+    expect(result.status, result.out).toBe(0);
+    expect(result.recorded?.env.isolatedSeed).toBe('ready');
   });
 
   it('preflights default full-suite native prerequisites before starting the desktop', () => {
