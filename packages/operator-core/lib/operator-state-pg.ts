@@ -21,6 +21,7 @@
  * continue to use the plaintext `payload` JSONB column unchanged.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { TransactionSql } from 'postgres';
 import { activeWorkspaceId } from './workspace-registry';
 import { ENCRYPTED_TABLES, getDbEncryptionKey } from './db-encryption';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -577,6 +578,9 @@ export async function updateOperatorState<T>(
   defaultValue: T,
   mutator: (current: T) => T,
   wsOverride?: string,
+  // Database-only companion writes share this transaction and its rollback.
+  // Keep network calls and sync notifications outside the row lock.
+  afterWrite?: (tx: TransactionSql, previous: Readonly<T>, next: Readonly<T>, workspaceId: string) => Promise<void>,
 ): Promise<T> {
   const { sql } = getOrgPg();
   const ws = wsOverride ?? activeWorkspaceId();
@@ -650,6 +654,7 @@ export async function updateOperatorState<T>(
       `;
       changed = table !== 'operator_account_pool' || written.length > 0;
     }
+    if (afterWrite) await afterWrite(tx, current, next, ws);
     return next;
   })) as T;
   invalidateOperatorStateCache(table, ws); // P-004: same-process read-after-write consistency

@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { freezeMinecraftTrial } from './minecraft-protocol';
-import { startMinecraftRuntime } from './minecraft-runtime';
+import { assignMinecraftTask, freezeMinecraftManifest, freezeMinecraftSelection, freezeMinecraftTrial } from './minecraft-protocol';
+import { startMinecraftParticipantBridge, startMinecraftRuntime } from './minecraft-runtime';
 import type { ProcExec } from './grader/swe-bench-pro';
 
 const roots: string[] = [];
@@ -12,12 +12,18 @@ afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
-async function fixture() {
+async function fixture(runId = 'run') {
   const root = await mkdtemp(join(tmpdir(), 'mc-runtime-test-')); roots.push(root);
   const serverJar = join(root, 'server.jar'); await writeFile(serverJar, 'jar-fixture');
   const sha = 'a'.repeat(64);
-  const trial = freezeMinecraftTrial({ schemaVersion: 1, runId: 'run', armId: 'stock', taskId: 'iron',
-    manifestHash: sha, selectionHash: sha, worldSeed: '9223372036854775807', objective: 'iron-tools',
+  const material = (taskId: string, n: number, worldSeed = String(n)) => ({ taskId, worldSeed, objective: 'iron-tools',
+    referenceSha256: String(n).repeat(64), scoringFixtureSha256: String(n + 3).repeat(64), exampleSha256: [] });
+  const manifest = freezeMinecraftManifest({ schemaVersion: 1, revision: 1, train: [material('train', 1)],
+    dev: [material('dev', 2)], heldOut: [material('iron', 3, '9223372036854775807')] });
+  const selection = freezeMinecraftSelection(manifest, { runId, armId: 'stock', modelId: 'model',
+    promptSha256: sha, configurationSha256: sha, sources: [] });
+  const trial = freezeMinecraftTrial({ schemaVersion: 1, runId, armId: 'stock', taskId: 'iron',
+    manifestHash: manifest.manifestHash, selectionHash: selection.selectionHash, worldSeed: '9223372036854775807', objective: 'iron-tools',
     rules: { version: '1.20.4', difficulty: 'easy', gameMode: 'survival', cheats: false },
     pins: { serverImage: `minecraft/server@sha256:${sha}`, serverJarSha256: createHash('sha256').update('jar-fixture').digest('hex'),
       mineflayerVersion: '4.32.0', pathfinderVersion: '2.4.5' },
@@ -34,9 +40,59 @@ async function fixture() {
     else if (args[0] === 'inspect') stdout = 'true';
     return { code: 0, stdout, stderr: args[0] === 'exec' ? 'openjdk version "17.0.1"' : '' };
   });
-  return { trial, serverJar, workRoot: root, botImage: `sha256:${sha}`, acceptEula: true, exec, commands };
+  const assignment = assignMinecraftTask(manifest, trial, 'alice', selection);
+  return { trial, assignment, serverJar, workRoot: root, botImage: `sha256:${sha}`, acceptEula: true, exec, commands };
 }
 describe('Minecraft owned runtime lifecycle', () => {
+  it('binds the native gameplay connection to its issued player and reuses isolated program execution', async () => {
+    const f = await fixture(); const runtime = await startMinecraftRuntime(f);
+    const bridge = await startMinecraftParticipantBridge(runtime, f.assignment);
+    try {
+      const response = await fetch(bridge.endpoint, { method: 'POST', headers: { authorization: `Bearer ${bridge.token}` },
+        body: JSON.stringify({ source: 'return await bot.position()' }) });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ ok: true, value: { x: 1 } });
+      const program = f.commands.find(args => args.includes('/app/program.cjs'))!;
+      expect(JSON.parse(Buffer.from(program.at(-1)!, 'base64').toString())).toMatchObject({ participant: 'alice' });
+      expect(bridge.participantId).toBe('alice');
+      expect(bridge.endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+    } finally { await bridge.stop(); await runtime.dispose(); }
+  });
+  it('refuses copied and foreign assignment handles before opening a gameplay connection', async () => {
+    const f = await fixture(); const runtime = await startMinecraftRuntime(f);
+    try {
+      await expect(startMinecraftParticipantBridge(runtime, { ...f.assignment })).rejects.toThrow(/issued/);
+      const other = await fixture('other-run');
+      await expect(startMinecraftParticipantBridge(runtime, other.assignment)).rejects.toThrow(/issued/);
+      await expect(startMinecraftParticipantBridge({ ...runtime }, f.assignment)).rejects.toThrow(/owned/);
+    } finally { await runtime.dispose(); }
+  });
+  it.each([
+    { name: 'missing credential', status: 401, authorization: '', body: { source: 'return 1' } },
+    { name: 'wrong credential', status: 401, authorization: 'Bearer wrong', body: { source: 'return 1' } },
+    { name: 'participant override', status: 400, body: { source: 'return 1', participant: 'bob' } },
+    { name: 'empty program', status: 400, body: { source: '' } },
+    { name: 'oversized program', status: 400, body: { source: 'x'.repeat(16385) } },
+    { name: 'oversized body', status: 413, body: { source: 'x'.repeat(100_001) } },
+  ])('refuses $name before dispatching a program', async test => {
+    const f = await fixture(); const runtime = await startMinecraftRuntime(f);
+    const bridge = await startMinecraftParticipantBridge(runtime, f.assignment);
+    try {
+      const response = await fetch(bridge.endpoint, { method: 'POST',
+        headers: { authorization: test.authorization ?? `Bearer ${bridge.token}` }, body: JSON.stringify(test.body) });
+      expect(response.status).toBe(test.status); await response.text();
+      expect(f.commands.some(args => args.includes('/app/program.cjs'))).toBe(false);
+    } finally { await bridge.stop(); await runtime.dispose(); }
+  });
+  it('revokes native gameplay connections on runtime stop and refuses reopening a closed trial', async () => {
+    const f = await fixture(); const runtime = await startMinecraftRuntime(f);
+    const bridge = await startMinecraftParticipantBridge(runtime, f.assignment);
+    await runtime.stop();
+    await expect(fetch(bridge.endpoint, { method: 'POST', headers: { authorization: `Bearer ${bridge.token}` },
+      body: JSON.stringify({ source: 'return 1' }) })).rejects.toThrow();
+    await expect(startMinecraftParticipantBridge(runtime, f.assignment)).rejects.toThrow(/active/);
+    await bridge.stop(); await runtime.dispose();
+  });
   it('refuses incompatible pins, EULA and player identities before allocating a container', async () => {
     const f = await fixture();
     await expect(startMinecraftRuntime({ ...f, acceptEula: false })).rejects.toThrow(/EULA/);

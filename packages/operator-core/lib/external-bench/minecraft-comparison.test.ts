@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { freezeMinecraftManifest, freezeMinecraftPair, freezeMinecraftSelection, freezeMinecraftTrial,
-  inspectMinecraftPairAssignment, type MinecraftPairArm } from './minecraft-protocol';
+  inspectMinecraftPairAssignment, withMinecraftAssignment, type FrozenMinecraftTrial,
+  type MinecraftAssignment, type MinecraftPairArm } from './minecraft-protocol';
 
 const sha = (n: number) => n.toString(16).padStart(64, '0');
 function fixture() {
@@ -76,5 +77,32 @@ describe('Minecraft immutable paired comparison admission', () => {
     expect(() => freezeMinecraftPair(f.manifest, { arms: [f.arms[0], f.arms[0]], orderSeed: sha(100) })).toThrow(/Duplicate/);
     expect(() => freezeMinecraftPair(f.manifest, { arms: [{ ...f.arms[0], selection: { ...f.arms[0].selection } }, f.arms[1]],
       orderSeed: sha(100) })).toThrow(/selection/);
+  });
+  it('dispatches a paired assignment only after validating the runtime and reset measurement', async () => {
+    const f = fixture(), arm = f.arms[0];
+    const pair = freezeMinecraftPair(f.manifest, { arms: f.arms, orderSeed: sha(100) });
+    const runtime = { serverInstanceId: 'fresh-world', serverReady: true, javaMajor: 17,
+      trialId: arm.trial.trialId, worldSeed: arm.trial.protocol.worldSeed,
+      rules: arm.trial.protocol.rules, pins: arm.trial.protocol.pins };
+    const dispatch = vi.fn(async (_trial: FrozenMinecraftTrial, assignment: MinecraftAssignment) => assignment);
+    const result = await withMinecraftAssignment(f.manifest, arm.selection, arm.trial.protocol, runtime,
+      arm.trial.trialId, 'alice', dispatch, { pair, initialState: f.initialState });
+    expect(result).toEqual({ trialId: arm.trial.trialId, taskId: 'held', participantId: 'alice' });
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+  it.each(['worldSha256', 'memorySha256'] as const)('refuses dispatch after measured %s drift', async field => {
+    const f = fixture(), arm = f.arms[0];
+    const pair = freezeMinecraftPair(f.manifest, { arms: f.arms, orderSeed: sha(100) });
+    const runtime = { serverInstanceId: 'fresh-world', serverReady: true, javaMajor: 17,
+      trialId: arm.trial.trialId, worldSeed: arm.trial.protocol.worldSeed,
+      rules: arm.trial.protocol.rules, pins: arm.trial.protocol.pins };
+    const dispatch = vi.fn();
+    await expect(withMinecraftAssignment(f.manifest, arm.selection, arm.trial.protocol, runtime,
+      arm.trial.trialId, 'alice', dispatch, { pair, initialState: { ...f.initialState, [field]: sha(99) } }))
+      .rejects.toThrow(/unpaired.*initialState/);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(inspectMinecraftPairAssignment(pair, 'stock', { trialId: arm.trial.trialId,
+      protocol: arm.trial.protocol, initialState: { ...f.initialState, [field]: sha(99) } }))
+      .toMatchObject({ pairId: pair.pairId, armId: 'stock', trialId: arm.trial.trialId, paired: false });
   });
 });

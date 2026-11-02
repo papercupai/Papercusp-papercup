@@ -7,8 +7,7 @@ import { createHash } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { z } from 'zod';
-import { advanceSecuritySourceProgress, validateSecuritySourceProgress,
-  type SecuritySourceDiscovery, type SecuritySourceProgress, type SecuritySourceShard } from './security-source-census';
+import type { SecuritySourceDiscovery, SecuritySourceProgress, SecuritySourceShard } from './security-source-census';
 import {
   createSecurityManifest, createSecurityTupleLedger,
   type SecurityManifest, type SecuritySnapshot, type SecurityTupleLedger,
@@ -66,6 +65,8 @@ const sourceArchiveSchema = z.object({
  * survive unchanged; successful decoding grants no qualification authority. */
 export async function loadSecuritySourceShard(harness: string, progress: SecuritySourceProgress, sha256: string,
   { maxRawBytes = 128 * 1024 * 1024, expectedPaths }: { maxRawBytes?: number; expectedPaths?: readonly string[] } = {}): Promise<SecuritySourceDiscovery | null> {
+  // Runtime manifest/custody operations must not initialize source scanners.
+  const { validateSecuritySourceProgress } = await import('./security-source-census');
   validateSecuritySourceProgress(progress);
   if (!Number.isSafeInteger(maxRawBytes) || maxRawBytes < 1) throw new Error('security_source_positive_budget_required');
   const receipt = progress.capturedShards.find(row => row.sha256 === sha256);
@@ -113,6 +114,7 @@ export async function loadSecuritySourceShard(harness: string, progress: Securit
 /** Persist the exact discovery before advancing its queue. Both objects reuse
  * immutable artifacts; an interrupted save leaves the prior queue usable. */
 export async function saveSecuritySourceShard(harness: string, progress: SecuritySourceProgress, shard: SecuritySourceShard) {
+  const { advanceSecuritySourceProgress } = await import('./security-source-census');
   const raw = canonicalJson(shard.discovery);
   const rawSha256 = createHash('sha256').update(raw).digest('hex');
   const envelope = canonicalJson({ schema: 'security-source-discovery-archive-v1', encoding: 'gzip+base64',

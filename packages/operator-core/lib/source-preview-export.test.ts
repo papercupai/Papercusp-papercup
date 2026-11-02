@@ -73,7 +73,9 @@ import { BG_R1_CASE_REGISTRY, BG_R1_SOURCE_CASES, BG_R1_MEMBER_CASES, BG_R1_PARE
 import r1Manifest from './source-preview.r1-cases.fixture.json';
 import { captureTestSourceSnapshot } from './testing-worktree';
 import { measureBootOperatorArtifact } from './release/operator-artifact';
-import { cleanupEndedVerifierDirectories, verifierSourceFiles, writeVerifierTaskReceipt } from './verifier-source';
+import { cleanupEndedVerifierDirectories, verifierResourceInventory, verifierSourceFiles, writeVerifierTaskReceipt,
+  type VerifierTeardownOutcome } from './verifier-source';
+import { readProcessIdentity } from './process-identity';
 import { bindFrozenDependencyGeneration } from './dependency-generation-proof';
 import { closeTask } from './task-manager/store';
 import type { TaskRow } from './task-manager/types';
@@ -81,6 +83,189 @@ import type { TaskRow } from './task-manager/types';
 let tmp: string;
 let fx: Superproject;
 let out: string;
+
+describe('BG teardown resource inventory source controls', () => {
+  const roots: string[] = [];
+  afterAll(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
+  function fixture() {
+    const root = mkdtempSync(join(tmpdir(), 'bg-teardown-ledger-'));
+    roots.push(root);
+    const owned = join(root, 'owned'), peer = join(root, 'peer');
+    mkdirSync(owned); writeFileSync(peer, 'original peer sentinel');
+    const custody = { 'parent-fire24': { subject: 'original-parent', fire: 24 }, owner: 'original-owner',
+      origin: 'original-origin', 'error-history': ['original failure'], 'evidence-reference': ['original-proof'] };
+    let at = 100;
+    const options = { path: join(root, 'resources.jsonl'), owner: 'fixture-owned-attempt',
+      deadlineEpochMs: 200, custody, now: () => at };
+    const ledger = verifierResourceInventory(options);
+    ledger.record({ id: 'candidate', kind: 'root', path: owned });
+    ledger.record({ id: 'peer', kind: 'binding', path: peer, retain: 'peer sentinel' });
+    return { root, owned, peer, custody, options, ledger, advance: (value: number) => { at = value; } };
+  }
+
+  async function helperTree(ledger: ReturnType<typeof verifierResourceInventory>) {
+    const child = spawn(process.execPath, ['-e',
+      'const {spawn}=require("node:child_process"); const c=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"}); console.log(c.pid); setInterval(()=>{},1000);'],
+    { detached: true, env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+    const closed = once(child, 'close');
+    let stdout = '', stderr = '', launchError: string | undefined;
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-4096); });
+    child.on('error', error => { launchError = String(error); });
+    const stop = async () => {
+      try { process.kill(-child.pid!, 'SIGKILL'); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+      await closed;
+    };
+    try {
+      await vi.waitFor(() => expect(stdout.trim(), JSON.stringify({ pid: child.pid,
+        exitCode: child.exitCode, signal: child.signalCode, launchError, stderr })).toMatch(/^\d+$/), { timeout: 5_000 });
+      const identity = readProcessIdentity(child.pid!);
+      expect(identity).toBeTypeOf('string');
+      ledger.record({ id: 'helper', kind: 'process', pid: child.pid!, processIdentity: identity!, processGroup: child.pid! });
+      return { latePid: Number(stdout.trim()), stop };
+    } catch (error) { await stop(); throw error; }
+  }
+
+  it('BG-TEARDOWN-RECONCILE keeps recursive inventory append-only through late-child reconciliation', async () => {
+    const f = fixture();
+    const child = spawn(process.execPath, ['-e',
+      'const {spawn}=require("node:child_process"); const c=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"}); console.log(c.pid); setInterval(()=>{},1000);'],
+    { detached: true, env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+    const closed = once(child, 'close');
+    let stdout = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    try {
+      await vi.waitFor(() => expect(stdout.trim()).toMatch(/^\d+$/), { timeout: 5_000 });
+      const latePid = Number(stdout.trim());
+      const identity = readProcessIdentity(child.pid!);
+      expect(identity).toBeTypeOf('string');
+      f.ledger.record({ id: 'helper', kind: 'process', pid: child.pid!, processIdentity: identity!, processGroup: child.pid! });
+      const prefix = readFileSync(f.options.path, 'utf8');
+      rmSync(f.owned, { recursive: true });
+      const unresolved = await f.ledger.reconcile({ outcome: 'success', custody: f.custody });
+      expect(unresolved.sealed).toBe(false);
+      expect(unresolved.observations).toContainEqual(expect.objectContaining({ pid: latePid, state: 'live',
+        processIdentity: readProcessIdentity(latePid) }));
+      const discovered = readFileSync(f.options.path, 'utf8');
+      expect(discovered.startsWith(prefix)).toBe(true);
+      process.kill(-child.pid!, 'SIGKILL');
+      await closed;
+      const recovered = verifierResourceInventory({ ...f.options, resume: true, expectedHistory: f.ledger.checkpoint() });
+      const terminal = await recovered.reconcile({ outcome: 'success', custody: f.custody });
+      expect(terminal).toMatchObject({ sealed: true, status: 'completed', survivors: [] });
+      expect(terminal.observations).toContainEqual(expect.objectContaining({ pid: latePid, state: 'exited' }));
+      expect(readFileSync(f.options.path, 'utf8').startsWith(discovered)).toBe(true);
+      expect(readFileSync(f.peer, 'utf8')).toBe('original peer sentinel');
+      expect(() => recovered.record({ id: 'too-late', kind: 'root', path: f.owned })).toThrow('already sealed');
+    } finally {
+      try { process.kill(-child.pid!, 'SIGKILL'); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+      await closed;
+    }
+  });
+
+  it('BG-TEARDOWN-RECONCILE preserves original parent fire24 owner origin and errors custody', async () => {
+    const f = fixture();
+    const original = readFileSync(f.options.path, 'utf8');
+    const changed = structuredClone(f.custody); changed['error-history'].push('rewritten child history');
+    await expect(f.ledger.reconcile({ outcome: 'success', custody: changed })).rejects.toThrow('original parent custody changed');
+    expect(readFileSync(f.options.path, 'utf8')).toBe(original);
+    expect(() => verifierResourceInventory({ ...f.options, resume: true, expectedHistory: f.ledger.checkpoint(), deadlineEpochMs: 201 }))
+      .toThrow('original owner, custody or deadline changed');
+  });
+
+  const custodyFields = ['parent-fire24', 'owner', 'origin', 'error-history', 'evidence-reference'] as const;
+  const custodyActions = ['delete', 'reset', 'replace', 'rewrite'] as const;
+  for (const field of custodyFields) for (const action of custodyActions) {
+    it(`bg-r4-custody-${field}-${action} refuses ${action} of original ${field} custody`, async () => {
+      const f = fixture();
+      rmSync(f.owned, { recursive: true });
+      const changed: Record<string, unknown> = structuredClone(f.custody);
+      if (action === 'delete') delete changed[field];
+      else changed[field] = action === 'reset' ? null : action === 'replace' ? { replacement: 'new attempt' } : 'rewritten';
+      const before = readFileSync(f.options.path, 'utf8');
+      await expect(f.ledger.reconcile({ outcome: 'success', custody: changed })).rejects.toThrow('original parent custody changed');
+      expect(readFileSync(f.options.path, 'utf8')).toBe(before);
+      const positive = await f.ledger.reconcile({ outcome: 'success', custody: f.custody });
+      expect(positive).toMatchObject({ sealed: true, status: 'completed', deadlineExceeded: false });
+    });
+  }
+
+  const outcomes: VerifierTeardownOutcome[] = ['success', 'failure', 'cancellation', 'timeout', 'interruption-recovery'];
+  for (const outcome of outcomes) for (const timing of ['immediately-before', 'exactly-at', 'after'] as const) {
+    it(`bg-r4-teardown-${outcome}-${timing} reconciles late descendants on ${outcome} at original teardown deadline ${timing}`, async () => {
+      const f = fixture();
+      // A new root is first inventoried during cleanup; it must be present in
+      // the terminal census even though the candidate has already been removed.
+      const late = join(f.root, 'late-output'); mkdirSync(late);
+      rmSync(f.owned, { recursive: true });
+      f.ledger.record({ id: 'late-output', kind: 'root', path: late });
+      const helper = await helperTree(f.ledger);
+      try {
+      f.advance(timing === 'immediately-before' ? 199 : timing === 'exactly-at' ? 200 : 201);
+      const unresolved = await f.ledger.reconcile({ outcome, custody: f.custody });
+      expect(unresolved).toMatchObject({ sealed: false, survivors: expect.arrayContaining(['late-output', 'helper']),
+        deadlineExceeded: timing !== 'immediately-before' });
+      expect(unresolved.observations).toContainEqual(expect.objectContaining({ pid: helper.latePid, state: 'live' }));
+      const prefix = readFileSync(f.options.path, 'utf8');
+      rmSync(late, { recursive: true });
+      await helper.stop();
+      const recovered = verifierResourceInventory({ ...f.options, resume: true, expectedHistory: f.ledger.checkpoint() });
+      if (timing === 'immediately-before') {
+        // Independent admissible D-epsilon control, then advance THIS unresolved
+        // operation through its original D; success cannot erase expiry.
+        const control = fixture(); rmSync(control.owned, { recursive: true }); control.advance(199);
+        expect(await control.ledger.reconcile({ outcome, custody: control.custody }))
+          .toMatchObject({ sealed: true, deadlineExceeded: false, status: outcome === 'success' ? 'completed' : 'failed' });
+        f.advance(200);
+      }
+      const terminal = await recovered.reconcile({ outcome, custody: f.custody });
+      expect(terminal).toMatchObject({ outcome, sealed: true, status: 'failed', deadlineEpochMs: 200, deadlineExceeded: true });
+      expect(terminal.observations).toContainEqual(expect.objectContaining({ id: 'late-output', state: 'removed' }));
+      expect(terminal.observations).toContainEqual(expect.objectContaining({ pid: helper.latePid, state: 'exited' }));
+      expect(readFileSync(f.options.path, 'utf8').startsWith(prefix)).toBe(true);
+      expect(readFileSync(f.peer, 'utf8')).toBe('original peer sentinel');
+      } finally { await helper.stop(); }
+    });
+  }
+
+  it('BG-TEARDOWN-RECONCILE refuses terminal success after the predeclared teardown deadline', async () => {
+    const f = fixture(); f.advance(200);
+    expect(await f.ledger.reconcile({ outcome: 'cancellation', custody: f.custody }))
+      .toMatchObject({ sealed: false, deadlineExceeded: true, status: 'incomplete' });
+    rmSync(f.owned, { recursive: true });
+    f.advance(201);
+    await expect(f.ledger.reconcile({ outcome: 'success', custody: f.custody })).rejects.toThrow('original teardown outcome changed');
+    expect(await f.ledger.reconcile({ outcome: 'cancellation', custody: f.custody }))
+      .toMatchObject({ sealed: true, deadlineExceeded: true, status: 'failed', outcome: 'cancellation' });
+  });
+
+  it('refuses inventory rewrite, duplicate resource and retained-peer corruption before settlement', async () => {
+    const f = fixture();
+    const before = readFileSync(f.options.path, 'utf8');
+    expect(() => f.ledger.record({ id: 'candidate', kind: 'root', path: f.owned })).toThrow('unique stable id');
+    expect(readFileSync(f.options.path, 'utf8')).toBe(before);
+    writeFileSync(f.peer, 'changed sentinel');
+    await expect(f.ledger.reconcile({ outcome: 'success', custody: f.custody })).rejects.toThrow('retained inventory resource changed');
+    const history = f.ledger.checkpoint();
+    writeFileSync(f.options.path, before.slice(0, -1));
+    expect(() => verifierResourceInventory({ ...f.options, resume: true, expectedHistory: history })).toThrow('incomplete append');
+    expect(() => f.ledger.record({ id: 'new', kind: 'root', path: join(f.root, 'new') })).toThrow('history changed before append');
+  });
+
+  it('refuses complete-event truncation after restart against independently retained history', () => {
+    const f = fixture();
+    const history = f.ledger.checkpoint();
+    expect(() => verifierResourceInventory({ ...f.options, resume: true })).toThrow('independently retained history anchor');
+    const first = readFileSync(f.options.path, 'utf8').split('\n')[0]! + '\n';
+    writeFileSync(f.options.path, first);
+    expect(() => verifierResourceInventory({ ...f.options, resume: true, expectedHistory: history }))
+      .toThrow('recovery history anchor changed');
+  });
+});
 
 // This ordinary CI guard proves declarations only. Acceptance additionally needs
 // a completed canonical receipt for every manifest row, including this guard.
@@ -1654,6 +1839,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
           'dependencies.json': `${receiptPath}.dependencies.json`,
           'dependencies-after.json': `${receiptPath}.dependencies.after.json`,
           'task.json': taskReceiptPath,
+          'resources.jsonl': `${receiptPath}.resources.jsonl`,
           'phases.jsonl': `${receiptPath}.phases.jsonl`,
           'child.json': `${receiptPath}.child.json`,
           'stdout.log': `${receiptPath}.stdout.log`,
@@ -2565,6 +2751,16 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(rows.filter(row => row.event === 'progress').map(row => row.progress)).toEqual([
       { ...progress, cacheHit: false }, { ...progress, cacheHit: true }, progress,
     ]);
+    expect(readVerifierPhaseMeasurements(path)).toEqual({ 'deps.census': expect.any(Number) });
+    for (const invalid of [
+      { ...progress, completedTrees: 2 },
+      { ...progress, cacheHit: 'yes' },
+      { ...progress, extra: 'unbounded' },
+    ]) {
+      const altered = rows.map(row => row.event === 'progress' ? { ...row, progress: invalid } : row);
+      writeFileSync(path, altered.map(row => JSON.stringify(row)).join('\n') + '\n');
+      expect(() => readVerifierPhaseMeasurements(path)).toThrow();
+    }
   });
 
   function bgRecipePhaseRunner(label: string) {

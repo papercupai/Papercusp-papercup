@@ -23,6 +23,8 @@ import {
   type EphemeralExecutorDeps,
   type EphemeralRoutineSpec,
 } from './ephemeral-executor';
+import { registerSystemAction } from '../harness/routines/system-actions';
+import { startupActivityFeatureId } from '../schedule-inventory';
 
 const spec = (over: Partial<EphemeralRoutineSpec> = {}): EphemeralRoutineSpec => ({
   id: 'r1',
@@ -53,6 +55,23 @@ function installFakeRegistry(): void {
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 describe('execution policy at an armed ephemeral timer', () => {
+  it('binds the managed timer to the routine inventory identity in its own workspace', async () => {
+    installFakeRegistry();
+    const item = spec();
+    await armEphemeralExecutor(mkDeps().deps);
+    expect(getManaged('ephemeral:r1')?.activity).toEqual({
+      kind: 'workspace', workspaceId: item.workspaceId,
+      featureId: startupActivityFeatureId({ source: 'routines', installSlug: item.installSlug, name: item.name, detail: {} }, { workspaceId: item.workspaceId }),
+    });
+  });
+
+  it('uses the registered control purpose rather than the timer category or routine name', async () => {
+    installFakeRegistry();
+    registerSystemAction('ephemeral-admission-recovery-test', async () => {}, { requiredForControl: 'Restores the control channel.' });
+    await armEphemeralExecutor(mkDeps({ list: async () => [spec({ targetRole: 'system:ephemeral-admission-recovery-test' })] }).deps);
+    expect(getManaged('ephemeral:r1')?.activity).toEqual({ kind: 'required-control', reason: 'Restores the control channel.' });
+  });
+
   it('withholds without recording a fire, then permits the next tick after resume', async () => {
     installFakeRegistry();
     let allowed = false;

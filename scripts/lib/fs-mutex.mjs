@@ -687,10 +687,25 @@ async function reclaimAbandonedLock(
  * Fail-open: no ordering information ⇒ the caller falls back to racing for the
  * lock directly, so a broken/unreadable queue can never deadlock acquisition.
  */
-async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase, observeHead = () => {}) {
+const TICKET_HEAD_CACHE_TTL_MS = 100;
+const TICKET_HEAD_CACHE_MAX_ENTRIES = 256;
+const ticketHeadCache = new Map();
+const ticketHeadScans = new Map();
+
+async function ticketDirectoryStamp(ticketsDir) {
+  try {
+    const directory = await stat(ticketsDir);
+    return String(directory.mtimeMs) + ":" + String(directory.ctimeMs);
+  } catch {
+    return null;
+  }
+}
+
+async function scanOldestTicketDir(ticketsDir, staleMs, io, measureSubphase) {
+  const beforeStamp = await ticketDirectoryStamp(ticketsDir);
   let entries;
   try {
-    entries = await readdir(ticketsDir, { withFileTypes: true });
+    entries = await (io.readdir ?? readdir)(ticketsDir, { withFileTypes: true });
   } catch {
     return null;
   }
@@ -715,10 +730,64 @@ async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase, ob
     }
     // Reuse the liveness check's owner read. FIFO-only waiters never reach the
     // writer-lock reclaim path, and diagnostics must not require onWaiting.
-    observeHead(ticketDir, observedOwner);
-    return ticketDir;
+    const afterStamp = await ticketDirectoryStamp(ticketsDir);
+    return {
+      ticketDir,
+      owner: observedOwner,
+      queueStamp: beforeStamp && beforeStamp === afterStamp ? beforeStamp : null,
+    };
   }
   return null;
+}
+
+async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase, observeHead = () => {}) {
+  const cached = ticketHeadCache.get(ticketsDir);
+  if (cached && Date.now() < cached.expiresAtMs) {
+    const currentStamp = await ticketDirectoryStamp(ticketsDir);
+    if (currentStamp && currentStamp === cached.queueStamp) {
+      try {
+        if ((await lstat(cached.ticketDir)).isDirectory()) {
+          observeHead(cached.ticketDir, cached.owner);
+          return cached.ticketDir;
+        }
+      } catch {
+        // The head vanished after the queue stamp read; rescan the current prefix.
+      }
+    }
+    ticketHeadCache.delete(ticketsDir);
+  }
+
+  let scan = ticketHeadScans.get(ticketsDir);
+  if (!scan) {
+    scan = scanOldestTicketDir(ticketsDir, staleMs, io, measureSubphase);
+    ticketHeadScans.set(ticketsDir, scan);
+  }
+
+  let head;
+  try {
+    head = await scan;
+  } finally {
+    if (ticketHeadScans.get(ticketsDir) === scan) ticketHeadScans.delete(ticketsDir);
+  }
+  if (!head?.ticketDir) {
+    ticketHeadCache.delete(ticketsDir);
+    return null;
+  }
+  if (head.queueStamp) {
+    ticketHeadCache.delete(ticketsDir);
+    ticketHeadCache.set(ticketsDir, {
+      ticketDir: head.ticketDir,
+      owner: head.owner,
+      queueStamp: head.queueStamp,
+      expiresAtMs: Date.now() + TICKET_HEAD_CACHE_TTL_MS,
+    });
+    if (ticketHeadCache.size > TICKET_HEAD_CACHE_MAX_ENTRIES) {
+      const oldestKey = ticketHeadCache.keys().next().value;
+      if (oldestKey) ticketHeadCache.delete(oldestKey);
+    }
+  }
+  observeHead(head.ticketDir, head.owner);
+  return head.ticketDir;
 }
 
 async function writerLockIsHeld(lockDir, staleMs, io = {}) {

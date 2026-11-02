@@ -208,6 +208,16 @@ export function assignMinecraftTask(
   return assignment;
 }
 
+/** Native gameplay transport accepts issued assignment handles only. Copying
+ * public participant/trial fields cannot grant control of an enrolled player. */
+export function requireMinecraftAssignment(assignment: MinecraftAssignment, trialId: string): MinecraftAssignment {
+  const grant = assignments.get(assignment);
+  if (!grant || grant.trial.trialId !== trialId || assignment.trialId !== trialId) {
+    throw new Error('Minecraft gameplay requires its issued trial assignment');
+  }
+  return assignment;
+}
+
 export function readMinecraftTaskMaterial(
   manifest: FrozenMinecraftManifest,
   request: { taskId: string; participantId: string;
@@ -276,8 +286,15 @@ export async function withMinecraftAssignment<T>(
   input: unknown, runtimeMeasurement: unknown, expectedTrialId: string,
   participantId: string,
   dispatch: (trial: FrozenMinecraftTrial, assignment: MinecraftAssignment) => Promise<T>,
+  pairing?: { pair: FrozenMinecraftPair; initialState: unknown },
 ): Promise<T> {
   return withMinecraftPreflight(input, runtimeMeasurement, expectedTrialId, async trial => {
+    if (pairing) {
+      const measured = inspectMinecraftPairAssignment(pairing.pair, trial.protocol.armId, {
+        trialId: trial.trialId, protocol: trial.protocol, initialState: pairing.initialState,
+      });
+      if (!measured.paired) throw new Error(`Minecraft assignment is unpaired: ${measured.deviations.join(', ')}`);
+    }
     const assignment = assignMinecraftTask(manifest, trial, participantId, selection);
     return dispatch(trial, assignment);
   });

@@ -1995,6 +1995,36 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     expect(readFileSync(s, 'utf8')).toBe('keep\n');
   });
 
+  it.skipIf(!containWorks)('excludes legacy console sentinels from contained root copies', () => {
+    const repo = join(dir, 'console-sentinel-containment-repo');
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    git(repo, ['init', '-q']);
+    const s = join(repo, 'src', 'subject.txt');
+    const sentinel = join(repo, '.papercup-console-active.4294967295');
+    const rootInput = join(repo, 'root-input.txt');
+    writeFileSync(s, 'keep\n');
+    writeFileSync(sentinel, 'legacy process marker\n');
+    writeFileSync(rootInput, 'visible\n');
+
+    const guard = [
+      `if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then test -f ${JSON.stringify(sentinel)}; else ! compgen -G ${JSON.stringify(join(repo, '.papercup-console-active.*'))} >/dev/null; fi`,
+      `test "$(cat ${JSON.stringify(rootInput)})" = visible`,
+      "grep -q '^keep$' {}",
+    ].join(' && ');
+    const result = runProbeIO(
+      ['--file', s, '--mutate', 's/keep/KEEP/', '--test', guard],
+      { ...process.env, MUTATION_PROBE_CONTAIN_WRITES: '1' },
+      repo,
+    );
+
+    expect(result.out).toContain('MUTATION_PROBE_CONTAINMENT status=contained');
+    expect(result.out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(result.code, result.out).toBe(0);
+    expect(existsSync(sentinel)).toBe(true);
+    expect(readFileSync(rootInput, 'utf8')).toBe('visible\n');
+    expect(readFileSync(s, 'utf8')).toBe('keep\n');
+  });
+
   /**
    * WI-6554700010018051: if a contained leg's setup cannot mount its tmpfs, the guard never ran,
    * so its exit code (the setup's 97) is not a measurement. run_guard must refuse with a

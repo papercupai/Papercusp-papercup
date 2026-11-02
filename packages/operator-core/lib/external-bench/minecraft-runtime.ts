@@ -3,7 +3,8 @@
  * Participant JS runs in a third network-none container with only a gameplay RPC
  * socket. Server files, operator credentials and Docker are never mounted there.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createServer } from 'node:http';
 import { appendFile, chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
@@ -11,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { liveProcExec } from './grader/index';
 import type { ProcExec } from './grader/swe-bench-pro';
 import { assertMinecraftTrialIdentity, minecraftRuntimeMeasurementSchema,
-  type FrozenMinecraftTrial } from './minecraft-protocol';
+  requireMinecraftAssignment, type FrozenMinecraftTrial, type MinecraftAssignment } from './minecraft-protocol';
 
 export const MINECRAFT_RUNTIME_LABEL = 'papercusp.minecraft-runtime';
 const imagePin = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
@@ -57,14 +58,97 @@ export interface MinecraftRuntimeSnapshot {
     nondeterministicInputs: string[];
   };
 }
-const ownedRuntimes = new WeakMap<MinecraftRuntime, () => Promise<MinecraftRuntimeSnapshot>>();
+const ownedRuntimes = new WeakMap<MinecraftRuntime, {
+  snapshot(): Promise<MinecraftRuntimeSnapshot>;
+  active(): boolean;
+  bridges: Set<() => Promise<void>>;
+}>();
 /** Host-only: a caller-supplied object or path can never stand in for a runtime. */
 export async function readMinecraftRuntimeSnapshot(runtime: MinecraftRuntime): Promise<MinecraftRuntimeSnapshot> {
   const read = ownedRuntimes.get(runtime);
   if (!read) throw Error('Minecraft evidence requires an owned runtime');
-  return read();
+  return read.snapshot();
 }
 export function minecraftOfflinePlayerUuid(name: string): string { return offlineUuid(name); }
+
+/** Assignment-local native transport. Only program source crosses this seam;
+ * player identity, Docker authority, world paths and scoring stay host-owned.
+ * The existing execute path owns program isolation, deadlines and replay. */
+export async function startMinecraftParticipantBridge(runtime: MinecraftRuntime, assignment: MinecraftAssignment): Promise<{
+  endpoint: string; token: string; participantId: string; stop(): Promise<void>;
+}> {
+  const owner = ownedRuntimes.get(runtime);
+  if (!owner?.active()) throw Error('Minecraft gameplay requires an active owned runtime');
+  const { participantId } = requireMinecraftAssignment(assignment, runtime.trial.trialId);
+  const token = randomBytes(32).toString('base64url');
+  const authorization = Buffer.from(`Bearer ${token}`);
+  let closed = false, stopping: Promise<void> | undefined;
+  const server = createServer((request, response) => {
+    const reply = (status: number, value: unknown) => {
+      response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      response.end(JSON.stringify(value));
+    };
+    const supplied = Buffer.from(request.headers.authorization ?? '');
+    if (closed || !owner.active()) { reply(410, { error: 'Minecraft trial is closed' }); request.resume(); return; }
+    if (supplied.length !== authorization.length || !timingSafeEqual(supplied, authorization)) {
+      reply(401, { error: 'Minecraft gameplay credential refused' }); request.resume(); return;
+    }
+    if (request.method !== 'POST' || request.url !== '/') {
+      reply(405, { error: 'Minecraft gameplay accepts POST / only' }); request.resume(); return;
+    }
+    const chunks: Buffer[] = []; let bytes = 0, overflow = false;
+    request.setTimeout(runtime.trial.protocol.limits.maxProgramMs, () => request.destroy());
+    request.on('error', () => { /* Client disconnects do not grant another program. */ });
+    request.on('data', (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > 100_000) {
+        if (!overflow) reply(413, { error: 'Minecraft gameplay request limit' });
+        overflow = true; chunks.length = 0;
+      } else if (!overflow) chunks.push(chunk);
+    });
+    request.on('end', async () => {
+      if (overflow) return;
+      let input: unknown;
+      try { input = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+      catch { reply(400, { error: 'Malformed Minecraft gameplay request' }); return; }
+      if (!input || typeof input !== 'object' || Array.isArray(input) ||
+          Object.keys(input).length !== 1 || !Object.hasOwn(input, 'source') ||
+          typeof (input as { source?: unknown }).source !== 'string' ||
+          !(input as { source: string }).source.trim() || Buffer.byteLength((input as { source: string }).source) > 16384) {
+        reply(400, { error: 'Minecraft gameplay requires bounded program source only' }); return;
+      }
+      try {
+        if (closed || !owner.active()) throw Error('Minecraft trial is closed');
+        reply(200, await runtime.execute(participantId, (input as { source: string }).source));
+      } catch (error) {
+        reply(409, { error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+  });
+  server.requestTimeout = runtime.trial.protocol.limits.maxProgramMs;
+  server.headersTimeout = Math.min(10_000, server.requestTimeout);
+  const stop = (): Promise<void> => {
+    if (stopping) return stopping;
+    closed = true; owner.bridges.delete(stop);
+    stopping = new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+      // Close sockets without awaiting an execute handler that may itself be
+      // stopping this runtime after a program deadline.
+      server.closeAllConnections();
+    });
+    return stopping;
+  };
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve(); });
+  });
+  owner.bridges.add(stop);
+  // Startup can race cancellation while listen is awaiting its receipt.
+  if (!owner.active()) { await stop(); throw Error('Minecraft trial is closed'); }
+  const address = server.address();
+  if (!address || typeof address === 'string') { await stop(); throw Error('Minecraft gameplay listener unavailable'); }
+  return { endpoint: `http://127.0.0.1:${address.port}/`, token, participantId, stop };
+}
 
 function offlineUuid(name: string): string {
   const bytes = createHash('md5').update(`OfflinePlayer:${name}`).digest();
@@ -96,6 +180,7 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
   let starting = true;
   const startupLogTails: Record<string, string> = {};
   let stoppedAtMs = 0;
+  const bridges = new Set<() => Promise<void>>();
   let replayBytes = 0;
   let programDrained: Promise<void> = Promise.resolve();
   const replayFile = join(root, 'programs.jsonl');
@@ -120,6 +205,9 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
     stopped = true; clearTimeout(timer); config.signal?.removeEventListener('abort', onAbort);
     stopping = (async () => {
       const errors: string[] = [];
+      for (const close of [...bridges]) {
+        try { await close(); } catch (error) { errors.push(`Minecraft gameplay cleanup failed: ${String(error)}`); }
+      }
       // A timed-out/lost docker-run receipt may still have created the named
       // resource. Drain admitted commands before removing by allocated name.
       await Promise.allSettled([...pending]);
@@ -259,7 +347,8 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
       },
       async dispose() { const report = await stop(); if (report.removed) await rm(root, { recursive: true, force: true }); return report; },
     };
-    ownedRuntimes.set(runtime, async () => {
+    ownedRuntimes.set(runtime, { bridges, active: () => !stopped && !config.signal?.aborted && Date.now() < deadline,
+      snapshot: async () => {
       const report = await stop();
       await programDrained;
       if (!report.removed || report.errors.length) throw Error('Minecraft evidence requires verified runtime cleanup');
@@ -286,7 +375,7 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
         provenance: { source: 'host-collected-server-files', deterministicReplay: false,
           nondeterministicInputs: ['server-tick-and-process-scheduling', 'entity-behaviour-and-game-randomness',
             'bot-network-and-action-timing'] } };
-    });
+    } });
     starting = false;
     return runtime;
   } catch (error) {

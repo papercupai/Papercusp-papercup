@@ -65,6 +65,29 @@ beforeEach(() => {
 });
 afterEach(() => _resetActiveRunsForTests());
 
+describe.each(['legacy', 'current'] as const)('Minecraft admission through the %s launcher', route => {
+  it.each([
+    { taskSetId: 'minecraft-pilot' },
+    { taskSetId: 'minecraft-ender-dragon' },
+    { taskSetId: 'minecraft-unknown' },
+    { taskSetId: 'custom', suite: 'minecraft' },
+  ])('refuses a gameplay task before allocating generic launch resources: %j', async selection => {
+    const assertEnabled = vi.fn(), loadBacklog = vi.fn();
+    const request = { ...input, ...selection,
+      ...(route === 'legacy' ? { arm: 'su-independent', current: undefined } : {}) };
+    await expect(launchBenchRun(request, { scope: scope(), assertEnabled, loadBacklog }))
+      .rejects.toThrow(/Minecraft.*frozen gameplay runtime/);
+    expect(assertEnabled).not.toHaveBeenCalled();
+    expect(loadBacklog).not.toHaveBeenCalled();
+    expect(sql).not.toHaveBeenCalled();
+    expect(io.prereg).not.toHaveBeenCalled();
+    expect(io.register).not.toHaveBeenCalled();
+    expect(io.upsert).not.toHaveBeenCalled();
+    expect(io.legacyBind).not.toHaveBeenCalled();
+    expect(io.legacyRun).not.toHaveBeenCalled();
+  });
+});
+
 describe('current host selection', () => {
   it('separates each frozen seed and workspace while deriving the exact controls', () => {
     const selected = currentBenchLaunchSelection(input, config);

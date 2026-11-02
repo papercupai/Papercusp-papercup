@@ -182,9 +182,10 @@ export function verifierPhaseRunner(path: string, env: NodeJS.ProcessEnv, childD
  * @param {string} command
  * @param {string[]} args
  * @param {{ cwd: string, env: NodeJS.ProcessEnv, timeoutMs?: number, maxMs?: number,
- *   stallWindowMs?: number, extensionMs?: number, signal?: AbortSignal, cutoffEpochMs?: number | null, now?: () => number }} options
+ *   stallWindowMs?: number, extensionMs?: number, signal?: AbortSignal, cutoffEpochMs?: number | null, now?: () => number,
+ *   resourceInventory?: ReturnType<typeof verifierResourceInventory> }} options
  */
-export function runVerifierDependencyCommand(command: string, args: string[], { cwd, env, timeoutMs, maxMs, stallWindowMs, extensionMs, signal, cutoffEpochMs, now }: {
+export function runVerifierDependencyCommand(command: string, args: string[], { cwd, env, timeoutMs, maxMs, stallWindowMs, extensionMs, signal, cutoffEpochMs, now, resourceInventory }: {
     cwd: string;
     env: NodeJS.ProcessEnv;
     timeoutMs?: number;
@@ -194,6 +195,7 @@ export function runVerifierDependencyCommand(command: string, args: string[], { 
     signal?: AbortSignal;
     cutoffEpochMs?: number | null;
     now?: () => number;
+    resourceInventory?: ReturnType<typeof verifierResourceInventory>;
 }): Promise<string>;
 /** Prepare through the maintained Git exporter, with original parent authority
  * resolved BEFORE it creates a destination. No build or activation is implied.
@@ -2005,9 +2007,10 @@ export function verifyBgVerifierOutputRecord(output: BgVerifierOutputRecord, rec
  * deadline. Neither progress nor a forecast grants more time. Keep the default
  * dependency ceiling when omitted, and reserve the parent's cleanup window.
  * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal,
- *   env?: NodeJS.ProcessEnv, maxMs?: number, cutoffEpochMs?: number | null, now?: () => number }} options
+ *   env?: NodeJS.ProcessEnv, maxMs?: number, cutoffEpochMs?: number | null, now?: () => number,
+ *   resourceInventory?: ReturnType<typeof verifierResourceInventory> }} options
  */
-export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, signal, env, maxMs, cutoffEpochMs, now }: {
+export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, signal, env, maxMs, cutoffEpochMs, now, resourceInventory }: {
     donor: string;
     dest: string;
     receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
@@ -2017,6 +2020,7 @@ export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, si
     maxMs?: number;
     cutoffEpochMs?: number | null;
     now?: () => number;
+    resourceInventory?: ReturnType<typeof verifierResourceInventory>;
 }): Promise<{
     schemaVersion: string;
     scope: string;
@@ -2722,6 +2726,7 @@ export type Gate = (dir: string, opts: {
     env?: NodeJS.ProcessEnv;
 }) => Promise<GateVerdict>;
 export type Log = (message: string) => void;
+import { verifierResourceInventory } from '@papercusp/operator-core/lib/verifier-source';
 import { runTreeRestrictedHoldPreflight } from './lib/restricted-hold-preflight.mjs';
 declare function main(argv: any): Promise<number>;
 /** Read one physical file without reopening between validation and hashing.

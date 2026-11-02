@@ -49,6 +49,7 @@ import { admitTaskDeadline, readTaskDeadlineEpochMs } from './lib/task-deadline.
 import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV, requestPrivateTestPgRelease } from './lib/with-test-pg-cleanup.mjs';
 import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
 import { processGroupLifetime } from '@papercusp/operator-core/lib/fleet/process-group-lifetime';
+import { readProcessIdentity } from '@papercusp/operator-core/lib/process-identity';
 import { sealRuntimeSourceHandle } from '@papercusp/operator-core/lib/blind-review-source-seal';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -63,7 +64,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
 import { compileFunction } from 'node:vm';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError, writeVerifierTaskReceipt } from '@papercusp/operator-core/lib/verifier-source';
+import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError, writeVerifierTaskReceipt, verifierResourceInventory } from '@papercusp/operator-core/lib/verifier-source';
 import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
 import { runTreeRestrictedHoldPreflight, formatTreeRestrictedHoldRefusal,
   RESTRICTED_HOLD_PREFLIGHT_ENV, RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER } from './lib/restricted-hold-preflight.mjs';
@@ -717,6 +718,19 @@ function assertVerifierSnapshotSelection(selection) {
     'Verifier snapshot selection metadata does not match its route inputs');
 }
 
+/** The writer and historical budget reader accept the same progress contract. */
+function assertVerifierDependencyProgress(progress) {
+  assert.deepEqual(Object.keys(progress ?? {}).filter(key => key !== 'cacheHit').sort(), ['completedTrees', 'currentTree', 'totalTrees'],
+    'Verifier dependency progress must remain bounded');
+  assert.ok(!Object.hasOwn(progress, 'cacheHit') || typeof progress.cacheHit === 'boolean',
+    'Verifier dependency cacheHit must be boolean');
+  assert.ok(Number.isSafeInteger(progress.completedTrees) && Number.isSafeInteger(progress.totalTrees) &&
+    progress.totalTrees > 0 && progress.totalTrees <= 1000 &&
+    progress.completedTrees >= 0 && progress.completedTrees <= progress.totalTrees &&
+    typeof progress.currentTree === 'string' && progress.currentTree.length > 0 &&
+    progress.currentTree.length <= 256, 'Invalid verifier dependency progress');
+}
+
 /** Append outside the owned tree synchronously: a blocked event loop or SIGKILL
  * must leave the last started phase readable without claiming it completed.
  * Mirror exact records into the existing checkpoint-log store so temporary
@@ -748,15 +762,7 @@ export function verifierPhaseRunner(path, env, childDiagnosticsPath) {
   const reportProgress = (phase, progress) => {
     assert.ok(active.has(phase) && ['deps.census', 'deps.postverify'].includes(phase),
       'Verifier dependency progress requires an active census phase');
-    assert.deepEqual(Object.keys(progress ?? {}).filter(key => key !== 'cacheHit').sort(), ['completedTrees', 'currentTree', 'totalTrees'],
-      'Verifier dependency progress must remain bounded');
-    assert.ok(!Object.hasOwn(progress, 'cacheHit') || typeof progress.cacheHit === 'boolean',
-      'Verifier dependency cacheHit must be boolean');
-    assert.ok(Number.isSafeInteger(progress.completedTrees) && Number.isSafeInteger(progress.totalTrees) &&
-      progress.totalTrees > 0 && progress.totalTrees <= 1000 &&
-      progress.completedTrees >= 0 && progress.completedTrees <= progress.totalTrees &&
-      typeof progress.currentTree === 'string' && progress.currentTree.length > 0 &&
-      progress.currentTree.length <= 256, 'Invalid verifier dependency progress');
+    assertVerifierDependencyProgress(progress);
     record(phase, 'progress', { progress });
   };
   const run = async (phase, operation, metadata) => {
@@ -849,10 +855,11 @@ function verifierChildDiagnostics(receiptPath) {
  * @param {string} command
  * @param {string[]} args
  * @param {{ cwd: string, env: NodeJS.ProcessEnv, timeoutMs?: number, maxMs?: number,
- *   stallWindowMs?: number, extensionMs?: number, signal?: AbortSignal, cutoffEpochMs?: number | null, now?: () => number }} options
+ *   stallWindowMs?: number, extensionMs?: number, signal?: AbortSignal, cutoffEpochMs?: number | null, now?: () => number,
+ *   resourceInventory?: ReturnType<typeof verifierResourceInventory> }} options
  */
 export async function runVerifierDependencyCommand(command, args, { cwd, env,
-  timeoutMs = 600_000, maxMs = 1_800_000, stallWindowMs = 150_000, extensionMs = 60_000, signal, cutoffEpochMs, now = Date.now }) {
+  timeoutMs = 600_000, maxMs = 1_800_000, stallWindowMs = 150_000, extensionMs = 60_000, signal, cutoffEpochMs, now = Date.now, resourceInventory }) {
   if (signal?.aborted) throw new PreviewError('verifier dependency preflight canceled before launch', 2);
   const deadline = readTaskDeadlineEpochMs(env);
   if (deadline !== null) maxMs = Math.min(maxMs, deadline - now() - 10_000);
@@ -912,6 +919,12 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
   signal?.addEventListener('abort', onAbort, { once: true });
   if (signal?.aborted) onAbort();
   try {
+    if (resourceInventory) {
+      const identity = readProcessIdentity(child.pid);
+      assert.ok(identity, 'Verifier helper original process identity unavailable');
+      resourceInventory.record({ id: `process:${child.pid}:${identity}`, kind: 'process',
+        pid: child.pid, processIdentity: identity, processGroup: child.pid });
+    }
     const result = await Promise.race([closed, aborted]);
     await Promise.race([lifetime.waitForExit({ timeoutMs: maxMs }), aborted]);
     if (terminationReason) throw new PreviewError(terminationReason, 2);
@@ -2110,10 +2123,11 @@ export function verifyBgVerifierOutputRecord(output, record, invocation) {
  * deadline. Neither progress nor a forecast grants more time. Keep the default
  * dependency ceiling when omitted, and reserve the parent's cleanup window.
  * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal,
- *   env?: NodeJS.ProcessEnv, maxMs?: number, cutoffEpochMs?: number | null, now?: () => number }} options
+ *   env?: NodeJS.ProcessEnv, maxMs?: number, cutoffEpochMs?: number | null, now?: () => number,
+ *   resourceInventory?: ReturnType<typeof verifierResourceInventory> }} options
  */
 export async function prepareVerifierDependencies({ donor, dest, receipt, runPhase = async (_phase, operation) => operation(), signal,
-  env = process.env, maxMs, cutoffEpochMs, now = Date.now }) {
+  env = process.env, maxMs, cutoffEpochMs, now = Date.now, resourceInventory }) {
   const admission = admitVerifierCommandBudget(null, { env, nowMs: now() });
   if (maxMs !== undefined && (!Number.isSafeInteger(maxMs) || maxMs <= 0 || admission.deadlineEpochMs === null))
     throw new PreviewError('explicit verifier preparation allowance needs positive integer milliseconds and a finite caller task deadline', 2);
@@ -2122,7 +2136,7 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
   const preparationCutoff = cutoffs.length ? Math.min(...cutoffs) : null;
   env = verifierDependencyEnv(env);
   const run = (command, args) => runVerifierDependencyCommand(command, args,
-    { cwd: dest, env, signal, maxMs, cutoffEpochMs: preparationCutoff, now });
+    { cwd: dest, env, signal, maxMs, cutoffEpochMs: preparationCutoff, now, resourceInventory });
   // A retry can retain staging and completed dependency trees. Only this
   // pre-copy check permits staging; the locked helper must adopt it, and
   // subsequent source checks still reject unfinished copies. Runtime assets
@@ -2516,6 +2530,9 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   let phaseArchivePath;
   let taskEvidenceRoot;
   let taskEvidenceManifestPath;
+  let resourceInventory;
+  let inventoryCustody;
+  let inventoryTerminal;
   const admitBudget = (estimate, preparation = false) => {
     const admission = admitVerifierCommandBudget(estimate, { env, preparation, nowMs: clock.now() });
     budget = { deadlineEpochMs: admission.deadlineEpochMs, cleanupReserveMs: admission.cleanupReserveMs,
@@ -2526,6 +2543,15 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   try {
     assertOutsideArchive(owned, resolve(receiptPath));
     ownership = writeVerifierTaskReceipt(owned, sourceRepo, env, taskReceiptPath);
+    const originalDeadline = readTaskDeadlineEpochMs(env);
+    if (originalDeadline !== null) {
+      inventoryCustody = { ownership, sourceCommit };
+      resourceInventory = verifierResourceInventory({ path: `${receiptPath}.resources.jsonl`,
+        owner: ownership.taskId ?? ownership.processIdentity, deadlineEpochMs: originalDeadline,
+        custody: inventoryCustody, now: clock.now });
+      resourceInventory.record({ id: 'candidate-root', kind: 'root', path: owned });
+      resourceInventory.record({ id: 'source-root', kind: 'root', path: root });
+    }
     const tracedPhase = verifierPhaseRunner(`${resolve(receiptPath)}.phases.jsonl`, env,
       `${receiptPath}.child.json`);
     phaseArchivePath = tracedPhase.archivePath;
@@ -2575,6 +2601,12 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         }
         return result;
       }, metadata);
+      if (resourceInventory) {
+        const retained = { 'receipt.write': receiptPath, 'deps.snapshot': `${receiptPath}.snapshot.txt`,
+          'deps.receipt.write': `${receiptPath}.dependencies.json` }[phase];
+        if (retained && existsSync(retained)) resourceInventory.record({ id: phase, kind: 'binding',
+          path: resolve(retained), retain: 'original source/dependency evidence' });
+      }
       measurements[phase] = Math.ceil(performance.now() - before);
       if (!mustFinishAfterCancellation) {
         await new Promise(resolve => setImmediate(resolve));
@@ -2598,7 +2630,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       inputs, inputsFile, tauriInputs, gitCheckout: true }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
     const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase,
-      signal: cancellation.signal, env, maxMs: preparationMaxMs, cutoffEpochMs: budget.childCutoffEpochMs, now: clock.now });
+      signal: cancellation.signal, env, maxMs: preparationMaxMs, cutoffEpochMs: budget.childCutoffEpochMs, now: clock.now, resourceInventory });
     await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,
       `${JSON.stringify(dependencies)}\n`, { flag: 'wx', mode: 0o600 }));
     const childEstimate = estimateVerifierCommandBudget({ ...previousMeasurements, ...measurements }, childEstimateMs,
@@ -2665,6 +2697,12 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       };
       let onError, onClose;
       try {
+        if (resourceInventory) {
+          const identity = readProcessIdentity(child.pid);
+          assert.ok(identity, 'Verifier child original process identity unavailable');
+          resourceInventory.record({ id: `process:${child.pid}:${identity}`, kind: 'process',
+            pid: child.pid, processIdentity: identity, processGroup: child.pid });
+        }
         diagnostics = verifierChildDiagnostics(receiptPath);
         child.stdout.on('data', collect('stdout'));
         child.stderr.on('data', collect('stderr'));
@@ -2726,7 +2764,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       const after = await captureVerifierCommandDependencies({ dest: root, receipt, env,
         run: (command, args) => runVerifierDependencyCommand(command, args,
           { cwd: root, env: verifierDependencyEnv(env), signal: cancellation.signal,
-            cutoffEpochMs: budget.childCutoffEpochMs, now: clock.now }),
+            cutoffEpochMs: budget.childCutoffEpochMs, now: clock.now, resourceInventory }),
         onProgress: progress => runPhase.reportProgress?.('deps.postverify', progress) });
       // Keep the actual final census even on drift; never overwrite the
       // original observation with a reconstructed matching receipt.
@@ -2749,10 +2787,18 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     throw error;
   } finally {
     let cleanup = 'pending';
+    const inventoryOutcome = cancellationSignal ? 'cancellation' : budget?.cutoffTriggeredAtMs != null ? 'timeout'
+      : failure || (commandExitCode !== null && commandExitCode !== 0) ? 'failure' : 'success';
     try {
+      let inventoryHasWriters = false;
+      if (resourceInventory) {
+        inventoryTerminal = await resourceInventory.reconcile({ outcome: inventoryOutcome,
+          custody: { ownership: JSON.parse(readFileSync(taskReceiptPath, 'utf8')), sourceCommit } });
+        inventoryHasWriters = inventoryTerminal.observations.some(row => row.pid !== undefined && row.state !== 'exited');
+      }
       // An unverified exit is not permission to race a live writer. The task's
       // retained ownership receipt lets the existing reconciler clean it later.
-      if (failure?.retainVerifierTree || failure?.cause?.retainVerifierTree) {
+      if (inventoryHasWriters || failure?.retainVerifierTree || failure?.cause?.retainVerifierTree) {
         cleanup = 'deferred';
         process.stderr.write(`VERIFIER_CLEANUP_DEFERRED unverified process exit: ${owned}\n`);
       } else {
@@ -2782,12 +2828,25 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
           throw cleanupError;
         }
       }
+      if (resourceInventory) {
+        inventoryTerminal = await resourceInventory.reconcile({ outcome: inventoryOutcome, custody: inventoryCustody });
+        if (!failure && inventoryOutcome === 'success' && inventoryTerminal.status !== 'completed')
+          throw new PreviewError(`Verifier teardown unqualified: ${JSON.stringify(inventoryTerminal)}`, 2);
+      }
+    } catch (cleanupError) {
+      finalizationFailure = failure && failure !== cleanupError
+        ? new AggregateError([failure, cleanupError], `${failure.message}; verifier finalization failed: ${cleanupError.message}`)
+        : cleanupError;
+      throw finalizationFailure;
     } finally {
       try {
         if (ownership) {
           const next = `${taskReceiptPath}.${process.pid}.tmp`;
           try {
             await fs.writeFile(next, `${JSON.stringify({ ...ownership, cleanup,
+              resourceInventory: resourceInventory ? { path: `${receiptPath}.resources.jsonl`,
+                history: resourceInventory.checkpoint(), terminal: inventoryTerminal }
+                : { status: 'unknown', reason: 'original finite task deadline unavailable' },
               ...(budget ? { budget } : {}),
               ...(cancellationSignal ? { cancellationSignal } : {}),
               ...(taskEvidenceManifestPath ? { evidenceManifestPath: taskEvidenceManifestPath } : {}) })}\n`,
@@ -2999,12 +3058,9 @@ export function readVerifierPhaseMeasurements(path) {
       started.add(row.phase);
     } else if (row.event === 'progress') {
       const progress = row.progress;
-      assert.ok(started.has(row.phase) && ['deps.census', 'deps.postverify'].includes(row.phase) &&
-        Number.isSafeInteger(progress?.completedTrees) && Number.isSafeInteger(progress?.totalTrees) &&
-        progress.totalTrees > 0 && progress.totalTrees <= 1000 &&
-        progress.completedTrees >= 0 && progress.completedTrees < progress.totalTrees &&
-        typeof progress.currentTree === 'string' && progress.currentTree.length > 0 &&
-        progress.currentTree.length <= 256, 'Invalid verifier phase progress receipt');
+      assert.ok(started.has(row.phase) && ['deps.census', 'deps.postverify'].includes(row.phase),
+        'Invalid verifier phase progress receipt');
+      assertVerifierDependencyProgress(progress);
     } else {
       assert.ok(started.delete(row.phase) && ['completed', 'failed'].includes(row.event),
         'Verifier phase terminal record lacks a start');
@@ -3098,6 +3154,7 @@ function archiveVerifierTaskEvidence({ evidenceRoot, taskId, sourceCommit, recei
     ['dependencies.json', `${receiptPath}.dependencies.json`],
     ['dependencies-after.json', `${receiptPath}.dependencies.after.json`],
     ['task.json', taskReceiptPath],
+    ['resources.jsonl', `${receiptPath}.resources.jsonl`],
     ['phases.jsonl', phaseArchivePath],
     ['child.json', `${receiptPath}.child.json`],
     ['stdout.log', `${receiptPath}.stdout.log`],

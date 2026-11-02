@@ -26,6 +26,7 @@ import { appendFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
+import { parse as parseShellCommand } from 'shell-quote';
 import { codeIntelDelivery } from './delivery-ledger.mjs';
 
 /**
@@ -633,6 +634,99 @@ export function clampPrompt(prompt) {
   return typeof prompt === 'string' ? prompt.slice(0, PORTS['turn-start'].promptClamp) : '';
 }
 
+const SHELL_PRE_TOOL_NAMES = new Set(['Bash', 'bash', 'exec_command', 'shell_command', 'shell']);
+const PLAN_ANCHOR_REPAIR_KEYS = new Set(['slug', 'harness', 'itemId', 'anchors', 'expectedHash', 'rationale']);
+
+/**
+ * Read the command carried by a native shell-tool event.
+ * @param {{ input?: unknown, toolInput?: unknown }} partial
+ * @returns {string | null}
+ */
+function shellCommandFromPartial(partial) {
+  const input = partial?.input ?? partial?.toolInput;
+  if (!input || typeof input !== 'object') return null;
+  if (typeof input.cmd === 'string') return input.cmd;
+  return typeof input.command === 'string' ? input.command : null;
+}
+
+/**
+ * Permit only a single, read-only ripgrep invocation when authority lookup is
+ * unavailable. shell-quote exposes operators/substitutions as non-string
+ * tokens; reject those and ripgrep's command/config execution options.
+ * @param {string} command
+ * @param {NodeJS.ProcessEnv} env
+ */
+function isReadOnlyRipgrepCommand(command, env) {
+  if (command.length > 16_384 ||
+      command.includes(String.fromCharCode(0)) ||
+      command.includes(String.fromCharCode(10)) ||
+      command.includes(String.fromCharCode(13)) ||
+      command.includes(String.fromCharCode(96)) ||
+      command.includes('$')) return false;
+
+  let tokens;
+  try {
+    tokens = parseShellCommand(command);
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(tokens) || tokens.length === 0 || tokens.some(token => typeof token !== 'string')) return false;
+  if (tokens[0] !== 'rg') return false;
+  const args = tokens.slice(1);
+  if (args.some(arg => /^--(?:pre|pre-glob|config-path)(?:=|$)/.test(arg))) return false;
+  if (typeof env.RIPGREP_CONFIG_PATH === 'string' && env.RIPGREP_CONFIG_PATH.trim() && !args.includes('--no-config')) return false;
+  return true;
+}
+
+/**
+ * Permit the typed canonical plan-anchor repair path. The quoted heredoc makes
+ * its JSON data inert to the shell, and the allowlisted payload cannot replace
+ * plan prose or requirements. The operator still validates and authorizes the
+ * plans:edit call.
+ * @param {string} command
+ */
+function isCanonicalPlanAnchorRepairCommand(command) {
+  if (command.length > 32_768 || command.includes(String.fromCharCode(0))) return false;
+  const lines = command.split('\n').map(line => line.endsWith('\r') ? line.slice(0, -1) : line);
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length < 3) return false;
+
+  const header = lines.shift();
+  const closingDelimiter = lines.pop();
+  const match = /^ptool[ \t]+plans:edit[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[A-Za-z0-9._-]+"|'[A-Za-z0-9._-]+'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  if (!match || closingDelimiter !== match[2] || lines.includes(match[2])) return false;
+
+  let payload;
+  try {
+    payload = JSON.parse(lines.join('\n'));
+  } catch {
+    return false;
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  if (Object.keys(payload).some(key => !PLAN_ANCHOR_REPAIR_KEYS.has(key))) return false;
+  return typeof payload.slug === 'string' &&
+    /^[a-z0-9][a-z0-9-]*$/i.test(payload.slug) &&
+    typeof payload.itemId === 'string' &&
+    /^P-\d{3,}$/.test(payload.itemId) &&
+    Array.isArray(payload.anchors) &&
+    payload.anchors.length > 0 &&
+    payload.anchors.length <= 32;
+}
+
+/**
+ * Only a small set of non-implementation operations may pass through when the
+ * remote execution-authority lookup itself is unavailable. Everything else
+ * stays fail-closed.
+ * @param {{ tool?: string, input?: unknown, toolInput?: unknown }} partial
+ * @param {NodeJS.ProcessEnv} env
+ */
+function isSafeWithoutExecutionAuthority(partial, env) {
+  if (!SHELL_PRE_TOOL_NAMES.has(partial?.tool ?? '')) return false;
+  const command = shellCommandFromPartial(partial);
+  if (command === null) return false;
+  return isReadOnlyRipgrepCommand(command, env) || isCanonicalPlanAnchorRepairCommand(command);
+}
+
 /**
  * The whole pipeline for one event, minus the client specifics.
  *
@@ -680,7 +774,9 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     // EI-27540173897381380: an unavailable guard is not permission to mutate.
     // Context delivery retains its fail-silent contract; native edits and arbitrary
     // shell execution require an actual server verdict. Read/Grep/Glob still work.
-    if (port === 'pre-tool' && /^(?:Edit|Write|MultiEdit|edit|write|apply_patch|Bash|bash|exec_command|shell_command|shell|write_stdin)$/.test(partial.tool ?? '')) {
+    if (port === 'pre-tool' &&
+        /^(?:Edit|Write|MultiEdit|edit|write|apply_patch|Bash|bash|exec_command|shell_command|shell|write_stdin)$/.test(partial.tool ?? '') &&
+        !isSafeWithoutExecutionAuthority(partial, env)) {
       unavailableMutationGuard = (error = null) => {
         // No trace-file opt-in should be needed to distinguish an HTTP refusal
         // from a timeout. Include only transport metadata, never request/response
@@ -691,7 +787,9 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
             (post.operatorOrigin ? `; operatorOrigin=${post.operatorOrigin}` : '')
           : `stage=guard-threw; errorType=${error?.name ?? 'unknown'}`;
         return adapter.render('pre-tool',
-          `plan_execution_not_ready: execution authority is unavailable; this mutation is refused. Guard diagnostic: ${detail}. Use read-only tools or restore the operator, then retry.`, event);
+          'plan_execution_not_ready: execution-authority lookup failed; no server verdict was received. ' +
+          'This invocation was denied fail-closed because it may mutate state. Guard diagnostic: ' +
+          detail + '. Restore operator access, then retry.', event);
       };
     }
 

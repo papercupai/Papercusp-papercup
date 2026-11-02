@@ -53,7 +53,7 @@ test('P011 neutral browser executes the shared oracle and catches duplicate effe
 });
 
 test('P011 neutral browser renders inert content and rechecks current action authority', async ({ page }) => {
-  const document = page.locator('[data-result-id="neutral-document"]');
+  const document = page.locator('.structured-result[data-result-id="neutral-document"]');
   await expect(document).toContainText('Shared document reader');
   const safeLink = document.locator('a[href="https://example.com/neutral"]');
   await expect(safeLink).toHaveAttribute('target', '_blank');

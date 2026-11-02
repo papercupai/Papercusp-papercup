@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { hostname, userInfo } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import type { Sql, TransactionSql } from 'postgres';
 import { activeWorkspaceId } from './workspace-registry';
 import { readOperatorState } from './operator-state-pg';
 import { z } from 'zod';
@@ -85,15 +86,20 @@ export function savedStartupActivityPolicy(feature: Readonly<StartupActivityFeat
 }
 
 /** Extend existing audit records; strip undeclared fields before they reach storage. */
-export async function recordStartupActivityHistory(entry: StartupActivityHistoryEntry, actorIdentity: string, actorKind: 'user' | 'system' = 'user'): Promise<void> {
+export async function recordStartupActivityHistory(
+  entry: StartupActivityHistoryEntry,
+  actorIdentity: string,
+  actorKind: 'user' | 'system' = 'user',
+  transaction?: { sql: Sql | TransactionSql; workspaceId: string },
+): Promise<void> {
   if (!actorIdentity.trim()) throw new Error('Startup history requires actor identity');
   const safe = persistedHistorySchema.parse({ ...entry, actor: `${actorKind}:${opaque([actorIdentity])}` });
   if (safe.operation === 'policy-change' && (!safe.previous || !safe.resulting
     || safe.resulting.revision === null || safe.resulting.revision <= (safe.previous.revision ?? -1)))
     throw new Error('Policy history requires previous and resulting revisions');
-  const { sql } = getOrgPg();
-  const workspace = activeWorkspaceId();
-  if (!workspace.trim()) throw new Error('Startup history requires workspace identity');
+  const sql = transaction?.sql ?? getOrgPg().sql;
+  const workspace = transaction?.workspaceId ?? activeWorkspaceId();
+  if (!workspace.trim() || workspace === '*') throw new Error('Startup history requires workspace identity');
   await sql`
     INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
     VALUES (${randomUUID()}, ${new Date(safe.at).getTime()}, ${safe.actor}, ${historyAction}, ${safe.featureId},

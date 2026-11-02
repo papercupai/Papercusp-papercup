@@ -644,8 +644,8 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       expect(await (await post()).json()).toMatchObject({ ok: true, replayed: true });
       expect(await listTasks({ workspaceId, sessionId: identity.nativeSessionId!, coordOwnerId: identity.ownerId,
         classes: ['agent-session'] })).toHaveLength(1);
-      const stale = await host.acceptCommand({ ...command, commandId: `stale-${randomUUID()}`, expectedRuntimeGeneration: generation + 1 });
-      expect(await stale.terminal).toMatchObject({ status: 'refused', refusal: { code: 'runtime_generation_mismatch' } });
+      const mismatched = await host.acceptCommand({ ...command, commandId: `mismatch-${randomUUID()}`, expectedRuntimeGeneration: generation + 1 });
+      expect(await mismatched.terminal).toMatchObject({ status: 'refused', refusal: { code: 'runtime_generation_mismatch' } });
       const interrupt = host.startCommand({ schema: SU_SESSION_SCHEMA, protocolVersion: SU_SESSION_PROTOCOL_VERSION,
         type: 'interrupt', commandId: `interrupt-${randomUUID()}`, issuedAt: new Date().toISOString(), target: identity });
       expect(await interrupt.terminal).toMatchObject({ status: 'completed' });
@@ -658,7 +658,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       expect(await afterEnd.terminal).toMatchObject({ status: 'refused' });
       console.info('SU_EXEC_R8_NATIVE_RECEIPT', JSON.stringify({ backend, executionKind: 'programmatic',
         ownerId: identity.ownerId, nativeSessionId: identity.nativeSessionId, runtimeGeneration: generation, taskId,
-        toolStream: true, durableReplay: true, staleCommandRefused: true, ended: true,
+        toolStream: true, durableReplay: true, generationMismatchRefused: true, ended: true,
         // This case deliberately does not claim the separate PTY, active-tool
         // interruption, background-child or operator-loss qualification duties.
         remaining: ['native-pty', 'active-tool-interrupt', 'background-child', 'operator-loss'] }));

@@ -61,8 +61,15 @@ export type ManagedCategory =
  */
 export type TimerClassification = 'must-sample' | 'timeout-reaper' | 'violation';
 
+/** Trusted host registration metadata, independent of category and load shedding. */
+export type ManagedActivityPolicy =
+  | { readonly kind: 'workspace'; readonly workspaceId: string; readonly featureId: string }
+  | { readonly kind: 'required-control'; readonly reason: string };
+
 export interface ManagedTimerOptions {
   category: ManagedCategory;
+  /** Bind optional work to its existing policy identity, or explain its control/recovery purpose. */
+  activity?: ManagedActivityPolicy;
   /** Keep a one-shot CLI alive until its owner calls stop(); background timers default to unref. */
   ref?: boolean;
   /** Heavy ticks shed a cycle under load when the injected shouldShed(name) returns true. Light ticks omit it. */
@@ -123,6 +130,8 @@ export interface ManagedTimerOptions {
 export interface ManagedEntry {
   name: string;
   category: ManagedCategory;
+  /** Absent for registrations whose execution-policy scope has not been classified. */
+  activity?: ManagedActivityPolicy;
   intervalMs: number;
   /** epoch ms when armed. */
   armedAt: number;
@@ -440,6 +449,7 @@ function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTim
           deliver(() => onHung({ ...episode, heldMs }));
         }, {
           category: 'watchdog', classification: 'timeout-reaper', instanced: true,
+          activity: { kind: 'required-control', reason: 'Detects hung execution and delivers recovery alarms.' },
           phase: 'arm', allowInTest: opts.allowInTest,
         });
         activeHang = { watcher, finish: () => {
@@ -586,6 +596,7 @@ export function managedSetInterval(
   const entry: ManagedEntry = {
     name,
     category: opts.category,
+    ...(opts.activity === undefined ? {} : { activity: Object.freeze({ ...opts.activity }) }),
     intervalMs,
     armedAt: state.resolved.now(),
     lastFireAt: null,

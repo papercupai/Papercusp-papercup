@@ -10,10 +10,12 @@
  */
 import { notifySyncInvalidate } from './sync-sse';
 import { readOperatorState, updateOperatorState } from './operator-state-pg';
-import { savedBackgroundActivitySchema, savedStartupActivityStateSchema, startupPauseIsActive } from './startup-activity';
-import { startupActivityFeatureId } from './schedule-inventory';
+import { recordStartupActivityHistory, savedBackgroundActivitySchema, savedStartupActivityStateSchema, startupPauseIsActive } from './startup-activity';
+import { collectScheduleInventory, scheduleStartupFeature, startupActivityFeatureId, startupPolicySchema, type StartupActivityPolicy } from './schedule-inventory';
 import { getSystemActionEntry, SYSTEM_TARGET_PREFIX } from './harness/routines/system-actions';
-import type { z } from 'zod';
+import { activeWorkspaceId } from './workspace-registry';
+import type { SessionUser } from './auth';
+import { z } from 'zod';
 
 // ── Pause / resume sentinel (PG-backed, migration 029) ─────────────────
 //
@@ -37,6 +39,8 @@ interface PauseState {
 async function changePauseState(
   change: (current: PauseState, policy: NonNullable<PauseState['backgroundActivity']>) => PauseState,
   expectedRevision?: number,
+  history?: { featureId: string; actorId: string; operation: 'policy-change' | 'pause' | 'resume'; defaults: StartupActivityPolicy },
+  workspaceId?: string,
 ): Promise<PauseState> {
   const result = await updateOperatorState<PauseState>('operator_paused', { paused: false }, current => {
     savedStartupActivityStateSchema.parse(current);
@@ -44,10 +48,20 @@ async function changePauseState(
       version: 1, revision: 0, automatic: true, pausedUntil: null, features: {},
     });
     if (expectedRevision !== undefined && expectedRevision !== policy.revision)
-      throw new Error('Startup policy changed; refresh before retrying');
+      throw Object.assign(new Error('Startup policy changed; refresh before retrying'), { code: 'startup_policy_conflict' });
     if (!Number.isSafeInteger(policy.revision + 1)) throw new Error('Startup policy revision unavailable');
     return change(current, { ...policy, revision: policy.revision + 1 });
-  });
+  }, workspaceId, history ? async (tx, previous, next, workspace) => {
+    const featurePolicy = (state: Readonly<PauseState>): StartupActivityPolicy => {
+      const policy = state.backgroundActivity;
+      return { ...history.defaults, ...policy?.features[history.featureId], revision: policy?.revision ?? 0 };
+    };
+    await recordStartupActivityHistory({
+      featureId: history.featureId, operation: history.operation, status: 'completed',
+      at: new Date().toISOString(), actor: 'system', trigger: 'settings', source: 'settings', reason: 'user-choice',
+      previous: featurePolicy(previous), resulting: featurePolicy(next),
+    }, history.actorId, 'user', { sql: tx, workspaceId: workspace });
+  } : undefined);
   void notifySyncInvalidate('operatorPauseFlag').catch(() => {});
   return result;
 }
@@ -75,6 +89,57 @@ export async function setBackgroundActivityAutomatic(automatic: boolean, expecte
   await changePauseState((current, policy) => ({
     ...current, backgroundActivity: { ...policy, automatic },
   }), expectedRevision);
+}
+
+/** The settings caller chooses an opaque feature, never an execution/workspace identity. */
+export const featureBackgroundActivityChangeSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('automatic'), automatic: z.boolean() }).strict(),
+  z.object({ action: z.literal('pause'), until: savedBackgroundActivitySchema.shape.pausedUntil }).strict(),
+  z.object({ action: z.literal('resume') }).strict(),
+]);
+
+export function assertBackgroundActivityAuthority(principal: SessionUser): string {
+  const workspace = activeWorkspaceId();
+  if (!workspace.trim() || workspace === '*' || principal.workspace_id !== workspace
+    || !z.string().uuid().safeParse(principal.id).success
+    || !principal.capabilities.some(capability => capability === '*' || capability === 'workspace:operate'))
+    throw Object.assign(new Error('Startup policy authority unavailable'), { code: 'startup_policy_forbidden' });
+  return workspace;
+}
+
+export async function setFeatureBackgroundActivityPolicy(
+  featureId: string,
+  change: z.infer<typeof featureBackgroundActivityChangeSchema>,
+  expectedRevision: number,
+  principal: SessionUser,
+): Promise<StartupActivityPolicy> {
+  const workspace = assertBackgroundActivityAuthority(principal);
+  if (!/^activity-[a-f0-9]{64}$/.test(featureId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+    throw Object.assign(new Error('Invalid startup policy request'), { code: 'startup_policy_invalid' });
+  const action = featureBackgroundActivityChangeSchema.parse(change);
+  if (action.action === 'pause' && action.until !== null && Date.parse(action.until) <= Date.now())
+    throw Object.assign(new Error('Pause must end at a future time'), { code: 'startup_policy_invalid' });
+  // Resolve the current registration under authenticated workspace scope. A saved
+  // orphan, caller-supplied descriptor, or other device is not a control target.
+  const rows = await collectScheduleInventory();
+  const row = rows.find(candidate => startupActivityFeatureId(candidate, { workspaceId: workspace }) === featureId);
+  const feature = row ? scheduleStartupFeature(row, { workspaceId: workspace }) : null;
+  const role = row?.detail.targetRole;
+  if (!feature || feature.scope.kind !== 'workspace' || feature.scope.id !== workspace
+    || (typeof role === 'string' && role.startsWith(SYSTEM_TARGET_PREFIX)
+      && getSystemActionEntry(role.slice(SYSTEM_TARGET_PREFIX.length))?.requiredForControl))
+    throw Object.assign(new Error('Startup feature cannot be controlled here'), { code: 'startup_policy_forbidden' });
+  const state = await changePauseState((current, policy) => {
+    const previous = policy.features[featureId] ?? { ...feature.desired, paused: false };
+    const override = action.action === 'automatic' ? { automatic: action.automatic }
+      : action.action === 'pause' ? { paused: true, pausedUntil: action.until }
+        : { paused: false, pausedUntil: null };
+    return { ...current, backgroundActivity: { ...policy, features: {
+      ...policy.features, [featureId]: { ...previous, ...override, revision: policy.revision },
+    } } };
+  }, expectedRevision, { featureId, actorId: principal.id, defaults: feature.desired,
+    operation: action.action === 'automatic' ? 'policy-change' : action.action }, workspace);
+  return startupPolicySchema.parse({ ...state.backgroundActivity!.features[featureId]!, revision: state.backgroundActivity!.revision });
 }
 
 export async function isPaused(): Promise<boolean> {

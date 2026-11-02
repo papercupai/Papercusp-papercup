@@ -939,6 +939,7 @@ export function startSuRpcEngine(
         // resource scope, protected capture receipt or funded turn.
       } } : {}),
       spec: { class: 'agent-session', title: `PUI ${backend} structured engine`, launchedBy: 'pui-su-session',
+        sessionId: nativeId() || null,
         argv: [resolvedBinary, ...args],
         harnessSlug: binding.harnessSlug, planSlug: binding.planSlug, cwd: boot.cwd,
         detail: { coordOwnerId: binding.ownerId, advSessionId: binding.advSessionId, transport: 'structured' } },
@@ -1083,6 +1084,9 @@ export function startSuRpcEngine(
       else await (adapter as OmpSuSessionAdapter).consumeTranscriptSnapshot({ preserveLifecycle: true });
     }
     if (closed || !ownsRuntime()) throw new Error('Structured connection closed or was replaced during startup');
+    options.stage?.('rpc-bind-task-identity');
+    await peer.bindNativeSession?.(nativeId());
+    if (closed || !ownsRuntime()) throw new Error('Structured runtime closed or was replaced while binding its process');
     options.stage?.('rpc-finalize-resume');
     await options.beforeReady?.(peer.pid());
     if (closed || !ownsRuntime()) throw new Error(`${backend} closed or was replaced while finalizing resume`);

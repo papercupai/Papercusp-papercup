@@ -72,6 +72,22 @@ function harness() {
 afterEach(() => resetScheduledRegistry());
 
 describe('execution eligibility', () => {
+  it('pins the declared workspace identity before handing a timer to the host policy', async () => {
+    const h = harness();
+    const activity = { kind: 'workspace' as const, workspaceId: 'workspace-a', featureId: 'feature-a' };
+    const canRun = vi.fn(() => false);
+    configureScheduledRegistry({ canRun });
+    const tick = vi.fn();
+    managedSetInterval('scoped', 100, tick, { category: 'watchdog', activity });
+    activity.workspaceId = 'workspace-b';
+    await h.fire();
+    expect(canRun).toHaveBeenCalledWith(expect.objectContaining({
+      activity: { kind: 'workspace', workspaceId: 'workspace-a', featureId: 'feature-a' },
+    }));
+    expect(Object.isFrozen(getManaged('scoped')!.activity)).toBe(true);
+    expect(tick).not.toHaveBeenCalled();
+  });
+
   it('gates fireOnArm and ordinary intervals independently of shedding', async () => {
     const h = harness();
     let allowed = false;

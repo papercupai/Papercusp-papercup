@@ -7,6 +7,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { startSupervisorBeat } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { managedSpawn } from './task-manager/managed-spawn';
 import { killTask } from './task-manager/control';
+import { bindLiveAgentSessionTasksToNativeSession } from './task-manager/store';
 import type { TaskSpec } from './task-manager/types';
 import { redactSensitiveText } from './sensitive-text';
 import { processMonotonicClock } from './process-monotonic-clock';
@@ -36,6 +37,9 @@ export interface SuStdioPeer {
   done: Promise<void>;
   close(): Promise<void>;
   pid(): number | null;
+  /** Link the enrolled process after the native protocol identifies its session.
+   * Optional only for older injected peers that do not enroll a process. */
+  bindNativeSession?(sessionId: string): Promise<void>;
   /** Optional for older peer implementations. A missing state cannot prove a
    * complete receipt population. Read after close(), not just turn/completed. */
   receiptState?(): SuStdioReceiptState;
@@ -289,6 +293,13 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
   }
   return {
     send, done, close, pid: () => child.pid ?? null,
+    async bindNativeSession(sessionId) {
+      if (!sessionId.trim()) throw new Error('Native process session identity is missing');
+      const bound = await bindLiveAgentSessionTasksToNativeSession({
+        workspaceId: options.workspaceId, coordOwnerId: options.ownerId, sessionId, initialTaskId: taskId,
+      });
+      if (!bound.includes(taskId)) throw new Error('Native process enrollment did not match its session');
+    },
     receiptState: () => ({ peerId, clockId: processMonotonicClock.id, emitted: receiptSequence,
       enabled: Boolean(options.onReceipt), sinkFailed: receiptSinkFailed, exited, pendingWrites }),
     request(frame, timeoutMs = 45_000) {

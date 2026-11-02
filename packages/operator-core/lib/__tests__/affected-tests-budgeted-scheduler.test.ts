@@ -231,6 +231,50 @@ describe('private native proof custody (P002)', () => {
     expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('complete');
   });
 
+  describe('bounded manifest metadata', () => {
+    let f: ReturnType<typeof fixture>, saved: ReturnType<ReturnType<typeof fixture>['save']>;
+    let index: { schemaVersion: string; byteLength: number; sha256: string;
+      parts: Array<{ offset: number; artifact: { ref: string; sha256: string; byteLength: number } }> };
+    beforeAll(() => {
+      f = fixture();
+      const out = f.contract.expected[0]!.out!, payload = JSON.parse(readFileSync(out, 'utf8'));
+      const evaluation = { ...payload.rows[0].moduleEvaluations,
+        entries: Array(1024).fill(payload.rows[0].moduleEvaluations.entries[0]), vmInputs: [] };
+      payload.rows = Array.from({ length: 64 }, () => ({ moduleEvaluations: evaluation }));
+      payload.diagnostics = []; payload.nativeRun.files = [];
+      writeFileSync(out, JSON.stringify(payload));
+      saved = f.save();
+      index = JSON.parse(readFileSync(join(f.directory, 'objects', saved.locator.manifest.ref), 'utf8'));
+      rmSync(f.producer, { recursive: true });
+    }, 60_000);
+
+    it('retains a large reference inventory within the unchanged object and metadata byte limits', () => {
+      expect(index.schemaVersion).toBe('native-proof-index-v1');
+      expect(index.byteLength).toBeGreaterThan(16 * 1024 * 1024);
+      expect(saved.locator.manifest.byteLength).toBeLessThan(16 * 1024 * 1024);
+      expect(index.parts.every(part => part.artifact.byteLength <= 8 * 1024 * 1024)).toBe(true);
+      const consumed = verifyNativeProofPacket(f.directory, saved.locator, f.contract);
+      expect(consumed.status).toBe('complete');
+      expect(consumed.manifest.groups[0]!.references).toHaveLength(65536);
+      expect(consumed.manifest.verdicts.nativeProof).toBe('unqualified');
+      expect(consumed.manifest.limits.objectBytes).toBe(16 * 1024 * 1024);
+      expect(consumed.manifest.limits.bytes).toBe(64 * 1024 * 1024);
+    });
+
+    it.each(['offset', 'digest', 'missing-part', 'object-bound', 'aggregate-bound'])
+      ('refuses metadata %s without trusting a replacement index', fault => {
+        const changed = structuredClone(index);
+        if (fault === 'offset') changed.parts[1]!.offset++;
+        if (fault === 'digest') changed.sha256 = '0'.repeat(64);
+        if (fault === 'missing-part') changed.parts.pop();
+        if (fault === 'object-bound') changed.parts[0]!.artifact.byteLength = 16 * 1024 * 1024 + 1;
+        if (fault === 'aggregate-bound') changed.byteLength = 64 * 1024 * 1024 + 1;
+        const manifest = createNativeArtifactPersister(join(f.directory, 'objects'))
+          .persist(Buffer.from(JSON.stringify(changed)), 'native-proof.json');
+        expect(() => verifyNativeProofPacket(f.directory, { ...saved.locator, manifest }, f.contract)).toThrow();
+      });
+  });
+
   function largeOutFixture() {
     const f = fixture(), out = f.contract.expected[0]!.out!;
     const payload = JSON.parse(readFileSync(out, 'utf8'));

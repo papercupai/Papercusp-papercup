@@ -1651,7 +1651,7 @@ async function main() {
           env: scriptEnvironment,
         });
       } finally {
-        if (testReceiptDir) rmSync(testReceiptDir, { recursive: true, force: true });
+        finalizeTestReceiptDir(testReceiptDir, run);
       }
 
       if (run.error) {
@@ -1692,6 +1692,28 @@ async function main() {
  */
 export const isDirectCliInvocation = (entryPath = process.argv[1]) =>
   typeof entryPath === 'string' && /(?:^|[\\/])lint-as-committed\.mjs$/.test(entryPath);
+
+/**
+ * Successful test:file runs have already proved their canonical rows and can
+ * discard the private receipt sink. A failed run keeps it for the diagnosis of
+ * late INSERT acknowledgements; the existing stale-root sweep removes inactive
+ * receipt directories after its six-hour retention window.
+ */
+export function finalizeTestReceiptDir(testReceiptDir, run) {
+  if (!testReceiptDir) return { retained: false };
+  if (!run?.error && run?.status === 0 && !run?.signal) {
+    rmSync(testReceiptDir, { recursive: true, force: true });
+    return { retained: false };
+  }
+
+  const outcome = run?.signal
+    ? `signal ${run.signal}`
+    : run?.error
+      ? `spawn error: ${run.error.message ?? String(run.error)}`
+      : `exit ${run?.status ?? 'unknown'}`;
+  console.error(`lint-as-committed: test:file receipt artifacts retained at ${testReceiptDir} after ${outcome}; inactive receipt directories are eligible for cleanup by the existing stale-root sweep after ${KEEP_TTL_MS / 3_600_000}h.`);
+  return { retained: true, path: testReceiptDir };
+}
 
 if (isDirectCliInvocation()) {
   main();

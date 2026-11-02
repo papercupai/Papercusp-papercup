@@ -56,6 +56,45 @@ function harness({
 }
 
 describe('WI-10002078 — production carry re-arms cannot outlive their child epoch', () => {
+  it('retains retryable carry preparation until delivery and releases the mutex between attempts', async () => {
+    const mutex = makeInjectMutex();
+    const message = carry();
+    let resume!: () => void;
+    const pause = new Promise<void>(resolve => { resume = resolve; });
+    const performDelivery = vi.fn()
+      .mockResolvedValueOnce({ delivered: false, retryable: true, reason: 'codex-route-unavailable' })
+      .mockResolvedValue({ delivered: true, reason: 'delivered' });
+    const onSettlement = vi.fn();
+    const waitWakeModeRetry = vi.fn(async () => {
+      const release = await mutex.acquire();
+      release();
+      await pause;
+    });
+    const controller = makeCarryRearmController({
+      acquireInject: () => mutex.acquire(),
+      waitAtPrompt: async () => ({ deferred: false }),
+      performDelivery, recycle: vi.fn(), emitEvent: vi.fn(),
+      waitWakeModeRetry, onSettlement,
+    });
+    try {
+      controller.schedule(message);
+      await drain();
+      expect(waitWakeModeRetry).toHaveBeenCalledTimes(1);
+      expect(controller.pendingCount('carry-respawn')).toBe(1);
+      expect(onSettlement).not.toHaveBeenCalled();
+      resume();
+      await drain();
+      expect(performDelivery).toHaveBeenCalledTimes(2);
+      expect(performDelivery.mock.calls[1]?.[0]).toBe(message);
+      expect(onSettlement).toHaveBeenCalledTimes(1);
+      expect(onSettlement.mock.calls[0]?.[1]).toMatchObject({ delivered: true });
+      expect(controller.pendingCount()).toBe(0);
+    } finally {
+      resume();
+      controller.dispose();
+    }
+  });
+
   it('retires an obsolete retry before waiting on the successor prompt', async () => {
     const h = harness();
     const release = await h.mutex.acquire();

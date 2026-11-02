@@ -289,6 +289,10 @@ const custodyLimits = Object.freeze({ ...legacyCustodyLimits, referenceOccurrenc
 // an independent finite population bound; rollover never admits a larger object.
 // Oversized OUT files use multiple ordinary objects, with one sealed logical entry.
 const custodyArchiveLimits = Object.freeze({ segments: 64, objects: custodyLimits.objects });
+// Control metadata has the same finite aggregate read budget as before. Large
+// reference inventories need ordinary bounded objects too, not a larger IO cap.
+const custodyMetadataChunkBytes = 8 * 1024 * 1024;
+const custodyMetadataParts = Math.ceil(custodyLimits.bytes / custodyMetadataChunkBytes);
 const custodyFamilyKeys = ['A', 'B', 'C', 'D', 'auxiliary'];
 function custodyProcessSourcesRequested(expected) {
   // Older independent contracts required all four families unconditionally.
@@ -431,6 +435,46 @@ function custodyOutBytes(entry, read, allowPartial = false) {
   if (complete && offset !== byteLength || hash.digest('hex') !== sha256)
     throw new Error('custody OUT reassembly mismatch');
   return Buffer.concat(chunks, offset);
+}
+
+function persistCustodyManifest(store, manifest) {
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  if (bytes.length <= custodyLimits.objectBytes) return store.persist(bytes, 'native-proof.json');
+  if (bytes.length > custodyLimits.bytes) throw new Error('custody metadata byte limit');
+  const parts = [];
+  for (let offset = 0; offset < bytes.length; offset += custodyMetadataChunkBytes) {
+    parts.push({ offset, artifact: store.persist(bytes.subarray(offset,
+      offset + custodyMetadataChunkBytes), 'native-metadata-chunk') });
+  }
+  const index = Buffer.from(JSON.stringify({ schemaVersion: 'native-proof-index-v1',
+    byteLength: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), parts }));
+  // Reads charge the index, every part and each EOF sentinel to ONE budget.
+  if (index.length + bytes.length + parts.length + 1 > custodyLimits.bytes)
+    throw new Error('custody metadata byte limit');
+  return store.persist(index, 'native-proof.json');
+}
+
+function readCustodyManifest(pin, read) {
+  const budget = { objects: 0, bytes: 0, private: true };
+  const value = JSON.parse(read(pin, budget).toString('utf8'));
+  if (value.schemaVersion !== 'native-proof-index-v1') return value;
+  if (!Number.isSafeInteger(value.byteLength) || value.byteLength <= custodyLimits.objectBytes ||
+      value.byteLength > custodyLimits.bytes || !comparisonDigest(value.sha256) ||
+      !Array.isArray(value.parts) || !value.parts.length || value.parts.length > custodyMetadataParts)
+    throw new Error('custody metadata index mismatch');
+  const chunks = [], hash = createHash('sha256');
+  let offset = 0;
+  for (const part of value.parts) {
+    if (part.offset !== offset || !Number.isSafeInteger(part.artifact?.byteLength) ||
+        part.artifact.byteLength <= 0 || part.artifact.byteLength > custodyMetadataChunkBytes ||
+        offset + part.artifact.byteLength > value.byteLength)
+      throw new Error('custody metadata chunk mismatch');
+    const bytes = read(part.artifact, budget);
+    chunks.push(bytes); hash.update(bytes); offset += bytes.length;
+  }
+  if (offset !== value.byteLength || hash.digest('hex') !== value.sha256)
+    throw new Error('custody metadata reassembly mismatch');
+  return JSON.parse(Buffer.concat(chunks, offset).toString('utf8'));
 }
 
 /** Publish an immutable edition; failures preserve useful bytes and explicit gaps.
@@ -610,9 +654,10 @@ export function retainNativeProofPacket(directory, input) {
     verdicts: { custody: gaps.length ? 'partial' : 'complete', execution: input.execution ?? 'unknown',
       protocol: 'unqualified', producerRetirement: 'not-performed', cleanup: input.cleanup ?? 'unknown',
       nativeProof: 'unqualified', acceptance: 'unmeasured' } };
-  const manifestPin = store.persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+  const manifestPin = persistCustodyManifest(store, manifest);
   // Segment/manifest metadata is separately object-bounded, not capture content.
-  for (const name of custodyInventory(objectRoot, custodyLimits.objects + custodyArchiveLimits.segments + 1)) {
+  for (const name of custodyInventory(objectRoot,
+    custodyLimits.objects + custodyArchiveLimits.segments + custodyMetadataParts + 1)) {
     const fd = openSync(join(objectRoot, name), constants.O_RDONLY | constants.O_NOFOLLOW);
     try { fsyncSync(fd); } finally { closeSync(fd); }
   }
@@ -654,8 +699,9 @@ export function verifyNativeProofPacket(directory, locator, contract) {
   };
   // The producer's content budget excludes the manifest it writes afterward.
   // Apply the same accounting when consuming a partial packet at that limit;
-  // the manifest still has its own ordinary single-object bound.
-  const manifest = JSON.parse(read(locator.manifest, { objects: 0, bytes: 0, private: true }, null).toString('utf8'));
+  // Metadata parts share one bounded read budget; every object retains its
+  // ordinary single-object bound. Legacy single-object manifests still work.
+  const manifest = readCustodyManifest(locator.manifest, read);
   const legacy = manifest.schemaVersion === 'native-proof-custody-v1';
   segmented = manifest.schemaVersion === 'native-proof-custody-v3';
   const current = manifest.schemaVersion === 'native-proof-custody-v2' || segmented;

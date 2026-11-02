@@ -1,15 +1,88 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { configureScheduledRegistry, managedSetInterval, resetScheduledRegistry } from '@papercusp/scheduled-registry';
 import { installManagedTickAlarm } from './managed-tick-alarm';
+import { workspaceBackgroundActivityAllowed } from '../device-operator-actions';
 
 vi.mock('@dbos-inc/dbos-sdk', () => { throw new Error('DBOS unavailable'); });
+vi.mock('../device-operator-actions', () => ({ workspaceBackgroundActivityAllowed: vi.fn() }));
 
 afterEach(() => {
   resetScheduledRegistry();
+  vi.mocked(workspaceBackgroundActivityAllowed).mockReset();
   vi.useRealTimers();
 });
 
 describe('production managed tick alarm adapter', () => {
+  it('checks the declared workspace before fireOnArm and each later fire, including watchdog categories', async () => {
+    vi.useFakeTimers();
+    vi.mocked(workspaceBackgroundActivityAllowed).mockResolvedValue(false);
+    installManagedTickAlarm();
+    const tick = vi.fn();
+    const featureId = `activity-${'a'.repeat(64)}`;
+    managedSetInterval('workspace-optional', 1000, tick, {
+      category: 'watchdog', classification: 'must-sample', fireOnArm: true,
+      activity: { kind: 'workspace', workspaceId: 'workspace-a', featureId },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(workspaceBackgroundActivityAllowed).toHaveBeenCalledOnce());
+    expect(tick).not.toHaveBeenCalled();
+    expect(workspaceBackgroundActivityAllowed).toHaveBeenLastCalledWith('workspace-a', featureId);
+    vi.mocked(workspaceBackgroundActivityAllowed).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(tick).toHaveBeenCalledOnce());
+    vi.mocked(workspaceBackgroundActivityAllowed).mockResolvedValue(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(tick).toHaveBeenCalledOnce();
+    expect(workspaceBackgroundActivityAllowed).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps explicitly justified control ticks synchronous without consulting optional policy', () => {
+    let fire!: () => void;
+    configureScheduledRegistry({ setIntervalImpl: callback => { fire = callback; return {}; } });
+    installManagedTickAlarm();
+    const tick = vi.fn();
+    managedSetInterval('control', 1000, tick, {
+      category: 'global-sweep',
+      activity: { kind: 'required-control', reason: 'Restores the settings control channel.' },
+    });
+    fire();
+    expect(tick).toHaveBeenCalledOnce();
+    expect(workspaceBackgroundActivityAllowed).not.toHaveBeenCalled();
+  });
+
+  it('withholds malformed scoped registrations before reading any workspace policy', async () => {
+    vi.useFakeTimers();
+    installManagedTickAlarm();
+    vi.mocked(workspaceBackgroundActivityAllowed).mockResolvedValue(true);
+    const tick = vi.fn();
+    for (const [name, workspaceId, featureId] of [
+      ['unknown-workspace', '*', `activity-${'a'.repeat(64)}`],
+      ['missing-feature', 'workspace-a', ''],
+    ]) managedSetInterval(name, 1000, tick, {
+      category: 'global-sweep', activity: { kind: 'workspace', workspaceId, featureId },
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(tick).not.toHaveBeenCalled();
+    expect(workspaceBackgroundActivityAllowed).not.toHaveBeenCalled();
+  });
+
+  it('withholds control declarations without a reason and failed optional-policy reads', async () => {
+    vi.useFakeTimers();
+    configureScheduledRegistry({ log: vi.fn() });
+    installManagedTickAlarm();
+    const tick = vi.fn();
+    managedSetInterval('empty-control', 1000, tick, {
+      category: 'watchdog', activity: { kind: 'required-control', reason: ' ' },
+    });
+    vi.mocked(workspaceBackgroundActivityAllowed).mockRejectedValue(new Error('private policy body'));
+    managedSetInterval('unreadable-policy', 1000, tick, {
+      category: 'global-sweep', activity: { kind: 'workspace', workspaceId: 'workspace-a', featureId: `activity-${'b'.repeat(64)}` },
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(workspaceBackgroundActivityAllowed).toHaveBeenCalledOnce());
+    expect(tick).not.toHaveBeenCalled();
+  });
+
   it('raises and resolves actual shared alarm state while DBOS is unavailable', async () => {
     // Load the shared rail before advancing fake time; module I/O uses real event-loop turns.
     await import('../alarm-attention');

@@ -33,6 +33,27 @@ const deferred = <T,>() => {
 };
 
 describe('exact pending carry cancellation', () => {
+  it('retries only the exact begun request, never a replay or a settled request', () => {
+    const guard = state();
+    const msg = carry();
+    expect(guard.admit(msg)).toBeNull();
+    expect(guard.begin(msg)).toBeNull();
+    expect(guard.begin(msg)).toBeNull();
+    expect(guard.admit({ ...msg })).toBe('carry-already-committed');
+    expect(guard.begin({ ...msg })).toBe('carry-already-committed');
+    guard.end(msg);
+    expect(guard.begin(msg)).toBe('carry-already-committed');
+  });
+
+  it('revalidates host identity before retrying the same begun request', () => {
+    let current = { ...identity };
+    const guard = createPendingCarryFence({ identity: () => current, now: () => NOW });
+    const msg = carry();
+    expect(guard.begin(msg)).toBeNull();
+    current = { ...current, childGeneration: current.childGeneration + 1 };
+    expect(guard.begin(msg)).toBe('stale-carry-target');
+  });
+
   it('tombstones before arrival, refuses delayed old execution and preserves a newer nonce', () => {
     const guard = state();
     expect(guard.fence(request())).toEqual(receipt());

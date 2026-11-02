@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolResult } from '@papercusp/tooldef';
 
+import capabilityEdit from './capability/edit';
 import launchAgent from './capability/launch-agent';
 import migrate from './db/migrate';
 import consultDecline from './consult/decline';
@@ -51,6 +52,8 @@ const LATE_RETURN_MUTATORS = {
   'consult:decline': consultDecline,
   'fleet:launch-on-plan': fleetLaunchOnPlan,
   'capability:launch-agent': launchAgent,
+  // EI-27646651852056454: the nested repair-queue dispatch follows the committed replacement.
+  'capability:edit': capabilityEdit,
   // EI-25219048009184886: a late migration success must carry the schema ledger identity.
   'db:migrate': migrate,
   // EI-25175620446966840: the write tool's p95 reached 82% of its dispatch budget.
@@ -105,6 +108,30 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
     for (const [name, tool] of Object.entries(LATE_RETURN_MUTATORS)) {
       expect(tool.name).toBe(name);
     }
+  });
+
+  it('capability:edit identifies committed replacements and fails closed on ambiguous results', () => {
+    const receipt = capabilityEdit.abortCompletionReceipt;
+    expect(receipt).toBeTypeOf('function');
+    const attempt = { callId: 'capability-edit-call-1', toolName: 'capability:edit' };
+    const result = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    }) as ToolResult;
+
+    expect(receipt!({}, result({ ok: true, path: '/repo/source.ts', replacements: 1 }), attempt))
+      .toMatchObject({
+        status: 'recorded',
+        effectRef: 'capability-edit:capability-edit-call-1:/repo/source.ts',
+        diagnostics: { path: '/repo/source.ts', replacements: 1 },
+      });
+    expect(receipt!({}, result({ ok: false, reason: 'not_found' }), attempt)).toMatchObject({
+      status: 'not-recorded',
+      reason: 'capability:edit returned before the file replacement (not_found)',
+    });
+    expect(receipt!({}, result({ ok: true, path: '/repo/source.ts' }), attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-edit-result-identity'],
+    });
   });
 
   it('inbox:bulk-run-report identifies partial writes and explicit no-write results', () => {

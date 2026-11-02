@@ -9,12 +9,14 @@ import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { fileLockedResult, guardFileLock } from '../locks/file-lock-guard';
 import { recordEditAttribution } from '../../edit-attribution';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { refuseRestrictedRuntimeWrite } from './write';
 import { occurrences, spliceLiteral, squashWhitespace } from './text-splice';
 import { replaceFileContents } from './replace-file';
+import { completedResultPayload } from '../abort-completion-payload';
 
 function frozenRepairCaptureWarning(result: {
   content?: ReadonlyArray<unknown>;
@@ -44,6 +46,66 @@ function frozenRepairCaptureWarning(result: {
   return `release:repair-queue did not record the hunk (${String(body.reason ?? body.verdict ?? 'unknown')})`;
 }
 
+/**
+ * The replacement is committed before the nested repair-queue dispatch. If that tail
+ * returns after the outer deadline, identify the exact edit so a caller can avoid a blind retry.
+ */
+export function capabilityEditAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  if (context.toolName !== 'capability:edit' || !context.callId.trim()) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'capability:edit receipt did not receive the dispatch attempt identity',
+      failures: ['missing-attempt-identity'],
+    };
+  }
+
+  const payload = completedResultPayload(result);
+  if (!payload) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'capability:edit result did not contain a parseable completion payload',
+      failures: ['missing-result-payload'],
+    };
+  }
+
+  const noWriteReason = typeof payload.reason === 'string' ? payload.reason : '';
+  if (
+    payload.ok === false
+    && ['no_op', 'read_failed', 'not_found', 'not_unique'].includes(noWriteReason)
+  ) {
+    return {
+      status: 'not-recorded',
+      reason: `capability:edit returned before the file replacement (${noWriteReason})`,
+    };
+  }
+
+  const path = typeof payload.path === 'string' ? payload.path.trim() : '';
+  const replacements = payload.replacements;
+  if (
+    payload.ok === true
+    && path.length > 0
+    && typeof replacements === 'number'
+    && Number.isSafeInteger(replacements)
+    && replacements > 0
+  ) {
+    return {
+      status: 'recorded',
+      effectRef: `capability-edit:${context.callId}:${path}`,
+      diagnostics: { path, replacements },
+    };
+  }
+
+  return {
+    status: 'recovery-incomplete',
+    reason: 'capability:edit result did not prove whether a file replacement was committed',
+    failures: ['missing-edit-result-identity'],
+  };
+}
+
 export default defineTool({
   name: 'capability:edit',
   description:
@@ -58,6 +120,7 @@ export default defineTool({
       'capability:inspect (typecheck / test to verify the edit)',
     ],
   },
+  abortCompletionReceipt: capabilityEditAbortCompletionReceipt,
   capability: 'capability:fs-write',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],

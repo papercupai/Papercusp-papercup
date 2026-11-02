@@ -308,20 +308,55 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     expect(op.received).toHaveLength(1);
   });
 
-  it('pre-tool: unreachable execution authority refuses native writes but leaves reads available', async () => {
+  it('pre-tool: unreachable execution authority keeps writes closed and allows only safe shell operations', async () => {
     const { runInjection } = await import('../core.mjs');
     const fetchImpl = (async () => { throw new Error('connection refused'); }) as typeof fetch;
+    const planAnchorRepair = [
+      "ptool plans:edit --json - --workspace=papercusp-workspace --harness=papercusp <<'JSON'",
+      JSON.stringify({
+        slug: 'host-memory-right-sizing-2026-10-31',
+        itemId: 'P-001',
+        anchors: [{
+          path: 'apps/operator/scripts/hooks/inject/core.mjs',
+          symbol: 'runInjection',
+          change: { action: 'investigate', summary: 'Anchor the guard repair', reason: 'Keep the canonical plan linked to the source.' },
+        }],
+      }),
+      'JSON',
+    ].join('\n');
+    const contentEdit = [
+      "ptool plans:edit --json - <<'JSON'",
+      JSON.stringify({ slug: 'host-memory-right-sizing-2026-10-31', old_string: 'old', new_string: 'new' }),
+      'JSON',
+    ].join('\n');
     for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
       for (const tool of ['apply_patch', 'Write', 'exec_command']) {
         const output = await runInjection({ adapter, nativeEvent,
           event: { tool_name: tool, tool_input: { cmd: 'touch source.ts' } },
           env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl });
-        expect(JSON.parse(output!).hookSpecificOutput).toMatchObject({
+        const decision = JSON.parse(output!).hookSpecificOutput;
+        expect(decision).toMatchObject({
           permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
         });
+        expect(decision.permissionDecisionReason).toContain('no server verdict was received');
       }
       expect(await runInjection({ adapter, nativeEvent, event: { tool_name: 'Read', tool_input: { file_path: 'source.ts' } },
         env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl })).toBeNull();
+      for (const cmd of ['rg --files apps/operator/scripts/hooks/inject', "rg -n -F 'plan_execution_not_ready' apps/operator/scripts/hooks/inject"]) {
+        expect(await runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd } },
+          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl })).toBeNull();
+      }
+      for (const cmd of ['rg --pre=cat --files .', 'rg --files; touch source.ts']) {
+        const output = await runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd } },
+          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl });
+        expect(JSON.parse(output!).hookSpecificOutput.permissionDecision).toBe('deny');
+      }
+      expect(await runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd: planAnchorRepair } },
+        env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl })).toBeNull();
+      const rejectedContentEdit = await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd: contentEdit } },
+        env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl });
+      expect(JSON.parse(rejectedContentEdit!).hookSpecificOutput.permissionDecision).toBe('deny');
     }
   });
 

@@ -46,7 +46,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { computeWorkspaceRootFrom } from '@papercusp/test-config/admin-test-runs-reporter';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -174,6 +174,41 @@ describe('committed reporter database route', () => {
       PAPERCUSP_TEST_RUNS_DB_URL: 'postgres://ledger.invalid',
       PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT: '/inherited/stale-receipt.json',
     }, null, receiptFile).PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT).toBeUndefined();
+  });
+
+  it('retains failed test:file receipts for diagnosis and reuses the stale-root sweep for cleanup', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lint-as-committed-receipt-retention-'));
+    const receiptDir = mkdtempSync(join(root, `${mod.WORK_ROOT_PREFIX}receipts-`));
+    const receiptFile = join(receiptDir, 'receipts.jsonl');
+    const receipt = '{"outcome":"timeout","reason":"pg_insert_timeout_25000ms"}\n';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      writeFileSync(receiptFile, receipt, { mode: 0o600 });
+      expect(mod.finalizeTestReceiptDir(receiptDir, { status: 1, signal: null, error: null }))
+        .toEqual({ retained: true, path: receiptDir });
+      expect(readFileSync(receiptFile, 'utf8')).toBe(receipt);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(`retained at ${receiptDir}`));
+
+      const successDir = mkdtempSync(join(root, `${mod.WORK_ROOT_PREFIX}receipts-success-`));
+      expect(mod.finalizeTestReceiptDir(successDir, { status: 0, signal: null, error: null }))
+        .toEqual({ retained: false });
+      expect(existsSync(successDir)).toBe(false);
+
+      const swept = await mod.sweepStaleWorkRoots({
+        root,
+        nowMs: Date.now() + mod.KEEP_TTL_MS + 60_000,
+        cwds: [],
+        maxIdleKept: 0,
+      });
+      expect(swept.removed).toContainEqual({
+        name: receiptDir.slice(root.length + 1),
+        reason: 'unmarked-expired',
+      });
+      expect(existsSync(receiptDir)).toBe(false);
+    } finally {
+      errorSpy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('writes a private prepared-root receipt bound to HEAD and its owner marker', () => {

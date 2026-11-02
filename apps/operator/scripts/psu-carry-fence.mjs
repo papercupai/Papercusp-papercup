@@ -21,6 +21,7 @@ export function createPendingCarryFence({ identity, canFence = () => true, now =
   let pendingLegacyCount = 0;
   const fenced = new Map();
   const committed = new Set();
+  const begun = new WeakMap();
   const isWeakKey = value => value !== null &&
     (typeof value === 'object' || typeof value === 'function');
   const text = value => typeof value === 'string' && value.trim() === value && value.length > 0 && value.length <= 200;
@@ -47,12 +48,19 @@ export function createPendingCarryFence({ identity, canFence = () => true, now =
     },
     end(message) {
       if (isWeakKey(message) && pending.delete(message)) pendingLegacyCount -= 1;
+      if (isWeakKey(message)) begun.delete(message);
     },
     isFenced(message) { return fenced.has(message?.carryNonce); },
     deliveryRefusal,
     begin(message) {
       const reason = deliveryRefusal(message);
-      if (!reason && message?.carryNonce !== undefined) committed.add(message.carryNonce);
+      // Only the admitted in-process request may retry preparation. A replayed
+      // envelope still fails, and target identity/fence checks run on every try.
+      if (reason === 'carry-already-committed' && begun.get(message) === message.carryNonce) return null;
+      if (!reason && message?.carryNonce !== undefined) {
+        committed.add(message.carryNonce);
+        begun.set(message, message.carryNonce);
+      }
       return reason;
     },
     fence(request) {

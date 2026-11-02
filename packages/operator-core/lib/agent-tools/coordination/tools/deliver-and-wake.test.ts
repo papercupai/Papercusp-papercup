@@ -41,6 +41,11 @@ const emitAwaitedEvent = vi.fn(async ({ key }: { key: string }) => ({
 // the report without PG. Default: a roster of su-bee-1/2/3 (so they aren't treated
 // as federated) and zero active watchers (so a plain send reports them idle).
 const listActiveAwaitsForKey = vi.fn(async (_key: string) => [] as unknown[]);
+const ensureInboxWakeArmedForActiveSession = vi.fn(async (_input: {
+  ownerId: string;
+  forceRecheck?: boolean;
+  workspaceId?: string;
+}) => false);
 const listPresence = vi.fn(async () => [
   { ownerId: 'su-bee-1' },
   { ownerId: 'su-bee-2' },
@@ -123,6 +128,21 @@ vi.mock('../../../events/await/store', () => ({
   upsertInboxWakeAwait: (input: { eventKey: string }) => upsertInboxWakeAwait(input),
   cancelInboxWakeAwaits: () => cancelInboxWakeAwaits(),
   listActiveAwaitsForKey: (key: string) => listActiveAwaitsForKey(key),
+}));
+vi.mock('../../../events/await/inbox-wake-arm', () => ({
+  armInboxWake: async (input: { ownerId: string; note?: string | null; minSleepSec?: number | null }) => {
+    startAwaitSweeper();
+    const { note: handleNote } = await captureWakeHandleForOwner();
+    const eventKey = inboxWakeKey(input.ownerId);
+    const minSleepSec = input.minSleepSec ?? 60;
+    const row = await upsertInboxWakeAwait({ eventKey, minSleepSec, note: input.note });
+    return { awaitId: row.id, eventKey, handleNote, minSleepSec };
+  },
+  ensureInboxWakeArmedForActiveSession: (input: {
+    ownerId: string;
+    forceRecheck?: boolean;
+    workspaceId?: string;
+  }) => ensureInboxWakeArmedForActiveSession(input),
 }));
 // ⚠ Do NOT reintroduce `importOriginal()` in THIS mock.
 //
@@ -259,6 +279,8 @@ describe('coord:send', () => {
     // su-bee-1/2/3, zero active watchers.
     listActiveAwaitsForKey.mockReset();
     listActiveAwaitsForKey.mockResolvedValue([]);
+    ensureInboxWakeArmedForActiveSession.mockReset();
+    ensureInboxWakeArmedForActiveSession.mockResolvedValue(false);
     listPresence.mockReset();
     listPresence.mockResolvedValue([
       { ownerId: 'su-bee-1' },
@@ -332,8 +354,10 @@ describe('coord:send', () => {
       ctx,
     );
     expect(send1(res).notWoken).toBeUndefined();
-    // the no-wake probe must not run on the wake path
-    expect(listActiveAwaitsForKey).not.toHaveBeenCalled();
+    // The sender checks for a missing listener before firing, but does not run
+    // the report-only idle-recipient probe on the required-wake path.
+    expect(listActiveAwaitsForKey).toHaveBeenCalledTimes(1);
+    expect(ensureInboxWakeArmedForActiveSession).toHaveBeenCalledTimes(1);
   });
 
   it('wake:true ENQUEUES the message AND fires exactly the recipient keys (P-040)', async () => {
@@ -348,6 +372,14 @@ describe('coord:send', () => {
     // wake half: ONE emit per recipient, each on that recipient's OWN key.
     const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
     expect(keys).toEqual([inboxWakeKey('su-bee-1'), inboxWakeKey('su-bee-2')]);
+    expect(ensureInboxWakeArmedForActiveSession).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ ownerId: 'su-bee-1', forceRecheck: true }),
+    );
+    expect(ensureInboxWakeArmedForActiveSession).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ ownerId: 'su-bee-2', forceRecheck: true }),
+    );
     expect(send1(res).wake).toMatchObject({
       targets: ['su-bee-1', 'su-bee-2'],
       queued: 2,
@@ -356,6 +388,32 @@ describe('coord:send', () => {
       woken: 2,
       pickupConfirmed: false,
     });
+  });
+
+  it('repairs a missing listener before emitting its inbox-wake event', async () => {
+    listActiveAwaitsForKey.mockResolvedValueOnce([]);
+    const res = await coordSend.handler(
+      parse(coordSend, { to: ['su-bee-1'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: true }),
+      ctx,
+    );
+
+    expect(send1(res).wake.queued).toBe(1);
+    expect(ensureInboxWakeArmedForActiveSession).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-bee-1', forceRecheck: true }),
+    );
+    expect(ensureInboxWakeArmedForActiveSession.mock.invocationCallOrder[0]).toBeLessThan(
+      emitAwaitedEvent.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('skips repair when a recipient already has an active inbox-wake listener', async () => {
+    listActiveAwaitsForKey.mockResolvedValueOnce([{ id: 77 }]);
+    await coordSend.handler(
+      parse(coordSend, { to: ['su-bee-1'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: true }),
+      ctx,
+    );
+    expect(ensureInboxWakeArmedForActiveSession).not.toHaveBeenCalled();
+    expect(emitAwaitedEvent).toHaveBeenCalledTimes(1);
   });
 
   it('NEVER fires a broadcast key — "*" and "human" are not wakeable (P-042)', async () => {

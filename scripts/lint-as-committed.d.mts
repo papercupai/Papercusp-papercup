@@ -329,6 +329,19 @@ export function showAtRef(repoRoot: any, ref: any, path: any): string | null;
  * Read both ends from the parent commit, never the newer checked-out submodule. */
 export function assertCommittedFocusedRunnerImports(repoRoot: any, ref?: string): Promise<string[]>;
 /**
+ * Successful test:file runs have already proved their canonical rows and can
+ * discard the private receipt sink. A failed run keeps it for the diagnosis of
+ * late INSERT acknowledgements; the existing stale-root sweep removes inactive
+ * receipt directories after its six-hour retention window.
+ */
+export function finalizeTestReceiptDir(testReceiptDir: any, run: any): {
+    retained: boolean;
+    path?: undefined;
+} | {
+    retained: boolean;
+    path: any;
+};
+/**
  * Every run extracts a ~1.4 GB tree under tmpdir. Measured 2026-10-03: 26 of them sat in
  * /tmp (~36 GB), 24 with no live process inside, and they refilled the root disk at
  * 2-5 per hour. Three ways a tree outlives its run: `--keep` (the testing:evidence

@@ -20,6 +20,7 @@ import {
 } from './schedule-inventory';
 import type { DbosScheduledEntry } from './dbos/dbos-schedule-introspect';
 import { EXTERNAL_SCHEDULES, SYNC_TRIGGERED_SCHEDULES } from './schedule-descriptors.mjs';
+import { runWithWorkspace } from './workspace-als';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its allow/baseline sets only.
 import { BASELINE, ALLOWLIST, ALLOWLIST_DIRS } from '../../../scripts/check-no-raw-setinterval.mjs';
@@ -67,6 +68,39 @@ const startupRow = (over: Partial<ScheduleInventoryRow> = {}): ScheduleInventory
 });
 
 describe('startup activity disclosure', () => {
+  it('uses the managed registration policy identity and filters another workspace before policy/history reads', async () => {
+    const featureId = `activity-${'a'.repeat(64)}`;
+    const activity = { kind: 'workspace' as const, workspaceId: 'workspace-a', featureId };
+    const row = startupRow({ source: 'managed', detail: { activity } });
+    expect(scheduleStartupFeature(row, { workspaceId: 'workspace-b', deviceId: 'desktop' }))
+      .toMatchObject({ id: featureId, scope: { kind: 'workspace', id: 'workspace-a' } });
+    const snapshot = await runWithWorkspace('workspace-b', () => collectStartupActivity({
+      ...emptyInventory,
+      getManaged: () => [{ name: 'other-workspace', category: 'global-sweep', intervalMs: 1000, activity,
+        armedAt: 0, lastFireAt: null, lastError: null, running: false, runningSince: null,
+        skippedWhileRunning: 0, fires: 0, shed: false, instanced: false, instances: 1, classification: null }],
+    }, { native: async () => [], policy: async () => { throw new Error('foreign policy must not be read'); },
+      history: async ids => { expect(ids).toEqual([]); return []; } }));
+    expect(snapshot.features).toEqual([]);
+    expect(snapshot.unavailable.some(source => source.startsWith('policy:'))).toBe(false);
+  });
+
+  it('combines one routine policy with its actual managed execution observation', async () => {
+    const item = routine({ name: 'optional-sweep' });
+    const featureId = scheduleStartupFeature(startupRow({ source: 'routines', installSlug: item.install_slug, name: item.name }), { workspaceId: 'workspace-a' }).id;
+    const snapshot = await runWithWorkspace('workspace-a', () => collectStartupActivity({
+      ...emptyInventory, getRoutines: async () => [item],
+      getManaged: () => [{ name: 'ephemeral:opaque-id', category: 'ephemeral-harness', intervalMs: 1000,
+        activity: { kind: 'workspace', workspaceId: 'workspace-a', featureId },
+        armedAt: 0, lastFireAt: 1, lastError: null, running: true, runningSince: 1,
+        skippedWhileRunning: 0, fires: 1, shed: false, instanced: false, instances: 1, classification: null }],
+    }));
+    const matches = snapshot.features.filter(feature => feature.id === featureId);
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({ origin: 'routines', observed: 'running', scope: { kind: 'workspace', id: 'workspace-a' } });
+    expect(matches[0].entrypointIds).toEqual(expect.arrayContaining(['routine-dispatch', 'managed-fire-on-arm']));
+  });
+
   it('distinguishes configured startup from observed running state', () => {
     const registered = scheduleStartupFeature(startupRow({ detail: { lastStatus: 'SUCCESS', running: true } }));
     expect(registered.observed).toBe('unknown');

@@ -32,6 +32,7 @@ import '../harness/routines/register-system-actions';
 import { backgroundWorkspaceIds } from '../workspace-registry';
 import { runWithWorkspace } from '../workspace-als';
 import { routineBackgroundActivityAllowed } from '../device-operator-actions';
+import { startupActivityFeatureId } from '../schedule-inventory';
 
 /** Min cadence floor (seconds) — mirrors blueprint:validate's EPHEMERAL_MIN_INTERVAL_SEC. */
 export const EPHEMERAL_MIN_INTERVAL_SEC = 1;
@@ -107,6 +108,8 @@ const logWith = (deps: EphemeralExecutorDeps, msg: string): void =>
 function armOne(spec: EphemeralRoutineSpec, deps: EphemeralExecutorDeps): ArmedEphemeral {
   let stopped = false;
   const intervalSec = Math.max(EPHEMERAL_MIN_INTERVAL_SEC, Math.floor(spec.intervalSec));
+  const requiredForControl = spec.targetRole.startsWith(SYSTEM_TARGET_PREFIX)
+    ? getSystemActionEntry(spec.targetRole.slice(SYSTEM_TARGET_PREFIX.length))?.requiredForControl : undefined;
   const handle = managedSetInterval(
     `ephemeral:${spec.id}`,
     intervalSec * 1000,
@@ -133,7 +136,12 @@ function armOne(spec: EphemeralRoutineSpec, deps: EphemeralExecutorDeps): ArmedE
       }
     },
     // The registry's re-entrancy guard + shed gate; ephemeral fires are bounded sweeps → shed-eligible.
-    { category: 'ephemeral-harness', shed: true },
+    { category: 'ephemeral-harness', shed: true, activity: requiredForControl ? {
+      kind: 'required-control', reason: requiredForControl,
+    } : {
+      kind: 'workspace', workspaceId: spec.workspaceId,
+      featureId: startupActivityFeatureId({ source: 'routines', installSlug: spec.installSlug, name: spec.name, detail: {} }, { workspaceId: spec.workspaceId }),
+    } },
   );
   return { spec, handle: { stop: () => { stopped = true; handle.stop(); } } };
 }
@@ -178,7 +186,9 @@ export async function armEphemeralExecutor(deps: EphemeralExecutorDeps): Promise
           /* best-effort */
         }
       },
-      { category: 'ephemeral-harness' },
+      { category: 'ephemeral-harness', activity: {
+        kind: 'required-control', reason: 'Recovers the executor catalog after an unavailable initial read and reports liveness.',
+      } },
     );
   }
   logWith(deps, `armed ${specs.length} ephemeral cadence(s): ${specs.map((s) => s.name).join(', ') || '(none)'}`);

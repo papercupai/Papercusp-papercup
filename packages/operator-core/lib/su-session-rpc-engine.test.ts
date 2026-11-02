@@ -93,6 +93,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   missingTranscript?: boolean;
   deliveryTimeoutMs?: number;
   beforeReady?: () => Promise<void>;
+  bindNativeSession?: (sessionId: string) => Promise<void>;
   onExit?: () => Promise<void>;
   toolApproval?: 'prompt';
   identity?: 'su' | 'coding-assistant';
@@ -173,7 +174,8 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
     ...(overrides.resume ? { nativeSession } : {}),
     ...(overrides.legacyFork ? { forkFrom: {} } : {}),
-    peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close, pid: () => 7171 }; },
+    peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close,
+      pid: () => 7171, bindNativeSession: overrides.bindNativeSession }; },
   });
   engines.push(engine);
   return { engine, boot, sent, request, close, failExit, transport: () => transport, emit: (frame: RpcFrame) => transport.onMessage(frame) };
@@ -184,6 +186,36 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
     commandId: id, issuedAt: new Date().toISOString(), target: engine.adapter.host.descriptor().identity };
   return type === 'owner_turn' ? { ...base, type, turnId: `owner-${id}`, content: 'Hello from PUI' } : { ...base, type };
 }
+
+describe('native process enrollment before readiness', () => {
+  it.each(['codex', 'omp'] as const)('waits for the confirmed %s identity before accepting input', async backend => {
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const bind = vi.fn(async (_sessionId: string) => waiting);
+    const beforeReady = vi.fn(async () => {});
+    const f = fixture(backend, { bindNativeSession: bind, beforeReady });
+    try {
+      await vi.waitFor(() => expect(bind).toHaveBeenCalledWith(`native-${backend}`));
+      expect(beforeReady).not.toHaveBeenCalled();
+      expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
+      release();
+      await f.engine.ready;
+      expect(beforeReady).toHaveBeenCalledOnce();
+      expect(f.engine.adapter.host.snapshot().streamReady).toBe(true);
+    } finally { release(); }
+  });
+
+  it.each(['codex', 'omp'] as const)('refuses readiness when %s process enrollment cannot be bound', async backend => {
+    const beforeReady = vi.fn(async () => {});
+    const f = fixture(backend, { bindNativeSession: async () => {
+      throw new Error('Native process enrollment did not match its session');
+    }, beforeReady });
+    await expect(f.engine.ready).rejects.toThrow('Native process enrollment did not match its session');
+    expect(beforeReady).not.toHaveBeenCalled();
+    expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
+    expect(f.close).toHaveBeenCalled();
+  });
+});
 
 describe('OMP host-owned accepted-input authority', () => {
   const principal = { kind: 'system' as const, slug: 'system:superuser', workspaceId: 'workspace',

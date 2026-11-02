@@ -333,7 +333,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
   20_000,
 );
 
-it('preserves the classified Codex home failure when refusing carry before stopping the child', async () => {
+it.each([503, 403])('preserves the classified Codex home failure and retries only transient HTTP %s before stopping the child', async (status) => {
   const root = mkdtempSync(join(tmpdir(), 'pty-carry-route-failure-'));
   const ownerId = uniqueOwner('CARRY-ROUTE-FAILURE');
   const sock = socketPathFor(ownerId);
@@ -341,7 +341,8 @@ it('preserves the classified Codex home failure when refusing carry before stopp
   const { io, captured } = fakeIo();
   const diagnostic = vi.spyOn(process.stderr, 'write');
   let mints = 0;
-  const failure = { stage: 'response', reason: 'http-error', status: 503 };
+  const failure = { stage: 'response', reason: 'http-error', status };
+  let preparations = 0;
   const childCode = "process.stdin.setRawMode(true);process.stdout.write('READY\\n');" +
     "process.stdin.on('data',d=>{if(d.includes(4))process.exit(0);process.stdout.write('ORIGINAL-ALIVE\\n');});" +
     "setTimeout(()=>process.exit(0),18000);";
@@ -350,7 +351,7 @@ it('preserves the classified Codex home failure when refusing carry before stopp
     env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', CODEX_HOME: root,
       PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto', PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
       PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500', PAPERCUSP_PSU_PTY_REARM_CAP_MS: '1000' }),
-    ensureCodexHome: async () => ({ ok: false, failure }),
+    ensureCodexHome: async () => { preparations++; return { ok: false, failure }; },
     mintCarryRespawnArgs: () => { mints++; throw new Error('must not mint an unavailable route'); },
   });
   try {
@@ -360,15 +361,22 @@ it('preserves the classified Codex home failure when refusing carry before stopp
       data: 'saved work', systemPromptAddendum: 'saved work', deliveryId: 'classified-route-failure' }))
       .toMatchObject({ ok: true, reason: 'accepted' });
     const deadline = Date.now() + 6500;
-    while (Date.now() < deadline && !(existsSync(log) && readFileSync(log, 'utf8').includes('codex-route-unavailable'))) await sleep(15);
+    while (Date.now() < deadline && (status === 503 ? preparations < 2 :
+      !(existsSync(log) && readFileSync(log, 'utf8').includes('codex-route-unavailable')))) await sleep(15);
     const events = readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
     expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-failed', mode: 'carry-respawn',
       reason: 'codex-route-unavailable', homeEnsureFailure: failure }));
     expect(mints).toBe(0);
     expect(events.some(event => event.kind === 'respawn-predecessor-stop-started')).toBe(false);
     expect(diagnostic.mock.calls.some(([value]) => String(value).includes(
-      `carry-respawn NOT completed for ${ownerId}: Codex home preparation failed (HTTP 503)`,
+      `carry-respawn NOT completed for ${ownerId}: Codex home preparation failed (HTTP ${status})`,
     ))).toBe(true);
+    expect(preparations).toBe(status === 503 ? 2 : 1);
+    if (status === 503) {
+      expect(await injectIntoHostWithConfirmation(sock, { mode: 'carry-respawn', ownerId,
+        data: 'saved work', systemPromptAddendum: 'saved work', deliveryId: 'classified-route-failure' }))
+        .toMatchObject({ ok: true, reason: 'pending-delivery-id' });
+    }
     await injectIntoHost(sock, { mode: 'raw', ownerId, data: 'still here' });
     expect(await waitForOutput(captured, 'ORIGINAL-ALIVE')).toBe(true);
   } finally {

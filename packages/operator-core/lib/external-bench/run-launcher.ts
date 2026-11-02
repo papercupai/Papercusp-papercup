@@ -46,7 +46,7 @@ import {
   recordRunCompletion,
   type BenchRunStatus,
 } from './run-store';
-import { loadBenchTaskSet } from './task-sets';
+import { isMinecraftTaskSet, loadBenchTaskSet } from './task-sets';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -1201,6 +1201,11 @@ export async function launchBenchRun(
   input: LaunchBenchRunInput,
   deps: LaunchDeps = {},
 ): Promise<{ runId: string; done: Promise<void> }> {
+  // A public objective roster grants no gameplay runtime or inference authority.
+  // Minecraft must enter through its frozen runtime/assignment admission rather
+  // than becoming a SWE/diff task with the generic launcher's default grader.
+  if (input.suite === 'minecraft' || isMinecraftTaskSet(input.taskSetId) || input.taskSetId.startsWith('minecraft-'))
+    throw new Error('Minecraft execution requires its frozen gameplay runtime and assignment launcher.');
   const assertEnabled = deps.assertEnabled ?? (() => assertExternalBenchEnabled('system'));
   await assertEnabled();
 

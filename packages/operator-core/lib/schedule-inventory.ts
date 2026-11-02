@@ -445,6 +445,7 @@ export async function collectScheduleInventory(
         instances: m.instances ?? 1,
         instanced: m.instanced ?? false,
         classification: m.classification ?? null,
+        ...(m.activity === undefined ? {} : { activity: m.activity }),
       },
     });
   }
@@ -568,6 +569,7 @@ export async function collectScheduleInventory(
           instances: m.instances ?? 1,
           instanced: m.instanced ?? false,
           classification: m.classification ?? null,
+          ...(m.activity === undefined ? {} : { activity: m.activity }),
         },
       });
     }
@@ -761,11 +763,25 @@ export interface StartupActivityAdapters {
 const unknownPolicy = (): StartupActivityPolicy => ({ automatic: null, pausedUntil: null, revision: null });
 const unknownPurpose = 'Purpose has not been described for this feature.';
 
+const managedWorkspaceActivitySchema = z.object({
+  kind: z.literal('workspace'),
+  workspaceId: z.string().trim().min(1).refine(value => value !== '*'),
+  featureId: z.string().regex(/^activity-[a-f0-9]{64}$/),
+});
+
+function managedWorkspaceBinding(row: { source: string; detail: { activity?: unknown } }) {
+  if (row.source !== 'managed' && row.source !== 'external-process') return null;
+  const parsed = managedWorkspaceActivitySchema.safeParse(row.detail.activity);
+  return parsed.success ? parsed.data : null;
+}
+
 /** Shared by inventory and execution admission: never derive a second policy key. */
 export function startupActivityFeatureId(
-  row: Pick<ScheduleInventoryRow, 'source' | 'installSlug' | 'name'> & { detail: { process?: unknown } },
+  row: Pick<ScheduleInventoryRow, 'source' | 'installSlug' | 'name'> & { detail: { process?: unknown; activity?: unknown } },
   context: { workspaceId?: string; deviceId?: string } = {},
 ): string {
+  const binding = managedWorkspaceBinding(row);
+  if (binding) return binding.featureId;
   return `activity-${createHash('sha256').update(JSON.stringify([
     context.workspaceId ?? null, row.source === 'routines' ? null : context.deviceId ?? null,
     row.source, row.installSlug, row.detail.process ?? null, row.name,
@@ -776,6 +792,7 @@ export function scheduleStartupFeature(
   row: ScheduleInventoryRow,
   context: { workspaceId?: string; deviceId?: string } = {},
 ): StartupActivityFeature {
+  const binding = managedWorkspaceBinding(row);
   const label = row.name.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_:]+/g, ' ');
   const sync = row.category === 'sync-triggered';
   const declaredSpend = row.detail.spends;
@@ -803,7 +820,8 @@ export function scheduleStartupFeature(
     trigger: typeof row.detail.trigger === 'string' ? row.detail.trigger : row.cadence,
     origin: row.source,
     entrypointIds,
-    scope: row.source === 'routines' ? { kind: 'workspace', id: context.workspaceId ?? null }
+    scope: binding ? { kind: 'workspace', id: binding.workspaceId }
+      : row.source === 'routines' ? { kind: 'workspace', id: context.workspaceId ?? null }
       : row.source === 'dbos' ? { kind: 'unknown', id: null } : { kind: 'device', id: context.deviceId ?? null },
     dependencies: null,
     desired: { ...unknownPolicy(), automatic: row.source === 'routines' || sync ? row.armed : null },
@@ -860,7 +878,23 @@ export async function collectStartupActivity(
   if (!deps.getDbosSchedules) unavailable.add('dbos-completeness');
   if (rows.some(row => row.detail.reachable === false)) unavailable.add('federation');
   const context = { workspaceId: activeWorkspaceId(), deviceId: adapters.deviceId };
-  const features = rows.map(row => scheduleStartupFeature(row, context));
+  const byId = new Map<string, StartupActivityFeature>();
+  for (const row of rows) {
+    const feature = scheduleStartupFeature(row, context);
+    if (feature.scope.kind === 'workspace' && feature.scope.id !== context.workspaceId) continue;
+    const existing = byId.get(feature.id);
+    if (!existing) byId.set(feature.id, feature);
+    else {
+      // Inventory rows are sorted for display, not authority. Retain the routine's
+      // description/policy regardless of whether its live timer sorted before it.
+      const merged = feature.origin === 'routines' ? feature : existing;
+      merged.entrypointIds = [...new Set([...existing.entrypointIds, ...feature.entrypointIds])];
+      merged.observed = existing.observed === 'running' || feature.observed === 'running' ? 'running'
+        : existing.observed === 'idle' || feature.observed === 'idle' ? 'idle' : 'unknown';
+      byId.set(feature.id, merged);
+    }
+  }
+  const features = [...byId.values()];
   if (adapters.native) {
     try { features.push(...await adapters.native()); }
     catch { unavailable.add('native'); }

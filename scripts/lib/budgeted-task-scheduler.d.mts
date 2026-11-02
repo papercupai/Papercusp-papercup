@@ -27,6 +27,7 @@ export interface NativeCustodyGroup {
   processSources?: { preload: string | null; workspace: string | null; root: string | null };
 }
 export interface NativeCustodyLocator {
+  /** Pins a small manifest or a digest-bound index of bounded metadata parts. */
   manifest: NativeArtifactPin; identity: NativeCustodyIdentity; expectedHash: string;
   /** Producer capture seal; retain independently of any replacement manifest. */
   inventoryHash: string;

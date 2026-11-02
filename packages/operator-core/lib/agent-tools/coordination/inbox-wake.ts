@@ -25,6 +25,7 @@
 
 import { getOrgPg, withDbCallDeadline } from '@papercusp/db-org';
 import { emitAwaitedEvent } from '../../events/await/engine';
+import { ensureInboxWakeArmedForActiveSession } from '../../events/await/inbox-wake-arm';
 import { listActiveAwaitsForKey } from '../../events/await/store';
 import { buildKey } from '../../events/await/catalog';
 import { pickupWindowSec } from '../../events/await/turn-proof';
@@ -438,6 +439,20 @@ export async function wakeRecipients(
                 return { kind: 'skipped' };
               }
             }
+          }
+          try {
+            const activeAwaits = await listActiveAwaitsForKey(key);
+            if (activeAwaits.length === 0) {
+              await ensureInboxWakeArmedForActiveSession({
+                ownerId,
+                forceRecheck: true,
+                workspaceId: opts.workspaceId,
+              });
+            }
+          } catch (e) {
+            console.warn(
+              `[inbox-wake] listener recovery check for ${ownerId} failed: ${e instanceof Error ? e.message : e}`,
+            );
           }
           try {
             const res = await emitAwaitedEvent({

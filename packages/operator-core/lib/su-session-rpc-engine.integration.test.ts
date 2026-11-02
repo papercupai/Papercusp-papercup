@@ -22,6 +22,11 @@ vi.mock('./task-manager/managed-spawn', () => ({ managedSpawn: async (binary: st
 vi.mock('./task-manager/control', () => ({ killTask: async (id: string) => {
   processState.children.get(id)?.kill('SIGKILL'); return { ok: true };
 } }));
+vi.mock('./task-manager/store', async original => ({
+  ...(await original<typeof import('./task-manager/store')>()),
+  bindLiveAgentSessionTasksToNativeSession: async (input: { initialTaskId?: string }) =>
+    input.initialTaskId && processState.children.has(input.initialTaskId) ? [input.initialTaskId] : [],
+}));
 vi.mock('./su-session-persistence', () => ({
   bindSuSessionToAdvSession: vi.fn(async () => ({ status: 'bound' })),
   persistSuSessionDescriptor: vi.fn(async () => true),

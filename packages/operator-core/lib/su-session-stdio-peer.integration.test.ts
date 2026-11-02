@@ -20,6 +20,11 @@ import type { RpcFrame, SuStdioPeer, SuStdioReceipt } from './su-session-stdio-p
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
+const enrollment = vi.hoisted(() => ({ bind: vi.fn(async (input: { initialTaskId?: string }) => [input.initialTaskId!]) }));
+vi.mock('./task-manager/store', async original => ({
+  ...(await original<typeof import('./task-manager/store')>()), bindLiveAgentSessionTasksToNativeSession: enrollment.bind,
+}));
+
 const processState = vi.hoisted(() => ({ children: new Map<string, ChildProcess>(), stderr: '', killFailure: '', killError: '',
   killCalls: [] as Array<{ pid: number | null; includeSubtree?: boolean; reapTerminalResidue?: boolean }> }));
 vi.mock('./task-manager/managed-spawn', () => ({ managedSpawn: async (binary: string, args: string[], _spec: unknown, options: { spawnOptions: object }) => {
@@ -85,6 +90,22 @@ async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {},
     spec: { class: 'test', title: 'PUI native protocol test', launchedBy: 'vitest', argv: [binary, ...args] }, onMessage, onReceipt });
   peers.push(result); return result;
 }
+
+describe('native process enrollment binding', () => {
+  it('binds the actual enrolled task and stable owner to the confirmed native identity', async () => {
+    const p = await peer(process.execPath, ['-e', 'process.stdin.resume()']);
+    const taskId = [...processState.children.keys()].at(-1)!;
+    await p.bindNativeSession!('confirmed-native-id');
+    expect(enrollment.bind).toHaveBeenLastCalledWith({ workspaceId: 'protocol-test',
+      coordOwnerId: 'su-protocol-test', sessionId: 'confirmed-native-id', initialTaskId: taskId });
+  });
+
+  it('refuses an enrollment mismatch instead of treating an unbound process as ready', async () => {
+    const p = await peer(process.execPath, ['-e', 'process.stdin.resume()']);
+    enrollment.bind.mockResolvedValueOnce([]);
+    await expect(p.bindNativeSession!('foreign-native-id')).rejects.toThrow('Native process enrollment did not match its session');
+  });
+});
 
 /** Owned-fixture Node loader observations. The hook delegates to the actual
  * loader and records its returned branch/conditions; it never guesses exports

@@ -41,14 +41,15 @@ Every code below is checked against source by the doc-claims test. Codes are gro
 
 From `PlanStartRefusal` (`packages/operator-core/lib/agent-tools/plans/plan-input-validation.ts`):
 
-| code                    | meaning                                        |
-| ----------------------- | ---------------------------------------------- |
-| `missing_required`      | A required plan input is missing.              |
-| `invalid_data`          | A plan input fails its schema.                 |
-| `bad_schema`            | The plan's property schema is invalid.         |
-| `unknown_template`      | The plan names a template that does not exist. |
-| `schema_conflict`       | Plan inputs conflict with the template schema. |
-| `plan_inputs_not_ready` | The plan's inputs are not ready for start.     |
+| code                           | meaning                                                                                                                                                                                         |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `missing_required`             | A required plan input is missing.                                                                                                                                                               |
+| `invalid_data`                 | A plan input fails its schema.                                                                                                                                                                  |
+| `bad_schema`                   | The plan's property schema is invalid.                                                                                                                                                          |
+| `unknown_template`             | The plan names a template that does not exist.                                                                                                                                                  |
+| `schema_conflict`              | Plan inputs conflict with the template schema.                                                                                                                                                  |
+| `plan_inputs_not_ready`        | The plan's inputs are not ready for start.                                                                                                                                                      |
+| `initial_change_scope_missing` | A draft or ready plan lacks the initial code-scope anchors required to start. Add `plans:edit` anchors with `action:create` for known new work or `action:investigate` when scope is uncertain. |
 
 From `DraftItemStartRefusal` (`packages/operator-core/lib/agent-tools/plans/draft-item-start-gate.ts`):
 

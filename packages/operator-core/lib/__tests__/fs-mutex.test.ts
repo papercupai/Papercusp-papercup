@@ -1532,6 +1532,55 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
     }
   });
 
+  it('reuses a stable FIFO head snapshot while a waiter polls', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-ticket-head-cache-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const name = 'ticket-head-cache';
+    let releaseHolder!: () => void;
+    let markHolderEntered!: () => void;
+    const holderEntered = new Promise<void>((resolve) => { markHolderEntered = resolve; });
+    const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    const holder = withFsMutex(name, async () => {
+      markHolderEntered();
+      await holderGate;
+      return 'holder';
+    }, { timeoutMs: 1_000, retryMs: 1 });
+    let waiter: Promise<string> | undefined;
+    try {
+      await holderEntered;
+      const queueDir = join(dir, name + '.queue');
+      let queueReads = 0;
+      const io = {
+        readdir: async (path: string, options?: unknown) => {
+          if (path === queueDir) queueReads += 1;
+          return readdir(path, options as never);
+        },
+      };
+      waiter = withFsMutex(name, async () => 'waiter', {
+        timeoutMs: 1_000,
+        retryMs: 1,
+        staleMs: 10_000,
+        io,
+      });
+      const deadline = Date.now() + 1_000;
+      while (queueReads === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      expect(queueReads).toBeGreaterThan(0);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(queueReads).toBeLessThanOrEqual(2);
+
+      releaseHolder();
+      await expect(waiter).resolves.toBe('waiter');
+      await expect(holder).resolves.toBe('holder');
+      expect(queueReads).toBeLessThanOrEqual(2);
+    } finally {
+      releaseHolder();
+      await Promise.allSettled([holder, ...(waiter ? [waiter] : [])]);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reclaims a ticket with no owner.json (crash between mkdir and write) once it is stale', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;

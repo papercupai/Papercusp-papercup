@@ -8,6 +8,9 @@ const h = vi.hoisted(() => ({ artifacts: new Map<string, string>(), claims: new 
   related: vi.fn(async (_a: string, _b: string) => false), keyAvailable: true,
   secret: Buffer.alloc(32, 7), now: 1000, captureRuntimeSecurityCensus: vi.fn() }));
 vi.mock('../observability/runtime', () => ({ captureRuntimeSecurityCensus: h.captureRuntimeSecurityCensus }));
+// Runtime custody must load and work even when source-only scanning cannot load.
+// In particular, a relocated host bundle has no sibling source checkout.
+vi.mock('./security-source-census', () => { throw Error('runtime-custody-loaded-source-scanner'); });
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: async () =>
   h.keyAvailable ? [{ value_b64: h.secret.toString('base64') }] : [] }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-security' }));

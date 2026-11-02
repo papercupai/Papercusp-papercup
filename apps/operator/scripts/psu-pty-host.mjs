@@ -6211,7 +6211,7 @@ export function makeCarryRearmController({
                   });
               if (disposed) return;
               const outcome = result ?? { delivered: false, reason: 'recycle-outcome-unavailable' };
-              if (performDelivery && !isDrill && mode !== 'carry-respawn'
+              if (performDelivery && !isDrill
                 && !outcome.delivered && outcome.retryable) {
                 // A turn re-arm can reach its verified prompt while a higher-priority
                 // carry-respawn still owns the next write. That is an ordering deferral,
@@ -16538,6 +16538,13 @@ export function hostThroughPty(o) {
             sessionClass: msg.mode === "carry-respawn" ? msg.sessionClass : "",
           });
           if (recycleResult?.delivered) return { ok: true, reason: "delivered" };
+          if (msg.mode === 'carry-respawn' && recycleResult?.retryable) {
+            // ACK is a must-deliver commitment. Preparation failed before the
+            // predecessor stop, so retain this exact request in the existing
+            // paced retry controller rather than discard it at settlement.
+            carryRearm.schedule(msg);
+            return { ok: false, reason: 'deferred-busy-gate' };
+          }
           return {
             ok: false,
             reason: recycleResult?.reason ?? "recycle-failed",
@@ -18203,7 +18210,12 @@ export function hostThroughPty(o) {
                 `Codex home preparation failed${status}. The current session is intact; ` +
                 'the operator repair must succeed before the managed carry can finish.\n',
               );
-              return settleQuotaRecovery(false, 'codex-route-unavailable');
+              const statusCode = homeEnsureFailure?.status;
+              const retryable = homeEnsureFailure?.stage === 'request' ||
+                (homeEnsureFailure?.stage === 'response' &&
+                  (statusCode === 408 || statusCode === 429 ||
+                    (statusCode >= 500 && statusCode <= 599)));
+              return { ...settleQuotaRecovery(false, 'codex-route-unavailable'), retryable };
             }
           }
         }

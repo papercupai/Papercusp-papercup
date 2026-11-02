@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
 import { advanceSecuritySourceProgress, captureSecuritySourceShard, enumerateSecuritySourcePopulation,
   prepareSecuritySourceShard, validateSecuritySourceProgress,
   type PinnedSecuritySource, type SecuritySourceProgress, type SecuritySourceSnapshot } from './security-source-census';
@@ -19,6 +26,39 @@ const selectedSnapshot = (sources: PinnedSecuritySource[], paths: string[]): Sec
 const receipt = (censusFingerprint: string) => ({ sha256: '3'.repeat(64), censusFingerprint });
 
 describe('pinned security source discovery', () => {
+  it('loads the bundled source scanner without requiring a sibling source checkout', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'security-source-bundle-'));
+    try {
+      const bundle = join(directory, 'census.mjs');
+      const require = createRequire(import.meta.url);
+      await build({ entryPoints: [fileURLToPath(new URL('./security-source-census.ts', import.meta.url))],
+        outfile: bundle, bundle: true, platform: 'node', format: 'esm',
+        define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true' },
+        banner: { js: "import { createRequire as bundleRequire } from 'node:module'; const require = bundleRequire(import.meta.url);" },
+        plugins: [{ name: 'external-parser', setup(builder) {
+          builder.onResolve({ filter: /^typescript$/ }, () => ({ path: require.resolve('typescript'), external: true }));
+        } }],
+      });
+      const output = execFileSync(process.execPath, ['--input-type=module', '--eval', `
+        import { enumerateSecuritySourcePopulation } from ${JSON.stringify(pathToFileURL(bundle).href)};
+        import { createHash } from 'node:crypto';
+        const bytes = Buffer.from('import fs from "node:fs"; fs.readFileSync("fixture");');
+        const commit = 'a'.repeat(40);
+        const result = enumerateSecuritySourcePopulation({ sources: [{ path: 'fixture.ts', repository: '.', commit,
+          bytes, blobOid: createHash('sha1').update('blob ' + bytes.length + '\\0').update(bytes).digest('hex') }],
+          repositories: [{ path: '.', commit }], unresolved: [] });
+        console.log(JSON.stringify(result));
+      `], { cwd: directory, encoding: 'utf8', timeout: 20_000 });
+      const result = JSON.parse(output);
+      expect(result.inventory.files[0].imports).toEqual(expect.arrayContaining([
+        expect.objectContaining({ specifier: 'node:fs' }),
+      ]));
+      expect(result.sites).toEqual(expect.arrayContaining([expect.objectContaining({ expression: 'fs.readFileSync' })]));
+      expect(result.closureAccepted).toBe(false);
+      expect(result.executionAdmitted).toBe(false);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('bounds serialized evidence independently of call count and retains exact omission gaps', () => {
     const text = `if ("${'x'.repeat(6000)}") { ${'run();'.repeat(100)} }`;
     const input = snapshot([source('minified.ts', text)]);

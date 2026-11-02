@@ -173,7 +173,7 @@ import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 import { readIssueClaimability } from '../../scheduler/get-next';
-import { mockResolvedTyped } from '../../testing/typed-mock';
+import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 import {
   progressLeaseInputSchema,
   resolveProducerHealthCertificate,
@@ -1921,7 +1921,62 @@ describe('EI-21565976517547834 — reconcile an already-claimable level after aw
 
   it('keeps the ordinary edge await when the current oracle has no matching survivor', async () => {
     vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as unknown as ClaimSpecRecord);
-    vi.mocked(readIssueClaimability).mockResolvedValueOnce({ rows: [] } as never);
+    const emptyReading = {
+      breakdown: {
+        matchedByFilter: 0,
+        claimable: 0,
+        affinityCoverage: {
+          denominator: 0,
+          nonEmptyPaths: 0,
+          floor: 0.5,
+          belowFloor: false,
+        },
+        excluded: {
+          taken: 0,
+          claimHold: 0,
+          admissionRecovery: 0,
+          admissionHold: 0,
+          needsOwnerAction: 0,
+          agentReview: 0,
+          observationLane: 0,
+          externalBlocker: 0,
+          planLaneReserved: 0,
+          federationDetector: 0,
+          loopNoise: 0,
+          alreadyCompleted: 0,
+          watchdogRecovery: 0,
+          crossMachineRig: 0,
+          blockedDep: 0,
+          cooldown: 0,
+          remoteOrigin: 0,
+          admissionPending: 0,
+          liveGateOps: 0,
+          stopTheLine: 0,
+        },
+        queueControl: {
+          activeClaims: 0,
+          rawClaimHolds: 0,
+          holdOpenLeases: 0,
+          durableParks: 0,
+          unattributedClaimHolds: 0,
+          pendingAgentReview: 0,
+          revisionRequestedAgentReview: 0,
+          revisionReproductionValidation: 0,
+          revisionContentAdoptionCandidates: 0,
+          revisionLegacyException: 0,
+        },
+      },
+      rows: [],
+      admitted: {
+        total: 0,
+        byKind: {},
+        bySeverity: {},
+        lowSeverityShare: null,
+        degenerate: false,
+        peakDay: null,
+      },
+    } satisfies Awaited<ReturnType<typeof readIssueClaimability>>;
+    mockResolvedOnceTyped(vi.mocked(readIssueClaimability), emptyReading);
 
     const out = await call({ event: 'work-item:claimable' });
 
