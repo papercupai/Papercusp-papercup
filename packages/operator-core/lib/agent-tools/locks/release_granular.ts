@@ -46,6 +46,19 @@ export default defineTool({
         const r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
           releaseGranular(tx, coordinationDomain, ownerId, lockId),
         );
+        if (r.released === 0) {
+          return {
+            ok: false as const,
+            lock_id: lockId,
+            released: 0,
+            code: 'not_found_or_wrong_lock_kind',
+            error: 'No owned granular lock rows were released.',
+            note: [
+              'No owned granular lock rows were released. The id may be unknown, expired, owned by another agent, or belong to another lock kind.',
+              'Use locks:release for classic file locks or locks:release_resource for named resources.',
+            ].join(' '),
+          };
+        }
         return { ok: true as const, lock_id: lockId, released: r.released };
       },
       { keyOf: (lockId) => ({ lock_id: lockId }) },

@@ -657,6 +657,17 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(brief).not.toContain('coord:send');
   });
 
+  it('preserves the full requester reason in the review brief body', () => {
+    const reason = `Disposition of earlier objections: ${'reason-detail '.repeat(120).trimEnd()}`;
+    expect(reason.length).toBeGreaterThan(800);
+
+    const brief = buildAmendmentReviewBrief({ ...baseInput, reason });
+    const reasonLine = brief.split('\n').find((line) => line.startsWith('Reason given:'));
+
+    expect(reasonLine).toHaveLength(`Reason given: ${reason}`.length);
+    expect(reasonLine).toBe(`Reason given: ${reason}`);
+  });
+
   it('treats an unapplied new BAR as expected during pre-apply review', () => {
     const newCriterion = { key: 'r-32', barKey: 'R-32', model: 'New requirement from the source Requirements.' };
     const existingCriteria = Array.from({ length: 26 }, (_, index) => ({

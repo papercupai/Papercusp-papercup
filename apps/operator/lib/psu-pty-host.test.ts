@@ -117,6 +117,38 @@ describe('Codex configured composer readiness (EI-26141756824840354)', () => {
   });
 });
 
+describe('Codex transcript Find input-surface classification (EI-27098303090571611)', () => {
+  const dims = { rows: 30, cols: 120 };
+  const findScreen = (inputRow: string, statusRow: string) =>
+    '\x1b[2J\x1b[H' +
+    '\x1b[2;1H  >_ OpenAI Codex (v0.166.0)' +
+    '\x1b[10;1HTranscript body' +
+    '\x1b[29;1H' + inputRow +
+    '\x1b[30;1H' + statusRow;
+
+  it('recognizes both Find editing and Find reading footers from the shipped Codex 0.166.0 source', () => {
+    expect(realHost.codexTranscriptFindState(
+      findScreen('Find: queued wake text', 'Searching… · full transcript · esc cancel'),
+      dims,
+    )).toBe('editing');
+    expect(realHost.codexTranscriptFindState(
+      findScreen('', 'Find · ctrl+p older · ctrl+n newer · esc latest'),
+      dims,
+    )).toBe('reading');
+  });
+
+  it('does not mistake transcript text or an older Find frame for the current input surface', () => {
+    const transcriptText = findScreen('Find in transcript', 'Ready · GPT-5.6-Sol high · Context 100% left');
+    const readyFrame =
+      '\x1b[2J\x1b[H' +
+      '\x1b[2;1H  >_ OpenAI Codex (v0.166.0)' +
+      '\x1b[29;1H› Ask Codex to do anything' +
+      '\x1b[30;1HReady · GPT-5.6-Sol high · Context 100% left';
+    expect(realHost.codexTranscriptFindState(transcriptText, dims)).toBeNull();
+    expect(realHost.codexTranscriptFindState(transcriptText + readyFrame, dims)).toBeNull();
+  });
+});
+
 describe('Codex hook observation transaction', () => {
   it('keeps visible cells on ED3 and rejects partial scrollback-erasure paint', () => {
     const raw = '\x1b[2J\x1b[H› owner draft\x1b[3J\x1b[3;1HReady · GPT-6-Sol medium · Context 100% left · staging';
@@ -3289,6 +3321,46 @@ describe('makeAgentBusyGate (mid-turn inject safety)', () => {
     const g = makeAgentBusyGate({ lastOutputAt: () => 0, now: () => 5000, quietMs: 100, capMs: 1000 });
     const r = await g.waitAtPrompt();
     expect(r.deferred).toBe(false);
+  });
+
+  it('does not release a quiet Codex transcript Find surface as a composer prompt', async () => {
+    let now = 0;
+    const inputSurface = 'codex-transcript-find-editing';
+    const gate = makeAgentBusyGate({
+      lastOutputAt: () => 0,
+      now: () => (now += 10),
+      quietMs: 1,
+      capMs: 30,
+      blockedInputSurface: () => inputSurface,
+    });
+
+    const result = await gate.waitAtPrompt();
+    expect(result).toMatchObject({
+      deferred: true,
+      reason: inputSurface,
+      inputSurface,
+    });
+  });
+
+  it('rechecks the Codex input surface after the quiet confirmation', async () => {
+    let now = 0;
+    let inputSurface = null;
+    const gate = makeAgentBusyGate({
+      lastOutputAt: () => 0,
+      now: () => (now += 10),
+      quietMs: 1,
+      capMs: 30,
+      blockedInputSurface: () => inputSurface,
+    });
+    setImmediate(() => {
+      inputSurface = 'codex-transcript-find-reading';
+    });
+
+    await expect(gate.waitAtPrompt()).resolves.toMatchObject({
+      deferred: true,
+      reason: 'codex-transcript-find-reading',
+      inputSurface: 'codex-transcript-find-reading',
+    });
   });
 
   it('rechecks after queued PTY output drains before accepting the quiet boundary', async () => {

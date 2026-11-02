@@ -114,6 +114,7 @@ import {
  * tank the hit-rate; this short soft TTL bounds worst-case staleness alongside the debounce.
  */
 const COORD_INBOX_SOFT_TTL_MS = 5_000;
+const SLOW_DEFAULT_INBOX_TRACE_THRESHOLD_MS = 10_000;
 
 /** P-005 reply-quote hydration budget (D-004): ~200 verbatim chars per quote,
  *  at most one quote per shown injection line (default window = 8 lines). */
@@ -1230,9 +1231,14 @@ export default defineTool({
       metadata?: (value: Record<string, unknown>) => void;
     } | undefined)?.metadata;
     const traceSelectivePhases = Boolean(args.from || directedOnly || unansweredOnly);
+    const traceDefaultInboxWhenSlow =
+      !traceAllInboxPhases && !traceSelectivePhases && !traceIndirectDispatch;
+    let slowDefaultInboxTraceTriggered = false;
+    const slowDefaultInboxTraceTimers = new Map<number, ReturnType<typeof setTimeout>>();
     let tracePresenceRebootstrap = false;
     const shouldTraceInboxPhase = (name?: string): boolean =>
-      traceAllInboxPhases || traceSelectivePhases || traceIndirectDispatch || (
+      traceAllInboxPhases || traceSelectivePhases || traceIndirectDispatch ||
+      slowDefaultInboxTraceTriggered || (
         tracePresenceRebootstrap && (
           name === undefined ||
           name === "consume-presence-rebootstrap" ||
@@ -1273,11 +1279,19 @@ export default defineTool({
         // Diagnostic delivery must never replace the inbox result or error.
       }
     };
+    const triggerSlowDefaultInboxTrace = (): void => {
+      if (slowDefaultInboxTraceTriggered) return;
+      slowDefaultInboxTraceTriggered = true;
+      for (const timer of slowDefaultInboxTraceTimers.values()) clearTimeout(timer);
+      slowDefaultInboxTraceTimers.clear();
+      publishInboxPhases();
+    };
     const measureInboxPhase = async <T>(
       name: string,
       action: () => Promise<T>,
     ): Promise<T> => {
-      if (!shouldTraceInboxPhase(name) || !phaseMetadata) return action();
+      const observeSlowDefaultInbox = traceDefaultInboxWhenSlow && Boolean(phaseMetadata);
+      if ((!shouldTraceInboxPhase(name) && !observeSlowDefaultInbox) || !phaseMetadata) return action();
       const phaseId = ++nextInboxPhaseId;
       const phase: InboxPhase = {
         name,
@@ -1287,6 +1301,19 @@ export default defineTool({
       };
       inboxPhases.push(phase);
       activeInboxPhases.set(phaseId, name);
+      if (observeSlowDefaultInbox && !slowDefaultInboxTraceTriggered) {
+        const remainingMs = SLOW_DEFAULT_INBOX_TRACE_THRESHOLD_MS -
+          (performance.now() - phaseTraceStartedAt);
+        if (remainingMs <= 0) {
+          triggerSlowDefaultInboxTrace();
+        } else {
+          const timer = setTimeout(() => {
+            slowDefaultInboxTraceTimers.delete(phaseId);
+            triggerSlowDefaultInboxTrace();
+          }, remainingMs);
+          slowDefaultInboxTraceTimers.set(phaseId, timer);
+        }
+      }
       publishInboxPhases();
       const startedAt = performance.now();
       try {
@@ -1297,11 +1324,23 @@ export default defineTool({
         phase.status = "rejected";
         throw error;
       } finally {
+        const timer = slowDefaultInboxTraceTimers.get(phaseId);
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          slowDefaultInboxTraceTimers.delete(phaseId);
+        }
         phase.elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
         activeInboxPhases.delete(phaseId);
+        if (observeSlowDefaultInbox &&
+            performance.now() - phaseTraceStartedAt >= SLOW_DEFAULT_INBOX_TRACE_THRESHOLD_MS) {
+          triggerSlowDefaultInboxTrace();
+        }
         publishInboxPhases();
       }
     };
+    // Default reads stay quiet unless their total handler time crosses the
+    // diagnostic threshold. Keep measurements in memory until then so the
+    // threshold snapshot includes phases that already completed.
     // EI-12930: resolve a SHORT ownerId/label `from` (`su-b0fbf`) to the FULL ownerId via
     // the SAME roster resolver coord:send uses — so a filter that SUCCESSFULLY sent can't
     // then silently FAIL to find the reply — and flag `from_unmatched` when it matches NO
@@ -1964,7 +2003,10 @@ export default defineTool({
       // guaranteed `no_live_pty_host` refusal.
       const selfCompactionAvailable =
         pct != null && pct >= CONTEXT_GAUGE_LOUD_PCT
-          ? (await selfCompactionAvailabilityAsync(identity.ownerId)).available
+          ? (await measureInboxPhase(
+              "self-compaction-availability-read",
+              () => selfCompactionAvailabilityAsync(identity.ownerId),
+            )).available
           : null;
       let fleetWindDownLoopEndAuthorized: boolean | null = null;
       const authorizationWorkspaceId =
@@ -2151,9 +2193,12 @@ export default defineTool({
     // scanning resolutions over the FULL read (`all`) so the annotation sees
     // resolutions even when the alarm+resolution straddle the `limit` window.
     const allConditionRows = all as unknown as Array<Record<string, unknown>>;
-    const missingConditionResolutions = await readMissingConditionResolutions(
-      entries as unknown as Array<Record<string, unknown>>,
-      allConditionRows,
+    const missingConditionResolutions = await measureInboxPhase(
+      "missing-condition-resolutions-read",
+      () => readMissingConditionResolutions(
+        entries as unknown as Array<Record<string, unknown>>,
+        allConditionRows,
+      ),
     );
     const annotatedEntries = annotateResolvedConditions(
       entries as unknown as Array<Record<string, unknown>>,

@@ -580,11 +580,16 @@ export default defineTool({
               z.object({
                 claim: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.claim,
-                  'The pending owner-gated action/decision, stated concretely.',
+                  'The carried constraint or pending decision, stated concretely.',
                   { min: 1 },
                 ),
                 id: CARRY_ROW_ID_SCHEMA,
                 replaces: CARRY_ROW_REPLACES_SCHEMA,
+                origin: z.enum(['owner', 'system', 'external', 'self']).optional(),
+                appliesWhile: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.recheck,
+                  'The live condition under which a self/external wall still applies.',
+                ).optional(),
                 recheck: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.recheck,
                   'A concrete command a successor runs to re-check it.',
@@ -599,14 +604,30 @@ export default defineTool({
                   'Compatibility alias for `claim`; prefer `claim`.',
                 ).optional(),
                 key: CARRY_ROW_ID_SCHEMA,
+              }).superRefine((row, ctx) => {
+                if ((row.origin === 'self' || row.origin === 'external') && !row.appliesWhile?.trim()) {
+                  ctx.addIssue({
+                    code: 'custom',
+                    path: ['appliesWhile'],
+                    message: 'self/external walls require an appliesWhile predicate',
+                  });
+                }
+                if ((row.origin === 'self' || row.origin === 'external') && !row.recheck?.trim()) {
+                  ctx.addIssue({
+                    code: 'custom',
+                    path: ['recheck'],
+                    message: 'self/external walls require a recheck procedure',
+                  });
+                }
               }),
             )
             .max(CARRY_NOTE_MAX_WALLS * CARRY_CAP_HARD_MULTIPLE),
         )
         .optional()
         .describe(
-          'Open WALLS (owner-gated commitments) as rows — rendered into EVERY wake + carry brief until cleared. ' +
-            "Compact claim strings are accepted (`walls: ['owner approval']`) and mapped losslessly to `{ claim }`; " +
+          'Carry walls as rows. origin:owner/system is an authoritative gate; origin:self/external requires appliesWhile + recheck and must be revalidated at every fresh wake. ' +
+            'Legacy rows without origin are unscoped and must be revalidated; they are not authority by themselves. ' +
+            "Compact claim strings are accepted (walls: ['owner approval']) and mapped losslessly to { claim }; " +
             'a JSON-encoded array is accepted for stale wire manifests. ' +
             'OMITTED ⇒ existing walls CARRY FORWARD (a rewrite or note-clear never drops them); a supplied list ' +
             "REPLACES (the default is rowsMode:'merge', which upserts instead), so pass the full current set (dropped ones come " +
@@ -1444,7 +1465,7 @@ export default defineTool({
     const rawNote = args.note !== undefined ? args.note : checkpointNote;
     const baseNote = hasStructured ? renderCarryNote(fields) : rawNote;
 
-    // P-006 walls merge — commitments are cleared EXPLICITLY, never incidentally:
+    // P-006 walls merge — carried rows are retired EXPLICITLY, never incidentally:
     //   explicit `walls` wins (its [] is the only true clear); a raw note's own
     //   `## Walls` rows win next; otherwise the PRIOR walls carry forward — across
     //   rewrites AND across a note clear (the note then survives as walls-only).
@@ -1469,13 +1490,14 @@ export default defineTool({
     // still flags (an honest miss, never a fake ref).
     type CarryRowText = {
       claim: string;
+      appliesWhile?: string;
       recheck?: string;
       falsifier?: string;
       verified?: string;
       observed?: string;
       contested?: string;
     };
-    const carryRowTextFields = ['claim', 'recheck', 'falsifier', 'verified', 'observed', 'contested'] as const;
+    const carryRowTextFields = ['claim', 'appliesWhile', 'recheck', 'falsifier', 'verified', 'observed', 'contested'] as const;
     const rowsHaveCurrentTurnSentinel = (rows: CarryRowText[] | undefined): boolean =>
       rows?.some((row) => carryRowTextFields.some((field) => hasCurrentTurnSentinel(row[field]))) ?? false;
     const currentTurnSentinelSupplied =
@@ -1562,7 +1584,7 @@ export default defineTool({
     // `transform` seam), not out here. The caller-side read → merge → write it
     // replaces had a real race — a concurrent writer on this scope landing between
     // the prior read and the write was silently clobbered, which for WALLS means
-    // dropping an owner-gated commitment.
+    // dropping a carried wall row.
     //
     // The transform's own output is CAPTURED (via a holder object, so the assignment
     // survives control-flow narrowing) rather than re-merged out here: the advisory
@@ -2538,9 +2560,8 @@ export default defineTool({
                     'an unmatched retirement removed nothing.',
                 }
               : {}),
-            /** Same contract for WALLS — and a dropped wall is worse than a dropped check:
-             *  it is an owner-gated commitment, so losing one silently un-blocks work the
-             *  owner never released. */
+            /** Same contract for WALLS — a dropped row is data loss, even when its
+             *  current authority still needs revalidation. Never silently discard it. */
             ...(droppedWalls.length
               ? {
                   wallsDropped: droppedWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
@@ -2549,11 +2570,11 @@ export default defineTool({
                     rowsMode === 'merge'
                       ? `The proposed rowsMode:'merge' composition UNIONED your ` +
                         `${effectiveWalls?.length ?? 0} row(s) onto the carried set, the union exceeded the ` +
-                        `${CARRY_NOTE_MAX_WALLS}-row cap, and ${droppedWalls.length} CARRIED owner-gated ` +
-                        `commitment(s) were excluded from that proposed composition. Carried walls must be ` +
+                        `${CARRY_NOTE_MAX_WALLS}-row cap, and ${droppedWalls.length} carried wall ` +
+                        `row(s) were excluded from that proposed composition. Carried rows must be ` +
                         'preserved; close individual walls with retireIds naming their stable IDs.'
                       : `a supplied \`walls\` list REPLACES the carried set — ${droppedWalls.length} carried ` +
-                        `owner-gated commitment(s) were not in this write and are now gone. Re-send the FULL set, ` +
+                        `carried wall row(s) were not in this write and are now gone. Re-send the FULL set, ` +
                         `pass no \`walls\` at all, or use rowsMode:'merge' so unmentioned rows survive.`,
                 }
               : {}),

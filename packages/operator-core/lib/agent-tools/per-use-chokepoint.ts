@@ -475,8 +475,18 @@ export class NativeInstalledPerUseTurns {
       || observed.toolName !== input.toolName || canonicalJson(observed.arguments) !== canonicalJson(args)) return null;
     // Reserve synchronously before either awaited check, even when it refuses.
     observed.principalClaimed = true;
+    const callFingerprint = input.callIdFingerprint, argsJson = canonicalJson(args);
+    const inputIdentity = () => canonicalJson([input.workspaceId, input.advSessionId, input.ownerId,
+      input.nativeSessionFingerprint, input.callIdFingerprint, input.toolName, input.runtimeBearer]);
+    const originalIdentity = inputIdentity();
+    const sameInput = () => {
+      try {
+        const currentArgs = nativeToolArguments(input.arguments);
+        return inputIdentity() === originalIdentity && currentArgs !== null && canonicalJson(currentArgs) === argsJson;
+      } catch { return false; }
+    };
     const active = () => this.turns.get(key) === entry && !entry.withdrawn && (entry.nativeTurnId !== null || !!entry.nativeInput)
-      && entry.observations.get(input.callIdFingerprint) === observed;
+      && entry.observations.get(callFingerprint) === observed && sameInput();
     try {
       // OMP's owned extension lives in the child. Its verified session/call
       // metadata only finds this independently observed scope; it never gets
@@ -521,21 +531,38 @@ export class NativeInstalledPerUseTurns {
       || ['harness', 'harness_slug'].some(field => Object.hasOwn(args, field) && args[field] !== harnessSlug)
       || ['workspace', 'workspace_id'].some(field => Object.hasOwn(args, field) && args[field] !== workspaceId)) return false;
     observed.captureClaimed = true;
+    const tool = request.tool, authorizeResource = tool.authorize, ctx = request.ctx, toolName = request.toolName;
+    const argsJson = canonicalJson(args), nativeJson = canonicalJson(native);
+    const snapshot = (value: NonNullable<Request['ctx']['principal']>) => canonicalJson({ ...value,
+      capabilities: [...value.capabilities].sort(), roles: value.roles && [...value.roles].sort(),
+      allowedTools: value.allowedTools && [...value.allowedTools].sort() });
+    const principalJson = snapshot(principal);
+    // Every await can yield to code retaining the mutable dispatch request.
+    // A receipt for the original call cannot certify a replacement scope,
+    // principal, target or ACL, even if that replacement is independently allowed.
+    const sameRequest = () => {
+      try {
+        const currentArgs = nativeToolArguments(request.input);
+        return request.ctx === ctx && request.tool === tool && request.toolName === toolName
+          && tool.authorize === authorizeResource && !tool.pluginInstallation && !ctx.gateBypass?.policy
+          && ctx.transport === 'mcp' && ctx.workspaceId === workspaceId && ctx.harnessSlug === harnessSlug
+          && ctx.uiClientId === entry.context.ownerId && ctx.principal === principal
+          && snapshot(principal) === principalJson && canonicalJson(ctx.requestOrigin?.nativeSession) === nativeJson
+          && currentArgs !== null && canonicalJson(currentArgs) === argsJson;
+      } catch { return false; }
+    };
     const active = () => this.turns.get(key) === entry && !entry.withdrawn && entry.nativeTurnId !== null
-      && entry.observations.get(native.callIdFingerprint!) === observed && !request.ctx.signal.aborted;
+      && entry.observations.get(native.callIdFingerprint!) === observed && !ctx.signal.aborted && sameRequest();
     const authorize = async () => {
       if (!active() || !await verifyNativeRuntimeBearer(observed.runtimeBearer!, { workspaceId,
         advSessionId: entry.context.advSessionId, ownerId: entry.context.ownerId, provider: 'codex' }) || !active()) return false;
       const current = await entry.resolveRequestPrincipal!();
-      const snapshot = (value: NonNullable<Request['ctx']['principal']>) => canonicalJson({ ...value,
-        capabilities: [...value.capabilities].sort(), roles: value.roles && [...value.roles].sort(),
-        allowedTools: value.allowedTools && [...value.allowedTools].sort() });
-      if (!active() || !current || snapshot(current) !== snapshot(principal)) return false;
+      if (!active() || !current || snapshot(current) !== principalJson) return false;
       // The outer dispatcher ran this gate already. Renew that SAME gate after
       // async possession/principal IO so an intervening resource revocation
       // cannot receive a durable certificate from an earlier allow decision.
-      const decision = request.tool.authorize
-        ? await request.tool.authorize({ principal: current, input: request.input, ctx: request.ctx }) : { allow: true };
+      const decision = authorizeResource
+        ? await authorizeResource({ principal: current, input: args, ctx }) : { allow: true };
       return active() && decision.allow;
     };
     const input: NativeDispatchAppend = { workspaceId, harnessSlug, ownerId: entry.context.ownerId,

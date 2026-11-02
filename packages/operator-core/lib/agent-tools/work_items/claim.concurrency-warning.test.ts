@@ -142,6 +142,7 @@ const blockersM = vi.mocked(readUnresolvedDepBlockers);
 const mod = await import('./claim');
 const tool = mod.default;
 const { concurrencyClaimWarning } = mod;
+const setClaimSpecTool = (await import('../scheduler/set_claim_spec')).default;
 
 type Out = { data: any };
 const body = async (args: unknown) => ((await tool.handler(args as never, {} as never)) as Out).data;
@@ -213,6 +214,37 @@ describe('concurrencyClaimWarning (pure)', () => {
     expect(w).toContain('12/1');
     expect(w).toContain('+4 more');
     expect(w).not.toContain('WI-9,');
+  });
+
+  it('prescribes a cap update accepted by scheduler:set_claim_spec', () => {
+    const warning = concurrencyClaimWarning(verdict(['WI-HELD'], 1), 'WI-OVER', 'member-7', 'member-7')!;
+    expect(warning).toContain("scheduler:get_claim_spec { cupId: 'member-7' }");
+    expect(warning).toContain(
+      "scheduler:set_claim_spec { cupId: 'member-7', spec: { ...current.spec, " +
+        'limits: { ...current.spec.limits, maxConcurrentClaims: N } } }',
+    );
+
+    const current = {
+      spec: {
+        specVersion: '1.0',
+        specId: 'member-lane',
+        revision: 1,
+        view: { filter: { field: 'kind', op: '=', value: 'bug' } },
+        rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+        limits: { maxConcurrentClaims: 1 },
+      },
+    };
+    const advisedCall = {
+      cupId: 'member-7',
+      spec: {
+        ...current.spec,
+        limits: { ...current.spec.limits, maxConcurrentClaims: 2 },
+      },
+    };
+
+    expect(setClaimSpecTool.args.safeParse(advisedCall).success).toBe(true);
+    expect(setClaimSpecTool.args.safeParse({ cupId: 'member-7', limits: { maxConcurrentClaims: 2 } }).success).toBe(false);
+    expect(setClaimSpecTool.args.safeParse({ cupId: 'member-7', spec: { limits: { maxConcurrentClaims: 2 } } }).success).toBe(false);
   });
 });
 

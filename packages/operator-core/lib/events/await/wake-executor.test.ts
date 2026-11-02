@@ -482,6 +482,7 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     readLockGrantOwnership: vi.fn(async () => true),
     observeFallback: vi.fn(),
     getCurrentWorkItem: vi.fn(async () => null) as never,
+    findSupersededTimeoutAwaitIdsFn: vi.fn(async () => []),
     // Keep the Channel 2 grading-audit checks hermetic by default. Only their
     // focused freshness tests should provide task/scorecard rows; the production
     // readers open the live org database.
@@ -574,6 +575,98 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     ...over,
   };
 }
+
+describe('executeWake — superseded timeout await delivery (EI-27090819594731761)', () => {
+  it('drops a timeout only after the store confirms a newer active exact-key replacement', async () => {
+    const lookup = vi.fn(async (_subscriberId: string, _awaitIds: readonly number[]) => [41]);
+    const findPty = vi.fn(() => ({ id: 'pty-stale-timeout' }));
+    const write = vi.fn<NonNullable<ExecuteWakeDeps['write']>>(() => true);
+    const delivery = work({
+      awaitId: 41,
+      eventKey: 'conversation:answered:thread-1',
+      payload: { timeout: true },
+      wakeHandle: advHandle(),
+    });
+
+    await expect(executeWake(delivery, deps({
+      findSupersededTimeoutAwaitIdsFn: lookup,
+      findPty: findPty as never,
+      write,
+    }))).resolves.toMatchObject({ kind: 'drop', reason: expect.stringContaining('newer active exact-key await') });
+    expect(lookup).toHaveBeenCalledWith('su-abc', [41]);
+    expect(findPty).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('fails open when the store lookup is unavailable', async () => {
+    const lookup = vi.fn(async () => {
+      throw new Error('await store unavailable');
+    });
+    const findPty = vi.fn(() => ({ id: 'pty-timeout-fail-open' }));
+    const write = vi.fn<NonNullable<ExecuteWakeDeps['write']>>(() => true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const delivery = work({
+      awaitId: 42,
+      eventKey: 'conversation:answered:thread-2',
+      payload: { timeout: true },
+      wakeHandle: advHandle(),
+    });
+
+    try {
+      await expect(executeWake(delivery, deps({
+        findSupersededTimeoutAwaitIdsFn: lookup,
+        findPty: findPty as never,
+        write,
+      }))).resolves.toEqual({ kind: 'delivered', channel: 'pty-inject' });
+      expect(findPty).toHaveBeenCalled();
+      expect(write).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('removes only the superseded timeout component from a coalesced wake', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const liveTimeout = work({
+      id: 501,
+      awaitId: 51,
+      eventKey: 'conversation:answered:current',
+      payload: { timeout: true },
+      summary: 'current timeout remains actionable',
+      createdAt: new Date(1_000).toISOString(),
+      note: null,
+    });
+    const staleTimeout = work({
+      id: 502,
+      awaitId: 52,
+      eventKey: 'conversation:answered:old',
+      payload: { timeout: true },
+      summary: 'superseded timeout notice',
+      createdAt: new Date(2_000).toISOString(),
+      note: 'old timeout note',
+    });
+    const delivery = {
+      ...coalesceDeliveries([liveTimeout, staleTimeout]),
+      wakeHandle: advHandle(),
+    };
+    const lookup = vi.fn(async (_subscriberId: string, _awaitIds: readonly number[]) => [52]);
+    const write = vi.fn<NonNullable<ExecuteWakeDeps['write']>>(() => true);
+
+    await expect(executeWake(delivery, deps({
+      findSupersededTimeoutAwaitIdsFn: lookup,
+      findPty: vi.fn(() => ({ id: 'pty-coalesced-timeout' })) as never,
+      write,
+    }))).resolves.toEqual({ kind: 'delivered', channel: 'pty-inject' });
+
+    expect(lookup).toHaveBeenCalledWith('su-abc', [51, 52]);
+    const injected = (write.mock.calls[0]?.[1] as Buffer).toString('utf8');
+    expect(injected).toContain('conversation:answered:current');
+    expect(injected).toContain('current timeout remains actionable');
+    expect(injected).not.toContain('conversation:answered:old');
+    expect(injected).not.toContain('superseded timeout notice');
+    expect(injected).not.toContain('old timeout note');
+  });
+});
 
 describe('executeWake — obsolete turn-end fallback delivery (EI-26908413306331308)', () => {
   it('suppresses a pure fallback when a newer guaranteed dependency await is active', async () => {

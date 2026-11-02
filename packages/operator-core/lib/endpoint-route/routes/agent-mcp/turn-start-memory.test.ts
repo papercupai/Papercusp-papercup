@@ -53,6 +53,7 @@ const {
   evaluateTurnStartPackageSinkMock,
   packageSinkReceiptMock,
   isLoopFirePromptMock,
+  isLoopTurnStartCandidateMock,
   recordLoopTurnStartMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
@@ -76,6 +77,7 @@ const {
   evaluateTurnStartPackageSinkMock: vi.fn(),
   packageSinkReceiptMock: vi.fn(),
   isLoopFirePromptMock: vi.fn(),
+  isLoopTurnStartCandidateMock: vi.fn(),
   recordLoopTurnStartMock: vi.fn(),
 }));
 
@@ -87,6 +89,7 @@ vi.mock('../../../memory/injection', () => ({
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../harness/routines/loop-turn-start-stamp', () => ({
   isLoopFirePrompt: isLoopFirePromptMock,
+  isLoopTurnStartCandidate: isLoopTurnStartCandidateMock,
   recordLoopTurnStart: recordLoopTurnStartMock,
 }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-1' }) }));
@@ -243,6 +246,7 @@ beforeEach(() => {
   evaluateTurnStartPackageSinkMock.mockReset().mockResolvedValue({ result: null, classes: [] });
   packageSinkReceiptMock.mockReset().mockReturnValue(null);
   isLoopFirePromptMock.mockReset().mockReturnValue(false);
+  isLoopTurnStartCandidateMock.mockReset().mockImplementation(() => isLoopFirePromptMock());
   recordLoopTurnStartMock.mockReset().mockResolvedValue(false);
 });
 afterEach(() => resetReadCursorStore());
@@ -500,6 +504,7 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
 describe('turn-start per-request outcome receipt', () => {
   it('reports a failed loop marker append separately from an allowed ambient gate', async () => {
     isLoopFirePromptMock.mockReturnValue(true);
+    isLoopTurnStartCandidateMock.mockImplementation(() => isLoopFirePromptMock());
     recordLoopTurnStartMock.mockResolvedValue(false);
 
     const out = await post({
@@ -513,6 +518,44 @@ describe('turn-start per-request outcome receipt', () => {
       ambientGate: 'allowed',
       loopFire: true,
       loopMarkerAppend: 'failed',
+    });
+  });
+
+  it('records authenticated self-compaction candidates without relabeling them as direct loop fires', async () => {
+    isLoopTurnStartCandidateMock.mockReturnValue(true);
+    isLoopFirePromptMock.mockReturnValue(false);
+    recordLoopTurnStartMock.mockResolvedValue(true);
+
+    const out = await post({
+      owner: 'sess-self-compaction',
+      client: 'codex',
+      prompt: '⟦turn-origin:self-compaction nonce:0123456789abcdef⟧\nContinue the verified work.',
+      turnStartRequestId: 'req-self-compaction',
+    });
+
+    expect(recordLoopTurnStartMock).toHaveBeenCalledWith(expect.objectContaining({
+      owner: 'sess-self-compaction', client: 'codex', turnStartRequestId: 'req-self-compaction',
+    }));
+    expect(out.turnStartOutcome).toEqual({
+      requestId: 'req-self-compaction', ambientGate: 'allowed',
+      loopFire: false, loopMarkerAppend: 'appended',
+    });
+  });
+
+  it('keeps an unrelated self-compaction prompt out of loop-marker failure reporting', async () => {
+    isLoopTurnStartCandidateMock.mockReturnValue(true);
+    isLoopFirePromptMock.mockReturnValue(false);
+    recordLoopTurnStartMock.mockResolvedValue(null);
+
+    const out = await post({
+      owner: 'sess-unrelated-compaction',
+      client: 'codex',
+      prompt: '⟦turn-origin:self-compaction nonce:0123456789abcdef⟧\nContinue ordinary work.',
+      turnStartRequestId: 'req-unrelated-compaction',
+    });
+
+    expect(out.turnStartOutcome).toMatchObject({
+      loopFire: false, loopMarkerAppend: 'not-applicable',
     });
   });
 });

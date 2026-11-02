@@ -240,10 +240,35 @@ describe('WI-10007604 — frozen host source identity', () => {
       expect(selected.stdout).toBe('');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
-  it('retains the ordinary checkout source identity', () => {
+  it('attributes an ordinary checkout only when its source tree is clean', () => {
     const selected = select(REPO_ROOT);
     expect(selected.status, selected.stderr).toBe(0);
-    expect(selected.stdout).toBe(spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).stdout.trim());
+    const head = spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const status = spawnSync('git', ['-C', REPO_ROOT, 'status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'], { encoding: 'utf8' });
+    expect(status.status, status.stderr).toBe(0);
+    expect(selected.stdout).toBe(status.stdout.trim() ? head + '+dirty' : head);
+  });
+  it('marks tracked and untracked Git source changes as dirty instead of attributing them to HEAD', () => {
+    const root = mkdtempSync(join(tmpdir(), 'host-source-dirty-'));
+    const git = (...args: string[]) => spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+    try {
+      expect(git('init', '-q').status).toBe(0);
+      expect(git('config', 'user.name', 'Papercusp fixture').status).toBe(0);
+      expect(git('config', 'user.email', 'fixture@example.invalid').status).toBe(0);
+      writeFileSync(join(root, 'entry.ts'), 'export const source = 1;\n');
+      expect(git('add', 'entry.ts').status).toBe(0);
+      const committed = git('commit', '-q', '-m', 'fixture source');
+      expect(committed.status, committed.stderr).toBe(0);
+      const head = git('rev-parse', '--short', 'HEAD').stdout.trim();
+
+      expect(select(root).stdout).toBe(head);
+      writeFileSync(join(root, 'entry.ts'), 'export const source = 2;\n');
+      expect(select(root).stdout).toBe(head + '+dirty');
+
+      expect(git('checkout', '--', 'entry.ts').status).toBe(0);
+      writeFileSync(join(root, 'new-entry.ts'), 'export const added = true;\n');
+      expect(select(root).stdout).toBe(head + '+dirty');
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it('bakes a generation-alias checkout identity into the actual build-info resolver', () => {
     const dir = mkdtempSync(join(tmpdir(), 'host-source-alias-'));
@@ -255,6 +280,8 @@ describe('WI-10007604 — frozen host source identity', () => {
       const imported = spawnSync('git', ['fast-import', '--quiet'], { cwd: root, encoding: 'utf8',
         input: 'blob\nmark :1\ndata 6\nfrozen\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1577836800 +0000\ndata 6\nfrozen\nM 100644 :1 source.txt\n\ndone\n' });
       expect(imported.status, imported.stderr).toBe(0);
+      const checkout = spawnSync('git', ['checkout', '-f', 'main'], { cwd: root, encoding: 'utf8' });
+      expect(checkout.status, checkout.stderr).toBe(0);
       const expected = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
       const rootBlock = source.slice(source.indexOf('REPO_ROOT="$(cd'), source.indexOf('# Node helpers run'));
       const selected = spawnSync('bash', ['-c', 'set -euo pipefail; OPERATOR_DIR="$1/apps/operator";\n' +

@@ -5431,6 +5431,34 @@ describe('work_items:checkpoint — absence-premise continuity lint (WI-7238)', 
     expect(result).not.toHaveProperty('absenceLint');
   });
 
+  it('binds current-turn absence prose to this write\'s structured conversation check', async () => {
+    const currentTurn = {
+      ref: '[turn:session-example@2026-11-01T12:00:00.000Z]',
+      verdict: 'agent-injected',
+      origin: 'loop-fire',
+    };
+    const body = 'There is no accepted answer or posts in the exact conversation; [turn:self] is the provenance anchor.';
+    const check = {
+      claim: 'The exact conversation currently has no accepted answer or posts.',
+      recheck: 'Read the exact conversation and inspect the accepted answer and posts.',
+      verified: 'Current conversation returned accepted_answer=null and no posts.',
+    };
+    const stored = body.replace('[turn:self]', currentTurn.ref);
+
+    resolveCurrentTurnStamp.mockResolvedValueOnce(currentTurn);
+    getWorkItem.mockResolvedValue({ id: 'WI-TURN-ABSENCE-CHECK', harness: 'papercup' });
+    // Structured checks are persisted separately on this path; the absence lint must
+    // still consume the current write's check rather than only the returned body string.
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+
+    const result = await one({ id: 'WI-TURN-ABSENCE-CHECK', checkpoint: body, checks: [check] });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('absenceLint');
+    expect(resolveCurrentTurnStamp).toHaveBeenCalled();
+  });
+
   it('covers an unaccounted group/task absence with its matching unfiltered live-process census', async () => {
     const body = 'There is no current unaccounted group/task id for the descriptor probe.';
     const processCensus = {

@@ -3165,7 +3165,7 @@ describe('dispatchPendingGradingAudits', () => {
         terminalRecovery: expect.objectContaining({
           retiredTaskIds: ['task-live-terminal-auditor'],
           attempts: 1,
-          codes: ['inference_gateway_error'],
+          codes: ['model_quota_exhausted'],
         }),
       }),
     ]);
@@ -3853,6 +3853,7 @@ describe('dispatchPendingGradingAudits', () => {
   it.each([
     {
       screen: 'gateway 5xx',
+      terminalCode: 'inference_gateway_error',
       gatewayLog:
         '\u001b[38;5;220m●\u001b[3GAPI Error: 500 inference-gateway internal error. This is a server-side\r\n' +
         'issue, usually temporary — try again in a moment. If it persists, check your inference gateway ' +
@@ -3861,18 +3862,21 @@ describe('dispatchPendingGradingAudits', () => {
     },
     {
       screen: 'gateway 429',
+      terminalCode: 'model_quota_exhausted',
       gatewayLog:
         '\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: all accounts \r\n' +
         'throttled; retry after 60s\u001b[0m\r\n\r\n✻ Worked for 13m 45s · done 9:09 AM\r\n❯',
     },
     {
       screen: 'gateway 429 without a completed-turn footer',
+      terminalCode: 'model_quota_exhausted',
       gatewayLog:
         '\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: all accounts \r\n' +
         'throttled; retry after 60s\u001b[0m',
     },
     {
       screen: 'account-scoped gateway 429',
+      terminalCode: 'model_quota_exhausted',
       gatewayLog:
         '\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429)\r\n' +
         "This request would exceed your account's rate limit. Please try again later.\u001b[0m\r\n\r\n" +
@@ -3880,11 +3884,12 @@ describe('dispatchPendingGradingAudits', () => {
     },
     {
       screen: 'account-paced gateway 429',
+      terminalCode: 'model_quota_exhausted',
       gatewayLog:
         "\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: account 'aviynw4' " +
         'paced/paused; retry after 60s\u001b[0m\r\n\r\n✻ Cooked for 13m 41s · done 9:33 AM\r\n❯',
     },
-  ])('retires a deduped auditor with a terminal $screen and launches the Codex fallback', async ({ gatewayLog }) => {
+  ])('retires a deduped auditor with a terminal $screen and launches the Codex fallback', async ({ gatewayLog, terminalCode }) => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-gateway-500')]);
     d.launch
@@ -3932,7 +3937,7 @@ describe('dispatchPendingGradingAudits', () => {
         state: 'launched',
         terminalRecovery: expect.objectContaining({
           retiredTaskIds: ['task-gateway-500'],
-          codes: ['inference_gateway_error'],
+          codes: [terminalCode],
         }),
       }),
     ]);
@@ -4267,7 +4272,7 @@ describe('dispatchPendingGradingAudits', () => {
       state: 'launched',
       terminalRecovery: {
         retiredTaskIds: ['task-primary'],
-        codes: ['inference_gateway_error'],
+        codes: ['model_quota_exhausted'],
         attempts: 2,
       },
     });
@@ -5112,7 +5117,8 @@ describe('terminal grading-audit failures record a reset-aware or generic backof
       }));
     const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
     const gatewayError =
-      'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s\n' +
+      'API Error: 500 inference-gateway internal error. This is a server-side issue, usually temporary — ' +
+      'try again in a moment. If it persists, check your inference gateway (127.0.0.1:8788).\n' +
       '✻ Worked for 13m 45s · done 9:09 AM\n❯';
 
     const result = await dispatchPendingGradingAudits(
@@ -5125,8 +5131,8 @@ describe('terminal grading-audit failures record a reset-aware or generic backof
         terminalLogRecheckDelayMs: 0,
         terminalLogMaxRechecks: 0,
         now: () => NOW,
-        // The available account reset must not be mistaken for a quota-classified
-        // failure; this is an inference_gateway_error and uses retry-window.
+        // A gateway 5xx is deliberately used here: only a measured 429 is
+        // quota-classified and eligible for the account reset horizon.
         readProviderResets: async () => [NOW + 40 * 60_000],
       },
     );

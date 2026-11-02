@@ -839,10 +839,8 @@ export function renderLoopWallsBlock(walls: ReadonlyArray<WallEntry>, nowMs: num
   }
   if (conditional.length > 0) {
     sections.push(
-      '⚠ CARRIED WALLS TO REVALIDATE — self/external predicates and legacy unscoped rows are not authority by themselves. ' +
-        'Check each current source now; a conditional wall blocks only while its appliesWhile predicate is verified. ' +
-        'Do not let an unscoped carried row block repair solely because it was copied into this wake; clear it or rewrite it ' +
-        'with an explicit, current source:\n' +
+      '⚠ REVALIDATE CARRIED WALLS — self/external and legacy rows are not gates by themselves. ' +
+        'Run the recheck; self/external rows block only while appliesWhile is verified. Verify a current source for legacy rows:\n' +
         conditional.map(renderRow).join('\n'),
     );
   }

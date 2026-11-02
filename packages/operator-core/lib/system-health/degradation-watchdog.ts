@@ -47,6 +47,7 @@ import {
   coordSql,
 } from '../agent-tools/coordination/log';
 import { MESSAGE_GC_RETENTION_DAYS } from '../agent-tools/coordination/message-log-gc';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import type { FallbackWindow, ScopedFallbackWindow } from '../degradation/fallback-observations';
 import type { SevereEventBroadcast, SevereEventResolution } from '../severe-event-broadcast';
 import { runWithWorkspace } from '../workspace-als';
@@ -182,7 +183,7 @@ registerDegradationMechanism({
     'A collapse means eligible passing proofs were not reused in the observed window.',
   scopeKeyed: true,
   observationWorkspaceId: 'default',
-  observationProcessTag: 'gate-reuse:green-checkpoint',
+  observationProcessTag: `gate-reuse:green-checkpoint:${operatorHomeHarnessSlug()}`,
   yieldDrop: {
     minPreviousEligible: DEGRADATION_MIN_ELIGIBLE,
     healthyAppliedRate: DEGRADATION_RECOVER_RATE,

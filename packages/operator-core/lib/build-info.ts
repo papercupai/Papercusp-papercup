@@ -61,10 +61,11 @@ declare const __PAPERCUSP_BUNDLED_SIDECAR__: boolean | undefined;
  * `rev-parse` of a non-bundled host (cached for the process lifetime, so it still
  * names the loaded code); `unresolved` always pairs with `sha: null`.
  */
-export type BuildShaSource = 'baked' | 'env' | 'git' | 'unresolved';
+// dirty means the baked identity carries +dirty and cannot name an attributable commit.
+export type BuildShaSource = 'baked' | 'env' | 'git' | 'dirty' | 'unresolved';
 
 export interface BuildInfo {
-  /** Short source SHA for the running artifact, or null if unresolved. */
+  /** Short source SHA for the running artifact, or null if dirty/unresolved. */
   sha: string | null;
   /** package.json version (npm_package_version), or '0.0.0' if unset. */
   version: string;
@@ -111,6 +112,8 @@ export function resolveBuild(opts: {
       : (typeof __PAPERCUSP_BUNDLED_SOURCE_SHA__ !== 'undefined'
         ? __PAPERCUSP_BUNDLED_SOURCE_SHA__?.trim() || null
         : null);
+  // A commit SHA cannot identify a bundle that included local working-tree bytes.
+  if (bakedSha?.endsWith('+dirty')) return { sha: null, shaSource: 'dirty', version };
   if (bakedSha) return { sha: bakedSha, shaSource: 'baked', version };
   const envSha = env.PAPERCUSP_BUILD_SHA?.trim();
   if (envSha) return { sha: envSha, shaSource: 'env', version };

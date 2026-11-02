@@ -1984,19 +1984,19 @@ describe('walls + turn-settle nag in the wake text (compaction-continuity-harden
   });
 
   it('legacy and self-imposed walls require revalidation instead of becoming unconditional blockers', () => {
-    const legacy = renderLoopWallsBlock([{ claim: 'Do not rerun the gate' }], NOW)!;
-    expect(legacy).toContain('⚠ CARRIED WALLS TO REVALIDATE');
+    const legacy = renderLoopWallsBlock([{ claim: 'Do not rerun the gate' }])!;
+    expect(legacy).toContain('⚠ REVALIDATE CARRIED WALLS');
     expect(legacy).not.toContain('⛔ OPEN WALLS');
     const conditional = renderLoopWallsBlock([{
       claim: 'Do not mutate the repair queue',
       origin: 'self',
       appliesWhile: 'gate run rr-123 is active',
       recheck: 'release:repair-queue status rr-123',
-    }], NOW)!;
+    }])!;
     expect(conditional).toContain('gate run rr-123 is active');
     expect(conditional).toContain('release:repair-queue status rr-123');
     expect(conditional).not.toContain('⛔ OPEN WALLS');
-    expect(renderLoopWallsBlock([{ claim: 'Owner approval pending', origin: 'owner' }], NOW)).toContain('⛔ OPEN WALLS');
+    expect(renderLoopWallsBlock([{ claim: 'Owner approval pending', origin: 'owner' }])).toContain('⛔ OPEN WALLS');
   });
 
   it('renderLoopWakeText splices the nag line in BOTH forms, ahead of the checkpoint block', () => {

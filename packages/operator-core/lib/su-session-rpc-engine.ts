@@ -265,6 +265,7 @@ export function startSuRpcEngine(
   let ompInput: { id: string; ownerTurnId: string; text: string; principalId: string;
     accepted: Promise<void>; releaseAcceptance(): void;
     originalCalls: Map<string, SuNativeToolCall>;
+    executedCalls: Map<string, SuNativeToolCall>;
     rootSeen: boolean; agentStarted: boolean; nativeTools: Readonly<Record<string, string>> } | undefined;
   let ompInputScope: ReturnType<typeof nativeInstalledPerUseTurns.registerNativeInput> | undefined;
   const withdrawOmpInput = () => {
@@ -436,7 +437,7 @@ export function startSuRpcEngine(
               let releaseAcceptance!: () => void;
               const accepted = new Promise<void>(resolve => { releaseAcceptance = resolve; });
               ompInput = { id: `omp-input:${turnEpoch}`, ownerTurnId: turnId, text: content, accepted, releaseAcceptance,
-                originalCalls: new Map(),
+                originalCalls: new Map(), executedCalls: new Map(),
                 principalId: principal.slug, rootSeen: false, agentStarted: false, nativeTools: Object.freeze(names) };
             }
           }
@@ -917,11 +918,22 @@ export function startSuRpcEngine(
           || ompInput !== input || !ompInputScope || call.nativeSessionId !== nativeId()) {
           throw new Error('Native hook owner input is no longer active');
         }
+        const { executedArguments, ...original } = call;
         const previous = input.originalCalls.get(call.callId);
-        if (previous && canonicalJson(previous) !== canonicalJson(call)) throw new Error('Native hook changed its original call');
+        if (previous && canonicalJson(previous) !== canonicalJson(original)) throw new Error('Native hook changed its original call');
+        if (Object.hasOwn(call, 'executedArguments')) {
+          if (!previous || !executedArguments) throw new Error('Native execution has no original hook call');
+          const executed = input.executedCalls.get(call.callId);
+          if (executed && canonicalJson(executed) !== canonicalJson(call)) throw new Error('Native hook changed its executed call');
+          // Join the two private-hook snapshots without registering a second
+          // canonical observation or replacing the original input. A result
+          // attests only what the native hook observed, never scope or success.
+          input.executedCalls.set(call.callId, structuredClone(call));
+          return;
+        }
         if (!previous && input.originalCalls.size >= 1000) throw new Error('Native hook call population exceeds the bound');
         await ompInputScope.observeToolCall({ ...call, nativeInputId: input.id, server: 'papercusp-su' });
-        input.originalCalls.set(call.callId, structuredClone(call));
+        input.originalCalls.set(call.callId, structuredClone(original));
         // Built-ins are deliberately absent from nativeTools. Their genuine
         // original input is observed here but grants no canonical target,
         // resource scope, protected capture receipt or funded turn.

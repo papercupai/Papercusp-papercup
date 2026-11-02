@@ -314,9 +314,11 @@ describe('runPureLaneProofCapture', () => {
 
   it('reads proofs only for the lane files it judges (WI-6554700010019200)', async () => {
     const scopes: unknown[] = [];
+    const readerRoots: string[] = [];
     const h = harness({
-      loadProofs: async ({ files }: { files?: string[] }) => {
+      loadProofs: async ({ files, repoRoot }: { files?: string[]; repoRoot?: string }) => {
         scopes.push(files);
+        readerRoots.push(repoRoot ?? '');
         return { proofs: new Map([[rr('lib/a.test.ts'), proof(SHA, HOUR)]]), rows: 1 };
       },
     });
@@ -325,6 +327,7 @@ describe('runPureLaneProofCapture', () => {
     expect([...(scopes[0] as string[])].sort()).toEqual(
       ['lib/a.test.ts', 'lib/b.test.ts', 'lib/c.test.ts', 'lib/d.test.ts', 'lib/e.test.ts'].map(rr),
     );
+    expect(readerRoots).toEqual(['/r']);
   });
 
   it('retains the exact named local proof population before removing its temporary result files', async () => {

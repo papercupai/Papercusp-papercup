@@ -4248,6 +4248,8 @@ describe('carry-drill busy-gate metric correlation (WI-6554700010012191)', () =>
     const { captured, io } = fakeIo();
     const childCode = [
       "process.stdout.write('BOOT:'+process.pid+'\\n');",
+      // Match Codex's real composer footer so the host and test share the same readiness signal.
+      "process.stdout.write('› Ask Codex to do anythingReady · GPT-5.6-Sol high · Context 100% left\\n');",
       "setInterval(()=>process.stdout.write('SPIN\\n'),20);",
       "process.stdin.setEncoding('utf8');process.stdin.on('data',d=>{if(d.includes('QUIT'))process.exit(0);});",
       'setTimeout(()=>process.exit(0),15000);',
@@ -4266,7 +4268,7 @@ describe('carry-drill busy-gate metric correlation (WI-6554700010012191)', () =>
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '1000',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '250',
-          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '500',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '20',
         },
         ownerId,
@@ -4275,8 +4277,10 @@ describe('carry-drill busy-gate metric correlation (WI-6554700010012191)', () =>
         nativePersistenceTimeoutMs: 100,
       });
       await vi.waitFor(() => {
+        expect(captured()).toContain(FLATTENED_CODEX_READY_FOOTER);
         expect(captured()).toContain('SPIN');
       }, { timeout: 5000 });
+      expect(startupOutputReady('codex', captured())).toBe(true);
 
       await envelopeInject(sock, {
         mode: 'carry-respawn',
@@ -5636,9 +5640,10 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
       if (options.recycleAgainAfterFirst) {
         if (options.deleteOriginalAfterFirst) unlinkSync(stale);
         await controlInject(sock, 'recycle', '');
+        // Allow the 5s graceful-stop deadline and 1s SIGKILL observation window before judging the third spawn missing.
         await vi.waitFor(() => {
           expect([...captured().matchAll(/SPF:(\S+)/g)]).toHaveLength(3);
-        }, { timeout: 5000 });
+        }, { timeout: 15000 });
       }
     }
 

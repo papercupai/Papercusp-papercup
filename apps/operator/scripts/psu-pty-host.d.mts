@@ -2044,10 +2044,10 @@ export function shutdownRefusalReason({ launchedBy, headless, fleetSlug, lastInp
  *   lastOutputAt() → ms epoch of the agent's most recent pty output (0 = none yet,
  *                    treated as "quiet"/at-prompt).
  *   waitAtPrompt() → resolves { deferred:false } once output has been quiet for
- *                    quietMs (agent at prompt → safe to inject), or
- *                    { deferred:true, reason:'agent-busy' } if the agent stays busy
- *                    past capMs (caller SKIPS the live inject; the durable inbox
- *                    message stands for the next natural turn).
+ *                    quietMs and blockedInputSurface() is clear, or
+ *                    { deferred:true } if output stays active or a non-composer
+ *                    input surface persists through capMs (caller SKIPS the live
+ *                    inject; the durable inbox message stands for the next turn).
  *
  * Pure (injectable clock + getter); exported for tests.
  *
@@ -2065,8 +2065,9 @@ export function shutdownRefusalReason({ launchedBy, headless, fleetSlug, lastInp
  * @param {number} [opts.capMs]
  * @param {() => number} [opts.now]
  * @param {() => {phase?: string, pendingTools?: number} | null} [opts.nativeExecution]
+ * @param {() => string | null} [opts.blockedInputSurface] current non-composer input surface
  */
-export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExecution, }?: {
+export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExecution, blockedInputSurface, }?: {
     lastOutputAt?: (() => number) | undefined;
     quietMs?: number | undefined;
     capMs?: number | undefined;
@@ -2075,6 +2076,7 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExe
         phase?: string;
         pendingTools?: number;
     } | null) | undefined;
+    blockedInputSurface?: (() => string | null) | undefined;
 }): {
     /** ms the agent output has been quiet (huge when never seen ⇒ at-prompt).
      *  Pure helper, exported for tests. */
@@ -2097,23 +2099,16 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExe
     waitAtPrompt(overrideCapMs?: number | null, verifiedBoundary?: (() => boolean) | null, abortBoundary?: (() => boolean) | null): Promise<{
         deferred: boolean;
         boundary: string;
-        reason?: undefined;
-        maxQuietForMs?: undefined;
-        quietMs?: undefined;
-        nativeBusy?: undefined;
     } | {
         deferred: boolean;
         boundary?: undefined;
-        reason?: undefined;
-        maxQuietForMs?: undefined;
-        quietMs?: undefined;
-        nativeBusy?: undefined;
     } | {
-        deferred: boolean;
-        reason: string;
         maxQuietForMs: number;
         quietMs: number;
         nativeBusy: boolean;
+        inputSurface?: string | undefined;
+        deferred: boolean;
+        reason: string;
         boundary?: undefined;
     }>;
     /** WI-1872 (2): the START-RACE fix. Resolves as soon as output goes BUSY
@@ -4943,6 +4938,16 @@ export function codexFooterStateFromOutput(output: unknown, dims?: {
     rows?: number;
     cols?: number;
 }): string | null;
+/** Classify Codex's current transcript Find surface from the rendered terminal
+ * screen. Only the active footer and its adjacent input row count; flattened
+ * transcript text and an older frame cannot make a later composer look like Find.
+ * @param {unknown} output
+ * @param {{ rows?: number, cols?: number }} [dims]
+ * @returns {'editing' | 'reading' | null} */
+export function codexTranscriptFindState(output: unknown, dims?: {
+    rows?: number;
+    cols?: number;
+}): "editing" | "reading" | null;
 /** WI-10005178: the screen text a `codex-startup-still-starting` verdict was read
  * from. Measured 2026-10-02T01:40-01:44Z (su-6a2603be, codex home session-32862):
  * the dropped child's own codex-tui.log shows session init, MCP resolution and the

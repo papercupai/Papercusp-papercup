@@ -171,6 +171,7 @@ import {
   routineFireTimeoutMs,
   routineFireWorkflow,
   learningLoopHealthSweepDbosStep,
+  staleRoutineExecutorSweepDbosStep,
 } from './routines-workflow';
 import {
   LOOP_WAKE_TARGET_ROLE,
@@ -1060,6 +1061,46 @@ describe('learning-loop-health-sweep — durable operation output', () => {
     expect(stepAt).toBeGreaterThan(-1);
     expect(stepEnd).toBeGreaterThan(stepAt);
     expect(step).toContain('learningLoopHealthSweepDbosStep');
+  });
+});
+
+describe('staleRoutineExecutorSweepDbosStep — durable output', () => {
+  it.each([
+    { outcome: 'healthy', reason: 'no stale executor detected' },
+    { outcome: 'skipped', reason: 'routines are disabled on this process' },
+  ])('persists the quiet $outcome result for DBOS forensics', async (result) => {
+    await DBOS.runStep(
+      () => staleRoutineExecutorSweepDbosStep(async () => result),
+      { name: 'stale-routine-executor-sweep' },
+    );
+
+    expect(state.stepOutputs).toContainEqual({ name: 'stale-routine-executor-sweep', output: result });
+  });
+
+  it('persists a caught sweep failure as an error result', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await DBOS.runStep(
+        () => staleRoutineExecutorSweepDbosStep(async () => { throw new Error('probe failed'); }),
+        { name: 'stale-routine-executor-sweep' },
+      );
+
+      expect(state.stepOutputs).toContainEqual({
+        name: 'stale-routine-executor-sweep',
+        output: { outcome: 'error', reason: 'probe failed' },
+      });
+      expect(warn).toHaveBeenCalledWith('[stale-routine-executor] sweep failed: probe failed');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('uses the durable-output helper for the registered watchdog step', () => {
+    const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
+    const stepNameAt = source.indexOf("{ name: 'stale-routine-executor-sweep' }");
+    const stepAt = source.lastIndexOf('await DBOS.runStep(', stepNameAt);
+    expect(stepAt).toBeGreaterThan(-1);
+    expect(source.slice(stepAt, stepNameAt)).toContain('staleRoutineExecutorSweepDbosStep');
   });
 });
 

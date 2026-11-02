@@ -1080,7 +1080,7 @@ describe('loop surface round-trip (real PG)', () => {
     expect(status!.lastSuppressedWakeLoopTurnAt).toBeNull();
     expect(classifyLoopNextWake(status!, now)).toEqual({
       guaranteed: false,
-      reason: 'last-fire-no-loop-turn',
+      reason: 'last-turn-unrearmed',
     });
   });
 

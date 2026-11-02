@@ -935,6 +935,8 @@ export default defineTool({
                       }
                     : {}),
                   question: input.summary?.trim() || input.ref || input.id,
+                  evidence: input.evidence,
+                  nextVerb: input.nextVerb,
                   defaultIfUnanswered: input.defaultIfUnanswered,
                   decideBy: input.decideBy,
                   ownerAuthorityTopic: input.ownerAuthorityTopic ?? null,

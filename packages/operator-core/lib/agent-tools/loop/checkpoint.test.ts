@@ -2887,7 +2887,7 @@ describe('EI-22995965169175295: qualified plan-decision refs in loop carry respo
   });
 });
 
-describe('loop:checkpoint — the P-006 walls merge (commitments cleared explicitly, never incidentally)', () => {
+describe('loop:checkpoint — the P-006 walls merge (carried rows retired explicitly, never incidentally)', () => {
   const PRIOR_WITH_WALL = [
     '## Next action',
     'old next step',
@@ -2942,11 +2942,14 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
     getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
     await call({
       next: 'continue',
-      walls: [{ claim: 'zombie PIDs await owner OK' }, { claim: 'capital arming pending owner decision' }],
+      walls: [
+        { claim: 'zombie PIDs await owner OK', origin: 'owner' },
+        { claim: 'capital arming pending owner decision', origin: 'owner' },
+      ],
     });
     const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
-    expect(withoutRowIds(written)).toContain('- zombie PIDs await owner OK — re-check: ps -p 95902 (since 2026-07-07T12:00:00.000Z)');
-    expect(withoutRowIds(written)).toContain('- capital arming pending owner decision (since ');
+    expect(withoutRowIds(written)).toContain('- [origin:owner] zombie PIDs await owner OK — re-check: ps -p 95902 (since 2026-07-07T12:00:00.000Z)');
+    expect(withoutRowIds(written)).toContain('- [origin:owner] capital arming pending owner decision (since ');
   });
 
   it('a walls-only write keeps the narrative and retires only its named predecessor', async () => {
@@ -3732,6 +3735,29 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(parse({ walls: '["needs owner key"]' })).toMatchObject({ walls: [{ claim: 'needs owner key' }] });
     });
 
+    it('requires a live predicate and probe for self/external walls', () => {
+      for (const origin of ['self', 'external'] as const) {
+        expect(() => parse({ walls: [{ claim: 'Do not rerun', origin }] })).toThrow();
+        expect(() => parse({
+          walls: [{ claim: 'Do not rerun', origin, appliesWhile: 'gate run rr-123 is active' }],
+        })).toThrow();
+        expect(parse({
+          walls: [{
+            claim: 'Do not rerun',
+            origin,
+            appliesWhile: 'gate run rr-123 is active',
+            recheck: 'release:repair-queue status rr-123',
+          }],
+        })).toMatchObject({
+          walls: [{
+            origin,
+            appliesWhile: 'gate run rr-123 is active',
+            recheck: 'release:repair-queue status rr-123',
+          }],
+        });
+      }
+    });
+
     it('writes compact wall strings through the normal typed row path', async () => {
       const b = body(await call({ did: 'progress', walls: ['needs owner key'] }));
       expect(b).toMatchObject({ ok: true, walls: 1 });
@@ -3901,7 +3927,7 @@ describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-194637
 
   it('reports a named wall retirement separately from checks', async () => {
     getLoopCarryNote.mockResolvedValue(
-      buildPrior([], [{ claim: 'owner must ratify the cutover' }, { claim: 'awaiting capital arming' }]),
+      buildPrior([], [{ claim: 'owner must ratify the cutover', origin: 'owner' }, { claim: 'awaiting capital arming' }]),
     );
     const b = body(
       await call({
@@ -4136,7 +4162,7 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
   });
 
   it('merges WALLS under the same flag', async () => {
-    getLoopCarryNote.mockResolvedValue(buildPrior([], [{ claim: 'owner must ratify the cutover' }]));
+    getLoopCarryNote.mockResolvedValue(buildPrior([], [{ claim: 'owner must ratify the cutover', origin: 'owner' }]));
     const b = body(await call({ did: 'progress', walls: [{ claim: 'awaiting capital arming' }], rowsMode: 'merge' }));
 
     expect(b.walls).toBe(2);

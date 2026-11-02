@@ -34,7 +34,15 @@ type Out = {
     truncatedByLimit: boolean;
     waiting: number;
     stranded: number;
-    walls: Array<{ ownerId: string | null; status: string; waitingHours: number | null }>;
+    walls: Array<{
+      ownerId: string | null;
+      status: string;
+      waitingHours: number | null;
+      source?: string;
+      claim?: string;
+      origin?: string;
+      requiresRevalidation?: boolean;
+    }>;
   };
 };
 
@@ -84,6 +92,28 @@ describe('coord:walls handler', () => {
       status: 'unknown',
     }]);
     expect(h.resolveSessionStates).not.toHaveBeenCalled();
+  });
+
+  it('retains explicit system authority on a carry wall', async () => {
+    h.sql.mockReset();
+    h.sql
+      .mockResolvedValueOnce([]) // coord_presence
+      .mockResolvedValueOnce([{
+        scope: 'loop:papercusp:su-system',
+        note: '## Walls\n- [origin:system] Release gate lock',
+        updated_ts: new Date(),
+      }])
+      .mockResolvedValueOnce([]) // needs-human work_items
+      .mockResolvedValueOnce([]); // wall: standing facts
+
+    const out = (await tool.handler({}, { workspaceId: 'ws-test' } as never)) as Out;
+
+    expect(out.data.walls).toMatchObject([{
+      source: 'loop-carry-note',
+      claim: 'Release gate lock',
+      origin: 'system',
+      requiresRevalidation: false,
+    }]);
   });
 });
 

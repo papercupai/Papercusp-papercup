@@ -108,14 +108,24 @@ describe('openDecisionReviewPark — refusals open nothing', () => {
 });
 
 describe('openDecisionReviewPark — R-13 accepted park', () => {
-  it('opens a decision-review consult whose cascade carries the park identity', async () => {
+  it('opens a decision-review consult with the full park context for reviewers', async () => {
     const d = deps();
-    const r = await openDecisionReviewPark(req(), d);
+    const r = await openDecisionReviewPark(req({
+      evidence: 'The plan currently names P-001 as owner and D-001 forbids reassignment.',
+      nextVerb: 'resume P-001 or record a superseding plan decision',
+    }), d);
     expect(r.ok).toBe(true);
     expect(d.openConsult).toHaveBeenCalledTimes(1);
     expect(d.openConsult).toHaveBeenCalledWith(expect.objectContaining({
       question: 'Ship the compact layout as the default?',
       originTaskRef: 'WI-1',
+      observed: 'The plan currently names P-001 as owner and D-001 forbids reassignment.',
+      decisionAtStake: [
+        'Parked work item: WI-1',
+        'Blocker reference: decision:layout',
+        `Default if no reviewer objects by ${inMinutes(60)}: ship compact as default`,
+        'Next action after review: resume P-001 or record a superseding plan decision',
+      ].join('\n'),
       cascade: {
         flavor: DECISION_REVIEW_CASCADE_FLAVOR,
         workItemId: 'WI-1',
@@ -198,13 +208,25 @@ describe('makeProdParkDoorDeps — durable accepted consult identity', () => {
   it('uses acceptFeedbackRequestProd and forwards the request key and pre-dispatch wake', async () => {
     acceptFeedbackRequestProd.mockReset().mockResolvedValue({ conversation_id: 'conv-durable' });
     const identity = { ownerId: 'su-setter', workspaceId: 'ws-1' } as never;
-    const request = req({ requestKey: 'work_items:set_blocker:park:retry' });
+    const request = req({
+      requestKey: 'work_items:set_blocker:park:retry',
+      evidence: 'The plan currently names P-001 as owner and D-001 forbids reassignment.',
+      nextVerb: 'resume P-001 or record a superseding plan decision',
+    });
     const validation = validateParkRequest(request, NOW);
     if (!validation.ok) throw new Error('expected valid park');
+    const decisionAtStake = [
+      `Parked work item: ${request.workItemId}`,
+      `Blocker reference: ${request.callerRef}`,
+      `Default if no reviewer objects by ${validation.deadlineAt}: ${validation.defaultAction}`,
+      `Next action after review: ${request.nextVerb}`,
+    ].join('\n');
     const onAccepted = vi.fn(async () => undefined);
     const result = await makeProdParkDoorDeps(identity).openConsult({
       question: request.question,
       originTaskRef: request.workItemId,
+      observed: request.evidence!,
+      decisionAtStake,
       cascade: parkCascadeMeta(request, validation),
       requestKey: request.requestKey!,
       onAccepted,
@@ -218,6 +240,8 @@ describe('makeProdParkDoorDeps — durable accepted consult identity', () => {
         requestKey: 'work_items:set_blocker:park:retry',
         question: request.question,
         originTaskRef: request.workItemId,
+        observed: request.evidence,
+        decisionAtStake,
         cascade: parkCascadeMeta(request, validation),
       }),
       identity,

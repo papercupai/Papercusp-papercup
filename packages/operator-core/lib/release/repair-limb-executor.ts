@@ -16,7 +16,7 @@ import { getServingHostIdentity, type ServingHostIdentity } from '../serving-hos
 type BuildResolution = Pick<ResolvedBuild, 'sha' | 'shaSource'>;
 
 export interface ExecutingBuild {
-  /** The writing process's loaded source sha; null exactly when `source` is `unresolved`. */
+  /** The writing process's loaded source sha; null when the source is dirty or unresolved. */
   sha: string | null;
   source: BuildShaSource;
 }
@@ -27,11 +27,12 @@ export interface RepairLimbExecutor {
   executingBuild: ExecutingBuild;
 }
 
-const SOURCES: ReadonlySet<string> = new Set<BuildShaSource>(['baked', 'env', 'git', 'unresolved']);
+const SOURCES: ReadonlySet<string> = new Set<BuildShaSource>(['baked', 'env', 'git', 'dirty', 'unresolved']);
 
-/** An unresolved build never carries a sha, and a sha never rides under `unresolved`. */
+/** A dirty/unresolved build never carries a commit sha. */
 export function executingBuildFrom(info: BuildResolution): ExecutingBuild {
   const sha = typeof info.sha === 'string' ? info.sha.trim() : '';
+  if (info.shaSource === 'dirty') return { sha: null, source: 'dirty' };
   if (!sha || info.shaSource === 'unresolved' || !SOURCES.has(info.shaSource)) {
     return { sha: null, source: 'unresolved' };
   }
@@ -66,7 +67,8 @@ export function parseRepairLimbExecutor(value: unknown): RepairLimbExecutor | un
     return undefined;
   }
   const sha = build.sha === null ? null : typeof build.sha === 'string' && build.sha.trim() ? build.sha : undefined;
-  if (sha === undefined || (sha === null) !== (build.source === 'unresolved')) return undefined;
+  const unattributable = build.source === 'dirty' || build.source === 'unresolved';
+  if (sha === undefined || (sha === null) !== unattributable) return undefined;
   return {
     hostId: row.hostId,
     processId: typeof row.processId === 'string' ? row.processId : null,

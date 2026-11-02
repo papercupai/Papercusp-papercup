@@ -19,11 +19,11 @@ import {
 } from '../../harness/routines/loop-transition-log';
 import { getLoopCarryNoteWithMeta, shortCarryHash } from '../../carry-note';
 import { probeWakeReachability, type WakeReachabilityVerdict } from '../../events/await/wake-reachability';
-import { listWakeAwaitsForSubscriber } from '../../events/await/store';
+import { listParkedAwaitsForSubscribers, listWakeAwaitsForSubscriber } from '../../events/await/store';
 import type { LivePushChannels } from './arm';
 import { classifyLoopNextWake } from './next-wake';
 
-/** WI-10004466: a currently-withheld loop wake, derived from the latest transition. */
+/** WI-10004466: a currently-withheld loop wake, checked against the live driving await. */
 export interface ActiveAwaitSuppression {
   suppressedUntil: string;
   drivingEventKey: string | null;
@@ -32,23 +32,40 @@ export interface ActiveAwaitSuppression {
 
 /**
  * WI-10004466: the loop's next wake is being WITHHELD by await suppression right now when
- * the newest transition is loop-fire's `await-suppression` re-arm, its target is still in
- * the future, and the loop's schedule is still the one that re-arm wrote (a later arm or
- * re-arm supersedes it). Pure; null whenever any of that cannot be shown.
+ * the newest transition is loop-fire's `await-suppression` re-arm, its driving event is
+ * still an active blocking await, its target is still in the future, and the loop's
+ * schedule is still the one that re-arm wrote (a later arm or re-arm supersedes it).
+ * Pure; null whenever any of that cannot be shown.
  */
 export function deriveActiveAwaitSuppression(
   lastTransition: LatestLoopTransitionRead | null,
   nextFireAt: Date | string | null | undefined,
   nowMs: number,
+  activeBlockingAwaits: readonly {
+    eventKey: string;
+    once: boolean;
+    boundTo?: { kind?: string } | null;
+  }[] | null,
 ): ActiveAwaitSuppression | null {
   if (!lastTransition || lastTransition.status !== 'found') return null;
   const t = lastTransition.transition;
   if (t.actor !== 'await-suppression' || t.event !== 'rearmed' || !t.newNextFireAt) return null;
+  const key = typeof t.detail?.drivingEventKey === 'string' ? t.detail.drivingEventKey : null;
+  if (
+    !key ||
+    !activeBlockingAwaits?.some(
+      (awaitRow) =>
+        awaitRow.eventKey === key &&
+        awaitRow.once !== false &&
+        awaitRow.boundTo?.kind !== 'work-item-blocked',
+    )
+  ) {
+    return null;
+  }
   const untilMs = Date.parse(t.newNextFireAt);
   if (!Number.isFinite(untilMs) || untilMs <= nowMs) return null;
   const nextMs = nextFireAt instanceof Date ? nextFireAt.getTime() : nextFireAt ? Date.parse(nextFireAt) : NaN;
   if (!Number.isFinite(nextMs) || Math.abs(nextMs - untilMs) > 1_000) return null;
-  const key = typeof t.detail?.drivingEventKey === 'string' ? t.detail.drivingEventKey : null;
   const until = new Date(untilMs).toISOString();
   return {
     suppressedUntil: until,
@@ -271,6 +288,17 @@ export default defineTool({
     // scope on the wire so status:none can no longer be misread as global absence.
     const pendingAwaitsOut = { ...pendingAwaitsResult, scope: 'non-inbox-wake' as const };
 
+    // A transition is historical evidence. Confirm its exact driving await is still
+    // a live blocking park before describing the current loop as suppressed; otherwise
+    // events:cancel can leave this diagnostic pointing at a canceled conversation.
+    const activeBlockingAwaits =
+      status &&
+      lastTransition?.status === 'found' &&
+      lastTransition.transition.actor === 'await-suppression' &&
+      lastTransition.transition.event === 'rearmed'
+        ? await listParkedAwaitsForSubscribers([ownerId]).catch(() => null)
+        : [];
+
     const statusWithCadence = status
       ? {
           ...status,
@@ -338,7 +366,7 @@ export default defineTool({
             // guaranteed during an await suppression (a wake IS scheduled, just late), and
             // the cadence fields reflect the delay without naming it.
             awaitSuppression: status
-              ? deriveActiveAwaitSuppression(lastTransition, status.nextFireAt, Date.now())
+              ? deriveActiveAwaitSuppression(lastTransition, status.nextFireAt, Date.now(), activeBlockingAwaits)
               : null,
             carryNote,
             reachability: reachabilityOut,

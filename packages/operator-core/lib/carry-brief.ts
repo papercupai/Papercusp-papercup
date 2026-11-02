@@ -35,6 +35,8 @@ import {
 import {
   getLoopCarryNoteWithMeta,
   renderCheckLine,
+  renderWallLine,
+  isCarryWallAuthoritative,
   shortCarryHash,
   splitCarryNoteChecks,
   splitCarryNoteWalls,
@@ -201,9 +203,9 @@ export interface CarryBrief {
   directivesTotalOpen: number;
   /** Exact own count when the bounded directive fetch omits some own rows. */
   directivesOwnTotalOpen?: number | null;
-  /** Open WALLS (P-006): owner-gated commitments as structured rows, parsed out of
-   *  the loop carry-note's `## Walls` section. The brief carries them VERBATIM —
-   *  they are open commitments, and prose dissolves them. */
+  /** Carried WALLS (P-006): structured rows parsed from the loop note. Explicit
+   *  owner/system origins are gates; self/external and legacy rows need source
+   *  revalidation before they can block work. */
   walls: WallEntry[];
   /** carried CHECKS (cold-carry-system-hardening P-001): external-state claims +
    *  probes, parsed out of the note's `## Checks` section — same structured
@@ -336,6 +338,20 @@ function renderCheckpointChecksDisclosure(
     `\n    ⚠ checks: ${hidden} of ${stored.length} rows on THIS ITEM'S checkpoint are NOT shown above` +
     ` — a separate set from the loop's "CARRIED CHECKS" block, and an unread row cannot warn you.` +
     ` Read them before acting on this item: ${workItemFetchHint(id, harness)}`
+  );
+}
+
+function renderCheckpointWallsDisclosure(
+  checkpoint: string,
+  id: string,
+  harness: string | null,
+): string {
+  const walls = splitCarryNoteWalls(checkpoint).walls.filter((wall) => !isCarryWallAuthoritative(wall));
+  if (walls.length === 0) return '';
+  return (
+    `\n    ⚠ walls: ${walls.length} self/external or legacy-unscoped row(s) require a current-source check. ` +
+    'They are not authority by themselves; treat them as blocking only while an explicit predicate/source is verified. ' +
+    `Read the full item checkpoint before acting: ${workItemFetchHint(id, harness)}`
   );
 }
 /** An INACTIVE loop's carry-note older than this renders as a labeled STALE
@@ -1900,7 +1916,7 @@ export function renderCarryQueryHandlesBlock(handles: readonly QueryHandle[]): s
  */
 export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRIEF_FOCUS_MAX): string {
   const parts: string[] = [
-    'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and owner-gated walls',
+    'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and revalidate carried walls; only owner/system rows are gates',
   ];
   const ownDirectives = brief.directives.filter((directive) => directive.recordedBy === brief.ownerId);
   if (ownDirectives.length > 0) {
@@ -1912,9 +1928,20 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
     );
   }
   if (brief.walls.length > 0) {
-    // P-006: open walls outrank everything else — they are open COMMITMENTS, kept
-    // VERBATIM (per-claim capped only to survive the hard focus cap).
-    parts.push(`OPEN WALLS (carry verbatim, do not re-declare resolved): ${brief.walls.map((w) => `"${cap(w.claim, 90)}"`).join('; ')}`);
+    const authoritative = brief.walls.filter(isCarryWallAuthoritative);
+    const conditional = brief.walls.filter((wall) => !isCarryWallAuthoritative(wall));
+    if (authoritative.length > 0) {
+      parts.push(
+        `OPEN WALLS (owner/system authority, carry verbatim): ${authoritative.map((w) => `"${cap(w.claim, 90)}"`).join('; ')}`,
+      );
+    }
+    if (conditional.length > 0) {
+      parts.push(
+        `WALLS TO REVALIDATE (conditional or legacy-unscoped; not authority by themselves): ${conditional
+          .map((w) => `"${cap(w.claim, 90)}"`)
+          .join('; ')}`,
+      );
+    }
   }
   const heldOwnership = brief.heldItems.map((item) => ({
     item,
@@ -2170,25 +2197,30 @@ export function renderCarryBriefColdExtras(
     if (block) sections.push(block);
   }
   if (brief.walls.length > 0) {
-    // P-006: walls FIRST, as rows, VERBATIM — the redundancy with the note's own
-    // `## Walls` section is deliberate; commitments are the one carry class where
-    // double-delivery beats any byte saving.
-    const lines = brief.walls.map(
-      (w) => `  • ${w.claim}${w.recheck ? ` — re-check: ${w.recheck}` : ''}`,
-    );
-    sections.push(
-      `⛔ OPEN WALLS — owner-gated commitments you still carry (re-check, do not re-litigate or re-declare resolved; clear via loop:checkpoint { walls }):\n${lines.join('\n')}`,
-    );
+    const authoritative = brief.walls.filter(isCarryWallAuthoritative);
+    const conditional = brief.walls.filter((wall) => !isCarryWallAuthoritative(wall));
+    if (authoritative.length > 0) {
+      const lines = authoritative.map((wall) => `  ${renderWallLine(wall)}`.replace(/^  - /, '  • '));
+      sections.push(
+        `⛔ OPEN WALLS — explicit owner/system commitments you still carry. Re-check the current source; clear a resolved wall via loop:checkpoint { walls }:\n${lines.join('\n')}`,
+      );
+    }
+    if (conditional.length > 0) {
+      const lines = conditional.map((wall) => `  ${renderWallLine(wall)}`.replace(/^  - /, '  • '));
+      sections.push(
+        `⚠ CARRIED WALLS TO REVALIDATE — self/external predicates and legacy unscoped rows are not authority by themselves. Check each current source now; a conditional wall blocks only while its appliesWhile predicate is verified. Do not let an unscoped carried row block solely because it was copied into this brief; clear it or rewrite it with an explicit, current source:\n${lines.join('\n')}`,
+      );
+    }
     // A wall that has stood this long is being RE-REPORTED, not re-examined. The
     // carry surface already redelivers it every wake, which is exactly what makes
     // the trap invisible: each redelivery reads as "still blocked", never as "you
     // have never asked whether this is still wanted". See AGED_WALL_RESCOPE_PROMPT_MS.
     const nowMs = opts.nowMs ?? Date.now();
-    const agedAges = brief.walls
+    const agedAges = authoritative
       .map((w) => (w.sinceMs != null && Number.isFinite(w.sinceMs) ? nowMs - w.sinceMs : null))
       .filter((age): age is number => age != null && age >= AGED_WALL_RESCOPE_PROMPT_MS);
     if (agedAges.length > 0) {
-      const aged = brief.walls.filter(
+      const aged = authoritative.filter(
         (w) =>
           w.sinceMs != null &&
           Number.isFinite(w.sinceMs) &&
@@ -2273,7 +2305,11 @@ export function renderCarryBriefColdExtras(
         inlineNotice: true,
         more: workItemFetchHint(h.id, h.harness),
       });
-      return excerpt + renderCheckpointChecksDisclosure(h.checkpoint!, excerpt, h.id, h.harness);
+      return (
+        excerpt +
+        renderCheckpointChecksDisclosure(h.checkpoint!, excerpt, h.id, h.harness) +
+        renderCheckpointWallsDisclosure(h.checkpoint!, h.id, h.harness)
+      );
     };
     const lines = verifiedHeldItems.map((h) => {
       const title = h.title ? ` — ${cap(h.title, COLD_TITLE_CAP)}` : '';

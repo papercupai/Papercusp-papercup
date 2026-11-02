@@ -22,7 +22,16 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { COORD_ROLES } from '../coordination/roles';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
-import { updateWorkItem, getWorkItem, activeExternalBlockers, mergeWorkItemPayload, explainIssueClaimFloors, linkWorkItem, unlinkWorkItem } from '../../work-items';
+import {
+  updateWorkItem,
+  getWorkItem,
+  activeExternalBlockers,
+  mergeWorkItemPayload,
+  explainIssueClaimFloors,
+  linkWorkItem,
+  unlinkWorkItem,
+  setWorkItemStateWithAliasInfo,
+} from '../../work-items';
 import { hasStrictOwnerAction } from '../../harness/improvements/agent-review-policy';
 import { hasActiveStrictHumanAsk } from '../../hold-registry';
 import { runBulk, bulkContent } from '../_bulk';
@@ -288,7 +297,7 @@ const FIELDS = {
     .boolean()
     .optional()
     .describe(
-      'Compatibility input for the owner-action gate: true writes payload.needsOwnerAction=true and removes legacy payload.needsHuman; false unsets BOTH keys and re-admits the row. Reserve true for a genuine credential, physical-device, or external-service action only — product decisions use agent review.',
+      'Compatibility input for the owner-action gate: true writes payload.needsOwnerAction=true and removes legacy payload.needsHuman; false unsets BOTH keys and re-admits an issue-family row. If that issue is needs-human with no active external blockers, it also returns to open. Active blockers and feature plan state remain authoritative. Reserve true for a genuine credential, physical-device, or external-service action only — product decisions use agent review.',
     ),
   // WI-41509: before this, an existing work-item's payload was closed to agents except
   // through the fixed flags above — work_items:create was the only tool with a free-form
@@ -327,7 +336,7 @@ export default defineTool({
   name: 'work_items:update',
   profile: 'engineer',
   description:
-    "Edit one OR many work-items' title/body/severity/kind/found-during/linked feature/parent/goal/plan_item/needsTwoMachineRig/needsHuman; notifies subscribers. Single: { id, …fields }; many: items:[{ id, …fields }]. Returns per-item { ok, id, item? | error }; missing items do not fail the batch. Goal and plan_item are family-agnostic; parent is the duplicate/child relation and null clears it. Other field edits are issue-family-only (bug/change/task); features remain pipeline-owned. Body shrink is rejected unless confirmShrink:true (EI-8497). needsTwoMachineRig toggles payload.needs_2_machine_rig; compatibility input needsHuman:true writes the strict payload.needsOwnerAction gate, while false clears both legacy and strict keys. `payload` shallow-MERGES free-form keys onto an existing item (admission/claim and `_`-prefixed keys refused). (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
+    "Edit one OR many work-items' title/body/severity/kind/found-during/linked feature/parent/goal/plan_item/needsTwoMachineRig/needsHuman; notifies subscribers. Single: { id, …fields }; many: items:[{ id, …fields }]. Returns per-item { ok, id, item? | error }; missing items do not fail the batch. Goal and plan_item are family-agnostic; parent is the duplicate/child relation and null clears it. Other field edits are issue-family-only (bug/change/task); features remain pipeline-owned. Body shrink is rejected unless confirmShrink:true (EI-8497). needsTwoMachineRig toggles payload.needs_2_machine_rig; compatibility input needsHuman:true writes the strict payload.needsOwnerAction gate, while false clears both legacy and strict keys and reopens an issue-family needs-human item only when no external blocker remains. Feature plan state stays pipeline-owned. `payload` shallow-MERGES free-form keys onto an existing item (admission/claim and `_`-prefixed keys refused). (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
   guidance: {
     when: 'Refine filed work-items: clarify text, re-rate severity, correct kind (bug↔change controls lane), attach a feature, adopt/clear a goal, or backfill plan_item provenance for a plan-scoped lane. Batch via items:[…].',
     notWhen: 'Use set_state for lifecycle, amend for structural decisions, comment for notes, or tag for topics.',
@@ -594,6 +603,45 @@ export default defineTool({
               };
             }
             if (merged) item = merged;
+            if (it.needsHuman === false) {
+              const current = await getWorkItem(it.id, it.harness);
+              if (
+                current?.family === 'issue' &&
+                current.state === 'needs-human' &&
+                activeExternalBlockers(current.payload).length === 0
+              ) {
+                const restored = await setWorkItemStateWithAliasInfo(it.id, 'open', {
+                  harness: it.harness,
+                  by: ident.ownerId,
+                  expectedCurrentState: 'needs-human',
+                  requireNoActiveExternalBlockers: true,
+                });
+                if (restored.workItem?.state === 'open') {
+                  item = restored.workItem;
+                } else {
+                  // The issue writer re-checks state and blockers while holding the base row.
+                  // Re-read after a lost compare-and-set so a concurrent change is reflected
+                  // instead of claiming that the issue reopened.
+                  const latest = await getWorkItem(it.id, it.harness);
+                  if (!latest) {
+                    return {
+                      ok: false as const,
+                      id: it.id,
+                      error: 'needsHuman:false cleared the payload flags, but the issue disappeared before lifecycle restoration; re-read before retrying.',
+                    };
+                  }
+                  item = latest;
+                  if (latest.state === 'needs-human' && activeExternalBlockers(latest.payload).length === 0) {
+                    return {
+                      ok: false as const,
+                      id: it.id,
+                      item: latest,
+                      error: 'needsHuman:false cleared the payload flags, but the unblocked issue remained needs-human because the guarded lifecycle restore did not apply; re-read before retrying.',
+                    };
+                  }
+                }
+              }
+            }
           }
           // EI-20189734665644353: an existing item needs a member-writable plan stamp before
           // a plan-scoped fleet claim spec can admit it. Keep the public update shape aligned

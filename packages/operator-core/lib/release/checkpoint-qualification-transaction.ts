@@ -13,6 +13,7 @@ import { lstatSync, readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
+import { canonicalJson } from '@papercusp/hash-chain';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { isCheckpointCandidateSource, type CheckpointCandidateSource } from './checkpoint-candidate-source';
 import type { FreezeCutRecord } from './known-good-freeze';
@@ -1802,7 +1803,7 @@ export function recordQualificationEligibilitySnapshot(
   }
   const parsed = parseCheckpointEligibilitySnapshot(input.snapshot);
   if (!parsed) return { status: 'conflict', transaction: current };
-  if (JSON.stringify(current.eligibilitySnapshot ?? null) === JSON.stringify(parsed)) {
+  if (canonicalJson(current.eligibilitySnapshot ?? null) === canonicalJson(parsed)) {
     return { status: 'idempotent', transaction: current };
   }
   const evidenceRefs = uniqueStrings([

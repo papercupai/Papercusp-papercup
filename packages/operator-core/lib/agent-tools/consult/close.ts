@@ -53,10 +53,20 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const [{ getOrgPg }, { consultCloseCore }, conversations] = await Promise.all([
+    const [
+      { getOrgPg },
+      { consultCloseCore },
+      conversations,
+      { consultExpiryStopAnsweringSession },
+      { listLiveTasks },
+      { killTask },
+    ] = await Promise.all([
       import('@papercusp/db-org'),
       import('../../consult/consult-verbs-core'),
       import('../coordination/conversations'),
+      import('../../consult/consult-expiry-adapters'),
+      import('../../task-manager/store'),
+      import('../../task-manager/control'),
     ]);
     const workspaceId = conversations.withConversationsIdentityScope(identity, undefined, () =>
       conversations.conversationsScopeWorkspace(),
@@ -77,6 +87,10 @@ export default defineTool({
         getSql: () => getOrgPg().sql,
         post: (input) => conversations.postReply(identity, input),
         settleConversation: (input, tx) => conversations.settleConsultConversation(identity, input, tx),
+        stopAnsweringSession: consultExpiryStopAnsweringSession({
+          listLiveTasks: (workspaceId) => listLiveTasks(workspaceId),
+          killTask: (taskId) => killTask(taskId),
+        }),
         emitReplyEvent: async (e) => {
           await import('../../events/await/engine')
             .then(({ emitAwaitedEvent }) => emitAwaitedEvent({ ...e, source: identity.ownerId }))

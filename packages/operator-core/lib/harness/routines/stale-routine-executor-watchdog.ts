@@ -678,7 +678,22 @@ async function attemptStaleBgHostExecutorRestart(
     // refusal — judge it before collapsing the error to 'ptool_failed'. The body
     // of an isError result is on stderr (EI-27074588252473034).
     const body = parsePtoolResultBody(result.stdout, result.stderr);
-    if (result.error && body?.ok !== false) return { ...skipped('ptool_failed'), attempted: true, error: result.error };
+    const verify =
+      deps.verifyGeneration ??
+      ((pid: unknown) => waitForStaleExecutorRestartGeneration(pid, { run }));
+    if (result.error && body?.ok !== false) {
+      // dev:restart can restart this bg-host before ptool receives the HTTP
+      // response. If no explicit answer arrived, a changed MainPID is the
+      // durable receipt that the self-restart succeeded; an unchanged or
+      // unreadable generation keeps the ordinary ptool_failed classification.
+      const generation =
+        body?.ok !== true && beforePid !== null ? await verify(beforePid).catch(() => null) : null;
+      if (generation?.verified) {
+        staleExecutorRestartCooldownUntilMs = nowMs + STALE_EXECUTOR_RESTART_COOLDOWN_MS;
+        return { attempted: true, restarted: true, coalesced: false, verified: true, code: 'restarted' };
+      }
+      return { ...skipped('ptool_failed'), attempted: true, error: result.error };
+    }
     if (!body || body.ok !== true) {
       const holders = restartRefusalHolders(body);
       return {
@@ -693,9 +708,6 @@ async function attemptStaleBgHostExecutorRestart(
       return { attempted: true, restarted: false, coalesced: true, verified: body.verified === true, code: 'coalesced' };
     }
     if (body.restarted !== true) return { ...skipped('no_restart'), attempted: true };
-    const verify =
-      deps.verifyGeneration ??
-      ((pid: unknown) => waitForStaleExecutorRestartGeneration(pid, { run }));
     const generation = await verify(body.restartedFromPid ?? beforePid);
     if (!generation.verified) {
       return { attempted: true, restarted: false, coalesced: false, verified: false, code: 'restart_unverified' };

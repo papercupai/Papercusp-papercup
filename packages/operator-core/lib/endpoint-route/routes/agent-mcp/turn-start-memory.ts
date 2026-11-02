@@ -223,11 +223,12 @@ const turnStartMemory = defineTool({
       let observedLoopFire: boolean | null = null;
       const markerWrite = (async (): Promise<LoopMarkerOutcome> => {
         try {
-          const { isLoopFirePrompt, recordLoopTurnStart } =
+          const { isLoopFirePrompt, isLoopTurnStartCandidate, recordLoopTurnStart } =
             await import('../../../harness/routines/loop-turn-start-stamp');
           const loopFire = isLoopFirePrompt(prompt);
+          const loopTurnCandidate = isLoopTurnStartCandidate(prompt);
           observedLoopFire = loopFire;
-          if (!loopFire) return { loopFire: false, loopMarkerAppend: 'not-applicable' };
+          if (!loopTurnCandidate) return { loopFire: false, loopMarkerAppend: 'not-applicable' };
           const appended = await recordLoopTurnStart({
             owner,
             prompt,
@@ -236,7 +237,10 @@ const turnStartMemory = defineTool({
             client: typeof body.client === 'string' ? body.client : null,
             ...(turnStartRequestId ? { turnStartRequestId } : {}),
           });
-          return { loopFire: true, loopMarkerAppend: appended ? 'appended' : 'failed' };
+          return {
+            loopFire,
+            loopMarkerAppend: appended === null ? 'not-applicable' : appended ? 'appended' : 'failed',
+          };
         } catch {
           return { loopFire: observedLoopFire, loopMarkerAppend: 'failed' };
         }

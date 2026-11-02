@@ -15,6 +15,7 @@ vi.mock('@papercusp/db-org', async (original) => ({
 }));
 
 import { recordLoopTurnStart } from './loop-turn-start-stamp';
+import { getLoopStatus } from './loop';
 import { reconcileLoopRoutines } from './reconcile-loop-routines';
 import { LOOP_TURN_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
@@ -58,6 +59,78 @@ afterAll(async () => {
 });
 
 afterEach(() => vi.restoreAllMocks());
+
+async function insertLoopFixture(input: {
+  id: string;
+  owner: string;
+  firedAt: Date;
+  wakeCount: number;
+  lastStatus?: string;
+}) {
+  const armedAt = new Date(input.firedAt.getTime() - 60_000);
+  await sql`
+    INSERT INTO harness_shared.routines
+      (id, install_slug, name, trigger_kind, trigger_config, target_role,
+       active, workspace_id, last_fired_at, next_fire_at,
+       reschedule_interval_sec, target_owner_id, metadata)
+    VALUES (${input.id}, 'papercusp', ${input.id}, 'cron', '{}'::jsonb, 'su',
+            TRUE, ${WS}, ${input.firedAt}, 'infinity'::timestamptz, 60,
+            ${input.owner}, ${JSON.stringify({
+              fire_count: input.wakeCount, armed_at: armedAt.toISOString(),
+            })}::jsonb)
+  `;
+  if (input.lastStatus) {
+    await sql`
+      INSERT INTO harness_shared.autoloop_state
+        (workspace_id, harness_slug, role, last_fired_at, last_status, consecutive_errors)
+      VALUES (${WS}, 'papercusp', ${input.id}, ${input.firedAt},
+              ${input.lastStatus}, 1)
+    `;
+  }
+}
+
+async function createPinnedSelfCompactionPrompt(
+  owner: string,
+  routineId: string,
+  wakeCount: number,
+  text: string,
+) {
+  if (!provenanceDir) throw new Error('test provenance directory was not initialized');
+  const launchId = await recordAdvSession({
+    workspaceId: WS, agent: 'codex', mode: 'omp',
+    coordOwnerId: owner, sessionId: `native-${owner}`,
+  });
+  expect(launchId).not.toBeNull();
+  expect(await recordSuLaunchSpec(launchId!, owner, {
+    v: 1, workspaceId: WS, turnProvenanceDir: provenanceDir,
+  })).toBe(true);
+  return tagTurnForInjection({
+    sid: owner,
+    origin: 'self-compaction',
+    text,
+    loopFire: { routineId, wakeCount },
+    dir: provenanceDir,
+  });
+}
+
+async function insertNativeTurn(input: {
+  owner: string;
+  sessionId: string;
+  prompt: string;
+  promptAt: Date;
+  assistantAt: Date;
+}) {
+  await sql`
+    INSERT INTO harness_shared.session_turns
+      (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug,
+       speaker, text, turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+    VALUES
+      (${WS}, 'codex', ${input.sessionId}, 0, ${input.promptAt}, ${input.owner},
+       'papercusp', 'user', ${input.prompt}, 'self-compaction', 'agent-injected', 1),
+      (${WS}, 'codex', ${input.sessionId}, 1, ${input.assistantAt}, ${input.owner},
+       'papercusp', 'assistant', 'managed continuation completed', NULL, 'not-user-turn', 1)
+  `;
+}
 
 describe('loop turn-start producer to reconciler, real Postgres', () => {
   it('requires loop-fire prompt-start proof even when generic delivery proof observes tool use', async () => {
@@ -159,7 +232,7 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
           }
         }
       } else {
-        expect(await recordLoopTurnStart({ owner: c.owner, workspaceId: WS, client: 'codex', prompt })).toBe(false);
+        expect(await recordLoopTurnStart({ owner: c.owner, workspaceId: WS, client: 'codex', prompt })).toBeNull();
       }
     }
 
@@ -206,5 +279,114 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
     );
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("loop 'rt-no-start-proof'"));
+  });
+
+  it('joins a turn-start self-compaction marker only to the native prompt with the exact nonce', async () => {
+    const now = Date.now();
+    const firedAt = new Date(now - 60_000);
+    const exact = { id: 'rt-self-exact-nonce', owner: 'su-self-exact-nonce', wakeCount: 7 };
+    const mismatched = { id: 'rt-self-mismatch-nonce', owner: 'su-self-mismatch-nonce', wakeCount: 8 };
+
+    for (const item of [exact, mismatched]) {
+      await insertLoopFixture({ ...item, firedAt });
+      const stamped = await createPinnedSelfCompactionPrompt(
+        item.owner, item.id, item.wakeCount, 'Continue the verified loop work.',
+      );
+      expect(stamped.ledgerWritten).toBe(true);
+      expect(await recordLoopTurnStart({
+        owner: item.owner, workspaceId: WS, client: 'codex', prompt: stamped.taggedText,
+      })).toBe(true);
+
+      const nativePrompt = item === exact
+        ? stamped
+        : await tagTurnForInjection({
+            sid: item.owner,
+            origin: 'self-compaction',
+            text: 'An unrelated compaction continuation.',
+            dir: provenanceDir!,
+          });
+      const promptAt = new Date(firedAt.getTime() + 20_000);
+      const assistantAt = new Date(promptAt.getTime() + 5_000);
+      await insertNativeTurn({
+        owner: item.owner,
+        sessionId: `session-${item.id}`,
+        prompt: nativePrompt.taggedText,
+        promptAt,
+        assistantAt,
+      });
+    }
+
+    const exactStatus = await getLoopStatus(exact.owner, { sql });
+    const mismatchStatus = await getLoopStatus(mismatched.owner, { sql });
+    expect(exactStatus?.lastLoopTurnAt).toBe(new Date(firedAt.getTime() + 25_000).toISOString());
+    expect(mismatchStatus?.lastLoopTurnAt).toBeNull();
+  });
+
+  it('recovers the latest no-loop-turn fire from an exact self-compaction turn, real Postgres', async () => {
+    const now = Date.now();
+    const firedAt = new Date(now - 60_000);
+    const dispatchAt = new Date(firedAt.getTime() + 2_000);
+    const promptAt = new Date(firedAt.getTime() + 10_000);
+    const assistantAt = new Date(firedAt.getTime() + 20_000);
+    const fixture = {
+      id: 'rt-self-last-fire-recovery',
+      owner: 'su-self-last-fire-recovery',
+      wakeCount: 11,
+    };
+    await insertLoopFixture({
+      ...fixture,
+      firedAt,
+      lastStatus: 'loop-delivered-wake-no-loop-turn',
+    });
+
+    const awaitRow = await sql<Array<{ id: number }>>`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
+      VALUES (${WS}, ${fixture.owner}, 'test:self-compaction-last-fire-recovery')
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO harness_shared.event_wake_deliveries
+        (workspace_id, await_id, subscriber_id, event_key, source, status, channel,
+         created_at, delivered_at, turn_proof, turn_started_at)
+      VALUES
+        (${WS}, ${awaitRow[0]!.id}, ${fixture.owner},
+         'test:self-compaction-last-fire-recovery', ${'loop:' + fixture.id},
+         'delivered', 'psu-socket-inject', ${dispatchAt}, ${dispatchAt},
+         'awaiting', NULL)
+    `;
+
+    const stamped = await createPinnedSelfCompactionPrompt(
+      fixture.owner, fixture.id, fixture.wakeCount, 'Continue after managed self-compaction.',
+    );
+    expect(stamped.ledgerWritten).toBe(true);
+    expect(await recordLoopTurnStart({
+      owner: fixture.owner, workspaceId: WS, client: 'codex', prompt: stamped.taggedText,
+    })).toBe(true);
+    await insertNativeTurn({
+      owner: fixture.owner,
+      sessionId: `session-${fixture.id}`,
+      prompt: stamped.taggedText,
+      promptAt,
+      assistantAt,
+    });
+
+    const status = await getLoopStatus(fixture.owner, { sql });
+    expect(status?.lastDeliveryOutcome).toBe('loop-delivered-wake-no-loop-turn');
+    expect(status?.lastFailedFireLoopTurnCompletedAt).toBe(assistantAt.toISOString());
+
+    const result = await reconcileLoopRoutines({
+      sql,
+      nowMs: now,
+      recordFire: vi.fn(async () => {}),
+      readFireState: async () => null,
+    });
+    expect(result.loops).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: fixture.id, via: 'loop-turn' }),
+    ]));
+    const [routine] = await sql<Array<{ parked: boolean }>>`
+      SELECT next_fire_at = 'infinity'::timestamptz AS parked
+        FROM harness_shared.routines WHERE id = ${fixture.id}
+    `;
+    expect(routine?.parked).toBe(false);
   });
 });

@@ -983,6 +983,40 @@ describe('improvements:capture tool envelope', () => {
     expect(enospcProbation.watchdogKey).not.toBe(firstProbation.watchdogKey);
   });
 
+  it('separates structural reports with unknown code and field by normalized message fingerprint', async () => {
+    const messages = [
+      'archive subject lookup returned a voice rubric from the wrong corpus',
+      'managed-carry lookup returned an unrelated voice rubric because the scope filter was omitted',
+      'archive subject lookup returned a voice rubric from the wrong corpus 98765',
+    ];
+
+    for (const message of messages) {
+      await callTool({
+        kind: 'bug',
+        toolFailure: {
+          toolName: 'consult:get_feedback',
+          status: 'error',
+          message,
+        },
+      });
+    }
+
+    const inputs = mockCapture.mock.calls.map(([input]) => input as {
+      watchdogKey?: string;
+      payloadExtra?: { toolFailureProbation?: { messageFingerprint?: string | null } };
+    });
+    const rowKeys = inputs.map((input) => input.watchdogKey);
+    expect(rowKeys).toHaveLength(3);
+    expect(rowKeys[0]).toMatch(
+      /^tool-failure-signature:consult:get_feedback:structural:message-md5-[a-f0-9]{32}:field-unknown$/,
+    );
+    expect(rowKeys[1]).not.toBe(rowKeys[0]);
+    // Dynamic numeric detail is stripped by the existing message fingerprint.
+    expect(rowKeys[2]).toBe(rowKeys[0]);
+    expect(inputs[1]?.payloadExtra?.toolFailureProbation?.messageFingerprint)
+      .not.toBe(inputs[0]?.payloadExtra?.toolFailureProbation?.messageFingerprint);
+  });
+
   it('folds differently-worded status-502 lock failures onto one per-tool transient row (bug-inflow R-1)', async () => {
     mockIdentity.mockReturnValue(identity('static-client', 'su-lock-filer'));
     const prefix = 'locks:acquire failed (502): read ECONNRESET while acquiring the file lock for ';

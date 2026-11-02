@@ -871,6 +871,7 @@ async function inspectQueue(queueTarget: GateVerdictTarget, root: string) {
   const read = await readFrozenCandidateRepairQueueState(queueTarget);
   let queue = read.status === 'value' ? read.queue : null;
   let ledger: { status: string; reconciled: number; detail: string } | null = null;
+  let precheckLiveness: 'live' | 'unknown' | 'untracked' | 'ended' | null = null;
   if (queue) ({ queue, ledger } = await reconcileQueueRowWithLineage(queueTarget, queue, root));
   // New R6 runs live in task-manager scopes and persist progress/verdict by operationId.
   // The launcher host PID is only the pre-spawn race guard; after the task row exists,
@@ -897,11 +898,20 @@ async function inspectQueue(queueTarget: GateVerdictTarget, root: string) {
     const managedTaskLive = managedTask?.state === 'pending' || managedTask?.state === 'running';
     const managedTaskEnded = Boolean(managedTask && !managedTaskLive);
     let launcherHostDead = false;
+    let launcherHostAlive = false;
     if (!managedTask && !taskReadError && pending.runnerPidIdentity && pending.runnerPid) {
       const alive = isPidAlive(pending.runnerPid);
       const observedIdentity = alive === true ? checkpointPidIdentity(pending.runnerPid) : null;
       launcherHostDead = alive === false || (observedIdentity !== null && observedIdentity !== pending.runnerPidIdentity);
+      launcherHostAlive = alive === true && observedIdentity === pending.runnerPidIdentity;
     }
+    precheckLiveness = managedTaskLive
+      ? 'live'
+      : taskReadError || (pending.runnerTaskId && !managedTask) || launcherHostAlive
+        ? 'unknown'
+        : managedTaskEnded || launcherHostDead
+          ? 'ended'
+          : 'untracked';
     const runnerLost = !taskReadError && (managedTaskEnded || launcherHostDead);
     if (runnerLost) {
       const detail = managedTaskEnded
@@ -935,6 +945,7 @@ async function inspectQueue(queueTarget: GateVerdictTarget, root: string) {
     target: queueTarget,
     read,
     queue,
+    precheckLiveness,
     fixerAlive,
     /** P-027: null when the row already agreed with the lineage ref; otherwise what the reconcile did or refused. */
     ledger,
@@ -1098,7 +1109,7 @@ export default defineTool({
     notWhen:
       'Use the selected harness scope, not a harness/workspace key in the payload. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.',
     chaining:
-      '`get` → preview `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. Pin whole-blob source with `wholeBlob:true, sourceCommit:<reviewed ancestor SHA>, reason`. On `precheck-running`, read `get`; confirm only after pass with fresh identity. Retry only a terminal failed pre-check. For missed hooks, `patchCommit:<full SHA>, reason` replays one delta; `patchCommits:[<older SHA>,<newer SHA>], reason` replays dependent deltas before one R6/publication; each path must change in each commit. One commit from mixed sources: `sources:[{paths, wholeBlob|patchCommit(s)}], reason` (all-or-nothing). Retire only with `retireAllowed` and exact identity.',
+      '`get` → preview `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. Pin whole-blob source with `wholeBlob:true, sourceCommit:<reviewed ancestor SHA>, reason`. On `precheck-running`, read `get`; confirm only after pass with fresh identity. On `precheck-deferred`, inspect `precheckHolder`; no second operation is queued, so retry after that holder reaches a terminal status. Retry only a terminal failed pre-check. For missed hooks, `patchCommit:<full SHA>, reason` replays one delta; `patchCommits:[<older SHA>,<newer SHA>], reason` replays dependent deltas before one R6/publication; each path must change in each commit. One commit from mixed sources: `sources:[{paths, wholeBlob|patchCommit(s)}], reason` (all-or-nothing). Retire only with `retireAllowed` and exact identity.',
     returns:
       '{ ok, op, verdict?, repairQueueRead?, admitted?, precheckOperation?, previewOperation?, admissionPreview?, dryRun?, judgedSha?, nextAction?, containment?, proof?, inconclusiveTerminal? }. A slow dry run returns `previewOperation`; read `get{previewOperationId}` for its `admissionPreview` or await its settle event. Read `nextAction`; a successful retire of an unjudged repairHead emits the exact-SHA inconclusive terminal and reports its wake status.',
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
@@ -1116,6 +1127,8 @@ export default defineTool({
       verdict: z.string().optional(),
       admitted: z.boolean().optional(),
       precheckOperation: z.unknown().optional(),
+      pending: z.boolean().optional(),
+      deferred: z.boolean().optional(),
       // R-1: a dry run that outlasts the inline budget returns this handle; `get` reads it back.
       previewOperation: z.unknown().optional(),
       admissionPreview: z.unknown().optional(),
@@ -1134,6 +1147,14 @@ export default defineTool({
       note: z.string().optional(),
       reason: z.string().optional(),
       detail: z.string().optional(),
+      precheckHolder: z.object({
+        operationId: z.string(),
+        ownerId: z.string(),
+        paths: z.array(z.string()),
+        expiresAtMs: z.number(),
+        expired: z.boolean(),
+        liveness: z.enum(['live', 'unknown', 'untracked', 'ended']),
+      }).optional(),
       stray: z.array(z.string()).optional(),
       retired: z.boolean().optional(),
       // WI-1105109: the post-retire procedure statement. Declared rather than left to
@@ -1538,22 +1559,42 @@ export default defineTool({
       }
       const identity = readIdentity(ctx);
       const activePrecheck = queue.admissionPrecheck;
-      if (!dryRun && activePrecheck?.status === 'running' && activePrecheck.expiresAtMs > Date.now()) {
+      const precheckUnexpired = activePrecheck?.status === 'running' && activePrecheck.expiresAtMs > Date.now();
+      const precheckWorkerMayBeLive = inspected.precheckLiveness === 'live' || inspected.precheckLiveness === 'unknown';
+      // Expiry bounds the runner; it does not prove that the managed task stopped. inspectQueue
+      // reconciles a task known to have ended before this point. A task known live or whose
+      // liveness cannot be established keeps the slot after expiry; an expired legacy marker
+      // with no runner identity can still be recovered instead of wedging the queue forever.
+      if (!dryRun && activePrecheck?.status === 'running' && (precheckUnexpired || precheckWorkerMayBeLive)) {
+        const expired = activePrecheck.expiresAtMs <= Date.now();
+        const liveness = inspected.precheckLiveness ?? 'unknown';
         return json({
           ...base,
           ok: true,
           admitted: false,
-          pending: true,
+          pending: false,
+          deferred: true,
           dryRun: false,
-          verdict: 'precheck-running',
+          verdict: 'precheck-deferred',
+          reason: 'precheck-slot-held',
           judgedSha: queue.repairHead,
           precheckOperation: activePrecheck,
+          precheckHolder: {
+            operationId: activePrecheck.operationId,
+            ownerId: activePrecheck.actor,
+            paths: activePrecheck.files,
+            expiresAtMs: activePrecheck.expiresAtMs,
+            expired,
+            liveness,
+          },
           currentQueueIdentity: {
             candidate: queue.candidate,
             repairHead: queue.repairHead,
             updatedAtMs: queue.updatedAtMs,
           },
-          note: 'This queue already has one live R6 admission pre-check. It is the only admitted decision in flight and NOTHING publishes in the background. Re-read op:get after it settles; do not start a second pre-check.',
+          note: expired
+            ? 'The stored R6 pre-check exceeded its deadline, but its worker is live or liveness could not be confirmed. It still owns the single slot; the second admission is deferred and no replacement worker starts. The owning operation, owner and paths are in precheckHolder. Re-read op:get after the holder reaches a terminal status, then retry with the refreshed queue identity.'
+            : 'Another admission owns the single R6 pre-check slot. The second admission is deferred; no second operation is queued or started. The owning operation, owner and paths are in precheckHolder. Retry after the holder reaches a terminal status with the refreshed queue identity.',
         });
       }
       // P-020 (D-008 layers 2–3): HUNK-EXACT by default. The source the primitive admits from

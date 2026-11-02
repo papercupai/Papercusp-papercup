@@ -1360,6 +1360,50 @@ describe('release:repair-queue', () => {
     const dryRuns = () => mocks.admit.mock.calls.map((c) => (c[0] as { dryRun: boolean }).dryRun);
     const queueWithoutPrecheck = () => ({ ...queue, admissionPrecheck: undefined });
 
+    it('keeps an expired but still-running managed pre-check as the exclusive slot', async () => {
+      const expiresAtMs = Date.now() - 60_000;
+      const activeOperation = {
+        ...queue.admissionPrecheck,
+        operationId: 'repair-precheck-first-admitter',
+        status: 'running' as const,
+        actor: 'su-first-admitter',
+        files: ['lib/first.test.ts'],
+        runnerTaskId: 'repair-precheck-task-first-admitter',
+        expiresAtMs,
+      };
+      mocks.readState.mockResolvedValue({
+        status: 'value',
+        queue: { ...queueWithoutPrecheck(), admissionPrecheck: activeOperation },
+      });
+      mocks.getTask.mockResolvedValue({ state: 'running', confined: true });
+
+      const result = body(await tool.handler(
+        { op: 'admit', paths: ['lib/second.test.ts'], confirm: true } as never,
+        { role: 'su' } as never,
+      ));
+
+      expect(result).toMatchObject({
+        ok: true,
+        admitted: false,
+        pending: false,
+        deferred: true,
+        reason: 'precheck-slot-held',
+        verdict: 'precheck-deferred',
+        precheckOperation: { operationId: activeOperation.operationId },
+        precheckHolder: {
+          operationId: activeOperation.operationId,
+          ownerId: 'su-first-admitter',
+          paths: ['lib/first.test.ts'],
+          expiresAtMs,
+          expired: true,
+          liveness: 'live',
+        },
+      });
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+      expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
+    });
+
     it('WI-8351 runs the built gitlink population before publication and refuses a paired helper red', async () => {
       const pairedFiles = ['component/paired.test.mjs', 'parent.test.mjs'];
       const gitlinkQueue = { ...queueWithoutPrecheck(), signature: [{ kind: 'workspace-task' as const, id: 'component::test' }] };
@@ -1800,16 +1844,18 @@ describe('release:repair-queue', () => {
       expect(mocks.transition).not.toHaveBeenCalled();
     });
 
-    it('a live pre-check serializes the queue: another confirmed admission returns the same handle without building or launching', async () => {
+    it('a live pre-check serializes the queue: a second admission is deferred with the existing holder', async () => {
       const pending = {
         ...queueWithoutPrecheck(),
         admissionPrecheck: {
           ...queue.admissionPrecheck,
           status: 'running' as const,
           verdict: undefined,
+          runnerTaskId: 'managed-precheck-live',
           expiresAtMs: Date.now() + 60_000,
         },
       };
+      mocks.getTask.mockResolvedValue({ state: 'running', confined: true });
       mocks.readState.mockResolvedValue({ status: 'value', queue: pending });
       const result = body(
         await tool.handler(
@@ -1820,9 +1866,18 @@ describe('release:repair-queue', () => {
       expect(result).toMatchObject({
         ok: true,
         admitted: false,
-        pending: true,
-        verdict: 'precheck-running',
+        pending: false,
+        deferred: true,
+        reason: 'precheck-slot-held',
+        verdict: 'precheck-deferred',
         precheckOperation: { operationId: 'repair-precheck-fixture', status: 'running' },
+        precheckHolder: {
+          operationId: 'repair-precheck-fixture',
+          ownerId: 'su-test',
+          paths: ['lib/red.test.ts'],
+          expired: false,
+          liveness: 'live',
+        },
       });
       expect(mocks.admit).not.toHaveBeenCalled();
       expect(mocks.precheckFactory).not.toHaveBeenCalled();

@@ -26,6 +26,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { getMessageById } from '../coordination/messages';
 import { readGateRefs } from '../coordination/ref-hydrate';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
+import { announcementExpectedVerdict } from '../../events/await/announcement-verdict';
 import { getPredicateWatch } from '../../events/await/predicate-watch';
 import {
   familyAdmitsKey,
@@ -524,6 +525,7 @@ export default defineTool({
         }
         const latched = anns.find((a) => a.firedAt && a.firedReason === 'event');
         if (latched) {
+          const expectedVerdict = announcementExpectedVerdict(latched);
           return {
             content: [
               {
@@ -536,7 +538,10 @@ export default defineTool({
                   generation: latched.causalGeneration ?? null,
                   ...(latched.expectedCondition != null ? { expected: latched.expectedCondition } : {}),
                   ...(latched.note ? { gate_note: latched.note } : {}),
-                  advice: `The announced gate "${eventKey}" ALREADY FIRED at ${latched.firedAt} — do not wait. Proceed with the work this gate was blocking now.`,
+                  expected_verdict: expectedVerdict,
+                  advice: expectedVerdict === 'matched'
+                    ? `The announced gate "${eventKey}" ALREADY FIRED at ${latched.firedAt} and its expected condition matched — do not wait. Proceed with the work this gate was blocking now.`
+                    : `The announced gate "${eventKey}" ALREADY FIRED at ${latched.firedAt}, but its expected condition verdict is ${expectedVerdict}. The event alone does not establish that the gate is satisfied; re-read events:status and verify the governing condition before proceeding.`,
                 }),
               },
             ],
@@ -1393,7 +1398,7 @@ export default defineTool({
                 event: eventKey,
                 generation: error.currentGeneration,
                 ...(error.firedAt ? { fired_at: error.firedAt } : {}),
-                advice: `The announced gate "${eventKey}" fired during await registration at ${error.firedAt ?? 'an earlier time'} — do not wait. Proceed with the work this gate was blocking now.`,
+                advice: `The announced gate "${eventKey}" fired during await registration at ${error.firedAt ?? 'an earlier time'} — do not wait again. Re-read events:status { event: "${eventKey}", after_generation: ${error.currentGeneration} } and verify the expected condition before proceeding.`,
               }),
             },
           ],

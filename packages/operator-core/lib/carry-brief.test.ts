@@ -966,7 +966,7 @@ describe('renderCarryBriefFocus — the /compact focus line', () => {
     };
     const focus = renderCarryBriefFocus(empty);
     expect(focus).toBe(
-      'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and owner-gated walls; drop resolved tool output and superseded state.',
+      'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and revalidate carried walls; only owner/system rows are gates; drop resolved tool output and superseded state.',
     );
   });
 
@@ -977,13 +977,13 @@ describe('renderCarryBriefFocus — the /compact focus line', () => {
       heldItems: [{ id: 'WI-1', title: null, body: null, harness: 'h', checkpoint: null }],
       directives: [],
       directivesTotalOpen: 0,
-      walls: [{ claim: 'zombie PIDs await owner OK', recheck: 'ps -p 95902', sinceMs: 1 }],
+      walls: [{ claim: 'zombie PIDs await owner OK', origin: 'owner', recheck: 'ps -p 95902', sinceMs: 1 }],
       facts: [],
       awaits: [],
       fleet: null,
     };
     const focus = renderCarryBriefFocus(brief);
-    expect(focus).toContain('OPEN WALLS (carry verbatim, do not re-declare resolved): "zombie PIDs await owner OK"');
+    expect(focus).toContain('OPEN WALLS (owner/system authority, carry verbatim): "zombie PIDs await owner OK"');
     expect(focus.indexOf('OPEN WALLS')).toBeLessThan(focus.indexOf('WI-1'));
   });
 
@@ -1620,8 +1620,8 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
       directives: [],
       directivesTotalOpen: 0,
       walls: [
-        { claim: 'zombie PIDs await owner OK', recheck: 'ps -p 95902', sinceMs: 1 },
-        { claim: 'capital arming pending owner', sinceMs: 2 },
+        { claim: 'zombie PIDs await owner OK', origin: 'owner', recheck: 'ps -p 95902', sinceMs: 1 },
+        { claim: 'capital arming pending owner', origin: 'owner', sinceMs: 2 },
       ],
       facts: [],
       awaits: [],
@@ -1629,9 +1629,36 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     };
     const out = renderCarryBriefColdExtras(brief);
     expect(out).toContain('⛔ OPEN WALLS');
-    expect(out).toContain('  • zombie PIDs await owner OK — re-check: ps -p 95902');
-    expect(out).toContain('  • capital arming pending owner');
+    expect(out).toContain('  • [origin:owner] zombie PIDs await owner OK — re-check: ps -p 95902');
+    expect(out).toContain('  • [origin:owner] capital arming pending owner');
     expect(out.indexOf('OPEN WALLS')).toBeLessThan(out.indexOf('You HELD'));
+  });
+
+  it('surfaces legacy and self-imposed carry walls as revalidation work, not owner gates', () => {
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      workspaceId: 'ws-test',
+      loop: null,
+      heldItems: [],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [
+        { claim: 'Do not rerun the gate' },
+        {
+          claim: 'Do not mutate the repair queue',
+          origin: 'self',
+          appliesWhile: 'gate run rr-123 is active',
+          recheck: 'release:repair-queue status rr-123',
+        },
+      ],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+    const out = renderCarryBriefColdExtras(brief);
+    expect(out).toContain('⚠ CARRIED WALLS TO REVALIDATE');
+    expect(out).toContain('gate run rr-123 is active');
+    expect(out).not.toContain('⛔ OPEN WALLS');
   });
 
   describe('an AGED wall prompts re-scoping instead of another re-report', () => {
@@ -1647,7 +1674,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
       heldItems: [],
       directives: [],
       directivesTotalOpen: 0,
-      walls: [{ claim: 'owner must enrol a hardware key', recheck: 'plans:items', sinceMs }],
+      walls: [{ claim: 'owner must enrol a hardware key', origin: 'owner', recheck: 'plans:items', sinceMs }],
       facts: [],
       awaits: [],
       fleet: null,
@@ -1671,7 +1698,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
       expect(out).toContain('ASK WHETHER THE BLOCKED THING IS STILL WANTED');
       // The wall itself must still be delivered verbatim — the prompt ADDS to the
       // commitment, it never replaces it.
-      expect(out).toContain('  • owner must enrol a hardware key — re-check: plans:items');
+      expect(out).toContain('  • [origin:owner] owner must enrol a hardware key — re-check: plans:items');
     });
 
     it('cannot measure, so stays silent, when the wall carries no sinceMs', () => {
@@ -1679,6 +1706,30 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
       expect(out).toContain('⛔ OPEN WALLS');
       expect(out).not.toContain('AGED WALL');
     });
+  });
+
+  it('warns when a held work-item checkpoint carries unscoped walls', () => {
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      workspaceId: 'ws-test',
+      loop: null,
+      heldItems: [{
+        id: 'WI-wall',
+        title: null,
+        body: null,
+        harness: 'h',
+        checkpoint: '## Walls\n- Do not rerun the gate',
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
+      }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+    expect(renderCarryBriefColdExtras(brief)).toContain('legacy-unscoped row(s) require a current-source check');
+    expect(renderCarryBriefColdExtras(brief)).toContain('work_items:get');
   });
 
   it('caps a long checkpoint and flags a missing one', () => {

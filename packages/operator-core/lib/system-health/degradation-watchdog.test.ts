@@ -11,6 +11,7 @@ import { summarizeFallbackWindow, type FallbackReasonAggregate } from '../degrad
 import { actionableConditionFor, isActionableConditionKey } from '../coord/actionable-conditions';
 import { CONDITION_BRIDGE_ACTOR } from '../coord/condition-bridge';
 import { getSignal, isSignalCovered } from '../signal-actor-registry';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import type { SevereEventBroadcast, SevereEventResolution } from '../severe-event-broadcast';
 import {
   DEGRADATION_WATCHDOG_SIGNAL_ID,
@@ -480,7 +481,7 @@ describe('mechanism registry', () => {
     expect(getDegradationMechanism('gate-pass-reuse')).toMatchObject({
       scopeKeyed: true,
       observationWorkspaceId: 'default',
-      observationProcessTag: 'gate-reuse:green-checkpoint',
+      observationProcessTag: `gate-reuse:green-checkpoint:${operatorHomeHarnessSlug()}`,
     });
     expect(() => registerDegradationMechanism({ mechanism: 'gate-pass-reuse', description: 'dup' })).toThrow(/already registered/);
   });

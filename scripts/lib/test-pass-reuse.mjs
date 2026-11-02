@@ -979,6 +979,22 @@ export function gateReuseObservations(task, decision) {
 }
 
 let fallbackWriter;
+/** @type {Promise<{ operatorHomeHarnessSlug: () => string }> | null} */
+let operatorHomeHarnessModule = null;
+
+/** The install-local tag shared by the writer and degradation watchdog. */
+async function gateReuseProcessTag() {
+  if (!operatorHomeHarnessModule) {
+    const { tsImport } = await import('tsx/esm/api');
+    operatorHomeHarnessModule = tsImport(
+      '@papercusp/operator-core/lib/harness/operator-home-harness',
+      import.meta.url,
+    );
+  }
+  const { operatorHomeHarnessSlug } = await operatorHomeHarnessModule;
+  return `gate-reuse:green-checkpoint:${operatorHomeHarnessSlug()}`;
+}
+
 /**
  * Green-checkpoint decisions use the durable gate-health primitive. Clean-local runs
  * are intentionally excluded because their shared working trees are often dirty.
@@ -1003,10 +1019,11 @@ export async function recordGateReuseDecision(task, decision, context) {
       }
       writer = await fallbackWriter;
     }
+    const processTag = await gateReuseProcessTag();
     for (const row of gateReuseObservations(task, decision)) {
       writer.observeFallback('gate-pass-reuse', row, {
         workspaceId: 'default',
-        processTag: 'gate-reuse:green-checkpoint',
+        processTag,
         ...(correlationId ? { correlationId } : {}),
       });
     }
@@ -1014,6 +1031,7 @@ export async function recordGateReuseDecision(task, decision, context) {
     return result.failed === 0;
   } catch {
     fallbackWriter = null;
+    operatorHomeHarnessModule = null;
     return false;
   }
 }

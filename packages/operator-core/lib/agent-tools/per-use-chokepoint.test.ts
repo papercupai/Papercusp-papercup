@@ -347,6 +347,67 @@ describe('host-local native request principal', () => {
     await f.hooks.withdraw();
   });
 
+  it.each(['runtime', 'principal', 'resource-acl'] as const)(
+    'refuses an input changed during %s renewal instead of signing the original scope', async phase => {
+      const f = await captureFixture();
+      const mutate = () => { f.request.input = { harness: 'selected', resource: 'replacement' }; };
+      const authorizeResource = vi.fn(async () => {
+        if (phase === 'resource-acl') mutate();
+        return { allow: true };
+      });
+      f.request.tool.authorize = authorizeResource;
+      if (phase === 'runtime') vi.mocked(verifyNativeRuntimeBearer).mockImplementationOnce(async () => {
+        mutate(); return true;
+      });
+      if (phase === 'principal') f.resolve.mockImplementationOnce(async () => {
+        mutate(); return f.principal;
+      });
+      try {
+        expect(await f.registry.appendAuthorizedCapture(f.request, async (_input, authorize) => authorize())).toBe(false);
+        if (phase !== 'resource-acl') expect(authorizeResource).not.toHaveBeenCalled();
+      } finally { await f.hooks.withdraw(); }
+    });
+
+  it.each(['workspace', 'harness', 'owner', 'transport', 'principal', 'capabilities', 'native-call',
+    'target', 'authorizer', 'installed', 'bypass'] as const)(
+    'refuses a %s replacement while the original principal is being renewed', async kind => {
+      const f = await captureFixture();
+      const authorizeResource = vi.fn(async () => ({ allow: true }));
+      f.request.tool.authorize = authorizeResource;
+      f.resolve.mockImplementationOnce(async () => {
+        if (kind === 'workspace') f.request.ctx.workspaceId = 'replacement';
+        if (kind === 'harness') f.request.ctx.harnessSlug = 'replacement';
+        if (kind === 'owner') f.request.ctx.uiClientId = 'replacement';
+        if (kind === 'transport') f.request.ctx.transport = 'http';
+        if (kind === 'principal') f.request.ctx.principal = structuredClone(f.request.ctx.principal);
+        if (kind === 'capabilities') (f.request.ctx.principal!.capabilities as Set<string>).clear();
+        if (kind === 'native-call') f.request.ctx.requestOrigin!.nativeSession!.callIdFingerprint = fp('replacement');
+        if (kind === 'target') f.request.toolName = 'replacement:read';
+        if (kind === 'authorizer') f.request.tool.authorize = async () => ({ allow: true });
+        if (kind === 'installed') f.request.tool.pluginInstallation = tool().pluginInstallation;
+        if (kind === 'bypass') f.request.ctx.gateBypass = { policy: true };
+        return f.principal;
+      });
+      try {
+        expect(await f.registry.appendAuthorizedCapture(f.request, async (_input, authorize) => authorize())).toBe(false);
+        expect(authorizeResource).not.toHaveBeenCalled();
+      } finally { await f.hooks.withdraw(); }
+    });
+
+  it('renews the ACL with a frozen original input snapshot', async () => {
+    const f = await captureFixture();
+    f.request.tool.authorize = vi.fn(async ({ input }) => {
+      expect(input).toEqual(f.request.input);
+      expect(input).not.toBe(f.request.input);
+      expect(Object.isFrozen(input)).toBe(true);
+      return { allow: true };
+    });
+    try {
+      expect(await f.registry.appendAuthorizedCapture(f.request, async (_input, authorize) => authorize())).toBe(true);
+      expect(f.request.tool.authorize).toHaveBeenCalledOnce();
+    } finally { await f.hooks.withdraw(); }
+  });
+
   it('renews the existing resource ACL during append and refuses an intervening revocation', async () => {
     const f = await captureFixture();
     f.request.tool.authorize = vi.fn(async () => ({ allow: false, reason: 'revoked after outer authorization' }));
@@ -419,6 +480,29 @@ describe('host-local native request principal', () => {
     expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
     release(true); expect(await first).toEqual(f.principal); await f.hooks.withdraw();
   });
+
+  it.each(['runtime', 'principal'] as const)(
+    'refuses exact-call input mutation during %s principal resolution', async phase => {
+      for (const kind of ['workspace', 'runtime-id', 'owner', 'session', 'call', 'target', 'arguments', 'credential'] as const) {
+        const f = await fixture();
+        const mutate = () => {
+          if (kind === 'workspace') f.input.workspaceId = 'replacement';
+          if (kind === 'runtime-id') f.input.advSessionId = 8;
+          if (kind === 'owner') f.input.ownerId = 'replacement';
+          if (kind === 'session') f.input.nativeSessionFingerprint = fp('replacement');
+          if (kind === 'call') f.input.callIdFingerprint = fp('replacement');
+          if (kind === 'target') f.input.toolName = 'replacement:read';
+          if (kind === 'arguments') f.input.arguments = { harness: 'selected', resource: 'replacement' };
+          if (kind === 'credential') f.input.runtimeBearer = 'replacement';
+        };
+        if (phase === 'runtime') vi.mocked(verifyNativeRuntimeBearer).mockImplementationOnce(async () => {
+          mutate(); return true;
+        });
+        else f.resolve.mockImplementationOnce(async () => { mutate(); return f.principal; });
+        try { expect(await f.registry.resolveRequestPrincipal(f.input), kind).toBeNull(); }
+        finally { await f.hooks.withdraw(); }
+      }
+    });
 
   it('still requires the existing dispatcher resource ACL after resolving a genuine principal', async () => {
     const f = await fixture(), principal = await f.registry.resolveRequestPrincipal(f.input);

@@ -16275,9 +16275,13 @@ describe("reportSessionRespawnedDurably (WI-10004917: a respawn report lost to a
     expect(reported).toEqual([freshId, newerId, newerId]);
   });
 
-  it("gives up after the last delay and never rejects", async () => {
+  it("keeps retrying at the final delay until accepted and never rejects", async () => {
+    let attempts = 0;
+    const onConfirmed = vi.fn();
     const reportImpl = vi.fn(async () => {
-      throw new Error("ECONNREFUSED");
+      attempts += 1;
+      if (attempts < 5) throw new Error("ECONNREFUSED");
+      return true;
     });
     const { pending, sleepImpl, tick } = manualSleep();
     await expect(
@@ -16286,14 +16290,17 @@ describe("reportSessionRespawnedDurably (WI-10004917: a respawn report lost to a
         reportImpl,
         retryDelaysMs: [5, 15],
         sleepImpl,
+        onConfirmed,
       }),
     ).resolves.toBe(false);
-    for (let i = 0; i < 2; i++) {
+    for (const expectedDelay of [5, 15, 15, 15]) {
       await tick();
+      expect(pending.map((entry) => entry.ms)).toEqual([expectedDelay]);
       pending.shift()!.release();
+      await tick();
     }
-    await tick();
-    expect(reportImpl).toHaveBeenCalledTimes(3);
+    expect(reportImpl).toHaveBeenCalledTimes(5);
+    expect(onConfirmed).toHaveBeenCalledExactlyOnceWith(freshId);
     expect(pending).toHaveLength(0);
   });
 

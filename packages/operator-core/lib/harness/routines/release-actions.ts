@@ -6484,12 +6484,24 @@ export function isStaleReleaseFixerCandidate(check: ReleaseFixerCandidateStaleCh
  * the original array-emptiness behaviour exactly, so this stays backward compatible and
  * never turns "unknown" into a suppression a caller did not ask for.
  */
+function hasActionableTypecheckPreflight(
+  preflight?: CheckpointTypecheckPreflight | null,
+): boolean {
+  if (!preflight || preflight.status !== 'failed') return false;
+  return preflight.failingFiles.length > 0 ||
+    preflight.diagnostics.some((diagnostic) => diagnostic.category === 'error');
+}
+
 export function frozenRepairHasNoMeasuredFailures(
   repairQueue: FrozenCandidateRepairQueue | undefined,
   failingTests: string[] | undefined,
   failingTestsMeasured?: boolean | null,
+  typecheckPreflight?: CheckpointTypecheckPreflight | null,
 ): boolean {
   if (!repairQueue) return false;
+  // An early compiler failure is an actionable code red even when the test suite had no
+  // opportunity to name a failing test file.
+  if (hasActionableTypecheckPreflight(typecheckPreflight)) return false;
   if (failingTestsMeasured === false) return true;
   return !failingTests || failingTests.length === 0;
 }
@@ -6509,7 +6521,9 @@ export function frozenRepairHasNoMeasuredFailures(
 export async function frozenRepairRedIsUnmeasured(
   ctx: GateVerdictTarget,
   repairQueue: FrozenCandidateRepairQueue,
+  typecheckPreflight?: CheckpointTypecheckPreflight | null,
 ): Promise<boolean> {
+  if (hasActionableTypecheckPreflight(typecheckPreflight)) return false;
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
@@ -6521,7 +6535,14 @@ export async function frozenRepairRedIsUnmeasured(
       [ctx.installSlug],
     )) as Array<{ ftm: string | null; legs: unknown }>;
     const ftm = rows[0]?.ftm === 'true' ? true : rows[0]?.ftm === 'false' ? false : null;
-    if (frozenRepairHasNoMeasuredFailures(repairQueue, repairQueue.failingTests, ftm)) return true;
+    if (
+      frozenRepairHasNoMeasuredFailures(
+        repairQueue,
+        repairQueue.failingTests,
+        ftm,
+        typecheckPreflight,
+      )
+    ) return true;
     const { parseRepairTickLegs, repairTickClearedQueueSignature } =
       await import('../../release/repair-tick-legs-snapshot');
     return repairTickClearedQueueSignature(parseRepairTickLegs(rows[0]?.legs), repairQueue);
@@ -6548,6 +6569,7 @@ export function buildReleaseFixerKickoff(input: {
   repairQueue?: FrozenCandidateRepairQueue | null;
   flakeAnnotation?: string;
   checkpointEvidence?: CheckpointEvidence;
+  typecheckPreflight?: CheckpointTypecheckPreflight | null;
   /** WI-10007494: queue entries the latest repair tick passed at this same repairHead. When
    *  non-empty, `failingTests` holds only the remaining real reds. */
   sameHeadContradicted?: readonly string[];
@@ -6555,6 +6577,23 @@ export function buildReleaseFixerKickoff(input: {
   const queue = input.repairQueue;
   const checkpointEvidence = boundedCheckpointEvidence(input.checkpointEvidence);
   const contradicted = input.sameHeadContradicted ?? [];
+  const typecheckPreflight = input.typecheckPreflight;
+  const typecheckErrors = (typecheckPreflight?.diagnostics ?? [])
+    .filter((diagnostic) => diagnostic.category === 'error')
+    .slice(0, 12)
+    .map((diagnostic) =>
+      (diagnostic.file ?? '(unknown file)') +
+      (diagnostic.line === null ? '' : ':' + diagnostic.line) +
+      (diagnostic.column === null ? '' : ':' + diagnostic.column) +
+      ' ' + diagnostic.code + ': ' + diagnostic.message,
+    )
+    .join('\n');
+  const typecheckNote = hasActionableTypecheckPreflight(typecheckPreflight)
+    ? '\n\nMeasured build/typecheck failure before the affected-test sweep. The test suite produced no test-file failure for this red; treat the compiler diagnostics as the repair target. Failing files: ' +
+      (typecheckPreflight?.failingFiles.slice(0, 20).join(', ') || 'not named') +
+      '. Compiler errors:\n' + (typecheckErrors || 'no diagnostic text supplied') +
+      '. Reproduce the typecheck at the frozen repair head and fix the source error.'
+    : '';
   // The fixer reads the full signature from `release:repair-queue { op: 'get' }`, which keeps
   // the contradicted entries on purpose, so the brief must say which entries to leave alone.
   const contradictionNote =
@@ -6599,7 +6638,13 @@ export function buildReleaseFixerKickoff(input: {
     : `\n\nNo exact producing-run checkpoint artifact reference was captured for this dispatch. ` +
       `Do not search logs by candidate SHA; reproduce the listed failure and disclose that the original ` +
       `run artifact was unavailable.`;
-  return kickoff + contradictionNote + checkpointNote + (input.flakeAnnotation ? `\n\n${input.flakeAnnotation}` : '');
+  return (
+    kickoff +
+    contradictionNote +
+    typecheckNote +
+    checkpointNote +
+    (input.flakeAnnotation ? `\n\n${input.flakeAnnotation}` : '')
+  );
 }
 
 /** Live-compute {@link ReleaseFixerCandidateStaleCheck} for `candidate` in `root`. */
@@ -7687,6 +7732,7 @@ export async function dispatchReleaseFixer(
     checkCandidate?: (root: string, candidate: string) => Promise<ReleaseFixerCandidateStaleCheck>;
     alarm?: import('../../alarm-attention').AlarmAttentionDeps;
     onSkip?: (skip: ReleaseFixerDispatchSkip) => void;
+    typecheckPreflight?: CheckpointTypecheckPreflight | null;
   } = {},
 ): Promise<{ spawnId: string | null; runId: string | null } | null> {
   const skip = (code: ReleaseFixerDispatchSkip['code'], reason: string, retryable = true): null => {
@@ -7843,7 +7889,12 @@ export async function dispatchReleaseFixer(
     return skip('snapshot-mismatch', 'no fresh candidate snapshot matches the candidate and failing-test signature');
   }
 
-  if (repairQueue && frozenRepairHasNoMeasuredFailures(repairQueue, failingTests, failingTestsMeasured)) {
+  if (repairQueue && frozenRepairHasNoMeasuredFailures(
+    repairQueue,
+    failingTests,
+    failingTestsMeasured,
+    deps.typecheckPreflight,
+  )) {
     console.log(
       `${orchestratorStdoutTag()} release-fixer dispatch skipped for ${candidate.slice(0, 8)}: frozen repair ` +
         `queue has no measured failing tests (failingTestsMeasured=${failingTestsMeasured}) — nothing to ` +
@@ -7977,6 +8028,7 @@ export async function dispatchReleaseFixer(
       flakeAnnotation,
       sameHeadContradicted,
       checkpointEvidence,
+      typecheckPreflight: deps.typecheckPreflight,
     });
     fired = await fireLaunchBlueprintForEvent('green-checkpoint:red', {
       installSlug: ctx.installSlug,
@@ -8000,6 +8052,9 @@ export async function dispatchReleaseFixer(
             : {}),
           ...(boundedCheckpointEvidence(checkpointEvidence)
             ? { checkpointEvidence: boundedCheckpointEvidence(checkpointEvidence) }
+            : {}),
+          ...(boundedTypecheckPreflight(deps.typecheckPreflight)
+            ? { typecheckPreflight: boundedTypecheckPreflight(deps.typecheckPreflight) }
             : {}),
         },
       },

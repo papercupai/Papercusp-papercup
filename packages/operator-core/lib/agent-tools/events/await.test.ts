@@ -1292,7 +1292,44 @@ describe('EI-18701276960172209 — a self-declared gate with no known emitter is
     const out = await call({ event: 'green-gate-verdict' });
     expect(out.already_fired).toBe(true);
     expect(out.no_known_emitter).toBeUndefined();
+    expect(out.expected_verdict).toBe('not-declared');
+    expect(out.advice).toMatch(/event alone does not establish that the gate is satisfied/i);
+    expect(out.advice).not.toMatch(/Proceed with the work this gate was blocking now/i);
     expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('advises proceeding only when an already-fired gate expected condition matches', async () => {
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
+      declaredRow({
+        firedAt: '2026-07-26T09:53:00Z',
+        firedReason: 'event',
+        expectedCondition: { kind: 'sha', sha: 'abcdef1' },
+        firedPayload: { sha: 'ABCDEF1' },
+      }),
+    ] as never);
+
+    const out = await call({ event: 'green-gate-verdict' });
+
+    expect(out.expected_verdict).toBe('matched');
+    expect(out.advice).toMatch(/expected condition matched/i);
+    expect(out.advice).toMatch(/Proceed with the work this gate was blocking now/i);
+  });
+
+  it('does not advise proceeding when an already-fired gate expected condition mismatches', async () => {
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
+      declaredRow({
+        firedAt: '2026-07-26T09:53:00Z',
+        firedReason: 'event',
+        expectedCondition: { kind: 'sha', sha: 'abcdef1' },
+        firedPayload: { sha: '1234567' },
+      }),
+    ] as never);
+
+    const out = await call({ event: 'green-gate-verdict' });
+
+    expect(out.expected_verdict).toBe('mismatched');
+    expect(out.advice).toMatch(/expected condition verdict is mismatched/i);
+    expect(out.advice).not.toMatch(/Proceed with the work this gate was blocking now/i);
   });
 
   it('is advisory-only, never blocking — still registers when there is no catalog near-miss at all', async () => {
@@ -1357,6 +1394,8 @@ describe('EI-18701276960172209 — a self-declared gate with no known emitter is
       generation: 2,
       fired_at: '2026-08-25T20:30:00.000Z',
     });
+    expect(out.advice).toMatch(/re-read events:status/i);
+    expect(out.advice).not.toMatch(/Proceed with the work this gate was blocking now/i);
     expect(out.error).toBeUndefined();
   });
 

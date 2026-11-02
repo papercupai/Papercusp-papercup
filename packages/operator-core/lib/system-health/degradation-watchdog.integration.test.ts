@@ -42,6 +42,7 @@ import { join } from 'node:path';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { recordGateReuseDecision } from '../../../../scripts/lib/test-pass-reuse.mjs';
 import { armTargetedTaskReuse } from '../../../../scripts/lib/targeted-task-reuse.mjs';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
@@ -50,6 +51,7 @@ const WS = 'ws-degradation-watchdog-it';
 const H = 'papercusp';
 const MECHANISM = 'gate-pass-reuse';
 const SCOPE = 'lane-unit';
+const GATE_REUSE_PROCESS_TAG = `gate-reuse:green-checkpoint:${operatorHomeHarnessSlug()}`;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -105,7 +107,7 @@ function tick() {
 async function observe(eligible: number, applied: number, reason: string, scope = SCOPE): Promise<void> {
   const correlationId = randomUUID();
   expect(observeFallback(MECHANISM, { eligible, applied, reason, scope }, {
-    workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint',
+    workspaceId: 'default', processTag: GATE_REUSE_PROCESS_TAG,
     correlationId,
   })).toBe(true);
   const flushed = await flushFallbackObservations();
@@ -113,14 +115,14 @@ async function observe(eligible: number, applied: number, reason: string, scope 
     SELECT reason, scope, samples, eligible, applied, workspace_id, process_tag, correlation_id
       FROM harness_shared.fallback_observations
      WHERE mechanism = ${MECHANISM} AND workspace_id = 'default'
-       AND process_tag = 'gate-reuse:green-checkpoint' AND correlation_id = ${correlationId}
+       AND process_tag = ${GATE_REUSE_PROCESS_TAG} AND correlation_id = ${correlationId}
      ORDER BY id
   `;
   // The writer batches process-wide observations. Verify this call's exact row rather than
   // assuming its flush count excludes other producers that shared the batch.
   expect(flushed).toMatchObject({ failed: 0 });
   expect(rows).toMatchObject([{ reason, scope, samples: 1, eligible, applied,
-    workspace_id: 'default', process_tag: 'gate-reuse:green-checkpoint', correlation_id: correlationId }]);
+    workspace_id: 'default', process_tag: GATE_REUSE_PROCESS_TAG, correlation_id: correlationId }]);
   expect(rows).toHaveLength(1);
 }
 
@@ -184,24 +186,51 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     expect((await runDegradationSweepOnce({ prune: null })).opened).toEqual([]);
 
     expect(observeFallback(MECHANISM, { eligible: 1, applied: 0, reason: 'dirty-checkout', scope: task }, {
-      workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint',
+      workspaceId: 'default', processTag: GATE_REUSE_PROCESS_TAG,
     })).toBe(true);
     expect(await flushFallbackObservations()).toMatchObject({ written: 1, failed: 0 });
     expect((await runDegradationSweepOnce({ prune: null })).opened).toEqual([key]);
   }, 120_000);
 
+  it('keeps fork install decisions out of the home install pass-reuse alarm window', async () => {
+    const priorHomeSlug = process.env.PAPERCUSP_POT_HOME_SLUG;
+    const forkSlug = `${operatorHomeHarnessSlug()}-fork-fixture`;
+    const forkProcessTag = `gate-reuse:green-checkpoint:${forkSlug}`;
+    const writer = { observeFallback, flushFallbackObservations };
+    process.env.PAPERCUSP_POT_HOME_SLUG = forkSlug;
+    try {
+      for (let i = 0; i < 20; i += 1) {
+        expect(await recordGateReuseDecision(SCOPE, {
+          summary: { candidates: 1, reused: 0, unknownDrift: 1 },
+        }, { runContext: 'green-checkpoint', writer })).toBe(true);
+      }
+    } finally {
+      if (priorHomeSlug === undefined) delete process.env.PAPERCUSP_POT_HOME_SLUG;
+      else process.env.PAPERCUSP_POT_HOME_SLUG = priorHomeSlug;
+    }
+
+    const forkWindows = await readFallbackWindowsByScope(MECHANISM, 60 * 60_000, {
+      sql: db.adminSql, workspaceId: 'default', processTag: forkProcessTag,
+    });
+    expect(forkWindows).toMatchObject([{ scope: SCOPE, window: { eligible: 20, applied: 0 } }]);
+    expect(await readFallbackWindowsByScope(MECHANISM, 60 * 60_000, {
+      sql: db.adminSql, workspaceId: 'default', processTag: GATE_REUSE_PROCESS_TAG,
+    })).toEqual([]);
+    expect((await runDegradationSweepOnce({ prune: null })).opened).toEqual([]);
+  }, 120_000);
+
   it('uses disjoint adjacent windows at the boundary', async () => {
     const boundary = new Date(Date.now() - 5 * 60_000);
     expect(observeFallback(MECHANISM, { eligible: 1, applied: 0, reason: 'otherRunner', scope: 'boundary-task' }, {
-      workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint', observedAt: boundary,
+      workspaceId: 'default', processTag: GATE_REUSE_PROCESS_TAG, observedAt: boundary,
     })).toBe(true);
     expect(await flushFallbackObservations()).toMatchObject({ written: 1, failed: 0 });
 
     const prior = await readFallbackWindowsByScope(MECHANISM, 60_000, {
-      sql: db.adminSql, workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint', now: boundary,
+      sql: db.adminSql, workspaceId: 'default', processTag: GATE_REUSE_PROCESS_TAG, now: boundary,
     });
     const current = await readFallbackWindowsByScope(MECHANISM, 60_000, {
-      sql: db.adminSql, workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint', now: new Date(boundary.getTime() + 60_000),
+      sql: db.adminSql, workspaceId: 'default', processTag: GATE_REUSE_PROCESS_TAG, now: new Date(boundary.getTime() + 60_000),
     });
     expect(prior).toEqual([]);
     expect(current).toMatchObject([{ scope: 'boundary-task', window: { eligible: 1, applied: 0 } }]);
@@ -274,7 +303,7 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     const priorAt = new Date(Date.now() - 70 * 60_000);
     for (let i = 0; i < 20; i++) {
       expect(observeFallback(MECHANISM, { eligible: 1, applied: 1, reason: 'applied', scope: task }, {
-        workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint', observedAt: priorAt,
+        workspaceId: 'default', processTag: GATE_REUSE_PROCESS_TAG, observedAt: priorAt,
       })).toBe(true);
     }
     // Identical observations coalesce into ONE row whose `samples` is 20 (WI-6554700010009713);

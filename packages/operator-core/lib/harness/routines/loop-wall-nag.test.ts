@@ -102,6 +102,7 @@ describe('renderWallNagLine — the hard-style mandate', () => {
     expect(line).toContain('TURN-SETTLE NAG');
     expect(line).toContain('"awaiting owner OK on the zombie PIDs"');
     expect(line).toContain('loop:checkpoint { walls:');
+    expect(line).toContain("origin: 'owner'");
     expect(line).toContain('blocked work_item');
   });
 });

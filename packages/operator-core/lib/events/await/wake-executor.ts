@@ -1226,6 +1226,7 @@ type CoalescedDeliveryEvent = {
   summary?: unknown;
   payload?: unknown;
   delivery_id?: unknown;
+  await_id?: unknown;
   createdAt?: unknown;
 };
 
@@ -1589,6 +1590,97 @@ async function refreshTurnEndRewakeDelivery(input: {
     excludeDeliveryIds: [delivery.id],
   }).catch((): TurnEndRewakeDeliveryVerdict => ({ kind: 'keep', reason: 'freshness read failed' }));
   return { delivery, obsoleteReason: verdict.kind === 'obsolete' ? verdict.reason : null };
+}
+
+type SupersededTimeoutDeliveryFreshness = {
+  delivery: DeliveryWork;
+  staleOnly: boolean;
+  staleAwaitIds: number[];
+};
+
+/** Drop only timeout components replaced by a newer active exact-key await. */
+async function revalidateSupersededTimeoutDelivery(
+  delivery: DeliveryWork,
+  lookup: (subscriberId: string, awaitIds: readonly number[]) => Promise<readonly number[]>,
+  timeoutMs: number,
+): Promise<SupersededTimeoutDeliveryFreshness> {
+  let events: CoalescedDeliveryEvent[] | null = null;
+  const candidates: Array<{ awaitId: number; eventIndex: number | null }> = [];
+  const validAwaitId = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+
+  if (isRecord(delivery.payload) && delivery.payload.coalesced === true) {
+    if (!Array.isArray(delivery.payload.events) || !delivery.payload.events.every(isRecord)) {
+      return { delivery, staleOnly: false, staleAwaitIds: [] };
+    }
+    events = delivery.payload.events as CoalescedDeliveryEvent[];
+    events.forEach((event, eventIndex) => {
+      if (deliveryEventPayloadIsTimeout(event) && validAwaitId(event.await_id)) {
+        candidates.push({ awaitId: event.await_id, eventIndex });
+      }
+    });
+  } else if (payloadIsTimeout(delivery.payload) && validAwaitId(delivery.awaitId)) {
+    candidates.push({ awaitId: delivery.awaitId, eventIndex: null });
+  }
+  if (candidates.length === 0) return { delivery, staleOnly: false, staleAwaitIds: [] };
+
+  const candidateIds = [...new Set(candidates.map((candidate) => candidate.awaitId))];
+  let supersededIds: number[];
+  try {
+    supersededIds = [
+      ...new Set(
+        (await withWakeTimeout(
+          Promise.resolve().then(() => lookup(delivery.subscriberId, candidateIds)),
+          `superseded timeout-await lookup/${delivery.subscriberId}`,
+          Math.max(1, timeoutMs),
+        )).filter(validAwaitId),
+      ),
+    ];
+  } catch {
+    // Uncertainty must preserve a valid wake; only a positive store result suppresses it.
+    return { delivery, staleOnly: false, staleAwaitIds: [] };
+  }
+  const superseded = new Set(supersededIds);
+  const staleAwaitIds = [...new Set(candidates
+    .filter((candidate) => superseded.has(candidate.awaitId))
+    .map((candidate) => candidate.awaitId))];
+  if (staleAwaitIds.length === 0) return { delivery, staleOnly: false, staleAwaitIds: [] };
+  if (!events) return { delivery, staleOnly: true, staleAwaitIds };
+
+  const staleIndexes = new Set(
+    candidates
+      .filter((candidate) => candidate.eventIndex != null && superseded.has(candidate.awaitId))
+      .map((candidate) => candidate.eventIndex!),
+  );
+  const remaining = events.filter((_event, index) => !staleIndexes.has(index));
+  if (remaining.length === 0) return { delivery, staleOnly: true, staleAwaitIds };
+
+  const rebuilt = rebuildCoalescedDelivery(delivery, remaining);
+  const latest = remaining[remaining.length - 1]!;
+  const latestAwaitId = validAwaitId(latest.await_id) ? latest.await_id : rebuilt.awaitId;
+  const latestDeliveryId =
+    typeof latest.delivery_id === 'number' && Number.isSafeInteger(latest.delivery_id)
+      ? latest.delivery_id
+      : null;
+  const rebuiltPayload = isRecord(rebuilt.payload) ? rebuilt.payload : {};
+  return {
+    delivery: {
+      ...rebuilt,
+      note: null,
+      awaitId: latestAwaitId,
+      ...(typeof latest.createdAt === 'string' ? { createdAt: latest.createdAt } : {}),
+      ...(latestDeliveryId != null ? { inboxDeliveryId: latestDeliveryId } : {}),
+      payload: {
+        ...rebuiltPayload,
+        latest: {
+          ...(isRecord(rebuiltPayload.latest) ? rebuiltPayload.latest : {}),
+          await_id: latestAwaitId,
+        },
+      },
+    },
+    staleOnly: false,
+    staleAwaitIds,
+  };
 }
 
 /**
@@ -3306,6 +3398,13 @@ export interface ExecuteWakeDeps {
    *  A re-claimed item is downgraded to inbox so a delayed fleet wake cannot
    *  spend a leader turn on an event that is no longer actionable. */
   getCurrentWorkItem?: typeof getWorkItem;
+  /** Delivery-time read for timed-out awaits with a newer active exact-key replacement. */
+  findSupersededTimeoutAwaitIdsFn?: (
+    subscriberId: string,
+    awaitIds: readonly number[],
+  ) => Promise<readonly number[]>;
+  /** Bound for the timed-out-await replacement check; unknown reads fail open. */
+  supersededTimeoutLookupTimeoutMs?: number;
   /** Upper bound for the delivery-time fleet claim lookup. */
   fleetClaimReleasedLookupTimeoutMs?: number;
   /** Upper bound for the delivery-time canonical claimable lookup. */
@@ -4332,6 +4431,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const lockGrantOwnershipLookupTimeoutMs =
     deps.lockGrantOwnershipLookupTimeoutMs ?? LOCK_GRANT_OWNERSHIP_LOOKUP_TIMEOUT_MS;
   const getCurrentWorkItem = deps.getCurrentWorkItem ?? getWorkItem;
+  const findSupersededTimeoutAwaitIds =
+    deps.findSupersededTimeoutAwaitIdsFn ??
+    (async (subscriberId: string, awaitIds: readonly number[]) => {
+      const { findSupersededTimeoutAwaitIds: find } = await import('./store');
+      return find(subscriberId, awaitIds);
+    });
+  const supersededTimeoutLookupTimeoutMs = deps.supersededTimeoutLookupTimeoutMs ?? 2_000;
   const getSessionInWorkspace = deps.getSessionInWorkspace ?? getAdvSessionInWorkspace;
   const fleetClaimReleasedLookupTimeoutMs =
     deps.fleetClaimReleasedLookupTimeoutMs ?? FLEET_CLAIM_RELEASED_LOOKUP_TIMEOUT_MS;
@@ -4515,6 +4621,24 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       return { kind: 'delivered', channel: 'suppressed-redundant' };
     }
     d = rewakeFreshness.delivery;
+
+    // A timeout can already be queued when an exact-key one-shot is re-armed.
+    // Recheck its owner-scoped await identity before any injection/resume side
+    // effect; only a confirmed newer active replacement makes it redundant.
+    const timeoutFreshness = await revalidateSupersededTimeoutDelivery(
+      d,
+      findSupersededTimeoutAwaitIds,
+      supersededTimeoutLookupTimeoutMs,
+    );
+    d = timeoutFreshness.delivery;
+    if (timeoutFreshness.staleOnly) {
+      return {
+        kind: 'drop',
+        reason:
+          `timed-out await delivery #${d.id} suppressed because newer active exact-key await(s) ` +
+          `${timeoutFreshness.staleAwaitIds.join(', ')} replaced the expired registration`,
+      };
+    }
 
     // EI-203843: this is deliberately the first delivery decision. A queued
     // wake can outlive the stand-down cue by minutes (especially on a cold

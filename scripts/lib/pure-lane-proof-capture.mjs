@@ -606,6 +606,7 @@ export async function runPureLaneProofCapture({
         workspaceName: PURE_PROOF_CAPTURE_WORKSPACE.name,
         runContext: PURE_PROOF_CAPTURE_RUN_CONTEXT,
         runnerIdentity,
+        repoRoot: root,
         files: laneFiles,
       });
       passedInSuite = outcomes.passedInSuite;

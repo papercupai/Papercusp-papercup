@@ -266,6 +266,24 @@ describe('OMP host-owned accepted-input authority', () => {
     f.emit({ type: 'agent_end' });
     await expect(hook(original)).rejects.toThrow('no matching owner input');
   });
+  it('retains executed input separately and refuses orphan, changed and late execution observations', async () => {
+    const f = await active(); f.emit(root()); f.emit({ type: 'agent_start' });
+    const original = { nativeSessionId: 'native-omp', callId: 'shell-call', tool: 'bash', arguments: { command: 'original' } };
+    const execution = { ...original, executedArguments: { command: 'executed' } };
+    const hook = f.transport().onNativeToolCall!;
+    await expect(hook(execution)).rejects.toThrow('no original hook call');
+    await hook(original);
+    await expect(hook(execution)).resolves.toBeUndefined();
+    await expect(hook(execution)).resolves.toBeUndefined();
+    expect(observe).toHaveBeenCalledOnce();
+    expect(observe.mock.calls[0]![0]).not.toHaveProperty('executedArguments');
+    await expect(hook({ ...execution, arguments: { command: 'forged original' } })).rejects.toThrow('changed its original');
+    await expect(hook({ ...execution, executedArguments: { command: 'another execution' } })).rejects.toThrow('changed its executed');
+    await expect(hook({ ...execution, nativeSessionId: 'other-session' })).rejects.toThrow('no matching owner input');
+    f.emit({ type: 'agent_end' });
+    await expect(hook(execution)).rejects.toThrow('no matching owner input');
+    expect(observe).toHaveBeenCalledOnce();
+  });
   it.each(['end', 'interrupt', 'close', 'exit'] as const)('withdraws on %s and ignores late calls', async end => {
     const f = await active(); f.emit(root()); f.emit({ type: 'agent_start' });
     expect(register).toHaveBeenCalledOnce();

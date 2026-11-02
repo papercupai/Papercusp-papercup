@@ -1757,7 +1757,7 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
     expect(reachCalls.filter((c) => c.conversationId === pending || c.conversationId === clean)).toEqual([]);
   });
 
-  it('uses the exact dispatched launch log for a terminal 429 when the native transcript has no reply', async () => {
+  it('uses the exact dispatched launch log for terminal 429 and context-limit failures when the native transcript has no reply', async () => {
     const rejected = await nonDue();
     const rejectedTranscript = rolloutFile(`log-429-${rejected}`, started);
     const rejectedLog = join(dir, `launch-429-${rejected}.log`);
@@ -1767,6 +1767,18 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
       transcriptPath: rejectedTranscript,
       kickoffAt: kickoff,
       launchLogPath: rejectedLog,
+    });
+
+    const contextRejected = await nonDue();
+    const contextTranscript = rolloutFile(`log-context-${contextRejected}`, started);
+    const contextLog = join(dir, `launch-context-${contextRejected}.log`);
+    writeFileSync(contextLog,
+      "review brief\n⎿ Context limit reached · /clear to continue\n" +
+      "[psu] native-turn-failed agent=claude code=native_error retryable=false\n");
+    await recordDispatch(contextRejected, {
+      transcriptPath: contextTranscript,
+      kickoffAt: kickoff,
+      launchLogPath: contextLog,
     });
 
     const quoted = await nonDue();
@@ -1780,7 +1792,7 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
       launchLogPath: quotedLog,
     });
 
-    const { deps, reachCalls } = makeDeps({ withReach: true });
+    const { deps, reachCalls, alerts } = makeDeps({ withReach: true });
     deps.rejudgeFirstTurn = (u) => rejudgeFirstTurn(u);
     const stops: Array<Parameters<NonNullable<ExpirySweepDeps['stopAnsweringSession']>>[0]> = [];
     deps.stopAnsweringSession = async (t) => { stops.push(t); return 'stopped exact answering session'; };
@@ -1789,17 +1801,31 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
 
     expect(r.advanced).toBeGreaterThanOrEqual(1);
     expect(await cascadeRow(rejected)).toMatchObject({ responder_id: 'resp-2', cascade_cursor: 1 });
+    expect(await cascadeRow(contextRejected)).toMatchObject({ responder_id: 'resp-2', cascade_cursor: 1 });
     expect(String((await attemptsOf(rejected)).at(-1)?.detail)).toContain(
       "resp-1-codex: the dispatched launch log reported a provider rejection (API Error: Request rejected (429)",
     );
+    expect(String((await attemptsOf(contextRejected)).at(-1)?.detail)).toContain(
+      'resp-1-codex: the dispatched launch log reported a provider rejection (Context limit reached · /clear to continue',
+    );
     expect(await cascadeRow(quoted)).toMatchObject({ responder_id: 'resp-1', cascade_cursor: 0 });
     expect(reachCalls.filter((c) => c.conversationId === rejected).map((c) => c.responder)).toEqual(['resp-2']);
+    expect(reachCalls.filter((c) => c.conversationId === contextRejected).map((c) => c.responder)).toEqual(['resp-2']);
     expect(reachCalls.filter((c) => c.conversationId === quoted)).toEqual([]);
+    expect(alerts.filter((a) => a.conversationId === contextRejected)).toHaveLength(1);
+    expect(r.requesterAlerts).toContain(contextRejected);
+    expect(r.requesterAlertFailures).not.toContain(contextRejected);
     expect(stops.filter((s) => s.conversationId === rejected)).toEqual([
       { workspaceId: WS, conversationId: rejected, answeringOwnerId: null, sourceOwnerId: 'resp-1' },
     ]);
+    expect(stops.filter((s) => s.conversationId === contextRejected)).toEqual([
+      { workspaceId: WS, conversationId: contextRejected, answeringOwnerId: null, sourceOwnerId: 'resp-1' },
+    ]);
     expect(r.answerFailures.filter((f) => f.conversationId === rejected)).toEqual([
       { conversationId: rejected, reason: 'answer-first-turn-rejected', stopOutcome: 'stopped exact answering session', recorded: true },
+    ]);
+    expect(r.answerFailures.filter((f) => f.conversationId === contextRejected)).toEqual([
+      { conversationId: contextRejected, reason: 'answer-first-turn-rejected', stopOutcome: 'stopped exact answering session', recorded: true },
     ]);
     expect(r.answerFailures.filter((f) => f.conversationId === quoted)).toEqual([]);
   });

@@ -172,7 +172,7 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
 
   const walls: WallRow[] = [];
 
-  // ── Source 1: loop carry-note walls (the P-006 owner-gated commitment rows) ──
+  // ── Source 1: carried rows; only owner/system origins are unconditional gates ──
   const notes = await sql<Array<{ scope: string; note: string | null; updated_ts: Date | null }>>`
     SELECT scope, note, updated_ts
       FROM harness_shared.carry_notes
@@ -382,8 +382,7 @@ export default defineTool({
   name: 'coord:walls',
   description:
     'What is BLOCKED ON THE OWNER right now — every agent parked on a decision, credential, or approval only a human can give. ' +
-    'Unions the two surfaces where agents are already required to register owner-gated blockers: loop carry-note walls ' +
-    '(loop:checkpoint { walls }), work-items in needs-human, and live `wall:` standing facts. Each row carries the ask VERBATIM, how long it has been ' +
+    'Unions explicit owner/system carry-note walls, work-items in needs-human, and live wall facts. Self/external and legacy carry rows remain visible for revalidation but do not count as owner waits until current evidence confirms them. Each row carries the ask VERBATIM, how long it has been ' +
     'waiting, the re-check command, and — critically — whether the blocked agent is still ALIVE (waiting) or its session ' +
     'has died (stranded: answering will not resume it; it must be respawned). Live asks rank first, then oldest-wait.',
   guidance: {
@@ -395,12 +394,12 @@ export default defineTool({
       'Who is working on what (coord:presence / fleet:assignments). Blockers between AGENTS — those are peer coordination ' +
       '(coord:send), not owner walls; only a blocker a HUMAN must clear belongs here.',
     chaining:
-      'coord:walls → answer the claim (coord:send to the ownerId), then the agent clears it via loop:checkpoint { walls: [...] } ' +
-      '(pass the remaining set; [] clears all). A `stranded` row needs a respawn as well as an answer — the waiter is gone.',
+      'coord:walls → answer an actionable owner wait (coord:send to the ownerId), then the agent clears it via loop:checkpoint { walls: [...] } ' +
+      '(pass the remaining set; [] clears all). Self/external and legacy carry rows need a current-source check before anyone treats them as an owner wait. A stranded row needs a respawn as well as an answer — the waiter is gone.',
     returns:
       '{ ok, count, returned, truncatedByLimit, waiting, stranded, oldestWaitHours, walls: [{ source, ownerId, harness, claim, origin?, appliesWhile?, requiresRevalidation?, recheck?, ref?, factScope?, factScopeRef?, factKey?, sinceIso, waitingHours, status }] }. ' +
       '`count`/`waiting`/`stranded` are a census over the whole population; `returned` is the row-list size and `truncatedByLimit` says rows were omitted. ' +
-      'status: waiting = agent alive and parked on you; stranded = its session died (answer AND respawn); unknown = no presence row.',
+      'status: waiting = agent alive and parked on an actionable owner wait; stranded = its session died (answer AND respawn); unknown = no presence or current carry authority needs revalidation.',
     seeAlso: ['coord:presence', 'coord:send', 'loop:checkpoint', 'work_items:list'],
   },
   capability: 'coord:read',
@@ -475,7 +474,7 @@ export default defineTool({
         note:
           total === 0
             ? 'Nothing is blocked on the owner.'
-            : `${total} owner-gated blocker(s): ${waiting} agent(s) alive and parked on an answer, ` +
+            : `${total} wall record(s): ${waiting} actionable owner wait(s), ` +
               `${stranded} STRANDED (session died — answering alone will not resume them; respawn as well). ` +
               (truncatedByLimit
                 ? `Showing the ${returned} highest-priority (live asks first, then oldest); raise \`limit\` for the rest. `

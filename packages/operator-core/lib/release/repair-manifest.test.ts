@@ -23,6 +23,15 @@ const CANDIDATE = 'a'.repeat(40);
 const HEAD1 = 'b'.repeat(40);
 const HEAD2 = 'c'.repeat(40);
 
+function postgresJsonbOrder<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(postgresJsonbOrder) as T;
+  if (!value || typeof value !== 'object') return value;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => Buffer.byteLength(left) - Buffer.byteLength(right) ||
+      Buffer.compare(Buffer.from(left), Buffer.from(right)));
+  return Object.fromEntries(entries.map(([key, nested]) => [key, postgresJsonbOrder(nested)])) as T;
+}
+
 function queue(over: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidateRepairQueue {
   return {
     schemaVersion: 4,
@@ -251,6 +260,16 @@ describe('repair manifest — claims, rebuilds and the signature-change trigger'
     );
     expect(grown.signatureChanged).toBe(true);
     expect(grown.manifest.rows.map((r) => r.legId)).toContain('lint:migrations');
+  });
+
+  it('normalizes PostgreSQL jsonb key order before release-actions compares persisted rows', () => {
+    const manifest = withRepairManifest(queue(), 10).manifest;
+    const stored = postgresJsonbOrder(manifest);
+    const parsed = parseRepairManifest(stored);
+
+    expect(JSON.stringify(stored.rows)).not.toBe(JSON.stringify(manifest.rows));
+    expect(parsed).not.toBeNull();
+    expect(JSON.stringify(parsed!.rows)).toBe(JSON.stringify(manifest.rows));
   });
 
   it('a manifest built for a DIFFERENT candidate does not carry claims across', () => {

@@ -1435,6 +1435,17 @@ export default defineTool({
               { ...reportedToolFailure, errorCode: reportedToolFailure.status },
               normalizedToolFailure.class,
             )
+          : normalizedToolFailure.class === 'structural' &&
+              !hasExplicitErrorCode &&
+              !hasConcreteFieldPath &&
+              normalizedToolFailure.messageFingerprint
+            ? toolFailureSignatureKey(
+                {
+                  ...reportedToolFailure,
+                  errorCode: `message-${normalizedToolFailure.messageFingerprint}`,
+                },
+                normalizedToolFailure.class,
+              )
           : normalizedToolFailure.watchdogKey
       : undefined;
     const captureWatchdogKey =

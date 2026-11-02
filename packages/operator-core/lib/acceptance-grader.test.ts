@@ -94,7 +94,7 @@ describe('native terminal API-error provenance', () => {
     const options = { readLogTail, nativeTranscriptPath: 'native.jsonl', nativeSessionId: sessionId,
       maxRechecks: 0, detectStartupStall: false };
     await expect(detectAcceptanceGraderTerminalFailure('judge.log', options))
-      .resolves.toMatchObject({ code: 'inference_gateway_error' });
+      .resolves.toMatchObject({ code: status === 429 ? 'model_quota_exhausted' : 'inference_gateway_error' });
     await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
       ...options, readLogTail: (path: string) => path === 'native.jsonl' ? record({ type: 'user' }) : log,
     })).resolves.toBeNull();
@@ -184,7 +184,7 @@ describe('native terminal API-error provenance', () => {
       maxRechecks: 0, detectStartupStall: false };
     await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
       ...options, readLogTail: (path) => path === 'native.jsonl' ? record({ apiErrorStatus: status }) : log,
-    })).resolves.toMatchObject({ code: 'inference_gateway_error' });
+    })).resolves.toMatchObject({ code: status === 429 ? 'model_quota_exhausted' : 'inference_gateway_error' });
     await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
       ...options, readLogTail: (path) => path === 'native.jsonl' ? record({ type: 'user' }) : log,
     })).resolves.toBeNull();
@@ -231,7 +231,7 @@ describe('readOpenGradingAnswererTerminalFailure (EI-25855370514874242)', () => 
   it('binds the native failure to the current answerer task and retires only that task', async () => {
     const deps = dependencies();
     const failure = await readOpenGradingAnswererTerminalFailure(input, deps);
-    expect(failure).toMatchObject({ code: 'inference_gateway_error' });
+    expect(failure).toMatchObject({ code: 'model_quota_exhausted' });
     expect(deps.findTranscript).toHaveBeenCalledWith(target.sessionId, { owner: input.answeringOwnerId });
     expect(deps.listTasks).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: input.workspaceId, coordOwnerId: input.answeringOwnerId, classes: ['agent-session'], limit: 1,
@@ -269,7 +269,7 @@ describe('readOpenGradingAnswererTerminalFailure (EI-25855370514874242)', () => 
     const deps = dependencies();
     deps.killTask.mockResolvedValue({ ok: false, taskId: 'exact-task', action: 'kill', error });
     const failure = await readOpenGradingAnswererTerminalFailure(input, deps);
-    expect(failure).toMatchObject({ code: 'inference_gateway_error' });
+    expect(failure).toMatchObject({ code: 'model_quota_exhausted' });
     expect(await failure?.retire?.()).toBe(settled);
     expect(deps.killTask).toHaveBeenCalledWith('exact-task', { includeSubtree: true, escalateAfterMs: 5_000 });
   });
@@ -279,7 +279,7 @@ describe('readOpenGradingAnswererTerminalFailure (EI-25855370514874242)', () => 
     const failure = await readOpenGradingAnswererTerminalFailure(input, {
       ...deps, readLogTail: async (path) => path === 'answerer.jsonl' ? native : log,
     });
-    expect(failure).toMatchObject({ code: 'inference_gateway_error' });
+    expect(failure).toMatchObject({ code: 'model_quota_exhausted' });
     expect(await failure?.retire?.()).toBe(true);
     expect(deps.killTask).toHaveBeenCalledTimes(1);
   });
@@ -1695,7 +1695,7 @@ describe('launchAcceptanceGrader', () => {
       ...deps(launch), killTask: kill as never, terminalLogMaxRechecks: 0,
       readLogTail: (path) => path.endsWith('.jsonl') ? nativeRecord(true) : error,
     });
-    expect(result.terminalRecovery?.codes).toEqual(['inference_gateway_error']);
+    expect(result.terminalRecovery?.codes).toEqual(['model_quota_exhausted']);
     expect(kill).toHaveBeenCalledWith('task-native-error', { includeSubtree: true, escalateAfterMs: 5_000 });
     expect(launch).toHaveBeenCalledTimes(2);
     expect(launch.mock.calls[1][0]).toMatchObject({ agent: 'codex', account: 'auto' });
@@ -2171,11 +2171,11 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
         allowGatewayErrorWithoutFooter: true,
       }),
     ).toEqual({
-      code: 'inference_gateway_error',
+      code: 'model_quota_exhausted',
       evidence: 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s',
     });
     expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
-      code: 'inference_gateway_error',
+      code: 'model_quota_exhausted',
       evidence:
         'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s ✻ Worked for 13m 45s · done',
     });
@@ -2184,7 +2184,7 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
         allowInferenceGatewayError: true,
       }),
     ).toEqual({
-      code: 'inference_gateway_error',
+      code: 'model_quota_exhausted',
       evidence:
         'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s ✻ Brewed for 13m 45s · done',
     });
@@ -2193,7 +2193,7 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
         allowInferenceGatewayError: true,
       }),
     ).toEqual({
-      code: 'inference_gateway_error',
+      code: 'model_quota_exhausted',
       evidence:
         'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s ✻ Crunched for 13m 45s · done',
     });
@@ -2202,7 +2202,7 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
         allowInferenceGatewayError: true,
       }),
     ).toEqual({
-      code: 'inference_gateway_error',
+      code: 'model_quota_exhausted',
       evidence:
         'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s ✻ Sautéed for 13m 45s · done',
     });
@@ -2227,7 +2227,7 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure(error, { allowInferenceGatewayError: true })).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
-      code: 'inference_gateway_error',
+      code: 'model_quota_exhausted',
       evidence:
         "API Error: Request rejected (429) This request would exceed your account's rate limit. Please try again later. ✻ Baked for 8m 0s · done",
     });
@@ -2246,7 +2246,7 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
 
     expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
-      code: 'inference_gateway_error',
+      code: 'model_quota_exhausted',
       evidence:
         "API Error: Request rejected (429) This request would exceed your account's rate limit. Please try again later. ✻ Churned for 1m 2s · done",
     });
@@ -2261,7 +2261,7 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure(error, { allowInferenceGatewayError: true })).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
-      code: 'inference_gateway_error',
+      code: 'model_quota_exhausted',
       evidence:
         "API Error: Request rejected (429) · inference-gateway: account 'aviynw4' paced/paused; retry after 60s ✻ Cooked for 13m 41s · done",
     });

@@ -12097,7 +12097,12 @@ export function reportSessionRespawnedDurably(
   const first = attempt();
   void first.then(async (ok) => {
     if (ok || generation !== respawnReportGeneration) return;
-    for (const delayMs of retryDelaysMs) {
+    if (retryDelaysMs.length === 0) return;
+    // Keep the bounded cadence after the backoff schedule is spent. Ending
+    // retries here leaves adv_sessions naming the predecessor indefinitely,
+    // so the surviving successor remains correctly but permanently refused.
+    for (let retryIndex = 0; generation === respawnReportGeneration; retryIndex += 1) {
+      const delayMs = retryDelaysMs[Math.min(retryIndex, retryDelaysMs.length - 1)];
       await sleepImpl(delayMs);
       if (generation !== respawnReportGeneration) return;
       if (await attempt()) return;

@@ -120,6 +120,7 @@ it('joins actual OMP root input, built-in shell execution and exact MCP calls wi
   const resolvePrincipal = vi.fn(async () => principal), readOwner = vi.fn(async () => localSuSessionHostOwner());
   const frames: RpcFrame[] = [], errors: string[] = [], results: unknown[] = [], handlers: unknown[] = [];
   const originalHookCalls: SuNativeToolCall[] = [];
+  const executedHookCalls: SuNativeToolCall[] = [];
   const shellSessions: Array<{ type: unknown; toolCallId: unknown; nativeId: string | null | undefined }> = [];
   const servers = new Set<McpServer>();
   let engine: SuRpcEngine | undefined, pg: DedicatedNativePg | undefined, nativeId = '', advSessionId = 0;
@@ -272,8 +273,14 @@ it('joins actual OMP root input, built-in shell execution and exact MCP calls wi
           try {
           expect(options.onNativeToolCall, 'production original-hook host callback required').toBeTypeOf('function');
           await options.onNativeToolCall!(call);
-          originalHookCalls.push(structuredClone(call));
-          expect(frames.some(frame => frame.type === 'tool_execution_start' && frame.toolCallId === call.callId)).toBe(false);
+          if (Object.hasOwn(call, 'executedArguments')) {
+            const { executedArguments: _, ...original } = call;
+            expect(originalHookCalls).toContainEqual(original);
+            executedHookCalls.push(structuredClone(call));
+          } else {
+            originalHookCalls.push(structuredClone(call));
+            expect(frames.some(frame => frame.type === 'tool_execution_start' && frame.toolCallId === call.callId)).toBe(false);
+          }
           } catch (error) { errors.push('native-hook: ' + String(error)); throw error; }
         },
         args: [...nativeArgs, '--no-extensions', '--no-skills', '--no-rules', '--no-session', '--extension', provider],
@@ -324,6 +331,9 @@ it('joins actual OMP root input, built-in shell execution and exact MCP calls wi
       { nativeSessionId: nativeId, callId: shellCall, tool: 'bash', arguments: shellArgs },
       { nativeSessionId: nativeId, callId: rewrittenCall, tool: 'bash', arguments: originalArgs },
     ]);
+    expect(executedHookCalls).toStrictEqual(originalHookCalls.map(call => ({ ...call,
+      executedArguments: call.callId === rewrittenCall ? executedArgs : call.arguments,
+    })));
     // These are real built-in execution events from the installed process,
     // not a canonical MCP dispatch or a protected capture/funding receipt.
     expect(shellSessions).toEqual([shellCall, rewrittenCall].flatMap(toolCallId => [

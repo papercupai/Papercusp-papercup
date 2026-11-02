@@ -31,6 +31,22 @@ describe('executingBuildFrom', () => {
     expect(executingBuildFrom(info)).toEqual({ sha: null, source: 'unresolved' });
   });
 
+  it('dirty: a dirty baked bundle records its source state but no commit sha', () => {
+    const info = resolveBuildInfo({
+      env: { PAPERCUSP_BUILD_SHA: 'stale-env-sha' } as NodeJS.ProcessEnv,
+      bakedSha: 'bundle-sha+dirty',
+      bundled: true,
+      gitSha: () => 'checkout',
+    });
+    const stamp = executingBuildFrom(info);
+    expect(stamp).toEqual({ sha: null, source: 'dirty' });
+    expect(parseRepairLimbExecutor({ hostId: host.host, processId: host.processId, executingBuild: stamp })).toEqual({
+      hostId: host.host,
+      processId: host.processId,
+      executingBuild: stamp,
+    });
+  });
+
   it('git: a non-bundled host names its one boot-time rev-parse', () => {
     const info = resolveBuildInfo({ env: noEnv, bakedSha: null, bundled: false, gitSha: () => 'boot123' });
     expect(executingBuildFrom(info)).toEqual({ sha: 'boot123', source: 'git' });

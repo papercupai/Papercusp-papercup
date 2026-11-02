@@ -177,6 +177,84 @@ describe('work_items:update requires persisted current owner authority (P-003)',
     expect(row.status).toBe(change === 'close' ? 'done' : 'open');
     expect(row.payload.externalBlockers).toEqual([{ ...ownerCondition, status: change === 'clear' ? 'cleared' : 'active' }]);
   });
+
+  it('needsHuman:false reopens an issue whose last external blocker is already cleared', async () => {
+    const id = 'WI-clear-human-restore';
+    await seedIssue(id, {
+      status: 'needs-human',
+      payload: {
+        needsHuman: true,
+        needsOwnerAction: true,
+        externalBlockers: [{ ...ownerCondition, status: 'cleared' }],
+      },
+    });
+
+    const result = await update(id, { needsHuman: false });
+
+    expect(result.results[0]).toMatchObject({ ok: true });
+    const row = await read(id);
+    expect(row.status).toBe('open');
+    expect(row.payload).not.toHaveProperty('needsHuman');
+    expect(row.payload).not.toHaveProperty('needsOwnerAction');
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'worker' })).toMatchObject({ id });
+  });
+
+  it('needsHuman:false keeps an issue parked while an external blocker remains active', async () => {
+    const id = 'WI-active-human-restore-fence';
+    await seedIssue(id, {
+      status: 'needs-human',
+      payload: {
+        needsHuman: true,
+        needsOwnerAction: true,
+        externalBlockers: [ownerCondition],
+      },
+    });
+
+    const result = await update(id, { needsHuman: false });
+
+    expect(result.results[0]).toMatchObject({ ok: true });
+    const row = await read(id);
+    expect(row.status).toBe('needs-human');
+    expect(row.payload).not.toHaveProperty('needsHuman');
+    expect(row.payload).not.toHaveProperty('needsOwnerAction');
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'worker' })).toBeNull();
+  });
+
+  it('the guarded issue transition refuses to reopen if an active blocker remains at the row lock', async () => {
+    const id = 'WI-guarded-human-restore';
+    await seedIssue(id, {
+      status: 'needs-human',
+      payload: { externalBlockers: [ownerCondition] },
+    });
+
+    const result = await wi.setWorkItemStateWithAliasInfo(id, 'open', {
+      harness: H,
+      by: 'condition-tester',
+      expectedCurrentState: 'needs-human',
+      requireNoActiveExternalBlockers: true,
+    });
+
+    expect(result.workItem).toBeNull();
+    expect(result.appliedState).toBeNull();
+    expect((await read(id)).status).toBe('needs-human');
+  });
+
+  it('needsHuman:false does not reopen a feature-family plan lane', async () => {
+    const id = 'F-plan-human-restore';
+    await seedIssue(id, {
+      kind: 'feature',
+      status: 'needs-human',
+      payload: { needsHuman: true, needsOwnerAction: true },
+    });
+
+    const result = await update(id, { needsHuman: false });
+
+    expect(result.results[0]).toMatchObject({ ok: true });
+    const row = await read(id);
+    expect(row.status).toBe('needs-human');
+    expect(row.payload).not.toHaveProperty('needsHuman');
+    expect(row.payload).not.toHaveProperty('needsOwnerAction');
+  });
 });
 
 describe('claimNextWorkItem admits a legacy needsHuman:true OPEN issue after migration 864', () => {

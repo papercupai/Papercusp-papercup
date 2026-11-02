@@ -89,6 +89,7 @@ import type { AttributionRosterEntry, FileAttribution } from './git-sync-attribu
 import { resolveAttributionRepo } from './attribution-repo';
 import { runGitLocal } from '../docs/git-runner';
 import type { ContentDetector } from '../../content-lint/registry';
+import type { RunGitStdin } from '../../sync/pot-git/storage';
 import { emitGitSyncCommittedEvent } from './git-sync-events';
 import { gitSyncScopePayloadFilter } from '../../agent-tools/events/git-sync-await-scope';
 import { payloadMatchesFilter } from '../../events/await/pattern';
@@ -3734,6 +3735,49 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(residualIndex).toBeLessThan(attributedIndex);
     // both files landed; the tree is clean.
     expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('binds post-stage stdin reads to the attributed private index', async () => {
+    writeFileSync(join(repo, 'mine.txt'), 'clean staged content\n');
+    const privateIndexes: string[] = [];
+    const runGitStdin: RunGitStdin = async (args, cwd, stdin, options) => {
+      const index = options?.env?.GIT_INDEX_FILE;
+      if (index) privateIndexes.push(index);
+      const result = spawnSync('git', args, {
+        cwd,
+        input: stdin,
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+        env: options?.env ? { ...process.env, ...options.env } : process.env,
+      });
+      return {
+        code: result.status ?? 1,
+        stdout: Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.from(result.stdout ?? ''),
+        stderr: Buffer.isBuffer(result.stderr) ? result.stderr.toString('utf8') : result.stderr ?? '',
+      };
+    };
+    const detector: ContentDetector = {
+      key: 'private-index-test',
+      glob: '**/*',
+      matches: (file) => file === 'mine.txt',
+      detect: () => null,
+      fixerRole: 'content-fixer',
+    };
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      loadRoster: async () => [
+        { agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: ['mine.txt'] },
+      ],
+      contentDetectors: [detector],
+      runGit: directRunGit,
+      runGitStdin,
+    });
+
+    expect(out.status).toBe('synced');
+    expect(privateIndexes.length).toBeGreaterThan(0);
+    expect(privateIndexes.every((index) => index.includes('papercusp-git-sync-attributed-'))).toBe(true);
   });
 
   it('STRANDING GUARD (WI-1316 / 8186adfb5): a FAILED attributed commit (index.lock race) must NOT skip the catch-all — the remainder still commits', async () => {

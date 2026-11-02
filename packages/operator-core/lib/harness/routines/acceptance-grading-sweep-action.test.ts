@@ -209,6 +209,30 @@ describe('registered acceptance sweep audit entrypoint', () => {
     expect(h.runSweep).toHaveBeenCalledOnce();
   });
 
+  it('reconciles pending audits before a plan-grading budget failure can end the tick', async () => {
+    const order: string[] = [];
+    h.reconcile.mockImplementationOnce(async () => {
+      order.push('pending-audits');
+      return { requestedTargetIds: ['EI-audit'], receipts: [] };
+    });
+    h.runSweep.mockImplementationOnce(async () => {
+      expect(order).toEqual(['pending-audits']);
+      order.push('plan-grading');
+      return { budgetExhausted: true, failures: [], nextCursor: null };
+    });
+
+    const result = await h.handlers.get('acceptance-grading-sweep')!({ workspaceId: 'ws-sweep' } as SystemActionCtx);
+
+    expect(order).toEqual(['pending-audits', 'plan-grading']);
+    expect(result).toMatchObject({
+      softError: 'grading scan wall-time budget exhausted',
+      diagnostics: { stages: {
+        'pending-audits': { outcome: 'completed' },
+        'plan-grading': { outcome: 'completed' },
+      } },
+    });
+  });
+
   it('keeps acceptance recovery running when audit routing fails explicitly', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     h.reconcile.mockRejectedValue(new Error('audit routing unavailable'));

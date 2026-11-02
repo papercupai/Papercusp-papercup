@@ -194,6 +194,52 @@ describe("coord:inbox — cache the derive, keep side effects", () => {
     }
   });
 
+  it("captures an active phase when a default read crosses the slow-trace threshold", async () => {
+    const previousTraceFlag = process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES;
+    delete process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES;
+    vi.useFakeTimers();
+    let resolveRead: ((rows: unknown[]) => void) | undefined;
+    M.readInbox.mockImplementationOnce(() => new Promise<unknown[]>((resolve) => {
+      resolveRead = resolve;
+    }));
+    const metadata = vi.fn();
+    const pendingRead = inbox("owner-a", {}, metadata);
+
+    try {
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(metadata).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      const traces = metadata.mock.calls
+        .map(([value]) => (value as { coordInboxRead?: {
+          activePhases: string[];
+          phases: Array<{ name: string; status: string; elapsedMs: number | null }>;
+        } }).coordInboxRead)
+        .filter((trace): trace is NonNullable<typeof trace> => trace !== undefined);
+      const atThreshold = traces.at(-1);
+      expect(atThreshold?.activePhases).toContain("readInbox-derive");
+      expect(atThreshold?.phases.find(({ name }) => name === "readInbox-derive"))
+        .toMatchObject({ status: "running", elapsedMs: null });
+
+      resolveRead?.([]);
+      await pendingRead;
+      const settled = metadata.mock.calls
+        .map(([value]) => (value as { coordInboxRead?: {
+          phases: Array<{ name: string; status: string; elapsedMs: number | null }>;
+        } }).coordInboxRead)
+        .filter((trace): trace is NonNullable<typeof trace> => trace !== undefined)
+        .at(-1);
+      expect(settled?.phases.find(({ name }) => name === "readInbox-derive"))
+        .toMatchObject({ status: "fulfilled" });
+    } finally {
+      resolveRead?.([]);
+      await pendingRead.catch(() => {});
+      vi.useRealTimers();
+      if (previousTraceFlag === undefined) delete process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES;
+      else process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES = previousTraceFlag;
+    }
+  });
+
   it("records default-read phases on indirect dispatch without the diagnostic env flag", async () => {
     const previousTraceFlag = process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES;
     const correlationId = "b497d96b-f582-49b0-9397-94610fd9b04e";

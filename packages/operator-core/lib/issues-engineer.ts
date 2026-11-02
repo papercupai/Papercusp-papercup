@@ -33,6 +33,7 @@ import {
 } from './work-items-physical-row';
 import { resolveWorkItemPot } from './pot-membership';
 import { hasActiveStrictHumanAsk } from './hold-registry';
+import { activeExternalBlockers } from './external-blockers';
 import { ANY_FAMILY_TERMINAL_STATES, ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
 import { neutralizeToolCallTags, sanitizePersistedText } from './text-safety';
 import {
@@ -3767,6 +3768,10 @@ export async function setIssueState(
      * scoped to it, so a sibling row sharing this feature_id is never written.
      */
     harnessSlug?: string | null;
+    /** Internal lifecycle restore guard: only transition from this persisted state. */
+    expectedCurrentState?: string;
+    /** Internal lifecycle restore guard: require no active typed external blocker under the row lock. */
+    requireNoActiveExternalBlockers?: boolean;
   } = {},
 ): Promise<EngineerIssue | null> {
   const isTerminal = ISSUE_TERMINAL_STATUSES.has(state);
@@ -3914,6 +3919,12 @@ export async function setIssueState(
         FOR UPDATE`;
     const priorRow = prior[0];
     if (!priorRow) return [] as IssueRowDb[];
+    if (opts.expectedCurrentState !== undefined && priorRow.status !== opts.expectedCurrentState) {
+      return [] as IssueRowDb[];
+    }
+    if (opts.requireNoActiveExternalBlockers && activeExternalBlockers(priorRow.payload).length > 0) {
+      return [] as IssueRowDb[];
+    }
     // D-029 (plan unified-bug-pipeline-and-honest-queue-2026-10-05): the bottom issue writer
     // refuses a needs-human park without an answerable owner ask, read off the LOCKED row, so a
     // caller that skips setWorkItemState (resolve-core did) cannot write the hold-with-no-clearer

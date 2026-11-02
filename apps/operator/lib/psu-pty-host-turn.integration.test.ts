@@ -4360,3 +4360,84 @@ describe('owner keystrokes during submit verification (WI-10001508)', () => {
     30_000,
   );
 });
+
+describe('Codex transcript Find managed-wake admission (EI-27098303090571611)', () => {
+  it(
+    'leaves a wake queued instead of writing it into the quiet Find editor',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-codex-find-admission-'));
+      const inputTrace = join(root, 'input.trace');
+      const ownerId = uniqueOwner('CODEX-FIND');
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const findView =
+        '\x1b[2J\x1b[H' +
+        '\x1b[2;1H  >_ OpenAI Codex (v0.166.0)' +
+        '\x1b[10;1HTranscript body' +
+        '\x1b[23;1HFind: existing query' +
+        '\x1b[24;1HSearching… · full transcript · esc cancel';
+      const childCode = [
+        "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+        'process.stdout.write(' + JSON.stringify(findView) + ');',
+        "process.stdin.on('data',data=>fs.appendFileSync(process.env.TEST_INPUT_TRACE,data));",
+        'setTimeout(()=>process.exit(0),5000);',
+      ].join('');
+      const { io, captured } = fakeIo();
+      const signalSource = new EventEmitter();
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: root,
+        ownerId,
+        env: hermeticEnv({
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_SID: ownerId,
+          CODEX_HOME: root,
+          TEST_INPUT_TRACE: inputTrace,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '10',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '80',
+        }),
+        io,
+        bridgeTty: false,
+        signalSource,
+        onExit: () => undefined,
+      });
+      const rows = () => existsSync(eventLog)
+        ? readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+        : [];
+
+      try {
+        const host = await waitForHost(ownerId);
+        expect(host).not.toBeNull();
+        expect(await waitForOutput(captured, 'Find:', 3000)).toBe(true);
+        expect(await injectIntoHostWithConfirmation(host!.sock, {
+          mode: 'turn',
+          ownerId,
+          data: 'queued managed wake payload',
+          deliveryId: 'codex-find-admission',
+        })).toMatchObject({ ok: true, reason: 'accepted' });
+
+        await vi.waitFor(() => {
+          expect(rows().some(row => row.kind === 'busy-gate-expired')).toBe(true);
+        }, { timeout: 3000 });
+
+        const busyGate = rows().find(row => row.kind === 'busy-gate-expired');
+        expect(busyGate).toMatchObject({
+          mode: 'turn',
+          inputSurface: 'codex-transcript-find-editing',
+        });
+        expect(existsSync(inputTrace) ? readFileSync(inputTrace, 'utf8') : '')
+          .not.toContain('queued managed wake payload');
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
+        rmSync(root, { recursive: true, force: true });
+      }
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    15_000,
+  );
+});

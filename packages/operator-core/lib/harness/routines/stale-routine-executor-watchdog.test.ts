@@ -378,6 +378,54 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     expect(result).toMatchObject({ attempted: true, restarted: false, code: 'gate_collision' });
   });
 
+  it('recognizes a self-restart after ptool disconnects when the bg-host MainPID changes (EI-27134307706925262)', async () => {
+    let systemctlReads = 0;
+    const result = await restartStaleBgHostExecutor('port-3271', staleVerdict(), {
+      now: () => 9_000_000_000_000,
+      run: async (command) => {
+        if (command === 'systemctl') {
+          systemctlReads += 1;
+          return { stdout: systemctlReads === 1 ? '101\n' : '202\n' };
+        }
+        return {
+          stdout: '',
+          stderr: 'connect ECONNRESET after bg-host restart',
+          error: 'Command failed: node ptool.mjs dev:restart --json -',
+        };
+      },
+      ptoolScript: '/tmp/ptool.mjs',
+    });
+
+    expect(result).toMatchObject({
+      attempted: true,
+      restarted: true,
+      coalesced: false,
+      verified: true,
+      code: 'restarted',
+    });
+    expect(result).not.toHaveProperty('error');
+    expect(systemctlReads).toBe(2);
+  });
+
+  it('keeps ptool_failed when a disconnect does not replace the bg-host generation (EI-27134307706925262)', async () => {
+    let verificationCalls = 0;
+    const result = await restartStaleBgHostExecutor('port-3271', staleVerdict(), {
+      now: () => 9_000_000_000_000,
+      run: async (command) =>
+        command === 'systemctl'
+          ? { stdout: '101\n' }
+          : { stdout: '', error: 'Command failed: node ptool.mjs dev:restart --json -' },
+      verifyGeneration: async (beforePid) => {
+        verificationCalls += 1;
+        return { verified: false, beforePid: Number(beforePid), observedPid: 101, code: 'generation_unchanged' };
+      },
+      ptoolScript: '/tmp/ptool.mjs',
+    });
+
+    expect(result).toMatchObject({ attempted: true, restarted: false, code: 'ptool_failed' });
+    expect(verificationCalls).toBe(1);
+  });
+
   it('only remediates the stale bg-host identity and keeps the safety rails on the ptool call', async () => {
     let nowMs = 1_000_000_000;
     let retentionGateCalls = 0;

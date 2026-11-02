@@ -850,7 +850,16 @@ export function classifyAcceptanceGraderTerminalFailure(
       /\bcode=api_error_429\b/i.test(nativeFailure[0]) ||
       /API Error:\s*Request rejected \(429\)/i.test(before);
     if (nativeQuotaFailure && !quoted) {
-      return { code: 'model_quota_exhausted', evidence: nativeFailure[0].trim() };
+      const quotaContext = [...before.matchAll(
+        /API Error:\s*Request rejected \(429\)[^\n]{0,240}(?:\n[^\n]{0,240})?/gi,
+      )].at(-1)?.[0];
+      const evidence = [quotaContext, nativeFailure[0].trim()]
+        .filter((part): part is string => Boolean(part))
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 400);
+      return { code: 'model_quota_exhausted', evidence };
     }
     if (!quoted && !hasAcceptanceGraderFirstTurnProgress(after) &&
         !/^[ \t]*(?:●|❯[ \t]*\S|>[ \t]*\S)/mu.test(after)) {

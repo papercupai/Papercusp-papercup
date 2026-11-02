@@ -6,6 +6,15 @@ import {
   type CheckpointEligibilityPredicate,
 } from './checkpoint-eligibility-snapshot';
 
+function postgresJsonbOrder<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(postgresJsonbOrder) as T;
+  if (!value || typeof value !== 'object') return value;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => Buffer.byteLength(left) - Buffer.byteLength(right) ||
+      Buffer.compare(Buffer.from(left), Buffer.from(right)));
+  return Object.fromEntries(entries.map(([key, nested]) => [key, postgresJsonbOrder(nested)])) as T;
+}
+
 const clearPredicates = (): CheckpointEligibilityPredicate[] =>
   CHECKPOINT_ELIGIBILITY_PREDICATES.map((code) => ({
     code,
@@ -34,6 +43,19 @@ describe('checkpoint eligibility snapshot', () => {
       waitEvents: [],
     });
     expect(parseCheckpointEligibilitySnapshot(snapshot)).toEqual(snapshot);
+  });
+
+  it('accepts a semantically unchanged snapshot read back with PostgreSQL jsonb key order', () => {
+    const snapshot = buildCheckpointEligibilitySnapshot({
+      attemptId: 'attempt-jsonb',
+      candidate: 'abc123',
+      observedAtMs: 100,
+      predicates: clearPredicates(),
+    });
+    const stored = postgresJsonbOrder(snapshot);
+
+    expect(JSON.stringify(stored)).not.toBe(JSON.stringify(snapshot));
+    expect(parseCheckpointEligibilitySnapshot(stored)).toEqual(snapshot);
   });
 
   it('treats named detached preflights as resolved but permits only the preflight runner', () => {

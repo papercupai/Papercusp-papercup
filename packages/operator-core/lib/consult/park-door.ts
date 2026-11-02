@@ -41,6 +41,10 @@ export interface ParkDoorRequest {
   question: string;
   /** What the parker will do if nobody objects (defaultIfUnanswered). */
   defaultIfUnanswered?: string | null;
+  /** Evidence supplied by set_blocker; carried into the reviewer-facing consult body. */
+  evidence?: string | null;
+  /** The action that follows from the review, when the caller knows it. */
+  nextVerb?: string | null;
   /** The deadline (decideBy), an ISO instant. */
   decideBy?: string | null;
   ownerAuthorityTopic?: string | null;
@@ -120,6 +124,8 @@ export interface ParkDoorDeps {
   openConsult(input: {
     question: string;
     originTaskRef: string;
+    observed?: string;
+    decisionAtStake: string;
     cascade: DecisionReviewCascadeMeta;
     requestKey?: string;
     onAccepted?: (consultId: string) => Promise<void> | void;
@@ -171,11 +177,20 @@ export async function openDecisionReviewPark(req: ParkDoorRequest, deps: ParkDoo
       wakeRegistered = false;
     }
   };
+  const decisionAtStake = [
+    `Parked work item: ${req.workItemId}`,
+    req.callerRef?.trim() ? `Blocker reference: ${req.callerRef.trim()}` : undefined,
+    `Default if no reviewer objects by ${valid.deadlineAt}: ${valid.defaultAction}`,
+    req.nextVerb?.trim() ? `Next action after review: ${req.nextVerb.trim()}` : undefined,
+    valid.ownerAuthorityTopic ? `Owner-authority topic: ${valid.ownerAuthorityTopic}; only the owner can resolve it.` : undefined,
+  ].filter((part): part is string => Boolean(part)).join('\n');
   let consultId: string;
   try {
     ({ consultId } = await deps.openConsult({
       question: req.question,
       originTaskRef: req.workItemId,
+      ...(req.evidence?.trim() ? { observed: req.evidence.trim() } : {}),
+      decisionAtStake,
       cascade,
       ...(req.requestKey ? { requestKey: req.requestKey } : {}),
       onAccepted: registerVerdictWake,
@@ -242,6 +257,8 @@ export function makeProdParkDoorDeps(identity: import('../agent-tools/coordinati
           requesterId: identity.ownerId,
           question: input.question,
           originTaskRef: input.originTaskRef,
+          ...(input.observed ? { observed: input.observed } : {}),
+          decisionAtStake: input.decisionAtStake,
           cascade: input.cascade,
           ...(input.requestKey ? { requestKey: input.requestKey } : {}),
         },

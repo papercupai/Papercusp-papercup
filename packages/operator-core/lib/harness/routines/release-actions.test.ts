@@ -319,6 +319,7 @@ import {
   applyFrozenCandidateRepairQueueTransition,
   FrozenRepairQueueWriteConflictError,
   type AutoServePlan,
+  type CheckpointTypecheckPreflight,
   type DeployEventRow,
   type ReleaseFixerRecord,
   type GitCheckRunner,
@@ -2069,6 +2070,31 @@ describe('frozenRepairHasNoMeasuredFailures (WI-2140605: no reproduce-fixer with
 
     it('failingTestsMeasured:false is out of scope with no repair queue, same as the array axis', () => {
       expect(frozenRepairHasNoMeasuredFailures(undefined, ['lib/broken.test.ts'], false)).toBe(false);
+    });
+
+    it('keeps a frozen compiler red dispatchable when no affected-test failure could be measured', () => {
+      const typecheckPreflight: CheckpointTypecheckPreflight = {
+        status: 'failed',
+        checkedFiles: ['libs/scout-chat/src/reducer.ts'],
+        failingFiles: [],
+        diagnostics: [{
+          file: 'libs/scout-chat/src/reducer.ts',
+          line: 117,
+          column: 69,
+          code: 'TS18048',
+          category: 'error',
+          message: "'value' is possibly 'undefined'.",
+        }],
+      };
+
+      expect(
+        frozenRepairHasNoMeasuredFailures(
+          repairQueue({ failingTests: [] }),
+          [],
+          false,
+          typecheckPreflight,
+        ),
+      ).toBe(false);
     });
   });
 });
@@ -5352,6 +5378,77 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     expect(fakeSql.unsafe.mock.calls.some(([query]) => String(query).includes('UPDATE'))).toBe(false);
   });
 
+  it('dispatches an actionable frozen typecheck failure despite failingTestsMeasured=false', async () => {
+    const candidate = 'c'.repeat(40);
+    const failingTests = ['lint:tsc'];
+    const repairQueue: FrozenCandidateRepairQueue = {
+      schemaVersion: 1,
+      phase: 'awaiting-fixer',
+      candidate,
+      base: 'b'.repeat(40),
+      repairHead: candidate,
+      affectedTestProofGroup: 'proof-1',
+      attempts: 0,
+      openedAtMs: 1,
+      updatedAtMs: 2,
+      fixerSpawnId: null,
+      failingTests,
+      signature: [],
+    };
+    const typecheckPreflight: CheckpointTypecheckPreflight = {
+      status: 'failed',
+      checkedFiles: ['libs/scout-chat/src/reducer.ts'],
+      failingFiles: [],
+      diagnostics: [{
+        file: 'libs/scout-chat/src/reducer.ts',
+        line: 117,
+        column: 69,
+        code: 'TS18048',
+        category: 'error',
+        message: "'value' is possibly 'undefined'.",
+      }],
+    };
+    const snapshot = buildCandidateSnapshot({ candidate, failingTests, repairQueue }, Date.now());
+    expect(snapshot).not.toBeNull();
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([{ lf: null, ftm: 'false', cs: snapshot }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]));
+    fireLaunchBlueprintForEvent.mockResolvedValueOnce({
+      spawn: { spawnId: 'spawn-typecheck', runId: 'run-typecheck', durable: false },
+    });
+    const onSkip = vi.fn();
+
+    const result = await dispatchReleaseFixer(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      candidate,
+      failingTests,
+      repairQueue,
+      undefined,
+      {
+        checkCandidate: async () => ({ candidateExists: true, candidatePromoted: false }),
+        onSkip,
+        typecheckPreflight,
+        alarm: { broadcast: vi.fn(async () => true), notify: vi.fn(async () => {}) },
+      },
+    );
+
+    expect(result).toEqual({ spawnId: 'spawn-typecheck', runId: 'run-typecheck' });
+    expect(onSkip).not.toHaveBeenCalled();
+    expect(fireLaunchBlueprintForEvent).toHaveBeenCalledWith(
+      'green-checkpoint:red',
+      expect.objectContaining({
+        kickoff: expect.stringContaining('libs/scout-chat/src/reducer.ts:117:69 TS18048'),
+        bodyExtra: expect.objectContaining({
+          releaseFixerContext: expect.objectContaining({ typecheckPreflight }),
+        }),
+      }),
+    );
+  });
+
   it('does not announce or suppress retries when the launch target returns no spawn', async () => {
     const candidate = 'a'.repeat(40);
     const failingTest = 'lint:identity-leak';
@@ -5484,6 +5581,44 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       'Authoritative checkpoint run evidence: {"logPath":"/var/lib/papercusp/checkpoint-logs/exact-run.log","runId":"exact-run-42","integrationRoot":"/srv/papercusp"}',
     );
     expect(brief).toContain('Read this exact checkpoint artifact and use its failure tail');
+  });
+
+  it('gives the frozen fixer compiler diagnostics as the repair target when the suite did not run', () => {
+    const typecheckPreflight: CheckpointTypecheckPreflight = {
+      status: 'failed',
+      checkedFiles: ['libs/scout-chat/src/reducer.ts'],
+      failingFiles: [],
+      diagnostics: [{
+        file: 'libs/scout-chat/src/reducer.ts',
+        line: 117,
+        column: 69,
+        code: 'TS18048',
+        category: 'error',
+        message: "'value' is possibly 'undefined'.",
+      }],
+    };
+    const brief = buildReleaseFixerKickoff({
+      candidate: 'a'.repeat(40),
+      failingTests: ['lint:tsc'],
+      repairQueue: {
+        schemaVersion: 1,
+        phase: 'awaiting-fixer',
+        candidate: 'a'.repeat(40),
+        base: 'b'.repeat(40),
+        repairHead: 'a'.repeat(40),
+        attempts: 0,
+        openedAtMs: 1,
+        updatedAtMs: 2,
+        fixerSpawnId: null,
+        failingTests: ['lint:tsc'],
+        signature: [],
+      },
+      typecheckPreflight,
+    });
+
+    expect(brief).toContain('Measured build/typecheck failure before the affected-test sweep');
+    expect(brief).toContain("libs/scout-chat/src/reducer.ts:117:69 TS18048: 'value' is possibly 'undefined'.");
+    expect(brief).toContain('Reproduce the typecheck at the frozen repair head');
   });
 
   it('keeps the legacy moving-tip brief free of frozen-child authorization instructions', () => {

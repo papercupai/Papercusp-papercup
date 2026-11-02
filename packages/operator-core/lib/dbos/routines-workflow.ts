@@ -147,6 +147,28 @@ export async function learningLoopHealthSweepDbosStep(
   return report;
 }
 
+type StaleRoutineExecutorSweepStepResult = { outcome: string; reason?: string };
+
+/** Preserve quiet watchdog outcomes in DBOS operation_outputs for forensics. */
+export async function staleRoutineExecutorSweepDbosStep(
+  sweep: () => Promise<StaleRoutineExecutorSweepStepResult> = async () => {
+    const { staleRoutineExecutorSweep } = await import('../harness/routines/stale-routine-executor-watchdog');
+    return staleRoutineExecutorSweep({});
+  },
+): Promise<StaleRoutineExecutorSweepStepResult> {
+  try {
+    const result = await sweep();
+    if (result.outcome === 'alerted' || result.outcome === 'error') {
+      console.warn(`[stale-routine-executor] ${result.outcome}: ${result.reason}`);
+    }
+    return result;
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.warn(`[stale-routine-executor] sweep failed: ${reason}`);
+    return { outcome: 'error', reason };
+  }
+}
+
 function routineFirePrimaryAppVersion(): string {
   return (
     process.env.PAPERCUSP_HOSTED_PROVISIONING_DBOS_APP_VERSION?.trim() ||
@@ -1919,17 +1941,7 @@ async function routinesSweepPassImpl(DBOS: typeof timedSweepDbos = timedSweepDbo
   // what actually covers :3070; do not read this self-check as covering anything but the
   // process it runs in.
   await DBOS.runStep(
-    async () => {
-      try {
-        const { staleRoutineExecutorSweep } = await import('../harness/routines/stale-routine-executor-watchdog');
-        const result = await staleRoutineExecutorSweep({});
-        if (result.outcome === 'alerted' || result.outcome === 'error') {
-          console.warn(`[stale-routine-executor] ${result.outcome}: ${result.reason}`);
-        }
-      } catch (e) {
-        console.warn(`[stale-routine-executor] sweep failed: ${e instanceof Error ? e.message : e}`);
-      }
-    },
+    () => staleRoutineExecutorSweepDbosStep(),
     { name: 'stale-routine-executor-sweep' },
   );
 

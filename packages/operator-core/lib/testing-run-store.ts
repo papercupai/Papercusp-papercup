@@ -2015,9 +2015,15 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
   proc.stdout?.on('data', (b: Buffer) => appendOutput(state, b.toString('utf8')));
   proc.stderr?.on('data', (b: Buffer) => appendOutput(state, b.toString('utf8')));
   proc.on('error', (e) => {
+    if (state.snapshot.finishedAt !== null) {
+      // A late ChildProcess error (for example, a kill error after normal exit)
+      // is diagnostic only. The close event already recorded the process verdict.
+      appendOutput(state, `\n[post-close-child-error] ${e.message}\n`);
+      return;
+    }
     appendOutput(state, `\n[spawn-error] ${e.message}\n`);
     state.snapshot.status = 'error';
-    if (state.snapshot.finishedAt === null) state.snapshot.finishedAt = Date.now();
+    state.snapshot.finishedAt = Date.now();
     finalizeTerminalRun();
     finishEnrolment({
       state: 'exited',

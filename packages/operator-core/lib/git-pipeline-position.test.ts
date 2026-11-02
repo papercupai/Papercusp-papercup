@@ -4,6 +4,7 @@ import { buildTestPassReuseHealth } from './release/test-pass-reuse-report';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { GATE_ABORT_DETAIL_LIVENESS_MARKER } from './release/gate-abort-status';
+import { RESTRICTED_WINDOW_INTENT, RESTRICTED_WINDOW_OWNER } from './personal-vault/git-sync-hold';
 
 /**
  * P-003: `gitPipelinePosition`'s serving probe really shells out to
@@ -7391,6 +7392,52 @@ describe('sweep exposure (P-006)', () => {
       expect(d?.lever).toContain('locks:release does not lift it');
       expect(gitSyncDeferralFor('packages/locked.ts', { skippedPaths: skipped, syncAgeMs: 60_000 })?.reason).toBe('edit-lock');
     });
+  });
+
+  it('distinguishes an unattributed disclosure-window hold from an edit lock', () => {
+    const path = 'docs/evidence/restricted.json';
+    const skippedPaths = [{
+      scope: 'superproject',
+      path,
+      owner: RESTRICTED_WINDOW_OWNER,
+      intent: RESTRICTED_WINDOW_INTENT,
+    }];
+    const deferral = gitSyncDeferralFor(path, { skippedPaths, syncAgeMs: 22 * 60_000 });
+    expect(deferral?.reason).toBe('restricted-window-unattributed');
+    expect(deferral?.detail).toContain('personal-disclosure window');
+    expect(deferral?.detail).toContain('unattributed');
+    expect(deferral?.lever).toContain('every active personal disclosure is released');
+    expect(deferral?.lever).toContain('locks:release does not lift this hold');
+    expect(deferral?.lever).not.toContain('git-sync:run');
+
+    const input = stageInput(evaluateSweepExposure({
+      dirtyUncommitted: true,
+      dirtyPaths: [path],
+      nextSweepAtMs: NOW + 60_000,
+      nowMs: NOW,
+    }));
+    input.input = { path };
+    input.gitSync = { ...HEALTHY_GIT_SYNC, skippedPaths, syncAgeMs: 22 * 60_000 };
+    const committed = computeStages(input).find((stage) => stage.name === 'committed');
+    expect(committed?.detail).toContain('personal-disclosure window');
+    expect(committed?.lever).not.toContain('git-sync:run');
+  });
+
+  it('shows the last git-sync status and age when no path deferral explains a dirty file', () => {
+    const input = stageInput(evaluateSweepExposure({
+      dirtyUncommitted: true,
+      dirtyPaths: ['docs/evidence/unexplained.json'],
+      nextSweepAtMs: NOW + 60_000,
+      nowMs: NOW,
+    }));
+    input.input = { path: 'docs/evidence/unexplained.json' };
+    input.gitSync = { ...HEALTHY_GIT_SYNC, status: 'synced', syncAgeMs: 22 * 60_000, skippedPaths: [] };
+    const committed = computeStages(input).find((stage) => stage.name === 'committed');
+    expect(committed?.detail).toContain('No matching path-specific deferral was recorded');
+    expect(committed?.detail).toContain('latest git-sync status is synced');
+    expect(committed?.detail).toContain('last completed tick was ~22 min ago');
+    expect(committed?.health).toBe('stalled');
+    expect(committed?.lever).toContain('git-sync:run');
   });
 
   it('a clean path is not exposed at all — and says nothing', () => {

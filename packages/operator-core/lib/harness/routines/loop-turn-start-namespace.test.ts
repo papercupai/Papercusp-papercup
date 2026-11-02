@@ -56,6 +56,43 @@ describe('indexed loop launch namespace', () => {
     expect(readLaunchRecord).toHaveBeenCalledWith('su-a', 'workspace-a');
   });
 
+  it('stamps self-compaction only when the launch-pinned ledger proves loop lineage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'live-loop-self-compaction-'));
+    dirs.push(root);
+    const targetDir = join(root, 'workspace-a');
+    vi.stubEnv('PAPERCUSP_TURN_PROVENANCE_DIR', join(root, 'host'));
+    const now = Date.now();
+    const tagged = await tagTurnForInjection({
+      sid: 'su-a', origin: 'self-compaction', text: 'Continue the loop work.',
+      dir: targetDir, nowMs: now, loopFire: { routineId: 'routine-a', wakeCount: 3 },
+    });
+    expect(tagged.ledgerWritten).toBe(true);
+    readLaunchRecord.mockResolvedValue({
+      workspaceId: 'workspace-a', agent: 'codex',
+      launchSpec: { workspaceId: 'workspace-a', turnProvenanceDir: targetDir }, launchArgv: null,
+    });
+    const append = vi.fn(async () => ({ id: 'self-compaction-stamp' }));
+    expect(await recordLoopTurnStart({
+      owner: 'su-a', workspaceId: 'workspace-a', client: 'codex', prompt: tagged.taggedText,
+    }, { append })).toBe(true);
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      detail: expect.objectContaining({
+        origin: 'self-compaction', nonce: tagged.nonce,
+        loopFire: { routineId: 'routine-a', wakeCount: 3 },
+      }),
+    }));
+
+    const unrelated = await tagTurnForInjection({
+      sid: 'su-a', origin: 'self-compaction', text: 'Continue ordinary work.',
+      dir: targetDir, nowMs: now + 1,
+    });
+    const noAppend = vi.fn(async () => ({ id: 'must-not-append' }));
+    expect(await recordLoopTurnStart({
+      owner: 'su-a', workspaceId: 'workspace-a', client: 'codex', prompt: unrelated.taggedText,
+    }, { append: noAppend })).toBeNull();
+    expect(noAppend).not.toHaveBeenCalled();
+  });
+
   it.each(['missing', 'wrong workspace', 'wrong spec workspace', 'wrong client', 'missing pin', 'relative pin', 'wrong directory', 'unavailable'])
   ('keeps a %s launch unknown despite a valid host ledger', async (problem) => {
     const hostDir = await mkdtemp(join(tmpdir(), 'live-loop-unknown-'));

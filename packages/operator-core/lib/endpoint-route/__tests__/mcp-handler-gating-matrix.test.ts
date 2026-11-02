@@ -2026,6 +2026,133 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
     ]);
   }
 
+  it('applies fleet:status tiers at the actual CallToolRequestSchema boundary', async () => {
+    const handlerContexts: Array<Record<string, unknown>> = [];
+    const source = {
+      ok: true,
+      slug: 'rocket',
+      leaderId: 'su-tier-leader',
+      memberCount: 20,
+      members: Array.from({ length: 20 }, (_, index) => ({
+        agentId: index === 0 ? 'su-tier-leader' : `su-tier-member-${index}`,
+        label: `Member ${index}`,
+        fleetRole: index === 0 ? 'leader' : 'member',
+        intent: `tier test ${index}`,
+        heartbeatFresh: true,
+        sessionState: 'live',
+        lastActiveSecAgo: 1,
+        doing: `WI-${index}`,
+        load: 1,
+        lastToolCallAt: '2026-11-01T12:00:00Z',
+      })),
+      launchTransaction: {
+        governor: {
+          history: Array.from({ length: 32 }, (_, index) => ({
+            at: index,
+            action: 'observe',
+            reason: `event ${index}`,
+          })),
+        },
+      },
+    };
+
+    const findStatusPayload = (value: unknown): Record<string, unknown> | null => {
+      const pending: unknown[] = [value];
+      const seen = new Set<object>();
+      while (pending.length > 0) {
+        const current = pending.pop();
+        if (typeof current === 'string') {
+          try { pending.push(JSON.parse(current)); } catch { /* non-JSON text block */ }
+          continue;
+        }
+        if (!current || typeof current !== 'object' || seen.has(current)) continue;
+        seen.add(current);
+        if (!Array.isArray(current) && Array.isArray((current as Record<string, unknown>).members) &&
+            (current as Record<string, unknown>).launchTransaction) {
+          return current as Record<string, unknown>;
+        }
+        pending.push(...(Array.isArray(current) ? current : Object.values(current)));
+      }
+      return null;
+    };
+
+    const assertTier = (result: CallResult, tier: 'standard' | 'trimmed') => {
+      expect(result.isError).not.toBe(true);
+      const out = findStatusPayload(result);
+      expect(out).not.toBeNull();
+      const memberCap = tier === 'standard' ? 12 : 8;
+      const historyCap = tier === 'standard' ? 24 : 12;
+      const members = out!.members as Array<Record<string, unknown>>;
+      const governor = (out!.launchTransaction as { governor: Record<string, unknown> }).governor;
+      expect(members).toHaveLength(memberCap + 1);
+      expect(members.at(-1)?.agentId).toBe('(truncated)');
+      expect(governor.history as unknown[]).toHaveLength(historyCap);
+      expect(governor.historyTotal).toBe(32);
+    };
+
+    await withSdkHost(
+      superuserExtra('&workspace=ws-test&client=su-tier-shaping&harness=papercup&role=operator'),
+      async client => {
+        await client.listTools();
+        const statusDefinition = getCatalog().find(tool => tool.name === 'fleet:status');
+        if (!statusDefinition) throw new Error('Expected the production fleet:status definition after tools/list');
+        const mutableStatus = statusDefinition as unknown as {
+          handler: (args: unknown, ctx: UnifiedToolContext) => Promise<unknown>;
+          shape?: { standard?: unknown; trimmed?: unknown };
+        };
+        expect(mutableStatus.shape?.standard).toBeTypeOf('function');
+        expect(mutableStatus.shape?.trimmed).toBeTypeOf('function');
+
+        const originalHandler = mutableStatus.handler;
+        mutableStatus.handler = async (_args, ctx) => {
+          const context = ctx as unknown as Record<string, unknown>;
+          handlerContexts.push({
+            transport: context.transport,
+            requestedStructured: context.requestedStructured,
+            payloadTierOverride: context.payloadTierOverride,
+          });
+          return { content: [{ type: 'text' as const, text: JSON.stringify(source) }] };
+        };
+
+        try {
+          const directStandard = await client.callTool({
+            name: 'fleet:status',
+            arguments: { fleet: 'rocket', payloadTier: 'standard' },
+            _meta: { format: 'json' },
+          }) as CallResult;
+          assertTier(directStandard, 'standard');
+
+          const nestedStandard = await client.callTool({
+            name: 'tools:invoke',
+            arguments: {
+              name: 'fleet:status',
+              args: { fleet: 'rocket' },
+              payloadTier: 'standard',
+            },
+            _meta: { format: 'json' },
+          }) as CallResult;
+          assertTier(nestedStandard, 'standard');
+
+          const directTrimmed = await client.callTool({
+            name: 'fleet:status',
+            arguments: { fleet: 'rocket', payloadTier: 'trimmed' },
+            _meta: { format: 'json' },
+          }) as CallResult;
+          assertTier(directTrimmed, 'trimmed');
+        } finally {
+          mutableStatus.handler = originalHandler;
+        }
+      },
+      'http',
+    );
+
+    expect(handlerContexts).toEqual([
+      { transport: 'mcp', requestedStructured: false, payloadTierOverride: 'standard' },
+      { transport: 'mcp', requestedStructured: false, payloadTierOverride: 'standard' },
+      { transport: 'mcp', requestedStructured: false, payloadTierOverride: 'trimmed' },
+    ]);
+  });
+
   // Compare literal payload and all semantic metadata, not JSON byte size or
   // a "format" label alone. Controlled corruptions below calibrate this oracle.
   function assertSameResult(actual: CallResult, expected: CallResult) {

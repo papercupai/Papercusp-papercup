@@ -40,6 +40,12 @@ export function isLoopFirePrompt(prompt: string): boolean {
   return parseEnvelope(prompt ?? '')?.origin === 'loop-fire';
 }
 
+/** Candidate turn origins; self-compaction still needs authenticated loop lineage. */
+export function isLoopTurnStartCandidate(prompt: string): boolean {
+  const origin = parseEnvelope(prompt ?? '')?.origin;
+  return origin === 'loop-fire' || origin === 'self-compaction';
+}
+
 export interface LoopTurnStartInput {
   owner: string;
   prompt: string;
@@ -185,10 +191,10 @@ export function loopTurnStartRecord(input: LoopTurnStartInput): ActivityRecord |
 export async function recordLoopTurnStart(
   input: LoopTurnStartInput,
   store?: Pick<TelemetryStore, 'append'>,
-): Promise<boolean> {
+): Promise<boolean | null> {
   const owner = input.owner?.trim();
   const envelope = parseEnvelope(input.prompt);
-  if (!owner || !envelope || !['loop-fire', 'self-compaction'].includes(envelope.origin)) return false;
+  if (!owner || !envelope || !['loop-fire', 'self-compaction'].includes(envelope.origin)) return null;
   const submittedAt = Date.now();
   try {
     let loopFire = input.loopFire;
@@ -213,7 +219,7 @@ export async function recordLoopTurnStart(
       }
     }
     const record = loopTurnStartRecord({ ...input, owner, loopFire });
-    if (!record) return false;
+    if (!record) return null;
     const target = store ?? (await import('../../activity-pg-store')).createPgTelemetryStore();
     await target.append(record);
     return true;

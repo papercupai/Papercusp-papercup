@@ -2360,6 +2360,13 @@ export async function getLoopStatuses(
                            OR (st.turn_origin = 'loop-fire'
                              AND start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
                              AND st.ts >= start_stamp.created_at)
+                           OR (
+                             st.turn_origin = 'self-compaction'
+                             AND start_stamp.detail->>'source' = 'turn-start'
+                             AND start_stamp.detail->>'origin' = 'self-compaction'
+                             AND start_stamp.detail->>'nonce' =
+                               substring(st.text FROM '^[[:space:]]*⟦turn-origin:self-compaction nonce:([a-f0-9]{8,64})⟧')
+                           )
                          )
                     )
                     AND NOT EXISTS (
@@ -2576,6 +2583,13 @@ export async function getLoopStatuses(
                       OR (u.turn_origin = 'loop-fire'
                         AND start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
                         AND u.ts >= start_stamp.created_at)
+                      OR (
+                        u.turn_origin = 'self-compaction'
+                        AND start_stamp.detail->>'source' = 'turn-start'
+                        AND start_stamp.detail->>'origin' = 'self-compaction'
+                        AND start_stamp.detail->>'nonce' =
+                          substring(u.text FROM '^[[:space:]]*⟦turn-origin:self-compaction nonce:([a-f0-9]{8,64})⟧')
+                      )
                     )
                ))                                                    AS last_loop_turn_at,
            -- WI-6554700010012442: the earliest prompt after the arm proves the arming turn
@@ -2642,6 +2656,13 @@ export async function getLoopStatuses(
                           OR (u.turn_origin = 'loop-fire'
                             AND start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
                             AND u.ts >= start_stamp.created_at)
+                          OR (
+                            u.turn_origin = 'self-compaction'
+                            AND start_stamp.detail->>'source' = 'turn-start'
+                            AND start_stamp.detail->>'origin' = 'self-compaction'
+                            AND start_stamp.detail->>'nonce' =
+                              substring(u.text FROM '^[[:space:]]*⟦turn-origin:self-compaction nonce:([a-f0-9]{8,64})⟧')
+                          )
                         )
                    ))
                 ELSE NULL
@@ -2702,6 +2723,13 @@ export async function getLoopStatuses(
                           OR (u.turn_origin = 'loop-fire'
                             AND start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
                             AND u.ts >= start_stamp.created_at)
+                        OR (
+                          u.turn_origin = 'self-compaction'
+                          AND start_stamp.detail->>'source' = 'turn-start'
+                          AND start_stamp.detail->>'origin' = 'self-compaction'
+                          AND start_stamp.detail->>'nonce' =
+                            substring(u.text FROM '^[[:space:]]*⟦turn-origin:self-compaction nonce:([a-f0-9]{8,64})⟧')
+                        )
                         )
                    ))
                 ELSE NULL

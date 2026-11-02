@@ -31,7 +31,11 @@ import { promisify } from 'node:util';
 import * as path from 'node:path';
 import { hostname } from 'node:os';
 import { createHash } from 'node:crypto';
-import { isTurnHoldIntent } from './personal-vault/git-sync-hold';
+import {
+  RESTRICTED_WINDOW_OWNER,
+  isRestrictedHoldIntent,
+  isTurnHoldIntent,
+} from './personal-vault/git-sync-hold';
 import { isCommitOnlyMember } from './harness/git-sync/decide-git-sync-push';
 export { isCommitOnlyMember } from './harness/git-sync/decide-git-sync-push';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
@@ -3806,12 +3810,11 @@ export function mainBufferIsStale(
 /**
  * WI-10006493: the last git-sync pass's deliberate deferral of the queried path, if any.
  *
- * git-sync defers a dirty path for three reasons: a live edit lock (`owner` + `intent`), a
- * migration whose number reservation was refused (`migration-reservation`), or a superproject
- * path held back with such a migration by the dependency fence (`migration-dependency-fence`).
- * In all three a forced sync defers the path again, so `git-sync:run` is not a lever. The
- * returned `lever` names what actually unblocks the path, and deliberately does NOT contain
- * the `git-sync:run` token, because callers copy the lever verbatim.
+ * git-sync can defer a path for a live edit lock, a turn-scoped hold, a personal-disclosure
+ * hold (including an unattributed write held by the disclosure window), a refused migration
+ * reservation, or the dependency fence behind such a migration. For each, a forced sync
+ * defers the path again, so `git-sync:run` is not a lever. The returned `lever` names what
+ * actually unblocks it and deliberately omits the `git-sync:run` token; callers copy it verbatim.
  *
  * `skippedPaths` entries are repo-relative within their `scope` (a submodule path, or
  * `superproject`); the queried path is superproject-relative, so the two are joined first.
@@ -3821,7 +3824,13 @@ export function gitSyncDeferralFor(
   path: string | null,
   gitSync: Pick<GitSyncLegs, 'skippedPaths' | 'syncAgeMs'>,
 ): {
-  reason: 'edit-lock' | 'turn-hold' | 'migration-reservation' | 'migration-dependency-fence';
+  reason:
+    | 'edit-lock'
+    | 'turn-hold'
+    | 'restricted-disclosure'
+    | 'restricted-window-unattributed'
+    | 'migration-reservation'
+    | 'migration-dependency-fence';
   detail: string;
   lever: string;
 } | null {
@@ -3846,6 +3855,20 @@ export function gitSyncDeferralFor(
         `${when} held this path under the turn-scoped hold: ${entry.owner} edited it during a turn that had not ended. ` +
         'Forcing git-sync:run holds it again until that turn ends, the session ends, or 60 min pass since the edit.',
       lever: `none needed — it commits with ${entry.owner}'s other edits on the first sweep after that turn ends; locks:release does not lift it`,
+    };
+  }
+  if ('owner' in entry && isRestrictedHoldIntent(entry.intent)) {
+    const unattributedWindow = entry.owner === RESTRICTED_WINDOW_OWNER;
+    return {
+      reason: unattributedWindow ? 'restricted-window-unattributed' : 'restricted-disclosure',
+      detail: unattributedWindow
+        ? when + ' held this path under the personal-disclosure window because its write was unattributed. ' +
+          'This is a disclosure hold, not a live edit lock, and it lifts when every active disclosure is released.'
+        : when + ' held this path because ' + entry.owner + ' edited it during an active personal disclosure. ' +
+          'This is a disclosure hold, not a live edit lock, and it lifts when that disclosure is released.',
+      lever: unattributedWindow
+        ? 'wait until every active personal disclosure is released; this path commits on the next git-sync pass (locks:release does not lift this hold)'
+        : 'wait until the active personal disclosure held by ' + entry.owner + ' is released; this path commits on the next git-sync pass (locks:release does not lift this hold)',
     };
   }
   if ('owner' in entry) {
@@ -3898,6 +3921,20 @@ export function gitSyncContentQuarantineFor(
       'Repeating the sync cannot commit it until that finding is fixed.',
     lever: `fix this path's ${entry.detector} content-check finding; git-sync will retry it on the next pass`,
   };
+}
+
+function gitSyncFreshnessNote(gitSync: Pick<GitSyncLegs, 'status' | 'syncAgeMs'>): string {
+  const status = gitSync.status ?? 'unknown';
+  const ageMs = gitSync.syncAgeMs;
+  if (ageMs === null || !Number.isFinite(ageMs)) {
+    return 'The latest git-sync status is ' + status + '; the last completed tick age is unknown.';
+  }
+  const ageMinutes = Math.max(0, Math.round(ageMs / 60_000));
+  const staleNote =
+    ageMs > GIT_SYNC_STALE_AFTER_MS
+      ? ' The age is past the ' + Math.round(GIT_SYNC_STALE_AFTER_MS / 60_000) + ' min stale threshold.'
+      : '';
+  return 'The latest git-sync status is ' + status + '; the last completed tick was ~' + ageMinutes + ' min ago.' + staleNote;
 }
 
 /**
@@ -3999,6 +4036,9 @@ export function computeStages(
   // WI-10006493: git-sync:run is only the lever when a sync CAN commit this path. When the last
   // pass deliberately deferred it (a migration guard, or a live edit lock), forcing another pass
   // defers it again, so the blocker and its owner are named instead.
+  // WI-10006493: git-sync:run is only the lever when a sync CAN commit this path. When the last
+  // pass deliberately deferred it (an edit, turn, disclosure, or migration hold), forcing another
+  // pass defers it again, so name the blocker and its actual release condition.
   const deferral = p.dirtyUncommitted
     ? gitSyncContentQuarantineFor(p.input?.path ?? null, p.gitSync) ?? gitSyncDeferralFor(p.input?.path ?? null, p.gitSync)
     : null;
@@ -4017,7 +4057,9 @@ export function computeStages(
       ? deferral.detail
       : p.dirtyUncommitted
       ? 'Uncommitted edits in the working tree. The release gate checks out a COMMITTED candidate and cannot see the tree, so this change is invisible to it until git-sync commits. Force it now: git-sync:run.' +
-        (sweep.detail ? ` ${sweep.detail}` : '')
+        (sweep.detail ? ` ${sweep.detail}` : '') +
+        ' No matching path-specific deferral was recorded in the skipped-path snapshot. ' +
+        gitSyncFreshnessNote(p.gitSync)
       : workingTreeUnknown
         ? 'The working-tree status read failed, so whether this path has uncommitted edits is unknown. Treat nothing past this stage as proof the edit on disk is live.'
         : targetUnresolvedDetail,

@@ -45,9 +45,10 @@ import { isUnderAnyPath, unpublishedNestedPotCheckouts } from './nested-pot-chec
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { scanProcForOpenFile } from './proc-open-file-scan';
 import { projectDirForSlug } from '../../operator-notes';
-import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitViaSpawnerSidecar, type SidecarDiagnosticTags } from '../../fleet/git-via-sidecar';
+import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitStdinViaSpawnerSidecar, runGitViaSpawnerSidecar, type SidecarDiagnosticTags } from '../../fleet/git-via-sidecar';
 import { gitSubcommandOf } from '../../fleet/sidecar-read-only-git';
 import { gitReplayIsSafe, isSidecarPostDispatchFault, sidecarPostDispatchUnknownResult } from '../../fleet/sidecar-dispatch-fault';
+import { runGitStdinLocal, type RunGitStdin } from '../../sync/pot-git/storage';
 import {
   detectContentOffenders,
   detectUnscannedStagedOffenders,
@@ -538,6 +539,37 @@ const defaultRunGit: RunGit = (args, cwd, options) =>
     env: options?.env,
     diagnosticTags: options?.diagnosticTags,
   });
+
+/** Binary-safe stdin runner using the same git-sync sidecar route as {@link defaultRunGit}. */
+const runGitSyncStdinBounded: RunGitStdin = async (args, cwd, stdin, options) => {
+  const timeoutMs = options?.timeoutMs ?? gitTimeoutMsFor(args);
+  if (options?.signal?.aborted) return { code: -1, stdout: Buffer.alloc(0), stderr: 'git aborted before spawn' };
+  const subcommand = gitSubcommand(args);
+  const env = {
+    ...process.env,
+    ...options?.env,
+    LC_ALL: 'C',
+    LANG: 'C',
+    PAPERCUSP_GIT_SYNC_PUSH: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    ...(GIT_SIDECAR_READ_ONLY_COMMANDS.has(subcommand) ? { GIT_OPTIONAL_LOCKS: '0' } : {}),
+  };
+  if (gitSyncSidecarEnabled()) {
+    try {
+      const result = await runGitStdinViaSpawnerSidecar(args, cwd, stdin, timeoutMs, env);
+      if (!isSidecarInfrastructureFault(result)) return result;
+      noteSidecarFallback('git-sync', new Error(result.stderr));
+    } catch (error) {
+      // cat-file batch reads are replay-safe; a sidecar fault degrades to the local
+      // bounded stdin seam and never changes the private-index environment.
+      noteSidecarFallback('git-sync', error);
+      if (options?.signal?.aborted) {
+        return { code: -1, stdout: Buffer.alloc(0), stderr: 'git aborted after sidecar transport loss' };
+      }
+    }
+  }
+  return runGitStdinLocal(args, cwd, stdin, { ...options, timeoutMs, env });
+};
 
 /** No Git child ran on a sidecar admission refusal; do not diagnose a Git merge conflict. */
 export function gitSyncPreDispatchError(result: Awaited<ReturnType<RunGit>>): string | null {
@@ -2206,6 +2238,8 @@ export interface RunGitSyncOpts {
   repoPath?: string | null;
   /** Inject the git runner (tests). */
   runGit?: RunGit;
+  /** Inject the raw-stdout stdin runner used for private-index content batches (tests). */
+  runGitStdin?: RunGitStdin;
   /** Authorize every push at the child-process boundary, including transport and
    * non-fast-forward retries. Non-legacy hive callers must supply the owner gate.
    * A refusal leaves local commits intact and is reported as a publication error. */
@@ -5053,6 +5087,7 @@ interface PrivateIndexSite {
   sharedIndex: string | null;
   newIndexFile: () => string;
   bindIndex: (indexFile: string) => RunGit;
+  bindIndexStdin?: (indexFile: string) => RunGitStdin;
 }
 
 /**
@@ -5065,6 +5100,7 @@ async function openPrivateIndexSite(
   repoPath: string,
   label: string,
   tag: string,
+  runGitStdin?: RunGitStdin,
 ): Promise<{ ok: true; site: PrivateIndexSite } | { ok: false; error: string }> {
   const gitDirRes = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
   const gitDir = gitDirRes.stdout.trim();
@@ -5074,6 +5110,10 @@ async function openPrivateIndexSite(
   const newIndexFile = (): string => join(gitDir, `papercusp-git-sync-${tag}-${process.pid}-${randomUUID()}.index`);
   const bindIndex = (indexFile: string): RunGit => (args, cwd, options) =>
     runGit(args, cwd, { ...options, env: { ...options?.env, GIT_INDEX_FILE: indexFile } });
+  const bindIndexStdin = runGitStdin
+    ? (indexFile: string): RunGitStdin => (args, cwd, stdin, options) =>
+        runGitStdin(args, cwd, stdin, { ...options, env: { ...options?.env, GIT_INDEX_FILE: indexFile } })
+    : undefined;
   const probe = newIndexFile();
   const seen = await resolveIndexPath(bindIndex(probe), repoPath);
   if (seen !== resolvePath(probe)) {
@@ -5084,7 +5124,16 @@ async function openPrivateIndexSite(
         `(git reported ${seen ?? 'no index path'}), so a private index cannot be isolated from the shared one`,
     };
   }
-  return { ok: true, site: { gitDir, sharedIndex: await resolveIndexPath(runGit, repoPath), newIndexFile, bindIndex } };
+  return {
+    ok: true,
+    site: {
+      gitDir,
+      sharedIndex: await resolveIndexPath(runGit, repoPath),
+      newIndexFile,
+      bindIndex,
+      ...(bindIndexStdin ? { bindIndexStdin } : {}),
+    },
+  };
 }
 
 /**
@@ -5744,7 +5793,9 @@ async function commitAttributedGroupsPass(
      *  guardStagedIndexBeforeCommit). WI-10006705: it receives the runner bound to the
      *  group's PRIVATE index and must guard through it. A failure skips that group only
      *  (WI-6554700010018197). */
-    beforeCommit?: (privateRunGit: RunGit) => Promise<{ ok: true } | { ok: false; error: string }>;
+    beforeCommit?: (privateRunGit: RunGit, privateRunGitStdin?: RunGitStdin) => Promise<{ ok: true } | { ok: false; error: string }>;
+    /** Private-index stdin runner for post-stage content reads. */
+    runGitStdin?: RunGitStdin;
     onPublished?: (sha: string) => void;
     /** WI-6554700010019415: working-tree text for the import edges that merge linked groups.
      *  Defaults to reading `repoPath`. */
@@ -5859,7 +5910,7 @@ async function commitAttributedGroupsPass(
   let committedCount = 0;
 
   // Fail closed: a runner that drops `env` would run read-tree/add/reset on the SHARED index.
-  const opened = await openPrivateIndexSite(runGit, repoPath, 'per-agent and residual commits', 'attributed');
+  const opened = await openPrivateIndexSite(runGit, repoPath, 'per-agent and residual commits', 'attributed', opts.runGitStdin);
   if (!opened.ok) return { committedAny, committedCount, error: opened.error };
   const { site } = opened;
 
@@ -5923,6 +5974,7 @@ async function commitAttributedGroupsPass(
     const groupLabel = g.agent ? `attributed commit for ${g.agent}` : 'residual catch-all';
     const indexFile = site.newIndexFile();
     const privateGit = site.bindIndex(indexFile);
+    const privateGitStdin = site.bindIndexStdin?.(indexFile);
     // WI-6554700010018197: a failing group is recorded and skipped; later groups still run.
     const fail = (error: string): void => {
       groupFailures.push({ agent: g.agent, files: g.files.length, error });
@@ -5975,7 +6027,7 @@ async function commitAttributedGroupsPass(
         continue;
       }
       if (opts.beforeCommit) {
-        const guard = await opts.beforeCommit(privateGit);
+        const guard = await opts.beforeCommit(privateGit, privateGitStdin);
         if (!guard.ok) {
           fail(guard.error);
           continue;
@@ -6110,6 +6162,7 @@ interface CommitRepoOpts {
   maxBlobBytes: number;
   maxCommitTotalBytes: number;
   contentDetectors: ContentDetector[];
+  runGitStdin?: RunGitStdin;
   deletionGuard: boolean;
   readText: (repoPath: string, relPath: string) => Promise<string | null>;
   writeText: (repoPath: string, relPath: string, text: string) => Promise<void>;
@@ -7069,7 +7122,10 @@ async function commitOneRepoWithScratch(
     // reported like a pre-stage one (skippedPaths), deduped by path.
     // WI-10006705: an attributed group passes the runner bound to its PRIVATE index, so the
     // guard inspects and edits exactly the index that group's commit records.
-    const postStageGuard = async (indexRunGit: RunGit = runGit): Promise<PostStageGuardResult> => {
+    const postStageGuard = async (
+      indexRunGit: RunGit = runGit,
+      indexRunGitStdin?: RunGitStdin,
+    ): Promise<PostStageGuardResult> => {
       // Each caller owns scratch-index cleanup in finally. Stop before a slow
       // guard if the drain arrived during its completed add, and check again
       // after the guard. Never split shared-index refresh from publication CAS.
@@ -7092,6 +7148,7 @@ async function commitOneRepoWithScratch(
         rescanStagedContent: (staged, guardRunGit) =>
           detectUnscannedStagedOffenders({
             runGit: guardRunGit,
+            runGitStdin: indexRunGitStdin,
             repoPath,
             staged,
             scanned: contentScanned,
@@ -7138,7 +7195,8 @@ async function commitOneRepoWithScratch(
                 paths.join(', '),
             );
           },
-          beforeCommit: (privateRunGit) => postStageGuard(privateRunGit),
+          beforeCommit: (privateRunGit, privateRunGitStdin) => postStageGuard(privateRunGit, privateRunGitStdin),
+          runGitStdin: o.runGitStdin,
           onPublished: o.onPublished,
           custodyPaths: custody.protectedPaths,
           readText: (rel) => o.readText(repoPath, rel),
@@ -7193,15 +7251,18 @@ async function commitOneRepoWithScratch(
     custody.protectedPaths = [...new Set([...custody.protectedPaths, ...catchAllCustody.protectedPaths])];
     stagingExcludePaths = [...new Set([...stagingExcludePaths, ...custody.protectedPaths])];
     let stageGit: RunGit = runGit;
+    let stageGitStdin: RunGitStdin | undefined = o.runGitStdin;
     let catchAllPrivate: { base: string | null; baseTree: string; gitDir: string } | null = null;
-    const catchAllSite = await openPrivateIndexSite(runGit, repoPath, 'catch-all commit', 'catch-all');
+    const catchAllSite = await openPrivateIndexSite(runGit, repoPath, 'catch-all commit', 'catch-all', o.runGitStdin);
     if (catchAllSite.ok) {
       const indexFile = catchAllSite.site.newIndexFile();
       scratch.push(indexFile);
       const privateGit = catchAllSite.site.bindIndex(indexFile);
+      const privateGitStdin = catchAllSite.site.bindIndexStdin?.(indexFile);
       const seeded = await seedPrivateIndex(runGit, privateGit, repoPath, indexFile, catchAllSite.site.sharedIndex, 'catch-all commit');
       if (seeded.ok) {
         stageGit = privateGit;
+        stageGitStdin = privateGitStdin;
         catchAllPrivate = { base: seeded.base, baseTree: seeded.baseTree, gitDir: catchAllSite.site.gitDir };
         const carryExcludes = [...stagingExcludePaths, ...migrationQuarantinedPaths];
         const isCarryExcluded = (path: string): boolean =>
@@ -7373,7 +7434,7 @@ async function commitOneRepoWithScratch(
     }
     // EI-24712906810240170: a lock taken, or a transient edit made and undone, after the
     // pre-stage refresh must not publish through the index this add just built.
-    const catchAllGuard = await postStageGuard(stageGit);
+    const catchAllGuard = await postStageGuard(stageGit, stageGitStdin);
     if (!catchAllGuard.ok) {
       return {
         committedLocal: committedAny,
@@ -8194,6 +8255,30 @@ async function runGitSyncPass(
       }
     }
   };
+  const baseRunGitStdin: RunGitStdin | undefined = opts.runGitStdin ?? (opts.runGit ? undefined : runGitSyncStdinBounded);
+  const runGitStdin: RunGitStdin | undefined = baseRunGitStdin
+    ? async (args, cwd, stdin, gitOptions) => {
+        throwIfAborted();
+        reportProgress();
+        const startedAt = performance.now();
+        try {
+          const result = await baseRunGitStdin(args, cwd, stdin, {
+            ...gitOptions,
+            onProgress: reportProgress,
+            signal: opts.signal,
+          });
+          reportProgress();
+          throwIfAborted();
+          return result;
+        } finally {
+          const elapsedMs = Math.round(performance.now() - startedAt);
+          if (elapsedMs >= 10_000) {
+            const scope = repo && cwd.startsWith(`${repo}/`) ? cwd.slice(repo.length + 1) : 'superproject';
+            log(`[git-sync] ${slug}/${scope}: slow git stdin ${gitSubcommand(args)} call (${elapsedMs}ms, includes dispatch/admission/child/transport)`);
+          }
+        }
+      }
+    : undefined;
   const cfg = opts.config ?? {};
   const remote = cfg.remote ?? 'origin';
   const branch = cfg.branch ?? 'main';
@@ -8276,6 +8361,7 @@ async function runGitSyncPass(
     maxBlobBytes,
     maxCommitTotalBytes,
     contentDetectors,
+    runGitStdin,
     deletionGuard,
     readText,
     writeText,

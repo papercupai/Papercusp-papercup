@@ -553,7 +553,7 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
             // affected-tests path first reads only proof file keys, applies the exact lane split,
             // then fetches proof payloads for that lane; repair reuse must use the same bounded
             // shape or a large workspace can time out before its lane filter runs.
-            const listed = await d.loadProofFiles({ client, workspaceName: workspace, runContext, runnerIdentity });
+            const listed = await d.loadProofFiles({ client, workspaceName: workspace, runContext, runnerIdentity, repoRoot: root });
             if (!Array.isArray(listed?.files)) throw new Error("proof-file-list-invalid");
             const candidates = reuseCandidates({ wsRel: pkg.dirRel, relatedFiles: null, proofFiles: listed.files });
             const laneSplit = await import(pathToFileURL(path.join(root, "libs/test-config/src/lane-split.ts")).href);
@@ -574,6 +574,7 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
           workspaceName: workspace,
           runContext,
           runnerIdentity,
+          repoRoot: root,
           ...(files == null ? {} : { files }),
         });
         return { ...proofRows, error: null };

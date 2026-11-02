@@ -215,6 +215,7 @@ function makeFakes(
     readSourceDispatchRecords: async () => opts.sourceRecords ?? [],
     readReviewerModel: async () => null,
     isConsultOpen: async () => true,
+    reserveConsultSpawnLease: async () => ({ release: async () => {} }),
     // No transcript is poisoned unless a test says so; never read the real fs here.
     analyzeClaudeTranscript: () => null,
     analyzeCodexRollout: () => null,
@@ -709,7 +710,10 @@ describe('dispatchConsultResponder — the walk', () => {
 
   it('skips a consult that closes while the headless launch waits to create its process', async () => {
     let consultOpen = true;
-    const { deps, calls } = makeFakes({ isConsultOpen: async () => consultOpen });
+    const { deps, calls } = makeFakes({
+      isConsultOpen: async () => consultOpen,
+      reserveConsultSpawnLease: async () => consultOpen ? { release: async () => {} } : null,
+    });
     const spawn = deps.spawnHeadless!;
     deps.spawnHeadless = async (options) => {
       consultOpen = false;
@@ -732,13 +736,18 @@ describe('dispatchConsultResponder — the walk', () => {
 
   it('preserves a responder that answers and closes the consult during kickoff proof', async () => {
     let consultOpen = true;
-    const { deps, calls } = makeFakes({ isConsultOpen: async () => consultOpen });
+    const release = vi.fn(async () => {});
+    const { deps, calls } = makeFakes({
+      isConsultOpen: async () => consultOpen,
+      reserveConsultSpawnLease: async () => ({ release }),
+    });
     const spawn = deps.spawnHeadless!;
     deps.spawnHeadless = async (options) => {
       expect(options.beforeSpawn).toBeTypeOf('function');
       expect(await options.beforeSpawn?.()).toBe(true);
       // The OS child now exists and its first reply closes the consult while
       // spawnHeadless is still waiting for that child's kickoff receipt.
+      await options.afterSpawn?.();
       consultOpen = false;
       return spawn(options);
     };
@@ -747,7 +756,25 @@ describe('dispatchConsultResponder — the walk', () => {
 
     expect(result).toMatchObject({ dispatched: true, answeringOwnerId: 'su-answer-1' });
     expect(calls.spawn).toHaveLength(1);
+    expect(release).toHaveBeenCalledOnce();
     expect(calls.stopped).toHaveLength(0);
+  });
+
+  it('releases the consult spawn lease when headless launch fails after the final check', async () => {
+    const release = vi.fn(async () => {});
+    const { deps } = makeFakes({
+      loadRanks: async () => [{ rank: 1, agent: 'claude', model: 'opus' }],
+      reserveConsultSpawnLease: async () => ({ release }),
+    });
+    deps.spawnHeadless = async (options) => {
+      expect(await options.beforeSpawn?.()).toBe(true);
+      return { status: 'error', code: 500, error: 'fixture spawn failure' };
+    };
+
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+
+    expect(result.dispatched).toBe(false);
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it('does not launch a responder when persisting its participant identity fails', async () => {

@@ -4031,6 +4031,10 @@ export async function setWorkItemState(
     /** The item's family, when the caller has already read it from the `work_items`
      *  row in `harness`. `'feature'` skips the issue-family probe (WI-10003631). */
     family?: WorkItemFamily;
+    /** Internal issue lifecycle compare-and-set guard; not exposed by the tool surface. */
+    expectedCurrentState?: string;
+    /** Internal issue lifecycle guard used when reopening a needs-human row after blockers clear. */
+    requireNoActiveExternalBlockers?: boolean;
     /**
      * Internal dispatch-first handoff: suppress only the broad
      * `work-item:claimable` co-fire when this state transition enters the pool.
@@ -4664,6 +4668,8 @@ export async function setWorkItemState(
       secondTerminalCloseHandledByUnified: isSecondTerminalClose,
       terminalReason: requestedTerminalReason,
       harnessSlug: issueSlug,
+      expectedCurrentState: opts.expectedCurrentState,
+      requireNoActiveExternalBlockers: opts.requireNoActiveExternalBlockers,
     });
     result = updated ? issueToWorkItem(updated) : null;
   } else {

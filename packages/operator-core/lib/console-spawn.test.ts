@@ -676,12 +676,16 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     let releaseInstallWait!: () => void;
     const release = vi.fn();
     const beforeSpawn = vi.fn(() => current);
+    const afterSpawn = vi.fn();
     spawnMock.mockImplementation(() => fakeChild());
     const result = spawnHeadless({
       envelope,
       beforeSpawn,
+      afterSpawn,
       installBoundary: async () => {
-        await new Promise<void>((resolve) => { releaseInstallWait = resolve; });
+        await new Promise<void>((resolve) => {
+          releaseInstallWait = resolve;
+        });
         return { outcome: 'acquired', waitedMs: 1, release };
       },
       bootProbes: { windowMs: 0 },
@@ -699,6 +703,7 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(taskEnrolment.begin).not.toHaveBeenCalled();
     expect(taskEnrolment.complete).not.toHaveBeenCalled();
     expect(spawnMock).not.toHaveBeenCalled();
+    expect(afterSpawn).not.toHaveBeenCalled();
     expect(taskControl.kill).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledOnce();
   });
@@ -731,6 +736,48 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(release).toHaveBeenCalled();
   });
 
+  it('persists the envelope workspace on the headless task-ledger enrollment', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7851));
+    const result = await spawnHeadless({
+      envelope: { ...envelope, workspaceId: 'workspace-headless-owner' },
+      bootProbes: { windowMs: 0 },
+      ...noSystemdRun,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(taskEnrolment.complete.mock.calls[0]?.[3]).toEqual({ workspaceId: 'workspace-headless-owner' });
+  });
+
+  it('releases a caller reservation after process creation and if process creation throws', async () => {
+    const afterSpawn = vi.fn(async () => {});
+    spawnMock.mockImplementation(() => fakeChild());
+    const result = await spawnHeadless({
+      envelope,
+      beforeSpawn: async () => true,
+      afterSpawn,
+      bootProbes: { windowMs: 0 },
+      ...noSystemdRun,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(afterSpawn).toHaveBeenCalledOnce();
+    expect(afterSpawn.mock.invocationCallOrder[0]).toBeLessThan(taskEnrolment.complete.mock.invocationCallOrder[0]!);
+
+    afterSpawn.mockClear();
+    spawnMock.mockImplementation(() => {
+      throw new Error('fixture process creation failure');
+    });
+    const failed = await spawnHeadless({
+      envelope,
+      beforeSpawn: async () => true,
+      afterSpawn,
+      bootProbes: { windowMs: 0 },
+      ...noSystemdRun,
+    });
+    expect(failed.status).toBe('error');
+    expect(afterSpawn).toHaveBeenCalledOnce();
+  });
+
   it('records the exact work-item on the headless task-ledger enrollment', async () => {
     spawnMock.mockImplementation(() => fakeChild(7795));
     const workItemId = 'EI-26931290267778996';
@@ -747,6 +794,7 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
       expect.any(Object),
       expect.objectContaining({ class: 'agent-session', workItemId }),
       7795,
+      { workspaceId: envelope.workspaceId },
     );
   });
 
@@ -1255,6 +1303,7 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
         detail: { headless: true, label: 'hl', coordOwnerId: 'su-known-owner' },
       }),
       7788,
+      { workspaceId: envelope.workspaceId },
     );
   }, 10_000);
 
@@ -1268,6 +1317,31 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(r.status).toBe('error');
     expect((r as { code: number }).code).toBe(502);
     expect((r as { error: string }).error).toMatch(/died at boot/i);
+  });
+
+  it('reports an immediate child exit while releasing an async post-spawn reservation', async () => {
+    const afterSpawn = vi.fn(async () => {
+      await Promise.resolve();
+    });
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild(8890);
+      queueMicrotask(() => child.emit('exit', 1, null));
+      return child;
+    });
+
+    const result = await spawnHeadless({
+      envelope,
+      label: 'hl',
+      logDir: null,
+      beforeSpawn: async () => true,
+      afterSpawn,
+      ...noSystemdRun,
+    });
+
+    expect(afterSpawn).toHaveBeenCalledOnce();
+    expect(result.status).toBe('error');
+    expect((result as { code: number }).code).toBe(502);
+    expect((result as { error: string }).error).toMatch(/died at boot/i);
   });
 
   it('keeps a large kickoff out of both headless shell argv and inherited env', async () => {

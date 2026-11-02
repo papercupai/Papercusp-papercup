@@ -180,7 +180,10 @@ import {
   upstreamInstallFromEnv,
 } from "@papercusp/operator-core/lib/release/upstream-inherited-legs";
 import { routineFireIdentityFromEnv } from "@papercusp/operator-core/lib/release/in-flight-candidate";
-import type { WriteFrozenCandidateRepairQueueOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
+import type {
+  CheckpointTypecheckPreflight,
+  WriteFrozenCandidateRepairQueueOptions,
+} from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import type { ReleaseFixerDispatchSkip } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import type { FleetLogsGcResult } from "@papercusp/operator-core/lib/fleet-logs-gc";
 import type { SnapCacheOutcome } from "@papercusp/operator-core/lib/storage/snap-cache-retention";
@@ -1691,6 +1694,8 @@ export interface CheckpointDeps {
      * the gate can say WHY instead of only "did not return a spawn".
      */
     onSkip?: (skip: ReleaseFixerDispatchSkip) => void,
+    /** Early changed-file compiler evidence can be actionable even when no suite ran. */
+    typecheckPreflight?: CheckpointTypecheckPreflight,
   ): Promise<{ spawnId: string | null; runId: string | null } | null>;
   /**
    * WI-10003213: TRUE when the queue's current red measured no failing test — the exact
@@ -13551,6 +13556,7 @@ async function runGreenCheckpointInner(
     queue: FrozenCandidateRepairQueue,
     allowCreateIfAbsent: boolean,
     checkpointEvidence?: CheckpointEvidence,
+    typecheckPreflight?: CheckpointTypecheckPreflight,
   ): Promise<{
     queue: FrozenCandidateRepairQueue | null;
     fired: FrozenRepairDispatchResult | null;
@@ -13678,9 +13684,14 @@ async function runGreenCheckpointInner(
       await renewalChain;
       if (!reservationLost) {
         fired =
-          (await deps.dispatchFrozenRepairFixer?.(dispatchQueue, checkpointEvidence, (skip) => {
-            skipBox.skip = skip;
-          })) ?? null;
+          (await deps.dispatchFrozenRepairFixer?.(
+            dispatchQueue,
+            checkpointEvidence,
+            (skip) => {
+              skipBox.skip = skip;
+            },
+            typecheckPreflight,
+          )) ?? null;
       }
     } catch (error) {
       dispatchError = error;
@@ -16456,7 +16467,12 @@ async function runGreenCheckpointInner(
           // Reserve the durable candidate row before the external fixer launch. The candidate
           // is normally already present from the pre-suite write; allowCreateIfAbsent keeps the
           // compatibility first-red path atomic for callers that learned about C only here.
-          const dispatch = await dispatchFrozenRepair(repairQueue, true, checkpointEvidence);
+          const dispatch = await dispatchFrozenRepair(
+            repairQueue,
+            true,
+            checkpointEvidence,
+            typecheckPreflight,
+          );
           if (dispatch.capacityHold) {
             // WI-606293: the queue row is written and the red still stands — we simply do
             // not launch into an exhausted pool. No attempt is spent; the next tick retries.
@@ -16510,7 +16526,12 @@ async function runGreenCheckpointInner(
           await deps.writeFrozenRepairQueue(repairQueue, {
             expectedUpdatedAtMs: repairQueue.updatedAtMs,
           });
-          const dispatch = await dispatchFrozenRepair(repairQueue, false, checkpointEvidence);
+          const dispatch = await dispatchFrozenRepair(
+            repairQueue,
+            false,
+            checkpointEvidence,
+            typecheckPreflight,
+          );
           repairQueue = dispatch.queue ?? repairQueue;
           fired = dispatch.fired;
           dispatchSkip = dispatch.dispatchSkip;
@@ -23659,6 +23680,7 @@ export function realCheckpointDeps(
             queue: FrozenCandidateRepairQueue,
             checkpointEvidence?: CheckpointEvidence,
             onSkip?: (skip: ReleaseFixerDispatchSkip) => void,
+            typecheckPreflight?: CheckpointTypecheckPreflight,
           ) {
             const { dispatchReleaseFixer } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
@@ -23670,7 +23692,7 @@ export function realCheckpointDeps(
               queue.failingTests,
               queue,
               checkpointEvidence,
-              { onSkip },
+              { onSkip, typecheckPreflight },
             );
           },
           // WI-10007408: the fixer LIVENESS probe and the dead-fixer CLASSIFIER, deleted by

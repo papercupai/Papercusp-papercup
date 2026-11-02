@@ -28,7 +28,19 @@ NODE
     echo 'bundle-host.sh: pinned source receipt requires its archive marker' >&2
     return 78
   elif [[ "$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)" == "$repo_root" ]]; then
-    git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || true
+    local source_sha status
+    source_sha="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || true)"
+    [[ -n "$source_sha" ]] || return 0
+    # The build can include working-tree bytes that HEAD does not identify.
+    # Use the same conservative source-tree rule as bundle-host-freshness:
+    # preserve availability, but make the resulting artifact unattributable.
+    if ! status="$(git -C "$repo_root" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null)"; then
+      printf '%s+dirty' "$source_sha"
+    elif [[ -n "$status" ]]; then
+      printf '%s+dirty' "$source_sha"
+    else
+      printf '%s' "$source_sha"
+    fi
   fi
 }
 

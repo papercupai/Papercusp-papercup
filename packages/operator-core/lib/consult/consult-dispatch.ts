@@ -810,6 +810,11 @@ export function applyCodexGatewayRefusal(
   };
 }
 
+/** Read-only consult row lock held only until the answering OS child exists. */
+export interface ConsultSpawnLease {
+  release: () => Promise<void>;
+}
+
 /** Injectable seams — unit tests pass fakes; production omits (real impls). */
 export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   captureNativeBoundary?: typeof captureNativeConsultBoundary;
@@ -822,6 +827,8 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   checkApprover?: typeof import('../rubrics').checkAcceptanceBarApproverEligibility;
   /** Re-read the consult before launching a reviewer; cascades can race closure. */
   isConsultOpen: (workspaceId: string, conversationId: string) => Promise<boolean>;
+  /** Hold the consult row against terminal close until the OS child exists. */
+  reserveConsultSpawnLease: (workspaceId: string, conversationId: string) => Promise<ConsultSpawnLease | null>;
   resolveResumeTarget: typeof resolveResumeTarget;
   /** Reuse the port route's exact backend/owner guard for an older incarnation. */
   checkEvidenceIncarnationOwnedBy: (target: ResumeTarget, sessionId: string) => Promise<boolean>;
@@ -1553,6 +1560,56 @@ async function defaultIsConsultOpen(workspaceId: string, conversationId: string)
 }
 
 /**
+ * Serialize the terminal consult transition with the last process-creation
+ * boundary. consultCloseCore already locks this row FOR UPDATE; this lease holds
+ * the same row lock across child_process.spawn(), then rolls back the read-only
+ * transaction so a close either wins first (and launch is refused) or commits
+ * only after the answering process exists.
+ */
+export async function acquireConsultSpawnLease(
+  workspaceId: string,
+  conversationId: string,
+  sql?: Sql,
+): Promise<ConsultSpawnLease | null> {
+  const dbSql = sql ?? ((await import('@papercusp/db-org')).getOrgPg().sql as unknown as Sql);
+  const connection = await dbSql.reserve();
+  let transactionOpen = false;
+  let released = false;
+  const release = async (): Promise<void> => {
+    if (released) return;
+    released = true;
+    try {
+      if (transactionOpen) await connection.unsafe('ROLLBACK');
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(`[consult-dispatch] consult spawn lease rollback failed: ${reason.slice(0, 500)}`);
+    } finally {
+      transactionOpen = false;
+      connection.release();
+    }
+  };
+
+  try {
+    await connection.unsafe('BEGIN');
+    transactionOpen = true;
+    const [row] = await connection<Array<{ state: string; closed_at: Date | string | null }>>`
+      SELECT state, closed_at
+        FROM harness_shared.consult_state
+       WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+       FOR UPDATE
+    `;
+    if (!row || row.closed_at != null || (row.state !== 'awaiting_responder' && row.state !== 'active')) {
+      await release();
+      return null;
+    }
+    return { release };
+  } catch (error) {
+    await release();
+    throw error;
+  }
+}
+
+/**
  * Confirm the source has something a fork/convert can actually read. Delegated
  * to the shared preflight so the launch paths cannot diverge on what counts as
  * a resumable transcript.
@@ -1697,6 +1754,7 @@ export async function dispatchConsultResponder(
       return checkConsultSessionPortTranscript(target, transcript, evidenceSpan);
     },
     isConsultOpen: defaultIsConsultOpen,
+    reserveConsultSpawnLease: acquireConsultSpawnLease,
     analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
     analyzeCodexRollout: analyzeCodexRolloutFile,
     buildAgentLaunchCommand,
@@ -2369,7 +2427,16 @@ async function launchAnsweringSession(
   // validate again immediately before crossing the side-effecting spawn seam.
   if (!(await d.isConsultOpen(ctx.workspaceId, opts.conversationId))) return consultClosed();
 
-  const spawn = await d.spawnHeadless({
+  let spawnLease: ConsultSpawnLease | null = null;
+  const releaseSpawnLease = async (): Promise<void> => {
+    const lease = spawnLease;
+    if (!lease) return;
+    spawnLease = null;
+    await lease.release();
+  };
+  let spawn: Awaited<ReturnType<ConsultDispatchDeps['spawnHeadless']>>;
+  try {
+    spawn = await d.spawnHeadless({
     envelope: {
       ...envelope,
       env: {
@@ -2427,8 +2494,17 @@ async function launchAnsweringSession(
       },
     },
     kickoffProof: true,
-    beforeSpawn: () => d.isConsultOpen(ctx.workspaceId, opts.conversationId),
-  });
+    beforeSpawn: async () => {
+      spawnLease = await d.reserveConsultSpawnLease(ctx.workspaceId, opts.conversationId);
+      return spawnLease !== null;
+    },
+    afterSpawn: releaseSpawnLease,
+    });
+  } finally {
+    // Also release when the spawn implementation errors before it can invoke
+    // afterSpawn; successful console-spawn releases immediately after spawn().
+    await releaseSpawnLease();
+  }
   if (spawn.status !== 'ok') {
     if (spawn.cancelled) return consultClosed();
     const launchError = await d.readLaunchLogReason(spawn.logPath);

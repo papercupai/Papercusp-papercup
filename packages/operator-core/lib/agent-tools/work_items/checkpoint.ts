@@ -3022,8 +3022,15 @@ export default defineTool({
           ...(() => {
             try {
               if (stored === null || typeof checkpoint !== 'string' || !checkpoint.trim()) return {};
-              const submittedBody = splitCarryNoteChecks(checkpoint).body;
-              const probeText = splitCarryNoteChecks(stored).checks.map(renderCheckLine).join('\n');
+              // Use the same normalized submission provenance has already checked:
+              // the raw argument still contains `[turn:self]`, which can otherwise
+              // become the subject of a repository-wide absence recheck. Include the
+              // structured rows supplied by this write as well as rows in the stored
+              // checkpoint; some storage paths keep those rows separately.
+              const submitted = splitCarryNoteChecks(currentProvenanceText);
+              const submittedBody = submitted.body.replace(/\[turn:[^\]\r\n]+\]/g, ' ');
+              const storedChecks = splitCarryNoteChecks(stored).checks;
+              const probeText = [...storedChecks, ...submitted.checks].map(renderCheckLine).join('\n');
               const claims = uncoveredAbsencePremises(submittedBody, 'carry-note', probeText);
               return claims.length > 0
                 ? {

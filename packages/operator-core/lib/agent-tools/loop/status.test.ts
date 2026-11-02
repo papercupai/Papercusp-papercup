@@ -41,6 +41,7 @@ vi.mock('../../events/await/wake-reachability', () => ({
 
 vi.mock('../../events/await/store', () => ({
   listWakeAwaitsForSubscriber: vi.fn(async () => ({ totalCount: 0, sample: [] })),
+  listParkedAwaitsForSubscribers: vi.fn(async () => []),
 }));
 
 vi.mock('../../harness/routines/loop', async (importOriginal) => ({
@@ -61,7 +62,7 @@ import { readServingGeneration } from '../../serving-generation';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { readLatestLoopTransition } from '../../harness/routines/loop-transition-log';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
-import { listWakeAwaitsForSubscriber } from '../../events/await/store';
+import { listParkedAwaitsForSubscribers, listWakeAwaitsForSubscriber } from '../../events/await/store';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
 import statusTool, { deriveActiveAwaitSuppression } from './status';
 
@@ -69,6 +70,7 @@ const getLoopStatusMock = getLoopStatus as unknown as ReturnType<typeof vi.fn>;
 const readLatestLoopTransitionMock = readLatestLoopTransition as unknown as ReturnType<typeof vi.fn>;
 const getLoopCarryNoteWithMetaMock = getLoopCarryNoteWithMeta as unknown as ReturnType<typeof vi.fn>;
 const listWakeAwaitsMock = listWakeAwaitsForSubscriber as unknown as ReturnType<typeof vi.fn>;
+const listParkedAwaitsMock = listParkedAwaitsForSubscribers as unknown as ReturnType<typeof vi.fn>;
 const probeWakeReachabilityMock = probeWakeReachability as unknown as ReturnType<typeof vi.fn>;
 const getServingBuildMock = getServingBuild as unknown as ReturnType<typeof vi.fn>;
 const readServingGenerationMock = readServingGeneration as unknown as ReturnType<typeof vi.fn>;
@@ -322,6 +324,8 @@ beforeEach(() => {
   getLoopCarryNoteWithMetaMock.mockResolvedValue({ note: null, updatedAtMs: null });
   listWakeAwaitsMock.mockReset();
   listWakeAwaitsMock.mockResolvedValue({ totalCount: 0, sample: [] });
+  listParkedAwaitsMock.mockReset();
+  listParkedAwaitsMock.mockResolvedValue([]);
   readLatestLoopTransitionMock.mockReset();
   readLatestLoopTransitionMock.mockResolvedValue({ status: 'none' });
   getServingBuildMock.mockReset();
@@ -607,6 +611,9 @@ describe('loop:status latest transition diagnostics (EI-21573850378423298)', () 
       },
       cycle: { phase: 'settled', turnInFlightSec: null, lastTurn: null, basis: 'test-basis' },
     });
+    listParkedAwaitsMock.mockResolvedValue([
+      { eventKey: 'plan-item:done:x:P-008', once: true, boundTo: null },
+    ]);
 
     const out = await run();
 
@@ -615,6 +622,61 @@ describe('loop:status latest transition diagnostics (EI-21573850378423298)', () 
       drivingEventKey: 'plan-item:done:x:P-008',
     });
     expect(String((out.awaitSuppression as { summary: string }).summary)).toContain('events:cancel');
+  });
+
+  it('does not report a canceled driving await while other blocking awaits remain', async () => {
+    const until = new Date(Date.now() + 55 * 60_000).toISOString();
+    const canceledEventKey = 'conversation:answered:conv-mvpo2q63-0000-e1adc5b25c79417485a61278992a09a3';
+    const remainingAwaits = [
+      { eventKey: 'work-item:claimable', once: true, boundTo: null },
+      { eventKey: 'work-item:done:WI-1', once: true, boundTo: null },
+      { eventKey: 'work-item:done:WI-2', once: true, boundTo: null },
+    ];
+    getLoopStatusMock.mockResolvedValue({
+      name: 'loop-su-caller-own-id', ownerId: 'su-caller-own-id', harnessSlug: 'papercusp',
+      active: true, intervalSec: 60, nextFireAt: until,
+    });
+    readLatestLoopTransitionMock.mockResolvedValue({
+      status: 'found',
+      transition: {
+        at: new Date().toISOString(), event: 'rearmed', actor: 'await-suppression',
+        newNextFireAt: until, intervalSec: 60,
+        detail: { via: 'await-suppression', drivingEventKey: canceledEventKey },
+      },
+      cycle: { phase: 'settled', turnInFlightSec: null, lastTurn: null, basis: 'test-basis' },
+    });
+    listParkedAwaitsMock.mockResolvedValue(remainingAwaits);
+    listWakeAwaitsMock.mockResolvedValue({
+      totalCount: remainingAwaits.length,
+      sample: remainingAwaits.map(({ eventKey }) => ({ eventKey, expiresTs: null, rootId: null })),
+    });
+
+    const out = await run();
+
+    expect(out.awaitSuppression).toBeNull();
+    expect(out.pendingAwaits).toMatchObject({ status: 'found', count: 3 });
+  });
+
+  it('fails closed when the live blocking-await check is unavailable', async () => {
+    const until = new Date(Date.now() + 55 * 60_000).toISOString();
+    getLoopStatusMock.mockResolvedValue({
+      name: 'loop-su-caller-own-id', ownerId: 'su-caller-own-id', harnessSlug: 'papercusp',
+      active: true, intervalSec: 60, nextFireAt: until,
+    });
+    readLatestLoopTransitionMock.mockResolvedValue({
+      status: 'found',
+      transition: {
+        at: new Date().toISOString(), event: 'rearmed', actor: 'await-suppression',
+        newNextFireAt: until, intervalSec: 60,
+        detail: { via: 'await-suppression', drivingEventKey: 'conversation:answered:conv-1' },
+      },
+      cycle: { phase: 'settled', turnInFlightSec: null, lastTurn: null, basis: 'test-basis' },
+    });
+    listParkedAwaitsMock.mockRejectedValue(new Error('pg unavailable'));
+
+    const out = await run();
+
+    expect(out.awaitSuppression).toBeNull();
   });
 
   it('includes a completed late cycle in cadenceDrift even after its next wake parks', async () => {
@@ -665,19 +727,21 @@ describe('deriveActiveAwaitSuppression (WI-10004466)', () => {
   });
 
   it('is active while the suppression re-arm still owns a future schedule', () => {
-    expect(deriveActiveAwaitSuppression(found() as never, until, now)).toMatchObject({
+    const activeBlockingAwaits = [{ eventKey: 'k', once: true, boundTo: null }];
+    expect(deriveActiveAwaitSuppression(found() as never, until, now, activeBlockingAwaits)).toMatchObject({
       suppressedUntil: until,
       drivingEventKey: 'k',
     });
-    expect(deriveActiveAwaitSuppression(found() as never, new Date(until), now)).not.toBeNull();
+    expect(deriveActiveAwaitSuppression(found() as never, new Date(until), now, activeBlockingAwaits)).not.toBeNull();
   });
 
   it('is null once the target passed, a different actor wrote last, or a later arm moved the schedule', () => {
-    expect(deriveActiveAwaitSuppression(found() as never, until, Date.parse(until) + 1)).toBeNull();
-    expect(deriveActiveAwaitSuppression(found({ actor: 'loop-arm' }) as never, until, now)).toBeNull();
-    expect(deriveActiveAwaitSuppression(found() as never, '2026-10-01T00:32:00.000Z', now)).toBeNull();
-    expect(deriveActiveAwaitSuppression({ status: 'unknown' }, until, now)).toBeNull();
-    expect(deriveActiveAwaitSuppression(null, until, now)).toBeNull();
+    const activeBlockingAwaits = [{ eventKey: 'k', once: true, boundTo: null }];
+    expect(deriveActiveAwaitSuppression(found() as never, until, Date.parse(until) + 1, activeBlockingAwaits)).toBeNull();
+    expect(deriveActiveAwaitSuppression(found({ actor: 'loop-arm' }) as never, until, now, activeBlockingAwaits)).toBeNull();
+    expect(deriveActiveAwaitSuppression(found() as never, '2026-10-01T00:32:00.000Z', now, activeBlockingAwaits)).toBeNull();
+    expect(deriveActiveAwaitSuppression({ status: 'unknown' }, until, now, activeBlockingAwaits)).toBeNull();
+    expect(deriveActiveAwaitSuppression(null, until, now, activeBlockingAwaits)).toBeNull();
   });
 });
 

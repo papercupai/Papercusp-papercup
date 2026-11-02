@@ -122,6 +122,15 @@ export interface ConsultVerbDeps {
     postId: number;
     now: string;
   }, tx?: Sql | TransactionSql) => Promise<void>;
+  /** Stop the currently dispatched answerer when another participant closes
+   * the consult before that answerer has completed. Bound to the same
+   * conversation-scoped task lookup used by the expiry sweep. */
+  stopAnsweringSession?: (opts: {
+    workspaceId: string;
+    conversationId: string;
+    answeringOwnerId: string | null;
+    sourceOwnerId: string;
+  }) => Promise<string>;
   /** Latched `consult:reply:<conv>` emit → the (possibly parked) requester.
    * Prod binds emitAwaitedEvent; best-effort there (never breaks the verb). */
   emitReplyEvent: (input: {
@@ -1233,10 +1242,35 @@ export async function consultCloseCore(
   // transaction so a failed secondary write cannot leave consult_state
   // terminal while conversations:get/list still reports the consult open.
   let review: ConsultReviewState | undefined;
+  let closedByCurrentResponder = isCurrentResponder(row, req.authorId);
+  let obsoleteAnswerer: Parameters<NonNullable<ConsultVerbDeps['stopAnsweringSession']>>[0] | null = null;
   await sql.begin(async (tx) => {
-    const [latest] = await tx`SELECT outcome FROM harness_shared.consult_state
+    const [latest] = await tx`SELECT outcome, responder_id, cascade_cursor, routing FROM harness_shared.consult_state
       WHERE workspace_id=${req.workspaceId} AND conversation_id=${req.conversationId} FOR UPDATE`;
     review = readConsultReview(latest?.outcome);
+    if (latest) {
+      // Decide against the row protected by this close transaction. A reply
+      // may have advanced the cursor after the initial participant read; in
+      // that case the closer is now a prior participant and the new selectee
+      // must be stopped. A current responder's own close must leave its tool
+      // call alive long enough to return the close result.
+      const lockedRow = {
+        ...row,
+        responder_id: latest.responder_id,
+        cascade_cursor: Number(latest.cascade_cursor ?? row.cascade_cursor),
+        routing: latest.routing,
+      };
+      closedByCurrentResponder = isCurrentResponder(lockedRow, req.authorId);
+      if (!closedByCurrentResponder && lockedRow.responder_id) {
+        const cursorEntry = selectionFromRouting(lockedRow.routing)[lockedRow.cascade_cursor];
+        obsoleteAnswerer = {
+          workspaceId: req.workspaceId,
+          conversationId: req.conversationId,
+          answeringOwnerId: cursorEntry?.answeringOwnerId ?? null,
+          sourceOwnerId: lockedRow.responder_id,
+        };
+      }
+    }
     if (req.reviewDispositions !== undefined) review = appendConsultReview({ current: review,
       dispositions: req.reviewDispositions, postId, authorId: req.authorId, requesterId: row.requester_id, at: now });
     await tx`
@@ -1272,7 +1306,7 @@ export async function consultCloseCore(
   // requester closing their own consult has nobody parked on the key.
   // (isCurrentResponder, not an id equality: a fork closes under its own
   // identity, and the parked requester must still be released.)
-  if (isCurrentResponder(row, req.authorId)) {
+  if (closedByCurrentResponder) {
     await deps.emitReplyEvent({
       key: parkKey(req.conversationId),
       summary: `consult ${req.conversationId}: ${state} by ${req.authorId} — ${oneLine(body)}`,
@@ -1297,6 +1331,22 @@ export async function consultCloseCore(
     payload: { conversation_id: req.conversationId, closed_by: req.authorId, kind: 'close', post_id: postId, state },
     to: [],
   });
+
+  // A prior responder (or the requester) can validly close after the cascade
+  // advances. The close is terminal, so stop the newly selected answerer now
+  // instead of leaving it to discover consult_not_open after doing its work.
+  // Keep this best-effort: the task reaper remains the fallback if stopping
+  // this exact conversation's answerer fails.
+  if (obsoleteAnswerer && deps.stopAnsweringSession) {
+    try {
+      const stopped = await deps.stopAnsweringSession(obsoleteAnswerer);
+      if (!stopped.startsWith('stopped task') && !stopped.includes('already gone')) {
+        console.warn(`[consult-close] could not stop superseded answerer for ${req.conversationId}: ${stopped}`);
+      }
+    } catch (error) {
+      console.warn(`[consult-close] stopping superseded answerer failed for ${req.conversationId}: ${String(error)}`);
+    }
+  }
 
   return {
     ok: true,
@@ -1349,10 +1399,12 @@ export async function consultResolveRequestedConsult(
   if ('error' in normalized) return normalized;
   const row = await readState(sql, req.workspaceId, normalized.req.conversationId);
   if (!row) return { error: 'not_a_consult' };
-  if (row.requester_id !== req.requesterId) {
+  const followupAuthority = requesterFollowupAuthority(row.requester_id, row.routing);
+  if (row.requester_id !== req.requesterId &&
+      (!followupAuthority.valid || followupAuthority.ownerId !== req.requesterId)) {
     return {
       error: 'not_the_requester',
-      hint: `consult_id must name a consult YOU requested; ${row.conversation_id} was requested by ${row.requester_id}.`,
+      hint: `consult_id must name a consult you requested or whose follow-up authority was explicitly transferred to you; ${row.conversation_id} was requested by ${row.requester_id}.`,
     };
   }
   return {
@@ -1360,5 +1412,180 @@ export async function consultResolveRequestedConsult(
     conversation_id: row.conversation_id,
     consult_state: row.state,
     latency_contract: row.latency_contract,
+  };
+}
+
+export interface ConsultRequesterFollowupTransferRequest {
+  workspaceId: string;
+  /** The transfer target and actor are the same live caller. */
+  authorId: string;
+  conversationId: string;
+  reason: string;
+}
+
+export interface ConsultRequesterFollowupTransferDeps {
+  getSql: () => Sql;
+  /** This is an administrative handoff; ordinary role-gated callers refuse. */
+  isSuperuser: boolean;
+  /** Must return true only for an authoritative ended_at row. */
+  requesterEnded: (requesterId: string) => Promise<boolean>;
+  now?: () => Date;
+}
+
+export interface ConsultRequesterFollowupTransferResult {
+  ok: true;
+  conversation_id: string;
+  original_requester_id: string;
+  previous_followup_owner_id: string;
+  followup_owner_id: string;
+  state: string;
+  changed: boolean;
+  reason?: string;
+  transferred_at?: string;
+}
+
+interface RequesterFollowupTransferRecord {
+  from: string;
+  to: string;
+  by: string;
+  reason: string;
+  at: string;
+}
+
+interface RequesterFollowupAuthority {
+  valid: boolean;
+  ownerId: string;
+  rawHistory: unknown;
+}
+
+/**
+ * Resolve the active plan-start follow-up identity while preserving
+ * consult_state.requester_id as the original requester for historical posts,
+ * routing metrics, and participant attribution. Only the latest complete,
+ * chained audit history can grant successor authority.
+ */
+function requesterFollowupAuthority(originalRequesterId: string, routing: unknown): RequesterFollowupAuthority {
+  let parsed = routing;
+  if (typeof parsed === 'string') {
+    try { parsed = JSON.parse(parsed) as unknown; }
+    catch { return { valid: false, ownerId: originalRequesterId, rawHistory: null }; }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { valid: false, ownerId: originalRequesterId, rawHistory: null };
+  }
+
+  const root = parsed as Record<string, unknown>;
+  const rawHistory = root.requesterFollowupTransfers;
+  if (rawHistory === undefined) return { valid: true, ownerId: originalRequesterId, rawHistory: null };
+  if (!Array.isArray(rawHistory)) return { valid: false, ownerId: originalRequesterId, rawHistory };
+
+  let ownerId = originalRequesterId;
+  for (const value of rawHistory) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return { valid: false, ownerId: originalRequesterId, rawHistory };
+    }
+    const record = value as Partial<RequesterFollowupTransferRecord>;
+    if (record.from !== ownerId || typeof record.to !== 'string' || !record.to.trim() ||
+        record.by !== record.to || typeof record.reason !== 'string' || !record.reason.trim() ||
+        typeof record.at !== 'string' || !Number.isFinite(Date.parse(record.at))) {
+      return { valid: false, ownerId: originalRequesterId, rawHistory };
+    }
+    ownerId = record.to;
+  }
+  return { valid: true, ownerId, rawHistory };
+}
+
+/**
+ * Explicitly hand off only the consult's plan-start follow-up authority. The
+ * original requester id remains unchanged; this avoids rewriting the author
+ * identity used by existing consult posts and health metrics. The exact
+ * requester check in consultResolveRequestedConsult accepts only the current
+ * successor recorded here.
+ */
+export async function consultTransferRequesterFollowupCore(
+  req: ConsultRequesterFollowupTransferRequest,
+  deps: ConsultRequesterFollowupTransferDeps,
+): Promise<ConsultRequesterFollowupTransferResult | ConsultVerbError |
+  { error: 'superuser_required' | 'reason_required' | 'consult_routing_in_progress' | 'invalid_followup_transfer_history' |
+    'requester_not_confirmed_ended' | 'requester_liveness_unavailable' | 'followup_authority_changed'; requester_id?: string }> {
+  if (!deps.isSuperuser) return { error: 'superuser_required' };
+  const reason = req.reason.trim();
+  if (!reason) return { error: 'reason_required' };
+
+  const sql = deps.getSql();
+  const normalized = await normalizeConversationRef(sql, req);
+  if ('error' in normalized) return normalized;
+  const row = await readState(sql, req.workspaceId, normalized.req.conversationId);
+  if (!row) return { error: 'not_a_consult' };
+  if (row.state === 'routing') return { error: 'consult_routing_in_progress' };
+
+  const authority = requesterFollowupAuthority(row.requester_id, row.routing);
+  if (!authority.valid) return { error: 'invalid_followup_transfer_history' };
+  if (authority.ownerId === req.authorId) {
+    return {
+      ok: true,
+      conversation_id: row.conversation_id,
+      original_requester_id: row.requester_id,
+      previous_followup_owner_id: authority.ownerId,
+      followup_owner_id: authority.ownerId,
+      state: row.state,
+      changed: false,
+    };
+  }
+
+  let ended: boolean;
+  try { ended = await deps.requesterEnded(authority.ownerId); }
+  catch { return { error: 'requester_liveness_unavailable', requester_id: authority.ownerId }; }
+  if (!ended) return { error: 'requester_not_confirmed_ended', requester_id: authority.ownerId };
+
+  const now = (deps.now ? deps.now() : new Date()).toISOString();
+  const rawHistory = authority.rawHistory === null ? null : JSON.stringify(authority.rawHistory);
+  const rows = (await sql`
+    UPDATE harness_shared.consult_state
+       SET routing = jsonb_set(
+             COALESCE(routing, '{}'::jsonb),
+             '{requesterFollowupTransfers}',
+             COALESCE(routing->'requesterFollowupTransfers', '[]'::jsonb) ||
+               jsonb_build_array(jsonb_build_object(
+                 'from', ${authority.ownerId}::text, 'to', ${req.authorId}::text, 'by', ${req.authorId}::text,
+                 'reason', ${reason}::text, 'at', ${now}::text
+               )),
+             true
+           ),
+           updated_at = ${now}::timestamptz
+     WHERE workspace_id = ${req.workspaceId}
+       AND conversation_id = ${row.conversation_id}
+       AND requester_id = ${row.requester_id}
+       AND routing->'requesterFollowupTransfers' IS NOT DISTINCT FROM ${rawHistory}::jsonb
+    RETURNING requester_id, state
+  `) as unknown as Array<{ requester_id: string; state: string }>;
+  const updated = rows[0];
+  if (!updated) {
+    const latest = await readState(sql, req.workspaceId, row.conversation_id);
+    const latestAuthority = latest && requesterFollowupAuthority(latest.requester_id, latest.routing);
+    if (latest && latestAuthority?.valid && latestAuthority.ownerId === req.authorId) {
+      return {
+        ok: true,
+        conversation_id: latest.conversation_id,
+        original_requester_id: latest.requester_id,
+        previous_followup_owner_id: authority.ownerId,
+        followup_owner_id: req.authorId,
+        state: latest.state,
+        changed: false,
+      };
+    }
+    return { error: 'followup_authority_changed', requester_id: latestAuthority?.ownerId ?? row.requester_id };
+  }
+
+  return {
+    ok: true,
+    conversation_id: row.conversation_id,
+    original_requester_id: updated.requester_id,
+    previous_followup_owner_id: authority.ownerId,
+    followup_owner_id: req.authorId,
+    state: updated.state,
+    changed: true,
+    reason,
+    transferred_at: now,
   };
 }

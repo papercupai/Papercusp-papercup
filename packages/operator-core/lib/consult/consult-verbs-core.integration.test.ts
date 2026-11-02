@@ -27,10 +27,12 @@ import {
   consultCloseCore,
   consultDeclineCore,
   consultReplyCore,
+  consultResolveRequestedConsult,
+  consultTransferRequesterFollowupCore,
   type ConsultVerbDeps,
 } from './consult-verbs-core';
 import { advanceCascade, continueCascadeDispatchCore, makeDigestEntry } from './cascade-core';
-import { makeDeferredConsultReachDispatcher } from './consult-dispatch';
+import { acquireConsultSpawnLease, makeDeferredConsultReachDispatcher } from './consult-dispatch';
 
 const WS = 'ws-consult-verbs';
 const NOW = new Date('2026-08-16T00:00:00Z');
@@ -672,7 +674,9 @@ describe('consultReplyCore — kind rules + transitions', () => {
     const row = await stateRow(id);
     expect(row.state).toBe('active');
     expect(row.exchanges_used).toBe(0);
-    expect(await jsonbShapes(id)).toEqual({ routing_type: 'object', outcome_type: null, cascade_digest_type: 'array' });
+    // consultReplyCore normalizes outcome to {} on its first post so future
+    // review metadata can merge without inventing a second terminal schema.
+    expect(await jsonbShapes(id)).toEqual({ routing_type: 'object', outcome_type: 'object', cascade_digest_type: 'array' });
 
     // The hard-blocked requester's park key fired, latched, addressed to them.
     expect(emits).toHaveLength(2);
@@ -1135,6 +1139,62 @@ describe('consultCloseCore', () => {
     expect(emits).toEqual([]);
   });
 
+  it('serializes terminal close behind the final consult spawn boundary', async () => {
+    const id = await seedConsult({ state: 'active' });
+    const spawnSql = postgres(fixtureDb.url, { max: 4, onnotice: () => {} });
+    let lease: Awaited<ReturnType<typeof acquireConsultSpawnLease>> = null;
+    let closing: Promise<unknown> | null = null;
+    try {
+      lease = await acquireConsultSpawnLease(WS, id, spawnSql);
+      expect(lease).not.toBeNull();
+      if (!lease) throw new Error('active consult should have granted a spawn lease');
+
+      const { deps } = makeDeps();
+      deps.getSql = () => spawnSql;
+      const originalPost = deps.post;
+      let resolvePost!: () => void;
+      const postWritten = new Promise<void>((resolve) => { resolvePost = resolve; });
+      deps.post = async (input) => {
+        const result = await originalPost(input);
+        resolvePost();
+        return result;
+      };
+      let closeSettled = false;
+      const closePromise = consultCloseCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id,
+        outcome: 'cant_help', reason: 'fixture terminal close' }, deps).finally(() => { closeSettled = true; });
+      closing = closePromise;
+      await postWritten;
+
+      const deadline = Date.now() + 2_000;
+      let lockWaitSeen = false;
+      while (!lockWaitSeen && Date.now() < deadline) {
+        const rows = await spawnSql<Array<{ count: number }>>`
+          SELECT count(*)::int AS count
+            FROM pg_stat_activity
+           WHERE datname = current_database()
+             AND pid <> pg_backend_pid()
+             AND wait_event_type = 'Lock'
+             AND query ILIKE '%consult_state%'
+        `;
+        lockWaitSeen = Number(rows[0]?.count ?? 0) > 0;
+        if (!lockWaitSeen) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(lockWaitSeen).toBe(true);
+      expect(closeSettled).toBe(false);
+
+      // This is the same ordering as console-spawn's afterSpawn callback.
+      await lease.release();
+      lease = null;
+      await expect(closePromise).resolves.toMatchObject({ ok: true, state: 'closed_cant_help' });
+      expect((await stateRow(id)).state).toBe('closed_cant_help');
+      expect(await acquireConsultSpawnLease(WS, id, spawnSql)).toBeNull();
+    } finally {
+      await lease?.release();
+      if (closing) await closing.catch(() => undefined);
+      await spawnSql.end({ timeout: 5 });
+    }
+  });
+
   it('does not count a requester answer disposition as a responder critique', async () => {
     const id = await seedConsult({ state: 'active' });
     const { deps, emits } = makeDeps();
@@ -1434,6 +1494,11 @@ describe('cascade advance (D-005/P-013)', () => {
   it('a previously woken responder remains a participant and may close after advancing the cascade', async () => {
     const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-2']) });
     const { deps } = makeDeps();
+    const stopped: Parameters<NonNullable<ConsultVerbDeps['stopAnsweringSession']>>[0][] = [];
+    deps.stopAnsweringSession = async (target) => {
+      stopped.push(target);
+      return 'stopped task resp-2-fork';
+    };
 
     const reply = await consultReplyCore(
       { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'answer', body: 'the answer', evidence: EVIDENCE },
@@ -1449,6 +1514,37 @@ describe('cascade advance (D-005/P-013)', () => {
     if ('error' in close) throw new Error(close.error);
     expect(close.state).toBe('closed_answered');
     expect((await stateRow(id)).state).toBe('closed_answered');
+    expect(stopped).toEqual([{
+      workspaceId: WS,
+      conversationId: id,
+      answeringOwnerId: 'resp-2-fork',
+      sourceOwnerId: 'resp-2',
+    }]);
+  });
+
+  it("does not stop the current responder's session when it closes its own consult", async () => {
+    const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-2']) });
+    const { deps } = makeDeps();
+    const stopped: Parameters<NonNullable<ConsultVerbDeps['stopAnsweringSession']>>[0][] = [];
+    deps.stopAnsweringSession = async (target) => {
+      stopped.push(target);
+      return 'stopped task resp-2-fork';
+    };
+
+    const reply = await consultReplyCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'answer', body: 'the answer', evidence: EVIDENCE },
+      deps,
+    );
+    if ('error' in reply) throw new Error(reply.error);
+
+    const close = await consultCloseCore(
+      { workspaceId: WS, authorId: 'resp-2-fork', conversationId: id, outcome: 'answered', answer: 'settled' },
+      deps,
+    );
+    if ('error' in close) throw new Error(close.error);
+    expect(close.state).toBe('closed_answered');
+    expect((await stateRow(id)).state).toBe('closed_answered');
+    expect(stopped).toEqual([]);
   });
 
   // WI-1700133: the VOID-consult exit. A responder who judges the QUESTION
@@ -2203,5 +2299,108 @@ describe('truncated conversation ref resolution (EI-23942597240908282)', () => {
     // it must carry NO truncation hint. Without this the other two cases pass
     // just as well against a resolver that sprays the hint onto every miss.
     expect(res).toEqual({ error: 'not_a_consult' });
+  });
+});
+
+describe('consult requester follow-up transfer', () => {
+  it('records an ended requester’s successor without rewriting original requester attribution', async () => {
+    const id = await seedConsult({ state: 'closed_cant_help', routing: { preserved: 'route-snapshot' } });
+    const reason = 'The requester session ended; this session owns the saved plan-start follow-up.';
+    const requesterEnded = async (ownerId: string) => ownerId === REQUESTER;
+
+    const transferred = await consultTransferRequesterFollowupCore({
+      workspaceId: WS,
+      authorId: 'successor-1',
+      conversationId: id,
+      reason,
+    }, {
+      getSql: () => rootSql,
+      isSuperuser: true,
+      requesterEnded,
+      now: () => NOW,
+    });
+
+    expect(transferred).toMatchObject({
+      ok: true,
+      conversation_id: id,
+      original_requester_id: REQUESTER,
+      previous_followup_owner_id: REQUESTER,
+      followup_owner_id: 'successor-1',
+      state: 'closed_cant_help',
+      changed: true,
+      reason,
+      transferred_at: NOW.toISOString(),
+    });
+    const row = await stateRow(id);
+    expect(row.requester_id).toBe(REQUESTER);
+    expect(row.routing).toMatchObject({
+      preserved: 'route-snapshot',
+      requesterFollowupTransfers: [{
+        from: REQUESTER,
+        to: 'successor-1',
+        by: 'successor-1',
+        reason,
+        at: NOW.toISOString(),
+      }],
+    });
+
+    await expect(consultResolveRequestedConsult({
+      workspaceId: WS, requesterId: 'successor-1', conversationRef: id,
+    }, { getSql: () => rootSql })).resolves.toMatchObject({ ok: true, conversation_id: id });
+    await expect(consultResolveRequestedConsult({
+      workspaceId: WS, requesterId: 'unrelated-agent', conversationRef: id,
+    }, { getSql: () => rootSql })).resolves.toMatchObject({ error: 'not_the_requester' });
+  });
+
+  it('refuses transfer unless the current follow-up owner is confirmed ended', async () => {
+    const id = await seedConsult({ state: 'active', routing: { preserved: true } });
+    const transferred = await consultTransferRequesterFollowupCore({
+      workspaceId: WS,
+      authorId: 'successor-live-check',
+      conversationId: id,
+      reason: 'Attempted takeover while requester is still live.',
+    }, {
+      getSql: () => rootSql,
+      isSuperuser: true,
+      requesterEnded: async () => false,
+      now: () => NOW,
+    });
+
+    expect(transferred).toMatchObject({ error: 'requester_not_confirmed_ended', requester_id: REQUESTER });
+    expect(await stateRow(id)).toMatchObject({ requester_id: REQUESTER, routing: { preserved: true } });
+  });
+
+  it('refuses a non-superuser before reading consult state', async () => {
+    const transferred = await consultTransferRequesterFollowupCore({
+      workspaceId: WS,
+      authorId: 'ordinary-agent',
+      conversationId: 'unknown-consult',
+      reason: 'not authorized',
+    }, {
+      getSql: () => { throw new Error('unauthorized transfer must not read storage'); },
+      isSuperuser: false,
+      requesterEnded: async () => true,
+      now: () => NOW,
+    });
+
+    expect(transferred).toEqual({ error: 'superuser_required' });
+  });
+
+  it('does not transfer while the consult is still routing', async () => {
+    const id = await seedConsult({ state: 'routing' });
+    const transferred = await consultTransferRequesterFollowupCore({
+      workspaceId: WS,
+      authorId: 'successor-routing',
+      conversationId: id,
+      reason: 'The requester session ended during routing.',
+    }, {
+      getSql: () => rootSql,
+      isSuperuser: true,
+      requesterEnded: async () => { throw new Error('routing consult must be refused before liveness lookup'); },
+      now: () => NOW,
+    });
+
+    expect(transferred).toEqual({ error: 'consult_routing_in_progress' });
+    expect((await stateRow(id)).requester_id).toBe(REQUESTER);
   });
 });

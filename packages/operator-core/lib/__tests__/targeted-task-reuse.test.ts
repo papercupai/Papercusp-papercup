@@ -17,6 +17,7 @@ import {
 import { decideReuseSkip, parseReuseSkipList } from '@papercusp/test-config/test-pass-reuse-skip';
 import { gateReuseObservations, recordGateReuseDecision } from '../../../../scripts/lib/test-pass-reuse.mjs';
 import { summarizeFallbackWindow } from '../degradation/fallback-observations';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { judgeDegradation } from '../system-health/degradation-watchdog';
 
 /**
@@ -196,7 +197,7 @@ describe('gate reuse on the degradation rail (P-004)', () => {
     })).toBe(true);
     expect(calls).toMatchObject([{
       mechanism: 'gate-pass-reuse', eligible: 0, applied: 0,
-      options: { workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint', correlationId: runGroupId },
+      options: { workspaceId: 'default', processTag: `gate-reuse:green-checkpoint:${operatorHomeHarnessSlug()}`, correlationId: runGroupId },
     }]);
     expect(flushed).toBe(1);
   });
@@ -411,6 +412,7 @@ describe('armTargetedTaskReuse', () => {
     ];
     const proofs = new Map(files.map((file) => [file, proof(HEAD, [file])]));
     const loadedScopes: string[][] = [];
+    const readerRoots: string[] = [];
     const armed = await armTargetedTaskReuse({
       root,
       workspace: WS,
@@ -418,8 +420,12 @@ describe('armTargetedTaskReuse', () => {
       expectedSha: HEAD,
       env: baseEnv(),
       deps: deps({
-        loadProofFiles: async () => ({ files, rows: files.length }),
-        loadProofs: async ({ files: requestedFiles }: { files?: string[] }) => {
+        loadProofFiles: async ({ repoRoot }: { repoRoot?: string }) => {
+          readerRoots.push(repoRoot ?? '');
+          return { files, rows: files.length };
+        },
+        loadProofs: async ({ files: requestedFiles, repoRoot }: { files?: string[]; repoRoot?: string }) => {
+          readerRoots.push(repoRoot ?? '');
           loadedScopes.push(requestedFiles ?? []);
           const selected = new Map([...proofs].filter(([file]) => requestedFiles?.includes(file)));
           return { proofs: selected, rows: selected.size };
@@ -430,6 +436,7 @@ describe('armTargetedTaskReuse', () => {
     expect(armed.reused).toBe(expected);
     expect(armed.lines.join('\n')).toContain(`candidates=${expected}`);
     expect(armed.lines.join('\n')).toContain(`lane=${lane} otherLane=${files.length - expected}`);
+    expect(readerRoots).toEqual([root, root]);
     expect(loadedScopes).toEqual([lane === 'pure'
       ? ['packages/lane-ws/pure.test.ts']
       : ['packages/lane-ws/stateful-a.test.ts', 'packages/lane-ws/stateful-b.test.ts']]);

@@ -17,6 +17,7 @@ import {
   recordQualificationChildScope,
   recordQualificationWorkProgress,
   recordQualificationWorkYield,
+  recordQualificationEligibilitySnapshot,
   type QualificationWorkProgressInput,
   isPostVerdictHang,
   QUALIFICATION_POST_VERDICT_HANG_MS,
@@ -62,6 +63,15 @@ const begin = () =>
     evidenceRefs: ['tool:release:checkpoint-run'],
     nowMs: 100,
   }).transaction;
+
+function postgresJsonbOrder<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(postgresJsonbOrder) as T;
+  if (!value || typeof value !== 'object') return value;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => Buffer.byteLength(left) - Buffer.byteLength(right) ||
+      Buffer.compare(Buffer.from(left), Buffer.from(right)));
+  return Object.fromEntries(entries.map(([key, nested]) => [key, postgresJsonbOrder(nested)])) as T;
+}
 
 describe('qualification child scope custody', () => {
   const fence = { attemptId: 'attempt-1', runnerId: 'runner', runId: 'run', pidIdentity: 'boot:42' };
@@ -1244,6 +1254,32 @@ describe('logical checkpoint qualification transaction', () => {
       eligibilitySnapshot: { safeNextAction: { code: 'launch-preflight-runner' } },
       safeNextAction: { code: 'await-current-run' },
     });
+  });
+
+  it('treats a JSONB-reordered persisted eligibility snapshot as idempotent', () => {
+    const snapshot = buildCheckpointEligibilitySnapshot({
+      attemptId: 'attempt-1',
+      candidate: 'candidate-1',
+      observedAtMs: 200,
+      predicates: CHECKPOINT_ELIGIBILITY_PREDICATES.map((code) => ({
+        code,
+        status: 'clear',
+        detail: code + ' clear',
+        clearEvents: [],
+        evidenceRefs: ['test:' + code],
+      })),
+    });
+    const current = parseCheckpointQualificationTransaction(postgresJsonbOrder({
+      ...begin(),
+      eligibilitySnapshot: snapshot,
+    }))!;
+
+    expect(JSON.stringify(current.eligibilitySnapshot)).not.toBe(JSON.stringify(snapshot));
+    expect(recordQualificationEligibilitySnapshot(current, {
+      attemptId: 'attempt-1',
+      snapshot,
+      nowMs: 300,
+    }).status).toBe('idempotent');
   });
 
   it('cancels only the exact attempt/unit and settles a terminal code-inconclusive outcome', () => {

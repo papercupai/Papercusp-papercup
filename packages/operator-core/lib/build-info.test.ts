@@ -52,6 +52,23 @@ describe('resolveBuildInfo', () => {
     expect(Object.keys(resolveBuildInfo({ env, bakedSha: 'b1', bundled: true })).sort()).toEqual(['sha', 'version']);
   });
 
+  it('treats a dirty baked source as unattributable and ignores stale env and checkout SHAs', () => {
+    let gitCalled = false;
+    const resolved = resolveBuild({
+      env: { PAPERCUSP_BUILD_SHA: 'stale-env-sha' } as NodeJS.ProcessEnv,
+      bakedSha: 'bundle-sha+dirty',
+      bundled: true,
+      gitSha: () => { gitCalled = true; return 'current-checkout-sha'; },
+    });
+    expect(resolved).toMatchObject({ sha: null, shaSource: 'dirty' });
+    expect(resolveBuildInfo({
+      env: { PAPERCUSP_BUILD_SHA: 'stale-env-sha' } as NodeJS.ProcessEnv,
+      bakedSha: 'bundle-sha+dirty',
+      bundled: true,
+    })).toMatchObject({ sha: null });
+    expect(gitCalled).toBe(false);
+  });
+
   it('trims a whitespace env sha', () => {
     expect(resolveBuildInfo({ env: { PAPERCUSP_BUILD_SHA: '  feed123  ' } as NodeJS.ProcessEnv }).sha).toBe('feed123');
   });

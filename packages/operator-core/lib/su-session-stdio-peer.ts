@@ -138,10 +138,13 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
           const bounded = (value: unknown, max: number) => typeof value === 'string'
             && value.length <= max && /^[A-Za-z0-9._:-]+$/.test(value);
           if (!frame || typeof frame !== 'object' || Array.isArray(frame)
-            || Object.keys(frame).sort().join(',') !== 'arguments,callId,id,nativeSessionId,tool'
+            || Object.keys(frame).sort().join(',') !== (Object.hasOwn(frame, 'executedArguments')
+              ? 'arguments,callId,executedArguments,id,nativeSessionId,tool' : 'arguments,callId,id,nativeSessionId,tool')
             || frame.id !== hookSequence + 1 || !bounded(frame.nativeSessionId, 128)
             || !bounded(frame.callId, 256) || !bounded(frame.tool, 256)
-            || !frame.arguments || typeof frame.arguments !== 'object' || Array.isArray(frame.arguments)) {
+            || !frame.arguments || typeof frame.arguments !== 'object' || Array.isArray(frame.arguments)
+            || Object.hasOwn(frame, 'executedArguments') && (!frame.executedArguments
+              || typeof frame.executedArguments !== 'object' || Array.isArray(frame.executedArguments))) {
             throw new Error('Invalid native hook observation');
           }
           hookSequence++;

@@ -724,6 +724,16 @@ describe('close handler', () => {
     expect(store.getRun(b.runId)?.status).toBe('fail');
   });
 
+  it('preserves the observed verdict when a child error arrives after close', () => {
+    const snapshot = store.startRun(req());
+    lastChild._emitClose(0);
+    lastChild._emitError(new Error('kill: ESRCH'));
+
+    expect(store.getRun(snapshot.runId)).toMatchObject({ status: 'pass', exitCode: 0 });
+    expect(store.getRun(snapshot.runId)?.output).toContain('[post-close-child-error] kill: ESRCH');
+    expect(taskManagerMocks.finish).toHaveBeenCalledTimes(1);
+  });
+
   it('a cancelled run stays cancelled even after close', () => {
     const snap = store.startRun(req());
     store.cancelRun(snap.runId);

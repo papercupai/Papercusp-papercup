@@ -2263,11 +2263,30 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
 
     it("records NO receipt when an early typecheck preflight failed, because no suite ran", async () => {
       const { repaired, cell, deps, calls } = await admittedRepairFixture();
+      const dispatchedTypechecks: unknown[] = [];
+      deps.dispatchFrozenRepairFixer = async (
+        _queue,
+        _evidence,
+        _onSkip,
+        preflight,
+      ) => {
+        dispatchedTypechecks.push(preflight);
+        return { spawnId: "typecheck-fixer", runId: "typecheck-run" };
+      };
       deps.changedFilesForRange = async () => ["packages/operator-core/lib/thing.ts"];
       deps.runChangedFileTypecheckPreflight = async () => ({
         status: "failed" as const,
         summary: "thing.ts(1,1): error TS2322: Type 'string' is not assignable.",
         failingSignatures: ["lint:tsc"],
+        failingFilePaths: ["packages/operator-core/lib/thing.ts"],
+        diagnostics: [{
+          file: "packages/operator-core/lib/thing.ts",
+          line: 1,
+          column: 1,
+          code: "TS2322",
+          category: "error" as const,
+          message: "Type 'string' is not assignable.",
+        }],
       });
 
       await runGreenCheckpoint(cfg(), deps, { noPush: true });
@@ -2275,6 +2294,20 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       expect(calls.filter((call) => call === "runGreen")).toHaveLength(0);
       expect(cell.queue?.convergenceRounds?.map((r) => r.head)).toEqual([repaired]);
       expect(cell.queue?.selectiveCoverage).toBeUndefined();
+      expect(dispatchedTypechecks).toHaveLength(1);
+      expect(dispatchedTypechecks[0]).toEqual({
+        status: "failed",
+        checkedFiles: ["packages/operator-core/lib/thing.ts"],
+        failingFiles: ["packages/operator-core/lib/thing.ts"],
+        diagnostics: [{
+          file: "packages/operator-core/lib/thing.ts",
+          line: 1,
+          column: 1,
+          code: "TS2322",
+          category: "error",
+          message: "Type 'string' is not assignable.",
+        }],
+      });
     });
   });
 

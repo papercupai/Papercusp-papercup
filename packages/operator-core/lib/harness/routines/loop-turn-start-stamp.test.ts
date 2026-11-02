@@ -1,7 +1,7 @@
 import type { ActivityRecord } from '@papercusp/activity-bridge';
 import { describe, expect, it, vi } from 'vitest';
 import { LOOP_TURN_START_MARKER, SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
-import { indexedLoopTurnStartRecord, isLoopFirePrompt, loopTurnStartRecord, readLoopFireIdentityForCurrentTurn, recordLoopTurnStart, type IndexedNativeLoopTurn } from './loop-turn-start-stamp';
+import { indexedLoopTurnStartRecord, isLoopFirePrompt, isLoopTurnStartCandidate, loopTurnStartRecord, readLoopFireIdentityForCurrentTurn, recordLoopTurnStart, type IndexedNativeLoopTurn } from './loop-turn-start-stamp';
 import { LOOP_FIRE_PROVENANCE_TTL_MS, type LedgerRow } from '../../turn-provenance/turn-provenance';
 
 // EI-24791346664119438: the turn-start endpoint stamps a loop-fire turn start in real time so
@@ -102,6 +102,14 @@ describe('loop-turn-start-stamp', () => {
   it('recognises a prompt that opens with a loop-fire envelope, including a whole-paste wrap', () => {
     expect(isLoopFirePrompt(LOOP_PROMPT)).toBe(true);
     expect(isLoopFirePrompt(`  ${LOOP_PROMPT}`)).toBe(true);
+  });
+
+  it('recognises self-compaction as a candidate while keeping direct loop-fire classification distinct', () => {
+    expect(isLoopTurnStartCandidate(LOOP_PROMPT)).toBe(true);
+    expect(isLoopFirePrompt(SELF_COMPACTION_PROMPT)).toBe(false);
+    expect(isLoopTurnStartCandidate(SELF_COMPACTION_PROMPT)).toBe(true);
+    expect(isLoopTurnStartCandidate('⟦turn-origin:wake-pump nonce:63e822d364133373⟧ wake')).toBe(false);
+    expect(isLoopTurnStartCandidate(`quoted: ${SELF_COMPACTION_PROMPT}`)).toBe(false);
   });
 
   it('does not stamp other origins, owner text, or an envelope quoted mid-text', () => {
@@ -212,7 +220,7 @@ describe('loop-turn-start-stamp', () => {
   it('appends one row for a loop-fire prompt and none otherwise', async () => {
     const append = vi.fn(async (_record: ActivityRecord) => ({ id: '1' as string | null }));
     expect(await recordLoopTurnStart({ owner: 'su-1', prompt: LOOP_PROMPT, workspaceId: 'ws-1', loopFire: null }, { append })).toBe(true);
-    expect(await recordLoopTurnStart({ owner: 'su-1', prompt: 'hi', workspaceId: 'ws-1' }, { append })).toBe(false);
+    expect(await recordLoopTurnStart({ owner: 'su-1', prompt: 'hi', workspaceId: 'ws-1' }, { append })).toBeNull();
     expect(append).toHaveBeenCalledTimes(1);
     expect(append.mock.calls[0][0]).toMatchObject({ summary: LOOP_TURN_START_MARKER, owner: 'su-1' });
   });

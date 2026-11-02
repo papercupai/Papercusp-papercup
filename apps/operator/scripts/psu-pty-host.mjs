@@ -5498,10 +5498,10 @@ export function shutdownRefusalReason({
  *   lastOutputAt() → ms epoch of the agent's most recent pty output (0 = none yet,
  *                    treated as "quiet"/at-prompt).
  *   waitAtPrompt() → resolves { deferred:false } once output has been quiet for
- *                    quietMs (agent at prompt → safe to inject), or
- *                    { deferred:true, reason:'agent-busy' } if the agent stays busy
- *                    past capMs (caller SKIPS the live inject; the durable inbox
- *                    message stands for the next natural turn).
+ *                    quietMs and blockedInputSurface() is clear, or
+ *                    { deferred:true } if output stays active or a non-composer
+ *                    input surface persists through capMs (caller SKIPS the live
+ *                    inject; the durable inbox message stands for the next turn).
  *
  * Pure (injectable clock + getter); exported for tests.
  *
@@ -5519,6 +5519,7 @@ export function shutdownRefusalReason({
  * @param {number} [opts.capMs]
  * @param {() => number} [opts.now]
  * @param {() => {phase?: string, pendingTools?: number} | null} [opts.nativeExecution]
+ * @param {() => string | null} [opts.blockedInputSurface] current non-composer input surface
  */
 export function makeAgentBusyGate({
   lastOutputAt,
@@ -5526,8 +5527,21 @@ export function makeAgentBusyGate({
   capMs = TURN_INJECT_BUSY_CAP_MS,
   now = Date.now,
   nativeExecution = () => null,
+  blockedInputSurface = () => null,
 } = {}) {
   const getLast = typeof lastOutputAt === 'function' ? lastOutputAt : () => 0;
+  const getBlockedInputSurface = typeof blockedInputSurface === 'function'
+    ? blockedInputSurface
+    : () => null;
+  const readBlockedInputSurface = () => {
+    try {
+      const surface = getBlockedInputSurface();
+      return typeof surface === 'string' && surface.trim() ? surface.trim() : null;
+    } catch {
+      // An unreadable input surface cannot be treated as a verified composer.
+      return 'input-surface-unavailable';
+    }
+  };
   return {
     /** ms the agent output has been quiet (huge when never seen ⇒ at-prompt).
      *  Pure helper, exported for tests. */
@@ -5576,17 +5590,19 @@ export function makeAgentBusyGate({
         try { shouldAbort = abortBoundary?.() === true; } catch { /* fail closed: keep waiting */ }
         if (shouldAbort) return { deferred: false, boundary: 'abort-before-write' };
 
+        let inputSurface = readBlockedInputSurface();
         const nativeBusy = nativeExecutionBlocksInjection(nativeExecution());
         nativeBusyObserved = nativeBusy;
-        if (!nativeBusy && verifiedBoundary?.()) {
+        if (!inputSurface && !nativeBusy && verifiedBoundary?.()) {
           await new Promise((resolve) => setImmediate(resolve));
-          if (!nativeExecutionBlocksInjection(nativeExecution()) && verifiedBoundary()) {
+          inputSurface = readBlockedInputSurface();
+          if (!inputSurface && !nativeExecutionBlocksInjection(nativeExecution()) && verifiedBoundary()) {
             return { deferred: false, boundary: 'native-turn-complete' };
           }
         }
         const quietFor = this.quietForMs();
         if (quietFor > maxQuietForMs) maxQuietForMs = quietFor;
-        if (!nativeBusy && quietFor >= quietMs) {
+        if (!inputSurface && !nativeBusy && quietFor >= quietMs) {
           // EI-22806311344295685: an expired timer can run before libuv's poll
           // phase drains an already-buffered node-pty onData callback. Yield to
           // the check phase once, then re-read the output timestamp; otherwise
@@ -5608,12 +5624,20 @@ export function makeAgentBusyGate({
           await new Promise((resolve) => setImmediate(resolve));
           const confirmedQuietFor = this.quietForMs();
           if (confirmedQuietFor > maxQuietForMs) maxQuietForMs = confirmedQuietFor;
-          if (confirmedQuietFor >= quietMs && !nativeExecutionBlocksInjection(nativeExecution())) {
+          inputSurface = readBlockedInputSurface();
+          if (!inputSurface && confirmedQuietFor >= quietMs && !nativeExecutionBlocksInjection(nativeExecution())) {
             return { deferred: false };
           }
         }
         if (now() >= deadline) {
-          return { deferred: true, reason: 'agent-busy', maxQuietForMs, quietMs, nativeBusy: nativeBusyObserved };
+          return {
+            deferred: true,
+            reason: inputSurface ?? 'agent-busy',
+            ...(inputSurface ? { inputSurface } : {}),
+            maxQuietForMs,
+            quietMs,
+            nativeBusy: nativeBusyObserved,
+          };
         }
         // P-004 (the part that IS a real defect): recompute the sleep from the
         // CURRENT quiet window, not the stale pre-confirmation `quietFor`.
@@ -5624,7 +5648,7 @@ export function makeAgentBusyGate({
         // the cap — the next pass reads the fresh value and sleeps properly
         // (10, 1490, 1500, 1500, …). So this is a micro-correction, NOT the
         // false-defer fix; see D-005 for the retraction of that claim.
-        const need = nativeBusy ? 100 : Math.max(0, quietMs - this.quietForMs());
+        const need = nativeBusy || inputSurface ? 100 : Math.max(0, quietMs - this.quietForMs());
         const wait = Math.min(need, Math.max(0, deadline - now()));
         await new Promise((r) => setTimeout(r, Math.max(10, wait)));
       }
@@ -9147,6 +9171,30 @@ export function codexFooterStateFromOutput(output, dims) {
     ?? codexStatusFooterState(stripAnsi(raw));
 }
 
+/** Classify Codex's current transcript Find surface from the rendered terminal
+ * screen. Only the active footer and its adjacent input row count; flattened
+ * transcript text and an older frame cannot make a later composer look like Find.
+ * @param {unknown} output
+ * @param {{ rows?: number, cols?: number }} [dims]
+ * @returns {'editing' | 'reading' | null} */
+export function codexTranscriptFindState(output, dims) {
+  const screen = renderTerminalScreen(output, dims);
+  const hasCodexHeader = screen.some(line => /^\s*>_ OpenAI Codex(?:\s+\(v[^)]+\))?\s*$/i.test(line));
+  if (!hasCodexHeader) return null;
+
+  const inputRow = (screen.at(-2) ?? '').trim();
+  const statusRow = (screen.at(-1) ?? '').trim();
+  if (/^Searching…\s*·\s*full transcript\s*·\s*esc cancel$/i.test(statusRow) &&
+    /^Find:\s*/i.test(inputRow)) {
+    return 'editing';
+  }
+  if (/^Find\s*·\s*ctrl\+p older\s*·\s*ctrl\+n newer\s*·\s*esc latest$/i.test(statusRow) &&
+    inputRow === '') {
+    return 'reading';
+  }
+  return null;
+}
+
 /** WI-10005178: the screen text a `codex-startup-still-starting` verdict was read
  * from. Measured 2026-10-02T01:40-01:44Z (su-6a2603be, codex home session-32862):
  * the dropped child's own codex-tui.log shows session init, MCP resolution and the
@@ -12579,6 +12627,11 @@ export function hostThroughPty(o) {
     }
     return context;
   };
+  const codexTranscriptFindInputSurface = () => {
+    if (String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() !== 'codex') return null;
+    const state = codexTranscriptFindState(childStartupOutput, childScreenDims());
+    return state ? 'codex-transcript-find-' + state : null;
+  };
   let queuedOwnerInput = [];
   // Mid-turn inject gate (coord-wake-mid-turn-2026-06-30): reads the SAME
   // lastOutputAt the activity tracker records on every `child.onData` below, so a
@@ -12592,6 +12645,7 @@ export function hostThroughPty(o) {
     quietMs: positiveNumber(env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS, OUTPUT_QUIET_MS),
     capMs: turnInjectBusyCapMs,
     nativeExecution: currentNativeExecution,
+    blockedInputSurface: codexTranscriptFindInputSurface,
   });
   // A machine submit and real owner input both advance the observation floor.
   // The host/process and child generation travel with the snapshot so readers
@@ -16191,6 +16245,9 @@ export function hostThroughPty(o) {
               // indistinguishable from one on a genuinely busy agent, which is
               // what made the codex-only wiring invisible for so long.
               verifier: verifierSupport.reason ?? 'supported',
+              ...(atPrompt?.inputSurface
+                ? { reason: atPrompt.reason ?? atPrompt.inputSurface, inputSurface: atPrompt.inputSurface }
+                : {}),
             };
             appendHostEvent(ownerId, 'busy-gate-expired', busyGateEvent);
             // Drill metrics must share the drill ID used by the terminal drop;
@@ -16664,6 +16721,33 @@ export function hostThroughPty(o) {
           })) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (firstInputWrite && msg.mode === 'turn') {
+              const inputSurface = codexTranscriptFindInputSurface();
+              if (inputSurface) {
+                const { support } = verifiedBoundaryFor(msg);
+                appendHostEvent(ownerId, 'busy-gate-prewrite-refused', {
+                  mode: msg.mode,
+                  reason: inputSurface,
+                  inputSurface,
+                  capMs: turnInjectBusyCapMs,
+                  observedMaxQuietMs: agentBusyGate.quietForMs(),
+                  quietMs: positiveNumber(env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS, OUTPUT_QUIET_MS),
+                  verifier: support.reason ?? 'supported',
+                });
+                const turnVerdict = carryRearm.schedule(msg);
+                appendHostEvent(ownerId, 'wake-rearm-scheduled', {
+                  mode: msg.mode,
+                  verdict: turnVerdict,
+                  capMs: turnInjectBusyCapMs,
+                  verifier: support.reason ?? 'supported',
+                  inputSurface,
+                });
+                if (turnVerdict === 'duplicate') {
+                  claimCoalesced();
+                  return { ok: false, reason: 'turn-rearm-duplicate' };
+                }
+                claimCoalesced();
+                return { ok: false, reason: 'deferred-busy-gate', inputSurface };
+              }
               firstInputWrite = false;
               const writeCommit = deliveryDedup.beginWrite([...coalescedDeliveryIds]);
               if (writeCommit.status === 'already-started') {

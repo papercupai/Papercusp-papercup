@@ -27,6 +27,7 @@ import {
   GATE_VERDICT_WORKSPACE_ENV,
 } from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import type { FrozenCandidateRepairQueue } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+import type { CheckpointTypecheckPreflight } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 
 const dispatchReleaseFixer = vi.fn(
   async (..._args: unknown[]): Promise<{ spawnId: string | null; runId: string | null } | null> => ({
@@ -177,21 +178,39 @@ describe("WI-10000758: realCheckpointDeps wires the frozen-repair dispatcher", (
       attempts: 0,
       fixerSpawnId: null,
     } as unknown as FrozenCandidateRepairQueue;
+    const typecheckPreflight: CheckpointTypecheckPreflight = {
+      status: "failed",
+      checkedFiles: ["libs/scout-chat/src/reducer.ts"],
+      failingFiles: [],
+      diagnostics: [{
+        file: "libs/scout-chat/src/reducer.ts",
+        line: 117,
+        column: 69,
+        code: "TS18048",
+        category: "error",
+        message: "'value' is possibly 'undefined'.",
+      }],
+    };
 
-    const fired = await deps.dispatchFrozenRepairFixer!(queue);
+    const fired = await deps.dispatchFrozenRepairFixer!(
+      queue,
+      undefined,
+      undefined,
+      typecheckPreflight,
+    );
 
     expect(fired).toEqual({ spawnId: "s-wiring-test", runId: "r-wiring-test" });
     expect(dispatchReleaseFixer).toHaveBeenCalledTimes(1);
-    // The 5th argument is the checkpoint evidence the dispatcher forwards when the gate has
-    // one; this call supplies none, so it is forwarded as undefined. The 6th carries the
-    // gate's onSkip (WI-6554700010029683) — none here either.
+    // The 5th argument is checkpoint evidence; this call supplies none. The 6th argument's
+    // options object carries onSkip (WI-6554700010029683) and the compiler evidence through
+    // the app/core seam.
     expect(dispatchReleaseFixer).toHaveBeenCalledWith(
       { workspaceId: "papercusp-workspace", installSlug: "papercusp" },
       queue.repairHead,
       queue.failingTests,
       queue,
       undefined,
-      { onSkip: undefined },
+      { onSkip: undefined, typecheckPreflight },
     );
   });
 

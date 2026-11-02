@@ -2373,6 +2373,9 @@ export interface SpawnHeadlessOpts {
    * before task enrolment/process creation. False cancels without starting a child.
    * Omit for launches whose purpose cannot expire during preparation. */
   beforeSpawn?: () => boolean | Promise<boolean>;
+  /** Release a reservation made by beforeSpawn after child creation, or on an
+   * error path after the guard passed. */
+  afterSpawn?: () => void | Promise<void>;
   /**
    * Opt into a parent-visible proof that the detached launch kickoff reached
    * the backend's native transcript. The receipt env is carried through the
@@ -2733,6 +2736,17 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
   // install cannot start tearing node_modules down mid-resolution. Taken BEFORE
   // the task enrolment so a long wait never leaves a half-enrolled task.
   let installLease: InstallBoundaryLease | null = null;
+  let spawnGuardHeld = false;
+  const releaseSpawnGuard = async (): Promise<void> => {
+    if (!spawnGuardHeld) return;
+    spawnGuardHeld = false;
+    try {
+      await opts.afterSpawn?.();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(`[console-spawn] afterSpawn cleanup failed: ${reason.slice(0, 500)}`);
+    }
+  };
   try {
     // EI-9748 Route (A): escape the operator service's own cgroup via
     // systemd-run --user --scope when available, so a headless member
@@ -2750,19 +2764,22 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     // Check at the last async boundary, before enrolling or creating a process.
     // Once a child exists it can itself answer/close during kickoff proof, so
     // this predicate must never be used as a post-spawn cleanup decision.
-    if (opts.beforeSpawn && !(await opts.beforeSpawn())) {
-      cleanupKickoffProofRequest(kickoffProofRequest);
-      if (logFd != null) {
-        closeSync(logFd);
-        logFd = null;
+    if (opts.beforeSpawn) {
+      if (!(await opts.beforeSpawn())) {
+        cleanupKickoffProofRequest(kickoffProofRequest);
+        if (logFd != null) {
+          closeSync(logFd);
+          logFd = null;
+        }
+        return {
+          status: 'error',
+          code: 409,
+          error: 'headless launch cancelled before process creation',
+          cancelled: true,
+          logPath,
+        };
       }
-      return {
-        status: 'error',
-        code: 409,
-        error: 'headless launch cancelled before process creation',
-        cancelled: true,
-        logPath,
-      };
+      spawnGuardHeld = true;
     }
     const memoryMaxBytes = agentSpawnScopeMemoryMaxG() * 1024 ** 3;
     const enrolment = beginSyncEnrolment({ class: 'agent-session', memoryMaxBytes });
@@ -2780,12 +2797,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       enrolment.unconfinedReason === 'no-scope-support'
         ? { ...opts.spawnCommandProbes, hasSystemdRun: () => false }
         : opts.spawnCommandProbes;
-    const { bin, args, scopeUnit } = buildHeadlessSpawnCommand(
-      oneliner,
-      label,
-      spawnCommandProbes,
-      taskScope,
-    );
+    const { bin, args, scopeUnit } = buildHeadlessSpawnCommand(oneliner, label, spawnCommandProbes, taskScope);
     const child = spawn(bin, args, {
       detached: true,
       stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
@@ -2795,20 +2807,26 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       // would tell the psu it is running inside the OPERATOR's multiplexer pane,
       // which it is not. pui and `psu --brain` both drive zellij, so that is a
       // live wrong-answer, not a hypothetical one.
-      env: normalizeHeadlessAgentTerm(scrubTerminalContextEnv({
-        ...agentInheritedOperatorEnv(process.env),
-        ...launchEnv,
-        // The child bootstrap can use this exact enrollment id if the CLI exits
-        // before its native session identity is recorded. Only send it when the
-        // ledger row is owner-stamped, so the exact binder can prove the join.
-        ...(coordOwnerId ? { PAPERCUSP_AGENT_TASK_ID: enrolment.taskId } : {}),
-      })),
+      env: normalizeHeadlessAgentTerm(
+        scrubTerminalContextEnv({
+          ...agentInheritedOperatorEnv(process.env),
+          ...launchEnv,
+          // The child bootstrap can use this exact enrollment id if the CLI exits
+          // before its native session identity is recorded. Only send it when the
+          // ledger row is owner-stamped, so the exact binder can prove the join.
+          ...(coordOwnerId ? { PAPERCUSP_AGENT_TASK_ID: enrolment.taskId } : {}),
+        }),
+      ),
     });
-    // Keep a second, persistent observer before the bounded boot probes remove
-    // their own listeners. The consult reviver consumes this promise to turn a
-    // post-return status-2 exit into a truthful failed revival.
+    // Install both observers synchronously after spawn(): a child may exit on
+    // its first microtask, including while the consult reservation is released.
     const childExit = observeChildExit(child);
+    const earlyExitProbe = watchEarlyExit(child, EARLY_EXIT_PROBE_MS);
     child.unref();
+    // The consult close path locks the same row. Release that reservation at
+    // the first point where the OS child exists, before any asynchronous boot
+    // wait or kickoff receipt can keep a terminal close waiting.
+    await releaseSpawnGuard();
     completeSyncEnrolment(
       // EI-19366263067183489: record the unit the spawn ACTUALLY used, not just the enrolled
       // one. This was `taskScope?.unit ?? null`, so every unconfined-but-ledgered spawn wrote
@@ -2833,6 +2851,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
         },
       },
       child.pid ?? null,
+      { workspaceId: envelope.workspaceId },
     );
     if (logFd != null) {
       closeSync(logFd); // the child holds its own dup of the fd
@@ -2843,7 +2862,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     // config-dir fault) exits within the window — surface it + the log tail, not
     // a false ok. A healthy session BLOCKS here (the agent runs), so the probe
     // times out and we report ok.
-    const earlyExit = await watchEarlyExit(child, EARLY_EXIT_PROBE_MS);
+    const earlyExit = await earlyExitProbe;
     // The headless binary never started at all (missing psu/agent CLI on PATH is
     // the live case on the rig mac, where `claude` sits in ~/.local/bin outside
     // the sidecar's ssh-launched PATH). Without this, the fail-open branch below
@@ -2896,11 +2915,21 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     // the asynchronous liveness plane (presence/sessionState), which reaps a
     // member that stops taking turns. This closes the boot-time case, which is
     // the one that silently consumed a delegated seat.
-    const readLog = opts.bootProbes?.readLog ?? ((p: string) => {
-      try { return readFileSync(p, 'utf8'); } catch { return ''; }
-    });
-    const bootSleep = opts.bootProbes?.sleep
-      ?? ((ms: number) => new Promise<void>((r) => { setTimeout(r, ms).unref?.(); }));
+    const readLog =
+      opts.bootProbes?.readLog ??
+      ((p: string) => {
+        try {
+          return readFileSync(p, 'utf8');
+        } catch {
+          return '';
+        }
+      });
+    const bootSleep =
+      opts.bootProbes?.sleep ??
+      ((ms: number) =>
+        new Promise<void>((r) => {
+          setTimeout(r, ms).unref?.();
+        }));
     const windowMs = opts.bootProbes?.windowMs ?? HEADLESS_BOOT_RECEIPT_MS;
     const bootDeadline = Date.now() + windowMs;
     for (;;) {
@@ -2945,10 +2974,15 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     // log instead of an opened member with a misleading proof timeout.
     if (kickoffProof?.reason?.startsWith('kickoff-child-exited:')) {
       let logTail = '';
-      try { logTail = bootDeathLogExcerpt(readFileSync(logPath, 'utf8')); } catch { /* log unavailable */ }
+      try {
+        logTail = bootDeathLogExcerpt(readFileSync(logPath, 'utf8'));
+      } catch {
+        /* log unavailable */
+      }
       return {
         status: 'error',
-        error: `headless psu ended before kickoff proof (${kickoffProof.reason.slice('kickoff-child-exited:'.length)})` +
+        error:
+          `headless psu ended before kickoff proof (${kickoffProof.reason.slice('kickoff-child-exited:'.length)})` +
           `${logTail ? ` — log tail: ${logTail}` : ` — see ${logPath}`}`,
         code: 502,
         logPath,
@@ -3006,6 +3040,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     return { status: 'error', error: `headless spawn failed: ${e?.message}`, code: 500, logPath };
   } finally {
     // Idempotent; covers every early-return and throw path above.
+    await releaseSpawnGuard();
     installLease?.release();
   }
 }
