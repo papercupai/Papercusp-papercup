@@ -20,6 +20,7 @@ import {
   callOwnerProcess,
   bindOwnerRpcResource,
   locateOwnerRpcResource,
+  registerOwnerRpcHandler,
   startPrimaryOwnerRpcRelay,
   startWorkerOwnerRpc,
   type OwnerRpcClusterLike,
@@ -164,6 +165,45 @@ describe('cluster owner rpc across real worker processes', () => {
       ok: false,
       code: 'timeout',
     });
+  });
+
+  it('reaches primary-owned runtime state from a real request worker', async () => {
+    let active = true;
+    const received: unknown[] = [];
+    registerOwnerRpcHandler('fixture-primary-control', (payload, source) => {
+      expect(payload).toEqual({ op: 'stop' });
+      expect(source.fromPid).toBe(b.pid);
+      source.progress?.({ status: 'draining' });
+      active = false;
+      return { status: 'completed', servedBy: process.pid };
+    });
+    const out = await callFrom(b, process.pid, { op: 'stop' }, {
+      kind: 'fixture-primary-control', onProgress: progress => received.push(progress),
+    });
+    expect(out).toEqual({ ok: true, result: { status: 'completed', servedBy: process.pid } });
+    expect(active).toBe(false);
+    expect(received).toEqual([{ status: 'draining' }]);
+  });
+
+  it('preserves typed primary handler failures and timeout semantics', async () => {
+    expect(await callFrom(b, process.pid, {}, { kind: 'fixture-primary-missing' }))
+      .toMatchObject({ ok: false, code: 'no_handler' });
+    registerOwnerRpcHandler('fixture-primary-error', () => { throw new Error('primary handler failed'); });
+    expect(await callFrom(b, process.pid, {}, { kind: 'fixture-primary-error' }))
+      .toMatchObject({ ok: false, code: 'handler_error', message: 'primary handler failed' });
+    registerOwnerRpcHandler('fixture-primary-slow', () => new Promise(() => {}));
+    expect(await callFrom(b, process.pid, {}, { kind: 'fixture-primary-slow', timeoutMs: 200 }))
+      .toMatchObject({ ok: false, code: 'timeout' });
+  });
+
+  it('rejects a forged IPC sender before invoking a primary handler', async () => {
+    const invoke = vi.fn();
+    registerOwnerRpcHandler('fixture-primary-forged', invoke);
+    for (const listener of listeners) listener(a.worker, {
+      type: 'papercusp:owner-rpc-request', id: 'forged-primary-request',
+      fromPid: b.pid, targetPid: process.pid, kind: 'fixture-primary-forged', payload: {},
+    });
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('relays progress notifications from the owner before returning the terminal result', async () => {

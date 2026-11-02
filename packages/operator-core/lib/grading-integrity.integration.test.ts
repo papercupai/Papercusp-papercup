@@ -120,6 +120,28 @@ afterAll(async () => {
 describe.each([false, true])('grading audit JSON writes with prepare=%s', (prepare) => {
   beforeEach(() => { h.sql = prepare ? prepared : db.sql; });
 
+  it('retires only a quota backoff after route recovery without bypassing a live lease', async () => {
+    const quota = { ...backoff, code: 'model_quota_exhausted' };
+    await seed(issueId, { state: 'pending', dispatchBackoff: quota });
+    expect(await reservePendingGradingAudit(issueId, reservation.key, { workspaceId, now }))
+      .toMatchObject({ status: 'quota-backoff' });
+    expect(await reservePendingGradingAudit(issueId, reservation.key, {
+      workspaceId, now, allowRecoveredQuotaBackoff: true,
+    })).toMatchObject({ status: 'claimed' });
+    expect(await readAudit()).not.toHaveProperty('dispatchBackoff');
+    expect(await reservePendingGradingAudit(issueId, reservation.key, {
+      workspaceId, now, allowRecoveredQuotaBackoff: true,
+    })).toMatchObject({ status: 'already-reserved' });
+  });
+
+  it('keeps non-quota backoffs even when the requested route can serve', async () => {
+    await seed(issueId, { state: 'pending', dispatchBackoff: backoff });
+    expect(await reservePendingGradingAudit(issueId, reservation.key, {
+      workspaceId, now, allowRecoveredQuotaBackoff: true,
+    })).toMatchObject({ status: 'dispatch-backoff' });
+    expect(await readAudit()).toHaveProperty('dispatchBackoff', backoff);
+  });
+
   it('stores both reservation fields as objects and confirms the exact lease', async () => {
     await seed();
     expect(await reservePendingGradingAudit(issueId, reservation.key, { workspaceId, now }))

@@ -168,10 +168,27 @@ describe('plugin capability grants', () => {
       capabilities: ['cap:x'],
     });
     const grants = await getGrantsForPluginInHarness(TEST_PLUGIN, TEST_VERSION, TEST_HARNESS, {
-      skipLegacy: true,
+      requireAuthoritative: true,
     });
     expect(grants).not.toContain('cap:x');
     expect(grants).toContain('cap:y');
+  });
+
+  it('authoritative reads propagate a real database failure instead of reporting no grants', async () => {
+    await rootSql.begin(async (tx) => {
+      await tx`ALTER TABLE harness_shared.plugin_capability_grants RENAME TO grants_unavailable`;
+      await expect(getGrantsForPluginInHarness(TEST_PLUGIN, TEST_VERSION, TEST_HARNESS, {
+        sql: tx as unknown as postgres.Sql,
+        requireAuthoritative: true,
+      })).rejects.toMatchObject({ code: '42P01' });
+      // Rollback restores the table in this suite's private database.
+      throw new Error('rollback private grant-store fault');
+    }).catch((error: Error) => {
+      if (error.message !== 'rollback private grant-store fault') throw error;
+    });
+    expect(await getGrantsForPluginInHarness(TEST_PLUGIN, TEST_VERSION, TEST_HARNESS, {
+      requireAuthoritative: true,
+    })).toEqual([]);
   });
 
   it('re-granting an existing tuple is idempotent (no error)', async () => {

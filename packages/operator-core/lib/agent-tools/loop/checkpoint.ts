@@ -2144,7 +2144,7 @@ export default defineTool({
     const continuationReadTrace: ContinuationReadTrace = { completed: [], active: new Map() };
     const continuationRead = await withBoundedTimeout(
       async () => {
-        const pres = await measureContinuationRead(continuationReadTrace, 'presence', () =>
+        const presenceRead = measureContinuationRead(continuationReadTrace, 'presence', () =>
           getPresence(ownerId).catch(() => null));
         // P-006 (cold-carry-system-hardening-2026-07-19): derive context usage from the
         // transcript's CURRENT state (WI-4154's live read — the same fix inbox.ts already
@@ -2153,14 +2153,17 @@ export default defineTool({
         // checkpoint closed on "context usage unknown" even seconds after a fresh turn
         // (observed on every single wake of 2026-07-19). Best-effort: null keeps the
         // old fail-safe-toward-settling behavior.
-        const liveTokens = await measureContinuationRead(continuationReadTrace, 'context.live-tokens', async () => {
-          try {
-            const { currentContextTokensForOwner } = await import('../../compaction-usage');
-            return await currentContextTokensForOwner(ownerId);
-          } catch {
-            return null;
-          }
-        });
+        const [pres, liveTokens] = await Promise.all([
+          presenceRead,
+          measureContinuationRead(continuationReadTrace, 'context.live-tokens', async () => {
+            try {
+              const { currentContextTokensForOwner } = await import('../../compaction-usage');
+              return await currentContextTokensForOwner(ownerId);
+            } catch {
+              return null;
+            }
+          }),
+        ]);
         // Same P-006 gap on the denominator: presence.compactionLimit is null for the
         // same sessions — derive the model-spec default (the compliance-watchdog's own
         // fallback chain) so a live token read isn't wasted on a null limit.
@@ -2178,7 +2181,10 @@ export default defineTool({
         });
         let unreadInbox: number | null = null;
         try {
-          const wm = await measureContinuationRead(continuationReadTrace, 'inbox.watermark', () => readWatermark(ownerId));
+          const [wm, readTs] = await Promise.all([
+            measureContinuationRead(continuationReadTrace, 'inbox.watermark', () => readWatermark(ownerId)),
+            measureContinuationRead(continuationReadTrace, 'inbox.last-read-at', () => lastInboxReadAt(ownerId)),
+          ]);
           // messages_since_ts advances at turn-END, so this counts messages addressed to you
           // that arrived since your last settle. filterInbox (inside readInbox) drops own +
           // notify-kind rows; countPendingInterrupts then drops system machinery — categorized
@@ -2192,7 +2198,6 @@ export default defineTool({
           // "inbox not evaluated"; and a mid-turn read after the last settle correctly
           // narrows "unread" to what arrived AFTER that read. Neither cursor available ⇒
           // stays null (blocking — fail safe toward settling, unchanged).
-          const readTs = await measureContinuationRead(continuationReadTrace, 'inbox.last-read-at', () => lastInboxReadAt(ownerId));
           const sinceTs = pickUnreadCursor(wm?.messages_since_ts, readTs);
           if (sinceTs) {
             const unread = await measureContinuationRead(continuationReadTrace, 'inbox.messages', () =>
@@ -2217,6 +2222,7 @@ export default defineTool({
         let activeLoopIntervalSec: number | null = null;
         let activeLoopGoal: string | null = null;
         let activeLoopRewakeBlockedReason: ActiveLoopRewakeBlockedReason | null = null;
+        let selfCompactionAvailable: boolean | null = null;
         try {
           const [
             { isRewakeGuaranteed, awaitGuaranteesRewake },
@@ -2224,6 +2230,7 @@ export default defineTool({
             { getConversationStatesByIds },
             { getModes },
             { probeWakeReachability },
+            { selfCompactionAvailabilityAsync },
           ] = await measureContinuationRead(continuationReadTrace, 'rewake.dependencies', () => Promise.all(
             [
               import('../../turn-end-tracking'),
@@ -2231,20 +2238,24 @@ export default defineTool({
               import('../coordination/conversations'),
               import('../../modes/store'),
               import('../../events/await/wake-reachability'),
+              import('../../events/await/psu-pty-discovery'),
             ],
           ));
-          const [loop, awaits, modes, reachability] = await Promise.all([
+          const [loop, awaits, modes, reachability, currentTurn, selfCompaction] = await Promise.all([
             measureContinuationRead(continuationReadTrace, 'rewake.loop-status', () => getLoopStatus(ownerId).catch(() => null)),
             measureContinuationRead(continuationReadTrace, 'rewake.active-awaits', () => listActiveAwaits(ownerId).catch(() => [])),
             measureContinuationRead(continuationReadTrace, 'rewake.modes', () =>
               workspaceId ? getModes(workspaceId, ownerId).catch(() => []) : Promise.resolve([])),
             measureContinuationRead(continuationReadTrace, 'rewake.reachability', () =>
               probeWakeReachability(ownerId).catch(() => null)),
+            measureContinuationRead(continuationReadTrace, 'rewake.current-turn', () =>
+              resolveCurrentTurnStamp(ownerId).catch(() => null)),
+            measureContinuationRead(continuationReadTrace, 'rewake.self-compaction', async () =>
+              (await selfCompactionAvailabilityAsync(ownerId)).available).catch(() => null),
           ]);
           activeLoopIntervalSec = loop?.active ? loop.intervalSec : null;
           activeLoopGoal = loop?.active ? loop.goal : null;
-          const currentTurn = await measureContinuationRead(continuationReadTrace, 'rewake.current-turn', () =>
-            resolveCurrentTurnStamp(ownerId).catch(() => null));
+          selfCompactionAvailable = selfCompaction;
           const loopWake = classifyLoopNextWake(loop, Date.now(), reachability?.reachable);
           activeLoopRewakeBlockedReason =
             loop?.active && !loopWake.guaranteed && loopWake.reason !== 'no-active-loop' ? loopWake.reason : null;
@@ -2307,14 +2318,6 @@ export default defineTool({
         // spend its LAST turn on a call that can only return no_live_pty_host. Read
         // the SAME predicate session:request-compaction evaluates — not a correlated
         // proxy — so advice and refusal cannot disagree. Best-effort; unknown ⇒ null.
-        let selfCompactionAvailable: boolean | null = null;
-        try {
-          const { selfCompactionAvailabilityAsync } = await import('../../events/await/psu-pty-discovery');
-          selfCompactionAvailable = await measureContinuationRead(continuationReadTrace, 'rewake.self-compaction', async () =>
-            (await selfCompactionAvailabilityAsync(ownerId)).available);
-        } catch {
-          selfCompactionAvailable = null;
-        }
         let fleetWindDownLoopEndAuthorized: boolean | null = null;
         const contextPct = contextUsagePct(liveTokens ?? pres?.contextTokens, derivedLimit);
         const authorizationWorkspaceId = workspaceId ?? identity.workspaceId;

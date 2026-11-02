@@ -209,6 +209,9 @@ describe('finite code-intelligence worker source collection', () => {
     writeFileSync(join(root, 'f0700.ts'), 'export {target as alias} from "./f0500"; export * from "./f0900";\n');
     writeFileSync(join(root, 'f0900.ts'), 'export * from "./f0700"; new (unknown())();\n');
     writeFileSync(join(root, 'f1000.ts'), 'function broken(');
+    // Separate path identities retain separate calls, while identical Git
+    // blobs across capture batches must have one immutable backing write.
+    writeFileSync(join(root, 'f1001.ts'), readFileSync(join(root, 'f0000.ts')));
     const parserExcluded = ['_retired/legacy.ts', '.materialized/generated.ts'];
     for (const path of parserExcluded) {
       mkdirSync(dirname(join(root, path)), { recursive: true });
@@ -256,7 +259,12 @@ describe('finite code-intelligence worker source collection', () => {
           // fails here; the complete ordered result must still match its oracle.
           const captureSite = "      const out = await gitBytes(['cat-file', '--batch'],";
           if (!source.includes(captureSite)) throw new Error('Capture overlap observation site moved');
-          const pipelined = source.replace('batch.length < 4096', 'batch.length < 256').replace(captureSite, `
+          const writeSite = '          writeFileSync(file, out.subarray(endHeader + 1, endHeader + 1 + size));';
+          if (!source.includes(writeSite)) throw new Error('Immutable capture write observation site moved');
+          const pipelined = source.replace(writeSite, `
+            if (observedBlobWrites.has(file)) throw new Error('Immutable blob overwritten');
+            observedBlobWrites.add(file);
+${writeSite}`).replace('batch.length < 4096', 'batch.length < 256').replace(captureSite, `
             if (i > batch.length) {
               const captureDeadline = Date.now() + 3000;
               while (!overlapExists(${JSON.stringify(marker)})) {
@@ -266,7 +274,7 @@ describe('finite code-intelligence worker source collection', () => {
               if (process.env.P019_TEST_CASE === 'capture') throw new Error('Injected blob capture failure');
             }
 ${captureSite}`);
-          return { contents: `import {existsSync as overlapExists} from 'node:fs';\n` + pipelined.replace(site, `${site}
+          return { contents: `import {existsSync as overlapExists} from 'node:fs';\nconst observedBlobWrites = new Set();\n` + pipelined.replace(site, `${site}
             const overlapDeadline = Date.now() + 3000;
             while (!overlapExists(${JSON.stringify(marker)})) {
               if (Date.now() > overlapDeadline) throw new Error('Source parser did not overlap diff collection');

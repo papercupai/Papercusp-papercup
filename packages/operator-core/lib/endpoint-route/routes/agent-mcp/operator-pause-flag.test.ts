@@ -35,7 +35,8 @@ describe('existing pause endpoint feature controls', () => {
     const response = await handle(request('PATCH', { featureId, action: 'stop' }));
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, status: 'pending', policy: { automatic: true } });
-    expect(stopFeatureBackgroundActivity).toHaveBeenCalledWith(featureId, user);
+    expect(stopFeatureBackgroundActivity).toHaveBeenCalledWith(featureId, user,
+      { headers: expect.any(Headers), runtimePid: undefined });
     expect(setFeatureBackgroundActivityPolicy).not.toHaveBeenCalled();
     expect(setWorkspaceBackgroundActivityPolicy).not.toHaveBeenCalled();
     vi.mocked(stopFeatureBackgroundActivity).mockResolvedValueOnce({ status: 'unavailable',
@@ -43,6 +44,17 @@ describe('existing pause endpoint feature controls', () => {
     const unsupported = await handle(request('PATCH', { featureId, action: 'stop' }));
     expect(unsupported.status).toBe(503);
     expect(await unsupported.json()).toMatchObject({ ok: false, status: 'unavailable' });
+  });
+  it('forwards a runtime selector with the authenticated request headers', async () => {
+    vi.mocked(stopFeatureBackgroundActivity).mockResolvedValueOnce({ status: 'draining',
+      policy: { automatic: true, pausedUntil: null, revision: 2 } });
+    const req = request('PATCH', { featureId, action: 'stop', runtimePid: 12345 });
+    req.headers.set('cookie', 'papercusp_session=original-session');
+    expect((await handle(req)).status).toBe(200);
+    expect(stopFeatureBackgroundActivity).toHaveBeenCalledWith(featureId, user, { headers: req.headers, runtimePid: 12345 });
+    for (const runtimePid of [0, -1, 1.5, '12345']) {
+      expect((await handle(request('PATCH', { featureId, action: 'stop', runtimePid }))).status).toBe(400);
+    }
   });
   it('binds an authenticated identity to the strict feature request and returns the saved revision', async () => {
     const response = await handle(request());

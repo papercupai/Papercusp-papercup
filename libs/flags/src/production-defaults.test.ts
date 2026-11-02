@@ -50,6 +50,9 @@ const VALID_DARK_CASES: ReadonlySet<DarkCase> = new Set<DarkCase>([
  * fails loudly if the derivation ever silently flips a flag.
  */
 const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
+  // P-002/P-019: explicit security authorization cutover, pending exact host
+  // resource binding and independently precommitted qualification under Avi AUTO.
+  "papercusp-plugin-invocation-policy",
   // P-010 / EI-26074325417052646: destructive PG-payload cutover waits for
   // a successful backup and compatible readers on the shared database.
   "papercusp-session-archive-cold-migration",
@@ -822,7 +825,8 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // case was 'owner-authority', so the parking subset and DARK_FLAGS_HIGH_WATERMARK
     // both stay 12. Count 36 → 35.
     // P-010 adds a destructive-migration cutover interlock. Count 36 → 37.
-    expect(offCount).toBe(37);
+    // P-002/P-019 adds the registered security-policy cutover. Count 37 → 38.
+    expect(offCount).toBe(38);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {

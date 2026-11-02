@@ -13,14 +13,20 @@ const phases = vi.hoisted(() => ({
   finish: vi.fn(),
   retract: vi.fn(),
   provenance: vi.fn(),
+  detach: vi.fn(),
+}));
+vi.mock('../../testing-run-store', async (original) => ({
+  ...(await original<typeof import('../../testing-run-store')>()), startRunDurable: phases.detach,
 }));
 vi.mock('../../verification-attempts/loop-gate', () => ({ loopLaunchRefusal: phases.gate }));
 vi.mock('./mutation-probe-fence', () => ({ mutationProbeRefusal: phases.fence }));
 // The restricted-write fence (WI-10005634) reads the fence module's closure exports, which the
 // factory above omits; it has its own suite (restricted-hold-fence.test.ts).
 vi.mock('./restricted-hold-fence', () => ({ restrictedHoldRefusal: vi.fn(async () => null) }));
-vi.mock('../capability/bash-task-provenance', async (original) => ({
-  ...(await original<typeof import('../capability/bash-task-provenance')>()),
+vi.mock('../capability/bash-task-provenance', () => ({
+  BashProvenanceRefusal: class extends Error {
+    constructor(public code: string, message: string) { super(message); }
+  },
   resolveBashTaskProvenance: phases.provenance,
 }));
 vi.mock('./evidence', async (original) => ({
@@ -31,10 +37,13 @@ vi.mock('./evidence', async (original) => ({
 }));
 
 import { BashProvenanceRefusal } from '../capability/bash-task-provenance';
-import runTool from './run';
+import runTool, { testingRunAbortCompletionReceipt } from './run';
 
 const roots: string[] = [];
 afterEach(async () => {
+  const directories = phases.detach.mock.calls.flatMap(([request]) =>
+    (request.detachedReportArtifacts ?? []).map((artifact: { reportPath: string }) => join(artifact.reportPath, '..')));
+  await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true })));
   Object.values(phases).forEach((mock) => mock.mockReset());
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -63,6 +72,49 @@ const refusal = {
   fingerprints: ['exit:aaa', 'log:bbb'],
   message: 'loop_audit_required — WI-grinding is grinding',
 };
+
+it('starts one caller-bound background core, retaining pending evidence and the full budget', async () => {
+  phases.gate.mockResolvedValue(null);
+  phases.fence.mockResolvedValue(null);
+  phases.prepare.mockResolvedValue([{}]);
+  phases.detach.mockResolvedValue({ snapshot: { runId: 'direct-background', taskId: 'task-direct' }, durable: true });
+  const before = Date.now();
+  const { root, result } = await invoke({ background: true, timeoutMs: 120_000,
+    privatePg: false, maxFailures: 7, reporterStageTrace: true, testNamePattern: 'focused case' });
+  expect(phases.gate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ background: true, timeoutMs: 120_000 }));
+  expect(phases.detach).toHaveBeenCalledTimes(1);
+  const request = phases.detach.mock.calls[0]![0];
+  expect(request).toMatchObject({ command: process.execPath, cwd: root, originRunId: result.runId,
+    env: { PAPERCUSP_TEST_RUN_HARNESS: 'gate-harness', PAPERCUSP_WORKSPACE_ID: 'gate-workspace' } });
+  const script = request.args.at(-1) as string;
+  expect(script).toContain('runTestFilesCore');
+  expect(script).toContain('"allowDetachedRecovery":false');
+  expect(script).toContain('"privatePg":false');
+  expect(script).toContain('"maxFailures":7');
+  expect(script).toContain('"testNamePattern":"focused case"');
+  expect(result).toMatchObject({ ok: true, mode: 'background', status: 'pending',
+    detachedRunId: 'direct-background', detachedDurable: true, taskId: 'task-direct',
+    evidenceBundle: { status: 'incomplete', verificationFingerprint: null, rows: [{ phase: 'pending', outcome: 'unknown' }],
+      recovery: { args: { recoverEvidence: { originRunId: result.runId, runId: 'direct-background' } } } } });
+  expect((result.deadline as { taskDeadlineAtMs: number }).taskDeadlineAtMs).toBeGreaterThanOrEqual(before + 120_000);
+  expect(phases.prepare).toHaveBeenCalledOnce();
+  expect(phases.finish).not.toHaveBeenCalled();
+  expect(result).not.toHaveProperty('passed');
+  expect(testingRunAbortCompletionReceipt({}, { data: result } as never, {} as never)).toMatchObject({
+    status: 'recorded', diagnostics: { outcome: 'pending' },
+  });
+  expect(testingRunAbortCompletionReceipt({}, { data: { ...result, detachedDurable: false } } as never, {} as never))
+    .toMatchObject({ status: 'recovery-incomplete' });
+});
+
+it.each(['changedPaths', 'recoverEvidence', 'remeasureEvidence', 'nativeConsult', 'securityQualification'])(
+  'refuses background mixed with %s before any preparation or launch', async selector => {
+    const { data: result } = await runTool.handler({ background: true, [selector]: {} } as never, {} as never) as
+      { data: Record<string, unknown> };
+    expect(result).toMatchObject({ ok: false, error: 'mutually_exclusive_selectors' });
+    expect(phases.prepare).not.toHaveBeenCalled();
+    expect(phases.detach).not.toHaveBeenCalled();
+  });
 
 it('refuses a grinding item before any evidence is registered or any test process starts', async () => {
   phases.gate.mockResolvedValue(refusal);

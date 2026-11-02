@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SystemActionCtx } from './system-actions';
+import { mockReturnTyped } from '../../testing/typed-mock';
 
 const h = vi.hoisted(() => ({
   handlers: new Map<string, (ctx: SystemActionCtx) => Promise<unknown>>(),
@@ -98,14 +99,15 @@ describe('registered acceptance sweep audit entrypoint', () => {
     { outcome: 'failed', settle: 'reject' },
   ])('records a bounded gate observation that settles late as $outcome', async ({ outcome, settle }) => {
     vi.useFakeTimers();
-    let resolveGate!: (value: unknown) => void;
+    const { evaluatePlanAcceptanceGate } = await import('../../plan-acceptance-gate');
+    type GateVerdict = Awaited<ReturnType<typeof evaluatePlanAcceptanceGate>>;
+    let resolveGate!: (value: GateVerdict) => void;
     let rejectGate!: (error: Error) => void;
-    const gatePromise = new Promise<unknown>((resolve, reject) => {
+    const gatePromise = new Promise<GateVerdict>((resolve, reject) => {
       resolveGate = resolve;
       rejectGate = reject;
     });
-    const { evaluatePlanAcceptanceGate } = await import('../../plan-acceptance-gate');
-    vi.mocked(evaluatePlanAcceptanceGate).mockReturnValue(gatePromise as never);
+    mockReturnTyped(vi.mocked(evaluatePlanAcceptanceGate), gatePromise);
     h.runSweep.mockImplementation(async (deps: { evaluateGate: (planSlug: string, row: unknown) => Promise<unknown> }) => {
       try {
         await deps.evaluateGate('slow-plan', {
@@ -124,7 +126,7 @@ describe('registered acceptance sweep audit entrypoint', () => {
       await running;
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('observation-over-deadline key=gate:papercusp:slow-plan:123 state=pending'));
 
-      if (settle === 'resolve') resolveGate({ satisfied: true });
+      if (settle === 'resolve') resolveGate({ buildProvenance: { sha: null, version: 'test' }, satisfied: true });
       else rejectGate(new Error('late gate failure'));
       await gatePromise.then(() => undefined, () => undefined);
       await vi.waitFor(() => expect(warning).toHaveBeenCalledWith(expect.stringContaining(

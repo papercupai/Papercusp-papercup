@@ -14,7 +14,7 @@ import { SPAWNER_SCOPE_ENV } from '../fleet/sidecar-exec-lifetime';
 import { SUBSTRATE_SOCKET_ENV } from '../sync/hyperbee/substrate-socket-path';
 import { writeOperatorArtifactManifest } from './operator-artifact';
 import { ensureGradingAuditRuntime, gradingAuditRuntimeChildEnv, retireUnusedGradingAuditRuntimes, recoverGradingAuditRuntimeSource,
-  qualifyRematerializedGradingAuditSource, gradingAuditRuntimeSupervisorArgs,
+  qualifyRematerializedGradingAuditSource, gradingAuditRuntimeSupervisorArgs, GradingAuditRuntimeReadinessError,
   type GradingAuditRuntimeDeps, type GradingAuditRuntimeLocator } from './grading-audit-runtime';
 
 const spawnManaged = vi.hoisted(() => vi.fn());
@@ -280,10 +280,59 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect((f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator).issueIds).toEqual(['EI-a', 'EI-b', 'EI-c']);
   });
 
+  it.each<{
+    label: string;
+    response: () => Promise<Response>;
+    failure: Record<string, unknown>;
+  }>([
+    { label: 'HTTP failure', response: async () => new Response('warming', { status: 503 }),
+      failure: { reason: 'http-error', httpStatus: 503 } },
+    { label: 'invalid JSON', response: async () => new Response('not JSON'),
+      failure: { reason: 'invalid-json' } },
+    { label: 'malformed health', response: async () => Response.json({ healthy: true }),
+      failure: { reason: 'invalid-health' } },
+    { label: 'null health', response: async () => Response.json(null),
+      failure: { reason: 'invalid-health' } },
+    { label: 'connection refusal', response: async () => {
+      throw new TypeError('fetch failed', { cause: { code: 'ECONNREFUSED' } });
+    }, failure: { reason: 'connection-error', errorCode: 'ECONNREFUSED' } },
+    { label: 'timeout', response: async () => { throw new DOMException('deadline', 'TimeoutError'); },
+      failure: { reason: 'timeout' } },
+    { label: 'unclassified fetch error', response: async () => { throw new Error('transport failed'); },
+      failure: { reason: 'fetch-error' } },
+  ])('retains exact task diagnostics for $label and reuses the task once ready', async ({ response, failure }) => {
+    const f = fixture();
+    const runtime = await ensureGradingAuditRuntime(f.input, f.deps);
+    f.rows[0].logPath = join(f.root, 'recorded-runtime.log');
+    delete f.deps.probe;
+    const fetchHealth = vi.spyOn(globalThis, 'fetch').mockImplementation(response);
+    const error = await ensureGradingAuditRuntime({ ...f.input, issueId: 'EI-b', acceptanceRef: 'WI-source' }, f.deps)
+      .catch(error => error);
+    expect(error).toBeInstanceOf(GradingAuditRuntimeReadinessError);
+    expect(error.diagnostic).toEqual({
+      taskId: runtime.taskId, locator: { ...f.source, baseUrl: runtime.baseUrl, expiresAtSec: runtime.expiresAtSec,
+        issueIds: ['EI-a', 'EI-b'], acceptanceRefs: ['WI-source'] },
+      logPath: f.rows[0].logPath, lastProbe: { status: 'unready', ...failure }, attempts: 1,
+      readiness: { method: 'GET', url: runtime.baseUrl + '/api/health', timeoutMs: 2000 },
+      taskRead: { tool: 'processes:list', args: { taskId: runtime.taskId } },
+      recovery: { tool: 'scorecards:repair', args: { targetIds: ['EI-b'] } },
+    });
+    expect(f.stop).not.toHaveBeenCalled();
+    expect(f.deps.spawn).toHaveBeenCalledTimes(1);
+    expect(readGradingAuditSourcePin(f.source.sourceRoot, f.source.ownerRef, 1000)?.bundleSha256).toBe(runtime.bundleSha256);
+    fetchHealth.mockImplementation(async () => Response.json(f.input.evaluatorBuild));
+    expect((await ensureGradingAuditRuntime(f.input, f.deps)).taskId).toBe(runtime.taskId);
+    expect(f.deps.spawn).toHaveBeenCalledTimes(1);
+  });
+
   it('retains a newly enrolled warming runtime after the readiness window and reuses it once ready', async () => {
     const f = fixture();
     f.deps.probe = vi.fn().mockResolvedValue(null);
-    await expect(ensureGradingAuditRuntime(f.input, f.deps)).rejects.toThrow('readiness is unknown');
+    const error = await ensureGradingAuditRuntime(f.input, f.deps).catch(error => error);
+    expect(error).toBeInstanceOf(GradingAuditRuntimeReadinessError);
+    expect(error.diagnostic).toMatchObject({ taskId: 'runtime-0', logPath: null, attempts: 30,
+      lastProbe: { status: 'unready', reason: 'unknown' },
+      locator: { ...f.source, baseUrl: 'http://127.0.0.1:45187', issueIds: ['EI-a'] } });
     expect(f.stop).not.toHaveBeenCalled();
     expect(f.rows[0].state).toBe('running');
     expect(f.deps.spawn).toHaveBeenCalledTimes(1);
@@ -292,6 +341,20 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect((await ensureGradingAuditRuntime({ ...f.input, issueId: 'EI-b' }, f.deps)).taskId).toBe('runtime-0');
     expect(f.deps.spawn).toHaveBeenCalledTimes(1);
     expect((f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator).issueIds).toEqual(['EI-a', 'EI-b']);
+  });
+
+  it('retains the last measured probe reason after the bounded startup window', async () => {
+    const f = fixture();
+    f.deps.probe = vi.fn().mockResolvedValueOnce({ status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' })
+      .mockResolvedValue({ status: 'unready', reason: 'http-error', httpStatus: 503 });
+    const error = await ensureGradingAuditRuntime(f.input, f.deps).catch(error => error);
+    expect(error.diagnostic).toMatchObject({ attempts: 30,
+      lastProbe: { status: 'unready', reason: 'http-error', httpStatus: 503 } });
+    expect(f.stop).not.toHaveBeenCalled();
+    expect(f.deps.probe).toHaveBeenCalledTimes(30);
+    f.deps.probe = async () => ({ status: 'ready', build: f.input.evaluatorBuild });
+    expect((await ensureGradingAuditRuntime(f.input, f.deps)).taskId).toBe('runtime-0');
+    expect(f.deps.spawn).toHaveBeenCalledTimes(1);
   });
 
   it('recovers a crash between atomic pin publication and task registration', async () => {

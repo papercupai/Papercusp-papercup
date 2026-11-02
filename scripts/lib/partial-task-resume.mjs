@@ -420,9 +420,12 @@ export function readPartialNativeChannelCustody(producer, native, { allowInterru
       return refused("native-channel-binding-invalid");
     const { rows, sourceRoot, population } = readNativeProcessTraceArtifacts(channel.traceOut);
     if (!population.complete) return refused("native-channel-trace-incomplete");
-    const events = rows.map(value => value.row);
-    if (events.some(row => ["trace-limit", "trace-event-too-large", "native-channel-unavailable"].includes(row.event)))
+    const observations = rows.map(value => value.row);
+    if (observations.some(row => ["trace-limit", "trace-event-too-large", "native-channel-unavailable"].includes(row.event)))
       return refused("native-channel-trace-gap");
+    // Worker preloads share a PID with the reporter. Keep their source evidence,
+    // but use only the main thread to establish OS-process ancestry and custody.
+    const events = observations.filter(row => row.threadId === undefined || row.threadId === 0);
     const one = predicate => {
       const matches = events.filter(predicate);
       if (matches.length !== 1) throw new Error("native-channel-process-ambiguous");

@@ -218,6 +218,8 @@ export interface TopologyRunResult {
   modelCallsSpent: number;
   tokensSpent: number;
   costUsdSpent: number;
+  /** Known usage is a subtotal; no further agent is admitted after this becomes true. */
+  accountingUnknown: boolean;
   /** True if any iso-budget dimension was reached (so some tasks went un-attempted). */
   budgetExhausted: boolean;
   attemptedTaskIds: string[];
@@ -251,6 +253,42 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
   const startedAtMs = now();
 
   const spent = { calls: 0, tokens: 0, costUsd: 0 };
+  let accountingUnknown = false;
+  const missingMeasurements = ['costUsdMeasurementMissing', 'modelCallsMeasurementMissing', 'tokenUsageMeasurementMissing'] as const;
+  const runAgent = async (input: RunAgentInput<H>): Promise<AgentRunOutput> => {
+    // Check again AFTER clone/other async preparation: another in-flight unit
+    // may have discovered unknown spend while this unit was being prepared.
+    if (accountingUnknown) throw new Error('Topology dispatch stopped: prior usage accounting is unknown.');
+    let output: AgentRunOutput;
+    try { output = await deps.runAgent(input); }
+    catch (cause) {
+      // An invocation failure supplies no proof that no provider request was
+      // sent. Stop here rather than fund another run with invented zero spend.
+      output = { submission: null, status: 'error', modelCalls: 0, tokensIn: 0,
+        tokensOut: 0, costUsd: 0, turns: 0, error: errMsg(cause),
+        armMeta: { costUsdMeasurementMissing: true, modelCallsMeasurementMissing: true, tokenUsageMeasurementMissing: true } };
+    }
+    const usage = { ...output };
+    const invalid: string[] = [];
+    for (const field of ['modelCalls', 'tokensIn', 'tokensOut', 'costUsd', 'turns', 'tokensCacheRead', 'tokensCacheWrite'] as const) {
+      const value = usage[field];
+      if (value === undefined && (field === 'tokensCacheRead' || field === 'tokensCacheWrite')) continue;
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || field !== 'costUsd' && !Number.isSafeInteger(value)) {
+        invalid.push(field);
+        usage[field] = 0; // unavailable portion, explicitly marked below; never NaN/negative headroom
+      }
+    }
+    const missing = missingMeasurements.filter(key => output.armMeta?.[key] === true);
+    if (!missing.length && !invalid.length) return output;
+    accountingUnknown = true;
+    return { ...usage, status: 'error', error: [output.error,
+      `Topology usage accounting is unknown (${[...missing, ...invalid].join(', ')}).`].filter(Boolean).join('; '),
+      armMeta: { ...output.armMeta,
+        ...(invalid.includes('costUsd') ? { costUsdMeasurementMissing: true } : {}),
+        ...(invalid.includes('modelCalls') ? { modelCallsMeasurementMissing: true } : {}),
+        ...(invalid.some(field => field.startsWith('tokens')) ? { tokenUsageMeasurementMissing: true } : {}),
+        ...(invalid.length ? { invalidUsageFields: invalid } : {}) } };
+  };
   const addUsage = (u: AgentRunUsage): void => {
     spent.calls += u.modelCalls;
     spent.tokens += u.tokensIn + u.tokensOut + (u.tokensCacheRead ?? 0) + (u.tokensCacheWrite ?? 0);
@@ -263,6 +301,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     if (budget.maxWallMs != null && now() - startedAtMs >= budget.maxWallMs) return true;
     return false;
   };
+  const dispatchStopped = () => accountingUnknown || exhausted();
   const remaining = (): IsoBudget => ({
     maxModelCalls: budget.maxModelCalls != null ? Math.max(0, budget.maxModelCalls - spent.calls) : undefined,
     maxTokens: budget.maxTokens != null ? Math.max(0, budget.maxTokens - spent.tokens) : undefined,
@@ -336,6 +375,8 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     withExecutionPath(withCapabilityEvidence({
       ...(outputs.length === 1 ? outputs[0].armMeta :
         outputs.some(output => output.armMeta) ? { agentExecutions: outputs.map(output => output.armMeta ?? null) } : {}),
+      ...Object.fromEntries(missingMeasurements.filter(key => outputs.some(output => output.armMeta?.[key] === true))
+        .map(key => [key, true])),
       ...armMeta,
     }, mergeCapabilityEvidence(outputs.map((o) => o.capabilityEvidence))) ?? armMeta, outputs);
 
@@ -349,7 +390,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       return buildRow({ task, usage: ZERO, grade: infraGrade, status: 'error', capped: false, generationError: `clone: ${errMsg(e)}`, wallClockMs: now() - unitStart });
     }
     try {
-      const out = await deps.runAgent({
+      const out = await runAgent({
         task, handle, role: 'worker', arm: spec.arm, teamKey: plan.teamKey,
         topic: teamTopic(spec, plan.teamKey), directive: plan.directive, forbidTools: plan.forbidTools,
         attemptBudget: remaining(),
@@ -375,7 +416,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     let coordCalls = 0;
     try {
       for (let i = 0; i < ensembleSize; i++) {
-        if (i > 0 && exhausted()) break; // always run at least one solver; stop spending past the cap
+        if (dispatchStopped()) break;
         let h: H;
         try {
           h = await seam.clone(task);
@@ -383,7 +424,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
           continue; // a failed clone drops that solver; the ensemble proceeds with the rest
         }
         handles.push(h);
-        const out = await deps.runAgent({
+        const out = await runAgent({
           task, handle: h, role: 'solver', arm: spec.arm, teamKey: plan.teamKey,
           topic: teamTopic(spec, plan.teamKey), directive: plan.directive, forbidTools: plan.forbidTools,
           attemptBudget: remaining(),
@@ -394,8 +435,8 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
         if (out.status === 'completed') candidates.push({ index: handles.length - 1, submission: out.submission });
       }
 
-      if (candidates.length === 0) {
-        return buildRow({ task, usage, grade: infraGrade, status: 'error', capped: false, generationError: 'ensemble: no solver produced a submission', wallClockMs: now() - unitStart, traceRefs: solverTraces, armMeta: withEvidence({ ensembleSize, solvers: handles.length, coordCalls }, outputs) });
+      if (accountingUnknown || candidates.length === 0) {
+        return buildRow({ task, usage, grade: infraGrade, status: 'error', capped: false, generationError: accountingUnknown ? 'ensemble: usage accounting is unknown' : 'ensemble: no solver produced a submission', wallClockMs: now() - unitStart, traceRefs: solverTraces, armMeta: withEvidence({ ensembleSize, solvers: handles.length, coordCalls }, outputs) });
       }
 
       const candidateIndices = candidates.map((c) => c.index);
@@ -405,10 +446,10 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       let judgeTrace: string | null | undefined;
       if (candidates.length === 1) {
         receipt = { ...selector, via: 'sole-candidate', pickIndex: candidateIndices[0], candidateIndices };
-      } else if (exhausted()) {
+      } else if (dispatchStopped()) {
         receipt = fallback('budget exhausted before selection');
       } else {
-        const judge = await deps.runAgent({
+        const judge = await runAgent({
           task, handle: handles[candidateIndices[0]], role: 'judge', arm: spec.arm, teamKey: plan.teamKey,
           topic: teamTopic(spec, plan.teamKey), directive: plan.directive, forbidTools: plan.forbidTools,
           attemptBudget: remaining(), candidates,
@@ -422,10 +463,10 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
           : { ...selector, via: 'judge', pickIndex: judge.pickIndex, candidateIndices };
       }
       const pickIndex = receipt.pickIndex;
-      const grade = await seam.grade(task, handles[pickIndex]);
+      const grade = accountingUnknown ? infraGrade : await seam.grade(task, handles[pickIndex]);
       // Graded solver first, then the other solvers in order, then the judge.
       const traceRefs = [solverTraces[pickIndex], ...solverTraces.filter((_, i) => i !== pickIndex), judgeTrace];
-      return buildRow({ task, usage, grade, status: 'completed', capped: exhausted(), wallClockMs: now() - unitStart, traceRefs, armMeta: withEvidence({ ensembleSize, solvers: handles.length, candidates: candidates.length, pickIndex, coordCalls, selector: receipt }, outputs) });
+      return buildRow({ task, usage, grade, status: accountingUnknown ? 'error' : 'completed', capped: exhausted(), generationError: accountingUnknown ? 'ensemble: usage accounting is unknown' : undefined, wallClockMs: now() - unitStart, traceRefs, armMeta: withEvidence({ ensembleSize, solvers: handles.length, candidates: candidates.length, pickIndex, coordCalls, selector: receipt }, outputs) });
     } finally {
       for (const h of handles) await safeTeardown(h);
     }
@@ -440,7 +481,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       return buildRow({ task, usage: ZERO, grade: infraGrade, status: 'error', capped: false, generationError: `clone: ${errMsg(e)}`, wallClockMs: now() - unitStart });
     }
     try {
-      const drv = await deps.runAgent({
+      const drv = await runAgent({
         task, handle, role: 'driver', arm: spec.arm, teamKey: plan.teamKey,
         topic: teamTopic(spec, plan.teamKey), directive: plan.directive, forbidTools: plan.forbidTools,
         attemptBudget: remaining(),
@@ -450,8 +491,8 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       let coordCalls = drv.coordCalls ?? 0;
       let navTrace: string | null | undefined;
       const outputs: AgentRunOutput[] = [drv];
-      if (drv.status === 'completed' && !exhausted()) {
-        const nav = await deps.runAgent({
+      if (drv.status === 'completed' && !dispatchStopped()) {
+        const nav = await runAgent({
           task, handle, role: 'navigator', arm: spec.arm, teamKey: plan.teamKey,
           topic: teamTopic(spec, plan.teamKey), directive: plan.directive, forbidTools: plan.forbidTools,
           attemptBudget: remaining(), candidates: [{ index: 0, submission: drv.submission }],
@@ -460,8 +501,8 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
         outputs.push(nav);
         navTrace = nav.traceRef;
       }
-      const grade = drv.status === 'completed' ? await seam.grade(task, handle) : infraGrade;
-      return buildRow({ task, usage, grade, status: drv.status, capped: !!drv.capped || exhausted(), generationError: drv.error, wallClockMs: now() - unitStart, traceRefs: [drv.traceRef, navTrace], armMeta: withEvidence({ pair: true, coordCalls }, outputs) });
+      const grade = !accountingUnknown && drv.status === 'completed' ? await seam.grade(task, handle) : infraGrade;
+      return buildRow({ task, usage, grade, status: accountingUnknown ? 'error' : drv.status, capped: !!drv.capped || exhausted(), generationError: accountingUnknown ? 'pair: usage accounting is unknown' : drv.error, wallClockMs: now() - unitStart, traceRefs: [drv.traceRef, navTrace], armMeta: withEvidence({ pair: true, coordCalls }, outputs) });
     } finally {
       await safeTeardown(handle);
     }
@@ -493,7 +534,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
         const i = cursor++;
         if (i >= units.length) return;
         const { task, plan } = units[i];
-        if (exhausted()) { skippedTaskIds.push(task.instanceId); continue; }
+        if (dispatchStopped()) { skippedTaskIds.push(task.instanceId); continue; }
         attemptedTaskIds.push(task.instanceId);
         let row: TaskRunResult;
         try {
@@ -519,12 +560,12 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       let leadCoordCalls = 0;
       let leadTrace: string | null | undefined;
       let leadOutput: AgentRunOutput | undefined;
-      if (!exhausted() && plan.tasks.length > 0) {
+      if (!dispatchStopped() && plan.tasks.length > 0) {
         let leadHandle: H | undefined;
         try { leadHandle = await seam.clone(plan.tasks[0]); } catch { leadHandle = undefined; }
         if (leadHandle !== undefined) {
           try {
-            const lead = await deps.runAgent({
+            const lead = await runAgent({
               task: plan.tasks[0], handle: leadHandle, role: 'lead', arm: spec.arm, teamKey: plan.teamKey,
               topic: teamTopic(spec, plan.teamKey), directive: leadDirective(spec, plan.teamKey, plan.tasks.length),
               forbidTools: plan.forbidTools, attemptBudget: remaining(),
@@ -572,6 +613,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     modelCallsSpent: spent.calls,
     tokensSpent: spent.tokens,
     costUsdSpent: spent.costUsd,
+    accountingUnknown,
     budgetExhausted: exhausted(),
     attemptedTaskIds,
     skippedTaskIds,

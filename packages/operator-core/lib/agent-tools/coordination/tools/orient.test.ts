@@ -2153,21 +2153,61 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     const listCalls = calls.filter((c) => c.name === 'work_items:list');
     expect(listCalls).toHaveLength(1);
     expect(listCalls[0].args).toMatchObject({ kind: 'feature' });
+    expect(calls.find((c) => c.name === 'work_items:observe')?.args).toMatchObject({
+      ids: ['F-1'],
+      harness: 'h',
+    });
   });
 
-  it('preserves the oracle Hive-home scope and observes rows in the resolved lane', async () => {
+  it('observes feature rows while the inbox is pending, without re-observing oracle rows', async () => {
+    vi.useFakeTimers();
+    const inboxValue = { summary: { total: 0 }, entries: [] };
+    let resolveInbox!: (value: typeof inboxValue) => void;
+    const inboxPending = new Promise<typeof inboxValue>((resolve) => {
+      resolveInbox = resolve;
+    });
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'work_items:claimable': () => ({ claimable: [{ id: 'EI-ORACLE', state: 'open' }] }),
+      'work_items:list': () => [{ id: 'F-1', state: 'open' }],
+      'coord:inbox': () => inboxPending,
+    });
+    let pending: Promise<unknown> | undefined;
+
+    try {
+      pending = composeOrient({ harness: 'h' }, call, 'me');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls.find((c) => c.name === 'work_items:observe')?.args).toMatchObject({
+        ids: ['F-1'],
+        harness: 'h',
+      });
+      resolveInbox(inboxValue);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(pending).resolves.toMatchObject({
+        claimable: [{ id: 'EI-ORACLE', state: 'open' }, { id: 'F-1', state: 'open' }],
+      });
+    } finally {
+      resolveInbox(inboxValue);
+      await vi.runAllTimersAsync();
+      if (pending) await pending.catch(() => undefined);
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves the oracle Hive-home scope and observes only list-sourced rows in the resolved lane', async () => {
     const scope = { requested: 'oddsmith', resolved: 'oddsmith-hive', resolution: 'hive-home' as const };
     const { call, calls } = fakeCall({
       ...CORE,
       'work_items:claimable': () => ({ claimable: [{ id: 'EI-HOME', state: 'open' }], claimableHarnessScope: scope }),
-      'work_items:list': () => [],
+      'work_items:list': () => [{ id: 'F-HOME', state: 'open' }],
     });
 
     const r = await composeOrient({ harness: 'oddsmith' }, call, 'me');
 
     expect(r.claimableHarnessScope).toEqual(scope);
+    expect((r.claimable as Array<{ id: string }>).map((x) => x.id)).toEqual(['EI-HOME', 'F-HOME']);
     expect(calls.find((c) => c.name === 'work_items:observe')?.args).toMatchObject({
-      ids: ['EI-HOME'],
+      ids: ['F-HOME'],
       harness: 'oddsmith-hive',
     });
   });

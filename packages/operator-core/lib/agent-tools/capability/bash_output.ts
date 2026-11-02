@@ -1329,13 +1329,75 @@ export default defineTool({
             : false;
 
         const scopeSnapshot =
-          ledgerVerdict.kind === 'ledger_inconclusive' && ledgerRow ? await taskScopeSnapshot(ledgerRow) : null;
+          ledgerRow && (ledgerVerdict.kind === 'ledger_inconclusive' || strandedLog.terminal?.taskId)
+            ? await taskScopeSnapshot(ledgerRow)
+            : null;
         const scopeActive = Boolean(
           scopeSnapshot?.loadState === 'loaded' &&
             scopeSnapshot.activeState &&
             LIVE_SCOPE_ACTIVE_STATES.has(scopeSnapshot.activeState),
         );
         const currentTaskIsLive = ledgerVerdict.kind === 'confirmed_alive' || scopeActive;
+
+        // A runner-authenticated JOB END can prove the payload has reached its
+        // terminal state while systemd is still completing the service stop.
+        // Relax the live-scope guard only when the marker, durable row, and the
+        // currently loaded systemd invocation all identify this exact job.
+        const expectedRunnerNonceHash = ledgerRow?.detail?.runnerMarkerNonceHash;
+        if (
+          ledgerRow &&
+          strandedLog.terminal &&
+          scopeSnapshot?.loadState === 'loaded' &&
+          scopeActive &&
+          ledgerRow.scopeUnit === scopeSnapshot.scopeUnit &&
+          typeof ledgerRow.detail.bashJobId === 'string' &&
+          typeof expectedRunnerNonceHash === 'string' &&
+          /^[a-f0-9]{64}$/.test(expectedRunnerNonceHash) &&
+          strandedLog.terminal.taskId === ledgerRow.taskId &&
+          strandedLog.terminal.bashJobId === ledgerRow.detail.bashJobId &&
+          strandedLog.terminal.scopeUnit === ledgerRow.scopeUnit &&
+          Boolean(scopeSnapshot.invocationId) &&
+          strandedLog.terminal.invocationId === scopeSnapshot.invocationId &&
+          strandedLog.terminal.nonce === expectedRunnerNonceHash
+        ) {
+          const marker = strandedLog.terminal;
+          const markerState = marker.status === 'killed'
+            ? 'killed'
+            : marker.status === 'timed_out'
+              ? 'timed_out'
+              : 'exited';
+          const ledgerReconciled = await persistRecoveredTaskTerminal(ledgerRow.taskId, {
+            state: markerState,
+            exitCode: marker.exitCode,
+            exitReason:
+              `runner-log: identity-bound JOB END status=${marker.status} ` +
+              `exit=${marker.exitCode ?? 'null'} scope=${marker.scopeUnit} ` +
+              `invocation=${marker.invocationId} read from ${strandedLog.logPath}`,
+          });
+          if (ledgerReconciled) {
+            const markerOk = marker.status === 'completed';
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({
+                ok: markerOk,
+                ...jobIdentity,
+                status: marker.status,
+                exit_code: marker.exitCode,
+                running: false,
+                recovered_from_log_marker: true,
+                recovered_from_live_runner_marker: true,
+                ledger_state: markerState,
+                ledger_reconciled: true,
+                ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
+                ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
+                ...recoveredResourceLimitFields,
+                ...selfRedirectFields,
+                ...strandedOutput,
+                output: recoveredStrandedOutput,
+              }) }],
+              ...(markerOk ? {} : { isError: true }),
+            };
+          }
+        }
 
         // The unit retains its own terminal result even when the watcher and
         // ledger update were lost. Reuse the ledger writer's classification and

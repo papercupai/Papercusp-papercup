@@ -650,27 +650,61 @@ function shellCommandFromPartial(partial) {
 }
 
 /**
- * Permit only a single, read-only ripgrep invocation when authority lookup is
- * unavailable. shell-quote exposes operators/substitutions as non-string
- * tokens; reject those and ripgrep's command/config execution options.
+ * Parse a bounded shell command into simple invocations. Newlines, `;`, and
+ * `&&` separate commands; every other shell operator stays fail-closed. Split
+ * newlines before parsing because shell-quote treats them as whitespace.
  * @param {string} command
- * @param {NodeJS.ProcessEnv} env
+ * @returns {string[][] | null}
  */
-function isReadOnlyRipgrepCommand(command, env) {
+function readOnlyCommandSegments(command) {
   if (command.length > 16_384 ||
       command.includes(String.fromCharCode(0)) ||
-      command.includes(String.fromCharCode(10)) ||
-      command.includes(String.fromCharCode(13)) ||
       command.includes(String.fromCharCode(96)) ||
-      command.includes('$')) return false;
+      command.includes('$')) return null;
 
-  let tokens;
-  try {
-    tokens = parseShellCommand(command);
-  } catch {
-    return false;
+  const normalized = command.replace(/\r\n/g, '\n');
+  if (normalized.includes(String.fromCharCode(13))) return null;
+  const segments = [];
+  for (const line of normalized.split('\n')) {
+    if (!line.trim()) continue;
+    if (line.trimEnd().endsWith('\\')) return null;
+
+    let tokens;
+    try {
+      tokens = parseShellCommand(line);
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(tokens) || tokens.length === 0) return null;
+
+    let current = [];
+    for (const token of tokens) {
+      if (typeof token === 'string') {
+        current.push(token);
+        continue;
+      }
+      if (token && typeof token === 'object' &&
+          (token.op === ';' || token.op === '&&') && current.length > 0) {
+        segments.push(current);
+        current = [];
+        continue;
+      }
+      return null;
+    }
+    if (current.length === 0) return null;
+    segments.push(current);
+    if (segments.length > 16) return null;
   }
-  if (!Array.isArray(tokens) || tokens.length === 0 || tokens.some(token => typeof token !== 'string')) return false;
+  return segments.length > 0 ? segments : null;
+}
+
+/**
+ * Permit only ripgrep commands that cannot execute configured helpers while
+ * authority lookup is unavailable.
+ * @param {string[]} tokens
+ * @param {NodeJS.ProcessEnv} env
+ */
+function isReadOnlyRipgrepInvocation(tokens, env) {
   if (tokens[0] !== 'rg') return false;
   const args = tokens.slice(1);
   if (args.some(arg => /^--(?:pre|pre-glob|config-path)(?:=|$)/.test(arg))) return false;
@@ -679,26 +713,11 @@ function isReadOnlyRipgrepCommand(command, env) {
 }
 
 /**
- * Permit file readers while the execution-authority server is unavailable.
  * cat accepts only input paths; sed accepts only explicit line-range printing.
- * Reject shell operators, substitutions, in-place edits, and sed write/exec scripts.
- * @param {string} command
+ * @param {string[]} tokens
  */
-function isReadOnlyFileReadCommand(command) {
-  if (command.length > 16_384 ||
-      command.includes(String.fromCharCode(0)) ||
-      command.includes(String.fromCharCode(10)) ||
-      command.includes(String.fromCharCode(13)) ||
-      command.includes(String.fromCharCode(96)) ||
-      command.includes('$')) return false;
-
-  let tokens;
-  try {
-    tokens = parseShellCommand(command);
-  } catch {
-    return false;
-  }
-  if (!Array.isArray(tokens) || tokens.length < 2 || tokens.some(token => typeof token !== 'string')) return false;
+function isReadOnlyFileReadInvocation(tokens) {
+  if (tokens.length < 2) return false;
   const [tool, ...args] = tokens;
   if (tool === 'cat') {
     return args.length > 0 && args.every(arg => arg.length > 0 && !arg.startsWith('-'));
@@ -724,8 +743,32 @@ function isCanonicalPlanAnchorRepairCommand(command) {
 
   const header = lines.shift();
   const closingDelimiter = lines.pop();
-  const match = /^ptool[ \t]+plans:edit[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[A-Za-z0-9._-]+"|'[A-Za-z0-9._-]+'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  const match = /^(.*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
   if (!match || closingDelimiter !== match[2] || lines.includes(match[2])) return false;
+  const commands = readOnlyCommandSegments(match[1]);
+  if (commands?.length !== 1) return false;
+  const [tool, verb, ...args] = commands[0];
+  if (tool !== 'ptool' || verb !== 'plans:edit') return false;
+  let jsonStdin = false;
+  let explicitUrl = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--json' && !jsonStdin && args[i + 1] === '-') {
+      jsonStdin = true;
+      i++;
+    } else if (/^--(?:workspace|harness)=[A-Za-z0-9._-]+$/.test(arg)) {
+      continue;
+    } else if (!explicitUrl && (arg === '--url' || arg.startsWith('--url='))) {
+      const url = arg === '--url' ? args[++i] : arg.slice('--url='.length);
+      // The maintained local staging operator is the only extra destination.
+      // Never forward the session bearer to an arbitrary host or audit sidecar.
+      if (typeof url !== 'string' || !/^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):3170\/?$/.test(url)) return false;
+      explicitUrl = true;
+    } else {
+      return false;
+    }
+  }
+  if (!jsonStdin) return false;
 
   let payload;
   try {
@@ -745,6 +788,42 @@ function isCanonicalPlanAnchorRepairCommand(command) {
 }
 
 /**
+ * A bounded, single typed operator call cannot run arbitrary shell code. These
+ * reads and consult dispositions still cross the authenticated operator, which
+ * enforces role, participant and identity ceilings. Only the unavailable plan
+ * lookup is independent of them; an actual guard refusal always wins.
+ * @param {string} command
+ */
+function isCanonicalReviewPtoolCommand(command) {
+  if (command.length > 32_768 || command.includes(String.fromCharCode(0))) return false;
+  const normalized = command.replace(/\r\n/g, '\n');
+  if (normalized.includes('\r')) return false;
+  const lines = normalized.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length < 3) return false;
+  const header = lines.shift();
+  const closingDelimiter = lines.pop();
+  const match = /^ptool[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[A-Za-z0-9._-]+"|'[A-Za-z0-9._-]+'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  if (!match || closingDelimiter !== match[3] || lines.includes(match[3])) return false;
+  try {
+    const payload = JSON.parse(lines.join('\n'));
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+    let tool = match[1];
+    if (tool === 'tools:invoke') {
+      if (Object.keys(payload).some(key => !['name', 'args', 'projection'].includes(key)) ||
+          typeof payload.name !== 'string' || !payload.args ||
+          typeof payload.args !== 'object' || Array.isArray(payload.args)) return false;
+      tool = payload.name;
+    }
+    return ['tools:find', 'plans:get', 'plans:items', 'work_items:get', 'reports:get',
+      'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
+      'consult:reply', 'consult:decline'].includes(tool);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Only a small set of non-implementation operations may pass through when the
  * remote execution-authority lookup itself is unavailable. Everything else
  * stays fail-closed.
@@ -755,9 +834,10 @@ function isSafeWithoutExecutionAuthority(partial, env) {
   if (!SHELL_PRE_TOOL_NAMES.has(partial?.tool ?? '')) return false;
   const command = shellCommandFromPartial(partial);
   if (command === null) return false;
-  return isReadOnlyRipgrepCommand(command, env) ||
-    isReadOnlyFileReadCommand(command) ||
-    isCanonicalPlanAnchorRepairCommand(command);
+  const segments = readOnlyCommandSegments(command);
+  return (segments !== null && segments.every(tokens =>
+    isReadOnlyRipgrepInvocation(tokens, env) || isReadOnlyFileReadInvocation(tokens))) ||
+    isCanonicalPlanAnchorRepairCommand(command) || isCanonicalReviewPtoolCommand(command);
 }
 
 /**

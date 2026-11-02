@@ -21,6 +21,7 @@ import type postgres from 'postgres';
 import { applyEventSubstrateMigrationsForTest, applyPlanItemAnchorMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { fileURLToPath } from 'node:url';
 import { unknownAnchor } from './plan-items/anchors';
+import type { PlanItemStamp } from './plan-items/convert';
 import { readPlanItemAnchors, writePlanItemAnchors } from './plan-items/anchor-store';
 import { codePayloadForPlanItems } from './plan-workitem-promotion';
 import {
@@ -120,10 +121,13 @@ vi.mock('./modes/goal-context', async (importOriginal) => {
 
 vi.mock('./work-items', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./work-items')>();
-  return {
-    ...actual,
-    createWorkItem: async (...args: Parameters<typeof actual.createWorkItem>) => {
-      const created = await actual.createWorkItem(...args);
+  const createWorkItem = actual.createWorkItem;
+  const setWorkItemState = actual.setWorkItemState;
+  // A consumer entered while importOriginal resolves a cycle can already hold
+  // the original namespace. Spy on it too, rather than instrumenting only the
+  // replacement object returned by this factory.
+  vi.spyOn(actual, 'createWorkItem').mockImplementation(async (...args) => {
+      const created = await createWorkItem(...args);
       const barrier = h.mintBarrier;
       const payload = (args[0]?.payload ?? {}) as Record<string, unknown>;
       if (barrier && '_conditionUpsert' in payload) {
@@ -132,8 +136,8 @@ vi.mock('./work-items', async (importOriginal) => {
         await barrier.release;
       }
       return created;
-    },
-    setWorkItemState: async (...args: Parameters<typeof actual.setWorkItemState>) => {
+    });
+  vi.spyOn(actual, 'setWorkItemState').mockImplementation(async (...args) => {
       const faults = h.standDownFaults;
       const [, state, opts] = args;
       if (faults && faults.remaining > 0 && state === 'dropped' && opts?.by === 'system:condition-upsert') {
@@ -141,9 +145,9 @@ vi.mock('./work-items', async (importOriginal) => {
         faults.injected++;
         throw new Error('injected: stand-down write failed (CONNECTION_ENDED)');
       }
-      return actual.setWorkItemState(...args);
-    },
-  };
+      return setWorkItemState(...args);
+    });
+  return actual;
 });
 
 vi.mock('./dbos/feature-blockers-edges', async (importOriginal) => {
@@ -1153,7 +1157,9 @@ created: 2026-08-21
     });
     h.mintBarrier = { arrivals: 0, release: mintRelease, open: openMint };
     try {
-      return await Promise.allSettled([run.promotePlanItems(base), run.promotePlanItems(base)]);
+      const settled = await Promise.allSettled([run.promotePlanItems(base), run.promotePlanItems(base)]);
+      expect(h.mintBarrier.arrivals, 'both callers must traverse the instrumented mint seam').toBe(2);
+      return settled;
     } finally {
       h.coverageBarrier = null;
       h.mintBarrier = null;
@@ -1982,7 +1988,9 @@ describe('P-010: a promoted plan chain GATES the real claim door (end-to-end, no
         (harness_slug, feature_id, title, status, item_kind, workspace_id, taken_by, created_ts, updated_ts, payload)
       VALUES (${HARNESS}, ${id}, ${`issue ${id}`}, ${opts.status ?? 'open'}, 'task', ${WS},
               ${opts.takenBy ?? null}, ${opts.createdTs ?? 0}, 0,
-              ${db.sql.json({ plan_item: { plan_slug: PLAN, item_id: opts.itemId } })})`;
+              ${db.sql.json({ plan_item: {
+                plan_slug: PLAN, item_id: opts.itemId, harness_slug: HARNESS,
+              } satisfies PlanItemStamp })})`;
     // The `implements` edge promotion writes alongside the stamp. Not decoration: it is the
     // SAME truth the backfill derives its candidate plans from (listConvertedPlanItemRefs), so
     // without it this plan is never even scanned — and creating it here is what proves an
@@ -2044,6 +2052,10 @@ describe('P-010: a promoted plan chain GATES the real claim door (end-to-end, no
     });
     await seedStampedIssue('WI-2001', { itemId: 'P-001', takenBy: 'other-owner', createdTs: 100 });
     await seedStampedIssue('WI-2002', { itemId: 'P-002', createdTs: 200 });
+
+    // Validate the fixture through the same stamp resolver the backfill uses, so
+    // malformed provenance cannot make this claim-door regression vacuous.
+    expect(await convert.findConvertedWorkItemByStamp(PLAN, 'P-002', HARNESS)).toMatchObject({ id: 'WI-2002' });
 
     const res = await backfill();
     expect(res).toMatchObject({ itemsConsidered: 1, edgesWritten: 1, edgeFailures: 0 });

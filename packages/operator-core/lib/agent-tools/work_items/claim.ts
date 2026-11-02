@@ -324,10 +324,9 @@ export function concurrencyClaimWarning(
   dispatchedAssignee?: string | null,
 ): string | null {
   if (!verdict?.blocked) return null;
-  // The verdict is PRE-claim, so the item just claimed is not in `heldIds` — subtract it
-  // anyway rather than trust that, so a retry/re-claim of an item the caller already holds
-  // can never be reported as if it were an additional lane.
-  const held = verdict.heldIds.filter((id) => id !== claimedId);
+  // Reclaiming an already-counted item adds no lane, even when the caller is over cap.
+  if (verdict.heldIds.includes(claimedId)) return null;
+  const held = verdict.heldIds;
   const shown = held.slice(0, 8);
   const more = held.length - shown.length;
   const isDispatch = Boolean(dispatchedAssignee);

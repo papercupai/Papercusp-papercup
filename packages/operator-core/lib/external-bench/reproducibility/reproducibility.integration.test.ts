@@ -6,6 +6,7 @@
  * priceRun, and the emitFromAttempt infra-failure path nulls `resolved`.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
@@ -24,6 +25,10 @@ import { exportRunBundle } from './export';
 import type { EmitRolloutInput } from './schema';
 import type { ArmAttempt, BenchTask, GradeResult } from '../types';
 import { currentProtocolFixture } from './_protocol-test-fixture';
+import { freezeMinecraftTrial } from '../minecraft-protocol';
+import { gradeMinecraftEvidence, readMinecraftEvidenceExport } from '../minecraft-evidence';
+import { minecraftOfflinePlayerUuid } from '../minecraft-runtime';
+import { canonicalJson } from './canonical-json';
 
 // Keep the real invalidation bus and pg_notify adapter, but bind its host pool
 // to the same disposable database as the benchmark writes. The live-PG guard
@@ -229,6 +234,52 @@ describe('current frozen rollout emission', () => {
     const [report] = await getRunReports(protocol.runId, { sql, workspaceId: WS });
     expect(report.priceTableVersion).toBe(row.priceTableVersion);
     expect(report.arms.find(arm => arm.arm === attempt.arm)?.cost.costUsd).toBeCloseTo(row.costUsd);
+  });
+
+  it('retains a Minecraft replay with its unsolved result and regenerates the same priced report', async () => {
+    const protocol = currentProtocolFixture('minecraft-replay-pg');
+    protocol.grader = { ...protocol.grader, family: 'minecraft', version: 'minecraft@1.20.4/server-advancements-v1' };
+    const { preregHash } = await preregister({ runId: protocol.runId, config: protocol,
+      suites: ['minecraft'], sql, workspaceId: WS, repoRoot });
+    const sha = (n: number) => n.toString(16).padStart(64, '0');
+    const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+    const trial = freezeMinecraftTrial({ schemaVersion: 1, runId: protocol.runId, armId: 'papercusp', taskId: 't1',
+      manifestHash: sha(1), selectionHash: sha(2), worldSeed: '3', objective: 'iron-tools',
+      rules: { version: '1.20.4', difficulty: 'easy', gameMode: 'survival', cheats: false },
+      pins: { serverImage: `minecraft/server@sha256:${sha(3)}`, serverJarSha256: sha(4),
+        mineflayerVersion: '4.32.0', pathfinderVersion: '2.4.5' },
+      participants: ['alice'], observations: ['position'], actions: ['move'],
+      limits: { maxWallClockMs: 100, maxProgramMs: 50, maxUsd: 3 } });
+    const uuid = minecraftOfflinePlayerUuid('alice');
+    const snapshot = { runtimeId: 'owned-minecraft-pg', trial, startedAtMs: 0, stoppedAtMs: 50,
+      files: { 'programs.jsonl': '', 'server.log': 'trusted server', 'bot.log': 'trusted bot',
+        [`world/world/advancements/${uuid}.json`]: JSON.stringify({ DataVersion: 1 }),
+        [`world/world/stats/${uuid}.json`]: JSON.stringify({ DataVersion: 1, stats: {} }) },
+      provenance: { source: 'host-collected-server-files', deterministicReplay: false, nondeterministicInputs: ['server-ticks'] } };
+    const body = canonicalJson({ schemaVersion: 1, trialId: trial.trialId, runtimeId: snapshot.runtimeId,
+      sha256: digest(canonicalJson(snapshot)), snapshot });
+    const archiveSha256 = digest(body);
+    const base = input({ preregHash });
+    const attempt: EmitRolloutInput = { ...base, runId: protocol.runId, suite: 'minecraft', taskId: 't1', seed: 1,
+      modality: 'in-container', generation: { ...base.generation, modelId: protocol.arms[0].model,
+        tokensOut: 500_000, tokensCacheRead: 200_000, tokensTotal: 1_700_000, submission: body,
+        armMeta: { minecraftEvidence: { trialId: trial.trialId, sha256: archiveSha256 } } },
+      grading: { resolved: false, score: 0, status: 'failed', ...protocol.grader } };
+    const receipt = await emitRollout(attempt, { sql, workspaceId: WS });
+    const [row] = await listRunResults({ runId: protocol.runId, sql, workspaceId: WS });
+    const rollout = await getRollout(receipt.rolloutId, { sql, workspaceId: WS });
+    expect(row).toMatchObject({ suite: 'minecraft', resolved: false, score: 0, graderStatus: 'failed',
+      armMeta: { minecraftEvidence: { sha256: archiveSha256 } } });
+    const replay = readMinecraftEvidenceExport(rollout!.submission!,
+      (row.armMeta!.minecraftEvidence as { sha256: string }).sha256);
+    const grade = gradeMinecraftEvidence(trial, replay);
+    expect(grade).toMatchObject({ resolved: false, score: 0 });
+    expect(grade.graderError).toBeUndefined();
+    expect(row.costUsd).toBeCloseTo(2.1);
+    const [report] = await getRunReports(protocol.runId, { sql, workspaceId: WS });
+    expect(report.suite).toBe('minecraft');
+    expect(report.arms.find(arm => arm.arm === attempt.arm)?.cost.costUsd).toBeCloseTo(row.costUsd);
+    expect(await getRollout(receipt.rolloutId, { sql, workspaceId: 'foreign-minecraft-workspace' })).toBeNull();
   });
 
   it('refuses a caller override that differs from frozen prices without writing either row', async () => {

@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010044289-cc437f4d2b91745520767fb9756d8400-reconcile.json"
+updated_at: 1793639196817
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010044289:cc437f4d2b91745520767fb9756d8400",
+  "inputSha256": "cc437f4d2b91745520767fb9756d8400af16fa5eea1355e89f07c0a1663d28b6",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-02T17:06:36.816Z",
+  "actor": "su-9aa0bac1-57ab-408e-a009-fd2b58012aa0",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010044289",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "6a4e2bb9e3c58736ebd0154a34b788e3ae2be831b580628f1a77bc220dd28574",
+      "observedParkFingerprint": "6a4e2bb9e3c58736ebd0154a34b788e3ae2be831b580628f1a77bc220dd28574",
+      "reasonCode": "operator-directed",
+      "evidence": "Avi authorized AUTO/direct security implementation through verified shipment. Scoped P008 adoption repair of canonical migrated security plan nodes only: plans:start46523941 promoted same identities; D011 requires audited lift, this session now holds WI-6554700010030915. Keep global P008 open; retain DAG, BARs, approvals and other holds.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010044289-cc437f4d2b91745520767fb9756d8400-reconcile.json"
+}

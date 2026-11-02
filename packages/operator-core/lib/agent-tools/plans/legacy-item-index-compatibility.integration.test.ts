@@ -16,6 +16,7 @@ vi.mock('../../hive-federation', async (original) => ({
 }));
 
 import { readExecutionPlanRow } from './plan-execution-authority';
+import { readPlanLineItems } from './plan-line-graph';
 import { getPlanItemRow, getPlanRow, listPlanIndexRows, planItemsForRow } from './source';
 
 let db: FreshPgDb;
@@ -41,7 +42,7 @@ function compact(items: readonly { id: string; text: string; blockedBy: string[]
 
 async function seedPlan(slug: string, content: string, items: unknown): Promise<void> {
   await db.sql.unsafe(
-    'INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status, items) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8::jsonb)',
+    'INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status, items) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8::text::jsonb)',
     [workspaceId, harnessSlug, slug, content, hashPlanContent(content), 'Compatibility fixture', 'draft', JSON.stringify(items)],
   );
 }
@@ -98,6 +99,19 @@ describe('old writer JSON item index compatibility', () => {
     // The d740fc3802 writer persisted this derived JSON index but had no graph-line write.
     await seedPlan('old-writer', body, oldIndex);
 
+    const [persisted] = await db.sql<{ items: unknown; content: string }[]>`
+      SELECT items, content
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         AND plan_slug = 'old-writer'
+    `;
+    if (!persisted) throw new Error('compatibility fixture row not persisted');
+    expect(persisted.items).toEqual(oldIndex);
+    expect(persisted.content).toBe(body);
+    const directItems = await db.sql.begin((tx) =>
+      readPlanLineItems(tx, { ...scope, slug: 'old-writer' }, persisted),
+    );
+
     const plan = await getPlanRow('old-writer', scope);
     const itemRow = await getPlanItemRow('old-writer', scope);
     const listed = await listPlanIndexRows({ ...scope, includeItems: true, limit: 10 });
@@ -109,6 +123,7 @@ describe('old writer JSON item index compatibility', () => {
       { id: 'P-001', text: 'First task', blockedBy: [] },
       { id: 'P-002', text: 'Second task', blockedBy: ['P-001'] },
     ];
+    expect(compact(directItems)).toEqual(expected);
     expect(compact(plan.items)).toEqual(expected);
     expect(compact(planItemsForRow(itemRow))).toEqual(expected);
     expect(compact(listedPlan.items)).toEqual(expected);

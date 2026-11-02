@@ -18,7 +18,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_SCRIPT_TIMEOUT_MS } from '@papercusp/tooldef';
 import { observeFallback } from './degradation/fallback-observations';
 import launchAgentTool, { INTERNAL_GRADING_AUDIT_TASK_DETAIL, INTERNAL_GRADING_AUDIT_RUNTIME } from './agent-tools/capability/launch-agent';
-import { ensureGradingAuditRuntime, retireUnusedGradingAuditRuntimes, type GradingAuditRuntimeBinding } from './release/grading-audit-runtime';
+import { ensureGradingAuditRuntime, retireUnusedGradingAuditRuntimes, GradingAuditRuntimeReadinessError,
+  type GradingAuditRuntimeBinding, type GradingAuditRuntimeReadinessDiagnostic } from './release/grading-audit-runtime';
 import { advSessionsByTranscriptHandles, type AdvSessionRow } from './adv-sessions';
 import { getBuildInfo, type BuildInfo } from './build-info';
 import { findSessionTranscript } from './claude-sessions';
@@ -614,6 +615,8 @@ export interface PendingGradingAuditDispatchReceipt {
   conversationId?: string;
   routingFallback?: string;
   reason?: string;
+  /** Failed readiness retains exact endpoint provenance and actionable diagnostic reads. */
+  runtimeReadiness?: GradingAuditRuntimeReadinessDiagnostic;
   /** The first dispatcher phase that failed; present on failed receipts. */
   phase?: GradingAuditDispatchPhase;
   /** EI-25965998744903219: set on a drift skip once no exact-build host can still serve the card. */
@@ -662,6 +665,8 @@ export interface DispatchPendingGradingAuditsInput {
    * history; this is the scorecards:emit repair trigger.
    */
   targetIds?: readonly string[];
+  /** Completion/feature reference that caused this audit dispatch, when one exists. */
+  acceptanceRef?: string | null;
   /** The completion caller's context, forwarded to capability:launch-agent. */
   ctx: GradingAuditLaunchContext;
   /** Keep the auditor in the completed item's harness when available. */
@@ -739,6 +744,8 @@ export interface DispatchPendingGradingAuditsDeps {
    * never routed to a pool the launcher will refuse at boot. Fails open.
    */
   providerCanServe?: (provider: string) => Promise<boolean>;
+  /** Strict current route reading before an explicit repair retires an old quota wall. */
+  quotaRouteCanServe?: typeof gradingAuditQuotaRouteCanServe;
   /** Running server generation used to pin audits of generation-bound cards to a fresh launch. */
   readCurrentGeneration?: typeof readRunningGeneration;
   /** Shared tri-state ancestry check used by both dispatch and scorecards:emit. */
@@ -1358,6 +1365,8 @@ interface GradingAuditReservationOptions {
    * That proof lets a compatible dispatcher clear a legacy generation-incompatible backoff.
    */
   allowGenerationIncompatibleBackoff?: boolean;
+  /** Explicit repair proved the requested provider/model can serve again. */
+  allowRecoveredQuotaBackoff?: boolean;
 }
 
 async function withGradingAuditSubjectMutex<T>(
@@ -1499,6 +1508,24 @@ async function readGradingAuditPoolVerdict(
   ]);
   const rows = await accountStatus(activeWorkspaceId(), nowMs);
   return poolVerdictByProvider(rows, nowMs).find((row) => row.provider === provider);
+}
+
+/** Reuse the launcher's pool/model readings; unknown capacity cannot retire a quota wall. */
+export async function gradingAuditQuotaRouteCanServe(
+  profile: GradingLaunchProfile,
+  deps: {
+    readPoolVerdict?: (provider: string, nowMs: number) => Promise<{ serviceable: number } | undefined>;
+    readCodexHeadroom?: () => Promise<Pick<GatewayHeadroom, 'reachable' | 'serviceableByModel'>>;
+  } = {},
+): Promise<boolean> {
+  try {
+    const verdict = await (deps.readPoolVerdict ?? readGradingAuditPoolVerdict)(profile.agent, Date.now());
+    if (!gradingAuditFallbackVerdictCanServe(verdict)) return false;
+    const headroom = await (deps.readCodexHeadroom ?? (() => fetchGatewayHeadroom({ provider: 'codex' })))();
+    return headroom.reachable && gradingAuditFallbackModelCanServe(headroom, profile.model);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1728,6 +1755,10 @@ export async function reservePendingGradingAudit(
                OR (
                  ${options.allowGenerationIncompatibleBackoff === true}
                  AND payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'code' = 'generation_incompatible'
+               )
+               OR (
+                 ${options.allowRecoveredQuotaBackoff === true}
+                 AND payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'code' = 'model_quota_exhausted'
                )
                OR CASE
                     WHEN payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'until'
@@ -2019,6 +2050,7 @@ function gradingAuditBrief(
   card: ScorecardRow,
   reservationReservedAt: string,
   runtime?: GradingAuditRuntimeBinding,
+  acceptanceRef?: string | null,
 ): string {
   const scratchTemplate = `/tmp/grading-integrity-${card.issueId}.XXXXXX`;
   const recordedEvaluatorBuild = recordedEvaluatorBuildForRecipe(card.rerunRecipe);
@@ -2027,6 +2059,7 @@ function gradingAuditBrief(
   const recoveryCommand = runtime
     ? `node scripts/mcp-call.mjs --port ${new URL(runtime.baseUrl).port || '80'} <tool> --json -`
     : 'node scripts/mcp-call.mjs <tool> --json -';
+  const completionRef = acceptanceRef?.trim();
   // WI-6554700010009935: the rubric's terminal-re-rate drill says only
   // `scorecards:list { rubricRef, sourceHive }`, so judges paged 200-500 terminal cards
   // (1.6-4MB per read) to find one subject's interim cards. Name the exact narrow read.
@@ -2040,6 +2073,7 @@ function gradingAuditBrief(
       : []),
     `You are the dedicated grading-integrity auditor for scorecard ${card.issueId}.`,
     `The target is a terminal standard-rubric scorecard for rubric '${card.rubricRef}'. Inspect that exact scorecard and grade whether its evidence and criterion explanations are complete and independently re-runnable.`,
+    ...(completionRef ? [`Originating completion reference: ${JSON.stringify(completionRef)}. This identifies why the audit was dispatched; grade only the exact scorecard and evidence scope named above.`] : []),
     `Source subject: ${JSON.stringify(card.subject ?? null)}; evidence fingerprint: ${card.evidenceFingerprint ?? 'not recorded'}. Preserve the stored evidence scope; do not substitute a newer working tree.`,
     `Interim cards (terminal-re-rate): read them with ${interimCardRead}. It returns only the provisional cards for this subject, usually none. Do not page the rubric's whole card history to find them.`,
     `Historical source evidence: when a criterion cites a committed file, use capability:git-evidence { op:'readFileAtCommit', commitSha:'<full SHA from the stored evidence>', path:'<repository-relative path>' } to inspect that exact blob. Do not use capability:git or current-tree capability:read as proof of historical contents. If the stored evidence lacks the full commit SHA or path, state that exact gap and do not infer from HEAD.`,
@@ -2378,7 +2412,7 @@ export async function dispatchPendingGradingAudits(
     },
   );
   const retainedRuntimes = new Map<string, GradingAuditRuntimeBinding>();
-  const runtimeFailures = new Map<string, string>();
+  const runtimeFailures = new Map<string, { reason: string; runtimeReadiness?: GradingAuditRuntimeReadinessDiagnostic }>();
   const runtimeCandidates = cards.filter(card => currentPendingScorecard(card) &&
     !pausedOwners.has(card.createdBy ?? '') &&
     (explicitTargetIds.length === 0 || explicitTargetIds.includes(card.issueId)) &&
@@ -2401,7 +2435,8 @@ export async function dispatchPendingGradingAudits(
       // Only measured endpoint readiness permits bypassing this host's drift exclusion.
       evaluatorBuildDriftIds.delete(card.issueId);
     } catch (error) {
-      runtimeFailures.set(card.issueId, error instanceof Error ? error.message : String(error));
+      runtimeFailures.set(card.issueId, { reason: error instanceof Error ? error.message : String(error),
+        ...(error instanceof GradingAuditRuntimeReadinessError ? { runtimeReadiness: error.diagnostic } : {}) });
     }
   });
   const pendingCards = cards.filter((card) => {
@@ -2590,6 +2625,14 @@ export async function dispatchPendingGradingAudits(
       phase = next;
     };
     const card = pendingById.get(issueId);
+    // Readiness failure is actionable even when this host cannot admit the old
+    // evaluator. Do not hide its exact locator behind a generic drift skip.
+    const runtimeFailure = runtimeFailures.get(issueId);
+    if (runtimeFailure && (card || runtimeFailure.runtimeReadiness)) return {
+      issueId, rubricRef: card?.rubricRef ?? runtimeCandidates.find(candidate => candidate.issueId === issueId)?.rubricRef,
+      state: 'failed', reason: `exact audit endpoint unavailable: ${runtimeFailure.reason}`,
+      ...(runtimeFailure.runtimeReadiness ? { runtimeReadiness: runtimeFailure.runtimeReadiness } : {}),
+    };
     if (!card) {
       if (evaluatorBuildDriftIds.has(issueId)) {
         const driftCard = evaluatorBuildDriftById.get(issueId);
@@ -2622,10 +2665,6 @@ export async function dispatchPendingGradingAudits(
       };
     }
 
-    if (runtimeFailures.has(issueId)) return {
-      issueId, rubricRef: card.rubricRef, state: 'failed',
-      reason: `exact audit endpoint unavailable: ${runtimeFailures.get(issueId)}`,
-    };
     markPhase('rubric-read');
     let rubric: Awaited<ReturnType<typeof getRubric>>;
     try {
@@ -2842,6 +2881,16 @@ export async function dispatchPendingGradingAudits(
         ...(generationCompatible ? { allowGenerationIncompatibleBackoff: true } : {}),
       };
       let reservation = await reserve(issueId, idempotencyKey, reservationOptions);
+      // A dated wall describes the failed route at that time. An explicit
+      // targeted repair may have selected a recovered pool or another route.
+      // Re-check current capacity and use the same atomic election/lease guard;
+      // this exception applies only to quota, never other failure backoffs.
+      if (reservation.status === 'quota-backoff' && profile && explicitTargetIds.includes(issueId) &&
+          await (deps.quotaRouteCanServe ?? gradingAuditQuotaRouteCanServe)(profile)) {
+        reservation = await reserve(issueId, idempotencyKey, {
+          ...reservationOptions, allowRecoveredQuotaBackoff: true,
+        });
+      }
       // Targeted repair must reach an auditor's proven terminal provider error
       // even while its original dispatch lease is fresh. Reuse the native
       // identity proof; a healthy/unreadable peer or an incomplete scan keeps
@@ -3318,7 +3367,7 @@ export async function dispatchPendingGradingAudits(
               card,
               reservationKey: idempotencyKey,
               reservationReservedAt,
-              brief: gradingAuditBrief(card, reservationReservedAt, retainedRuntimes.get(issueId)),
+              brief: gradingAuditBrief(card, reservationReservedAt, retainedRuntimes.get(issueId), input.acceptanceRef),
               ctx: input.ctx,
               ...(harnessResolved ? { harness } : {}),
             },
@@ -3391,7 +3440,7 @@ export async function dispatchPendingGradingAudits(
         markPhase('auditor-launch');
         const result = (await launch(
           {
-            brief: gradingAuditBrief(card, reservationReservedAt, retainedRuntime),
+            brief: gradingAuditBrief(card, reservationReservedAt, retainedRuntime, input.acceptanceRef),
             ...(harnessResolved ? { harness } : {}),
             workItem: issueId,
             headless: true,
@@ -3408,7 +3457,9 @@ export async function dispatchPendingGradingAudits(
             // grading_audit_generation_incompatible after the launch is paid.
             // An evaluator-build-bound recipe likewise needs this exact host
             // for creation-time replay, even without a deployed generation.
-            ...(generationBound || evaluatorBuildBound ? { mcpTarget: 'spawn-host' as const } : {}),
+            // A routine-scoped Codex profile also needs the matching restricted
+            // role MCP profile from this dispatcher, rather than the stable proxy.
+            ...(profile || generationBound || evaluatorBuildBound ? { mcpTarget: 'spawn-host' as const } : {}),
             account: useFallback ? GRADING_AUDIT_FALLBACK.account : GRADING_AUDIT_ACCOUNT,
             ...(useFallback ? { agent: GRADING_AUDIT_FALLBACK.agent } : {}),
             count: 1,

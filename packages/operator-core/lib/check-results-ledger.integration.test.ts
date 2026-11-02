@@ -126,6 +126,31 @@ const reading = (key: string, unit: InstrumentReading['unit'], value: number | n
 });
 
 describe('R-6 — every executed probe or instrument check writes one row to the results ledger', () => {
+  it('a failed current rescore persists an unknown attempt instead of reusing the previous SQL-ledger pass', async () => {
+    const rubricRef = 'performance-failed-attempt-fixture';
+    const criteria = [{ key: 'current', check: { kind: 'probe' as const, probe: sqlProbe(1), maxAgeMs: 60_000, unit: 'ms' } }];
+    const [oldId] = await recordRubricCheckResults([{
+      check: { id: 'current:0', rubricRef, criterionKey: 'current', kind: 'probe', value: 1, unit: 'ms' },
+      verdict: 'pass', measuredAt: new Date(Date.now() - 1000).toISOString(), durationMs: 1,
+    }], SCOPE, sql());
+    const outcome = await rescoreRubric({ rubricRef, workspaceId: WS, harnessSlug: 'papercusp' }, {
+      getRubric: async () => ({ rubricId: rubricRef, workspaceId: WS, criteria }),
+      readLatest: input => readLatestRubricCheckResults(input, sql()),
+      runInstruments: async () => [],
+      dispatchTool: async () => { throw new Error('fixture timeout'); },
+      evaluateProbes: async () => ({ ok: false, error: 'probe_run_failed', criterionKey: 'current', detail: 'fixture timeout' }),
+      record: (results, scope) => recordRubricCheckResults(results, scope, sql()),
+      emit: async () => { throw new Error('unknown must never emit a measured regression'); },
+    });
+    expect(outcome.testRunIds).toHaveLength(1);
+    const latest = await readLatestRubricCheckResults({ rubricRef, workspaceId: WS }, sql());
+    expect(latest.get('current:0')).toMatchObject({ testRunId: outcome.testRunIds[0], status: 'error', check: { value: null, unit: 'ms' } });
+    const grade = fillRatingsFromLedger({ criteria, latest, callerRatings: {}, rubricRatingScale: ['meets', 'misses', 'unknown'] });
+    expect(grade.ok && grade.ratings.current).toMatchObject({ rating: 'unknown', ledgerResult: { testRunId: outcome.testRunIds[0], value: null } });
+    const history = await rowsById([oldId!, ...outcome.testRunIds]);
+    expect(history.map(row => row.status)).toEqual(['pass', 'error']);
+  });
+
   it('scheduled adoption measures the real activity ledger, records regression, and grades from the stored result', async () => {
     const rubricRef = 'acceptance-scheduled-native-fixture';
     const at = '2026-10-13T04:00:00.000Z';

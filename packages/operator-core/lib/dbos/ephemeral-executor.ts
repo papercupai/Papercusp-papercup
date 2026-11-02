@@ -372,13 +372,19 @@ export function productionEphemeralExecutorDeps(): EphemeralExecutorDeps {
         console.warn(`[ephemeral] ${skip} (routine ${r.id})`);
         return { diagnostics: { restrictedHoldSkip: skip } };
       }
+      const { runObservedBackgroundActivity } = await import('../startup-activity');
+      // Re-read after async action/restricted-tree resolution, immediately before effects.
+      if (!await routineBackgroundActivityAllowed(r)) return { diagnostics: { backgroundActivityWithheld: true } };
       return await runWithWorkspace(r.workspaceId, () =>
-        action({
+        runObservedBackgroundActivity({ workspaceId: r.workspaceId,
+          featureId: startupActivityFeatureId({ source: 'routines', installSlug: r.installSlug, name: r.name, detail: {} }, { workspaceId: r.workspaceId }),
+          source: 'routine', trigger: 'timer',
+        }, () => action({
           installSlug: r.installSlug,
           workspaceId: r.workspaceId,
           triggerConfig: r.triggerConfig,
           payloadTemplate: r.payloadTemplate,
-        }),
+        })),
       );
     },
     recordFire: async (r, error) => {

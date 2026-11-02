@@ -12,7 +12,7 @@ import { liveBenchHarnessDriver, liveBenchHarnessOps, hasValidBenchRunCost, type
 import { FULL_SPINE_BLUEPRINT, setBenchHarnessDriver } from './run-loop';
 import type { BenchTask, GenerationBudget } from './types';
 import type { DbScope } from './reproducibility/db';
-import { requireCurrentBenchmarkAssignment } from './reproducibility/schema';
+import { isNativeCliReferenceArm, requireCurrentBenchmarkAssignment } from './reproducibility/schema';
 import { normalizeFeatureStateInput } from '../work-item-dispatch-states';
 import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
 import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from '../runtime-vintage';
@@ -1477,7 +1477,8 @@ export function currentBenchGatewayController(input: {
     async startNativeGateway(log = () => {}, start) {
       // Claude uses the maintained isolated stock runner. Its treatment route
       // is not supported by the su launcher; refuse it before any listener.
-      if (!live || starting || arm.agent !== 'codex' && !(arm.id === 'baseline' && arm.agent === 'claude'))
+      if (!live || starting || arm.agent !== 'codex' && !(arm.agent === 'claude' &&
+          (isNativeCliReferenceArm(arm) || arm.control?.topology === 'repeated-session')))
         throw new Error('Benchmark host gateway is revoked, already started or unsupported.');
       starting = true;
       let service: Awaited<ReturnType<typeof startNativeGymGateway>> | undefined;
@@ -2050,7 +2051,9 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
   return currentBenchHarnessDriver(lifecycle, ports, opts, 'current-su');
 }
 export function currentStockBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentStockBenchPorts, opts: CurrentSuBenchOptions) {
-  if (opts.armId !== 'baseline' || !['codex', 'claude'].includes(opts.agent))
+  const arm = currentBenchmarkProtocolSchema.parse(opts.preregistration.config).arms.find(value => value.id === opts.armId);
+  if (!arm || arm.agent !== opts.agent || !['codex', 'claude'].includes(opts.agent) ||
+      !(isNativeCliReferenceArm(arm) || arm.control?.topology === 'repeated-session'))
     throw new Error('Stock benchmark requires the frozen supported native baseline.');
   return currentBenchHarnessDriver(lifecycle, ports, opts, 'stock-native');
 }

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { verifierSourceFiles } from '../lib/verifier-source';
 import { preparePrivateOperatorApiBundle, produceCommittedReaderPrivateApiBundle, qualifyCommittedReaderSource,
   resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, preparePrivateWorkerSources,
-  observeCommittedReaderLoadedSources,
+  observeCommittedReaderLoadedSources, privateBundleRuntimeEnv,
   type CommittedReaderClosure, type CommittedReaderPreparationInputs } from './private-http-workspace-preflight';
 
 const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
@@ -84,13 +84,22 @@ function producerFixture(extraScript = '') {
   return { ...f, inputs, saveInputs, selected, produce, consume };
 }
 
-function loadedFixture() {
+function loadedFixture(source?: string, admit = true) {
   const f = fixture(), traceOut = join(f.dir, 'host-source.json');
+  if (source !== undefined) {
+    writeFileSync(f.bundle, source);
+    f.closure.sha256 = digest(source);
+    f.closure.artifacts.find(artifact => artifact.path === f.bundle)!.sha256 = f.closure.sha256;
+    f.save();
+  }
   const traceRoot = traceOut + '.native-processes';
   const startedAtMs = Date.now();
   const child = spawnSync(process.execPath, ['--import', pathToFileURL(resolve(import.meta.dirname,
     '../../../scripts/lib/vitest-startup-trace.mjs')).href, f.bundle], {
-    cwd: f.root, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '', PC_EXECUTED_SOURCE_MAP_OUT: traceOut },
+    cwd: f.root, env: privateBundleRuntimeEnv({ ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, {
+      traceOut, pinnedSources: admit ? [{ path: f.bundle, sha256: f.closure.sha256,
+        byteLength: readFileSync(f.bundle).length }] : [],
+    }),
     encoding: 'utf8', timeout: 15_000,
   });
   expect(child.error).toBeUndefined();
@@ -108,6 +117,28 @@ function loadedFixture() {
 }
 
 describe('committed reader loader-return source binding', () => {
+  it('binds an independently pinned product-sized bundle above both generic byte ceilings', () => {
+    // The measured private operator bundle was 81,830,447 bytes. Keep this
+    // regression large enough to exercise both the old 16MiB and 64MiB limits.
+    const source = '/*' + ' '.repeat(81_830_447) + '*/export const host = 1;';
+    const f = loadedFixture(source);
+    const observed = f.observe();
+    expect(observed).toMatchObject({ status: 'bound', gaps: [],
+      sources: [{ sha256: digest(source), byteLength: Buffer.byteLength(source) }] });
+    expect(observed.pending).toContain('complete-runtime-closure');
+    // Existing files must not backfill altered loader artifacts.
+    const load = f.rows.find(({ row }) => row.event === 'module-load-return')!.row;
+    writeFileSync(join(f.traceRoot, load.source.ref), 'altered retained bytes');
+    expect(f.observe().status).toBe('unknown');
+  });
+
+  it('keeps an unadmitted large source unknown with the original generic limits', () => {
+    const f = loadedFixture('/*' + ' '.repeat(16 * 1024 ** 2) + '*/', false);
+    expect(f.observe()).toMatchObject({ status: 'unknown',
+      limits: { sourceBytes: 16 * 1024 ** 2, processBytes: 64 * 1024 ** 2 } });
+    expect(f.rows.find(({ row }) => row.event === 'module-load-return')!.row.source.status).toBe('limit');
+  });
+
   it('binds real Node returned bundle bytes and preserves all broader runtime gaps', () => {
     const f = loadedFixture();
     const observed = f.observe();

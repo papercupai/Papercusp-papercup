@@ -73,6 +73,28 @@ describe('production session interruption adapter', () => {
     const waitQuery = m.sql.mock.calls.find(c => c[0].join('').includes('FROM harness_shared.event_awaits'))![0].join('');
     expect(waitQuery).toContain("policy = 'wake'");
   });
+  it.each([
+    { kind: 'Date', expires_ts: new Date('2026-11-03T15:42:11.952Z'), expected: '2026-11-03T15:42:11.952Z' },
+    { kind: 'text', expires_ts: '2026-11-03 15:42:11.952+00', expected: '2026-11-03T15:42:11.952Z' },
+    { kind: 'null', expires_ts: null, expected: null },
+  ])('normalizes an event-await expiry returned as $kind', async ({ expires_ts, expected }) => {
+    awaits = [{ subscriber_id: row.owner_id, event_key: 'dependency:ready',
+      expires_ts, timeout_behavior: 'wake', once: true }];
+
+    await sweepSessionInterruptions(ctx);
+
+    expect(m.targets.mock.calls[0]?.[0]).toEqual([{ subscriberId: row.owner_id,
+      eventKey: 'dependency:ready', expiresTs: expected, timeoutBehavior: 'wake', once: true }]);
+  });
+  it('fails closed when an event-await expiry is not a valid timestamp', async () => {
+    awaits = [{ subscriber_id: row.owner_id, event_key: 'dependency:ready',
+      expires_ts: 'not-a-timestamp', timeout_behavior: 'wake', once: true }];
+
+    await expect(sweepSessionInterruptions(ctx)).rejects.toThrow(
+      'event_awaits.expires_ts is not a timestamp: not-a-timestamp');
+    expect(m.targets).not.toHaveBeenCalled();
+    expect(m.launch).not.toHaveBeenCalled();
+  });
   it('does not let the ambient inbox watcher suppress interrupted work', async () => {
     awaits = [{ subscriber_id: row.owner_id, event_key: `coord:inbox-wake:${row.owner_id}`, once: false }];
     await sweepSessionInterruptions(ctx);

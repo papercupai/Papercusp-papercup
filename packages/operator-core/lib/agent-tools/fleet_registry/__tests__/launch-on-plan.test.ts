@@ -141,6 +141,14 @@ vi.mock('node:os', async (importOriginal) => ({
   totalmem: (...args: unknown[]) => totalmemMock(...args),
 }));
 
+// The detached partial outcome is exercised here through durable transaction
+// writes. Event delivery has its own maintained fleet-launch-failed tests and
+// must not enter the real database from this handler unit fixture.
+vi.mock('../../../fleet-transition-events', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../fleet-transition-events')>()),
+  publishDetachedLaunchOutcome: (completion: Promise<unknown>) => completion.then(() => false, () => false),
+}));
+
 vi.mock('../../../task-manager/store', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   listLiveTasks: (...args: unknown[]) => listLiveTasksMock(...args),
@@ -3936,6 +3944,46 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     ]);
     expect(payload.launchTransaction.state).toBe('partial');
     expect(payload.launchTransaction.recovery.retryOwnerIds).toEqual(payload.launchTransaction.requestedMemberIds);
+  });
+
+  it('settles a pending headless launch as unconfirmed when its exact evidence read stalls (EI-27691319662534418)', async () => {
+    vi.useFakeTimers();
+    const actual = await vi.importActual<typeof import('../../../agent-launch-core')>('../../../agent-launch-core');
+    let releaseRead!: () => void;
+    const blockedRead = new Promise<never[]>((resolve) => { releaseRead = () => resolve([]); });
+    launchTransaction.verify.mockImplementation((args: Parameters<typeof actual.verifyFreshLaunchStarted>[0]) =>
+      actual.verifyFreshLaunchStarted(args, { probe: () => blockedRead }),
+    );
+    try {
+      const responsePromise = invokeLaunchHandler(
+        { name: 'Stalled Evidence Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true } as never,
+        {} as never,
+        null,
+      );
+      await vi.waitFor(() => expect(launchTransaction.verify).toHaveBeenCalledOnce(), {
+        timeout: 5_000, interval: 10,
+      });
+      await vi.advanceTimersByTimeAsync(LAUNCH_RESPONSE_DEADLINE_MS);
+      const payload = parseHandlerPayload(await responsePromise);
+      expect(payload.completionPending).toBe(true);
+      await vi.advanceTimersByTimeAsync(actual.FRESH_VERIFY_TIMEOUT_MS);
+      const persisted = launchTransaction.persist.mock.calls.at(-1)?.[0] as {
+        transaction: { state: string; verifiedMemberIds: string[]; unconfirmedMemberIds: string[]; failed: unknown[] };
+      };
+      expect(persisted.transaction).toMatchObject({
+        state: 'partial',
+        verifiedMemberIds: [],
+        unconfirmedMemberIds: payload.launchTransaction.requestedMemberIds,
+        failed: [],
+      });
+      expect(spawnHeadlessMock).toHaveBeenCalledOnce();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    } finally {
+      releaseRead();
+      // Settle the pre-fix re-probe too when this regression is run red.
+      await vi.advanceTimersByTimeAsync(actual.FRESH_VERIFY_TIMEOUT_MS * 3);
+      vi.useRealTimers();
+    }
   });
 
   it('returns a durable pending handle before a slow verifier settles, then persists the detached result', async () => {

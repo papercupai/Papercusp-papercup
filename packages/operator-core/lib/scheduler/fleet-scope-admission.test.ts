@@ -34,6 +34,7 @@ const admissionMocks = vi.hoisted(() => ({
   latestFleetMembership: vi.fn(),
   listFleetAssignments: vi.fn(),
   getWorkItem: vi.fn(),
+  getWorkItemDetail: vi.fn(),
   releaseWorkItem: vi.fn(),
   readHeldDependencyEscapeContext: vi.fn(),
   sendMessage: vi.fn(),
@@ -71,7 +72,14 @@ vi.mock('../fleet/assignments', async (importOriginal) => {
   return { ...actual, listFleetAssignments: admissionMocks.listFleetAssignments };
 });
 vi.mock('../work-items', () => ({
+  claimWorkItem: vi.fn(),
+  commentWorkItem: vi.fn(),
+  depsBlockedExclusionSql: vi.fn(),
   getWorkItem: admissionMocks.getWorkItem,
+  getWorkItemDetail: admissionMocks.getWorkItemDetail,
+  isClaimHoldParked: vi.fn(),
+  claimHoldExclusionSql: vi.fn(),
+  mergeWorkItemPayload: vi.fn(),
   releaseWorkItem: admissionMocks.releaseWorkItem,
   readHeldDependencyEscapeContext: admissionMocks.readHeldDependencyEscapeContext,
   claimFloorsWhereSql: admissionMocks.claimFloorsWhereSql,

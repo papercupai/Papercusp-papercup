@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TaskRow } from '../../task-manager/types';
 import type { BashJob } from './bash-jobs';
-import { formatJobLogEndMarker } from './bash-jobs';
+import { JOB_LOG_END_MARKER_PREFIX, formatJobLogEndMarker } from './bash-jobs';
 
 const store = vi.hoisted(() => ({
   closeTask: vi.fn(),
@@ -105,6 +105,67 @@ function ctx(workspaceId = 'ws-current', stateDir = '/tmp/task-reattach-state') 
     emit: () => {},
     role: 'cup',
   } as never;
+}
+
+const LIVE_RUNNER_TASK_ID = 'tskcarry5678';
+const LIVE_RUNNER_BASH_JOB_ID = 'bash-carry-1';
+const LIVE_RUNNER_SCOPE_UNIT = 'pc-tskcarry5678.service';
+const LIVE_RUNNER_INVOCATION_ID = 'current-invocation-1';
+const LIVE_RUNNER_NONCE_HASH = 'a'.repeat(64);
+
+function identityRunnerMarker(identity: {
+  taskId?: string;
+  bashJobId?: string;
+  scopeUnit?: string;
+  invocationId?: string;
+  nonce?: string;
+} = {}) {
+  const value = {
+    taskId: LIVE_RUNNER_TASK_ID,
+    bashJobId: LIVE_RUNNER_BASH_JOB_ID,
+    scopeUnit: LIVE_RUNNER_SCOPE_UNIT,
+    invocationId: LIVE_RUNNER_INVOCATION_ID,
+    nonce: LIVE_RUNNER_NONCE_HASH,
+    ...identity,
+  };
+  return `\n${JOB_LOG_END_MARKER_PREFIX}: status=failed exit=1 at 2026-11-02T19:00:00.000Z ` +
+    `task=${value.taskId} bash=${value.bashJobId} scope=${value.scopeUnit} ` +
+    `invocation=${value.invocationId} nonce=${value.nonce}\n`;
+}
+
+async function readWithActiveRunnerMarker(identity: Parameters<typeof identityRunnerMarker>[0] = {}) {
+  const stateDir = mkdtempSync(join(tmpdir(), 'bash-active-runner-marker-'));
+  const logPath = join(stateDir, 'terminal.log');
+  const fakeBin = join(stateDir, 'bin');
+  mkdirSync(fakeBin, { recursive: true });
+  const fakeSystemctl = join(fakeBin, 'systemctl');
+  writeFileSync(
+    fakeSystemctl,
+    '#!/bin/sh\nfor unit; do :; done\nprintf "Id=%s\\nLoadState=loaded\\nActiveState=active\\nResult=success\\nExecMainCode=0\\nExecMainStatus=0\\nInvocationID=current-invocation-1\\n" "$unit"\n',
+  );
+  chmodSync(fakeSystemctl, 0o755);
+  writeFileSync(logPath, `partial output${identityRunnerMarker(identity)}`);
+  store.getTask.mockResolvedValue(taskRow({
+    taskId: LIVE_RUNNER_TASK_ID,
+    rootTaskId: LIVE_RUNNER_TASK_ID,
+    pid: null,
+    processIdentity: null,
+    cgroupPath: null,
+    scopeUnit: LIVE_RUNNER_SCOPE_UNIT,
+    logPath,
+    detail: { bashJobId: LIVE_RUNNER_BASH_JOB_ID, runnerMarkerNonceHash: LIVE_RUNNER_NONCE_HASH },
+  }));
+  jobs.getJob.mockReturnValue(null);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
+  try {
+    const result = await bashOutput.handler({ task_id: LIVE_RUNNER_TASK_ID }, ctx('ws-current', stateDir));
+    return { result, payload: JSON.parse(result.content[0]!.text) as Record<string, unknown> };
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    rmSync(stateDir, { recursive: true, force: true });
+  }
 }
 
 beforeEach(() => {
@@ -293,6 +354,50 @@ describe('capability:bash_output — durable task attachment', () => {
     } finally {
       rmSync(stateDir, { recursive: true, force: true });
     }
+  });
+
+  it('reconciles a failed runner JOB END while the exact systemd service is still active', async () => {
+    const { result, payload } = await readWithActiveRunnerMarker();
+
+    expect(result.isError).toBe(true);
+    expect(payload).toMatchObject({
+      ok: false,
+      task_id: LIVE_RUNNER_TASK_ID,
+      status: 'failed',
+      exit_code: 1,
+      running: false,
+      recovered_from_log_marker: true,
+      recovered_from_live_runner_marker: true,
+      ledger_state: 'exited',
+      ledger_reconciled: true,
+    });
+    expect(store.closeTask).toHaveBeenCalledWith(
+      LIVE_RUNNER_TASK_ID,
+      expect.objectContaining({
+        state: 'exited',
+        exitCode: 1,
+        exitReason: expect.stringContaining('identity-bound JOB END status=failed'),
+      }),
+      undefined,
+      expect.objectContaining({ onTerminalPersisted: expect.any(Function) }),
+    );
+    expect(jobs.startBackground).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['task id', { taskId: 'another-task' }],
+    ['bash job id', { bashJobId: 'another-bash-job' }],
+    ['scope unit', { scopeUnit: 'another-task.service' }],
+    ['systemd invocation', { invocationId: 'previous-invocation' }],
+    ['nonce hash', { nonce: 'b'.repeat(64) }],
+  ])('keeps the active task running when the runner marker %s does not match', async (_field, identity) => {
+    const { result, payload } = await readWithActiveRunnerMarker(identity);
+
+    expect(result.isError).toBeUndefined();
+    expect(payload).toMatchObject({ status: 'running', running: true, recovered_from_scope: true });
+    expect(payload).not.toHaveProperty('recovered_from_live_runner_marker');
+    expect(store.closeTask).not.toHaveBeenCalled();
+    expect(jobs.startBackground).not.toHaveBeenCalled();
   });
 
   // EI-22185525501280167: the exact reported shape — systemd CONFIRMS the job's

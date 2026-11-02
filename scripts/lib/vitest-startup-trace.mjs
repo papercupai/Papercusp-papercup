@@ -2,18 +2,39 @@
 import childProcess from 'node:child_process';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
-import { linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { threadId } from 'node:worker_threads';
+
+export const nativeSourceRetentionLimits = Object.freeze({ sourceBytes: 16 * 1024 ** 2,
+  processBytes: 64 * 1024 ** 2, pinnedSourceBytes: 128 * 1024 ** 2,
+  pinnedProcessBytes: 256 * 1024 ** 2, pins: 4 });
+const sourcePinsEnv = 'PC_NATIVE_LOADER_SOURCE_PINS';
+function validateSourcePins(pins) {
+  if (!Array.isArray(pins) || pins.length > nativeSourceRetentionLimits.pins ||
+      new Set(pins.map(pin => pin?.path)).size !== pins.length || pins.some(pin =>
+        typeof pin?.path !== 'string' || !isAbsolute(pin.path) || pin.path.length > 1024 ||
+        !/^[a-f0-9]{64}$/.test(pin.sha256) || !Number.isSafeInteger(pin.byteLength) ||
+        pin.byteLength < 0 || pin.byteLength > nativeSourceRetentionLimits.pinnedSourceBytes) ||
+      pins.reduce((total, pin) => total + pin.byteLength, 0) > nativeSourceRetentionLimits.pinnedProcessBytes)
+    throw new Error('Invalid bounded native loader source pins');
+  return pins;
+}
 
 /** Reuse the OUT channel and this preload without enabling stderr diagnostics.
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ enabled?: boolean }} [options] Source-owned prediction before the OUT path is allocated.
+ * @param {{ enabled?: boolean, pinnedSources?: Array<{ path: string, sha256: string, byteLength: number }> }} [options]
+ * Source-owned prediction and independent artifact pins before launch. Generic limits stay unchanged.
  */
 export function nativeProcessTraceEnv(env = process.env, options = {}) {
   if (!(options.enabled ?? Boolean(env.PC_EXECUTED_SOURCE_MAP_OUT?.trim()))) return env;
   const preload = `--import=${JSON.stringify(new URL('./vitest-startup-trace.mjs', import.meta.url).href)}`;
   const nodeOptions = env.NODE_OPTIONS ?? '';
-  return { ...env, NODE_OPTIONS: nodeOptions.includes(preload) ? nodeOptions : `${nodeOptions} ${preload}`.trim() };
+  return { ...env, NODE_OPTIONS: nodeOptions.includes(preload) ? nodeOptions : `${nodeOptions} ${preload}`.trim(),
+    ...(options.pinnedSources === undefined ? {} : {
+      [sourcePinsEnv]: JSON.stringify(validateSourcePins(options.pinnedSources)),
+    }) };
 }
 
 // These are observations, not a shell parser or a complete execution census.
@@ -49,13 +70,13 @@ function installNativeProcessTrace(out) {
     if (!terminal && remaining-- < 0) return;
     try {
       let row = { schemaVersion: 1, kind: 'native-node-process-event', event,
-        processIdentity: identity, pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields };
+        processIdentity: identity, pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields, threadId };
       if (!terminal && remaining === -1) row = { ...row, event: 'trace-limit' };
       let bytes = Buffer.from(JSON.stringify(row));
       if (bytes.length > 128 * 1024) {
         bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, kind: row.kind,
           event: 'trace-event-too-large', processIdentity: identity, pid: process.pid,
-          ppid: process.ppid, atMs: row.atMs, omittedEvent: event }));
+          ppid: process.ppid, atMs: row.atMs, omittedEvent: event, threadId }));
       }
       const sha256 = createHash('sha256').update(bytes).digest('hex');
       const path = join(root, `${sha256}.json`);
@@ -213,9 +234,34 @@ function installNativeProcessTrace(out) {
   // delegation so a killed/stuck child still names its last file boundary.
   // These are load observations, never claims that a module was evaluated.
   let loadSequence = 0;
-  const sourceByteLimit = 16 * 1024 * 1024, sourceTotalByteLimit = 64 * 1024 * 1024;
-  let sourceBytesHashed = 0;
-  const fingerprintSource = result => {
+  const sourceByteLimit = nativeSourceRetentionLimits.sourceBytes;
+  const sourceTotalByteLimit = nativeSourceRetentionLimits.processBytes;
+  let sourceBytesHashed = 0, pinnedBytesHashed = 0;
+  let sourcePins = [];
+  try {
+    const encoded = process.env[sourcePinsEnv] ?? '[]';
+    if (encoded.length > 8192) throw new Error('source pin enrollment too large');
+    sourcePins = validateSourcePins(JSON.parse(encoded));
+  } catch { emit('module-source-pins-invalid'); }
+  // Retain loader-returned bytes in bounded chunks. In particular, do not make
+  // another full UTF-8 copy of the product bundle already owned by the loader.
+  function* chunks(source) {
+    if (typeof source === 'string') {
+      for (let offset = 0; offset < source.length;) {
+        let end = Math.min(source.length, offset + 16 * 1024);
+        if (end < source.length && source.charCodeAt(end - 1) >= 0xd800 &&
+            source.charCodeAt(end - 1) <= 0xdbff) end--;
+        yield Buffer.from(source.slice(offset, end));
+        offset = end;
+      }
+    } else {
+      const bytes = ArrayBuffer.isView(source) ?
+        new Uint8Array(source.buffer, source.byteOffset, source.byteLength) : new Uint8Array(source);
+      for (let offset = 0; offset < bytes.length; offset += 64 * 1024)
+        yield bytes.subarray(offset, offset + 64 * 1024);
+    }
+  }
+  const fingerprintSource = (result, url) => {
     const observation = { scope: 'node-loader-returned-source', byteLimit: sourceByteLimit,
       totalByteLimit: sourceTotalByteLimit };
     try {
@@ -226,6 +272,42 @@ function installNativeProcessTrace(out) {
       const view = ArrayBuffer.isView(source);
       if (!text && !view && !(source instanceof ArrayBuffer))
         return { ...observation, status: 'unsupported' };
+      const expected = sourcePins.find(pin => fileURLToPath(url) === pin.path);
+      if (expected && expected.byteLength > sourceByteLimit) {
+        const pin = { ...observation, admission: 'independently-pinned-large-source-v1',
+          byteLimit: nativeSourceRetentionLimits.pinnedSourceBytes,
+          totalByteLimit: nativeSourceRetentionLimits.pinnedProcessBytes };
+        if ((text ? source.length : source.byteLength) > pin.byteLimit)
+          return { ...pin, status: 'limit', limit: 'pinned-source-byte-limit' };
+        const byteLength = text ? Buffer.byteLength(source) : source.byteLength;
+        if (byteLength > pin.byteLimit || byteLength > pin.totalByteLimit - pinnedBytesHashed)
+          return { ...pin, status: 'limit', byteLength, limit: 'pinned-source-byte-limit' };
+        pinnedBytesHashed += byteLength; // Failed attempts consume their budget too.
+        if (byteLength !== expected.byteLength)
+          return { ...pin, status: 'unavailable', reason: 'pinned-source-length-mismatch' };
+        const temporary = `${root}.pending-${identity}-${randomUUID()}`;
+        let fd;
+        try {
+          fd = openSync(temporary, 'wx', 0o600);
+          const hash = createHash('sha256');
+          for (const chunk of chunks(source)) {
+            hash.update(chunk);
+            for (let offset = 0; offset < chunk.length;)
+              offset += writeSync(fd, chunk, offset, chunk.length - offset);
+          }
+          closeSync(fd); fd = undefined;
+          const sha256 = hash.digest('hex');
+          if (sha256 !== expected.sha256)
+            return { ...pin, status: 'unavailable', reason: 'pinned-source-digest-mismatch' };
+          const ref = `${sha256}.source`;
+          try { linkSync(temporary, join(root, ref)); }
+          catch (error) { if (error?.code !== 'EEXIST') throw error; }
+          return { ...pin, status: 'hashed', sha256, byteLength, ref };
+        } finally {
+          if (fd !== undefined) closeSync(fd);
+          try { unlinkSync(temporary); } catch { /* Unfinished captures remain untrusted. */ }
+        }
+      }
       const remaining = sourceTotalByteLimit - sourceBytesHashed;
       // UTF-8 is at least as long as a string's UTF-16 code-unit count. Bound
       // even the byte-length scan before touching a very large returned string.
@@ -269,7 +351,7 @@ function installNativeProcessTrace(out) {
       try {
         const result = nextLoad(url, context);
         emit('module-load-return', { ...fields, elapsedMs: performance.now() - started,
-          format: result.format ?? null, source: fingerprintSource(result) });
+          format: result.format ?? null, source: fingerprintSource(result, url) });
         return result;
       } catch (error) {
         emit('module-load-error', { ...fields, elapsedMs: performance.now() - started,

@@ -73,6 +73,25 @@ import type { RegisteredSchedule } from './dbos/dbos-schedule-introspect';
 import type { StallWakerStatus } from './inference-gateway/stall-waker-loop';
 import type { EndpointIpcProcessRole } from './endpoint-ipc-discovery';
 import { backgroundWorkersEnabled } from './background-workers';
+import { z } from 'zod';
+
+/** Only a validated entry establishes a running invocation on this wire. */
+const observedBackgroundActivitySchema = z.object({
+  workspaceId: z.string().trim().min(1).refine(value => value !== '*'),
+  featureId: z.string().regex(/^activity-[a-f0-9]{64}$/),
+  source: z.enum(['routine', 'event', 'timer', 'sync']),
+  running: z.literal(true),
+  stopStatus: z.enum(['draining']).nullable(),
+  cancellable: z.literal(false),
+});
+export type ObservedBackgroundActivity = z.infer<typeof observedBackgroundActivitySchema>;
+export function parseObservedBackgroundActivities(value: unknown): ObservedBackgroundActivity[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(entry => {
+    const parsed = observedBackgroundActivitySchema.safeParse(entry);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
 
 /** Loopback path each operator-shaped process serves its managed registry on. */
 export const SIBLING_PROBE_PATH = '/api/internal/managed-timers';
@@ -105,6 +124,7 @@ export interface SiblingManagedTimers {
   ok: boolean;
   /** The sibling's `managedSetInterval` registry (ephemeral tier). */
   timers: ManagedEntry[];
+  backgroundActivities?: ObservedBackgroundActivity[];
   /**
    * The sibling's REGISTERED DBOS scheduled workflows (durable tier) — names +
    * crontabs only, deliberately WITHOUT fire-state.
@@ -150,6 +170,8 @@ interface PrimaryManagedTimersWireShape {
   role?: unknown;
   timers?: unknown;
   dbosSchedules?: unknown;
+  backgroundActivities?: unknown;
+  staleMs?: unknown;
 }
 
 /**
@@ -305,6 +327,8 @@ function primaryRowFromWire(
     process: primary.role,
     ok: true,
     timers: primary.timers as ManagedEntry[],
+    backgroundActivities: typeof primary.staleMs === 'number' && primary.staleMs >= 0 && primary.staleMs <= 15_000
+      ? parseObservedBackgroundActivities(primary.backgroundActivities) : [],
     dbosSchedules: Array.isArray(primary.dbosSchedules)
       ? (primary.dbosSchedules as RegisteredSchedule[])
       : [],
@@ -368,6 +392,7 @@ export async function probeSibling(
       dbosSchedules?: unknown;
       primary?: unknown;
       stallWaker?: unknown;
+      backgroundActivities?: unknown;
     };
     const proc = typeof body?.process === 'string' && body.process ? body.process : null;
     const timers = Array.isArray(body?.timers) ? (body.timers as ManagedEntry[]) : [];
@@ -388,6 +413,7 @@ export async function probeSibling(
       process: proc,
       ok: true,
       timers,
+      backgroundActivities: parseObservedBackgroundActivities(body?.backgroundActivities),
       dbosSchedules,
       stallWaker,
       elapsedMs,

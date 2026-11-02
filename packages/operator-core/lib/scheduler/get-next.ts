@@ -75,7 +75,6 @@ import {
   featureRowToWorkItem,
   familyOf,
   FEATURE_COLS,
-  ISSUE_FAMILY_KINDS,
   ISSUE_FAMILY_CLAIMABLE_STATES,
   releaseCooldownSec,
   claimHoldExclusionSql,
@@ -112,7 +111,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { systemDistinctId } from '../flag-distinct-id';
 import { trackDetached } from '../detached-imports';
-import { agentWorkWhereSql, issueFamilyRouteSql } from '../work-nature/agent-work-predicate';
+import { ISSUE_FAMILY_ROUTE_KINDS, agentWorkWhereSql, issueFamilyRouteSql } from '../work-nature/agent-work-predicate';
 import { CLEANUP_ITEM_KIND } from '../code-cleanup/cleanup-item-kind';
 import {
   intakeStageClaimFloorSql,
@@ -762,8 +761,8 @@ function kindLeafWidensToFeatureFamily(leaf: FilterLeaf): boolean {
   return true;
 }
 
-const ISSUE_KIND_SET = new Set<string>(ISSUE_FAMILY_KINDS);
-type IssueFallbackKind = (typeof ISSUE_FAMILY_KINDS)[number];
+const ISSUE_KIND_SET = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
+type IssueFallbackKind = (typeof ISSUE_FAMILY_ROUTE_KINDS)[number];
 
 /**
  * True only when the filter proves that no FEATURE-family row can match its `kind` terms.
@@ -820,7 +819,7 @@ function issueKindsForFallback(filter: FilterNode | undefined): readonly IssueFa
     if (leaf.op === '!=') {
       if (issueValues.length > 0) {
         sawIssueKindConstraint = true;
-        const base = allowed ?? new Set<IssueFallbackKind>(ISSUE_FAMILY_KINDS);
+        const base = allowed ?? new Set<IssueFallbackKind>(ISSUE_FAMILY_ROUTE_KINDS);
         for (const kind of issueValues) base.delete(kind);
         allowed = base;
       }

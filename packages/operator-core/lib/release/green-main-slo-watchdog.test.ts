@@ -33,8 +33,16 @@ vi.mock('../harness/routines/release-actions', () => ({
 }));
 vi.mock('../attention-notify', () => ({ notifyAttentionOnce: mocks.notifyAttentionOnce }));
 vi.mock('./watchdog-health', () => ({ recordWatchdogPassOutcome: mocks.recordWatchdogPassOutcome }));
-vi.mock('../coord/gate-ownership', async (original) => ({
-  ...await original<typeof import('../coord/gate-ownership')>(), readGateOwnership: mocks.readGateOwnership,
+vi.mock('../coord/gate-ownership', () => ({
+  readGateOwnership: mocks.readGateOwnership,
+  // This suite exercises the watchdog's use of the helper, not its full liveness
+  // table (covered in gate-ownership.test.ts). Avoid importing that module graph
+  // here; the importOriginal path hits its POSITIVELY_LIVE TDZ during Vitest setup.
+  ownershipHeldByLiveHolder: (owner: {
+    claimState: string;
+    holderSessionState: string | null;
+    assessment?: string;
+  }) => owner.claimState === 'held' && owner.holderSessionState === 'live' && owner.assessment !== 'held-stalled',
 }));
 vi.mock('../agent-tools/work_items/_create-core', () => ({ createOneWorkItem: mocks.createOneWorkItem }));
 vi.mock('../work-items', () => ({ claimWorkItem: mocks.claimWorkItem, getWorkItem: mocks.getWorkItem }));

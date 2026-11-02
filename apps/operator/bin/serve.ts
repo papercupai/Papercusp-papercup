@@ -1345,6 +1345,31 @@ export function isServeHelpRequest(argv: readonly string[]): boolean {
   return argv.includes("--help") || argv.includes("-h");
 }
 
+/** Bounded provenance only; missing or ambiguous markers remain unknown. */
+export function nativeStartupTrigger(argv: readonly string[]): import("@papercusp/operator-core/lib/startup-activity").NativeStartupTrigger {
+  const markers = argv.filter(arg => arg.startsWith("--startup-trigger="));
+  if (markers.length !== 1) return "unknown";
+  const value = markers[0]!.slice("--startup-trigger=".length);
+  switch (value) {
+    case "manual": case "login": case "boot": case "supervisor": case "upgrade": case "repair": case "unknown":
+      return value;
+    default: return "unknown";
+  }
+}
+
+/** Listening is the event time; schema readiness controls only its persistence. */
+export async function recordNativeListeningStart(
+  trigger: ReturnType<typeof nativeStartupTrigger>,
+  at: string,
+  deps: {
+    waitForMigrations: () => Promise<void>;
+    recordStart: (trigger: ReturnType<typeof nativeStartupTrigger>, at: string) => Promise<void>;
+  },
+): Promise<void> {
+  await deps.waitForMigrations();
+  await deps.recordStart(trigger, at);
+}
+
 export const HOSTED_CONTROL_PLANE_SERVE_PROFILE = "hosted-control-plane";
 
 export function isHostedControlPlaneServeProfile(
@@ -1701,6 +1726,7 @@ async function main(): Promise<void> {
     const hostedControlPlane = isHostedControlPlaneServeProfile();
     let requestHandler: (request: Request) => Promise<Response>;
     let hostedUpgrade: import("./hosted-handler").HostedHandler["upgrade"] | undefined;
+    let nativeHistoryMigrationsReady: (() => Promise<void>) | undefined;
 
     if (hostedControlPlane) {
       // D-051: never import the local handler or runBootstrap graph here. The
@@ -1712,10 +1738,20 @@ async function main(): Promise<void> {
       requestHandler = hostedHandler.handler;
       hostedUpgrade = hostedHandler.upgrade;
     } else {
-      const { runBootstrap } = await import("./host-bootstrap");
+      const { runBootstrap, waitForBootMigrationGate } = await import("./host-bootstrap");
       const { handler } = await import("./host-handler");
       requestHandler = handler;
       runBootstrap();
+      nativeHistoryMigrationsReady = async () => {
+        // Request-only hosts need the coordinated preflight too. The request
+        // gate can degrade open for availability; audit writes must still wait
+        // for its conclusive schema-ready signal, including slow recovery.
+        await waitForBootMigrationGate();
+        const { awaitMigrationsAppliedForRequestGate } = await import(
+          "@papercusp/operator-core/lib/sync/hyperbee/boot-gate"
+        );
+        await awaitMigrationsAppliedForRequestGate({ timeoutMs: Number.POSITIVE_INFINITY });
+      };
 
       // EI-20952729544817284: the desktop bundle is built from THIS entrypoint,
       // not hono-host.ts. The latter already starts this publisher, but keeping
@@ -1729,6 +1765,7 @@ async function main(): Promise<void> {
     }
 
     server = serve({ fetch: requestHandler, port, hostname }, async (info) => {
+      const listenedAt = new Date().toISOString();
       log(
         `listening on http://${hostname}:${info.port} (${hostedControlPlane ? "HOSTED CONTROL PLANE" : `UI ${process.env.PAPERCUSP_SERVE_UI === "0" ? "OFF" : "ON"}`})`,
       );
@@ -1763,6 +1800,21 @@ async function main(): Promise<void> {
           log(
             `could not persist port memory (${(e as Error).message}) — next restart re-picks`,
           );
+        }
+      }
+      // Singleton reuse returns before this actual-listen callback. Hosted and
+      // request-only siblings do not represent a new local native backend.
+      if (!hostedControlPlane && !REQUEST_ONLY_SIDECAR) {
+        try {
+          await recordNativeListeningStart(nativeStartupTrigger(argv), listenedAt, {
+            waitForMigrations: nativeHistoryMigrationsReady!,
+            recordStart: async (trigger, at) => {
+              const { recordNativeStartupActivityStart } = await import("@papercusp/operator-core/lib/startup-activity");
+              await recordNativeStartupActivityStart(trigger, at);
+            },
+          });
+        } catch {
+          log("native startup history unavailable");
         }
       }
     }) as import("node:http").Server;

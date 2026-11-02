@@ -404,6 +404,12 @@ beforeEach(() => {
     priorLaunchedAt: null,
     priorLaunchedBy: null,
   });
+  recordAgentLaunchResultMock.mockReset().mockImplementation(async (opts: unknown) => {
+    const summary = (opts as { summary?: { launchState?: string } }).summary;
+    // Progress must be durable before a spawn; leave the final completion write
+    // unconfirmed unless a test explicitly opts into a durable receipt.
+    return summary?.launchState === 'spawning';
+  });
   callerIdentity.current.ownerId = 'su-caller';
   releaseAgentLaunchClaimMock.mockResolvedValue(true);
   markAdvSessionEndedMock.mockReset();
@@ -2174,9 +2180,9 @@ describe('resume + fork (D-004/D-007)', () => {
     });
   });
 
-  it('reserves an ended source before governed admission and passes the same key to its exact child', async () => {
+  it.each([true, false])('reserves a dormant source before governed admission and passes the same key to its exact child (terminal stamp %s)', async (terminalStamp) => {
     findLiveHostMock.mockReturnValue(null);
-    resolveResumeTargetMock.mockResolvedValue(dead);
+    resolveResumeTargetMock.mockResolvedValue(terminalStamp ? dead : { ...dead, endedAt: null, endedBy: null });
     const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue exact work' }, ctx);
     expect(isError(result), textOf(result)).toBe(false);
     expect(acquireAdvSessionResumeMock).toHaveBeenCalledWith(11, expect.any(String), 300, undefined, undefined, true);
@@ -4577,7 +4583,7 @@ describe('idempotency (P-014: a replay must not open a second set of windows)', 
   it('spawns nothing and reports the ORIGINAL launch when the key was already claimed', async () => {
     claimAgentLaunchMock.mockResolvedValue({
       won: false,
-      priorSummary: { opened: 2, mode: 'fresh', tasks: [{ taskId: 'task-original', logPath: '/tmp/original.log' }] },
+      priorSummary: { opened: 2, failed: 0, mode: 'fresh', tasks: [{ taskId: 'task-original', logPath: '/tmp/original.log' }] },
       priorLaunchedAt: 1_760_000_000_000,
       priorLaunchedBy: 'su-caller',
     });
@@ -4590,6 +4596,86 @@ describe('idempotency (P-014: a replay must not open a second set of windows)', 
       deduped: true,
       launch: { deduped: true, opened: 2, tasks: [{ taskId: 'task-original', logPath: '/tmp/original.log' }] },
     });
+  });
+
+  it('returns an explicit unknown outcome for an unfinalized claim instead of fabricated zero counts', async () => {
+    claimAgentLaunchMock.mockResolvedValue({
+      won: false,
+      priorSummary: {
+        requestKind: 'capability:launch-agent',
+        launchState: 'spawning',
+        startedAt: 1_760_000_000_000,
+        expectedCount: 1,
+        ownerIds: ['su-original'],
+        processHandles: { '0': { ownerId: 'su-original', pid: 4242, terminalPid: 4343 } },
+        memberResults: { '0': { status: 'starting', outcome: 'unknown' } },
+      },
+      priorLaunchedAt: 1_760_000_000_000,
+      priorLaunchedBy: 'su-original-launcher',
+    });
+
+    const res = await launchAgent.handler({ brief: 'do it', idempotencyKey: 'retry-unknown' }, ctx);
+
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(textOf(res)).toContain('not a zero-open result');
+    expect(dataOf(res)).toMatchObject({
+      deduped: true,
+      launch: {
+        launchState: 'spawning',
+        outcome: 'unknown',
+        status: 'reconciliation-required',
+        opened: null,
+        failed: null,
+        processHandles: { '0': { ownerId: 'su-original', pid: 4242, terminalPid: 4343 } },
+      },
+    });
+    expect(dataOf(res)?.completionReceipt).toBeUndefined();
+  });
+
+  it('records claim phase and exact targets before opening a process', async () => {
+    await launchAgent.handler({ brief: 'do it', idempotencyKey: 'retry-phase' }, ctx);
+
+    expect(claimAgentLaunchMock).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: 'retry-phase',
+      initialSummary: expect.objectContaining({
+        requestKind: 'capability:launch-agent',
+        launchState: 'claimed',
+        expectedCount: 1,
+        ownerIds: [expect.any(String)],
+        targetMembers: [{ ownerId: expect.any(String), label: expect.any(String), headless: false }],
+        agentStarted: null,
+        tasks: [],
+      }),
+    }));
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: 'retry-phase',
+      summary: expect.objectContaining({
+        launchState: 'spawning',
+        spawnAttempted: false,
+        targetMembers: [{ ownerId: expect.any(String), label: expect.any(String), headless: false }],
+      }),
+    }));
+  });
+
+  it('persists process handles before a final launch summary can be lost', async () => {
+    recordAgentLaunchResultMock
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    const res = await launchAgent.handler({ brief: 'do it', idempotencyKey: 'retry-interrupted' }, ctx);
+    const progress = recordAgentLaunchResultMock.mock.calls
+      .map(([call]) => call.summary)
+      .find((summary) => summary.memberResults?.['0']?.pid === 4242);
+
+    expect(progress).toMatchObject({
+      launchState: 'spawning',
+      spawnAttempted: true,
+      processHandles: { '0': { pid: 4242, terminalPid: 4343 } },
+      memberResults: { '0': { outcome: 'opened', pid: 4242 } },
+    });
+    expect(dataOf(res)?.completionReceipt).toBeUndefined();
   });
 
   it('records what the winning launch did, so a later replay can report it', async () => {

@@ -9,7 +9,7 @@ import { nativeChangeReport, type ChangeReportRequest } from './packer-facade';
 import { firstPartyCallers } from './first-party-callers';
 import type { CodeIntelAnswer } from './contracts';
 import { coChangeFromCommits, formatPriorWorkLine, type PriorWorkQuery, type PriorWorkReport } from './change-history';
-import { readEngineeringEvidence, type EngineeringEvidenceDeps } from './engineering-evidence';
+import { ENGINEERING_EVIDENCE_LIMITS, readEngineeringEvidence, type EngineeringEvidenceDeps } from './engineering-evidence';
 import { coverageHash, type TestCoverageSnapshot } from '@papercusp/test-config/test-coverage-map';
 import { decodeClaimReuseContribution } from './reuse-brief-providers';
 import { toolsetFromNames } from './push-toolset';
@@ -452,22 +452,35 @@ describe('native engineering evidence task context', () => {
       payload: { paths: ['target.ts'] } };
     return { root, subject, deps: { ...depsFor(root), engineering: reader, claimedPaths: async () => [] } };
   }
-  it('ee.brief-four-axes: carries exact canonical references or an explicit execution gap through claim, intent and completion', async () => {
-    const { root, subject, deps } = engineeringFixture();
-    const claim = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject, owner: 'su-ee' }, deps))!.taskBrief;
-    expect(claim.engineering?.intent[0]?.ref).toMatchObject({ tool: 'plans:get-specs', args: { revision: 1, specIds: ['EE-1'] } });
-    expect(claim.engineering?.rationale[0]?.ref).toMatchObject({ tool: 'plans:get', args: { decisionId: 'D-001' } });
-    expect(claim.engineering?.rationale).toHaveLength(1);
-    expect(claim.engineering?.gaps).toContain('broader-plan-context-available');
-    expect(claim.engineering?.validation[0]?.ref.tool).toBe('plans:get-spec-evidence');
-    expect(claim.engineering?.execution).toEqual([]); expect(claim.engineering?.gaps.length).toBeGreaterThan(0);
-    const intent = (await getIntentTimeTaskBrief({ owner: 'su-ee', workspaceId: 'w', harness: 'h',
-      intent: 'Inspect target', paths: ['target.ts'] }, deps))!.taskBrief;
-    expect(intent.engineering?.recover?.args).toMatchObject({ file_path: 'target.ts', name: 'target', harnesses: ['h'] });
-    const completion = await getCompletionTimeBrief({ workspaceId: 'w', harness: 'h', paths: [], subject, owner: 'su-ee' },
+  const surfaces = ['claim', 'intent', 'completion'] as const;
+  type Surface = typeof surfaces[number];
+  const recoveryFor = (surface: Surface) => ({ tool: 'graph:query', args: { op: 'evidence', harnesses: ['h'],
+    ...(surface === 'intent' ? { file_path: 'target.ts', name: 'target' } : { plan: 'ee-feature', item: 'P-001' }) } });
+  async function deliveredBrief(surface: Surface, { root, subject, deps }: ReturnType<typeof engineeringFixture>,
+    { workspaceId = 'w', maxChars = TASK_BRIEF_MAX_CHARS } = {}) {
+    if (surface === 'claim') return (await getClaimTimeTaskBrief({ workspaceId, workItem: subject,
+      owner: 'su-ee', maxChars }, deps))!.taskBrief;
+    if (surface === 'intent') return (await getIntentTimeTaskBrief({ workspaceId, owner: 'su-ee', harness: 'h',
+      intent: 'Inspect target', paths: ['target.ts'], maxChars }, deps))!.taskBrief;
+    return getCompletionTimeBrief({ workspaceId, harness: 'h', paths: [], subject, owner: 'su-ee', maxChars },
       { root: async () => root, engineering: deps.engineering, toolset: deps.toolset });
-    expect(claim.engineering?.recover?.tool).toBe('graph:query');
-    expect(completion.engineering?.recover).toEqual(claim.engineering?.recover);
+  }
+  it.each(surfaces)('ee.brief-%s / ee.brief-four-axes: delivers each canonical axis or an explicit execution gap', async surface => {
+    const fixture = engineeringFixture();
+    const read = vi.fn(fixture.deps.engineering);
+    fixture.deps.engineering = read;
+    const brief = await deliveredBrief(surface, fixture);
+    expect(read).toHaveBeenCalledWith(expect.anything(), { workspaceId: 'w', harness: 'h', root: fixture.root });
+    expect(brief.engineering?.intent).toContainEqual({ state: 'current', ref: {
+      tool: 'plans:get-specs', args: { harness: 'h', slug: 'ee-feature', revision: 1, specIds: ['EE-1'] } } });
+    expect(brief.engineering?.rationale).toEqual([{ state: 'current', ref: {
+      tool: 'plans:get', args: { harness: 'h', slug: 'ee-feature', decisionId: 'D-001' } } }]);
+    expect(brief.engineering?.gaps).toContain('broader-plan-context-available');
+    expect(brief.engineering?.validation).toContainEqual({ state: 'current', ref: {
+      tool: 'plans:get-spec-evidence', args: { harness: 'h', slug: 'ee-feature', bindingIds: [51] } } });
+    expect(brief.engineering?.execution).toEqual([]);
+    expect(brief.engineering?.gaps).toContain('Only named child boundaries are observed; static anchors, test outcomes and parent spans do not observe their callees.');
+    expect(brief.engineering?.recover).toEqual(recoveryFor(surface));
   });
 
   it('preserves the complete engineering baseline and delivers every hint recorded as issued', async () => {
@@ -546,29 +559,43 @@ describe('native engineering evidence task context', () => {
     expect(observe.mock.calls[0][0].observations).toContainEqual(
       expect.objectContaining({ provider: 'provenance', status: 'issued', cohort: 'treatment' }));
   });
-  it('ee.brief-budget: fits the complete caller brief in 2400 characters and retains scoped recovery for omitted data', async () => {
-    const { subject, deps } = engineeringFixture();
-    const brief = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject, maxChars: 2400, owner: 'su-ee' }, deps))!.taskBrief;
+  it.each(surfaces)('ee.brief-budget / %s: fits the whole delivered brief and recovers omitted evidence in scope', async surface => {
+    const fixture = engineeringFixture({ decisions: async () => Array.from({ length: ENGINEERING_EVIDENCE_LIMITS.decisions + 1 },
+      (_, index) => ({ plan: 'ee-feature', id: `D-${index}`, title: 'Rationale', body: 'Explicit item rule',
+        itemRefs: ['P-001'], affects: [] })) });
+    const brief = await deliveredBrief(surface, fixture, { maxChars: 2400 });
     expect(JSON.stringify(brief).length).toBeLessThanOrEqual(2400);
-    expect(brief.engineering?.recover).toEqual({ tool: 'graph:query', args: { op: 'evidence', harnesses: ['h'], plan: 'ee-feature', item: 'P-001' } });
+    expect(brief.engineering?.gaps).toContain('additional-evidence-omitted');
+    expect(brief.engineering?.recover).toEqual(recoveryFor(surface));
   });
-  it('ee.brief-stale: preserves stale validation and refuses a foreign scope', async () => {
-    const { subject, deps } = engineeringFixture({ proofs: async () => [{ id: 51, plan: 'ee-feature', spec: 'EE-1',
-      revision: 1, workItem: 'WI-ee', evidenceRef: 'test-run:72101', kind: 'test', state: 'stale', withdrawn: false,
-      fingerprints: {}, runId: 72101, reasons: ['changed-source'] }] });
-    const brief = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject }, deps))!.taskBrief;
-    expect(brief.engineering?.validation[0]?.state).toBe('stale');
-    const foreign = (await getClaimTimeTaskBrief({ workspaceId: 'foreign', workItem: subject }, deps))!.taskBrief;
-    expect(foreign.engineering?.intent).toEqual([]); expect(foreign.engineering?.gaps).toContain('engineering-evidence-unavailable');
+  it.each(surfaces)('ee.brief-stale / %s: preserves stale and withdrawn proof history and refuses foreign evidence', async surface => {
+    for (const withdrawn of [false, true]) {
+      const fixture = engineeringFixture({ proofs: async () => [{ id: 51, plan: 'ee-feature', spec: 'EE-1',
+        revision: 1, workItem: 'WI-ee', evidenceRef: 'test-run:72101', kind: 'test', state: 'stale', withdrawn,
+        fingerprints: {}, runId: 72101, reasons: ['changed-source'] }] });
+      const brief = await deliveredBrief(surface, fixture);
+      expect(brief.engineering?.validation[0]).toEqual({ state: withdrawn ? 'historical' : 'stale', ref: {
+        tool: 'plans:get-spec-evidence', args: { harness: 'h', slug: 'ee-feature', bindingIds: [51],
+          ...(withdrawn ? { includeRetracted: true } : {}) } } });
+      expect(brief.engineering?.validation.some(value => value.state === 'current')).toBe(false);
+      expect(brief.engineering?.recover).toEqual(recoveryFor(surface));
+      const foreign = await deliveredBrief(surface, fixture, { workspaceId: 'foreign' });
+      expect(foreign.engineering).toMatchObject({ intent: [], rationale: [], validation: [], execution: [],
+        gaps: ['engineering-evidence-unavailable'] });
+      expect(JSON.stringify(foreign.engineering)).not.toMatch(/EE-1|D-001|72101/);
+    }
   });
-  it('ee.brief-no-trace: a missing trace or unavailable evidence cannot block ordinary task context', async () => {
-    const { subject, deps } = engineeringFixture();
-    const withoutPaths = { ...subject, payload: {} };
-    const claim = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: withoutPaths }, deps))!.taskBrief;
-    expect(claim.engineering?.intent.length).toBeGreaterThan(0); expect(claim.engineering?.execution).toEqual([]);
-    deps.engineering = async () => { throw new Error('optional trace service absent'); };
-    const fallback = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject }, deps))!.taskBrief;
-    expect(fallback.status).toBe('current'); expect(fallback.engineering?.gaps).toContain('engineering-evidence-unavailable');
+  it.each(surfaces)('ee.brief-no-trace / %s: optional evidence failures preserve ordinary task context', async surface => {
+    const fixture = engineeringFixture();
+    const base = await deliveredBrief(surface, fixture);
+    expect(base.engineering?.intent.length).toBeGreaterThan(0);
+    expect(base.engineering?.execution).toEqual([]);
+    fixture.deps.engineering = async () => { throw new Error('optional trace service absent'); };
+    const fallback = await deliveredBrief(surface, fixture);
+    expect({ ...fallback, engineering: undefined }).toEqual({ ...base, engineering: undefined });
+    expect(fallback.engineering).toMatchObject({ intent: [], rationale: [], validation: [], execution: [],
+      gaps: ['engineering-evidence-unavailable'] });
+    expect(fallback.engineering?.recover).toEqual(recoveryFor(surface));
   });
 });
 describe('P-006 SPEC-P-006-B: a brief names a recovery tool only when the recipient was listed it', () => {

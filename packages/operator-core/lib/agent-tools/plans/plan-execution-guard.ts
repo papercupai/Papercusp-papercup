@@ -36,6 +36,7 @@ const readCommands = new Set(['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'rg', 'g
 
 /** A deliberately small read-only shell subset; arbitrary interpreters require activation. */
 export function isPlanResearchCommand(command: unknown): boolean {
+  if (isPlanPtoolReadCommand(command)) return true;
   if (typeof command !== 'string' || /[$`\n\r]/.test(command)) return false;
   try {
     const tokens = parseShell(command);
@@ -56,6 +57,51 @@ export function isPlanResearchCommand(command: unknown): boolean {
   } catch { return false; }
 }
 
+const readOnlyPtoolTools = new Set([
+  'tools:find', 'plans:get', 'plans:items', 'work_items:get', 'reports:get',
+  'consult:get_feedback', 'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
+]);
+
+/**
+ * Recognize only a single ptool JSON call with a quoted heredoc. Its body is
+ * inert data; the exact target verb is checked against a narrow allowlist below.
+ */
+function ptoolJsonHeredocTool(command: unknown): string | null {
+  if (typeof command !== 'string' || command.length > 32_768 || command.includes('\0')) return null;
+  const normalized = command.replace(/\r\n/g, '\n');
+  if (normalized.includes('\r')) return null;
+  const lines = normalized.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length < 3) return null;
+
+  const header = lines.shift()!;
+  const closingDelimiter = lines.pop()!;
+  const match = /^ptool[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[A-Za-z0-9._-]+"|'[A-Za-z0-9._-]+'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  if (!match || closingDelimiter !== match[3] || lines.includes(match[3])) return null;
+
+  try {
+    const payload: unknown = JSON.parse(lines.join('\n'));
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    if (match[1] !== 'tools:invoke') return match[1];
+    const nested = payload as Record<string, unknown>;
+    if (Object.keys(nested).some(key => !['name', 'args', 'projection'].includes(key))) return null;
+    return typeof nested.name === 'string' && nested.args && typeof nested.args === 'object' && !Array.isArray(nested.args)
+      ? nested.name : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPlanPtoolReadCommand(command: unknown): boolean {
+  const tool = ptoolJsonHeredocTool(command);
+  return tool !== null && readOnlyPtoolTools.has(tool);
+}
+
+function isPlanPtoolConsultControl(command: unknown): boolean {
+  const tool = ptoolJsonHeredocTool(command);
+  return tool === 'consult:reply' || tool === 'consult:decline';
+}
+
 export function isPlanImplementationCall(toolName: string, args: unknown): boolean {
   const name = toolName.replace(/^functions\./, '').replace(/^mcp__.+?__/, '').replace(/^capability_/, 'capability:');
   if (name === 'write_stdin') {
@@ -65,7 +111,10 @@ export function isPlanImplementationCall(toolName: string, args: unknown): boole
   if (fileTools.has(name) || executionTools.has(name)) return true;
   if (!shellTools.has(name)) return false;
   const input = args && typeof args === 'object' ? args as Record<string, unknown> : {};
-  return !isPlanResearchCommand(input.command ?? input.cmd);
+  const command = input.command ?? input.cmd;
+  return !isPlanResearchCommand(command) &&
+    !isPlanPtoolReadCommand(command) &&
+    !isPlanPtoolConsultControl(command);
 }
 
 /** Read durable authority, never coord_presence or caller-supplied plan/force/purpose. */

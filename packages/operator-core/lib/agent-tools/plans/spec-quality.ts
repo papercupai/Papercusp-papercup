@@ -680,7 +680,7 @@ export function evaluatePlanSpecQuality(input: {
     if (CONTRACT_STATUSES.has(clause.lifecycleStatus) && (!clause.acceptedBy || !clause.acceptanceRef)) {
       identityFailures.push(`${clause.specId}:missing-acceptance-provenance`);
     }
-    const acceptanceRefInspection = inspectPlanAcceptanceRef(clause.acceptanceRef, clause.planItemId);
+    const acceptanceRefInspection = inspectPlanAcceptanceRef(clause.acceptanceRef, clause.planItemId, input.harnessSlug);
     if (acceptanceRefInspection.kind === 'invalid') {
       identityFailures.push(`${clause.specId}:${acceptanceRefInspection.code}`);
     }

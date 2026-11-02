@@ -69,7 +69,9 @@ const policyChange = z.union([featureChange, z.object({
   scope: z.literal('workspace'),
   revision: featureChange.shape.revision,
   change: featureBackgroundActivityChangeSchema,
-}).strict(), z.object({ featureId: featureChange.shape.featureId, action: z.literal('stop') }).strict()]);
+}).strict(), z.object({ featureId: featureChange.shape.featureId, action: z.literal('stop'),
+  runtimePid: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+}).strict()]);
 
 const patch = defineTool({
   method: 'PATCH', path: '/agent-mcp/operator-pause-flag', auth: 'loopback',
@@ -81,7 +83,8 @@ const patch = defineTool({
     if (!parsed.success) return Response.json({ ok: false, error: 'startup_policy_invalid' }, { status: 400 });
     try {
       if ('action' in parsed.data) {
-        const result = await stopFeatureBackgroundActivity(parsed.data.featureId, user);
+        const result = await stopFeatureBackgroundActivity(parsed.data.featureId, user,
+          { headers: req.headers, runtimePid: parsed.data.runtimePid });
         return Response.json({ ok: result.status !== 'unavailable', ...result },
           { status: result.status === 'unavailable' ? 503 : 200 });
       }

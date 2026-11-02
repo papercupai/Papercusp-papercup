@@ -21,6 +21,7 @@
  * (one sweep serves every workspace's consult rows), not a per-blueprint-install
  * one; mirrors `supervision-reconcile-action.ts`'s documented deviation.
  */
+import { statSync } from 'node:fs';
 import { registerSystemAction } from './system-actions';
 import { PgThreadStore } from '@papercusp/coordination/capabilities';
 
@@ -108,6 +109,13 @@ registerSystemAction('consult-expiry-sweep', async () => {
           listTasks(filter),
         ]);
         return [...new Map([...history, ...live].map((task) => [task.taskId, task])).values()];
+      },
+      statMtimeMs: (path) => {
+        try {
+          return statSync(path).mtimeMs;
+        } catch {
+          return null;
+        }
       },
       getPresence: async (ownerId) => {
         const { getPresence } = await import('../../agent-tools/coordination/presence');

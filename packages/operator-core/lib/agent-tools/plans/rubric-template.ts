@@ -294,6 +294,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('instrument'),
+      maxAgeMs: z.number().int().positive().optional().describe('Maximum age of the latest ledger measurement at grading time. Expired, invalid or future timestamps grade unknown; historical values remain evidence.'),
       experimentId: z.string().trim().min(1).max(200).optional().describe(
         'Preregistered experiment identity. Omission keeps the historical default; unknown ids fail closed.',
       ),
@@ -331,6 +332,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('probe'),
+      maxAgeMs: z.number().int().positive().optional().describe('Maximum age of the latest ledger attempt at grading time. Failed attempts and expired measurements grade unknown, never fall back to an older success.'),
       probe: z
         .unknown()
         .optional()

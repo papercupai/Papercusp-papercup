@@ -2106,6 +2106,17 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     });
   });
 
+  it.each(['api_error_429', 'native_error'])('keeps a local admission timeout out of quota backoff with native code %s', (code) => {
+    const receipt = `[psu] native-turn-failed agent=claude code=${code} retryable=false retryAfterMs=60000`;
+    const raw = "API Error: Request rejected (429) · inference-gateway: account 'aviynw4' paced/paused; retry after 60s\n"
+      + receipt;
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toMatchObject({
+      code: 'inference_gateway_error',
+      evidence: expect.stringContaining('paced/paused; retry after 60s'),
+    });
+  });
+
   it('matches a completed inference-gateway 5xx turn only for a controlled caller', () => {
     const raw =
       '\u001b[38;5;220m●\u001b[3GAPI Error: 500 inference-gateway internal error. This is a server-side\r\n' +
@@ -2252,7 +2263,7 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     });
   });
 
-  it('matches the completed account-paced gateway 429 screen only for a controlled caller', () => {
+  it('classifies the account-paced admission timeout as a gateway failure only for a controlled caller', () => {
     const error =
       "\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: account 'aviynw4' " +
       'paced/paused; retry after 60s\u001b[0m';
@@ -2261,10 +2272,13 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure(error, { allowInferenceGatewayError: true })).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
-      code: 'model_quota_exhausted',
+      code: 'inference_gateway_error',
       evidence:
         "API Error: Request rejected (429) · inference-gateway: account 'aviynw4' paced/paused; retry after 60s ✻ Cooked for 13m 41s · done",
     });
+    expect(classifyAcceptanceGraderTerminalFailure(error, {
+      allowInferenceGatewayError: true, allowGatewayErrorWithoutFooter: true,
+    })).toMatchObject({ code: 'inference_gateway_error' });
   });
 
   it('matches the exact launcher-owned kickoff quota drop only for a controlled caller', () => {

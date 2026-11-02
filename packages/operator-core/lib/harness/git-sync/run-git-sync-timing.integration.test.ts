@@ -33,9 +33,9 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
     execute: async (observe, evidenceDir) => {
       const probe = `
         import assert from 'node:assert/strict';
-        import { execFileSync, spawn } from 'node:child_process';
+        import { execFileSync, spawn, spawnSync } from 'node:child_process';
         import { createHash } from 'node:crypto';
-        import { mkdir, readFile, writeFile } from 'node:fs/promises';
+        import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
         import { join } from 'node:path';
         import postgres from 'postgres';
         import { runGitSync } from './packages/operator-core/lib/harness/git-sync/run-git-sync.ts';
@@ -84,6 +84,21 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
         git(repo, 'commit', '--no-verify', '-qm', 'fixture submodule');
         await writeFile(join(repo, 'root-work.txt'), 'root work\\n');
         await writeFile(join(repo, 'libs/child/child-work.txt'), 'child work\\n');
+        // EI-27693013605402344: exercise named-fatal batch recovery through
+        // the complete job. Known child paths are filtered before root staging;
+        // a symlink descendant reaches the root classifier in both passes.
+        await writeFile(join(repo, '.gitignore'), 'ignored-*\\n');
+        await mkdir(join(repo, 'generated-target'));
+        await symlink('generated-target', join(repo, 'linked-target'));
+        const protectedPaths = [
+          ...Array.from({ length: 120 }, (_, i) => 'ignored-' + i),
+          ...Array.from({ length: 11 }, (_, i) => 'libs/child/protected-' + i + '.ts'),
+          'linked-target/protected.ts',
+        ];
+        const invalidBatch = spawnSync('git', ['check-ignore', '--', 'ignored-0', 'linked-target/protected.ts'],
+          { cwd: repo, encoding: 'utf8' });
+        assert.equal(invalidBatch.status, 128, 'fixture must make the mixed batch fatal before running the job');
+        assert.match(invalidBatch.stderr, /beyond a symbolic link/);
 
         const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL, { max: 1, onnotice: () => {} });
         let sidecar;
@@ -161,6 +176,7 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
           const outcome = await runGitSync('isolated-timing-control', {
             repoPath: repo,
             config: { push: false, pushSubmoduleOrigins: false },
+            excludePaths: protectedPaths,
             log: line => logs.push(line),
             step: async (name, execute) => {
               const output = await execute();
@@ -191,6 +207,8 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
           assert.ok(Math.abs(sum - setup.setupMs) <= setup.setupSteps.length, 'rounded setup partition');
           assert.ok(pointer.durationMs >= pointer.commitDurationMs);
           assert.equal(git(repo, 'show', 'HEAD:root-work.txt'), 'root work');
+          assert.ok(logs.some(line => line.includes('pre-filtering protected path(s) beyond a symbolic link')),
+            'the job exercised named-fatal batch recovery');
           assert.equal(git(join(repo, 'libs/child'), 'show', 'HEAD:child-work.txt'), 'child work');
           assert.equal(git(repo, 'rev-parse', 'HEAD:libs/child'), git(join(repo, 'libs/child'), 'rev-parse', 'HEAD'));
           const events = logs.filter(line => line.startsWith('[git-sync:submodule-timing] '))

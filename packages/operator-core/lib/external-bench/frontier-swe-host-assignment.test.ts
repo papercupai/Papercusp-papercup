@@ -122,6 +122,19 @@ describe('FrontierSWE production assignment binding', () => {
     expect(f.read).toHaveBeenCalledWith({ workspaceId: 'benchmarks', runId: f.host.protocol.runId, suite: 'frontier-swe' });
   });
 
+  it('reads paired spend for a named Minecraft repeated-session arm without changing its frozen identity', async () => {
+    const f = pairedFixture();
+    f.host.protocol.arms.find(arm => arm.id === 'baseline')!.id = 'minecraft-repeated';
+    f.host.options.armId = 'minecraft-repeated';
+    f.input.task = { ...f.input.task, benchmark: 'minecraft' };
+    f.host.protocol.grader.family = 'minecraft';
+    f.read.mockResolvedValue([{ ...f.row, suite: 'minecraft', graderFamily: 'minecraft' }]);
+    expect(await readCurrentBenchRepeatedSessionControl(f.input, f.read)).toEqual({ treatmentCostUsd: 0.2, maxSessions: 4 });
+    expect(f.read).toHaveBeenCalledWith({ workspaceId: 'benchmarks', runId: f.host.protocol.runId, suite: 'minecraft' });
+    f.row.armMeta.nativeCostAccounting.attemptAccountingComplete = false;
+    await expect(readCurrentBenchRepeatedSessionControl(f.input, f.read)).rejects.toThrow();
+  });
+
   it.each(['missing', 'duplicate', 'foreign-protocol', 'unmeasured', 'incomplete-source', 'incomplete-requests', 'wrong-price'] as const)
     ('refuses %s paired spend before opening another native assignment', async kind => {
       const f = pairedFixture();

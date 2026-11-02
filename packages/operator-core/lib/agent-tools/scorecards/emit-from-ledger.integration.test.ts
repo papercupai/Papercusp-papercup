@@ -32,6 +32,21 @@ import type postgres from 'postgres';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 
+// A read-failed rubric deliberately refuses emission, but the facade hides its cause.
+// Keep the real read and its deadlines; retain the exception in this integration's log.
+vi.mock('../../pg-read-query', async (orig) => {
+  const actual = await orig<typeof import('../../pg-read-query')>();
+  const boundedPgReadTxn: typeof actual.boundedPgReadTxn = async (fn, opts) => {
+    try {
+      return await actual.boundedPgReadTxn(fn, opts);
+    } catch (error) {
+      console.error('[emit-from-ledger fixture] bounded read failed', error);
+      throw error;
+    }
+  };
+  return { ...actual, boundedPgReadTxn };
+});
+
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
@@ -49,7 +64,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 // A sql probe pins dev:pg_query's projected schema revision, which resolves only once the tool
 // is registered in this process.
 await import('../dev/pg_query');
-const { emitScorecard, _closeScorecardEmitMutexForTests } = await import('./emit');
+const { emitScorecard, scorecardEmitArgs, _closeScorecardEmitMutexForTests } = await import('./emit');
 const { proposeRubric, getRubric } = await import('../../rubrics');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { activeWorkspaceId } = await import('../../workspace-registry');
@@ -57,12 +72,16 @@ const { _resetHarnessAdminUrlCacheForTests } = await import('../../embedded-pg-d
 const { recordRubricCheckResults, rubricCheckLedgerPath } = await import('../../check-results-ledger');
 const { SQL_PROBE_TOOL, continuityProbeRevision } = await import('../../continuity-probes');
 const { asStructuredObservation } = await import('../../harness/improvements/observation-types');
+const { retainMeasurementProvenance } = await import('../../measurement-provenance');
+const { readScorecardEvidence } = await import('../../scorecards');
 type RubricCheckResult = import('../../check-results-ledger').RubricCheckResult;
 
 const RUBRIC = 'emit-from-ledger-fixture';
 const OWNER = 'su-emit-from-ledger-grader';
 const MANUAL_RATING = { rating: 'healthy', evidence: 'read the release notes; the wording matches the shipped behaviour' };
 const CPU_REMEDIATION = 'WI-6554700010009536 cpu regression follow-up';
+const QUERY_SQL = 'SELECT 62.38 AS mean_ms';
+const QUERY_CONTEXT = 'Calibration control: SELECT 40 AS mean_ms meets the same <=50 ms bar; fixture measurements are not application timings.';
 
 let db: Awaited<ReturnType<typeof createOrgTestDb>>;
 let workspaceId: string | null = null;
@@ -134,7 +153,7 @@ async function persistedObservation(issueId: string): Promise<Record<string, unk
 }
 
 const emit = (args: Record<string, unknown>) =>
-  emitScorecard({ rubricRef: RUBRIC, fromLedger: true, ...args } as never, {
+  emitScorecard(scorecardEmitArgs.parse({ rubricRef: RUBRIC, fromLedger: true, ...args }), {
     createdBy: OWNER,
     ctxHarness: 'papercusp',
     workspaceId: activeWorkspaceId(),
@@ -157,7 +176,7 @@ beforeAll(async () => {
         kind: 'probe',
         probe: {
           kind: 'sql',
-          sql: 'SELECT 1 AS mean_ms',
+          sql: QUERY_SQL,
           schemaRevision: continuityProbeRevision(SQL_PROBE_TOOL),
           expect: { path: '$.rows[0].mean_ms', op: 'lte', value: 50 },
         },
@@ -185,9 +204,15 @@ beforeAll(async () => {
   [ids.cpu] = await recordRubricCheckResults(
     [row('cpu-threshold', 'instrument', 3.5, 'cores', 'pass', '2026-10-13T01:30:00.000Z', { op: 'lte', value: 4 })], scope, sql(),
   );
-  [ids.queryCost] = await recordRubricCheckResults(
-    [row('query-cost', 'probe', 62.38, 'ms', 'fail', '2026-10-13T01:30:00.000Z', { op: 'lte', value: 50 })], scope, sql(),
-  );
+  const queryCost = row('query-cost', 'probe', 62.38, 'ms', 'fail', '2026-10-13T01:30:00.000Z', { op: 'lte', value: 50 });
+  queryCost.check.provenance = retainMeasurementProvenance({
+    procedure: { kind: 'sql', sql: QUERY_SQL, schemaRevision: continuityProbeRevision(SQL_PROBE_TOOL),
+      expect: { path: '$.rows[0].mean_ms', op: 'lte', value: 50 } },
+    result: { rows: [{ mean_ms: 62.38 }] },
+    startedAt: '2026-10-13T01:29:59.000Z', finishedAt: '2026-10-13T01:30:00.000Z',
+    transactionAt: '2026-10-13T01:29:59.100Z', needsTransactionClock: true,
+  });
+  [ids.queryCost] = await recordRubricCheckResults([queryCost], scope, sql());
   [ids.probe] = await recordRubricCheckResults(
     [row('probe-recorded', 'probe', 1, null, 'pass', '2026-10-13T01:30:00.000Z')], scope, sql(),
   );
@@ -248,7 +273,7 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
       // The poor cpu result is routed WITHOUT a hand-typed rating.
       ledgerDispositions: {
         'cpu-threshold': { remediation: CPU_REMEDIATION },
-        'query-cost': { disregard: 'Intermediate fixture band is recorded without a separate remediation.' },
+        'query-cost': { evidence: QUERY_CONTEXT, disregard: 'Intermediate fixture band is recorded without a separate remediation.' },
       },
       instrumentSnapshots: {
         'host:df-root-used-pct': {
@@ -303,6 +328,25 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
       disregard: 'Intermediate fixture band is recorded without a separate remediation.',
     });
     expect(String(ratings['query-cost']!.evidence)).toMatch(/query-cost:0=62\.38 ms → fail; scorecard rating degraded/);
+    expect(String(ratings['query-cost']!.evidence)).toContain(`"sql":"${QUERY_SQL}"`);
+    expect(String(ratings['query-cost']!.evidence)).toContain('original window 2026-10-13T01:29:59.000Z..2026-10-13T01:30:00.000Z');
+    expect(String(ratings['query-cost']!.evidence)).toContain(`Grader context: ${QUERY_CONTEXT}`);
+    expect(ratings['query-cost']!.ledgerResult).toMatchObject({ provenanceStatus: 'retained' });
+
+    // Audit readers must recover a usable procedure, not merely the internal ledger payload.
+    // Replay only this fixture's SQL in its isolated database, without writing another check.
+    const evidenceRead = await readScorecardEvidence(issueId as string);
+    expect(evidenceRead.kind).toBe('found');
+    if (evidenceRead.kind !== 'found') throw new Error('emitted card missing from evidence reader');
+    const evidence = evidenceRead.scorecard.criteria.find((entry) => entry.key === 'query-cost')!.evidence;
+    expect(evidence).toBe(ratings['query-cost']!.evidence);
+    const retained = JSON.parse(evidence.split('; retained procedure ')[1]!.split('\n')[0]!);
+    expect(retained).toMatchObject({ kind: 'sql', sql: QUERY_SQL, schemaRevision: continuityProbeRevision(SQL_PROBE_TOOL) });
+    const replay = await db.adminSql.unsafe(retained.sql);
+    expect(Number(replay[0]!.mean_ms)).toBe(62.38);
+    const control = await db.adminSql`SELECT 40 AS mean_ms`;
+    expect(Number(control[0]!.mean_ms)).toBeLessThanOrEqual(50);
+    expect(await ledgerRowCount()).toBe(rowsBefore);
 
     expect(ratings['probe-recorded']).toMatchObject({
       rating: 'healthy',

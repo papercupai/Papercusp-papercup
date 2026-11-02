@@ -1184,6 +1184,50 @@ describe('agent-review grading lifecycle', () => {
     expect(h.deliverRevision).not.toHaveBeenCalled();
   });
 
+  it('keeps reviewer custody when submitter liveness is unmeasured', async () => {
+    const h = harness(pending);
+    const feedback = 'Preserve the critique and revise through the existing adoption route.';
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 3, feedback, gradedBy: 'su-reviewer' };
+    h.state.submitterLiveness = null;
+
+    await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps)).resolves.toMatchObject({
+      status: 'revision-requested',
+      changed: true,
+      returnedToSubmitter: false,
+      reviewerRetained: true,
+    });
+
+    expect(h.state.issue.assignee).toBe('su-reviewer');
+    expect(h.state.issue.payload).toMatchObject({
+      agentReview: { status: 'revision-requested', revisionKind: 'content', submittedBy: 'su-filer', round: 1 },
+      implementationReadiness: { status: 'not-ready', reason: 'agent-review-revision-requested' },
+    });
+    expect(h.state.posts[0]?.body).toContain(feedback);
+    expect(h.claimWorkItem).not.toHaveBeenCalled();
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
+    expect(h.deliverRevision).not.toHaveBeenCalled();
+  });
+
+  it('does not release an existing submitter claim on unknown liveness', async () => {
+    const h = harness({ ...pending, assignee: 'su-filer' });
+    h.state.ledger = {
+      ideaId: 'WI-7', workItemId: 'WI-7', grade: 3,
+      feedback: 'Unknown liveness does not authorize taking the submitter claim.', gradedBy: 'su-reviewer',
+    };
+    h.state.submitterLiveness = null;
+
+    await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps)).resolves.toMatchObject({
+      status: 'revision-requested',
+      changed: true,
+      returnedToSubmitter: false,
+    });
+
+    expect(h.state.issue.assignee).toBe('su-filer');
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
+    expect(h.claimWorkItem).not.toHaveBeenCalled();
+    expect(h.deliverRevision).not.toHaveBeenCalled();
+  });
+
   it('keeps the reviewer claim for a system submitter without a verified session alias', async () => {
     const h = harness(issue({
       assignee: 'su-reviewer',

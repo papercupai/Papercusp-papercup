@@ -592,6 +592,9 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     workspace_id text NOT NULL DEFAULT 'default',
     harness_slug text NOT NULL DEFAULT 'papercup',
     plan_slug text NOT NULL,
+    -- Canonical Markdown and hash from migration 122; the activation gate reads content.
+    content text NOT NULL DEFAULT '',
+    content_hash text NOT NULL DEFAULT '',
     status text,
     op_status text,
     op_started_at timestamptz,
@@ -601,6 +604,9 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     template_slug text,
     PRIMARY KEY (workspace_id, harness_slug, plan_slug)
   );
+  -- CREATE TABLE IF NOT EXISTS cannot repair a pre-existing minimal fixture shape.
+  ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '';
+  ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS content_hash text NOT NULL DEFAULT '';
   -- Pre-existing fixture rows predate op_status; ALTER keeps an older fixture application
   -- (or a CREATE ... IF NOT EXISTS that no-ops against a stunted earlier shape) composable,
   -- exactly like the plan_item_claims doctrine above.

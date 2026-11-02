@@ -18,7 +18,8 @@
  *
  * The live block is canonical for verification fields because `rubrics:amend` re-renders the
  * plan's requirement blocks (`rerenderAmendedRequirementBlocks`), so after any amendment the block
- * and the rubric agree, and every later edit to the block is the newest truth.
+ * and the rubric agree. Older writers can leave stale blocks, so a live edit that drops an
+ * executable binding keeps the stronger stored verification until a canonical amendment.
  *
  * The stored rubric (and its barHash / criteriaHash) is deliberately NOT rewritten: those hashes
  * are the identity vetting, grading and proof were recorded against. This is a read overlay.
@@ -123,7 +124,7 @@ export interface LiveRequirementBar {
   criterion?: LiveRequirementCriterion;
 }
 
-export type LiveRequirementKeptReason = 'no-explicit-block' | 'check-kind-changed' | 'meaning-changed';
+export type LiveRequirementKeptReason = 'no-explicit-block' | 'check-kind-changed' | 'meaning-changed' | 'check-binding-downgraded';
 
 export interface LiveRequirementOverlay<C> {
   criteria: C[];
@@ -147,6 +148,43 @@ function promiseProjection(criterion: LiveVerificationFields): Record<string, un
   return promise;
 }
 
+function stringSet(value: unknown): Set<string> {
+  return new Set(Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []);
+}
+
+function strictSubset(before: Set<string>, after: Set<string>): boolean {
+  return after.size < before.size && [...after].every((entry) => before.has(entry));
+}
+
+function caseBindings(check: LiveRequirementCheck): Set<string> {
+  if (Array.isArray(check.cases)) {
+    return new Set(check.cases.flatMap((entry: unknown) => {
+      if (!entry || typeof entry !== 'object') return [];
+      const selector = entry as Record<string, unknown>;
+      return typeof selector.file === 'string' && typeof selector.testName === 'string'
+        ? [JSON.stringify([selector.file, selector.testName])] : [];
+    }));
+  }
+  const file = Array.isArray(check.files) ? check.files[0] : undefined;
+  return typeof file === 'string' && typeof check.testName === 'string' && check.testName.trim()
+    ? new Set([JSON.stringify([file, check.testName])]) : new Set();
+}
+
+/** Detect binding removal, without freezing legitimate file/case moves or instrument upgrades. */
+function checkBindingDowngraded(before: LiveRequirementCheck | undefined, after: LiveRequirementCheck | undefined): boolean {
+  if (!before || !after) return false; // An omitted live check inherits the whole stored check.
+  if (before.kind === 'instrument') {
+    // Match the registry's explicit manual-key semantics without importing its runtime graph.
+    const key = (value: unknown) => typeof value === 'string' ? value.trim().toLowerCase() : '';
+    const prior = key(before.instrumentKey);
+    const next = key(after.instrumentKey);
+    return prior !== '' && prior !== 'none' && (next === '' || next === 'none');
+  }
+  if (before.kind !== 'tests') return false;
+  return strictSubset(stringSet(before.files), stringSet(after.files))
+    || strictSubset(caseBindings(before), caseBindings(after));
+}
+
 /**
  * Overlay each stored acceptance criterion's verification fields with the live plan block's.
  *
@@ -155,8 +193,10 @@ function promiseProjection(criterion: LiveVerificationFields): Record<string, un
  * a meaning change that still needs an amendment. It also keeps it when the live block's PROMISE
  * (every meaning field except the check) differs from the stored one: the same R-N key then names
  * a new promise that only an amendment may adopt. A same-kind check rebind under an unchanged
- * promise (for example `instrument:none` → a registered instrument) is overlaid. A live field the
- * block omits keeps its stored value rather than being blanked.
+ * promise (for example `instrument:none` → a registered instrument) is overlaid unless it drops
+ * an executable binding: a bound instrument becoming manual, a strict subset of test files or
+ * selected cases. Path/case moves and binding upgrades remain live. A live field the block omits
+ * keeps its stored value rather than being blanked.
  */
 export function overlayLiveRequirementVerification<C extends LiveVerificationFields & { barKey?: string | null }>(
   stored: readonly C[],
@@ -197,6 +237,10 @@ export function overlayLiveRequirementVerification<C extends LiveVerificationFie
     // on (EI-26127406089578547, WI-6554700010018740).
     if (stableJson(promiseProjection(criterion)) !== stableJson(promiseProjection({ ...criterion, ...block }))) {
       kept.push({ barKey, reason: 'meaning-changed' });
+      return criterion;
+    }
+    if (checkBindingDowngraded(criterion.check, block.check)) {
+      kept.push({ barKey, reason: 'check-binding-downgraded' });
       return criterion;
     }
     const next: C = { ...criterion };

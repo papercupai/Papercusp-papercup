@@ -275,6 +275,7 @@ export default defineTool({
           spec.planItemId,
           async (planSlug, revision) =>
             (await getPlanRevisionSnapshot(planSlug, revision, { harnessSlug })) !== null,
+          harnessSlug,
         );
         if (!acceptanceRefCheck.ok) {
           return {

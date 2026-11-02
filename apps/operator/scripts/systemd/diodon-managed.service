@@ -14,7 +14,9 @@ ConditionEnvironment=DISPLAY
 [Service]
 Type=exec
 ExecStart=/usr/bin/diodon
-Restart=on-failure
+# Keep the clipboard client resident after clean exits such as SIGINT. systemd
+# still leaves a service stopped explicitly by the manager stopped with Restart=always.
+Restart=always
 RestartSec=2s
 Slice=app.slice
 

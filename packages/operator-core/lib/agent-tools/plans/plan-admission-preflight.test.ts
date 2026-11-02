@@ -807,6 +807,43 @@ describe('evaluateExactPlanAdmission', () => {
     expect(verdict).toMatchObject({ ready: false, reason: 'floor-gated' });
   });
 
+  it.each([
+    { label: 'sole unfinished lane', planItems: [item('P-001', 'wip')] },
+    { label: 'lane beside a blocked successor', planItems: [item('P-001', 'wip'), item('P-002', 'todo', ['P-001'])] },
+  ])('admits plans:start for the caller-owned WIP $label', ({ planItems }) => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems,
+      workItems: [{ id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-001'],
+        payload: null, assignee: 'su-caller', state: 'wip' }],
+      laneHealth: lane({ issue: 0, issueMatchedByFilter: 1,
+        issueExcluded: { taken: 1 }, featureReachable: false }),
+      assignee: 'su-caller',
+      allowCallerHeld: true,
+    });
+
+    expect(verdict).toMatchObject({ ready: true, reason: 'ready', planItems: { actionable: 0 } });
+    expect(verdict.message).toContain('caller already owns 1 active non-final lane(s)');
+  });
+
+  it.each([
+    { label: 'unclaimed WIP', holder: undefined, allowCallerHeld: true, requestedSeats: undefined },
+    { label: 'foreign WIP', holder: 'su-other', allowCallerHeld: true, requestedSeats: undefined },
+    { label: 'caller-neutral fleet', holder: 'su-caller', allowCallerHeld: false, requestedSeats: undefined },
+    { label: 'new fleet seat', holder: 'su-caller', allowCallerHeld: true, requestedSeats: 1 },
+  ])('does not admit a new lane from $label', ({ holder, allowCallerHeld, requestedSeats }) => {
+    expect(evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001', 'wip')],
+      workItems: [{ id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-001'],
+        payload: null, assignee: holder, state: 'wip' }],
+      laneHealth: lane({ issue: 0, issueMatchedByFilter: 1, featureReachable: false }),
+      assignee: 'su-caller',
+      allowCallerHeld,
+      requestedSeats,
+    })).toMatchObject({ ready: false, reason: 'no-actionable-plan-items' });
+  });
+
   it('admits plans:start when the caller owns active non-final lanes beside a blocked frontier', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
@@ -863,6 +900,22 @@ describe('preflightExactPlanAdmission IO wiring', () => {
       },
     ]);
     mocks.readClaimSpecLaneHealth.mockResolvedValue(lane({ issue: 1, featureReachable: false }));
+  });
+
+  it('reads lane health before admitting a caller whose only unfinished item is WIP', async () => {
+    mocks.planItemsForRow.mockReturnValue([item('P-001', 'done'), item('P-002', 'wip')]);
+    mocks.listWorkItems.mockResolvedValue([{ id: 'WI-2', family: 'issue', state: 'wip',
+      sourcePlanItemIds: ['P-002'], payload: null, assignee: 'su-test' }]);
+    mocks.readClaimSpecLaneHealth.mockResolvedValue(lane({ issue: 0,
+      issueMatchedByFilter: 1, issueExcluded: { taken: 1 }, featureReachable: false }));
+    const args = { workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: 'plan-a',
+      actor: 'su-test', claimant: 'su-test', specId: 'plans-start-plan-a', allowCallerHeld: true };
+
+    expect(await preflightExactPlanAdmission(args)).toMatchObject({ ready: true, reason: 'ready' });
+    expect(mocks.readClaimSpecLaneHealth).toHaveBeenCalledOnce();
+
+    mocks.readClaimSpecLaneHealth.mockResolvedValue(null);
+    expect(await preflightExactPlanAdmission(args)).toMatchObject({ ready: false, reason: 'lane-unknown' });
   });
 
   it('does not read plan claim floors or promotions for an explicit lanes-only scope', async () => {

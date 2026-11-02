@@ -767,6 +767,11 @@ function normalizeAcceptanceGraderLog(rawLog: string): string {
     .replace(/\r/g, '\n');
 }
 
+// gateway.ts emits this when local admission times out, before an upstream
+// attempt. It does not prove a provider usage wall or a model quota reset.
+const GRADER_GATEWAY_ADMISSION_TIMEOUT_RE =
+  /inference-gateway:\s*account\s+'[^'\n]{1,120}'\s+paced\/paused;\s*retry after \d+s/i;
+
 /**
  * A bounded, exact detector for a terminal first turn that can never satisfy the
  * acceptance mission. Keep this narrower than a generic "error" scan: the frozen
@@ -845,7 +850,8 @@ export function classifyAcceptanceGraderTerminalFailure(
     // Claude's native JSONL API-error row carries status 429 separately from
     // its text. The PTY host's terminal receipt preserves that status as
     // api_error_429; older hosts may still emit native_error beside the exact
-    // gateway screen. Keep either shape on the reset-aware quota path.
+    // gateway screen. Preserve the specific local admission-timeout signal:
+    // its 429 must not inherit unrelated account-ledger quota reset times.
     const nativeQuotaFailure =
       /\bcode=api_error_429\b/i.test(nativeFailure[0]) ||
       /API Error:\s*Request rejected \(429\)/i.test(before);
@@ -859,7 +865,12 @@ export function classifyAcceptanceGraderTerminalFailure(
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 400);
-      return { code: 'model_quota_exhausted', evidence };
+      return {
+        code: GRADER_GATEWAY_ADMISSION_TIMEOUT_RE.test(before)
+          ? 'inference_gateway_error'
+          : 'model_quota_exhausted',
+        evidence,
+      };
     }
     if (!quoted && !hasAcceptanceGraderFirstTurnProgress(after) &&
         !/^[ \t]*(?:●|❯[ \t]*\S|>[ \t]*\S)/mu.test(after)) {
@@ -1013,7 +1024,8 @@ export function classifyAcceptanceGraderTerminalFailure(
     : null;
   if (gatewayError) {
     return {
-      code: /Request rejected \(429\)/i.test(gatewayError[0])
+      code: /Request rejected \(429\)/i.test(gatewayError[0]) &&
+          !GRADER_GATEWAY_ADMISSION_TIMEOUT_RE.test(gatewayError[0])
         ? 'model_quota_exhausted'
         : 'inference_gateway_error',
       evidence: gatewayError[0].replace(/\s+/g, ' ').trim().slice(0, 400),

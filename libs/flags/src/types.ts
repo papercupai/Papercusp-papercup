@@ -968,6 +968,10 @@ export const FLAGS = {
   // non-fleet callers are exempt regardless (D-002). Surfaced loudly in the plan ## Now +
   // the completion report as the pending B-18 flip.
   CAPABILITY_ENVELOPE: "papercusp-capability-envelope",
+  // app-security-runtime-boundaries-and-defense-in-depth-2026-10-31 P-002/P-019:
+  // security policy cutover, DEFAULT OFF in DARK_FLAGS (owner-authority).
+  // ON requires independent host resource approvals; missing authority denies.
+  PLUGIN_INVOCATION_POLICY: "papercusp-plugin-invocation-policy",
   // live-configurability-audit-2026-06-20 P-008 — runtime role→capability grant tool
   // (capability:grant_role / capability:revoke_role). DARK by default (owner-authority, D-007):
   // it flag-gates both the loadRoleCapabilities grant-union AND the grant/revoke tools.
@@ -3212,6 +3216,10 @@ export const DARK_FLAGS: ReadonlyMap<
   FlagKey,
   { case: DarkCase; reason: string }
 > = new Map<FlagKey, { case: DarkCase; reason: string }>([
+  [FLAGS.PLUGIN_INVOCATION_POLICY, {
+    case: "owner-authority",
+    reason: "app-security-runtime-boundaries-and-defense-in-depth-2026-10-31 P-002/P-019: security authorization cutover. Enabling denies installed plugin calls without an independently bound host PDP and current exact resource approvals. Keep OFF during implementation; under Avi's standing AUTO authorization, enable in P-019 only after host binding, independently precommitted population qualification and required acceptance. OFF retains legacy dispatch and makes no security guarantee. This is a pending security rollout, not a finished feature; WI-6554700010044290 tracks the binding and qualification work.",
+  }],
   [FLAGS.SESSION_ARCHIVE_COLD_MIGRATION, {
     case: "cutover",
     reason: "disk-durable-headroom-2026-10-15 P-010 / EI-26074325417052646: destructive PG-payload migration. Keep scheduled writers OFF until a successful pre-destructive backup and compatible cold_storage readers are verified on every runtime sharing the database. Enable through flags:set in the P-010 rollout after those checks; cold readers and non-destructive export remain available while OFF.",

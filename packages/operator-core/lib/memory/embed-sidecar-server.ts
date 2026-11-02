@@ -915,6 +915,9 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     return observeWarmup(() => governed(operationInput, () => input.run(input.signal)));
   };
   let active = 0;
+  // Successful model completions, not cache misses or queued/started work.
+  // Supervisors need this distinction when a live worker stops making progress.
+  const inferenceProgress: Record<string, { completed: number; lastCompletedAtMs: number }> = {};
   interface QueueTask<T> {
     promise: Promise<T>;
     signal: AbortSignal;
@@ -1204,7 +1207,13 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
           signal: taskSignal,
           run: async (runSignal) => {
             const embed = await getEmbedder(model, kind);
-            return embed(text, runSignal);
+            const vector = await embed(text, runSignal);
+            const key = `${model}:${kind}`;
+            inferenceProgress[key] = {
+              completed: (inferenceProgress[key]?.completed ?? 0) + 1,
+              lastCompletedAtMs: Date.now(),
+            };
+            return vector;
           },
         }),
       signal,
@@ -1443,6 +1452,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         // beside the worker state for timeout diagnosis.
         rerankScorerGate: getScorerGateState(),
         cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
+        inferenceProgress: { ...inferenceProgress },
         // `null` means no local capacity ceiling. A finite value comes from the
         // explicit PG-free test seam or the production environment window; in
         // the latter case durable governor admission still wraps every started

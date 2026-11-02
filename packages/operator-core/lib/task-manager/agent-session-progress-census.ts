@@ -92,10 +92,14 @@ export interface AgentSessionProgress {
   disposition: ProgressDisposition;
   /** Minutes since the log was last written; null when not measurable. */
   quietMinutes: number | null;
+  /** Exact filesystem mtime used for the disposition; null when not measurable. */
+  logMtimeMs: number | null;
   startedAt: string;
 }
 
 export interface AgentSessionProgressCensus {
+  /** Per-task evidence, including active and unmeasurable rows. */
+  rows: AgentSessionProgress[];
   measured: number;
   active: number;
   quiet: number;
@@ -152,7 +156,12 @@ export function censusAgentSessionProgress(
     const startedMs = Date.parse(row.startedAt);
     const ageMs = Number.isFinite(startedMs) ? now - startedMs : Number.POSITIVE_INFINITY;
 
-    const base = { taskId: row.taskId, logPath: row.logPath ?? null, startedAt: row.startedAt };
+    const base = {
+      taskId: row.taskId,
+      logPath: row.logPath ?? null,
+      logMtimeMs: null as number | null,
+      startedAt: row.startedAt,
+    };
 
     if (ageMs < minAgeMs) {
       tooYoung += 1;
@@ -180,10 +189,10 @@ export function censusAgentSessionProgress(
     const quietMinutes = Math.round(quietFor / 60_000);
     if (quietFor > quietMs) {
       quiet += 1;
-      rowsOut.push({ ...base, disposition: 'quiet', quietMinutes });
+      rowsOut.push({ ...base, disposition: 'quiet', quietMinutes, logMtimeMs: mtime });
     } else {
       active += 1;
-      rowsOut.push({ ...base, disposition: 'active', quietMinutes });
+      rowsOut.push({ ...base, disposition: 'active', quietMinutes, logMtimeMs: mtime });
     }
   }
 
@@ -191,6 +200,7 @@ export function censusAgentSessionProgress(
   const degraded = unreadable > active + quiet;
 
   return {
+    rows: rowsOut,
     measured,
     active,
     quiet,

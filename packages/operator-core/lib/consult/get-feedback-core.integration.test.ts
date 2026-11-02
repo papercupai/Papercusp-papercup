@@ -55,7 +55,7 @@ import { readRoutingHealthRows } from './consult-routing-health';
 import { consultReplyCore, consultDeclineCore } from './consult-verbs-core';
 import { sweepExpiredConsults } from './consult-expiry-core';
 import { advanceCascade, continueCascadeDispatchCore, selectionFromRouting } from './cascade-core';
-import { closeSourceAuditConsults, independentSourceAuditRoute, routeSourceGradingAudit } from '../grading-audit-routing';
+import { closeSourceAuditConsults, independentSourceAuditRoute, routeSourceGradingAudit, routeGoalTenureGrading, closeGoalTenureGradingRequests } from '../grading-audit-routing';
 import { dispatchPendingGradingAudits, type DispatchPendingGradingAuditsInput } from '../grading-integrity';
 import { specQualitySubjectRef } from '../agent-tools/plans/spec-quality';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
@@ -309,6 +309,74 @@ const baseReq: GetFeedbackRequest = {
   question: 'why does the sync resolver drop SSE events under load?',
   originTaskRef: null, // explicit null: no default lookup, no budget aggregation
 };
+
+describe('goal tenure backlog recovery in real PostgreSQL', () => {
+  beforeAll(async () => {
+    // Minimal read-side landing pads, like work_items above. consult_state is
+    // still created by its real migrations, including its lifecycle checks.
+    await rootSql.unsafe(`CREATE TABLE harness_shared.goals (
+      workspace_id text NOT NULL, id text NOT NULL, status text NOT NULL,
+      PRIMARY KEY (workspace_id, id)
+    )`);
+    await rootSql.unsafe(`CREATE TABLE harness_shared.tool_invocations (
+      workspace_id text NOT NULL, goal_id text, goal_actor_class text,
+      coord_owner_id text, invoked_at timestamptz NOT NULL
+    )`);
+  });
+
+  async function fixture() {
+    const goal = { workspaceId: WS, goalId: `goal-residual-${randomBytes(6).toString('hex')}` };
+    await rootSql`INSERT INTO harness_shared.goals (workspace_id, id, status)
+      VALUES (${goal.workspaceId}, ${goal.goalId}, 'active')`;
+    await rootSql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id, goal_id, goal_actor_class, coord_owner_id, invoked_at)
+      VALUES (${goal.workspaceId}, ${goal.goalId}, 'holder-agent', 'residual-holder', ${NOW})`;
+    const core = makeDeps(routeOf([cand('archived-grading-expert')]));
+    const feedback = vi.fn(async (request: GetFeedbackRequest) => getFeedbackCore(request, {
+      ...core.deps,
+      getPartyKeys: async (_workspace, ids) => new Map(ids.map(id => [id, id])),
+    }));
+    const deps = { sql: rootSql, now: () => NOW.getTime(), feedback,
+      resolveResponderLiveness: vi.fn(async () => ({ sessionState: 'live' as const })) };
+    return { goal, core, deps };
+  }
+
+  it('persists one request under concurrent ticks and reads its answering session before deduping', async () => {
+    const { goal, core, deps } = await fixture();
+    const results = await Promise.all([routeGoalTenureGrading(goal, deps), routeGoalTenureGrading(goal, deps)]);
+    expect(results.map(result => result.state).sort()).toEqual(['deduped', 'pending']);
+    expect(deps.feedback).toHaveBeenCalledTimes(1);
+    expect(deps.resolveResponderLiveness).toHaveBeenCalledWith('archived-grading-expert-fork');
+    expect(core.reached[0]!.body).toContain('terminal:true');
+    expect(core.reached[0]!.body).not.toContain('Answer FROM the transcript');
+    const rows = await rootSql`SELECT conversation_id, routing FROM harness_shared.consult_state
+      WHERE workspace_id = ${WS} AND routing->'cascade'->>'goalId' = ${goal.goalId}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.routing.cascade).toMatchObject({ flavor: 'goal-tenure-grading', ...goal,
+      holderOwnerIds: ['residual-holder'] });
+    await closeGoalTenureGradingRequests(goal, rootSql);
+    expect((await stateRow(rows[0]!.conversation_id)).state).toBe('closed_answered');
+  });
+
+  it('retires an expired request before replacement and never resumes a paused goal', async () => {
+    const { goal, deps } = await fixture();
+    const first = await routeGoalTenureGrading(goal, deps);
+    await rootSql`UPDATE harness_shared.consult_state SET expires_at = ${new Date(NOW.getTime() - 1)}
+      WHERE workspace_id = ${WS} AND conversation_id = ${first.conversationId!}`;
+    const next = await routeGoalTenureGrading(goal, deps);
+    expect(next.state).toBe('pending');
+    expect(next.conversationId).not.toBe(first.conversationId);
+    expect((await stateRow(first.conversationId!)).state).toBe('expired');
+    const active = await rootSql`SELECT conversation_id FROM harness_shared.consult_state
+      WHERE workspace_id = ${WS} AND routing->'cascade'->>'goalId' = ${goal.goalId}
+        AND state IN ('awaiting_responder', 'active')`;
+    expect(active).toHaveLength(1);
+    await rootSql`UPDATE harness_shared.goals SET status = 'paused'
+      WHERE workspace_id = ${WS} AND id = ${goal.goalId}`;
+    expect(await routeGoalTenureGrading(goal, deps)).toMatchObject({ state: 'skipped' });
+    expect(deps.feedback).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('source-audit dispatcher through persisted consult routing', () => {
   it('excludes the creator from the plan origin revision for spec-quality audits', async () => {

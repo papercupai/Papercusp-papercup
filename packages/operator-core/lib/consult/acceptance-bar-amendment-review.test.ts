@@ -668,6 +668,30 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(reasonLine).toBe(`Reason given: ${reason}`);
   });
 
+  it('renders normalized probe changes absent from a method-only requested patch', () => {
+    const before = { key: 'r-5', barKey: 'R-5', title: 'Adoption', model: 'Source is contained.',
+      check: { kind: 'probe' as const, probe: {
+      kind: 'tool' as const, tool: 'status:read', args: { id: 'original' },
+      schemaRevision: 'projected-tool-registry-v1:retired', expect: { path: '$.state', op: 'exists' as const },
+    } } };
+    const after = { ...before, check: { ...before.check, probe: {
+      ...before.check.probe, schemaRevision: 'projected-tool-registry-v1:current',
+    } } };
+    const criterionChanges = [{ barKey: 'R-5', before, after }];
+    const patch = { requirement: { key: 'R-3', method: 'Use the existing frontier check.' } };
+    const brief = buildAmendmentReviewBrief({
+      ...baseInput,
+      patch,
+      preview: { ...baseInput.preview, criterionChanges,
+        changes: [{ barKey: 'R-5', kinds: ['bar-meaning'], fields: ['check'] }] },
+    });
+
+    expect(brief).toContain(JSON.stringify(patch));
+    expect(brief).toContain(JSON.stringify(criterionChanges, null, 2));
+    expect(brief).toContain('server-normalized');
+    expect(brief).toContain('not a replacement patch');
+  });
+
   it('treats an unapplied new BAR as expected during pre-apply review', () => {
     const newCriterion = { key: 'r-32', barKey: 'R-32', model: 'New requirement from the source Requirements.' };
     const existingCriteria = Array.from({ length: 26 }, (_, index) => ({

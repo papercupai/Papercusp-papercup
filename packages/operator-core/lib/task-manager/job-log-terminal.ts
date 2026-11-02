@@ -24,9 +24,24 @@ import { SYSTEMD_RUNNER_JOB_END_PREFIX } from '../systemd-scope-env-runner.mjs';
  *  operator's own close handler can also write killed/timed_out). */
 export type JobLogTerminalStatus = 'completed' | 'failed' | 'killed' | 'timed_out';
 
+/** Exact per-job identity attached by the confined service runner, never by the payload. */
+export interface JobLogTerminalIdentity {
+  taskId: string;
+  bashJobId: string;
+  scopeUnit: string;
+  invocationId: string;
+  /** SHA-256 of a random runner secret stored on the matching task-ledger row. */
+  nonce: string;
+}
+
 export interface JobLogTerminal {
   status: JobLogTerminalStatus;
   exitCode: number | null;
+  taskId?: string;
+  bashJobId?: string;
+  scopeUnit?: string;
+  invocationId?: string;
+  nonce?: string;
 }
 
 /** The prefix is DERIVED from the runner that writes it, never restated. */
@@ -53,9 +68,21 @@ export function parseJobLogEndMarker(log: string): JobLogTerminal | null {
   while ((match = JOB_LOG_END_MARKER_RE.exec(log)) !== null) latest = match;
   JOB_LOG_END_MARKER_RE.lastIndex = 0;
   if (!latest) return null;
+  const identity = /(?:^|\s)task=([^\s]+) bash=([^\s]+) scope=([^\s]+) invocation=([^\s]+) nonce=([a-f0-9]{64})(?=\s|$)/.exec(
+    latest[0],
+  );
   return {
     status: latest[1] as JobLogTerminalStatus,
     exitCode: latest[2] === 'null' ? null : Number(latest[2]),
+    ...(identity
+      ? {
+          taskId: identity[1]!,
+          bashJobId: identity[2]!,
+          scopeUnit: identity[3]!,
+          invocationId: identity[4]!,
+          nonce: identity[5]!,
+        }
+      : {}),
   };
 }
 

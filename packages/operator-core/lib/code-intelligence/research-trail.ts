@@ -65,7 +65,9 @@ export async function persistResearchBatch(input: PushInput, incoming: ResearchS
   const harness = input.harness;
   if (!input.owner || !input.workspace || !harness) return;
   await withWorkspace(input.workspace, async tx => {
-    await tx`SELECT set_config('statement_timeout', '100ms', true)`;
+    // This durable write can outlive codeIntelPushText's separate 100ms response bound.
+    // Bound lock waits separately so a slow response does not cancel the eventual write.
+    await tx`SELECT set_config('lock_timeout', '100ms', true), set_config('statement_timeout', '500ms', true)`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`research:${input.workspace}:${input.owner}:${harness}`}, 0))`;
     const rows = await tx<{ subjects: ResearchSubject[] }[]>`SELECT subjects FROM harness_shared.code_intel_research_trails
       WHERE workspace_id=${input.workspace} AND owner_id=${input.owner} AND harness_slug=${harness}`;

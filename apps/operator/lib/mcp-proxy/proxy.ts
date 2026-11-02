@@ -3055,6 +3055,10 @@ export const RESERVED_CONTROL_PLANE_PATHS = new Set([
   "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
   "/api/agent-mcp/console/bootstrap-su/session-resume-released",
   "/api/agent-mcp/console/bootstrap-su/session-respawned",
+  // Native tools require this deny-only authority response inside the hook's
+  // 1500ms wall. Ordinary tool work must not consume the socket needed to
+  // authorize the next call (EI-27692647688876336).
+  "/api/agent-mcp/tool-guard",
   "/api/tui/identity",
 ]);
 

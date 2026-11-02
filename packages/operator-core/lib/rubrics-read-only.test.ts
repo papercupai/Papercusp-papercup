@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { namedQueryStageTimings, withNamedQueryDiagnosticContext } from './agent-tools/db-diagnostic-correlation-wiring';
 
 const h = vi.hoisted(() => ({ sql: vi.fn(), boundedPgReadTxn: vi.fn() }));
 
@@ -27,7 +28,10 @@ const {
 } = await import('./rubrics');
 
 describe('rubric read-only lookups', () => {
+  afterEach(() => vi.restoreAllMocks());
+
   beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     h.sql.mockReset();
     h.boundedPgReadTxn.mockReset();
     h.boundedPgReadTxn.mockImplementation(
@@ -66,7 +70,9 @@ describe('rubric read-only lookups', () => {
   it('preserves a transient backing-row read failure instead of reporting a miss', async () => {
     h.sql.mockRejectedValueOnce(new Error('connection reset'));
 
-    await expect(readRubricWithoutSeeding('active-rubric')).resolves.toEqual({ kind: 'read-failed' });
+    await expect(readRubricWithoutSeeding('active-rubric')).resolves.toEqual({
+      kind: 'read-failed', diagnostic: { phase: 'plan-row-read', reason: 'exception' },
+    });
     expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
     expect(h.sql).toHaveBeenCalledTimes(1);
   });
@@ -81,7 +87,9 @@ describe('rubric read-only lookups', () => {
   it('keeps writer lookup failures distinct from a missing rubric', async () => {
     h.sql.mockRejectedValueOnce(new Error('connection reset'));
 
-    await expect(readRubric('active-rubric')).resolves.toEqual({ kind: 'read-failed' });
+    await expect(readRubric('active-rubric')).resolves.toEqual({
+      kind: 'read-failed', diagnostic: { phase: 'plan-row-read', reason: 'exception' },
+    });
     expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
   });
 
@@ -130,5 +138,58 @@ describe('rubric read-only lookups', () => {
     ).rejects.toThrow('acceptance_bar_approver_check_rubric_missing');
     expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
     expect(h.sql).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains query timeout phase and request correlation without exposing exception or row data', async () => {
+    const error = Object.assign(new Error('secret SQL and credential'), {
+      code: '57014', hint: 'secret hint', detail: 'secret detail',
+      boundedPgReadTxn: { phase: 'acquire', acquirePool: 'secret pool' },
+    });
+    h.sql.mockRejectedValueOnce(error);
+
+    await withNamedQueryDiagnosticContext('scorecards.get', async correlationId => {
+      const result = await readRubricWithoutSeeding('secret-rubric');
+      expect(result).toEqual({ kind: 'read-failed', diagnostic: {
+        phase: 'plan-row-read', reason: 'exception', code: '57014', timeoutPhase: 'acquire', correlationId,
+      } });
+      expect(namedQueryStageTimings()?.stages).toEqual([
+        expect.objectContaining({ stage: 'rubric-plan-row-read', outcome: 'rejected' }),
+      ]);
+      expect(console.warn).toHaveBeenCalledWith('[rubrics:read-failed]', JSON.stringify(result.kind === 'read-failed' && result.diagnostic));
+      expect(JSON.stringify(result)).not.toContain('secret');
+      expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain('secret');
+    });
+    expect(h.sql).toHaveBeenCalledTimes(1);
+  });
+
+  it('distinguishes a mapping exception from a query failure and keeps the same request identity', async () => {
+    h.sql.mockResolvedValueOnce([{ plan_slug: 'active-rubric', get template_data() {
+      throw Object.assign(new Error('secret malformed content'), { code: 'secret-code-must-not-escape' });
+    } }]);
+
+    await withNamedQueryDiagnosticContext('scorecards.get', async correlationId => {
+      const result = await readRubricWithoutSeeding('active-rubric');
+      expect(result).toEqual({ kind: 'read-failed', diagnostic: {
+        phase: 'row-map', reason: 'exception', correlationId,
+      } });
+      expect(namedQueryStageTimings()?.stages).toEqual([
+        expect.objectContaining({ stage: 'rubric-plan-row-read', outcome: 'fulfilled' }),
+        expect.objectContaining({ stage: 'rubric-row-map', outcome: 'rejected' }),
+      ]);
+      expect(JSON.stringify(result)).not.toContain('secret');
+    });
+    expect(h.sql).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels an invalid present row and logs failures for null-returning compatibility readers', async () => {
+    h.sql.mockResolvedValueOnce([{ plan_slug: 'bad-rubric', template_data: null }]);
+    await expect(readRubricWithoutSeeding('bad-rubric')).resolves.toEqual({
+      kind: 'read-failed', diagnostic: { phase: 'row-map', reason: 'invalid-row' },
+    });
+    h.sql.mockRejectedValueOnce(Object.assign(new Error('secret'), { code: 'ECONNRESET' }));
+    await expect(getRubricWithoutSeeding('bad-rubric')).resolves.toBeNull();
+    expect(console.warn).toHaveBeenLastCalledWith('[rubrics:read-failed]', JSON.stringify({
+      phase: 'plan-row-read', reason: 'exception', code: 'ECONNRESET',
+    }));
   });
 });

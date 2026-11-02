@@ -392,7 +392,7 @@ describe('current launcher owns its assignment runtime', () => {
         modelId: config.arms[1].model, harnessVersion: config.arms[1].runtime.sourceRevision,
         preregHash: input.current!.preregHash, rolloutId: req.runId });
       return { arm: req.spec.arm, runId: req.runId, startedAtMs: 0, finishedAtMs: 1, rows: [], modelCallsSpent: 0,
-        tokensSpent: 0, costUsdSpent: 0, budgetExhausted: false, attemptedTaskIds: ['t1'], skippedTaskIds: ['t2'] };
+        tokensSpent: 0, costUsdSpent: 0, accountingUnknown: false, budgetExhausted: false, attemptedTaskIds: ['t1'], skippedTaskIds: ['t2'] };
     });
     try {
       expect(currentBenchLaunchSelection(f.request, config).arm.agent).toBe('claude');
@@ -444,7 +444,7 @@ describe('current launcher owns its assignment runtime', () => {
         modelId: config.arms[1].model, harnessVersion: config.arms[1].runtime.sourceRevision,
         preregHash: input.current!.preregHash, rolloutId: req.runId });
       return { arm: req.spec.arm, runId: req.runId, startedAtMs: 0, finishedAtMs: 1, rows: [], modelCallsSpent: 0,
-        tokensSpent: 0, costUsdSpent: 0, budgetExhausted: false, attemptedTaskIds: ['t1'], skippedTaskIds: ['t2'] };
+        tokensSpent: 0, costUsdSpent: 0, accountingUnknown: false, budgetExhausted: false, attemptedTaskIds: ['t1'], skippedTaskIds: ['t2'] };
     });
     await (await launchBenchRun(f.request, { ...deps(), loadBacklog: f.loadBacklog,
       currentProximus: { prepare: f.prepare, start }, currentFrontierArm })).done;
@@ -471,7 +471,7 @@ describe('current launcher owns its assignment runtime', () => {
         modelId: config.arms[0].model, harnessVersion: config.arms[0].runtime.sourceRevision,
         preregHash: input.current!.preregHash, rolloutId: 'fixture-rollout', createdAt: new Date().toISOString() });
       return { arm: 'papercusp', runId: req.runId, startedAtMs: 0, finishedAtMs: 100, rows: [],
-        modelCallsSpent: 2, tokensSpent: 60, costUsdSpent: 0.002, budgetExhausted: false,
+        modelCallsSpent: 2, tokensSpent: 60, costUsdSpent: 0.002, accountingUnknown: false, budgetExhausted: false,
         attemptedTaskIds: ['t1', 't2'], skippedTaskIds: [] };
     });
     await (await launchBenchRun({ ...input, suite: 'frontier-swe' }, { ...deps(), loadBacklog,
@@ -489,7 +489,7 @@ describe('current launcher owns its assignment runtime', () => {
     config.grader.family = 'frontier-swe';
     const currentFrontierArm: NonNullable<Parameters<typeof launchBenchRun>[1]>['currentFrontierArm'] = vi.fn(async req => ({
       arm: req.spec.arm, runId: req.runId, startedAtMs: 0, finishedAtMs: 1, rows: [], modelCallsSpent: 0,
-      tokensSpent: 0, costUsdSpent: 0, budgetExhausted: false, attemptedTaskIds: [], skippedTaskIds: ['t1', 't2'],
+      tokensSpent: 0, costUsdSpent: 0, accountingUnknown: false, budgetExhausted: false, attemptedTaskIds: [], skippedTaskIds: ['t1', 't2'],
     }));
     const loadBacklog = async () => [task('t1'), task('t2')].map(value => ({ ...value, benchmark: 'frontier-swe' }));
     await (await launchBenchRun({ ...input, arm: 'baseline', suite: 'frontier-swe' },

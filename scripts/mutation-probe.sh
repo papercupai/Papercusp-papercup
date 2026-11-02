@@ -1443,10 +1443,10 @@ fi
 CMD_HITS="$(printf '%s\n%s' "$TEST_CMD" "$CALIBRATION_CMD" | grep -Eo "$DESTRUCTIVE_ERE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
 HISTORICAL_DESTRUCTIVE_HITS="$SUBJ_HITS$HIST_SUBJ_HITS$CMD_HITS"
 if [ -n "$HISTORICAL_DESTRUCTIVE_HITS" ] && [ "$HISTORICAL_MODE" -eq 1 ]; then
-  log "historical mode: destructive primitives detected (current subject: ${SUBJ_HITS:-none}; historical subject: ${HIST_SUBJ_HITS:-none}; --test/--calibration: ${CMD_HITS:-none}); no mutant is produced, so allowing the unmutated historical source comparison. Use --fake-destructive or --i-know-this-deletes --sandbox-root if the guard itself executes deletion logic."
+  log "historical mode: static scan matched destructive-code candidates (current subject: ${SUBJ_HITS:-none}; historical subject: ${HIST_SUBJ_HITS:-none}; --test/--calibration: ${CMD_HITS:-none}); no mutant is produced, so allowing the unmutated historical source comparison. Use --fake-destructive or --i-know-this-deletes --sandbox-root if the guard itself executes deletion logic."
 elif [ -n "$HISTORICAL_DESTRUCTIVE_HITS" ] && [ "$DELETES_ACK" -eq 0 ] && [ "$FAKE_DESTRUCTIVE" -eq 0 ]; then
-  die "REFUSING: the probe would EXECUTE destructive code, and nothing sandboxes what a mutant DOES.
-      Matched destructive primitives — current subject: ${SUBJ_HITS:-none}; historical subject: ${HIST_SUBJ_HITS:-none}; --test/--calibration: ${CMD_HITS:-none}
+  die "REFUSING: a static scan matched destructive-code candidates. These are lexical matches, not evidence that destructive code ran; a mutant may still execute a real destructive call, and the probe does not sandbox mutant effects.
+      Matched lexical candidates — current subject: ${SUBJ_HITS:-none}; historical subject: ${HIST_SUBJ_HITS:-none}; --test/--calibration: ${CMD_HITS:-none}
 
       Where it matched in $FILE (first 4, line-numbered — if every one of these is a
       comment or an identifier rather than a CALL, this is a false positive and
@@ -3047,7 +3047,7 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
     log "VERDICT: HARNESS ERROR (historical guard exited $HISTORICAL_RC) — no falsifiability verdict is sound"
   fi
 
-  printf 'MUTATION_PROBE_RESULT mode=historical verdict=%s expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s absence_control=%s positive_controls=%d destructive_primitives=%s assertion_evidence=%s\n' \
+  printf 'MUTATION_PROBE_RESULT mode=historical verdict=%s expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s absence_control=%s positive_controls=%d destructive_lexical_candidates=%s assertion_evidence=%s\n' \
     "$VERDICT" "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "$MUST_BE_ABSENT" "${#POSITIVE_CONTROLS[@]}" "${HISTORICAL_DESTRUCTIVE_HITS// /,}" "$HISTORICAL_ASSERTION_EVIDENCE"
 
   [ "$VERDICT" = "harness-error" ] && exit 2

@@ -95,6 +95,7 @@ describe('focused runner startup tracing', () => {
     const fixture = join(root, 'libs/test-config/src/__fixtures__/armed-capture');
     const config = join(fixture, 'vitest.config.ts');
     const dir = mkdtempSync(join(tmpdir(), 'native-reporter-channel-')), out = join(dir, 'out.json');
+    let completed = false;
     const env: NodeJS.ProcessEnv = {};
     for (const [key, value] of Object.entries(process.env)) {
       if (!['PC_', 'VITEST', 'PAPERCUSP_TEST_', 'PAPERCUSP_CHECKPOINT_', 'PAPERCUSP_MUTATION_', 'AFFECTED_']
@@ -133,7 +134,8 @@ describe('focused runner startup tracing', () => {
       });
       const { producer, path } = enrollment.producers[0]!;
       const snapshot = JSON.parse(readFileSync(producer.outPath, 'utf8'));
-      expect(readPartialNativeChannelCustody(producer, snapshot.nativeRun)).toMatchObject({ status: 'bound',
+      const custody = readPartialNativeChannelCustody(producer, snapshot.nativeRun);
+      expect(custody, JSON.stringify(custody)).toMatchObject({ status: 'bound',
         custody: { terminal: true, reporterPid: snapshot.nativeRun.pid } });
       const expected = { attemptId: producer.attemptId, root, taskKey: producer.taskKey,
         workspaceName: producer.workspaceName, producerPath: path,
@@ -143,14 +145,34 @@ describe('focused runner startup tracing', () => {
       const read = () => readPartialNativeCompletion(producer.outPath, expected, {
         requireTerminal: true, classifyReadPaths: () => ({ readPaths: [], opaqueReasons: [] }),
       });
-      expect(read()).toMatchObject({ status: 'ready', origin: { terminal: 'passed' },
-        receipts: [expect.objectContaining({ state: 'pass' })] });
+      const completion = read();
+      // A shared, unpinned install deliberately has no reusable runtime identity.
+      // Physical custody still binds, but cannot supply that independent proof.
+      if (snapshot.completionCheckpoint.runnerIdentity === null) {
+        expect(snapshot.rows[0].opaqueReasons).toContain('worker-runtime-unavailable');
+        expect(completion, JSON.stringify(completion)).toMatchObject({ status: 'refused',
+          reason: 'snapshot-identity-mismatch', receipts: [], currentEvidence: [] });
+      } else {
+        expect(completion, JSON.stringify(completion)).toMatchObject({ status: 'ready',
+          origin: { terminal: 'passed' }, receipts: [expect.objectContaining({ state: 'pass' })] });
+      }
+      const { completionIntegrity: _missingSeal, ...missingIdentity } = snapshot;
+      missingIdentity.completionCheckpoint = { ...missingIdentity.completionCheckpoint, runnerIdentity: null };
+      writeFileSync(producer.outPath, JSON.stringify({ ...missingIdentity, completionIntegrity: { schemaVersion: 1,
+        sha256: createHash('sha256').update(JSON.stringify(missingIdentity)).digest('hex') } }));
+      expect(read()).toMatchObject({ status: 'refused', reason: 'snapshot-identity-mismatch',
+        receipts: [], currentEvidence: [] });
       const { completionIntegrity: _seal, ...foreign } = snapshot;
       foreign.nativeRun.pid += 10_000_000;
+      expect(readPartialNativeChannelCustody(producer, foreign.nativeRun)).toMatchObject({ status: 'refused' });
       writeFileSync(producer.outPath, JSON.stringify({ ...foreign, completionIntegrity: { schemaVersion: 1,
         sha256: createHash('sha256').update(JSON.stringify(foreign)).digest('hex') } }));
       expect(read()).toMatchObject({ status: 'refused', receipts: [] });
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+      completed = true;
+    } finally {
+      if (completed) rmSync(dir, { recursive: true, force: true });
+      else process.stderr.write(`[native-reporter-channel] retained failure evidence: ${dir}\n`);
+    }
   }, 180_000);
 
   it.each(['clean', 'corrupt-plan', 'changed-script', 'claimed-channel'])(
@@ -317,6 +339,37 @@ describe('focused runner startup tracing', () => {
     expect(armed.PAPERCUSP_TEST_STARTUP_TRACE).toBeUndefined();
     expect(nativeProcessTraceEnv(armed).NODE_OPTIONS).toBe(armed.NODE_OPTIONS);
   });
+
+  it('distinguishes worker threads from process entries while retaining thread source bytes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-thread-source-'));
+    const out = join(dir, 'sources.json');
+    const worker = join(dir, 'worker.mjs'), main = join(dir, 'main.mjs');
+    const source = "import { parentPort } from 'node:worker_threads'; parentPort.postMessage('loaded');";
+    writeFileSync(worker, source);
+    writeFileSync(main, `import { Worker } from 'node:worker_threads';
+      const worker = new Worker(new URL('./worker.mjs', import.meta.url));
+      worker.once('error', error => { throw error; });
+      worker.once('message', value => { if (value !== 'loaded') process.exitCode = 1; });`);
+    try {
+      await promisify(execFile)(process.execPath, [main], {
+        env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+          PAPERCUSP_TEST_STARTUP_TRACE: '0' }), timeout: 30_000,
+      });
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
+        JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      const entries = rows.filter(row => row.event === 'node-entry');
+      const processes = entries.filter(row => row.threadId === 0);
+      const threads = entries.filter(row => row.threadId > 0);
+      expect(processes).toHaveLength(1);
+      expect(threads).toHaveLength(1);
+      expect(threads[0].pid).toBe(processes[0].pid);
+      expect(threads[0].processIdentity).not.toBe(processes[0].processIdentity);
+      const loaded = rows.find(row => row.event === 'module-load-return' && row.url === pathToFileURL(worker).href);
+      expect(loaded).toMatchObject({ threadId: threads[0].threadId, processIdentity: threads[0].processIdentity,
+        source: { status: 'hashed', sha256: createHash('sha256').update(source).digest('hex') } });
+      expect(readFileSync(join(`${out}.native-processes`, loaded.source.ref), 'utf8')).toBe(source);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 45_000);
 
   it.each(['string', 'view', 'array-buffer'])('fingerprints returned %s source and preserves a delegated loader error object', async representation => {
     const dir = mkdtempSync(join(tmpdir(), 'native-module-load-'));

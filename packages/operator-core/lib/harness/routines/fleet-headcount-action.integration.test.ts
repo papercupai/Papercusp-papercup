@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   releaseSlot: vi.fn(),
   setTransaction: vi.fn(),
   liveMemberIds: vi.fn(),
+  readFleetRoster: vi.fn(),
+  readFleetLaneHealth: vi.fn(),
   executingOwnersSince: vi.fn(),
   buildEnvelope: vi.fn(),
   spawnHeadless: vi.fn(),
@@ -81,6 +83,10 @@ vi.mock('../../console-spawn', () => ({
 }));
 vi.mock('../../fleet/fleet-roster', () => ({
   liveFleetMemberIds: (...args: unknown[]) => mocks.liveMemberIds(...args),
+  listFleetRosterDiagnosed: (...args: unknown[]) => mocks.readFleetRoster(...args),
+}));
+vi.mock('../../fleet/lane-health', () => ({
+  readFleetLaneHealthDiagnosed: (...args: unknown[]) => mocks.readFleetLaneHealth(...args),
 }));
 vi.mock('../../fleet/assignments', () => ({
   executingOwnersSince: (...args: unknown[]) => mocks.executingOwnersSince(...args),
@@ -238,6 +244,26 @@ beforeEach(() => {
   // otherwise the real assignments query returns an empty set and turns a
   // verified late boot into a synthetic refill deficit.
   mocks.executingOwnersSince.mockImplementation(async (ownerIds: string[]) => new Set(ownerIds));
+  mocks.readFleetRoster.mockImplementation(async (args: { leaderOwnerId?: string | null }) => ({
+    entries: [],
+    degradedLegs: [],
+    leaderLiveness: args.leaderOwnerId
+      ? {
+          ownerId: args.leaderOwnerId,
+          presenceRow: true,
+          recordedLive: false,
+          sessionState: 'live',
+          complete: true,
+        }
+      : undefined,
+  }));
+  mocks.readFleetLaneHealth.mockResolvedValue({
+    laneHealth: {
+      effective: { claimable: 1 },
+      spec: { specId: 'current-test-spec', revision: 1 },
+    },
+    unavailable: null,
+  });
   mocks.capacity.mockImplementation(async (args: { headroom?: number }) => ({
     content: [{
       type: 'text',
@@ -286,6 +312,154 @@ describe('deliberate loop-end is a headcount repair admission fence', () => {
       verifierResult(args.expectedOwnerIds[0]!, args.expectedOwnerIds[0] !== owner));
     return transaction;
   };
+
+  it('does not prune or respawn when registered leader liveness is unknown', async () => {
+    const transaction = setup(true);
+    mocks.readFleetRoster.mockResolvedValue({
+      entries: [],
+      degradedLegs: ['presence'],
+      leaderLiveness: {
+        ownerId: 'su-reaped-leader',
+        presenceRow: false,
+        recordedLive: null,
+        sessionState: null,
+        complete: false,
+      },
+    });
+
+    await run();
+
+    expect(mocks.readFleetLaneHealth).not.toHaveBeenCalled();
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(transaction.governor?.terminalVerdict).toMatchObject({
+      action: 'wait',
+      outcome: 'unverified',
+      reason: expect.stringContaining('leader liveness is unknown'),
+    });
+  });
+
+  it('disarms without a pull or replacement when complete evidence shows the leader was reaped', async () => {
+    const transaction = setup(true);
+    mocks.readFleetRoster.mockResolvedValue({
+      entries: [],
+      degradedLegs: [],
+      leaderLiveness: {
+        ownerId: 'su-reaped-leader',
+        presenceRow: false,
+        recordedLive: true,
+        sessionState: 'recorded',
+        complete: true,
+      },
+    });
+
+    await run();
+
+    expect(mocks.readFleetLaneHealth).not.toHaveBeenCalled();
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(mocks.setHeadcountTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws', fleetSlug: 'fleet-a', target: null }),
+    );
+    expect(mocks.recordAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      succeeded: false,
+      error: expect.stringContaining('leader is not positively live'),
+    }));
+    expect(transaction.governor?.terminalVerdict).toMatchObject({
+      action: 'none',
+      outcome: 'unverified',
+      reason: expect.stringContaining('leader is not positively live'),
+    });
+  });
+
+  it('rechecks leader liveness after preflight and refuses a replacement if the leader was reaped', async () => {
+    setup(false);
+    mocks.orgSql.mockResolvedValue([{ status: 'active', archived: false }]);
+    mocks.readFleetRoster
+      .mockResolvedValueOnce({
+        entries: [],
+        degradedLegs: [],
+        leaderLiveness: {
+          ownerId: 'su-reaped-leader',
+          presenceRow: true,
+          recordedLive: true,
+          sessionState: 'live',
+          complete: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        entries: [],
+        degradedLegs: [],
+        leaderLiveness: {
+          ownerId: 'su-reaped-leader',
+          presenceRow: false,
+          recordedLive: true,
+          sessionState: 'recorded',
+          complete: true,
+        },
+      });
+
+    await run();
+
+    expect(mocks.readFleetRoster).toHaveBeenCalledTimes(2);
+    expect(mocks.readFleetLaneHealth).toHaveBeenCalledTimes(1);
+    expect(mocks.claimSlot).toHaveBeenCalledTimes(1);
+    expect(mocks.releaseSlot).toHaveBeenCalledWith({ workspaceId: 'ws', fleetSlug: 'fleet-a', at: 10 });
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(mocks.setHeadcountTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws', fleetSlug: 'fleet-a', target: null }),
+    );
+  });
+
+  it('does not prune or respawn into an exactly measured empty fleet lane', async () => {
+    const transaction = setup(true);
+    mocks.readFleetLaneHealth.mockResolvedValue({
+      laneHealth: {
+        effective: { claimable: 0 },
+        spec: { specId: 'stale-byoc-lane', revision: 46 },
+      },
+      unavailable: null,
+    });
+
+    await run();
+
+    expect(mocks.readFleetLaneHealth).toHaveBeenCalledTimes(1);
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(transaction.governor?.terminalVerdict).toMatchObject({
+      action: 'wait',
+      outcome: 'unverified',
+      reason: expect.stringContaining('has no currently claimable work'),
+    });
+  });
+
+  it('does not prune or respawn when the measured lane count is negative', async () => {
+    const transaction = setup(true);
+    mocks.readFleetLaneHealth.mockResolvedValue({
+      laneHealth: {
+        effective: { claimable: -1 },
+        spec: { specId: 'invalid-byoc-lane', revision: 46 },
+      },
+      unavailable: null,
+    });
+
+    await run();
+
+    expect(mocks.readFleetLaneHealth).toHaveBeenCalledTimes(1);
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(transaction.governor?.terminalVerdict).toMatchObject({
+      action: 'wait',
+      outcome: 'unverified',
+      reason: expect.stringContaining('has no currently claimable work'),
+    });
+  });
 
   it.each([true, false])('preserves a settled no-assignment disposition across ticks (member live: %s)', async (live) => {
     const transaction = setup(live);
@@ -436,7 +610,7 @@ describe('headcount governor disarms a fleet whose plan is finished (WI-1457060)
 
   it.each(['shipped', 'superseded'])('disarms instead of topping up when the plan is %s', async (status) => {
     mocks.listTargets.mockResolvedValue(targetWithPlan);
-    mocks.orgSql.mockResolvedValue([{ status }]);
+    mocks.orgSql.mockResolvedValue([{ status, archived: false }]);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await run();
@@ -456,11 +630,29 @@ describe('headcount governor disarms a fleet whose plan is finished (WI-1457060)
     warn.mockRestore();
   });
 
+  it('disarms an archived plan even when its stored status still reads active', async () => {
+    mocks.listTargets.mockResolvedValue(targetWithPlan);
+    mocks.orgSql.mockResolvedValue([{ status: 'active', archived: true }]);
+
+    await run();
+
+    expect(mocks.setHeadcountTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws', fleetSlug: 'fleet-a', target: null }),
+    );
+    expect(mocks.claimAttempt).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(mocks.recordAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      succeeded: false,
+      error: expect.stringContaining('plan plan-a is archived'),
+    }));
+  });
+
   // CALIBRATION. Without this, every assertion above would also pass if the guard simply
   // disarmed everything unconditionally.
   it('still tops up a fleet whose plan is active', async () => {
     mocks.listTargets.mockResolvedValue(targetWithPlan);
-    mocks.orgSql.mockResolvedValue([{ status: 'active' }]);
+    mocks.orgSql.mockResolvedValue([{ status: 'active', archived: false }]);
 
     await run();
 

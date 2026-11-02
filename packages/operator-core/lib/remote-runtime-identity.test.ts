@@ -3,8 +3,10 @@
  * remote managed resource (WI-6554700010011907). The describe call is injected; the default
  * gcloud reader is exercised live by the cloud-portal SPEC-P-004 binding, not here.
  */
-import { afterEach, describe, it, expect, vi } from 'vitest';
-import { hostname } from 'node:os';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { hostname, homedir } from 'node:os';
+import { join } from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { readProcessIdentity } from './process-identity';
 import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from './runtime-vintage';
@@ -17,6 +19,13 @@ import {
 const configured = vi.hoisted(() => ({ host: 'https://flags.example.test', projectKey: 'capture-key', personalApiKey: 'server-secret' }));
 vi.mock('./posthog-config', () => ({ getPosthogConfigWithSource: () => ({ config: configured }) }));
 vi.mock('node:child_process', () => ({ execFile: vi.fn() }));
+vi.mock('node:fs/promises', async importOriginal => ({
+  ...await importOriginal<typeof import('node:fs/promises')>(), readFile: vi.fn(), stat: vi.fn(),
+}));
+beforeEach(() => {
+  vi.mocked(readFile).mockReset().mockRejectedValue(Object.assign(new Error('missing fixture'), { code: 'ENOENT' }));
+  vi.mocked(stat).mockReset().mockRejectedValue(Object.assign(new Error('missing fixture'), { code: 'ENOENT' }));
+});
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.mocked(execFile).mockReset(); });
 
 const UNIT = 'gcp-cloudsql:papercusp-cloud-prod/pc-cloud-prod-pg';
@@ -230,6 +239,11 @@ describe('Cloudflare Pages production deployment identity (WI-6554700010015755)'
 });
 
 describe('Cloudflare Worker serving identity (EI-27073086529997529)', () => {
+  beforeEach(() => {
+    for (const key of ['CF_API_TOKEN', 'CLOUDFLARE_API_KEY', 'CF_API_KEY', 'CLOUDFLARE_EMAIL', 'CF_EMAIL',
+      'WRANGLER_API_ENVIRONMENT', 'WRANGLER_COMPLIANCE_REGION']) vi.stubEnv(key, '');
+    vi.stubEnv('XDG_CONFIG_HOME', join(homedir(), 'runtime-fixture-config'));
+  });
   const account = 'f896982ea2f6d507e4f29eeecbd26e94';
   const unit = `cloudflare-worker:${account}/papercusp-cupboard`;
   const v1 = '968092d7-beeb-4bdb-a1b3-3953d4b9fefc', v2 = '11111111-2222-4333-8444-555555555555';
@@ -381,6 +395,96 @@ describe('Cloudflare Worker serving identity (EI-27073086529997529)', () => {
     });
     expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
   });
+
+
+  it('overlaps independent reads but keeps both mutable surfaces around the version read', async () => {
+    const { fetcher } = setupApi();
+    const original = fetcher.getMockImplementation()!;
+    const pending: Array<{ path: string; release: () => void }> = [];
+    fetcher.mockImplementation((url, init) => new Promise<Response>((resolve, reject) => {
+      pending.push({ path: new URL(String(url)).pathname.split('/').at(-1)!,
+        release: () => { void original(url, init).then(resolve, reject); } });
+    }));
+    const identity = measureRemoteRuntimeIdentity(unit);
+    await vi.waitFor(() => expect(pending.map(read => read.path).sort()).toEqual(['deployments', 'settings']));
+    const before = pending.splice(0);
+    before[0]!.release();
+    await Promise.resolve();
+    expect(pending).toEqual([]);
+    before[1]!.release();
+    await vi.waitFor(() => expect(pending.map(read => read.path)).toEqual([v1]));
+    pending.splice(0).forEach(read => read.release());
+    await vi.waitFor(() => expect(pending.map(read => read.path).sort()).toEqual(['deployments', 'settings']));
+    pending.splice(0).forEach(read => read.release());
+    expect(await identity).toMatch(/^[a-f0-9]{64}$/);
+    expect(fetcher).toHaveBeenCalledTimes(5);
+  });
+
+  it.each([true, false])('reads fresh OAuth state without a CLI or credential cache (quoted expiry: %s)', async quoted => {
+    const { fetcher } = setupApi();
+    vi.stubEnv('CLOUDFLARE_API_TOKEN', '');
+    const expiry = new Date(Date.now() + 3_600_000).toISOString();
+    const config = (token: string) => 'oauth_token = ' + JSON.stringify(token) +
+      '\nexpiration_time = ' + (quoted ? JSON.stringify(expiry) : expiry) + '\n';
+    vi.mocked(readFile).mockResolvedValue(config('local-oauth-secret'));
+    const identity = await measureRemoteRuntimeIdentity(unit);
+    expect(identity).toMatch(/^[a-f0-9]{64}$/);
+    expect(readFile).toHaveBeenCalledWith(join(homedir(), 'runtime-fixture-config', '.wrangler', 'config', 'default.toml'), 'utf8');
+    expect(new Headers(fetcher.mock.calls[0]![1]?.headers).get('authorization')).toBe('Bearer local-oauth-secret');
+    expect(execFile).not.toHaveBeenCalled();
+    vi.mocked(readFile).mockResolvedValue(config('rotated-oauth-secret'));
+    expect(await measureRemoteRuntimeIdentity(unit)).toBe(identity);
+    expect(new Headers(fetcher.mock.calls.at(-1)![1]?.headers).get('authorization')).toBe('Bearer rotated-oauth-secret');
+    expect(identity).not.toMatch(/local-oauth|rotated-oauth/);
+    vi.mocked(readFile).mockRejectedValue(new Error('credentials removed'));
+    vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+      (args.at(-1) as (error: Error) => void)(new Error('not logged in'));
+      return {} as ReturnType<typeof execFile>;
+    });
+    expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(10);
+  });
+
+  it.each(['missing', 'invalid', 'expired', 'near-expiry', 'malformed'])('leaves %s OAuth state to Wrangler refresh', async state => {
+    const { fetcher } = setupApi();
+    vi.stubEnv('CLOUDFLARE_API_TOKEN', '');
+    const expiry = state === 'invalid' ? 'not-a-date' :
+      new Date(Date.now() + (state === 'near-expiry' ? 30_000 : -30_000)).toISOString();
+    vi.mocked(readFile).mockResolvedValue(state === 'malformed' ? 'invalid = [' :
+      'oauth_token = "stale-local-secret"\n' + (state === 'missing' ? '' : 'expiration_time = ' + JSON.stringify(expiry)));
+    vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+      (args.at(-1) as (error: Error | null, stdout: string) => void)(null, JSON.stringify({ type: 'oauth', token: 'refreshed-secret' }));
+      return {} as ReturnType<typeof execFile>;
+    });
+    expect(await measureRemoteRuntimeIdentity(unit)).toMatch(/^[a-f0-9]{64}$/);
+    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(new Headers(fetcher.mock.calls[0]![1]?.headers).get('authorization')).toBe('Bearer refreshed-secret');
+  });
+
+  it('preserves the legacy directory precedence even if its auth file is missing', async () => {
+    setupApi(); vi.stubEnv('CLOUDFLARE_API_TOKEN', '');
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as Awaited<ReturnType<typeof stat>>);
+    vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+      (args.at(-1) as (error: Error) => void)(new Error('not logged in'));
+      return {} as ReturnType<typeof execFile>;
+    });
+    expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
+    expect(readFile).toHaveBeenCalledTimes(1);
+    expect(readFile).toHaveBeenCalledWith(join(homedir(), '.wrangler', 'config', 'default.toml'), 'utf8');
+  });
+
+  it.each(['CF_API_TOKEN', 'CLOUDFLARE_API_KEY', 'WRANGLER_API_ENVIRONMENT', 'WRANGLER_COMPLIANCE_REGION'])(
+    'leaves alternate %s configuration to Wrangler', async key => {
+      setupApi(); vi.stubEnv('CLOUDFLARE_API_TOKEN', '');
+      vi.stubEnv(key, key === 'WRANGLER_API_ENVIRONMENT' ? 'staging' : 'configured');
+      vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+        (args.at(-1) as (error: Error) => void)(new Error('unsupported auth'));
+        return {} as ReturnType<typeof execFile>;
+      });
+      expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
+      expect(readFile).not.toHaveBeenCalled();
+      expect(execFile).toHaveBeenCalledTimes(1);
+    });
 
   it('reuses Wrangler credentials when the server token is absent and fails closed if unavailable', async () => {
     setupApi(); vi.stubEnv('CLOUDFLARE_API_TOKEN', '');

@@ -1,5 +1,9 @@
 export const SYSTEMD_RUNNER_OUTPUT_PATH_ENV: string;
 export const SYSTEMD_RUNNER_REDACTIONS_ENV: string;
+export const SYSTEMD_RUNNER_TASK_ID_ENV: string;
+export const SYSTEMD_RUNNER_BASH_JOB_ID_ENV: string;
+export const SYSTEMD_RUNNER_SCOPE_UNIT_ENV: string;
+export const SYSTEMD_RUNNER_MARKER_SECRET_ENV: string;
 export const SYSTEMD_RUNNER_JOB_END_PREFIX: string;
 
 export interface StreamingSecretRedactor {

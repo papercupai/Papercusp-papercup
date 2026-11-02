@@ -183,6 +183,56 @@ describe('overlayLiveRequirementVerification', () => {
     expect(rewritten.criteria[0]).toBe(storedCriterion);
     expect(rewritten.kept).toEqual([{ barKey: 'R-15', reason: 'meaning-changed' }]);
   });
+
+  it.each(['none', ' NONE ', '', undefined])('keeps a bound instrument when the live key is %s', (instrumentKey) => {
+    const criterion = { barKey: 'R-11', check: { kind: 'instrument', instrumentKey: 'code-intel:straggler-dispositions' } };
+    const overlay = overlayLiveRequirementVerification([criterion], [{
+      barKey: 'R-11', criterion: { method: 'Stale procedure.', check: { kind: 'instrument', instrumentKey } },
+    }]);
+    expect(overlay.criteria[0]).toBe(criterion);
+    expect(overlay.live).toEqual([]);
+    expect(overlay.changed).toEqual([]);
+    expect(overlay.kept).toEqual([{ barKey: 'R-11', reason: 'check-binding-downgraded' }]);
+  });
+
+  it('keeps the complete stored suite when a stale live block drops a test file', () => {
+    const criterion = { barKey: 'R-2', check: { kind: 'tests', files: [OLD_TEST, NEW_TEST] } };
+    const overlay = overlayLiveRequirementVerification([criterion], [{
+      barKey: 'R-2', criterion: { check: { kind: 'tests', files: [OLD_TEST, OLD_TEST] } },
+    }]);
+    expect(overlay.criteria[0]).toBe(criterion);
+    expect(overlay.kept).toEqual([{ barKey: 'R-2', reason: 'check-binding-downgraded' }]);
+  });
+
+  it.each([
+    [{ kind: 'tests', files: [OLD_TEST], testName: 'required case' }, { kind: 'tests', files: [OLD_TEST] }],
+    [{ kind: 'tests', files: [OLD_TEST], cases: [{ file: OLD_TEST, testName: 'first' }, { file: OLD_TEST, testName: 'second' }] },
+      { kind: 'tests', files: [OLD_TEST], cases: [{ file: OLD_TEST, testName: 'first' }] }],
+  ])('keeps explicit case bindings when the live block drops selectors', (check, liveCheck) => {
+    const criterion = { barKey: 'R-2', check };
+    const overlay = overlayLiveRequirementVerification([criterion], [{ barKey: 'R-2', criterion: { check: liveCheck } }]);
+    expect(overlay.criteria[0]).toBe(criterion);
+    expect(overlay.kept).toEqual([{ barKey: 'R-2', reason: 'check-binding-downgraded' }]);
+  });
+
+  it('still overlays expanded suites, moved cases and bound instrument replacements', () => {
+    const overlays = [
+      overlayLiveRequirementVerification([{ barKey: 'R-1', check: { kind: 'tests', files: [OLD_TEST] } }], [
+        { barKey: 'R-1', criterion: { check: { kind: 'tests', files: [OLD_TEST, NEW_TEST] } } },
+      ]),
+      overlayLiveRequirementVerification([{ barKey: 'R-1', check: { kind: 'tests', files: [OLD_TEST], cases: [{ file: OLD_TEST, testName: 'required case' }] } }], [
+        { barKey: 'R-1', criterion: { check: { kind: 'tests', files: [NEW_TEST], cases: [{ file: NEW_TEST, testName: 'required case' }] } } },
+      ]),
+      overlayLiveRequirementVerification([{ barKey: 'R-1', check: { kind: 'instrument', instrumentKey: 'code-intel:straggler-dispositions' } }], [
+        { barKey: 'R-1', criterion: { check: { kind: 'instrument', instrumentKey: 'code-intel:coupling-shadow-window' } } },
+      ]),
+    ];
+    for (const overlay of overlays) {
+      expect(overlay.live).toEqual(['R-1']);
+      expect(overlay.changed).toEqual(['R-1']);
+      expect(overlay.kept).toEqual([]);
+    }
+  });
 });
 
 describe('readLiveAcceptanceCriteria (the acceptance read)', () => {

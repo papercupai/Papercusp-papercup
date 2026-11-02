@@ -45,6 +45,7 @@ import {
   gradingAuditFallbackModelCanServe,
   gradingAuditFallbackVerdictCanServe,
   gradingAuditProviderCanServe,
+  gradingAuditQuotaRouteCanServe,
   gradingAuditorLaunchCtx,
   readGradingAuditDispatchSuppression,
   reconcilePendingGradingAudits,
@@ -54,6 +55,7 @@ import {
   type DispatchPendingGradingAuditsInput,
 } from './grading-integrity';
 import { GRADING_INTEGRITY_JUDGE_STACK } from './judge-identity-stack';
+import { GradingAuditRuntimeReadinessError, type GradingAuditRuntimeReadinessDiagnostic } from './release/grading-audit-runtime';
 
 type ListScorecards = NonNullable<DispatchPendingGradingAuditsDeps['listScorecards']>;
 type ReadEvidence = NonNullable<DispatchPendingGradingAuditsDeps['readEvidence']>;
@@ -533,6 +535,34 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
 
 describe('dispatchPendingGradingAudits', () => {
   it.each([
+    { explicit: true, targeted: true, serving: true, launches: 1 },
+    { explicit: true, targeted: true, serving: false, launches: 0 },
+    { explicit: false, targeted: true, serving: true, launches: 0 },
+    { explicit: true, targeted: false, serving: true, launches: 0 },
+  ])('rechecks a quota wall only for a serving explicit repair: %j', async ({ explicit, targeted, serving, launches }) => {
+    const d = deps();
+    const issueId = 'EI-recovered-quota-route';
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+    d.reserve.mockResolvedValueOnce({ status: 'quota-backoff', backoff: {
+      until: '2099-01-01T00:00:00.000Z', source: 'account-ledger',
+      code: 'model_quota_exhausted', recordedAt: '2026-09-08T00:00:00.000Z', reason: 'old route quota',
+    } });
+    const quotaRouteCanServe = vi.fn(async () => serving);
+    const gradingLaunch = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' } as const;
+    await dispatchPendingGradingAudits({
+      ...(targeted ? { targetIds: [issueId] } : {}),
+      ctx: { ...ctx, ...(explicit ? { gradingLaunch } : {}) },
+    }, { ...d, quotaRouteCanServe });
+    expect(d.launch).toHaveBeenCalledTimes(launches);
+    expect(d.reserve).toHaveBeenCalledTimes(launches + 1);
+    expect(quotaRouteCanServe).toHaveBeenCalledTimes(explicit && targeted ? 1 : 0);
+    if (launches) {
+      expect(d.reserve).toHaveBeenLastCalledWith(issueId, `grading-audit:${issueId}`,
+        expect.objectContaining({ allowRecoveredQuotaBackoff: true }));
+    }
+  });
+
+  it.each([
     { kind: 'read-failed', state: 'failed', reason: 'target rubric read failed; retry this audit when its backing plan is readable' },
     { kind: 'missing', state: 'skipped', reason: 'target rubric not found' },
   ] as const)('distinguishes a $kind rubric lookup before reserving an auditor', async ({ kind, state, reason }) => {
@@ -586,6 +616,22 @@ describe('dispatchPendingGradingAudits', () => {
     );
 
     expect(d.launch).toHaveBeenCalledOnce();
+  });
+
+  it('carries the originating completion reference into the auditor brief without changing its target', async () => {
+    const d = deps();
+    const issueId = 'EI-acceptance-ref';
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+
+    await dispatchPendingGradingAudits(
+      { targetIds: [issueId], ctx, harness: 'papercusp', acceptanceRef: 'F-101' },
+      d,
+    );
+
+    expect(d.launch).toHaveBeenCalledOnce();
+    const launchInput = d.launch.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(launchInput.workItem).toBe(issueId);
+    expect(launchInput.brief).toContain('Originating completion reference: "F-101"');
   });
 
   it('cancels the pending lease and retires its live auditor when the target was superseded', async () => {
@@ -1512,6 +1558,44 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])('preserves exact readiness diagnostics through the repair receipt (evaluator drift: %s)', async drift => {
+    const d = deps();
+    const issueId = 'EI-runtime-unready';
+    const evaluatorBuild = { sha: drift ? 'old-evaluator' : 'live-evaluator-sha', version: '1.2.3' };
+    d.listScorecards.mockResolvedValue([card(issueId, {
+      gradedGeneration: { deployedSha: '2222222' } as ScorecardRow['gradedGeneration'],
+      ...(drift ? { rerunRecipe: {
+        schemaVersion: 1, evaluator: 'plans:evaluate-spec-test-adequacy', evaluatorBuild,
+        evaluatorRevision: 20, classRef: 'plan-class-bugfix',
+        args: { harness: 'papercusp', slug: 'retained-unready', classRef: 'plan-class-bugfix',
+          specIds: ['SPEC-RETAINED-UNREADY'], includeDraft: true },
+        selection: { planSlug: 'retained-unready', specId: 'SPEC-RETAINED-UNREADY', specRevision: 1,
+          specFingerprint: 'retained-unready-fingerprint', bindingIds: [], evidence: [] },
+        current: { supplied: false, fingerprints: [] },
+        derivation: { kind: 'listSpecEvidence.currentness', classifier: 'classifySpecEvidenceCurrentness', unknownWhenMissing: true },
+      } as NonNullable<ScorecardRow['rerunRecipe']> } : {}),
+    })]);
+    const diagnostic: GradingAuditRuntimeReadinessDiagnostic = {
+      taskId: 'runtime-unready', logPath: '/logs/exact-runtime.log', attempts: 1,
+      locator: { schemaVersion: 1, sourceRoot: '/immutable/checkout', bundlePath: '/immutable/checkout/apps/operator/dist-host/hono-host.mjs',
+        ownerRef: 'grading-audit-runtime:exact', evaluatorBuild, bundleSha256: 'b'.repeat(64),
+        expiresAtSec: 4102444800, baseUrl: 'http://127.0.0.1:45188', issueIds: [issueId] },
+      lastProbe: { status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' },
+      readiness: { method: 'GET', url: 'http://127.0.0.1:45188/api/health', timeoutMs: 2000 },
+      taskRead: { tool: 'processes:list', args: { taskId: 'runtime-unready' } },
+      recovery: { tool: 'scorecards:repair', args: { targetIds: [issueId] } },
+    };
+    d.ensureRuntime.mockRejectedValue(new GradingAuditRuntimeReadinessError(diagnostic));
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, d);
+    expect(JSON.parse(JSON.stringify(result)).receipts[0]).toMatchObject({
+      issueId, state: 'failed', runtimeReadiness: diagnostic,
+      reason: expect.stringContaining('ECONNREFUSED'),
+    });
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
   it('does not dispatch an audit for a stale or unbound rubric-subject attestation', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([
@@ -1799,6 +1883,24 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.generationAncestry).not.toHaveBeenCalled();
     expect(d.launch).toHaveBeenCalledTimes(1);
     expect(d.launch.mock.calls[0]?.[0]).not.toHaveProperty('mcpTarget');
+  });
+
+  it('binds a profile-pinned card without a graded generation to the dispatcher host', async () => {
+    const d = deps();
+    const issueId = 'EI-routine-profile-unbound-generation';
+    d.listScorecards.mockResolvedValue([card(issueId, { rubricRef: 'spec-quality' })]);
+    const profiledCtx = {
+      ...ctx,
+      gradingLaunch: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' },
+    } as DispatchPendingGradingAuditsInput['ctx'];
+
+    await dispatchPendingGradingAudits({ targetIds: [issueId], ctx: profiledCtx }, d);
+
+    expect(d.generationAncestry).not.toHaveBeenCalled();
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({
+      agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto', mcpTarget: 'spawn-host',
+    }), expect.anything());
   });
 
   it.each([
@@ -3884,7 +3986,7 @@ describe('dispatchPendingGradingAudits', () => {
     },
     {
       screen: 'account-paced gateway 429',
-      terminalCode: 'model_quota_exhausted',
+      terminalCode: 'inference_gateway_error',
       gatewayLog:
         "\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: account 'aviynw4' " +
         'paced/paused; retry after 60s\u001b[0m\r\n\r\n✻ Cooked for 13m 41s · done 9:33 AM\r\n❯',
@@ -4277,6 +4379,38 @@ describe('dispatchPendingGradingAudits', () => {
       },
     });
     expect(d.release).not.toHaveBeenCalled();
+  });
+
+  it('uses bounded dispatch backoff for paced admission timeouts without reading unrelated quota resets', async () => {
+    const d = deps();
+    const issueId = 'EI-paced-admission';
+    const nowMs = Date.parse('2026-11-02T12:00:00.000Z');
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+    d.launch
+      .mockResolvedValueOnce(launchResult({ deduped: false, launch: {
+        tasks: [{ taskId: 'task-primary', logPath: '/tmp/primary.log' }],
+      } }))
+      .mockResolvedValueOnce(launchResult({ deduped: false, launch: {
+        tasks: [{ taskId: 'task-fallback', logPath: '/tmp/fallback.log' }],
+      } }));
+    const readProviderResets = vi.fn(async () => [nowMs + 6 * 60 * 60_000]);
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, {
+      ...d,
+      killTask: async (taskId) => ({ ok: true, taskId, action: 'kill' }),
+      providerCanServe: async () => true,
+      readProviderResets,
+      now: () => nowMs,
+      readLogTail: () => "API Error: Request rejected (429) · inference-gateway: account 'aviynw4' paced/paused; retry after 60s",
+      terminalLogMaxRechecks: 0,
+    });
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(result.receipts[0]).toMatchObject({ state: 'failed', terminalRecovery: {
+      codes: ['inference_gateway_error', 'inference_gateway_error'],
+    } });
+    expect(readProviderResets).not.toHaveBeenCalled();
+    expect(d.release).toHaveBeenLastCalledWith(issueId, `grading-audit:${issueId}`, expect.objectContaining({
+      backoff: expect.objectContaining({ code: 'inference_gateway_error', source: 'retry-window' }),
+    }));
   });
 
   it('stops after one recovery when the fallback is quota-terminal too', async () => {
@@ -4991,6 +5125,30 @@ describe('resolveGradingAuditQuotaBackoff', () => {
       until: iso(GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS),
       source: 'default',
     });
+  });
+});
+
+describe('quota repair route capacity', () => {
+  const profile = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' } as const;
+  it.each([
+    { serviceable: 1, reachable: true, modelCount: 1, expected: true },
+    { serviceable: 0, reachable: true, modelCount: 1, expected: false },
+    { serviceable: 1, reachable: true, modelCount: 0, expected: false },
+    { serviceable: 1, reachable: false, modelCount: 1, expected: false },
+  ])('requires a serving pool and reachable non-refusing model: %j', async ({ serviceable, reachable, modelCount, expected }) => {
+    await expect(gradingAuditQuotaRouteCanServe(profile, {
+      readPoolVerdict: async () => ({ serviceable }),
+      readCodexHeadroom: async () => ({ reachable, serviceableByModel: { [profile.model]: modelCount } }),
+    })).resolves.toBe(expected);
+  });
+  it('preserves the old quota wall when current capacity cannot be measured', async () => {
+    await expect(gradingAuditQuotaRouteCanServe(profile, {
+      readPoolVerdict: async () => { throw new Error('ledger unavailable'); },
+    })).resolves.toBe(false);
+    await expect(gradingAuditQuotaRouteCanServe(profile, {
+      readPoolVerdict: async () => ({ serviceable: 1 }),
+      readCodexHeadroom: async () => { throw new Error('gateway unavailable'); },
+    })).resolves.toBe(false);
   });
 });
 

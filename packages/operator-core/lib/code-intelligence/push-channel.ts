@@ -338,13 +338,19 @@ export async function readPushSourceLinks(input: PushInput, paths: string[], sql
       CROSS JOIN unnest(${paths}::text[]) p(path)
       WHERE workspace_id = ${input.workspace} AND harness_slug = ${harness}
         AND b.retracted_at IS NULL
-        AND ((b.details->'currentMeasurement'->>'kind' = 'repo-files'
-          AND COALESCE(b.details->'currentMeasurement'->>'rootHarnessSlug', b.harness_slug) = ${harness}
-          AND COALESCE(b.details->'currentMeasurement'->'sourcePaths', '[]'::jsonb) ? p.path)
-          OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.details->'measurementPin'->'files') = 'array'
-            THEN b.details->'measurementPin'->'files' ELSE '[]'::jsonb END) f
-            WHERE f->>'dimension' = 'source' AND f->>'path' = p.path
-              AND COALESCE(f->>'rootHarnessSlug', b.details->'currentMeasurement'->>'rootHarnessSlug', b.harness_slug) = ${harness}))
+        AND (
+          (b.details->'currentMeasurement'->>'kind' = 'repo-files'
+            AND COALESCE(b.details->'currentMeasurement'->>'rootHarnessSlug', b.harness_slug) = ${harness}
+            AND (b.details->'currentMeasurement'->'sourcePaths') ? p.path)
+          OR (
+            (b.details->'measurementPin'->'files') @> jsonb_build_array(
+              jsonb_build_object('dimension', 'source', 'path', p.path))
+            AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.details->'measurementPin'->'files') = 'array'
+              THEN b.details->'measurementPin'->'files' ELSE '[]'::jsonb END) f
+              WHERE f->>'dimension' = 'source' AND f->>'path' = p.path
+                AND COALESCE(f->>'rootHarnessSlug', b.details->'currentMeasurement'->>'rootHarnessSlug', b.harness_slug) = ${harness})
+          )
+        )
       ORDER BY p.path, plan_slug, spec_id, spec_revision DESC LIMIT 12`);
     return { docs: null, specs: null, byPath: Object.fromEntries(paths.map(path => [path, {
       docs: docs.filter(row => row.anchor_paths.includes(path)).map(row => row.doc_id),
@@ -1525,8 +1531,9 @@ export function pushLegRank(id: PushLegId): number {
 export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps = defaults): Promise<string> {
   // Capture is independent of push flags, snapshot warmth and available text budget.
   if (input.owner && input.workspace && input.calls.length && deps.research) {
-    await withBoundedTimeout(() => deps.research!(input), {
-      timeoutMs: 100, fallback: undefined, label: 'code-intel-research-trail',
+    // Keep this optional write off the response path while retaining a bounded health signal.
+    void withBoundedTimeout(() => deps.research!(input), {
+      timeoutMs: 500, fallback: undefined, label: 'code-intel-research-trail',
     });
   }
   if (!input.owner || !input.workspace || !input.calls.length) return noteEmptyPush('missing-input'), '';

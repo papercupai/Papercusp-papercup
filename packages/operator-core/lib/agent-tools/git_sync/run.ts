@@ -441,7 +441,17 @@ export default defineTool({
       : committedWithoutConfirmedEgress
         ? 'committed'
         : (outcome?.status ?? 'unknown');
-    const committed = Boolean(before && after && before !== after) || outcome?.status === 'synced';
+    // HEAD may move because a different sync owns the lock. Attribute commits
+    // only from this fire's result, keeping before/after as separate diagnostics.
+    const hasLocalCommitIdentity =
+      gitSha(outcome?.localCommitSha) !== null ||
+      (Array.isArray(outcome?.localCommitShas) &&
+        outcome.localCommitShas.some((sha) => gitSha(sha) !== null));
+    const committedCount =
+      typeof outcome?.committedCount === 'number' && Number.isSafeInteger(outcome.committedCount)
+        ? outcome.committedCount
+        : 0;
+    const committed = outcome?.status === 'synced' || hasLocalCommitIdentity || committedCount > 0;
     const success = outcome?.status === 'synced' || outcome?.status === 'nothing';
     const remoteEgress =
       outcome?.status === 'synced'

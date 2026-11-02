@@ -1297,6 +1297,29 @@ describe('evaluatePlanSpecQuality', () => {
     );
   });
 
+  it('accepts same-harness legacy plan decision URIs but rejects cross-harness decision URIs', () => {
+    const legacy = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ acceptanceRef: 'plan://papercusp/accepted-plan#D-002' })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(legacy.ratings['stable-revision-identity'].rating).toBe('pass');
+
+    const crossHarness = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ acceptanceRef: 'plan://other-harness/accepted-plan#D-002' })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(crossHarness.ratings['stable-revision-identity'].rating).toBe('fail');
+    expect(crossHarness.ratings['stable-revision-identity'].evidence).toContain(
+      'SPEC-001-01:plan-acceptance-ref-harness-mismatch',
+    );
+  });
+
   it('fails malformed and mismatched structured plan acceptance references', () => {
     const malformed = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',

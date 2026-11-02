@@ -91,9 +91,40 @@ describe('enrichBusy', () => {
   // stale, not actively contended — surface it so a blocked peer needn't
   // cross-reference coord:presence by hand or wait out the ~20min TTL.
   it('flags holder_intent_diverged when the holder moved to an unrelated intent (the EI-10433 case)', async () => {
-    h.getPresence.mockResolvedValue({ intent: 'WI-1819/WI-1812 drain-loop picks', currentFiles: ['apps/other.ts'] });
-    const [row] = await enrichBusy([busy({ intent: 'WI-4138: add prReviewerSettings.byHarness named-query entry' })]);
+    h.getPresence.mockResolvedValue({
+      intent: 'WI-1819/WI-1812 drain-loop picks',
+      intentDeclaredAt: '2026-06-21T23:59:01.000Z',
+      currentFiles: ['apps/other.ts'],
+    });
+    const [row] = await enrichBusy([busy({
+      intent: 'WI-4138: add prReviewerSettings.byHarness named-query entry',
+      acquired_ts: new Date('2026-06-21T23:59:00.000Z'),
+    })]);
     expect(row.holder_intent_diverged).toBe(true);
+  });
+
+  it('does NOT flag a divergent intent declared before the lock was acquired', async () => {
+    h.getPresence.mockResolvedValue({
+      intent: 'P001 broad drain coordination',
+      intentDeclaredAt: '2026-11-02T05:26:00.000Z',
+      currentFiles: [],
+    });
+    const lock = {
+      ...busy({ intent: 'EI-276715 share writer/reader progress validation' }),
+      acquired_ts: new Date('2026-11-02T14:10:34.000Z'),
+    };
+    const [row] = await enrichBusy([lock]);
+    expect(row.holder_intent_diverged).toBeUndefined();
+  });
+
+  it('does NOT flag divergence when the lock acquisition time is unknown', async () => {
+    h.getPresence.mockResolvedValue({
+      intent: 'WI-1819/WI-1812 drain-loop picks',
+      intentDeclaredAt: '2026-06-22T00:10:00.000Z',
+      currentFiles: ['apps/other.ts'],
+    });
+    const [row] = await enrichBusy([busy({ intent: 'WI-4138: the named-query entry' })]);
+    expect(row.holder_intent_diverged).toBeUndefined();
   });
 
   it('does NOT flag divergence while the holder is still focused on THIS path', async () => {

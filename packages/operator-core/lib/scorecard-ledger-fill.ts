@@ -14,7 +14,7 @@
  *   - an executable criterion with no ledger result (or a row for a different unit) rates
  *     `unknown` with a reason and a next action, and is not asked of the grader;
  *   - a hand-typed rating for a ledger-owned criterion is accepted only when it agrees with the
- *     ledger (it may add remediation/disregard/suggestion); a disagreeing one is refused;
+ *     ledger (it may add context/remediation/disregard/suggestion); a disagreeing one is refused;
  *   - a poor ledger result is routed with a rating-free disposition (`dispositions`), so the
  *     grader never retypes a rating to satisfy the poor-rating disposition gate;
  *   - a manual criterion is never auto-rated: when its rating is missing the emit is refused with
@@ -53,6 +53,7 @@ export interface LedgerRatingBand {
 /** One ledger-backed check of a criterion: its ledger id and how to re-judge a stored value. */
 export interface LedgerCheckBinding {
   id: string;
+  maxAgeMs?: number;
   kind: 'probe' | 'instrument';
   /** Probe: the child's current predicate. */
   predicate?: ContinuityPredicate;
@@ -109,6 +110,8 @@ export function ledgerCheckBindings(criterion: LedgerFillCriterion): LedgerCheck
   const check = record(criterion.check);
   if (!check) return null;
   const ratingBands = ratingBandsOf(check);
+  const freshness = typeof check.maxAgeMs === 'number' && Number.isSafeInteger(check.maxAgeMs) && check.maxAgeMs > 0
+    ? { maxAgeMs: check.maxAgeMs } : {};
   if (check.kind === 'probe') {
     const children = Array.isArray(check.all) ? check.all : check.probe !== undefined ? [check.probe] : [];
     if (children.length === 0) return null;
@@ -118,6 +121,7 @@ export function ledgerCheckBindings(criterion: LedgerFillCriterion): LedgerCheck
       return {
         id: probeCheckId(criterion.key, index),
         kind: 'probe' as const,
+        ...freshness,
         ...(ratingBands ? { ratingBands } : {}),
         ...(unit !== undefined ? { unit } : {}),
         ...(expect && typeof expect.op === 'string' && typeof expect.path === 'string'
@@ -136,6 +140,7 @@ export function ledgerCheckBindings(criterion: LedgerFillCriterion): LedgerCheck
     return [{
       id: instrumentCheckId(criterion.key),
       kind: 'instrument',
+      ...freshness,
       unit: instrument.evaluator === 'command' ? instrument.unit : instrument.rescore!.unit,
       ...(instrument.evaluator === 'platform' ? { verdictRows: true } : {}),
       ...(ratingBands ? { ratingBands } : {}),
@@ -148,7 +153,11 @@ export function ledgerCheckBindings(criterion: LedgerFillCriterion): LedgerCheck
 }
 
 /** Re-judge one stored row against the binding's CURRENT threshold. */
-export function judgeLedgerRow(binding: LedgerCheckBinding, row: LatestRubricCheckResult): Verdict {
+export function judgeLedgerRow(binding: LedgerCheckBinding, row: LatestRubricCheckResult, nowMs = Date.now()): Verdict {
+  if (binding.maxAgeMs !== undefined) {
+    const ageMs = nowMs - Date.parse(row.finishedAt);
+    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > binding.maxAgeMs) return 'error';
+  }
   if (row.status === 'error') return 'error';
   const value = row.check.value;
   if (binding.kind === 'instrument') {
@@ -204,8 +213,9 @@ function rateLedgerRow(
   binding: LedgerCheckBinding,
   row: LatestRubricCheckResult,
   scale: readonly string[],
+  nowMs: number,
 ): { verdict: Verdict; rating: string } {
-  const verdict = judgeLedgerRow(binding, row);
+  const verdict = judgeLedgerRow(binding, row, nowMs);
   if (verdict === 'error') return { verdict, rating: 'unknown' };
   if (verdict === 'pass') return { verdict, rating: ledgerRatingLevel('pass', scale) };
   const value = row.check.value;
@@ -231,7 +241,10 @@ function describeRow(binding: LedgerCheckBinding, row: LatestRubricCheckResult, 
     : '';
   const p = row.check.provenance;
   const context = p
-    ? `; provenance ${measurementProvenanceStatus(p)}, original window ${p.startedAt}..${p.finishedAt}, procedure sha256 ${p.procedure.sha256}${p.transactionAt ? `, transaction ${p.transactionAt}` : ''}`
+    ? `; provenance ${measurementProvenanceStatus(p)}, original window ${p.startedAt}..${p.finishedAt}, procedure sha256 ${p.procedure.sha256}${p.transactionAt ? `, transaction ${p.transactionAt}` : ''}` +
+      // Retention already bounds and redacts this snapshot. Quote it exactly: a hash alone
+      // cannot tell an independent grader which SQL, tool args or argv produced the value.
+      `; retained procedure ${p.procedure.snapshot}${p.gaps.length ? `; provenance gaps ${p.gaps.join(', ')}` : ''}`
     : '; provenance legacy-missing (original diagnostics/window not retained)';
   return `${binding.id}=${shown} → ${verdict}${rated} (test_runs #${row.testRunId}, ${row.finishedAt})${detail}${context}`;
 }
@@ -248,14 +261,18 @@ const GRADER_ANNOTATIONS = ['remediation', 'disregard', 'suggestion', 'attributi
 /**
  * The routing a grader owns for a ledger-rated criterion, supplied WITHOUT a rating: a poor
  * ledger result still needs an owned remediation or disregard, but never a retyped rating.
+ * Optional evidence adds calibration or subject context after the server-owned measurement.
  */
-export type LedgerDisposition = Partial<Pick<ObservationRatingEntry, (typeof GRADER_ANNOTATIONS)[number]>>;
+export type LedgerDisposition = Partial<Pick<ObservationRatingEntry, (typeof GRADER_ANNOTATIONS)[number] | 'evidence'>>;
 
 function applyAnnotations(entry: ObservationRatingEntry, source: Partial<ObservationRatingEntry> | undefined): void {
   if (!source) return;
   for (const field of GRADER_ANNOTATIONS) {
     if (source[field] !== undefined) (entry as unknown as Record<string, unknown>)[field] = source[field];
   }
+  // Grader context supplements the ledger's evidence; it never replaces the measurement,
+  // provenance, evidenceRef or computed rating, even when a caller supplies its own prose.
+  if (source.evidence?.trim()) entry.evidence += `\nGrader context: ${source.evidence.trim()}`;
 }
 
 export type LedgerFillOutcome =
@@ -283,7 +300,10 @@ export function fillRatingsFromLedger(input: {
   latest: ReadonlyMap<string, LatestRubricCheckResult>;
   /** Rating-free routing (remediation/disregard/…) for ledger-rated criteria. */
   dispositions?: Readonly<Record<string, LedgerDisposition>>;
+  /** One clock snapshot for every criterion in this scorecard. */
+  nowMs?: number;
 }): LedgerFillOutcome {
+  const nowMs = input.nowMs ?? Date.now();
   const caller = input.callerRatings ?? {};
   const dispositions = input.dispositions ?? {};
   // A disposition can only route a criterion the ledger rates; anywhere else it would be dropped.
@@ -343,13 +363,14 @@ export function fillRatingsFromLedger(input: {
         nextEvidenceAction: `Run the criterion's check so it records a results-ledger row (${missing.join(', ')}), then re-emit with fromLedger.`,
       };
     } else {
-      const judged = rows.map((r) => ({ ...r, row: r.row!, ...rateLedgerRow(r.binding, r.row!, ratingScale) }));
+      const judged = rows.map((r) => ({ ...r, row: r.row!, ...rateLedgerRow(r.binding, r.row!, ratingScale, nowMs) }));
       const decidingError = judged.find((j) => j.verdict === 'error');
       const deciding = decidingError ?? judged.reduce((worst, current) => {
         const levels = ratingScale.filter((level) => level !== 'unknown');
         return levels.indexOf(current.rating) > levels.indexOf(worst.rating) ? current : worst;
       });
-      const evidence = `fromLedger: ${judged.map((j) => describeRow(j.binding, j.row, j.verdict, j.rating)).join('; ')}`;
+      const evidence = `fromLedger: ${judged.map((j) => describeRow(j.binding, j.row, j.verdict, j.rating) +
+        (j.binding.maxAgeMs === undefined ? '' : `; ageMs=${nowMs - Date.parse(j.row.finishedAt)}, maxAgeMs=${j.binding.maxAgeMs}`)).join('; ')}`;
       const provenance = {
         ratedFrom: 'ledger' as const,
         ledgerResult: ledgerResultOf(deciding.row),
@@ -362,7 +383,7 @@ export function fillRatingsFromLedger(input: {
             unknownReason: 'instrument-unavailable',
             attribution: 'instrument',
             evidence,
-            nextEvidenceAction: `Repair the measurement for ${deciding.binding.id} (its latest ledger row measured nothing) and re-run it.`,
+            nextEvidenceAction: `Re-run ${deciding.binding.id}: its latest attempt failed, has expired, or has an invalid measurement timestamp. Preserve its previous value as historical context only.`,
             ...provenance,
           }
         : { rating: deciding.rating, evidence, ...provenance };

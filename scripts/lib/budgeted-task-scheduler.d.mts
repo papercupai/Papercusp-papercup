@@ -14,6 +14,8 @@ export interface TaskBudgetInput {
 /** Bounded descriptor read shared by native receipt and continuation readers. */
 export function readNativeArtifactBytes(file: string, byteLength: number, byteLimit: number,
   recordRead?: (count: number) => void): Buffer;
+export function hashNativeArtifactBytes(file: string, byteLength: number, byteLimit: number,
+  recordRead?: (count: number) => void): string;
 export interface NativeArtifactPin { ref: string; sha256: string; byteLength: number; segment?: number; }
 export interface NativeCustodyIdentity { workspace: string; harness: string; runId: string; }
 export interface NativeCustodyAuxiliary {

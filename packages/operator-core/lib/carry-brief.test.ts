@@ -643,7 +643,7 @@ describe('note-citation hydration + post-note delta (cold-carry-system-hardening
     );
     expect(brief.citedRefs).toHaveLength(2);
     const text = renderCarryBriefText(brief);
-    expect(text).toContain('LIVE status (trust these over');
+    expect(text).toContain('status snapshots (lookup source and completion time when available; re-read before acting):');
     expect(text).toContain('↪ WI-5391 [bug/open');
     expect(text).toContain('WI-5397 [bug/resolved]');
   });
@@ -875,7 +875,7 @@ describe('scorecard cited-ref audit lifecycle', () => {
 
     for (const state of ['passed', 'failed']) {
       const settled = await renderWithAuditState(state);
-      expect(settled).toContain('⚠ TERMINAL ↪ ' + id + ' [change/done');
+      expect(settled).toContain('⚠ TERMINAL SNAPSHOT ↪ ' + id + ' [change/done');
       expect(settled).toContain('card filed, audit ' + state);
     }
   });
@@ -1547,7 +1547,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     );
     expect(out).toContain('STALE-NOTE CONTRADICTION');
     expect(out).toContain('already TERMINAL');
-    expect(out).toContain('⚠ TERMINAL ↪ WI-6054 [bug/done');
+    expect(out).toContain('⚠ TERMINAL SNAPSHOT ↪ WI-6054 [bug/done');
     // The banner is useless below the roster it is warning about.
     expect(out.indexOf('STALE-NOTE CONTRADICTION')).toBeLessThan(out.indexOf('Cited in the note'));
   });

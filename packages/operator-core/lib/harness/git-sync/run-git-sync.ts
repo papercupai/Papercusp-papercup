@@ -2929,9 +2929,12 @@ export type ProtectedPathExclusionPreflight = {
  * Exit code 1 means "not ignored". Git exits 128 when a protected path is a
  * descendant of a symlink; `git add -A` does not traverse that symlink, but the
  * explicit negative pathspec makes the entire add fatal, so classify that
- * population separately and omit only those impossible pathspecs. A 128 fails a
- * whole batch, so that batch (and any batch whose answer does not map back) is
- * re-probed one path at a time. `--` keeps leading dashes literal. Any other
+ * population separately and omit only those impossible pathspecs. A named fatal
+ * pathspec fails a whole batch: isolate that path (or the named submodule's
+ * descendants), then batch the remaining paths again. Otherwise one invalid
+ * exclusion turns every ordinary protected path into a separate Git process.
+ * Unrecognized failures and unmappable answers retain the per-path fallback.
+ * `--` keeps leading dashes literal. Any other
  * non-zero per-path result fails open by returning no matches and preserving all
  * exclusions for the existing add-failure recovery path.
  */
@@ -2942,7 +2945,36 @@ export async function classifyProtectedPathExclusions(
 ): Promise<ProtectedPathExclusionPreflight> {
   const beyondSymlink = new Set<string>();
   const inSubmodule = new Set<string>();
-  const { ignored: ignoredUntracked, unresolved: singles } = await checkIgnoreVerbatimBatches(runGit, repoPath, paths);
+  const ignoredUntracked = new Set<string>();
+  let pending = paths;
+  let singles: string[];
+  for (;;) {
+    const batch = await checkIgnoreVerbatimBatches(runGit, repoPath, pending);
+    for (const path of batch.ignored) ignoredUntracked.add(path);
+    singles = batch.unresolved;
+    const classified = new Set<string>();
+    for (const failure of batch.failedBatches) {
+      if (failure.code !== 128) continue;
+      for (const path of inSubmoduleProtectedExclusions(failure.stderr, singles)) {
+        inSubmodule.add(path);
+        classified.add(path);
+      }
+      for (const path of singles) {
+        // Match an exact input, including apostrophes, rather than parsing a
+        // shortened path from Git's human-readable quoting.
+        if (failure.stderr.includes(`fatal: pathspec '${path}' is beyond a symbolic link`)) {
+          beyondSymlink.add(path);
+          classified.add(path);
+        }
+      }
+    }
+    if (classified.size === 0) break;
+    pending = singles.filter((path) => !classified.has(path));
+    if (pending.length === 0) {
+      singles = [];
+      break;
+    }
+  }
   // Bound concurrency instead of serializing one git process per remaining path.
   let next = 0;
   let failed = false;

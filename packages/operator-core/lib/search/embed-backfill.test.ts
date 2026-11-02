@@ -1066,11 +1066,9 @@ describe('embed-backfill drain policy (P-005)', () => {
     const stats = await backfillTable(sql, ORDERED, { embed: perRow, maxRows: 20, mode: 'gemma', spaceAware: true, embedMany: embedMany });
 
     expect(stats.embedded).toBe(20);
-    // No single call may carry more than BATCH_EMBED_CHUNK_SIZE. The budget from
-    // sidecarBatchTimeoutMs is COUNT-scaled, so an unbounded call also has an
-    // unbounded deadline — 128 texts buys a 142s all-or-nothing bet against a
-    // 200s SWEEP_BUDGET_MS shared by 16 targets.
-    expect(batchCalls.map((c) => c.length)).toEqual([16, 4]);
+    // No single call may carry more than BATCH_EMBED_CHUNK_SIZE. The smaller
+    // chunks leave headroom under the count-scaled sidecar deadline.
+    expect(batchCalls.map((c) => c.length)).toEqual([8, 8, 4]);
     expect(perRow).not.toHaveBeenCalled();
   });
 
@@ -1080,7 +1078,7 @@ describe('embed-backfill drain policy (P-005)', () => {
     let call = 0;
     const embedMany = async (texts: string[]) => {
       call += 1;
-      if (call === 1) return texts.map(() => VEC);
+      if (call < 3) return texts.map(() => VEC);
       // The exact live failure: the AbortController in sidecarEmbedBatch firing
       // because the sidecar is slower than the count-scaled budget allows.
       throw new Error('This operation was aborted');

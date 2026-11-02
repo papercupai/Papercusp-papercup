@@ -340,6 +340,7 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
   // time by both maintained indexes; no checkout or durable store is created.
   const capture = mkdtempSync(join(captureRoot, 'reuse-source-capture-'));
   const sourceFiles = new Map(selected.map(entry => [entry.path, join(capture, entry.blob!)]));
+  const capturedBlobs = new Set<string>();
   const sourceSizes = new Map(selected.map(entry => [entry.path, entry.size]));
   const positions = new Map(selected.map((entry, index) => [entry.path, index + 1]));
   let capturedThrough = 0, captureError: Error | undefined;
@@ -377,7 +378,13 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
         if (blob !== entry.blob || kind !== 'blob' || !Number.isSafeInteger(size) || size < 0 || size > 2_000_000
           || out[endHeader + 1 + size] !== 10) throw new Error('Incomplete bounded Git blob population');
         const file = join(capture, blob!);
-        writeFileSync(file, out.subarray(endHeader + 1, endHeader + 1 + size));
+        // Multiple paths can name one immutable blob. A parser may already
+        // read the first alias while a later capture batch reaches another;
+        // never truncate/rewrite its shared backing file in that interval.
+        if (!capturedBlobs.has(blob!)) {
+          writeFileSync(file, out.subarray(endHeader + 1, endHeader + 1 + size));
+          capturedBlobs.add(blob!);
+        }
         offset = endHeader + 2 + size;
       }
       capturedThrough = i;

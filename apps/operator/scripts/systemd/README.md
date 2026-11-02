@@ -1443,11 +1443,18 @@ per-request inference accounting is invalid) and the drop-in
 `papercup-embed-sidecar.service.d/98-embed-concurrency.conf` (bounded embed
 concurrency: 2 slots x intraOp 4 threads = exactly the unit's 800% CPUQuota).
 
-The service cgroup accounts memory, begins reclaim at 8 GiB, hard-stops at 12
-GiB, and disallows swap (`MemoryAccounting=yes`, `MemoryHigh=8G`,
+The service cgroup accounts memory, begins reclaim at 10 GiB, hard-stops at 12
+GiB, and disallows swap (`MemoryAccounting=yes`, `MemoryHigh=10G`,
 `MemoryMax=12G`, `MemorySwapMax=0`, `OOMPolicy=kill`). The hard-limit kill is a
 failed sidecar instance, so `Restart=always` replaces it instead of leaving a
 partially alive worker behind.
+
+The soft threshold accommodates the supported CPU fallback with both embedding
+models resident. In EI-27697305155283725, its measured working set was about
+8.3 GiB: the former 8 GiB threshold repeatedly put live worker threads into
+`__mem_cgroup_handle_over_high` reclaim. A controlled change to 10 GiB stopped
+those reclaim events and restored an uncached 768-dimensional embedding in
+3.6 seconds without restarting the process or changing the model or hard limit.
 
 **Why these are here:** identical reasoning to the backup units above — these 4
 files existed ONLY as regular files in `~/.config/systemd/user/`, with no repo

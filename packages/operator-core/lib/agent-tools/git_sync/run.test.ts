@@ -585,6 +585,56 @@ describe('git-sync:run', () => {
     return parse((await tool.handler({}, MAKE_CTX())) as never);
   };
 
+  it('does not attribute a concurrent HEAD advance to a held_exclusive skip', async () => {
+    const heads = ['before', 'after'];
+    const execFileMock = vi.fn(
+      (_file: string, _args: string[], _opts: Record<string, unknown>, cb: (...args: unknown[]) => void) => {
+        const stdout = heads.shift() ?? '';
+        cb(null, `${stdout}\n`, '');
+      },
+    );
+    Object.defineProperty(execFileMock, promisify.custom, {
+      value: (_file: string, args: string[], opts: Record<string, unknown>) =>
+        new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+          execFileMock(_file, args, opts, (...callbackArgs: unknown[]) => {
+            const [error, stdout, stderr] = callbackArgs as [unknown, string, string];
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve({ stdout, stderr });
+          });
+        }),
+    });
+
+    const outcome = {
+      status: 'skipped' as const,
+      reason: 'held_exclusive',
+      blockedOn: 'git-sync:papercusp',
+      holders: SKIP_HOLDERS,
+    };
+    vi.doMock('node:child_process', () => ({ execFile: execFileMock }));
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => '/repo' }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn(async () => outcome) }));
+
+    const { default: tool } = await import('./run');
+    const result = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(execFileMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      ok: true,
+      fired: true,
+      status: 'skipped',
+      success: false,
+      committed: false,
+      head_before: 'before',
+      head_after: 'after',
+      outcome,
+    });
+  });
+
   // EI-22726196301284168: `held_exclusive` still must not advertise the global
   // lock-retry key, whose emitter deliberately excludes this refusal class. The
   // release path emits an exact resource key at the release boundary. The event

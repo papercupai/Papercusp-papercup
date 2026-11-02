@@ -3,10 +3,16 @@
 // scripts/lib/vitest-startup-trace.mjs and regenerate.
 /** Reuse the OUT channel and this preload without enabling stderr diagnostics.
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ enabled?: boolean }} [options] Source-owned prediction before the OUT path is allocated.
+ * @param {{ enabled?: boolean, pinnedSources?: Array<{ path: string, sha256: string, byteLength: number }> }} [options]
+ * Source-owned prediction and independent artifact pins before launch. Generic limits stay unchanged.
  */
 export function nativeProcessTraceEnv(env?: NodeJS.ProcessEnv, options?: {
     enabled?: boolean;
+    pinnedSources?: Array<{
+        path: string;
+        sha256: string;
+        byteLength: number;
+    }>;
 }): NodeJS.ProcessEnv;
 export function loaderIdentity(value?: string): {
     sha256: string;
@@ -21,3 +27,10 @@ export function startupTraceEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
  * @returns {() => void} stops observing.
  */
 export function observeForkStartup(child: any, emit: (row: Record<string, unknown>) => void, now?: () => number): () => void;
+export const nativeSourceRetentionLimits: Readonly<{
+    sourceBytes: number;
+    processBytes: number;
+    pinnedSourceBytes: number;
+    pinnedProcessBytes: number;
+    pins: 4;
+}>;

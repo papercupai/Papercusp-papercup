@@ -82,6 +82,7 @@ describe('censusAgentSessionProgress', () => {
     expect(census.degraded).toBe(false);
     expect(census.quietRows.map((r) => r.taskId)).toEqual(['stalled']);
     expect(census.quietRows[0].quietMinutes).toBe(71 * 60);
+    expect(census.rows.map((entry) => entry.logMtimeMs)).toEqual([NOW - 5 * 60 * 1000, NOW - 71 * HOUR]);
   });
 
   it('an UNREADABLE log is not counted as quiet — and the naive control gets it wrong', () => {
@@ -92,6 +93,7 @@ describe('censusAgentSessionProgress', () => {
 
     expect(census.unreadable).toBe(1);
     expect(census.quiet).toBe(0);
+    expect(census.rows[0]?.logMtimeMs).toBeNull();
 
     // The control DOES miscount it — proving this assertion discriminates.
     expect(naiveQuietCount(rows, stat)).toBe(1);
@@ -162,6 +164,18 @@ describe('censusAgentSessionProgress', () => {
 
 describe('evaluateAgentSessionResidue', () => {
   const clean = (quiet: number): AgentSessionProgressCensus => ({
+    rows: Array.from({ length: 90 }, (_, i) => {
+      const quietIndex = i - (90 - quiet);
+      const isQuiet = quietIndex >= 0;
+      return {
+        taskId: isQuiet ? `q${quietIndex}` : `a${i}`,
+        logPath: isQuiet ? `/logs/q${quietIndex}.log` : `/logs/a${i}.log`,
+        logMtimeMs: isQuiet ? NOW - (4260 - quietIndex) * 60_000 : NOW - 5 * 60_000,
+        disposition: isQuiet ? 'quiet' as const : 'active' as const,
+        quietMinutes: isQuiet ? 4260 - quietIndex : 5,
+        startedAt: new Date(NOW - 71 * HOUR).toISOString(),
+      };
+    }),
     measured: 90,
     active: 90 - quiet,
     quiet,
@@ -171,6 +185,7 @@ describe('evaluateAgentSessionResidue', () => {
     quietRows: Array.from({ length: quiet }, (_, i) => ({
       taskId: `q${i}`,
       logPath: `/logs/q${i}.log`,
+      logMtimeMs: NOW - (4260 - i) * 60_000,
       disposition: 'quiet' as const,
       quietMinutes: 4260 - i,
       startedAt: new Date(NOW - 71 * HOUR).toISOString(),

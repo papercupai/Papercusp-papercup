@@ -384,10 +384,12 @@ function findLiveWorker(cluster: OwnerRpcClusterLike, pid: number): OwnerRpcWork
 }
 
 /**
- * PRIMARY side: deliver each request to the worker with the target pid, and each
- * response back to the requesting worker. When the target pid is not a live
- * worker, answer `owner_gone` on the owner's behalf — the primary is the only
- * process that can say that with authority.
+ * PRIMARY side: serve requests for this process's own runtime objects, or deliver
+ * them to the worker with the target pid. Background machinery can live in the
+ * primary even though only workers accept HTTP requests. The same registered
+ * handlers and progress/terminal response contract apply in both processes.
+ * When the target pid is neither this primary nor a live worker, answer
+ * `owner_gone` authoritatively.
  */
 export function startPrimaryOwnerRpcRelay(opts: { cluster: OwnerRpcClusterLike }): OwnerRpcHandle {
   const { cluster } = opts;
@@ -423,6 +425,10 @@ export function startPrimaryOwnerRpcRelay(opts: { cluster: OwnerRpcClusterLike }
         }
         try { findLiveWorker(cluster, message.fromPid)?.send({ type: OWNER_RPC_RESPONSE_TYPE, id: message.id, toPid: message.fromPid, ...result }); }
         catch { /* requester times out */ }
+        return;
+      }
+      if (message.targetPid === process.pid) {
+        void serve(message, response => findLiveWorker(cluster, message.fromPid)?.send(response));
         return;
       }
       const target = findLiveWorker(cluster, message.targetPid);

@@ -31,6 +31,7 @@ type NamedQueryStage = 'goal-detail-dependencies' | 'goal-detail-sql' | 'goal-ho
   'work-item-dependencies-import' | 'work-item-dependencies-sql' |
   'work-item-dependency-waits-import' | 'work-item-dependency-waits-sql' |
   'scorecards-get-evidence-read' | 'scorecards-get-rubric-read' |
+  'rubric-plan-row-read' | 'rubric-row-map' | 'rubric-first-party-seed' |
   'dream-dependencies-import' | 'dream-observation-import' | 'dream-journal-dependencies-import' |
   'dream-action-journal' | 'dream-gym-journal' | 'dream-decision-journal-snapshot' | 'dream-workspace-transaction' | 'dream-observation-read' |
   'dream-observation-flags' | 'dream-observation-routines' | 'dream-observation-gym' |

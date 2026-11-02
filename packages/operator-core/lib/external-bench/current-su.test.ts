@@ -1840,6 +1840,40 @@ describe('current benchmark native terminal failure observation', () => {
     });
 });
 describe('current native benchmark execution', () => {
+  it('runs a named stock arm from its frozen topology rather than the legacy baseline id', async () => {
+    const protocol = currentProtocolFixture();
+    protocol.arms[0].control = { topology: 'solo', solverGroup: 'su-solver',
+      solverToolsHash: 'f'.repeat(64), capabilities: allCapabilities('on') };
+    protocol.arms[1].id = 'minecraft-stock';
+    protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock-solver',
+      solverToolsHash: 'f'.repeat(64), capabilities: allCapabilities('off') };
+    const opts = { ...options, armId: 'minecraft-stock',
+      preregistration: { ...options.preregistration, config: protocol } };
+    const f = fixture(opts), launchNative = vi.fn(async () => ({ agentStarted: true, tasks: [{ taskId: f.row.taskId }] }));
+    const { launch, ...common } = f.ports;
+    const result = await currentStockBenchHarnessDriver(f.lifecycle, { ...common, launchNative }, opts)
+      .spinRunAndCost({ ...request, blueprintId: 'native-codex' });
+    expect(result.telemetry.stopReason).toBe('done');
+    expect(launchNative).toHaveBeenCalledOnce();
+    expect(launch).not.toHaveBeenCalled();
+    expect(f.context.assignmentId).toBe(currentBenchAssignmentId(opts.runId, opts.armId, 't1', opts.seed));
+    expect(f.ports.verifyContext).toHaveBeenCalled();
+  });
+  it('refuses a controlled treatment named baseline before native driver allocation', () => {
+    const protocol = currentProtocolFixture();
+    protocol.arms[0].control = { topology: 'stock-native-reference', solverGroup: 'stock-solver',
+      solverToolsHash: 'f'.repeat(64), capabilities: allCapabilities('off') };
+    protocol.arms[1].control = { topology: 'solo', solverGroup: 'su-solver',
+      solverToolsHash: 'f'.repeat(64), capabilities: allCapabilities('on') };
+    const opts = { ...options, armId: 'baseline',
+      preregistration: { ...options.preregistration, config: protocol } };
+    const f = fixture(opts), launchNative = vi.fn();
+    const { launch, ...common } = f.ports;
+    expect(() => currentStockBenchHarnessDriver(f.lifecycle, { ...common, launchNative }, opts)).toThrow(/stock|baseline/);
+    expect(launchNative).not.toHaveBeenCalled();
+    expect(f.ports.admit).not.toHaveBeenCalled();
+    expect(f.lifecycle.createHarness).not.toHaveBeenCalled();
+  });
   it('runs the frozen Claude stock baseline only through its matching native blueprint and measured identity', async () => {
     const protocol = currentProtocolFixture();
     protocol.arms[1].agent = 'claude'; protocol.arms[1].runtime.clientVersion = 'claude/2.1.0';

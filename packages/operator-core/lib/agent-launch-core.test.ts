@@ -17,6 +17,7 @@ import {
   buildAgentLaunchCommand,
   claimAgentLaunch,
   recordAgentLaunchResult,
+  releaseAgentLaunchClaim,
   composeMemberLaunchContext,
   composeModelSpec,
   defaultLaunchAccountFor,
@@ -38,7 +39,7 @@ import {
 import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
 import type { AdvSessionRow } from './adv-sessions';
 import type { SessionPortRow } from './session-port/store';
-import type { PsuPtyHost } from './events/await/psu-pty-discovery';
+import type { PsuPtyHost, PtyHostEvent } from './events/await/psu-pty-discovery';
 
 const OWNER = 'su-b0fbfa98-0594-4a46-909f-3ca16622101d';
 
@@ -155,6 +156,29 @@ describe('recordAgentLaunchResult durable completion evidence', () => {
       summary: { opened: 1, failed: 0 },
     })).resolves.toBe(false);
     expect(launchCoreSql).not.toHaveBeenCalled();
+  });
+
+  it('scopes progress updates and claim release to the winning claim token', async () => {
+    launchCoreSql.mockResolvedValueOnce([{ idempotency_key: 'tokenized-launch' }]);
+    await expect(recordAgentLaunchResult({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'tokenized-launch',
+      claimToken: 'claim-token-1',
+      summary: { launchState: 'spawning' },
+    })).resolves.toBe(true);
+    const [update, ...updateValues] = launchCoreSql.mock.calls[0] ?? [];
+    expect(String(update?.join(' '))).toContain("summary ->> 'claimToken' =");
+    expect(updateValues).toContain('claim-token-1');
+
+    launchCoreSql.mockResolvedValueOnce([{ idempotency_key: 'tokenized-launch' }]);
+    await expect(releaseAgentLaunchClaim({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'tokenized-launch',
+      claimToken: 'claim-token-1',
+    })).resolves.toBe(true);
+    const [release, ...releaseValues] = launchCoreSql.mock.calls[1] ?? [];
+    expect(String(release?.join(' '))).toContain("summary ->> 'claimToken' =");
+    expect(releaseValues).toContain('claim-token-1');
   });
 });
 
@@ -365,6 +389,39 @@ describe('claimAgentLaunch crash recovery', () => {
       priorLaunchedAt: now - 1_000,
       priorLaunchedBy: 'su-first',
     });
+  });
+
+  it('keeps ambiguous capability:launch-agent claims fenced and leases only an unstarted phase', async () => {
+    const now = 1_800_000_000_000;
+    launchCoreSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        summary: {},
+        launched_at: now - AGENT_LAUNCH_UNCONFIRMED_CLAIM_LEASE_MS - 1,
+        launched_by: 'su-first',
+      }]);
+
+    const replay = await claimAgentLaunch({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'legacy-empty-launch',
+      launchedBy: 'su-retry',
+      preserveAmbiguousClaims: true,
+      initialSummary: {
+        requestKind: 'capability:launch-agent',
+        launchState: 'claimed',
+        agentStarted: null,
+        tasks: [],
+        processHandles: {},
+      },
+      now,
+    });
+
+    expect(replay.won).toBe(false);
+    const query = String(launchCoreSql.mock.calls[1]?.[0]?.join(' '));
+    expect(query).toContain("existing.summary ->> 'requestKind' = 'capability:launch-agent'");
+    expect(query).toContain("existing.summary ->> 'launchState' = 'claimed'");
+    expect(query).toContain("existing.summary -> 'processHandles' = '{}'::jsonb");
   });
 });
 
@@ -1433,6 +1490,11 @@ describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a 
 });
 
 describe('verifyResumeStarted (resume liveness is three-state)', () => {
+  const sourceNativeId = '11111111-2222-4333-8444-555555555555';
+  const targetNativeId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const sourceNativeRef = `/codex/sessions/2026/10/01/rollout-2026-10-01T09-00-00-${sourceNativeId}.jsonl`;
+  const targetNativeRef = `/codex/sessions/2026/10/01/rollout-2026-10-01T10-00-00-${targetNativeId}.jsonl`;
+
   it('refuses an observed Codex successor even when launch argv requests the original UUID', async () => {
     const result = await verifyResumeStarted(OWNER, {
       expectedSessionId: 'original-native',
@@ -1445,6 +1507,147 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
 
     expect(result).toMatchObject({ started: false, mismatch: true,
       expectedSessionId: 'original-native', actualSessionId: 'carry-successor' });
+  });
+
+  it('accepts an immediate Codex carry only with exact same-owner source, generation, binding, ADV row, and transcript refs', async () => {
+    const lineage = {
+      ownerId: OWNER,
+      advSessionId: 11,
+      hostStartedAt: 100,
+      sourceNativeId,
+      sourceNativeRef,
+      sourceChildGeneration: 1,
+      targetChildGeneration: 2,
+      targetNativeId,
+      targetNativeRef,
+    };
+    const events = [
+      {
+        kind: 'respawned',
+        mode: 'carry-respawn',
+        ownerId: OWNER,
+        managedCarryLineage: { ...lineage, targetNativeId: null, targetNativeRef: null },
+      },
+      {
+        kind: 'respawn-binding-confirmed',
+        ownerId: OWNER,
+        advSessionId: 11,
+        hostStartedAt: 100,
+        childGeneration: 2,
+        nativeId: targetNativeId,
+      },
+      {
+        kind: 'respawn-carry-delivered',
+        mode: 'carry-respawn',
+        ownerId: OWNER,
+        nativeId: targetNativeId,
+        turnStartVerified: true,
+        nativeRef: lineage.targetNativeRef,
+        managedCarryLineage: lineage,
+      },
+    ] as unknown as PtyHostEvent[];
+    const readAdvSession = vi.fn(async (id: number) => ({
+      id,
+      coordOwnerId: OWNER,
+      agent: 'codex',
+      sessionId: targetNativeId,
+    } as never));
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: sourceNativeId,
+      findHost: () => ptyHostFixture({
+        advSessionId: '11',
+        startedAt: 100,
+        childGeneration: 2,
+        nativeSessionId: targetNativeId,
+      }),
+      readAdvSession,
+      readHostEvents: () => events,
+      timeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({
+      started: true,
+      mismatch: false,
+      managedCarry: true,
+      expectedSessionId: sourceNativeId,
+      actualSessionId: targetNativeId,
+    });
+    expect(readAdvSession).toHaveBeenCalledWith(11);
+  });
+
+  it.each([
+    ['unrelated source UUID', (events: PtyHostEvent[]) => {
+      for (const event of events) {
+        const lineage = (event as Record<string, unknown>).managedCarryLineage as Record<string, unknown> | undefined;
+        if (lineage) lineage.sourceNativeId = 'another-source';
+      }
+    }],
+    ['source ref names another rollout', (events: PtyHostEvent[]) => {
+      for (const event of events) {
+        const lineage = (event as Record<string, unknown>).managedCarryLineage as Record<string, unknown> | undefined;
+        if (lineage) lineage.sourceNativeRef = '/codex/sessions/2026/10/01/rollout-2026-10-01T09-00-00-ffffffff-ffff-4fff-8fff-ffffffffffff.jsonl';
+      }
+    }],
+    ['target ref names another rollout', (events: PtyHostEvent[]) => {
+      const delivery = events.find((event) => event.kind === 'respawn-carry-delivered') as unknown as Record<string, unknown>;
+      const lineage = delivery.managedCarryLineage as Record<string, unknown>;
+      const wrongRef = '/codex/sessions/2026/10/01/rollout-2026-10-01T10-00-00-ffffffff-ffff-4fff-8fff-ffffffffffff.jsonl';
+      lineage.targetNativeRef = wrongRef;
+      delivery.nativeRef = wrongRef;
+    }],
+    ['missing binding confirmation', (events: PtyHostEvent[]) => {
+      const index = events.findIndex((event) => event.kind === 'respawn-binding-confirmed');
+      events.splice(index, 1);
+    }],
+    ['wrong child generation', (events: PtyHostEvent[]) => {
+      for (const event of events) {
+        const lineage = (event as Record<string, unknown>).managedCarryLineage as Record<string, unknown> | undefined;
+        if (lineage) lineage.targetChildGeneration = 3;
+      }
+    }],
+  ])('keeps a changed UUID refused with %s carry evidence', async (_label, corrupt) => {
+    const lineage = {
+      ownerId: OWNER,
+      advSessionId: 11,
+      hostStartedAt: 100,
+      sourceNativeId,
+      sourceNativeRef,
+      sourceChildGeneration: 1,
+      targetChildGeneration: 2,
+      targetNativeId,
+      targetNativeRef,
+    };
+    const events = [
+      { kind: 'respawned', mode: 'carry-respawn', ownerId: OWNER,
+        managedCarryLineage: { ...lineage, targetNativeId: null, targetNativeRef: null } },
+      { kind: 'respawn-binding-confirmed', ownerId: OWNER, advSessionId: 11,
+        hostStartedAt: 100, childGeneration: 2, nativeId: targetNativeId },
+      { kind: 'respawn-carry-delivered', mode: 'carry-respawn', ownerId: OWNER,
+        nativeId: targetNativeId, turnStartVerified: true,
+        nativeRef: lineage.targetNativeRef, managedCarryLineage: { ...lineage } },
+    ] as unknown as PtyHostEvent[];
+    corrupt(events);
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: sourceNativeId,
+      findHost: () => ptyHostFixture({
+        advSessionId: '11',
+        startedAt: 100,
+        childGeneration: 2,
+        nativeSessionId: targetNativeId,
+      }),
+      readAdvSession: async (id) => ({
+        id, coordOwnerId: OWNER, agent: 'codex', sessionId: targetNativeId,
+      } as never),
+      readHostEvents: () => events,
+      timeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({
+      started: false,
+      mismatch: true,
+      expectedSessionId: sourceNativeId,
+      actualSessionId: targetNativeId,
+    });
   });
 
   it.each([undefined, null])('keeps Codex argv-only identity unconfirmed (%s)', async (nativeSessionId) => {

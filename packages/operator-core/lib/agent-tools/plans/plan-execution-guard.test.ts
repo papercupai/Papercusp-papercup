@@ -45,6 +45,68 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
     expect(isPlanImplementationCall('write_stdin', { chars: '' })).toBe(false);
     expect(isPlanImplementationCall('write_stdin', { chars: 'touch x\n' })).toBe(true);
   });
+  it('permits bounded PTool contract reads and consult replies while refusing implementation calls', async () => {
+    const readCommand = [
+      "ptool plans:get --json - --harness=papercusp <<'JSON'",
+      '{"slug":"review-plan"}',
+      'JSON',
+    ].join('\n');
+    const replyCommand = [
+      "ptool consult:reply --json - --harness=papercusp <<'JSON'",
+      '{"conversation_id":"consult-1","kind":"answer","body":"Reviewed.","evidence":[{"session_id":"session-1","turn_idx":3}]}',
+      'JSON',
+    ].join('\n');
+    const writeCommand = [
+      "ptool work_items:set_state --json - <<'JSON'",
+      '{"id":"WI-123","state":"done"}',
+      'JSON',
+    ].join('\n');
+
+    expect(isPlanImplementationCall('exec_command', { cmd: readCommand })).toBe(false);
+    expect(isPlanImplementationCall('exec_command', { cmd: replyCommand })).toBe(false);
+    expect(isPlanImplementationCall('exec_command', { cmd: writeCommand })).toBe(true);
+    expect(isPlanImplementationCall('exec_command', { cmd: "ptool tools:invoke --json - <<'JSON'\n{}\nJSON" })).toBe(true);
+    expect(isPlanImplementationCall('exec_command', { cmd: "ptool plans:get --json - <<JSON\n{}\nJSON" })).toBe(true);
+
+    const readBindings = vi.fn(async () => [binding]);
+    const checkPlan = vi.fn(async () => ['plan_status:draft']);
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd: readCommand }), { readBindings, checkPlan })).toBeNull();
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd: replyCommand }), { readBindings, checkPlan })).toBeNull();
+    expect(readBindings).not.toHaveBeenCalled();
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd: writeCommand }), { readBindings, checkPlan }))
+      .toMatchObject({ code: 'plan_execution_not_ready', blockers: ['plan_status:draft'] });
+    expect(readBindings).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('reviewer read and decline are independent of plan activation (EI-27697470834897410)', () => {
+  const ptool = (name: string, args: unknown) =>
+    [`ptool ${name} --json - <<'JSON'`, JSON.stringify(args), 'JSON'].join('\n');
+
+  it.each([false, true])('allows exact reviewer targets when plan authority is unavailable; wrapped=%s', async wrapped => {
+    const readBindings = vi.fn(async () => { throw Error('authority unavailable'); });
+    for (const [name, args] of [
+      ['conversations:get', { id: 'consult-1' }],
+      ['consult:decline', { conversation_id: 'consult-1', reason: 'Cannot read evidence' }],
+    ] as const) {
+      const cmd = wrapped ? ptool('tools:invoke', { name, args }) : ptool(name, args);
+      expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), { readBindings, checkPlan: vi.fn() })).toBeNull();
+    }
+    expect(readBindings).not.toHaveBeenCalled();
+  });
+
+  it('keeps nested mutation targets, shell execution and altered wrappers fail-closed', async () => {
+    const read = ptool('conversations:get', { id: 'consult-1' });
+    const write = ptool('tools:invoke', { name: 'capability:write', args: { file_path: 'source.ts', content: 'changed' } });
+    const nested = ptool('tools:invoke', { name: 'tools:invoke', args: { name: 'conversations:get', args: { id: 'consult-1' } } });
+    const override = ptool('tools:invoke', { name: 'conversations:get', args: { id: 'consult-1' }, authenticatedPrincipal: 'someone-else' });
+    for (const cmd of [write, nested, override, read + '\ntouch source.ts', read.replace("<<'JSON'", '<<JSON'),
+      read.replace('ptool ', 'FAKE=1 ptool '), read.replace(' --json', ' --url=http://elsewhere --json')]) {
+      expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), {
+        readBindings: async () => { throw Error('authority unavailable'); }, checkPlan: vi.fn(),
+      }), cmd).toMatchObject({ blockers: ['plan_authority_unavailable'] });
+    }
+  });
 });
 
 describe('activation freshness', () => {

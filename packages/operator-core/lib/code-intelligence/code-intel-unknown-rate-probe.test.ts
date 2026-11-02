@@ -148,6 +148,35 @@ function deps(rows: ProbeInvocationRow[], over: Partial<UnknownRateProbeDeps> = 
 const SCOPE = { workspaceId: 'ws', windowStart: '2026-10-26T06:00:00Z', windowEnd: '2026-10-27T06:00:00Z' };
 
 describe('runCodeIntelUnknownRateProbe (P-004, R-9)', () => {
+  it.each([10, 11])('ordinary scope refusals remain in the rate: %i of 50 calls', async (unknown) => {
+    // Public invalid-input, role and quota exits all record scope-refused (the real
+    // dispatcher/host-recorder cross-product is in code-intel-result-status.dispatch.test.ts).
+    // Unlike R-1 liveness eligibility, R-9 must keep these calls in its denominator.
+    const rows = window(50, unknown).map((row, index) => ({
+      ...row,
+      status: index < unknown
+        ? { status: 'unknown', reason: 'scope-refused', invocationId: `c${index}` }
+        : row.status,
+    }));
+    const d = deps(rows);
+    const result = await runCodeIntelUnknownRateProbe(SCOPE, d);
+    expect(result.verdict).toBe('pass');
+    expect(result.value).toBe(unknown * 2);
+    const observation = vi.mocked(d.record).mock.calls[0]![0];
+    expect(observation.live.reconciliation).toMatchObject({
+      total: 50, unknown, owners: 3, gaps: [], unknownByReason: { 'scope-refused': unknown },
+    });
+    if (unknown === 11) {
+      expect(d.raise).toHaveBeenCalledTimes(1);
+      expect(d.resolve).not.toHaveBeenCalled();
+      expect(observation.live.decision.reasons).toEqual(['above-threshold']);
+    } else {
+      expect(d.raise).not.toHaveBeenCalled();
+      expect(d.resolve).toHaveBeenCalledWith(unknownRateConditionKey('ws'));
+      expect(observation.live.decision).toMatchObject({ reasons: [], recovered: true });
+    }
+  });
+
   it('an above-threshold live window raises the live alarm and passes when delivered', async () => {
     const d = deps(window(50, 11));
     const r = await runCodeIntelUnknownRateProbe(SCOPE, d);

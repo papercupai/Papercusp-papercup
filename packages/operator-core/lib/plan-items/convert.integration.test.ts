@@ -125,6 +125,9 @@ beforeAll(async () => {
   await applyMigrationForTest(rootSql, fileURLToPath(new URL(
     '../../../../libs/papercusp/libs/db/sql/938-plan-activation-audits.sql', import.meta.url,
   )));
+  // Fail during fixture setup if the live draft-start gate's required columns drift again.
+  await rootSql`SELECT content, content_hash FROM harness_shared.harness_plans LIMIT 0`;
+  await rootSql`SELECT activation FROM harness_shared.plan_audits LIMIT 0`;
   // WI-6993 / EI-19342686955096692 / migration 725: the shared fixture DDL deliberately
   // omits check constraints (see _work-items-schema.ts's doc comment — "add it in the
   // specific test, not here"). This test's whole point is proving the production

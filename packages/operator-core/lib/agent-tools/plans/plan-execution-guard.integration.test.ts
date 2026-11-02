@@ -32,11 +32,6 @@ vi.mock('./plan-spec-quality-gate', async original => ({
   ...(await original<typeof import('./plan-spec-quality-gate')>()),
   evaluatePlanSpecQualityGate: async () => ({ satisfied: true, applicable: false }),
 }));
-vi.mock('./plan-admission-gate', async original => ({
-  ...(await original<typeof import('./plan-admission-gate')>()),
-  checkPlanAdmission: async () => ({ admitted: true }),
-}));
-
 import { checkExecutionPlan, checkPlanExecutionGuard, readExecutionPlanBindings } from './plan-execution-guard';
 import { toolGuardText } from '../../endpoint-route/routes/agent-mcp/identity-hook-sinks';
 import { controlAnchorKernelResolver } from '../../projected-tool-deps';
@@ -66,6 +61,11 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.plan_revisions (id bigint, workspace_id text, harness_slug text,
       plan_slug text, content_snapshot text, seq integer);
     CREATE TABLE harness_shared.harness_registry (workspace_id text PRIMARY KEY, payload jsonb);
+    -- The real start gate reads admission policy. No policy row makes this
+    -- private project ungoverned while retaining the canonical admission reader.
+    CREATE TABLE harness_shared.pot_policy (workspace_id text, harness_slug text,
+      policy_json text, owner_pubkey text, signature text, policy_version bigint,
+      fed_hlc text, updated_at bigint);
     INSERT INTO harness_shared.harness_registry VALUES ('private-plan-execution',
       '{"projects":[{"slug":"project","harness_kind":"hive"}]}'::jsonb);
     -- Exercise the canonical rendered-plan reader, including its complete projection.

@@ -16,8 +16,11 @@ const NOW = 1_800_000_000;
 const GOOD_EMBED = JSON.stringify({ vectors: [[0.1, 0.2]], cache: { hits: 0, coalesced: 0, inferred: 1 } });
 const SATURATED_HEALTHZ = JSON.stringify({
   ok: true,
+  pid: 123,
+  uptimeMs: 3600000,
   workers: { embedder: { alive: true } },
   queue: { saturated: true, depth: 4 },
+  inferenceProgress: { 'gemma:query': { completed: 10, lastCompletedAtMs: NOW * 1000 } },
 });
 const IDLE_HEALTHZ = JSON.stringify({ ok: true, workers: { embedder: { alive: true } }, queue: { saturated: false, depth: 0 } });
 
@@ -71,6 +74,7 @@ interface RunOpts {
   enteredAgoSec?: number | null;
   embed?: 'ok' | 'refused' | 'bad-accounting';
   healthz?: 'saturated' | 'idle' | 'down';
+  saturatedHealth?: Record<string, unknown>;
 }
 
 function runWatchdog(opts: RunOpts = {}) {
@@ -89,7 +93,7 @@ function runWatchdog(opts: RunOpts = {}) {
     FAKE_EMBED: opts.embed ?? 'ok',
     FAKE_HEALTHZ: opts.healthz ?? 'down',
     FAKE_GOOD_EMBED: GOOD_EMBED,
-    FAKE_SATURATED_HEALTHZ: SATURATED_HEALTHZ,
+    FAKE_SATURATED_HEALTHZ: opts.saturatedHealth ? JSON.stringify(opts.saturatedHealth) : SATURATED_HEALTHZ,
     FAKE_IDLE_HEALTHZ: IDLE_HEALTHZ,
   };
   const res = spawnSync('bash', [WATCHDOG_SCRIPT], { env, encoding: 'utf8' });
@@ -132,7 +136,7 @@ describe('embed sidecar pressure supervision contract', () => {
     const unit = readFileSync(SIDECAR_UNIT, 'utf8');
 
     expect(unit).toContain('MemoryAccounting=yes');
-    expect(unit).toContain('MemoryHigh=8G');
+    expect(unit).toContain('MemoryHigh=10G');
     expect(unit).toContain('MemoryMax=12G');
     expect(unit).toContain('MemorySwapMax=0');
     expect(unit).toContain('OOMPolicy=kill');
@@ -244,13 +248,47 @@ describe('papercup-embed-sidecar-watchdog.sh', () => {
     expect(failureCount()).toBe('1');
   });
 
-  it('defers without counting when /healthz proves a saturated live queue', () => {
-    runWatchdog({ embed: 'refused' });
-    const run = runWatchdog({ embed: 'refused', healthz: 'saturated' });
-
+  it('defers only when successful inference advances and resets previous failures', () => {
+    runWatchdog({ embed: 'refused', healthz: 'saturated' });
+    const health = JSON.parse(SATURATED_HEALTHZ);
+    health.inferenceProgress['gemma:query'].completed++;
+    const run = runWatchdog({ embed: 'refused', healthz: 'saturated', saturatedHealth: health });
     expect(run.restarts).toEqual([]);
     expect(run.stdout).toContain('deferring restart');
+    expect(failureCount()).toBe('0');
+  });
+
+  it('recovers a saturated live worker that makes no successful inference progress', () => {
+    const first = runWatchdog({ embed: 'refused', healthz: 'saturated' });
+    expect(first.restarts).toEqual([]);
+    const second = runWatchdog({ embed: 'refused', healthz: 'saturated' });
+    expect(second.restarts).toHaveLength(1);
+    expect(second.stdout).not.toContain('deferring restart');
+  });
+
+  it.each(['missing progress', 'different pid', 'reset uptime', 'decreased count', 'invalid count'])(
+    'does not interpret %s as successful progress', (mode) => {
+      runWatchdog({ embed: 'refused', healthz: 'saturated' });
+      const health = JSON.parse(SATURATED_HEALTHZ);
+      health.inferenceProgress['gemma:query'].completed++;
+      if (mode === 'missing progress') delete health.inferenceProgress;
+      if (mode === 'different pid') health.pid++;
+      if (mode === 'reset uptime') health.uptimeMs = 1;
+      if (mode === 'decreased count') health.inferenceProgress['gemma:query'].completed = 1;
+      if (mode === 'invalid count') health.inferenceProgress['gemma:query'].completed = 'eleven';
+      const run = runWatchdog({ embed: 'refused', healthz: 'saturated', saturatedHealth: health });
+      expect(run.restarts).toHaveLength(1);
+    },
+  );
+
+  it('does not carry a failure streak through an advancing saturated interval', () => {
+    runWatchdog({ embed: 'refused', healthz: 'saturated' });
+    const health = JSON.parse(SATURATED_HEALTHZ);
+    health.inferenceProgress['gemma:query'].completed++;
+    runWatchdog({ embed: 'refused', healthz: 'saturated', saturatedHealth: health });
+    expect(runWatchdog({ embed: 'refused', healthz: 'saturated', saturatedHealth: health }).restarts).toEqual([]);
     expect(failureCount()).toBe('1');
+    expect(runWatchdog({ embed: 'refused', healthz: 'saturated', saturatedHealth: health }).restarts).toHaveLength(1);
   });
 
   it('does not treat an idle (unsaturated) healthz as a reason to defer', () => {

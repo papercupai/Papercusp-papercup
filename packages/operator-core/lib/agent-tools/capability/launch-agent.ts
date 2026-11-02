@@ -1251,7 +1251,7 @@ export default defineTool({
     let resumeFeature: string | null = null;
     let resumeHarnessSlug: string | null = null;
     let resumeSourceAdvSessionId: number | null = null;
-    let resumeSourceEnded = false;
+    let resumeNeedsStartupReservation = false;
     let resumeModel: string | null = null;
     let resumeModelSource: CodexModelSource | null = null;
     let resumeAccount: string | null = null;
@@ -1349,7 +1349,7 @@ export default defineTool({
       resumeFeature = target.feature;
       resumeHarnessSlug = target.harnessSlug ?? null;
       resumeSourceAdvSessionId = target.advSessionId;
-      resumeSourceEnded = hasAdvSessionTerminalEvidence(target);
+      resumeNeedsStartupReservation = hasAdvSessionTerminalEvidence(target) || target.live === false;
       resumeModel = target.model;
       resumeAccount = target.account;
       if (args.restoreOriginalMember) {
@@ -1465,7 +1465,7 @@ export default defineTool({
             );
           }
           validate(current);
-          resumeSourceEnded = hasAdvSessionTerminalEvidence(current);
+          resumeNeedsStartupReservation = hasAdvSessionTerminalEvidence(current) || current.live === false;
         };
       }
       // A legacy Codex launch may have recorded a model without the newer
@@ -1780,7 +1780,7 @@ export default defineTool({
             if (target.agent === 'codex' && (!writer || writer.held || !['free', 'no-lock-file'].includes(writer.reason))) {
               throw new Error(refusal + 'the Codex writer is live or unknown; no replacement was launched.');
             }
-            resumeSourceEnded = hasAdvSessionTerminalEvidence(current);
+            resumeNeedsStartupReservation = hasAdvSessionTerminalEvidence(current) || current.live === false;
           };
           try { await recheckInPlaceResume(); } catch (error) {
             return err(error instanceof Error ? error.message : String(error));
@@ -2682,15 +2682,49 @@ export default defineTool({
       resolved?.model === firstModelResolution?.model && resolved?.agent === firstModelResolution?.agent &&
       resolved?.effort === firstModelResolution?.effort) ? firstModelResolution : null;
 
+    const label =
+      args.label ??
+      (isSuccessor
+        ? `successor · ${args.successor?.agentId ?? resumeSessionId ?? 'agent'}`
+        : isResume
+          ? `${fork ? 'fork' : 'resume'} · ${args.resume?.agentId ?? resumeId ?? resumeSessionId ?? 'agent'}`
+          : `agent · ${args.plan ?? (args.brief ?? '').slice(0, 40)}`);
+    const memberLabels = memberCommands.map((_, i) => (count > 1 ? `${label} (${i + 1}/${count})` : label));
+
     // P-014: claim the launch only after all validation, target/profile resolution,
     // backend/model preflight, and command composition have succeeded. A refused
     // preflight must leave the key reusable so a corrected retry can launch; the
     // claim still lands immediately before the first spawn, preventing duplicate
     // windows for re-fired calls. (No key ⇒ unguarded, exactly like cup:spawn.)
+    const spawnStartedAt = Date.now();
+    const launchClaimToken = randomUUID();
     const claim = await claimAgentLaunch({
       workspaceId,
       idempotencyKey: args.idempotencyKey,
       launchedBy: callerOwnerId,
+      preserveAmbiguousClaims: true,
+      initialSummary: {
+        requestKind: 'capability:launch-agent',
+        claimToken: launchClaimToken,
+        launchState: 'claimed',
+        startedAt: spawnStartedAt,
+        expectedCount: count,
+        ownerIds: memberOwnerIds,
+        targetMembers: memberOwnerIds.map((ownerId, index) => ({
+          ownerId: ownerId ?? null,
+          label: memberLabels[index],
+          headless: !!foldedConfigs[index].headless,
+        })),
+        fleet: fleetSlug,
+        mode: isSuccessor ? 'successor' : isResume ? (fork ? 'fork' : 'resume') : 'fresh',
+        // This claim is written immediately before any spawn call. If it stays
+        // in this phase, no member process has been started by this invocation.
+        agentStarted: null,
+        spawnAttempted: false,
+        nativeSpawnAttempted: [],
+        tasks: [],
+        processHandles: {},
+      },
       ...(isSuccessor ? { failClosed: true } : {}),
     });
     if (!claim.won) {
@@ -2700,6 +2734,54 @@ export default defineTool({
           ? (prior.launch as Record<string, unknown>)
           : prior;
       const when = claim.priorLaunchedAt ? new Date(claim.priorLaunchedAt).toISOString() : 'earlier';
+      const priorIsComplete = Boolean(
+        prior &&
+          (prior.launchState === 'completed' ||
+            (prior.launchState !== 'reconciliation-required' &&
+              typeof priorLaunch?.opened === 'number' &&
+              typeof priorLaunch.failed === 'number')),
+      );
+      if (!priorIsComplete) {
+        const priorState = typeof prior?.launchState === 'string' ? prior.launchState : 'unrecorded';
+        const recoveryDetails = {
+          requestKind: prior?.requestKind ?? 'capability:launch-agent',
+          launchState: priorState,
+          startedAt: prior?.startedAt ?? claim.priorLaunchedAt ?? null,
+          expectedCount: prior?.expectedCount ?? count,
+          ownerIds: prior?.ownerIds ?? prior?.targetOwnerIds ?? [],
+          fleet: prior?.fleet ?? fleetSlug,
+          processHandles: prior?.processHandles ?? {},
+          memberResults: prior?.memberResults ?? {},
+        };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text:
+                'Already launched (deduped) — idempotencyKey ' +
+                JSON.stringify(args.idempotencyKey) +
+                ' was claimed at ' +
+                when +
+                (claim.priorLaunchedBy ? ' by ' + claim.priorLaunchedBy : '') +
+                '. No new process was spawned by this replay. The prior outcome is not a zero-open result; ' +
+                'reconcile its target owners, process handles, and task/log identities before deciding whether retry is safe. ' +
+                JSON.stringify(recoveryDetails),
+            },
+          ],
+          data: {
+            deduped: true,
+            launch: {
+              ...recoveryDetails,
+              deduped: true,
+              outcome: priorState === 'claimed' ? 'in-progress' : 'unknown',
+              status: priorState === 'claimed' ? 'in-progress' : 'reconciliation-required',
+              opened: null,
+              failed: null,
+              reconciliationRequired: priorState !== 'claimed',
+            },
+          },
+        };
+      }
       return {
         content: [
           {
@@ -2733,7 +2815,7 @@ export default defineTool({
       }
       if (failure) {
         await successorPreparation.release?.();
-        await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey });
+        await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey, claimToken: launchClaimToken });
         return err(failure);
       }
     }
@@ -2749,7 +2831,7 @@ export default defineTool({
         await clearContextEstimate(resumeOwnerId);
       } catch (error) {
         await successorPreparation.release?.();
-        await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey });
+        await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey, claimToken: launchClaimToken });
         return err(`Cannot start successor: failed to invalidate predecessor context pressure (${String(error)}). No process was opened.`);
       }
       try {
@@ -2774,13 +2856,6 @@ export default defineTool({
       );
     }
 
-    const label =
-      args.label ??
-      (isSuccessor
-        ? `successor · ${args.successor?.agentId ?? resumeSessionId ?? 'agent'}`
-        : isResume
-          ? `${fork ? 'fork' : 'resume'} · ${args.resume?.agentId ?? resumeId ?? resumeSessionId ?? 'agent'}`
-          : `agent · ${args.plan ?? (args.brief ?? '').slice(0, 40)}`);
     const anyHeadless = foldedConfigs.some((f) => !!f.headless);
     const headlessLogDir = anyHeadless ? join(papercuspPathForWorkspace(workspaceId), 'fleet-logs') : null;
 
@@ -2791,14 +2866,12 @@ export default defineTool({
     // own `brief` overrides the shared one for that agent's first turn.
     // P-003: the correlation floor for verifyFreshLaunchStarted — only sessions
     // that registered AFTER this instant can belong to this call.
-    const spawnStartedAt = Date.now();
     // Date.now() is only a correlation timestamp, not an invocation identity:
     // concurrent launch-agent calls can reach this point in the same millisecond
     // and otherwise reuse the governor's admission idempotency key. Keep the
     // timestamp for diagnostics, but add one nonce per launch invocation; the
     // member index still distinguishes processes within a single batch.
     const spawnAdmissionNonce = randomUUID();
-    const memberLabels = memberCommands.map((_, i) => (count > 1 ? `${label} (${i + 1}/${count})` : label));
     // A headless process can be alive and have a durable task/log identity even
     // when the bounded native-transcript kickoff receipt times out. Keep that
     // evidence separate from the SpawnConsoleResult status: turning an `ok`
@@ -2820,6 +2893,112 @@ export default defineTool({
       return [liveForkSafetyBrief, custom, goalAllocationBrief].filter(Boolean).join('\n\n') || undefined;
     });
     const kickoffProofRequired = memberBriefs.map((brief) => Boolean(brief || args.plan));
+    const targetMembers = memberOwnerIds.map((ownerId, index) => ({
+      ownerId: ownerId ?? null,
+      label: memberLabels[index],
+      headless: !!foldedConfigs[index].headless,
+    }));
+    const launchMemberResults: Record<string, Record<string, unknown>> = {};
+    const launchProcessHandles: Record<string, Record<string, unknown>> = {};
+    const nativeSpawnAttempted = new Set<number>();
+    const progressWrittenMembers = new Set<number>();
+    let progressWriteQueue: Promise<boolean> = Promise.resolve(true);
+    const progressLaunchMode = isSuccessor ? 'successor' : isResume ? (fork ? 'fork' : 'resume') : 'fresh';
+    const currentLaunchProgress = () => ({
+      requestKind: 'capability:launch-agent',
+      launchState: 'spawning',
+      startedAt: spawnStartedAt,
+      expectedCount: count,
+      ownerIds: memberOwnerIds,
+      targetMembers,
+      fleet: fleetSlug,
+      mode: progressLaunchMode,
+      spawnAttempted: nativeSpawnAttempted.size > 0,
+      nativeSpawnAttempted: [...nativeSpawnAttempted],
+      memberResults: { ...launchMemberResults },
+      processHandles: { ...launchProcessHandles },
+      // Preserve task/log identities in the existing recovery field. In-flight
+      // phases omit agentStarted so the old unconfirmed-result lease cannot
+      // reclaim a claim after a process may have started.
+      tasks: Object.entries(launchProcessHandles)
+        .filter(([, handle]) => handle.taskId != null || handle.logPath != null)
+        .map(([memberIndex, handle]) => ({ memberIndex: Number(memberIndex), ...handle })),
+    });
+    const recordLaunchProgress = () => {
+      if (!args.idempotencyKey?.trim()) return Promise.resolve(true);
+      const summary = currentLaunchProgress();
+      progressWriteQueue = progressWriteQueue.then(() =>
+        recordAgentLaunchResult({ workspaceId, idempotencyKey: args.idempotencyKey, claimToken: launchClaimToken, summary }),
+      );
+      return progressWriteQueue;
+    };
+    const persistMemberLaunchResult = async (memberIndex: number, result: SpawnChildExit) => {
+      const key = String(memberIndex);
+      const member: Record<string, unknown> = {
+        memberIndex,
+        ownerId: memberOwnerIds[memberIndex] ?? null,
+        label: memberLabels[memberIndex],
+        headless: !!foldedConfigs[memberIndex].headless,
+        status: result.status,
+        outcome: result.status === 'ok' ? 'opened' : 'failed',
+        ...(result.pid != null ? { pid: result.pid } : {}),
+        ...(result.terminalPid != null ? { terminalPid: result.terminalPid } : {}),
+        ...(result.taskId != null ? { taskId: result.taskId } : {}),
+        ...(result.logPath != null ? { logPath: result.logPath } : {}),
+        ...(result.normalizedLogPath != null ? { normalizedLogPath: result.normalizedLogPath } : {}),
+        ...(result.status === 'error' ? { code: result.code, error: result.error } : {}),
+      };
+      launchMemberResults[key] = member;
+      const hasProcessHandle = [
+        member.pid,
+        member.terminalPid,
+        member.taskId,
+        member.logPath,
+        member.normalizedLogPath,
+      ].some((value) => value != null);
+      if (hasProcessHandle) launchProcessHandles[key] = member;
+      else delete launchProcessHandles[key];
+
+      const recorded = await recordLaunchProgress();
+      if (recorded) progressWrittenMembers.add(memberIndex);
+      else
+        notes.push(
+          '⚠ launch progress for member ' +
+            memberIndex +
+            ' was not persisted; the final summary write will retry the recoverable process evidence.',
+        );
+      return recorded;
+    };
+    const markNativeSpawnAttempted = async (memberIndex: number) => {
+      const key = String(memberIndex);
+      launchMemberResults[key] = {
+        memberIndex,
+        ownerId: memberOwnerIds[memberIndex] ?? null,
+        label: memberLabels[memberIndex],
+        headless: !!foldedConfigs[memberIndex].headless,
+        status: 'starting',
+        outcome: 'unknown',
+      };
+      nativeSpawnAttempted.add(memberIndex);
+      if (await recordLaunchProgress()) return;
+      nativeSpawnAttempted.delete(memberIndex);
+      launchMemberResults[key] = {
+        memberIndex,
+        ownerId: memberOwnerIds[memberIndex] ?? null,
+        label: memberLabels[memberIndex],
+        headless: !!foldedConfigs[memberIndex].headless,
+        status: 'not-started',
+        outcome: 'unknown',
+      };
+      throw new Error('Could not persist the member spawn attempt; no process was started.');
+    };
+    // Persist the spawn phase before opening any member. If this write fails,
+    // release the claim and stop before a process can exist without a recovery
+    // record.
+    if (args.idempotencyKey?.trim() && !(await recordLaunchProgress())) {
+      await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey, claimToken: launchClaimToken });
+      return err('Could not persist the launch spawn phase. No agent process was started; retry after the claim is released.');
+    }
     const results = await Promise.all(
       memberCommands.map(async (cmd, i) => {
         const memberBrief = memberBriefs[i];
@@ -2860,7 +3039,10 @@ export default defineTool({
           if (recheckInPlaceResume) await recheckInPlaceResume();
           if (recheckOriginalMember) await recheckOriginalMember();
           if (reconcileOriginalRouting) await reconcileOriginalRouting();
-          if (isResume && !fork && resumeSourceEnded) {
+          // The owner liveness scan may already see a dormant source as ended
+          // before ADV has a terminal stamp. Its verified in-place resume needs
+          // the same bounded reservation to keep that scan from taking its lease.
+          if (isResume && !fork && resumeNeedsStartupReservation) {
             if (!resumeSourceAdvSessionId || !targetOwnerId || !callerOwnerId)
               throw new Error('Ended-source resume requires exact source and launcher identities before admission.');
             const claimKey = `governed-resume:${randomUUID()}`;
@@ -2914,6 +3096,7 @@ export default defineTool({
               ...(startupReservation ? { [GOVERNED_RESUME_RESERVATION_ENV]: JSON.stringify(startupReservation) } : {}),
             };
             if (foldedConfigs[i].headless) {
+              await markNativeSpawnAttempted(i);
               const result = await spawnHeadless({
                 envelope: { ...base, env: governedEnv, greetingCmd: cmd, cwd },
                 writeMcpJson: true,
@@ -2936,6 +3119,9 @@ export default defineTool({
                 // distinct identity is pinned in both argv and this receipt.
                 coordOwnerId: targetOwnerId,
               });
+              // Persist the returned process/task handles before inbox-wake
+              // setup or any later verification can be cancelled.
+              await persistMemberLaunchResult(i, result);
               // A one-turn headless agent may finish at its CLI prompt without
               // calling coord:orient or activity:report. Arm its standing wake
               // watcher here so follow-up work can still reach the live session.
@@ -2961,7 +3147,8 @@ export default defineTool({
               // launch and keeps the caller's idempotency claim.
               return result;
             }
-            return spawnConsole({
+            await markNativeSpawnAttempted(i);
+            const result = await spawnConsole({
               envelope: { ...base, env: governedEnv, greetingCmd: cmd, cwd },
               label: memberLabel,
               writeMcpJson: true,
@@ -2983,9 +3170,12 @@ export default defineTool({
               // launches with no explicit terminal preference.
               preferProcessPerWindow: !isResume && !process.env.TERMINAL?.trim(),
             });
+            await persistMemberLaunchResult(i, result);
+            return result;
           },
           );
           if (result.status === 'error') await releaseStartup();
+          if (!progressWrittenMembers.has(i)) await persistMemberLaunchResult(i, result);
           return result;
         } catch (error) {
           await releaseStartup();
@@ -2993,11 +3183,13 @@ export default defineTool({
           // its durable receipt cannot be persisted). Keep the attempt in its member
           // slot so a partial batch still reports the right member labels, while
           // making the rejection eligible for the zero-open rollback below.
-          return {
+          const failedResult: SpawnChildExit = {
             status: 'error' as const,
             code: 500,
             error: `governed spawn failed: ${(error as Error)?.message ?? error}`,
           };
+          await persistMemberLaunchResult(i, failedResult);
+          return failedResult;
         } finally {
           await successorPreparation.release?.();
         }
@@ -3082,10 +3274,16 @@ export default defineTool({
       );
     }
     let launchClaimReleased = false;
-    if (opened.length === 0 && args.idempotencyKey?.trim()) {
+    if (
+      opened.length === 0 &&
+      Object.keys(launchProcessHandles).length === 0 &&
+      nativeSpawnAttempted.size === 0 &&
+      args.idempotencyKey?.trim()
+    ) {
       launchClaimReleased = await releaseAgentLaunchClaim({
         workspaceId,
         idempotencyKey: args.idempotencyKey,
+        claimToken: launchClaimToken,
       });
       notes.push(
         launchClaimReleased
@@ -3401,6 +3599,20 @@ export default defineTool({
 
     const launchSummary = {
       deduped: false,
+      requestKind: 'capability:launch-agent',
+      launchState:
+        nativeSpawnAttempted.size > 0 && opened.length === 0 && Object.keys(launchProcessHandles).length === 0
+          ? 'reconciliation-required'
+          : 'completed',
+      startedAt: spawnStartedAt,
+      expectedCount: count,
+      targetMembers,
+      spawnAttempted: nativeSpawnAttempted.size > 0,
+      nativeSpawnAttempted: [...nativeSpawnAttempted],
+      reconciliationRequired:
+        nativeSpawnAttempted.size > 0 && opened.length === 0 && Object.keys(launchProcessHandles).length === 0,
+      memberResults: { ...launchMemberResults },
+      processHandles: { ...launchProcessHandles },
       // Preserve the resolver's pre-spawn count. A later read could include this
       // launch or an existing actor whose goal attribution/freshness changed.
       goalAdmission: goalLaunch.goalId ? {
@@ -3463,26 +3675,28 @@ export default defineTool({
             },
           }
         : {}),
-      tasks: results.flatMap((result, i) =>
-        result.status === 'ok'
-          ? [
-              {
-                taskId: result.taskId ?? null,
-                logPath: result.logPath ?? null,
-                normalizedLogPath: result.normalizedLogPath ?? null,
-                pid: result.pid,
-                terminalPid: result.terminalPid ?? null,
-                label: memberLabels[i],
-                ownerId: memberOwnerIds[i],
-                headless: !!foldedConfigs[i].headless,
-                kickoffProof: result.kickoffProof ?? null,
-                ...(freshVerdict
-                  ? { nativeSession: nativeSessionByOwner?.get(memberOwnerIds[i] ?? '') ?? null }
-                  : {}),
-              },
-            ]
-          : [],
-      ),
+      tasks: results.flatMap((result, i) => {
+        if (result.status !== 'ok') {
+          const handle = launchProcessHandles[String(i)];
+          return handle ? [{ ...handle, status: 'error' }] : [];
+        }
+        return [
+          {
+            taskId: result.taskId ?? null,
+            logPath: result.logPath ?? null,
+            normalizedLogPath: result.normalizedLogPath ?? null,
+            pid: result.pid,
+            terminalPid: result.terminalPid ?? null,
+            label: memberLabels[i],
+            ownerId: memberOwnerIds[i],
+            headless: !!foldedConfigs[i].headless,
+            kickoffProof: result.kickoffProof ?? null,
+            ...(freshVerdict
+              ? { nativeSession: nativeSessionByOwner?.get(memberOwnerIds[i] ?? '') ?? null }
+              : {}),
+          },
+        ];
+      }),
       ...(resumeVerified !== undefined ? { resumeVerified } : {}),
       ...(resumeVerification ? { resumeVerification } : {}),
       ...(freshVerdict
@@ -3505,6 +3719,7 @@ export default defineTool({
       launchSummaryRecorded = await recordAgentLaunchResult({
         workspaceId,
         idempotencyKey: args.idempotencyKey,
+        claimToken: launchClaimToken,
         summary: launchSummary,
       });
     }

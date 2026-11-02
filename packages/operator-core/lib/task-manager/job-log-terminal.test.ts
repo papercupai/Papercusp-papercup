@@ -40,6 +40,23 @@ describe('job-log-terminal', () => {
     expect(readJobLogTerminal(logFile(`boom\n${runnerLine('failed', 4)}`))).toEqual({ status: 'failed', exitCode: 4 });
   });
 
+  it('retains all runner identity pins from an identity-bearing failed JOB END', () => {
+    const marker = runnerLine('failed', 1).replace(
+      ' — this line was recorded',
+      ' task=task-1 bash=bash-1 scope=task-1.service invocation=invocation-1 ' +
+        `nonce=${'a'.repeat(64)} — this line was recorded`,
+    );
+    expect(parseJobLogEndMarker(marker)).toEqual({
+      status: 'failed',
+      exitCode: 1,
+      taskId: 'task-1',
+      bashJobId: 'bash-1',
+      scopeUnit: 'task-1.service',
+      invocationId: 'invocation-1',
+      nonce: 'a'.repeat(64),
+    });
+  });
+
   it('finds the marker at the end of a log larger than the bounded tail it reads', () => {
     const big = 'x'.repeat(JOB_LOG_TERMINAL_TAIL_BYTES * 3) + runnerLine('completed', 0);
     expect(readJobLogTerminal(logFile(big))).toEqual({ status: 'completed', exitCode: 0 });

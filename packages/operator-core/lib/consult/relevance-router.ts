@@ -279,6 +279,9 @@ export interface RoutingSnapshot {
     unmeasured: number;
     limit: number;
     unresolved: string[];
+    /** Bounded scoring failures, counted by invocation, never inferred from
+     * unmeasured owners. Raw provider error text is deliberately excluded. */
+    failures?: Array<SubjectEvidenceFailure & { count: number }>;
   };
   /** The bounded retrieval leg used while the semantic instrument was down. */
   fallback?: 'lexical';
@@ -659,13 +662,24 @@ export function contrastedSubjectScore(target: number | null, contrasts: readonl
 }
 
 let subjectScorer: Promise<RerankScoreFn> | null = null;
+export interface SubjectEvidenceFailure {
+  reason: 'missing-contract' | 'no-contrasts' | 'deadline' | 'scorer-error' | 'score-shape' | 'invalid-score';
+  errorCode?: string;
+}
 export async function scoreSubjectEvidence(subject: string, texts: string[], deadline: number,
-  deps: { scorer?: RerankScoreFn; contracts?: readonly SubjectContract[] } = {}): Promise<Array<number | null>> {
+  deps: { scorer?: RerankScoreFn; contracts?: readonly SubjectContract[];
+    onFailure?: (failure: SubjectEvidenceFailure) => void } = {}): Promise<Array<number | null>> {
+  const report = (failure: SubjectEvidenceFailure) => {
+    try { deps.onFailure?.(failure); } catch { /* diagnostics never change qualification */ }
+  };
   const { listAllProjectedTools } = await import('@papercusp/tooldef');
   const contracts = deps.contracts ?? listAllProjectedTools().flatMap(t => t.expose.mcp
     ? [{ name: t.expose.mcp.name, description: t.description }] : []);
   const query = subjectEvidenceQuery(subject, contracts.find(c => c.name === subject)?.description);
-  if (!query) return texts.map(() => null);
+  if (!query) {
+    report({ reason: 'missing-contract' });
+    return texts.map(() => null);
+  }
   if (!deps.scorer && !subjectScorer) {
     subjectScorer = import('../memory/embed-sidecar-wiring').then(async ({ buildSidecarAwareReranker }) => {
       return buildSidecarAwareReranker();
@@ -685,11 +699,18 @@ export async function scoreSubjectEvidence(subject: string, texts: string[], dea
   // questions false friends. For a natural question the full query is retained.
   return Promise.all(texts.map(async text => {
     const contrasts = subjectContrasts(subject, text, contracts);
-    if (!contrasts.length || Date.now() >= deadline) return null;
+    if (!contrasts.length) { report({ reason: 'no-contrasts' }); return null; }
+    if (Date.now() >= deadline) { report({ reason: 'deadline' }); return null; }
     const scores = await scorer(text, [...targets, ...contrasts.map(c => subjectEvidenceQuery(c.name, c.description)!)], { deadline })
-      .catch(() => null);
+      .catch(error => {
+        report({ reason: 'scorer-error', errorCode: routingErrorCode(error) });
+        return null;
+      });
     if (scores === null) return null;
-    if (scores.length !== contrasts.length + targets.length) return null;
+    if (scores.length !== contrasts.length + targets.length) { report({ reason: 'score-shape' }); return null; }
+    if (scores.some(score => score === null || !Number.isFinite(score) || score < 0 || score > 1)) {
+      report({ reason: 'invalid-score' });
+    }
     const alternatives = scores.slice(targets.length);
     const qualified = scores.slice(0, targets.length).map(target => contrastedSubjectScore(target, alternatives));
     return qualified.some(score => score === null) ? null : Math.min(...qualified as number[]);
@@ -984,7 +1005,7 @@ function routingErrorCode(error: unknown): string {
       const cause = error as { code?: unknown; name?: unknown; cause?: unknown };
       if (typeof cause.code === 'string' && /^[A-Z0-9_]{1,40}$/.test(cause.code)) return cause.code;
       if (cause.name === 'AbortError') return 'ABORT_ERR';
-      if (cause.name === 'TimeoutError') return 'ETIMEDOUT';
+      if (cause.name === 'TimeoutError' || cause.name === 'RerankDeadlineError') return 'ETIMEDOUT';
       error = cause.cause;
     }
   } catch { /* diagnostics must not replace the original result or exception */ }
@@ -1067,6 +1088,13 @@ async function routeConsultCore(
   const subjectRefs = [...new Set((params.subjectRefs !== undefined ? params.subjectRefs : [inferredSubject ?? params.question])
     .map(ref => ref.trim()).filter(Boolean))];
   const unresolvedSubjectRefs = [...new Set((params.unresolvedSubjectRefs ?? []).map(ref => ref.trim()).filter(Boolean))];
+  // Explicit anchors constrain retrieval before the turn and owner bounds.
+  // Otherwise unrelated semantic matches can exhaust both budgets before the
+  // evidence scorer ever sees a relevant transcript. Use a union here: an
+  // owner's evidence for different anchors may live in separate turns. The
+  // existing coverage check still requires support for every requested ref.
+  const explicitSubjectPattern = explicitSubjectRefs && subjectRefs.length
+    ? subjectRefs.map(exactSubjectMentionPattern).join('|') : null;
 
   const base: Omit<RoutingSnapshot, 'candidates'> = {
     query: params.question,
@@ -1127,6 +1155,7 @@ async function routeConsultCore(
            AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
            AND ${leg.match}
            AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
+           AND (${explicitSubjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${explicitSubjectPattern})
            AND ${notRestricted}
            AND ${nativePopulation}
       ORDER BY ${leg.order}, COALESCE(ts, ingested_at) DESC
@@ -1256,6 +1285,7 @@ async function routeConsultCore(
        ]}::text[])
        AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
        AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
+       AND (${explicitSubjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${explicitSubjectPattern})
        AND ${notRestricted}
        AND ${nativePopulation}`;
     const columns = tx`owner, session_id, turn_idx, COALESCE(ts, ingested_at) AS ts,
@@ -1419,6 +1449,14 @@ async function routeConsultCore(
   // subject; keep mismatches/unmeasured candidates for labelled minimum fill.
   const subjectCoverageByOwner = new Map<string, NonNullable<RoutingCandidate['subjectEvidenceCoverage']>>();
   if (subjectRefs.length || unresolvedSubjectRefs.length) {
+    const failureCounts = new Map<string, SubjectEvidenceFailure & { count: number }>();
+    const recordFailure = (failure: SubjectEvidenceFailure) => {
+      const key = `${failure.reason}:${failure.errorCode ?? ''}`;
+      const previous = failureCounts.get(key);
+      failureCounts.set(key, { ...failure, count: (previous?.count ?? 0) + 1 });
+    };
+    const scoreEvidence = deps.scoreSubjectEvidence ?? ((subject: string, texts: string[], deadline: number) =>
+      scoreSubjectEvidence(subject, texts, deadline, { onFailure: recordFailure }));
     const eligible = owners.filter(ownerId => {
       const similarity = clamp01(Math.max(...byOwner.get(ownerId)!.sims));
       const c = verByOwner.get(ownerId) ?? 0;
@@ -1443,7 +1481,7 @@ async function routeConsultCore(
     if (usable.length && subjectRefs.length) {
       try {
         const deadline = Date.now() + SUBJECT_EVIDENCE_TIMEOUT_MS;
-        const { value: scoreBySubject } = await measure('evidence', () => withDeadlineFallback((async () => {
+        const { value: scoreBySubject, degraded: deadlineExpired } = await measure('evidence', () => withDeadlineFallback((async () => {
           const all: Array<Array<number | null>> = [];
           for (const subject of subjectRefs) {
             const anchorRef = explicitSubjectRefs ? subject : subjectRef;
@@ -1454,15 +1492,23 @@ async function routeConsultCore(
               continue;
             }
             if (Date.now() >= deadline) {
+              recordFailure({ reason: 'deadline' });
               all.push(usable.map(() => null));
               continue;
             }
             const anchoredTexts = passageIndexes.map(index => usable[index]!.text);
-            const scores = await (deps.scoreSubjectEvidence ?? scoreSubjectEvidence)(subject, anchoredTexts, deadline)
-              .catch(() => anchoredTexts.map(() => null));
+            const scores = await scoreEvidence(subject, anchoredTexts, deadline)
+              .catch(error => {
+                recordFailure({ reason: 'scorer-error', errorCode: routingErrorCode(error) });
+                return anchoredTexts.map(() => null);
+              });
             if (scores.length !== passageIndexes.length) {
+              recordFailure({ reason: 'score-shape' });
               all.push(usable.map(() => null));
               continue;
+            }
+            if (scores.some(score => typeof score === 'number' && (!Number.isFinite(score) || score < 0 || score > 1))) {
+              recordFailure({ reason: 'invalid-score' });
             }
             const aligned = usable.map(() => null as number | null);
             passageIndexes.forEach((passageIndex, scoreIndex) => {
@@ -1472,6 +1518,7 @@ async function routeConsultCore(
           }
           return all;
         })(), SUBJECT_EVIDENCE_TIMEOUT_MS, () => subjectRefs.map(() => usable.map(() => null))));
+        if (deadlineExpired) recordFailure({ reason: 'deadline' });
         for (const ownerId of boundedOwners) {
           const evidence = subjectRefs.map((subject, subjectIndex) => {
             const scores = scoreBySubject[subjectIndex] ?? [];
@@ -1502,7 +1549,9 @@ async function routeConsultCore(
             : evidence.some(row => row.status === 'mismatch') ? 'mismatch' : 'supported';
           subjectCoverageByOwner.set(ownerId, { status, required: subjectRefs, evidence, unresolved: unresolvedSubjectRefs });
         }
-      } catch { /* unknown remains explicit, including capped or unavailable owners */ }
+      } catch (error) {
+        recordFailure({ reason: 'scorer-error', errorCode: routingErrorCode(error) });
+      }
     }
     const coverage = [...subjectCoverageByOwner.values()];
     const unmeasured = coverage.filter(row => row.status === 'unmeasured').length;
@@ -1514,6 +1563,7 @@ async function routeConsultCore(
       unmeasured,
       limit: SUBJECT_EVIDENCE_OWNER_LIMIT,
       unresolved: unresolvedSubjectRefs,
+      ...(failureCounts.size ? { failures: [...failureCounts.values()] } : {}),
     };
     if (unmeasured) base.degraded = 'evidence-unavailable';
   }

@@ -2270,6 +2270,114 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
+  it('starts presence and live-context continuation reads concurrently', async () => {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    getPresence.mockImplementation(async () => {
+      await gate;
+      return null;
+    });
+    currentContextTokensForOwner.mockImplementation(async () => {
+      await gate;
+      return null;
+    });
+    const priorBoundedTimeout = withBoundedTimeout.getMockImplementation();
+    expect(priorBoundedTimeout).toBeDefined();
+    withBoundedTimeout.mockImplementation(async (work: unknown, options: unknown) => {
+      if ((options as { label?: string }).label === 'loop:checkpoint continuation reads') {
+        return { value: await (work as () => Promise<unknown>)(), degraded: false, elapsedMs: 0 };
+      }
+      return priorBoundedTimeout!(work, options);
+    });
+
+    const pending = call({ next: 'continue after concurrent-read check' });
+    let waitError: unknown;
+    try {
+      await vi.waitFor(() => {
+        expect(getPresence).toHaveBeenCalledOnce();
+        expect(currentContextTokensForOwner).toHaveBeenCalledOnce();
+      }, { timeout: 1_000 });
+    } catch (error) {
+      waitError = error;
+    }
+    releaseGate();
+    await pending;
+    if (waitError) throw waitError;
+  });
+
+  it('starts the two independent inbox cursor reads concurrently', async () => {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    readWatermark.mockImplementation(async () => {
+      await gate;
+      return { messages_since_ts: '2026-08-21T05:00:00.000Z' };
+    });
+    orgSql.mockImplementation(async (...args: unknown[]) => {
+      const query = Array.isArray(args[0]) ? (args[0] as string[]).join(' ') : '';
+      if (query.includes('FROM harness_shared.tool_invocations')) await gate;
+      return [];
+    });
+    const priorBoundedTimeout = withBoundedTimeout.getMockImplementation();
+    expect(priorBoundedTimeout).toBeDefined();
+    withBoundedTimeout.mockImplementation(async (work: unknown, options: unknown) => {
+      if ((options as { label?: string }).label === 'loop:checkpoint continuation reads') {
+        return { value: await (work as () => Promise<unknown>)(), degraded: false, elapsedMs: 0 };
+      }
+      return priorBoundedTimeout!(work, options);
+    });
+
+    const pending = call({ next: 'continue after inbox cursor check' });
+    let waitError: unknown;
+    try {
+      await vi.waitFor(() => {
+        expect(readWatermark).toHaveBeenCalledOnce();
+        expect(orgSql.mock.calls.some(([parts]) =>
+          Array.isArray(parts) && parts.join(' ').includes('FROM harness_shared.tool_invocations'),
+        )).toBe(true);
+      }, { timeout: 1_000 });
+    } catch (error) {
+      waitError = error;
+    }
+    releaseGate();
+    await pending;
+    if (waitError) throw waitError;
+  });
+
+  it('starts turn-stamp and wake-reachability reads concurrently', async () => {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    resolveCurrentTurnStamp.mockImplementation(async () => {
+      await gate;
+      return null;
+    });
+    probeWakeReachability.mockImplementation(async () => {
+      await gate;
+      return { reachable: true, channel: 'inject', durableWhileAlive: true, summary: 'ok' };
+    });
+    const priorBoundedTimeout = withBoundedTimeout.getMockImplementation();
+    expect(priorBoundedTimeout).toBeDefined();
+    withBoundedTimeout.mockImplementation(async (work: unknown, options: unknown) => {
+      if ((options as { label?: string }).label === 'loop:checkpoint continuation reads') {
+        return { value: await (work as () => Promise<unknown>)(), degraded: false, elapsedMs: 0 };
+      }
+      return priorBoundedTimeout!(work, options);
+    });
+
+    const pending = call({ next: 'continue after wake reachability check' });
+    let waitError: unknown;
+    try {
+      await vi.waitFor(() => {
+        expect(resolveCurrentTurnStamp).toHaveBeenCalledOnce();
+        expect(probeWakeReachability).toHaveBeenCalledOnce();
+      }, { timeout: 1_000 });
+    } catch (error) {
+      waitError = error;
+    }
+    releaseGate();
+    await pending;
+    if (waitError) throw waitError;
+  });
+
   it('records per-leg continuation read durations when the aggregate budget times out', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const priorBoundedTimeout = withBoundedTimeout.getMockImplementation();

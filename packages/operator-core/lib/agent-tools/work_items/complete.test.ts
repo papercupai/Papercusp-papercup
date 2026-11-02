@@ -489,6 +489,29 @@ beforeEach(() => {
 });
 
 // ── EI-20286699547467039: unmet completion gates accumulate into ONE refusal ──────────
+describe('P009 plan code-link completion advisory', () => {
+  it.each([
+    [{ anchors: [{ path: 'linked.ts' }] }, ['extra.ts'], { unplannedFiles: ['extra.ts'], untouchedFiles: ['linked.ts'] }],
+    [{ anchors: [{ path: 'linked.ts' }] }, ['linked.ts', 'extra.ts'], { unplannedFiles: ['extra.ts'], untouchedFiles: [] }],
+    [{ anchors: [{ path: 'linked.ts' }, { path: 'other.ts' }] }, ['linked.ts'], { unplannedFiles: [], untouchedFiles: ['other.ts'] }],
+    [{ anchors: [{ path: 'linked.ts' }] }, ['linked.ts'], undefined],
+    [{ paths: ['text-only.ts'] }, ['extra.ts'], undefined],
+  ])('keeps a successful close successful for payload %j', async (payload, filesChanged, expected) => {
+    const row = { id: 'WI-anchor-advice', kind: 'task', family: 'issue', state: 'open', harness: 'papercup', payload };
+    getWorkItem.mockResolvedValue(row);
+    setWorkItemStateWithAliasInfo.mockResolvedValue({ workItem: { ...row, state: 'done' }, appliedState: 'done', requestedState: 'done', aliased: false });
+    const result = await one({ id: row.id, state: 'done', completion: { summary: 'completed fixture', filesChanged } });
+    expect(result.ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledOnce();
+    if (expected) {
+      expect(result.planAnchorAdvisory).toMatchObject(expected);
+      for (const path of [...expected.unplannedFiles, ...expected.untouchedFiles]) {
+        expect(result.planAnchorAdvisory.message).toContain(path);
+      }
+    } else expect(result.planAnchorAdvisory).toBeUndefined();
+  });
+});
+
 describe('P039 completion source brief delivery', () => {
   it('attaches the bounded pre-review brief after a successful close using declared changed files', async () => {
     const row = { id: 'WI-brief', kind: 'task', family: 'issue', state: 'open', harness: 'papercup' };
@@ -1324,7 +1347,9 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
       expect(validation).toMatchObject({
         ok: true,
         validationOnly: true,
-        completionAuthority: 'committed',
+        // This fixture omits the post-cutover change-kind proof, so it may remain proposed;
+        // the assertion below isolates whether a no-work sentinel creates a false shortfall.
+        completionAuthority: 'proposed',
       });
       expect(validation.requirementShortfallWarning).toBeUndefined();
       expect(validation.completionEvidenceFindings).toBeUndefined();
@@ -3812,6 +3837,7 @@ describe('work_items:complete (keyed-array)', () => {
         targetIds: pendingTargets,
         ctx,
         harness: 'papercusp',
+        acceptanceRef: 'F-101',
       });
       expect(r).toMatchObject({
         ok: false,
@@ -3966,8 +3992,12 @@ describe('work_items:complete (keyed-array)', () => {
       const outputPayload = resolveLocalSchemaRef(json, single?.properties?.outputPayload) as {
         description?: string;
       };
-      const completion = resolveLocalSchemaRef(json, single?.properties?.completion);
-      const verification = resolveLocalSchemaRef(json, completion.properties?.verification);
+      const completion = resolveLocalSchemaRef(json, single?.properties?.completion) as {
+        properties?: Record<string, unknown>;
+      };
+      const verification = resolveLocalSchemaRef(json, completion.properties?.verification) as {
+        properties?: Record<string, unknown>;
+      };
       const workOutcome = resolveLocalSchemaRef(json, verification.properties?.workOutcome) as {
         description?: string;
       };
@@ -4044,6 +4074,7 @@ describe('work_items:complete (keyed-array)', () => {
         targetIds: pendingTargets,
         ctx,
         harness: 'papercusp',
+        acceptanceRef: 'WI-101',
       });
       expect(r).toMatchObject({
         ok: false,

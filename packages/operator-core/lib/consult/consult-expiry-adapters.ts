@@ -45,7 +45,8 @@ import type { PriorRespawn } from '../carry-respawn-outcome';
 import type { ThreadableStore } from '@papercusp/coordination/capabilities';
 import { runWithWorkspace } from '../workspace-als';
 import { consultAnswerFacts } from '../task-manager/reaper';
-import { isTerminalState, type TaskRow } from '../task-manager/types';
+import { censusAgentSessionProgress, DEFAULT_QUIET_MS } from '../task-manager/agent-session-progress-census';
+import { isLiveOwnedState, isTerminalState, type TaskRow } from '../task-manager/types';
 
 /** The ownerId this sweep acts under. Exported so a test asserts the real constant
  *  rather than re-typing the string it is checking against. */
@@ -90,9 +91,9 @@ export interface SilentResponderDetectorDeps {
   ) => Promise<ReadonlyMap<string, { sessionState?: string | null }>>;
   getThreadStore: (workspaceId: string) => SilentResponderThreadStore;
   /** Exact-owner task history, including live rows that veto stale terminal proof. */
-  listAnsweringTasks?: (workspaceId: string, answeringOwnerId: string) => Promise<
-    readonly Pick<TaskRow, 'workspaceId' | 'class' | 'state' | 'endedAt' | 'detail'>[]
-  >;
+  listAnsweringTasks?: (workspaceId: string, answeringOwnerId: string) => Promise<readonly TaskRow[]>;
+  /** Null or a throw means the task log cannot be measured; it is never quiet evidence. */
+  statMtimeMs?: (path: string) => number | null;
   /** Injectable clock for the bounded live-busy pickup window. */
   now?: () => Date;
   /** Most recent durable host carry-respawn outcome for a logical responder. */
@@ -217,10 +218,9 @@ export function consultExpiryDispatch(
  * the consult thread contains no post by the current answerer:
  *
  *  - the answering session became active after routing and re-parked; or
- *  - the answering session is still live or parked after one hard-blocked expiry window.
- *    This is the continuously-busy or queued-but-never-picked-up case: a queued
- *    wake can sit behind unrelated work for the four-hour `proceed` window even
- *    though no consult turn was picked up; or
+ *  - its exact consult-tagged task has no post-route log write after the hard-blocked
+ *    pickup window, or a post-route log has been quiet for `DEFAULT_QUIET_MS`.
+ *    Missing or unreadable task logs are unknown, never pickup-failure evidence; or
  *  - the owner terminalized after routing, which makes waiting for expiry
  *    pointless because the queued wake can no longer be consumed; or
  *  - dispatch never stamped an answering identity after the bounded pickup
@@ -291,6 +291,66 @@ export function consultExpiryFindSilentResponders(
         return isTerminalState(task.state) && Number.isFinite(endedMs) && endedMs <= checkedAtMs;
       });
     };
+    const answerTaskProgress = async (
+      row: SilentResponderCandidate,
+      routedMs: number,
+    ): Promise<'unknown' | 'not-picked-up' | 'active' | 'stalled'> => {
+      if (!deps.listAnsweringTasks || !deps.statMtimeMs || !row.answeringOwnerId || !row.sourceOwnerId) {
+        return 'unknown';
+      }
+      const key = JSON.stringify([row.workspaceId, row.answeringOwnerId]);
+      let pending = tasksByOwner.get(key);
+      if (!pending) {
+        pending = deps.listAnsweringTasks(row.workspaceId, row.answeringOwnerId);
+        tasksByOwner.set(key, pending);
+      }
+      try {
+        const tasks = (await pending).filter((task) => {
+          if (task.workspaceId !== row.workspaceId || task.class !== 'agent-session') return false;
+          const facts = consultAnswerFacts(task);
+          return facts?.conversationId === row.conversationId &&
+            facts.sourceOwnerId === row.sourceOwnerId &&
+            facts.answeringOwnerId === row.answeringOwnerId;
+        });
+        const liveTasks = tasks.filter((task) => isLiveOwnedState(task.state));
+        if (liveTasks.length === 0) return 'unknown';
+
+        const census = censusAgentSessionProgress(liveTasks, {
+          statMtimeMs: (path) => {
+            try {
+              return deps.statMtimeMs!(path);
+            } catch {
+              return null;
+            }
+          },
+          now: checkedAtMs,
+          quietMs: DEFAULT_QUIET_MS,
+          minAgeMs: 0,
+        });
+        if (census.rows.length !== liveTasks.length) return 'unknown';
+        if (census.rows.some((entry) =>
+          entry.disposition === 'active' &&
+          entry.logMtimeMs !== null &&
+          entry.logMtimeMs > routedMs
+        )) return 'active';
+        if (census.rows.some((entry) =>
+          entry.logMtimeMs === null ||
+          entry.disposition === 'no-log' ||
+          entry.disposition === 'unreadable' ||
+          entry.disposition === 'too-young'
+        )) return 'unknown';
+
+        const latestWriteMs = Math.max(...census.rows.map((entry) => entry.logMtimeMs!));
+        if (!Number.isFinite(latestWriteMs)) return 'unknown';
+        if (latestWriteMs <= routedMs) return 'not-picked-up';
+        return census.rows.some((entry) =>
+          entry.logMtimeMs === latestWriteMs && entry.disposition === 'quiet'
+        ) ? 'stalled' : 'active';
+      } catch {
+        return 'unknown';
+      }
+    };
+
     const stores = new Map<string, SilentResponderThreadStore>();
     const getStore = (workspaceId: string) => {
       let store = stores.get(workspaceId);
@@ -318,10 +378,22 @@ export function consultExpiryFindSilentResponders(
           const terminalAfterRoute = DEAD_RESPONDER_STATES.has(sessionState ?? '');
           const reparkedAfterRoute =
             sessionState === 'parked' && Number.isFinite(activeMs) && activeMs > routedMs;
+          const shouldCheckTaskProgress =
+            (sessionState === 'live' || sessionState === 'parked') &&
+            ((Number.isFinite(checkedAtMs) && checkedAtMs - routedMs >= HARD_BLOCKED_EXPIRY_MS) ||
+              reparkedAfterRoute);
+          const taskProgress = shouldCheckTaskProgress
+            ? await answerTaskProgress(row, routedMs)
+            : 'unknown';
+          // A recent exact-task log write proves the answerer picked up the consult,
+          // even when no consult post has landed yet. Missing or unreadable logs are
+          // unknown and cannot justify the early recovery.
+          if (taskProgress === 'active') return;
           const inactivePastPickupWindow =
             (sessionState === 'live' || sessionState === 'parked') &&
             Number.isFinite(checkedAtMs) &&
-            checkedAtMs - routedMs >= HARD_BLOCKED_EXPIRY_MS;
+            checkedAtMs - routedMs >= HARD_BLOCKED_EXPIRY_MS &&
+            (taskProgress === 'not-picked-up' || taskProgress === 'stalled');
           const terminalLaunch = sessionState == null && await endedLaunch(row);
           if (!terminalAfterRoute && !reparkedAfterRoute && !inactivePastPickupWindow && !terminalLaunch) return;
           // A context-death ends the old native child before the watchdog's fresh

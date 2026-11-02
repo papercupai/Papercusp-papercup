@@ -773,7 +773,7 @@ const scorecardEmitBaseShape = {
       .strict()
       .optional()
       .describe(
-        "Author verdict after independent grading; requires complete ratings (supplied or acceptanceOf). Independent graders omit. accept-pending-delivery means only unreachable live/deployed proof remains; preserves its proof/blocker obligation.",
+        "An author acceptance verdict's persisted card always carries complete ratings, supplied directly or adopted from the exact independent card via acceptanceOf. Independent graders omit the verdict. accept-pending-delivery means only unreachable live/deployed proof remains; it preserves its proof/blocker obligation.",
       ),
     acceptanceOf: z
       .string()
@@ -781,7 +781,7 @@ const scorecardEmitBaseShape = {
       .min(1)
       .optional()
       .describe(
-        "With acceptance, adopt this exact independent card after checking independence, completeness and revision; ratings keep provenance. Omit to use first qualifying card.",
+        "With acceptance, adopts its ratings verbatim from the exact independent card named here after checking independence, completeness and revision; source grader provenance is preserved. Omit to use the first qualifying card.",
       ),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
     fromLedger: z
@@ -791,10 +791,11 @@ const scorecardEmitBaseShape = {
     ledgerDispositions: z
       .record(
         z.string().min(1),
-        scorecardRatingEntrySchema.pick({ remediation: true, disregard: true, suggestion: true, attribution: true }),
+        scorecardRatingEntrySchema.pick({ remediation: true, disregard: true, suggestion: true, attribution: true, evidence: true })
+          .partial({ evidence: true }),
       )
       .optional()
-      .describe('With fromLedger: remediation/disregard for a poor ledger-rated criterion, without a rating.'),
+      .describe('With fromLedger: remediation/disregard and optional evidence for calibration or subject context. Context is appended to ledger evidence; the rating and measurement stay ledger-owned.'),
     current: z
       .array(evidenceCurrentInputSchema)
       .max(2000)

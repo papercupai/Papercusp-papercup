@@ -172,6 +172,16 @@ async function workspaceSweepAllowed(name: string, workspaceId: string): Promise
   }
 }
 
+async function observeWorkspaceSweep<T>(name: string, workspaceId: string, invoke: () => Promise<T>): Promise<{ invoked: false } | { invoked: true; value: T }> {
+  const [{ runObservedBackgroundActivity }, { startupActivityFeatureId }, { operatorHomeHarnessSlug }] = await Promise.all([
+    import('../startup-activity'), import('../schedule-inventory'), import('../harness/operator-home-harness'),
+  ]);
+  const featureId = startupActivityFeatureId({ source: 'routines', installSlug: operatorHomeHarnessSlug(), name, detail: {} }, { workspaceId });
+  if (!await workspaceSweepAllowed(name, workspaceId)) return { invoked: false };
+  const value = await runObservedBackgroundActivity({ workspaceId, featureId, source: 'timer', trigger: 'timer' }, invoke);
+  return { invoked: true, value };
+}
+
 function warnPerfSnapshot(workspaceId: string, message: string): void {
   const now = Date.now();
   const prior = perfSnapshotWarningAt.get(workspaceId);
@@ -203,9 +213,10 @@ const systemHealthCheck: PeriodicCheck = {
     const { runSystemHealthTick } = await import('../system-health');
     for (const ws of readRegistry().workspaces.map((w) => w.id)) {
       if (!await workspaceSweepAllowed('system-health', ws)) continue;
-      await runSystemHealthTick(ws).catch((e) => {
+      const observation = await observeWorkspaceSweep('system-health', ws, () => runSystemHealthTick(ws)).catch((e) => {
         console.warn(`[system-health] tick failed for ${ws}: ${e instanceof Error ? e.message : e}`);
       });
+      if (observation?.invoked === false) continue;
       // The performance history used to ride only the owner-paused learning
       // watchdog. Reuse this active health sweep for its measurements without
       // re-arming that routine or dispatching its improvement signals.
@@ -1501,7 +1512,9 @@ const scorecardEmissionPulseCheck: PeriodicCheck = {
     );
     for (const ws of readRegistry().workspaces.map((w) => w.id)) {
       if (!await workspaceSweepAllowed('scorecard-emission-pulse', ws)) continue;
-      const r = await runScorecardEmissionPulse({ workspaceId: ws });
+      const observation = await observeWorkspaceSweep('scorecard-emission-pulse', ws, () => runScorecardEmissionPulse({ workspaceId: ws }));
+      if (!observation.invoked) continue;
+      const r = observation.value;
       if (r.outcome === 'filed') {
         console.warn(`[scorecard-emission-pulse] ${ws}: ${r.reason}`);
       }

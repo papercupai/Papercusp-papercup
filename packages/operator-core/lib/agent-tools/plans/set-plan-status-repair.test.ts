@@ -158,6 +158,17 @@ describe('plans:set-plan-status structured acceptance repair routes (P-026)', ()
     });
   });
 
+  it('keeps an exempt standing rubric active instead of recommending its retirement', () => {
+    for (const status of ['draft', 'ready', 'active']) {
+      const action = planAcceptanceRepairAction('standing-rubric', {
+        satisfied: true, skipped: 'rubric-template-plan',
+      }, { harnessSlug: 'papercusp' }, status);
+      expect(action).toMatchObject({ kind: 'diagnostic', nextVerb: null });
+      expect(action.instruction).toContain('Keep it active');
+      expect(action.instruction).toContain('shipped retires the rubric');
+    }
+  });
+
   it('does not infer a carried lifecycle for a legacy or unmeasured subject', () => {
     for (const status of ['ready', 'active', undefined]) {
       const action = planAcceptanceRepairAction('plan-a', { satisfied: true }, {}, status);

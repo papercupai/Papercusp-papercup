@@ -1,5 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
 const deps = vi.hoisted(() => ({ loads: 0, loadStack: '' }));
+const dispatch = vi.hoisted(() => ({
+  lookup: vi.fn(), invoke: vi.fn(), observe: vi.fn(), scope: vi.fn(),
+}));
+vi.mock('@papercusp/tooldef', async original => ({
+  ...await original<typeof import('@papercusp/tooldef')>(),
+  lookupByMcpName: dispatch.lookup, dispatchProjectedTool: dispatch.invoke,
+}));
+vi.mock('@papercusp/db-org', async original => ({
+  ...await original<typeof import('@papercusp/db-org')>(), withWorkspace: dispatch.scope,
+}));
+vi.mock('../startup-activity', () => ({ runObservedBackgroundActivity: dispatch.observe }));
 vi.mock('../projected-tool-deps', () => {
   deps.loads++;
   deps.loadStack = new Error('Unexpected eager dispatcher import').stack ?? '';
@@ -31,13 +42,38 @@ const parent = {
 const cause: ReactionCause = { depth: 1, chain: ['r1'], ruleId: 'r1', rootRunId: 'root' };
 
 describe('event execution admission', () => {
+  it('rechecks a newer disable after workspace setup and records only invoked dispatches', async () => {
+    dispatch.lookup.mockReturnValue({});
+    dispatch.scope.mockImplementation(async (_workspace, invoke) => invoke({}));
+    dispatch.observe.mockImplementation(async (_scope, invoke) => invoke());
+    dispatch.invoke.mockImplementation(async () => {
+      expect(dispatch.observe).toHaveBeenCalled();
+      return { ok: true, result: { content: [] } };
+    });
+    vi.mocked(workspaceBackgroundActivityAllowed).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const options = { fire: 'optional:registered', args: { private: 'secret' }, parentCtx: parent, cause };
+    try {
+      await expect(fireReactionInProcess(options)).resolves.toEqual({ ok: true, withheld: true });
+      expect(dispatch.invoke).not.toHaveBeenCalled();
+      expect(dispatch.observe).not.toHaveBeenCalled();
+      await expect(fireReactionInProcess(options)).resolves.toMatchObject({ ok: true });
+      expect(dispatch.invoke).toHaveBeenCalledOnce();
+      expect(dispatch.observe).toHaveBeenCalledWith({ workspaceId: 'w1',
+        featureId: startupReactionFeatureId('w1', 'r1'), source: 'event', trigger: 'event' }, expect.any(Function));
+      expect(JSON.stringify(dispatch.observe.mock.calls[0]![0])).not.toContain('secret');
+    } finally {
+      dispatch.lookup.mockReset(); dispatch.invoke.mockReset(); dispatch.observe.mockReset();
+    }
+  });
+
   it('withholds before tool lookup/dispatch and rechecks after resume', async () => {
+    const loadsBefore = deps.loads;
     vi.mocked(workspaceBackgroundActivityAllowed).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     const options = { fire: 'unregistered:optional', args: {}, parentCtx: parent, cause };
     await expect(fireReactionInProcess(options)).resolves.toEqual({ ok: true, withheld: true });
     await expect(fireReactionInProcess(options)).resolves.toMatchObject({ ok: false, error: 'unknown reaction tool "unregistered:optional"' });
     expect(workspaceBackgroundActivityAllowed).toHaveBeenLastCalledWith('w1', startupReactionFeatureId('w1', 'r1'));
-    expect(deps.loads, deps.loadStack).toBe(0);
+    expect(deps.loads, deps.loadStack).toBe(loadsBefore);
   });
 
   it('keeps the closed cache/control actions available without reading optional policy', async () => {

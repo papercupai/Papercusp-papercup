@@ -16,7 +16,11 @@ vi.mock('./events/await/psu-pty-discovery', () => ({
   injectIntoHost: vi.fn(),
 }));
 
-const { probeFreshLaunchSessions, verifyFreshLaunchStarted, resolveResumeTarget } = await import('./agent-launch-core');
+const {
+  probeFreshLaunchSessions, verifyFreshLaunchStarted, resolveResumeTarget,
+  claimAgentLaunch, recordAgentLaunchResult, releaseAgentLaunchClaim,
+  AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS,
+} = await import('./agent-launch-core');
 let sql: postgres.Sql;
 let dbName: string;
 let adminUri: string;
@@ -37,6 +41,11 @@ beforeAll(async () => {
   holder.sql = sql;
   await sql.unsafe(`
     CREATE SCHEMA harness_shared;
+    CREATE TABLE harness_shared.agent_launch_idempotency (
+      workspace_id text NOT NULL, idempotency_key text NOT NULL,
+      launched_at bigint NOT NULL, launched_by text, summary jsonb NOT NULL,
+      PRIMARY KEY (workspace_id, idempotency_key)
+    );
     CREATE TABLE harness_shared.adv_sessions (
       id integer PRIMARY KEY, session_id text, coord_owner_id text,
       workspace_id text, first_seen_at timestamptz, launch_spec jsonb, launch_argv jsonb,
@@ -63,7 +72,9 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.routines (target_owner_id text, name text, active boolean);
     CREATE TABLE harness_shared.event_awaits (
       subscriber_id text, policy text, event_key text, note text,
-      fired_at timestamptz, cancelled_at timestamptz, expires_ts timestamptz
+      fired_at timestamptz, cancelled_at timestamptz, expires_ts timestamptz,
+      timeout_behavior text NOT NULL DEFAULT 'expire'
+        CHECK (timeout_behavior IN ('expire', 'wake'))
     );
   `);
 });
@@ -79,6 +90,125 @@ afterAll(async () => {
       await admin.end({ timeout: 5 });
     }
   }
+});
+
+describe('launch claim ownership across progress receipts (real PG)', () => {
+  const preSpawn = {
+    requestKind: 'capability:launch-agent', launchState: 'spawning',
+    spawnAttempted: false, nativeSpawnAttempted: [], memberResults: {},
+    processHandles: {}, tasks: [],
+  };
+
+  it.each([false, true])('recovers an expired pre-spawn receipt and fences its prior writer (lostToken=%s)', async (lostToken) => {
+    const workspaceId = `ws-pre-spawn-${lostToken}`;
+    const idempotencyKey = 'recover';
+    const now = Date.now();
+    await claimAgentLaunch({
+      workspaceId, idempotencyKey, now: now - AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS - 1,
+      initialSummary: { ...preSpawn, claimToken: 'old-token' }, failClosed: true,
+    });
+    // Reproduce the old progress writer, which replaced the summary and lost
+    // its token. Its next token-CAS write must still fail before native spawn.
+    if (lostToken) await sql`UPDATE harness_shared.agent_launch_idempotency
+      SET summary = summary - 'claimToken'
+      WHERE workspace_id = ${workspaceId} AND idempotency_key = ${idempotencyKey}`;
+
+    const contenders = await Promise.all(['retry-a', 'retry-b'].map((claimToken) => claimAgentLaunch({
+      workspaceId, idempotencyKey, now, preserveAmbiguousClaims: true, failClosed: true,
+      initialSummary: { requestKind: 'capability:launch-agent', launchState: 'claimed', claimToken },
+    })));
+    expect(contenders.filter((claim) => claim.won)).toHaveLength(1);
+    expect(await recordAgentLaunchResult({
+      workspaceId, idempotencyKey, claimToken: 'old-token',
+      summary: { ...preSpawn, spawnAttempted: true, nativeSpawnAttempted: [0] },
+    })).toBe(false);
+    expect(await releaseAgentLaunchClaim({ workspaceId, idempotencyKey, claimToken: 'old-token' })).toBe(false);
+    const winner = contenders[0].won ? 'retry-a' : 'retry-b';
+    expect(await recordAgentLaunchResult({
+      workspaceId, idempotencyKey, claimToken: winner,
+      summary: { ...preSpawn, spawnAttempted: true, nativeSpawnAttempted: [0] },
+    })).toBe(true);
+  });
+
+  it.each([
+    { launchState: 'completed' }, { spawnAttempted: true },
+    { spawnAttempted: undefined }, { nativeSpawnAttempted: [0] },
+    { nativeSpawnAttempted: undefined }, { memberResults: { '0': { status: 'starting' } } },
+    { memberResults: undefined }, { processHandles: { '0': { pid: 123 } } },
+    { processHandles: undefined }, { tasks: [{ taskId: 'existing' }] },
+    { tasks: undefined }, { requestKind: undefined },
+  ])('keeps an expired ambiguous or attempted receipt fenced: %j', async (change) => {
+    const workspaceId = `ws-fenced-${randomBytes(5).toString('hex')}`;
+    const now = Date.now();
+    const summary = { ...preSpawn, ...change };
+    await claimAgentLaunch({
+      workspaceId, idempotencyKey: 'fenced', now: now - AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS - 1,
+      initialSummary: summary, failClosed: true,
+    });
+    expect(await claimAgentLaunch({
+      workspaceId, idempotencyKey: 'fenced', now, preserveAmbiguousClaims: true, failClosed: true,
+      initialSummary: { requestKind: 'capability:launch-agent', launchState: 'claimed', claimToken: 'retry' },
+    })).toMatchObject({ won: false });
+  });
+
+  it('does not recover a fresh pre-spawn receipt or replace one without a new ownership token', async () => {
+    const workspaceId = 'ws-fresh-pre-spawn';
+    const now = Date.now();
+    await claimAgentLaunch({ workspaceId, idempotencyKey: 'fresh', now, initialSummary: preSpawn, failClosed: true });
+    expect(await claimAgentLaunch({
+      workspaceId, idempotencyKey: 'fresh', now: now + 1, preserveAmbiguousClaims: true,
+      initialSummary: { requestKind: 'capability:launch-agent', launchState: 'claimed', claimToken: 'retry' },
+    })).toMatchObject({ won: false });
+    expect(await claimAgentLaunch({
+      workspaceId, idempotencyKey: 'fresh', now: now + AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS + 1,
+      preserveAmbiguousClaims: true, initialSummary: { requestKind: 'capability:launch-agent', launchState: 'claimed' },
+    })).toMatchObject({ won: false });
+  });
+
+  it('retains the winning token through repeated writes and refuses stale writers', async () => {
+    const workspaceId = 'ws-token-receipts';
+    const idempotencyKey = 'progress';
+    const claimToken = 'winning-token';
+    expect(await claimAgentLaunch({
+      workspaceId, idempotencyKey, failClosed: true,
+      initialSummary: { claimToken, launchState: 'claimed' },
+    })).toMatchObject({ won: true });
+
+    for (const launchState of ['spawning', 'member-starting', 'completed']) {
+      expect(await recordAgentLaunchResult({
+        workspaceId, idempotencyKey, claimToken,
+        summary: { launchState },
+      })).toBe(true);
+      const [row] = await sql`SELECT summary FROM harness_shared.agent_launch_idempotency
+        WHERE workspace_id = ${workspaceId} AND idempotency_key = ${idempotencyKey}`;
+      expect(row.summary).toEqual({ claimToken, launchState });
+      expect(await recordAgentLaunchResult({
+        workspaceId, idempotencyKey, claimToken: 'stale-token',
+        summary: { launchState: 'stale-write' },
+      })).toBe(false);
+    }
+
+    expect(await releaseAgentLaunchClaim({
+      workspaceId, idempotencyKey, claimToken: 'stale-token',
+    })).toBe(false);
+    expect(await releaseAgentLaunchClaim({ workspaceId, idempotencyKey, claimToken })).toBe(true);
+  });
+
+  it('keeps an existing ownership token when a legacy writer replaces the receipt', async () => {
+    const workspaceId = 'ws-legacy-token-receipts';
+    const idempotencyKey = 'legacy-progress';
+    const claimToken = 'original-token';
+    await claimAgentLaunch({
+      workspaceId, idempotencyKey, failClosed: true, initialSummary: { claimToken },
+    });
+    expect(await recordAgentLaunchResult({
+      workspaceId, idempotencyKey, summary: { claimToken: 'replacement-token', opened: 1 },
+    })).toBe(true);
+    const [row] = await sql`SELECT summary FROM harness_shared.agent_launch_idempotency
+      WHERE workspace_id = ${workspaceId} AND idempotency_key = ${idempotencyKey}`;
+    expect(row.summary).toEqual({ claimToken, opened: 1 });
+    expect(await releaseAgentLaunchClaim({ workspaceId, idempotencyKey, claimToken })).toBe(true);
+  });
 });
 
 describe('resume target registration election (real PG)', () => {
@@ -335,7 +465,9 @@ describe('fresh-launch tool-call attribution (real PG)', () => {
     expect(silent[0]!.msSinceLastSignal).toBeGreaterThan(60_000);
     const observedSilence = await verifyFreshLaunchStarted(
       { workspaceId, launcherOwnerId, since, expected: 1 },
-      { probe, timeoutMs: 1, pollMs: 1, silenceMs: 60_000, sleep: async () => {} },
+      // Measure PG above; classify that observation without requiring network
+      // IO to finish within the verifier's one-millisecond polling window.
+      { probe: async () => silent, timeoutMs: 1, pollMs: 2, silenceMs: 60_000 },
     );
     expect(observedSilence.agentStarted).toBe(false);
     expect(observedSilence.note).toMatch(/went SILENT/);
@@ -349,7 +481,7 @@ describe('fresh-launch tool-call attribution (real PG)', () => {
     expect(signalling[0]!.msSinceLastSignal).toBeLessThan(60_000);
     const stillSignalling = await verifyFreshLaunchStarted(
       { workspaceId, launcherOwnerId, since, expected: 1 },
-      { probe, timeoutMs: 1, pollMs: 1, silenceMs: 60_000, sleep: async () => {} },
+      { probe: async () => signalling, timeoutMs: 1, pollMs: 2, silenceMs: 60_000 },
     );
     expect(stillSignalling.agentStarted).toBeNull();
     expect(stillSignalling.note).toMatch(/still signalling/);
@@ -421,9 +553,10 @@ describe('fresh-launch tool-call attribution (real PG)', () => {
       expect(sessions).toHaveLength(1);
       return sessions[0]!;
     };
+    const slowBootObservation = await probeFreshLaunchSessions({ workspaceId, launcherOwnerId, since });
     const slowBoot = await verifyFreshLaunchStarted(
       { workspaceId, launcherOwnerId, since, expected: 1 },
-      { pollMs: 1, timeoutMs: 1, sleep: async () => {} },
+      { probe: async () => slowBootObservation, pollMs: 2, timeoutMs: 1 },
     );
     expect(slowBoot.agentStarted).toBeNull();
     expect(slowBoot.workerReady).toBe(false);

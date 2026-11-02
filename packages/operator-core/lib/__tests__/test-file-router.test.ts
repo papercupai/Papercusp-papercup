@@ -64,6 +64,7 @@ import {
   formatRouteError,
   failedAssertionsFromReport,
   groupRoutes,
+  hasVitestCloseTimeoutWarning,
   hasVitestWorkerTerminationWarning,
   isTestFilePath,
   listedFiles,
@@ -127,7 +128,7 @@ describe('router native custody population (P002)', () => {
         return nextLoad(url, context);
       } });
       const { createRouterProofCustody } = await import(${JSON.stringify(router)});
-      if (createRouterProofCustody([], {}, process.cwd()) !== null)
+      if (await createRouterProofCustody([], {}, process.cwd()) !== null)
         throw new Error('unrequested custody was activated');
       console.log('unrequested-custody-remains-unloaded');
     `], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000,
@@ -135,22 +136,45 @@ describe('router native custody population (P002)', () => {
     expect(child.status, child.stderr).toBe(0);
     expect(child.stdout).toContain('unrequested-custody-remains-unloaded');
   });
+  it('loads the lazy custody helper through ESM when the CommonJS guard refuses it', () => {
+    const router = new URL('../../../../scripts/test-files.mjs', import.meta.url).href;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import Module from 'node:module';
+      const compile = Module.prototype._compile;
+      Module.prototype._compile = function(source, filename) {
+        if (filename.endsWith('/scripts/lib/budgeted-task-scheduler.mjs'))
+          throw new Error('COMMITTED_SOURCE cannot substitute a dirty CommonJS helper');
+        return compile.call(this, source, filename);
+      };
+      const { createRouterProofCustody } = await import(${JSON.stringify(router)});
+      const session = await createRouterProofCustody([], {
+        PAPERCUSP_TEST_ARTIFACT_DIR: ${JSON.stringify(join(tmpdir(), 'router-esm-custody-'))}
+      }, process.cwd());
+      if (!session?.directory) throw new Error('custody did not initialize');
+      const { rmSync } = await import('node:fs');
+      rmSync(session.directory, { recursive: true, force: true });
+      console.log('custody-helper-loaded-as-esm');
+    `], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, NODE_OPTIONS: '' } });
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toContain('custody-helper-loaded-as-esm');
+  });
   let root: string;
   beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'router-native-custody-')); });
   afterEach(() => { rmSync(root, { recursive: true, force: true }); });
-  function setup(extraEnv: Record<string, string> = {}) {
+  async function setup(extraEnv: Record<string, string> = {}) {
     const producer = join(root, 'producer'), packets = join(root, 'packets');
     mkdirSync(producer);
     const groups = [0, 1].map(index => ({ cwd: producer, runner: 'vitest',
       routes: [{ absolute: join(producer, `file-${index}.test.ts`) }] }));
     const out = join(producer, 'out.json');
-    const session = createRouterProofCustody(groups, { PAPERCUSP_TEST_ARTIFACT_DIR: packets,
+    const session = await createRouterProofCustody(groups, { PAPERCUSP_TEST_ARTIFACT_DIR: packets,
       PAPERCUSP_WORKSPACE_ID: 'custody-workspace', PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
       PAPERCUSP_TEST_RUN_GROUP: 'router-fixture', PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'custody-workspace',
       PC_EXECUTED_SOURCE_MAP_OUT: out, ...extraEnv }, root);
     return { producer, session };
   }
-  function produce(session: ReturnType<typeof createRouterProofCustody>, id: string) {
+  function produce(session: Awaited<ReturnType<typeof createRouterProofCustody>>, id: string) {
     const group = session.expected.find((row: { id: string; out: string }) => row.id === id);
     writeFileSync(group.out, '{"rows":[],"diagnostics":[]}');
     for (const suffix of ['.modules', '.native-processes', '.processes']) mkdirSync(group.out + suffix);
@@ -159,8 +183,8 @@ describe('router native custody population (P002)', () => {
       complete: true, stdout: Buffer.from([0, 255, 10]), stderr: Buffer.from([254, 0, 10]),
     } }, 'npx', ['vitest', 'run', ...group.selected]);
   }
-  it('retains primary/detail identity and raw failed-child streams after temporary output removal', () => {
-    const { producer, session } = setup();
+  it('retains primary/detail identity and raw failed-child streams after temporary output removal', async () => {
+    const { producer, session } = await setup();
     const detail = session.detail('group-0', 0, 'file-0.test.ts', join(producer, 'detail.json'));
     for (const id of ['group-0', 'group-1', detail]) produce(session, id);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -176,8 +200,8 @@ describe('router native custody population (P002)', () => {
       expect(read.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
     } finally { log.mockRestore(); }
   });
-  it('retains an expected group which never started instead of shrinking the population', () => {
-    const { session } = setup();
+  it('retains an expected group which never started instead of shrinking the population', async () => {
+    const { session } = await setup();
     produce(session, 'group-0');
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
@@ -190,11 +214,11 @@ describe('router native custody population (P002)', () => {
   });
 
   it.each(['enabled', 'disabled', 'missing-root', 'relative-root', 'missing-workspace'] as const)
-    ('derives process-source custody from the real preload producer (%s)', mode => {
+    ('derives process-source custody from the real preload producer (%s)', async mode => {
       const env = { PC_EXECUTED_SOURCE_MAP_PRELOAD: mode === 'disabled' ? '0' : '1',
         PC_EXECUTED_SOURCE_MAP_ROOT: mode === 'missing-root' ? '' : mode === 'relative-root' ? 'relative' : root,
         ...(mode === 'missing-workspace' ? { PC_EXECUTED_SOURCE_MAP_WORKSPACE: '' } : {}) };
-      const { producer, session } = setup(env);
+      const { producer, session } = await setup(env);
       const capture = resolve(REPO_ROOT, 'libs/test-config/src/executed-config-load-capture.ts');
       for (const group of session.expected) {
         produce(session, group.id);
@@ -1413,6 +1437,23 @@ describe('Vitest worker termination warning is a finalization error', () => {
   });
 });
 
+describe('Vitest main-process close timeout is a finalization error', () => {
+  it.each(['Vite server', '2 Vite servers', 'the main process'])(
+    'recognizes the exact timeout diagnostic for %s, including ANSI and CRLF output', (resource) => {
+      expect(hasVitestCloseTimeoutWarning(
+        `\u001b[33mclose timed out after 10000ms\u001b[39m\r\nTests closed successfully but something prevents ${resource} from exiting\r\n`,
+      )).toBe(true);
+    },
+  );
+
+  it('ignores clean output, quoted diagnostics, and prose mentioning a timeout', () => {
+    expect(hasVitestCloseTimeoutWarning('Tests 1 passed (1)\n')).toBe(false);
+    expect(hasVitestCloseTimeoutWarning('a test title mentions close timed out after 10000ms\n')).toBe(false);
+    expect(hasVitestCloseTimeoutWarning('"close timed out after 10000ms"\n')).toBe(false);
+    expect(hasVitestCloseTimeoutWarning('close timed out after 10000ms was expected\n')).toBe(false);
+  });
+});
+
 describe('collection child identity evidence (WI-10007991)', () => {
   it('retains only bounded identities from the owned tree without reading argv or scanning the host', () => {
     const readFileImpl = vi.fn((path: string) => {
@@ -1477,6 +1518,30 @@ describe('collection child identity evidence (WI-10007991)', () => {
           { fd: 8, path: null, kind: 'pipe' }], unavailable: [], truncated: false } }] });
     expect(readlinkImpl.mock.calls.map(([path]) => path)).toEqual(['/proc/4310/fd/7', '/proc/4310/fd/8']);
     expect(readFileImpl.mock.calls.every(([path]) => /^\/proc\/4310\/(task\/4310\/children|status|wchan|io|syscall|stack)$/.test(path))).toBe(true);
+  });
+
+  it.each(['0x16', '22'])('retains the syscall-argument descriptor %s beyond the low-fd cap', (argument) => {
+    const readFileImpl = vi.fn((path: string) => {
+      if (path.endsWith('/children')) return '';
+      if (path.endsWith('/status')) return 'Name:\tnode\nState:\tD (disk sleep)\nPPid:\t4000\n';
+      if (path.endsWith('/wchan')) return 'iterate_dir\n';
+      if (path.endsWith('/io')) return 'rchar: 78195\nwchar: 10\nsyscr: 39\nsyscw: 3\nread_bytes: 0\nwrite_bytes: 0\n';
+      if (path.endsWith('/syscall')) return `217 ${argument} 0xabcd 0x8000 0x1 0x0 0x0 0xffff 0xeeee\n`;
+      if (path.endsWith('/stack')) return '[<0>] iterate_dir+0x10/0x20\n';
+      throw new Error('must not open descriptors or process credentials');
+    });
+    const readdirImpl = vi.fn((path: string) => path.endsWith('/task') ? ['4311']
+      : Array.from({ length: 32 }, (_, fd) => String(fd)));
+    const readlinkImpl = vi.fn((path: string) => path.endsWith('/22') ? '/repo/.git' : 'socket:[123]');
+    const snapshot = readTestChildDiagnostic(4311, { readFileImpl, readdirImpl, readlinkImpl });
+    expect(snapshot).toMatchObject({ status: 'measured', truncated: true, unreadableFields: 0 });
+    expect(snapshot.processes[0].blockedIo.files).toEqual([
+      ...Array.from({ length: 7 }, (_, fd) => ({ fd, path: null, kind: 'socket' })),
+      { fd: 22, path: '/repo/.git', kind: 'path' },
+    ]);
+    expect(readlinkImpl).toHaveBeenCalledTimes(8);
+    expect(readFileImpl.mock.calls.some(([path]) => /cmdline|environ|\/fd\//.test(path))).toBe(false);
+    expect(readdirImpl).not.toHaveBeenCalledWith('/proc');
   });
 
   it('keeps denied blocked-child evidence explicitly unknown', () => {
@@ -2916,6 +2981,22 @@ describe('failed assertion diagnostics — consume the report before private cle
     });
   });
 
+  it('emits mutation assertion evidence for a Testing Library missing-element assertion', () => {
+    const serialized = 'TestingLibraryElementError: Unable to find an element with the text: Authorized document.\n\nIgnored nodes: comments, script, style\n<body><p>This result is unavailable.</p></body>\n    at Object.getElementError (/repo/node_modules/@testing-library/dom/dist/config.js:37:19)\n    at guard.integration.test.tsx:240:19';
+    withReport({
+      testResults: [{
+        name: '/repo/lib/guard.integration.test.tsx',
+        status: 'failed',
+        assertionResults: [{ status: 'failed', fullName: 'guard > preserves authorized content', failureMessages: [serialized] }],
+      }],
+    }, (path) => {
+      const failures = failedAssertionsFromReport(path, '/repo');
+      expect(failures?.[0]?.assertionEvidence).toBe(true);
+      expect(formatFailedAssertionDiagnostics(failures)).toContain('TEST_FILE_ASSERTION_FAILURE file=');
+      expect(formatFailedAssertionDiagnostics(failures)).not.toContain('TEST_FILE_NON_ASSERTION_FAILURE');
+    });
+  });
+
   it('does not emit mutation assertion evidence for a runtime exception before the assertion', () => {
     withReport({
       testResults: [{
@@ -3860,7 +3941,18 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     }
   });
 
-  it('refuses an overall green when Vitest reports a timed-out fork worker after passing tests', async () => {
+  it.each([
+    {
+      label: 'a timed-out fork worker',
+      warning: '[vitest-pool]: Timeout terminating forks worker for test files x.test.ts.\n',
+      diagnostic: 'TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR',
+    },
+    {
+      label: 'a main-process close timeout',
+      warning: 'close timed out after 10000ms\nTests closed successfully but something prevents Vite server from exiting\n',
+      diagnostic: 'TEST_FILE_CLOSE_TIMEOUT_FINALIZATION_ERROR',
+    },
+  ])('refuses an overall green when Vitest reports $label after passing tests', async ({ warning, diagnostic }) => {
     const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
     const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
     delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
@@ -3882,7 +3974,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
           status: 0,
           signal: null,
           stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n',
-          stderr: '[vitest-pool]: Timeout terminating forks worker for test files x.test.ts.\n',
+          stderr: warning,
           error: null,
           timedOut: false,
         }),
@@ -3902,9 +3994,8 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(code, errors).toBe(3);
     expect(output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
     expect(output).toContain('finalizationError=true');
-    expect(errors).toContain('TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR');
-    expect(capturedStderr)
-      .toContain('[vitest-pool]: Timeout terminating forks worker for test files x.test.ts.');
+    expect(errors).toContain(diagnostic);
+    expect(capturedStderr).toContain(warning);
   });
 
   it.each(['admission-starved', 'undetermined'])('preserves the admission cause alongside NOT-MEASURED for %s', async (failureKind) => {

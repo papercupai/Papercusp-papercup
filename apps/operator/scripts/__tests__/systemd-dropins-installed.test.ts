@@ -33,6 +33,10 @@ const DEMOS_GALLERY_SOURCE_GUARD = join(
   REPO_ROOT,
   'apps/operator/scripts/systemd/papercup-demos-gallery.service.d/10-require-gallery-source.conf',
 );
+const DIODON_MANAGED_UNIT = join(
+  REPO_ROOT,
+  'apps/operator/scripts/systemd/diodon-managed.service',
+);
 
 /**
  * Wires scripts/check-systemd-dropins-installed.mjs onto a blocking path.
@@ -113,6 +117,11 @@ describe('systemd drop-in install guard (scripts/check-systemd-dropins-installed
     expect(gallery).toMatch(
       /^ConditionPathIsDirectory=%h\/demos\/papercusp-offsite-planner\/public$/m,
     );
+  });
+
+  it('keeps the managed Diodon process resident after a clean exit', () => {
+    const diodon = readFileSync(DIODON_MANAGED_UNIT, 'utf8');
+    expect(diodon).toMatch(/^Restart=always$/m);
   });
 
   it('--list reports a well-formed population and never fails the build', () => {

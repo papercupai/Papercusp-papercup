@@ -418,7 +418,9 @@ export function evaluateExactPlanAdmission(args: {
   if (scope?.size === 0)
     return finish(base, 'ready', 'ready',
       'No plan items are claimed by these ad-hoc lanes; plan-item promotion and claim floors do not apply.');
-  if (!actionable.length)
+  // A starter can own the only unfinished WIP lane. Keep it on the measured
+  // caller-held path below; a new fleet still needs actionable unclaimed work.
+  if (!actionable.length && !callerOwnsActiveLane)
     return finish(
       base,
       'blocked',

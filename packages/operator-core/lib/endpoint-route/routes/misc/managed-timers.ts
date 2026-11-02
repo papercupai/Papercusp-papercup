@@ -128,10 +128,14 @@ export default defineTool({
     // getStallWakerStatus() only reads module-scope primitives (booleans, numbers,
     // a Map) and cannot throw.
     const stallWaker = getStallWakerStatus();
+    let backgroundActivities: import('../../../schedule-federation').ObservedBackgroundActivity[] | undefined;
+    try { backgroundActivities = (await import('../../../startup-activity')).listObservedBackgroundActivities(); }
+    catch { /* Missing callback observations remain unknown without hiding timer visibility. */ }
     return Response.json({
       ok: timersError === null,
       ...identity,
       timers,
+      ...(backgroundActivities === undefined ? {} : { backgroundActivities }),
       dbosSchedules,
       stallWaker,
       moduleEvaluations,
@@ -148,6 +152,7 @@ export default defineTool({
               pid: cachedPrimary.pid,
               role: cachedPrimary.role,
               timers: cachedPrimary.timers,
+              backgroundActivities: cachedPrimary.backgroundActivities,
               dbosSchedules: cachedPrimary.dbosSchedules,
               sentAt: cachedPrimary.sentAt,
               staleMs: Date.now() - cachedPrimary.receivedAt,

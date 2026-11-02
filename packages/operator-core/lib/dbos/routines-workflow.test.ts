@@ -91,7 +91,9 @@ vi.mock('./bootstrap', () => ({
   withDbosIdleTxGrace: (url: string) => `${url}?test-idle-grace`,
 }));
 
-vi.mock('../embedded-pg-discovery', () => ({
+vi.mock('../embedded-pg-discovery', async original => ({
+  ...await original<typeof import('../embedded-pg-discovery')>(),
+  getHarnessAdminUrl: () => 'postgres://system-db',
   getHarnessAdminUrlWithSource: () => ({ url: 'postgres://system-db' }),
 }));
 
@@ -124,6 +126,9 @@ vi.mock('../harness/routines/claim', () => ({
 }));
 
 vi.mock('../device-operator-actions', () => ({ routineBackgroundActivityAllowed: state.policyAllowed }));
+vi.mock('../startup-activity', () => ({
+  runObservedBackgroundActivity: vi.fn(async (_scope, invoke) => invoke()),
+}));
 
 vi.mock('../harness/routines/loop-fire', () => ({
   fireLoopWake: vi.fn(async () => state.loopResult),
@@ -1120,8 +1125,38 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
     expect(state.stepNames).toEqual([]);
     await routineFireWorkflow(...args);
     expect(action).toHaveBeenCalledTimes(1);
-    expect(state.policyAllowed).toHaveBeenCalledTimes(2);
+    expect(state.policyAllowed).toHaveBeenCalledTimes(3);
     expect(state.stepNames).not.toContain('background-policy');
+  });
+
+  it('withholds a disable that arrives during the dispatch fence without reporting a start', async () => {
+    const { runObservedBackgroundActivity } = await import('../startup-activity');
+    vi.mocked(runObservedBackgroundActivity).mockClear();
+    const action = vi.fn(async () => undefined);
+    registerSystemAction('policy-late-disable-test', action, { scheduling: 'on-demand' });
+    state.policyAllowed.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await routineFireWorkflow('policy-late', 'workspace-a', 'home', 'system:policy-late-disable-test', {}, null, 'late-sweep');
+    expect(action).not.toHaveBeenCalled();
+    expect(runObservedBackgroundActivity).not.toHaveBeenCalled();
+    state.policyAllowed.mockResolvedValue(true);
+    await routineFireWorkflow('policy-late', 'workspace-a', 'home', 'system:policy-late-disable-test', {}, null, 'late-sweep');
+    expect(action).toHaveBeenCalledOnce();
+    const { startupActivityFeatureId } = await import('../schedule-inventory');
+    expect(runObservedBackgroundActivity).toHaveBeenCalledWith({ workspaceId: 'workspace-a',
+      featureId: startupActivityFeatureId({ source: 'routines', installSlug: 'home', name: 'late-sweep', detail: {} }, { workspaceId: 'workspace-a' }),
+      source: 'routine', trigger: 'unknown',
+    }, expect.any(Function));
+  });
+
+  it.each(['manual', 'scheduler'] as const)('preserves %s fire provenance in invocation history', async origin => {
+    const { runObservedBackgroundActivity } = await import('../startup-activity');
+    vi.mocked(runObservedBackgroundActivity).mockClear();
+    registerSystemAction('policy-provenance-test', async () => undefined, { scheduling: 'on-demand' });
+    await routineFireWorkflow('provenance-fire', 'workspace-a', 'home', 'system:policy-provenance-test', {}, null,
+      'provenance-sweep', null, null, { version: 1, origin, scheduledAt: null, configHash: 'opaque' });
+    expect(runObservedBackgroundActivity).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'routine', trigger: origin === 'manual' ? 'manual' : 'timer',
+    }), expect.any(Function));
   });
 
   it('registers every isolated routine lane at boot', () => {

@@ -462,7 +462,7 @@ if (existsSync('/usr/bin/diodon')) {
     if (diodon.UnitFileState !== 'enabled') issues.push('managed Diodon unit is not enabled');
     if (diodon.ActiveState !== 'active') issues.push('managed Diodon unit is not active');
     if (diodon.NeedDaemonReload !== 'no') issues.push('managed Diodon unit needs daemon-reload');
-    if (diodon.Restart !== 'on-failure') issues.push('managed Diodon crash recovery is disabled');
+    if (diodon.Restart !== 'always') issues.push('managed Diodon restart-on-exit policy is not always');
     if (zeitgeist.Restart !== 'on-failure') issues.push('Zeitgeist crash recovery is disabled');
     for (const [unit, props, property, value] of [
       [service, diodon, 'BindsTo', 'zeitgeist.service'],

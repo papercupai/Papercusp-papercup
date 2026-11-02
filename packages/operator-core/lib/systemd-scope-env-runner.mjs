@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { closeSync, createWriteStream, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:os';
@@ -12,6 +13,10 @@ import { StringDecoder } from 'node:string_decoder';
  */
 export const SYSTEMD_RUNNER_OUTPUT_PATH_ENV = 'PAPERCUSP_SYSTEMD_RUNNER_OUTPUT_PATH';
 export const SYSTEMD_RUNNER_REDACTIONS_ENV = 'PAPERCUSP_SYSTEMD_RUNNER_REDACTIONS';
+export const SYSTEMD_RUNNER_TASK_ID_ENV = 'PAPERCUSP_SYSTEMD_RUNNER_TASK_ID';
+export const SYSTEMD_RUNNER_BASH_JOB_ID_ENV = 'PAPERCUSP_SYSTEMD_RUNNER_BASH_JOB_ID';
+export const SYSTEMD_RUNNER_SCOPE_UNIT_ENV = 'PAPERCUSP_SYSTEMD_RUNNER_SCOPE_UNIT';
+export const SYSTEMD_RUNNER_MARKER_SECRET_ENV = 'PAPERCUSP_SYSTEMD_RUNNER_MARKER_SECRET';
 export const SYSTEMD_RUNNER_JOB_END_PREFIX = '[capability:bash] JOB END';
 
 function usage(message) {
@@ -253,16 +258,21 @@ function bestEffortMirror(stream) {
   };
 }
 
-function formatJobEnd(exitCode) {
+function formatJobEnd(exitCode, identity) {
   const status = exitCode === 0 ? 'completed' : 'failed';
+  const identityFields = identity
+    ? ` task=${identity.taskId} bash=${identity.bashJobId} scope=${identity.scopeUnit}` +
+      ` invocation=${identity.invocationId} nonce=${identity.nonce}`
+    : '';
   return (
     `\n${SYSTEMD_RUNNER_JOB_END_PREFIX}: status=${status} exit=${exitCode} at ${new Date().toISOString()}` +
+    identityFields +
     ' — this line was recorded by the transient-service runner; its file-backed sink survives loss of the ' +
     'operator host and is authoritative for durable output.\n'
   );
 }
 
-function runDurablePayload(command, args, environment, logPath, redactions, runnerStartedAt) {
+function runDurablePayload(command, args, environment, logPath, redactions, runnerStartedAt, markerIdentity) {
   // Truncate once, synchronously, then keep every writer on O_APPEND. The live
   // operator may append a bounded attribution snapshot while this service is
   // running; O_APPEND prevents the runner's next write from overwriting it.
@@ -323,7 +333,7 @@ function runDurablePayload(command, args, environment, logPath, redactions, runn
     // Capture the terminal observation at entry, but persist it only after the
     // redactor's buffered suffix so phase metadata cannot split payload bytes.
     recordPhase(terminalPhase, terminalAt);
-    if (logHealthy) log.write(formatJobEnd(exitCode));
+    if (logHealthy) log.write(formatJobEnd(exitCode, markerIdentity));
     log.end(() => {
       process.exitCode = logHealthy ? exitCode : 1;
     });
@@ -379,14 +389,35 @@ export function main(argv = process.argv) {
     if (inheritedFd) closeSync(Number(inheritedFd[1]));
     const logPath = environment[SYSTEMD_RUNNER_OUTPUT_PATH_ENV] ?? '';
     const redactions = decodeRedactions(environment[SYSTEMD_RUNNER_REDACTIONS_ENV] ?? '');
+    const markerTaskId = environment[SYSTEMD_RUNNER_TASK_ID_ENV] ?? '';
+    const markerBashJobId = environment[SYSTEMD_RUNNER_BASH_JOB_ID_ENV] ?? '';
+    const expectedScopeUnit = environment[SYSTEMD_RUNNER_SCOPE_UNIT_ENV] ?? '';
+    const markerSecret = environment[SYSTEMD_RUNNER_MARKER_SECRET_ENV] ?? '';
     delete environment[SYSTEMD_RUNNER_OUTPUT_PATH_ENV];
     delete environment[SYSTEMD_RUNNER_REDACTIONS_ENV];
+    delete environment[SYSTEMD_RUNNER_TASK_ID_ENV];
+    delete environment[SYSTEMD_RUNNER_BASH_JOB_ID_ENV];
+    delete environment[SYSTEMD_RUNNER_SCOPE_UNIT_ENV];
+    delete environment[SYSTEMD_RUNNER_MARKER_SECRET_ENV];
+    const systemdUnit = process.env.SYSTEMD_UNIT ?? '';
+    const invocationId = process.env.INVOCATION_ID ?? '';
+    const markerIdentity =
+      markerTaskId && markerBashJobId && expectedScopeUnit && expectedScopeUnit === systemdUnit &&
+      invocationId && markerSecret
+        ? {
+            taskId: markerTaskId,
+            bashJobId: markerBashJobId,
+            scopeUnit: expectedScopeUnit,
+            invocationId,
+            nonce: createHash('sha256').update(markerSecret).digest('hex'),
+          }
+        : null;
     const command = argv[separator + 1];
     const args = argv.slice(separator + 2);
     if (!command) {
       usage('payload command is missing');
     } else if (logPath) {
-      runDurablePayload(command, args, environment, logPath, redactions, runnerStartedAt);
+      runDurablePayload(command, args, environment, logPath, redactions, runnerStartedAt, markerIdentity);
     } else {
       // A Node payload with inherited stdio needs no resident wrapper. Replace
       // this process so its caller's integration root cannot retain a second

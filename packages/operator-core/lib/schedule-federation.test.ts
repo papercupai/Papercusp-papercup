@@ -83,6 +83,23 @@ describe('listSiblingOperators', () => {
 });
 
 describe('probeSibling', () => {
+  it('carries validated callback placement for worker and fresh primary without arbitrary payloads', async () => {
+    const invocation = { workspaceId: 'workspace-a', featureId: `activity-${'a'.repeat(64)}`,
+      source: 'event', running: true, stopStatus: 'draining', cancellable: false };
+    const body = { process: 'bg-host', timers: [], backgroundActivities: [
+      { ...invocation, credential: 'private-token', args: { secret: true } },
+      { ...invocation, workspaceId: '*' }, { ...invocation, running: false },
+    ], primary: { pid: 54321, role: 'bg-host', timers: [], staleMs: 1, backgroundActivities: [invocation] } };
+    const rows = await probeSibling(sibling(), { fetchImpl: okFetch(body) });
+    expect(rows.map(row => row.backgroundActivities)).toEqual([[invocation], [invocation]]);
+    expect(JSON.stringify(rows)).not.toContain('private-token');
+    expect(JSON.stringify(rows)).not.toContain('secret');
+    for (const staleMs of [undefined, -1, 15_001]) {
+      const stale = await probeSibling(sibling(), { fetchImpl: okFetch({ ...body, primary: { ...body.primary, staleMs } }) });
+      expect(stale[1].backgroundActivities).toEqual([]);
+    }
+  });
+
   it('returns BOTH per-process registries and a self-identified label, as a single-element array', async () => {
     const got = await probeSibling(sibling(), {
       fetchImpl: okFetch({

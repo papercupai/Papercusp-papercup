@@ -25,6 +25,36 @@ function run(program: string, extraArgs: string[] = []) {
   return { result, rows, fixture, source, output };
 }
 describe('actual runtime parsed-source capture', () => {
+  it('captures a file worker with inherited preloads without reopening the parent receipt', () => {
+    const { result, rows, fixture, source, output } = run(`
+      (async () => {
+        const fs = require('node:fs');
+        const {Worker} = require('node:worker_threads');
+        require(FIXTURE);
+        const workerFile = FIXTURE + '.worker.cjs';
+        fs.writeFileSync(workerFile, 'require(' + JSON.stringify(FIXTURE) + ');\\n');
+        process.execArgv = ${JSON.stringify(['--import', preload, '--import', 'tsx'])};
+        const worker = new Worker(workerFile);
+        const exitCode = await new Promise((resolve, reject) => {
+          worker.once('error', reject);
+          worker.once('exit', resolve);
+        });
+        if (exitCode !== 0) process.exitCode = 1;
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `, ['--import', 'tsx']);
+    expect(result.status, result.stderr).toBe(0);
+    const processTerminal = {processId: rows[0].processId, exitCode: result.status!, signal: result.signal, eof: true as const};
+    const receipt = validateRuntimeSourceCapture(rows, [], processTerminal);
+    expect(rows.filter(row => row.kind === 'start')).toHaveLength(1);
+    expect(receipt.workerIds.length).toBeGreaterThanOrEqual(1);
+    const expectedHash = crypto.createHash('sha256').update(source).digest('hex');
+    const loaded = rows.filter(row => row.kind === 'source' && row.url.endsWith(fixture));
+    expect(loaded.map(row => row.target)).toContain('main');
+    expect(loaded.some(row => row.target !== 'main')).toBe(true);
+    expect(loaded.every(row => row.sha256 === expectedHash && row.bytes === Buffer.byteLength(source))).toBe(true);
+    expect(fs.statSync(output).mode & 0o777).toBe(0o600);
+  });
+
   it('binds source bytes in main and a real worker that clears inherited flags', () => {
     const { result, rows, fixture, source, output } = run(`
       require(FIXTURE);

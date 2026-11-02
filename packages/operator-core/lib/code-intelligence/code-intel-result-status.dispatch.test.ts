@@ -6,7 +6,8 @@
  * tool_invocations row whose metadata_json carries `codeIntelResult`: for every tool in
  * NATIVE_CODE_INTEL_TOOLS, for every value of that tool's registered op enum, and on every exit
  * (empty success, stale payload, refusal, exception, timeout, cancellation, retry, duplicate delivery).
- * The calls carry no quota window, the transport shape that previously skipped telemetry.
+ * The baseline calls carry no quota window, the transport shape that previously skipped telemetry.
+ * Quota-negative controls explicitly enter a counted window.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -46,13 +47,19 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   }),
 }));
 
-import { dispatchProjectedTool, type DispatchProjectedDeps, type ProjectedTool } from '@papercusp/tooldef';
+import { dispatchProjectedTool, lookupByMcpName, type DispatchProjectedDeps, type ProjectedTool } from '@papercusp/tooldef';
 import { PROJECTED_DEPS, flushPendingTelemetry } from '../projected-tool-deps';
 import graphQuery from '../agent-tools/gitnexus/query';
 import lspQuery from '../agent-tools/lsp/query';
 import codePack from '../agent-tools/lsp/pack';
 import { CODE_INTEL_RESULT_METADATA_KEY, type CodeIntelResultStatus } from './code-intel-result-status.ts';
 import { NATIVE_CODE_INTEL_TOOLS } from './native-adoption.ts';
+import {
+  CODE_INTEL_CANARY_OWNER,
+  decideUnknownRateProbe,
+  reconcileCodeIntelWindow,
+  type ProbeInvocationRow,
+} from './code-intel-unknown-rate-probe.ts';
 
 /** The registered definition of each native tool; the static guard below pins this map to NATIVE_CODE_INTEL_TOOLS. */
 const DEFINITIONS: Record<string, unknown> = {
@@ -144,6 +151,7 @@ beforeEach(() => {
 afterEach(async () => {
   await flushPendingTelemetry();
   captured.length = 0;
+  vi.restoreAllMocks();
 });
 
 describe('static guard: every native code-intel tool is wrapped', () => {
@@ -173,44 +181,168 @@ describe('every tool and every op records exactly one status through the dispatc
 
 describe('each exit records its reason class', () => {
   for (const toolName of NATIVE_CODE_INTEL_TOOLS) {
-    const op = opsOf(DEFINITIONS[toolName])[0]!;
+    describe.each(opsOf(DEFINITIONS[toolName]))(`${toolName} op=%s`, (op) => {
+      it('a stale payload is unknown/stale', async () => {
+        const stale = { freshness: { health: 'healthy', indexedAt: null, staleVsDisk: true } };
+        const statuses = await dispatchOnce(toolName, async () => textResult(payloadFor(toolName, stale)), { op });
+        expect(statuses).toEqual([expect.objectContaining({ status: 'unknown', reason: 'stale' })]);
+      });
 
-    it(`${toolName}: a stale payload is unknown/stale`, async () => {
-      const stale = { freshness: { health: 'healthy', indexedAt: null, staleVsDisk: true } };
-      const statuses = await dispatchOnce(toolName, async () => textResult(payloadFor(toolName, stale)), { op });
-      expect(statuses).toEqual([expect.objectContaining({ status: 'unknown', reason: 'stale' })]);
+      it('a truncated payload is unknown/partial', async () => {
+        const statuses = await dispatchOnce(toolName, async () => textResult(payloadFor(toolName, { truncation: { truncated: true } })), { op });
+        expect(statuses).toEqual([expect.objectContaining({ status: 'unknown', reason: 'partial' })]);
+      });
+
+      it('a missing index is unknown/index-missing', async () => {
+        const statuses = await dispatchOnce(toolName, async () => textResult(payloadFor(toolName, { error: 'index not found' })), { op });
+        expect(statuses).toEqual([expect.objectContaining({ status: 'unknown', reason: 'index-missing' })]);
+      });
+
+      it('a self-reported refusal is unknown/scope-refused', async () => {
+        const refusal = { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: { code: 'scope_refused', message: 'paths outside the authorized scope' } }) }] };
+        const statuses = await dispatchOnce(toolName, async () => refusal, { op });
+        expect(statuses).toEqual([expect.objectContaining({ status: 'unknown', reason: 'scope-refused' })]);
+      });
+
+      it('a thrown handler is unknown/exception', async () => {
+        const statuses = await dispatchOnce(toolName, async () => { throw new TypeError('x is undefined'); }, { op });
+        expect(statuses).toEqual([expect.objectContaining({ status: 'unknown', reason: 'exception' })]);
+      });
+
+      it('a dispatcher timeout is unknown/timeout', async () => {
+        const statuses = await dispatchOnce(
+          toolName,
+          async () => { await sleep(400); return textResult(payloadFor(toolName)); },
+          { op },
+          { tool: { timeoutSec: 0.05 } },
+        );
+        expect(statuses).toEqual([expect.objectContaining({ status: 'unknown', reason: 'timeout' })]);
+      });
+
+      it('a caller cancellation is unknown/cancelled', async () => {
+        const controller = new AbortController();
+        const statuses = await dispatchOnce(
+          toolName,
+          async () => { controller.abort(); await sleep(50); return textResult(payloadFor(toolName)); },
+          { op },
+          { ctx: { signal: controller.signal } },
+        );
+        expect(statuses).toEqual([expect.objectContaining({ status: 'unknown', reason: 'cancelled' })]);
+      });
     });
+  }
+});
 
-    it(`${toolName}: a self-reported refusal is unknown/scope-refused`, async () => {
-      const refusal = { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: { code: 'scope_refused', message: 'paths outside the authorized scope' } }) }] };
-      const statuses = await dispatchOnce(toolName, async () => refusal, { op });
-      expect(statuses).toEqual([expect.objectContaining({ status: 'unknown', reason: 'scope-refused' })]);
-    });
+type PreHandlerExit = 'invalid-input' | 'role-not-allowed' | 'quota-exceeded';
+const PRE_HANDLER_EXITS: PreHandlerExit[] = ['invalid-input', 'role-not-allowed', 'quota-exceeded'];
+const EXIT_CODES = {
+  'invalid-input': 'invalid_input',
+  'role-not-allowed': 'role_not_allowed',
+  'quota-exceeded': 'quota_exceeded',
+} as const;
 
-    it(`${toolName}: a thrown handler is unknown/exception`, async () => {
-      const statuses = await dispatchOnce(toolName, async () => { throw new TypeError('x is undefined'); }, { op });
-      expect(statuses).toEqual([expect.objectContaining({ status: 'unknown', reason: 'exception' })]);
-    });
+/** Real defineTool schema/serialization wrapper, with only the backend handler replaced. */
+async function dispatchPreHandler(
+  toolName: string,
+  op: string,
+  exit: PreHandlerExit | 'measured',
+  ownerId = 'su-code-intel-status-test',
+) {
+  const definition = DEFINITIONS[toolName] as typeof graphQuery;
+  const handler = vi.spyOn(definition, 'handler').mockResolvedValue(textResult(payloadFor(toolName)));
+  const registered = lookupByMcpName(toolName)!;
+  const readQuotaState = vi.fn(async () => ({ count: exit === 'quota-exceeded' ? 1 : 0 }));
+  const onDispatchStart = vi.fn();
+  const validInput = { op, ...(toolName === 'code:pack' ? { include: ['src/**'] } : {}) };
+  const input = exit === 'invalid-input'
+    ? { ...validInput, ...(toolName === 'code:pack' ? { include: [] } : { name: 42 }) }
+    : validInput;
+  const tool = {
+    ...registered,
+    ...(exit === 'role-not-allowed' ? { agentRoles: ['architect'] as ProjectedTool['agentRoles'] } : {}),
+    ...(exit === 'quota-exceeded' ? { rolesQuota: { operator: { perRun: 1 } } } : {}),
+  };
+  captured.length = 0;
+  try {
+    const result = await dispatchProjectedTool(tool, toolName, input, ctx({
+      coordOwnerId: ownerId,
+      ...(exit === 'quota-exceeded' ? { runId: 'pre-handler-quota-window' } : {}),
+    }), { ...deps, readQuotaState, onDispatchStart });
+    await flushPendingTelemetry();
+    const statuses = recordedStatuses();
+    expect(onDispatchStart).toHaveBeenCalledTimes(1);
+    const callId = onDispatchStart.mock.calls[0]![0].callId as string;
+    expect(callId).toEqual(expect.any(String));
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]!.invocationId).toBe(callId);
+    if (exit === 'measured') {
+      expect(result.ok).toBe(true);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(statuses[0]).toEqual({ status: 'measured', invocationId: callId });
+    } else {
+      expect(result.error?.code).toBe(EXIT_CODES[exit]);
+      expect(handler).not.toHaveBeenCalled();
+      expect(statuses[0]).toMatchObject({ status: 'unknown', reason: 'scope-refused' });
+    }
+    return { status: statuses[0]!, callId };
+  } finally {
+    handler.mockRestore();
+  }
+}
 
-    it(`${toolName}: a dispatcher timeout is unknown/timeout`, async () => {
-      const statuses = await dispatchOnce(
-        toolName,
-        async () => { await sleep(400); return textResult(payloadFor(toolName)); },
-        { op },
-        { tool: { timeoutSec: 0.05 } },
-      );
-      expect(statuses).toEqual([expect.objectContaining({ status: 'unknown', reason: 'timeout' })]);
-    });
+describe('public pre-handler exits for every registered operation (D-038/D-045)', () => {
+  for (const toolName of NATIVE_CODE_INTEL_TOOLS) {
+    for (const op of opsOf(DEFINITIONS[toolName])) {
+      for (const exit of PRE_HANDLER_EXITS) {
+        it(`${toolName} op=${op}: ${exit} records one correlated scope refusal before handler entry`, async () => {
+          const refused = await dispatchPreHandler(toolName, op, exit);
+          const measured = await dispatchPreHandler(toolName, op, 'measured');
+          expect(measured.callId).not.toBe(refused.callId);
+        });
+      }
+    }
+  }
+});
 
-    it(`${toolName}: a caller cancellation is unknown/cancelled`, async () => {
-      const controller = new AbortController();
-      const statuses = await dispatchOnce(
-        toolName,
-        async () => { controller.abort(); await sleep(50); return textResult(payloadFor(toolName)); },
-        { op },
-        { ctx: { signal: controller.signal } },
-      );
-      expect(statuses).toEqual([expect.objectContaining({ status: 'unknown', reason: 'cancelled' })]);
+describe('recorded public refusals feed unknown-rate reconciliation (D-038/D-045)', () => {
+  for (const exit of PRE_HANDLER_EXITS) {
+    it(`${exit}: ordinary refusals count, canaries do not, and retry/missing/duplicate controls stay distinct`, async () => {
+      const build = 'dispatch-proof-build';
+      const rows: ProbeInvocationRow[] = [];
+      const dispatchRow = async (index: number, mode: PreHandlerExit | 'measured', canary = false) => {
+        const toolName = NATIVE_CODE_INTEL_TOOLS[index % NATIVE_CODE_INTEL_TOOLS.length]!;
+        const ownerId = canary ? CODE_INTEL_CANARY_OWNER : ['su-a', 'su-b', 'su-c'][index % 3]!;
+        const { status } = await dispatchPreHandler(toolName, opsOf(DEFINITIONS[toolName])[0]!, mode, ownerId);
+        return { rowId: `dispatch-${index}`, toolName, ownerId, servingBuildSha: build, status };
+      };
+      for (let index = 0; index < 50; index += 1) rows.push(await dispatchRow(index, index < 11 ? exit : 'measured'));
+      for (let index = 50; index < 55; index += 1) rows.push(await dispatchRow(index, exit, true));
+
+      const reconcile = (input: ProbeInvocationRow[]) => reconcileCodeIntelWindow(input, { runningBuildSha: build });
+      const baseline = reconcile(rows);
+      expect(baseline).toMatchObject({ total: 50, unknown: 11, owners: 3, canaryCalls: 5, gaps: [], unknownByReason: { 'scope-refused': 11 } });
+      expect(baseline.byTool).toEqual({
+        'graph:query': { total: 17, unknown: 4, gaps: 0 },
+        'lsp:query': { total: 17, unknown: 4, gaps: 0 },
+        'code:pack': { total: 16, unknown: 3, gaps: 0 },
+      });
+      expect(decideUnknownRateProbe(baseline)).toMatchObject({ alarm: true, reasons: ['above-threshold'], gradable: true, recovered: false });
+
+      const retry = await dispatchRow(55, exit);
+      expect(rows.map(row => (row.status as CodeIntelResultStatus).invocationId)).not.toContain((retry.status as CodeIntelResultStatus).invocationId);
+      expect(reconcile([...rows, retry])).toMatchObject({ total: 51, unknown: 12, gaps: [] });
+
+      const duplicate = reconcile([...rows, { ...rows[0]!, rowId: 'duplicate-delivery' }]);
+      expect(duplicate).toMatchObject({ total: 50, unknown: 11, gaps: [{
+        invocation: `call:${rows[0]!.toolName}:${(rows[0]!.status as CodeIntelResultStatus).invocationId}`,
+        toolName: rows[0]!.toolName,
+        statusRows: 2,
+      }] });
+      expect(decideUnknownRateProbe(duplicate).reasons).toEqual(['above-threshold', 'reconciliation-gap']);
+
+      const missing = reconcile(rows.map((row, index) => index === 0 ? { ...row, status: null } : row));
+      expect(missing).toMatchObject({ total: 49, unknown: 10, gaps: [{ invocation: 'row:dispatch-0', toolName: rows[0]!.toolName, statusRows: 0 }] });
+      expect(decideUnknownRateProbe(missing)).toMatchObject({ alarm: true, reasons: ['reconciliation-gap'], gradable: false, recovered: false });
     });
   }
 });

@@ -107,29 +107,22 @@ function getOperatorAuditWriter(): import('@papercusp/plugin-loader').AuditWrite
 }
 
 /**
- * Tier-2 grants loader — never throws. PG unavailability or a transient
- * read failure must not kill plugin init; we fall back to "no grants"
- * which combined with manifest-only behavior denies user-grant-required
- * caps but doesn't crash the host.
+ * Tier-2 runtime grants loader — never throws and never grants on failure.
+ * Compatibility/legacy reads are unsuitable for authorizing host effects:
+ * an empty or unavailable authoritative store means an empty grant set.
  */
 async function loadGrantedCapsSafe(
   pluginName: string,
   pluginVersion: string,
   harnessSlug: string,
-): Promise<string[] | undefined> {
+): Promise<string[]> {
   try {
-    const rows = await getGrantsForPluginInHarness(pluginName, pluginVersion, harnessSlug);
-    // Empty result → no grant info on file (PG unreachable + no legacy
-    // file, OR no consent flow has run for this plugin yet). Fall back
-    // to legacy single-tier (manifest-only) semantics rather than denying
-    // every cap. Operator's install flow backfills grants at enable time,
-    // so a real user-revoke path is expressed by deleting only specific
-    // caps — never as an empty array. Returning `undefined` (vs `[]`)
-    // signals hasCapability to skip the tier-2 check.
-    return rows.length === 0 ? undefined : rows;
+    return await getGrantsForPluginInHarness(pluginName, pluginVersion, harnessSlug, {
+      requireAuthoritative: true,
+    });
   } catch (e) {
     console.warn(`[plugin-grants] read failed for ${pluginName}@${pluginVersion} in ${harnessSlug}:`, (e as Error)?.message);
-    return undefined;
+    return [];
   }
 }
 
@@ -149,11 +142,11 @@ interface HostState {
   registries: Map<string, ServerActionRegistry>;
   /**
    * (pluginName, installSlug) → user-granted caps loaded at init time.
-   * Hot-path readers (spawn, action invoke) consult this cache instead of
-   * re-querying PG. Invalidated alongside `initialized` on plugin reload.
-   * Tier 2 of the two-tier capability check (Batch B).
+   * Initialization-time grants for runtime setup (including WASM imports).
+   * ctx.spawn re-reads authoritative grants at each effect boundary instead
+   * of using this cache. Invalidated with `initialized` on plugin reload.
    */
-  grants: Map<string, string[] | undefined>;
+  grants: Map<string, string[]>;
   /**
    * (pluginName, installSlug) → live WASM plugin handle (Batch G3).
    * Populated when manifest.runtime.kind === 'wasm'. JS plugins have no
@@ -660,21 +653,25 @@ const SPAWN_DEFAULT_MAX_BUFFER = 1024 * 1024;
  */
 function makePluginSpawn(args: {
   pluginName: string;
-  pluginVersion?: string;
-  harnessSlug?: string;
+  pluginVersion: string;
+  harnessSlug: string;
   capabilities: readonly string[];
-  granted?: readonly string[];
   defaultCwd: string;
 }): PluginSpawn {
-  const capCtx: CapabilityCheckContext = {
-    pluginName: args.pluginName,
-    capabilities: args.capabilities as any,
-    granted: args.granted as any,
-  };
+  const capabilities = Object.freeze([...args.capabilities]);
   return async function spawn(bin, argv, opts) {
     if (typeof bin !== 'string' || bin.length === 0) {
       throw new Error(`plugin "${args.pluginName}" ctx.spawn: bin must be a non-empty string`);
     }
+    // Re-check at the effect boundary. A context retained after init must not
+    // retain grants revoked since init, and a failed store read denies before
+    // mkdir or child_process.spawn. Ambient invocation limits still intersect
+    // this installation decision through hasCapability.
+    const capCtx: CapabilityCheckContext = {
+      pluginName: args.pluginName,
+      capabilities: capabilities as CapabilityCheckContext['capabilities'],
+      granted: await loadGrantedCapsSafe(args.pluginName, args.pluginVersion, args.harnessSlug) as CapabilityCheckContext['granted'],
+    };
     // Absolute-path policy (Batch D2, Rust-port-feedback item 10): an
     // absolute path is allowed iff the plugin declared either an exact
     // matching cap `compute:exec:<abs>` or a wildcard cap that covers it
@@ -904,7 +901,6 @@ function attachPluginCtxExtras(
   ctx: PapercuspContext,
   lp: LoadedPlugin,
   registry: ServerActionRegistry,
-  granted?: readonly string[],
 ): void {
   ctx.actions = registry as unknown as PapercuspContext['actions'];
   ctx.spawn = makePluginSpawn({
@@ -912,7 +908,6 @@ function attachPluginCtxExtras(
     pluginVersion: lp.plugin.version,
     harnessSlug: ctx.installSlug,
     capabilities: lp.plugin.capabilities ?? [],
-    granted,
     defaultCwd: ctx.pluginDataDir,
   });
 
@@ -1074,7 +1069,7 @@ async function ensureInitialized(
     return;
   }
   state.registries.set(key, registry);
-  attachPluginCtxExtras(ctx, lp, registry, state.grants.get(regKey(lp.plugin.name, ctx.installSlug)));
+  attachPluginCtxExtras(ctx, lp, registry);
 
   try {
     await runUnderPluginCtx(lp.plugin.name, ctx, undefined, async () => {
@@ -1348,7 +1343,7 @@ export async function invokePluginAction(args: {
   if (!registry) return { ok: false, error: `no action registry for "${args.pluginName}@${args.installSlug}" — init may have failed` };
   // ensureInitialized worked on its own ctx — attach the same extras to
   // this ctx (which is what the action handler will receive as its first arg).
-  attachPluginCtxExtras(ctx, lp, registry, state.grants.get(regKey(lp.plugin.name, ctx.installSlug)));
+  attachPluginCtxExtras(ctx, lp, registry);
   // Mint a correlation id per invocation so every line emitted during
   // this run (ctx.log + console.* + final result) is threadable in the UI.
   const corrId = args.triggerId ?? `inv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1456,7 +1451,7 @@ export async function firePluginLifecycle<K extends keyof PluginHooks>(
       stateDir: args.stateDir,
     });
     const registry = state.registries.get(regKey(lp.plugin.name, args.installSlug));
-    if (registry) attachPluginCtxExtras(ctx, lp, registry, state.grants.get(regKey(lp.plugin.name, ctx.installSlug)));
+    if (registry) attachPluginCtxExtras(ctx, lp, registry);
     try {
       await runUnderPluginCtx(lp.plugin.name, ctx, undefined, async () => {
         // Cast through `any` — the conditional-type indexed handler doesn't

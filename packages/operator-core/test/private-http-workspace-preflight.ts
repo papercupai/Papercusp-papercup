@@ -25,7 +25,8 @@ import { decideWatchdogExpiry } from '../../../scripts/lib/batch-watchdog.mjs';
 import { findUnsatisfiedDeclaredDepRanges } from '../../../scripts/check-declared-deps-extracted.mjs';
 // @ts-ignore -- share the unit-test process boundary with other standalone runtimes.
 import { isolatedRuntimeEnv } from '../../../scripts/lib/isolation-child-env.mjs';
-import { readNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
+import { hashNativeArtifactBytes, readNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
+import { nativeProcessTraceEnv, nativeSourceRetentionLimits } from '../../../scripts/lib/vitest-startup-trace.mjs';
 
 export interface PrivateUnrelatedCheckpointObservation {
   workspace: string;
@@ -506,7 +507,8 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
 /** Prepared ESM bundles must not inherit test transformers or Vitest's passive
  * startup tracer into their confined native descendants. Keep source guards,
  * unrelated preloads and all resource limits. */
-export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv,
+  observation?: { traceOut: string; pinnedSources?: Array<{ path: string; sha256: string; byteLength: number }> }): NodeJS.ProcessEnv {
   const tokens = (env.NODE_OPTIONS ?? '').match(/(?:[^\s"']+|"(?:\\.|[^"\\])*"|'[^']*')+/g) ?? [];
   const value = (token: string) => token.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g,
     (_, double: string | undefined, single: string | undefined) => double?.replace(/\\(["\\])/g, '$1') ?? single!);
@@ -522,7 +524,16 @@ export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessE
       && tokens[i + 1] && testPreload(value(tokens[i + 1]))) { i++; continue; }
     kept.push(tokens[i]);
   }
-  return { ...env, NODE_OPTIONS: kept.join(' ') };
+  const runtime = { ...env, NODE_OPTIONS: kept.join(' ') };
+  if (!observation) return runtime;
+  assert.ok(isAbsolute(observation.traceOut) && observation.traceOut.trim() === observation.traceOut,
+    'Private host trace requires an absolute channel');
+  assert.ok(!existsSync(observation.traceOut) && !existsSync(observation.traceOut + '.native-processes'),
+    'Private host trace requires a fresh channel');
+  // Select the maintained passive preload only after removing inherited test
+  // transformers and trace preloads. Its evidence remains loader-return only.
+  return nativeProcessTraceEnv({ ...runtime, PC_EXECUTED_SOURCE_MAP_OUT: observation.traceOut },
+    { pinnedSources: observation.pinnedSources ?? [] });
 }
 
 /** Retain readiness evidence even when the host exits, is signaled, or fails
@@ -910,7 +921,7 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     startedAtMs: o.startedAtMs, finishedAtMs: o.finishedAtMs,
     population: null as ReturnType<typeof readNativeProcessTraceArtifacts>['population'] | null,
     entrySha256: null as string | null, exitObserved: false,
-    limits: { loads: 128, sourceBytes: 16 * 1024 ** 2, processBytes: 64 * 1024 ** 2 },
+    limits: { loads: 128, ...nativeSourceRetentionLimits },
     sources, gaps, pending: ['module-evaluation', 'runtime-config', 'private-pg', 'sidecars',
       'descendant-imports', 'complete-runtime-closure'],
   };
@@ -949,10 +960,11 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
       if (file.kind === 'file') pin(join(o.root, 'node_modules', file.path), file.sha256);
     for (const artifact of closure.artifacts) pin(artifact.path, artifact.sha256);
     const starts = new Map<number, { url: string; atMs: number }>(), returned = new Set<number>();
-    let bytesRead = 0;
+    let bytesRead = 0, pinnedBytesRead = 0;
+    const pinnedPaths = new Set<string>();
     for (const { row } of own) {
       if (['trace-limit', 'trace-event-too-large', 'module-load-limit', 'module-load-unavailable',
-        'module-load-error'].includes(row.event)) gaps.push(row.event);
+        'module-load-error', 'module-source-pins-invalid'].includes(row.event)) gaps.push(row.event);
       if (row.event !== 'module-load-start') continue;
       assert.ok(Number.isSafeInteger(row.loadId) && row.loadId > 0 && row.loadId <= result.limits.loads
         && !starts.has(row.loadId) && typeof row.url === 'string', 'invalid or duplicate load start');
@@ -968,16 +980,24 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
         const source = row.source;
         assert.ok(source?.status === 'hashed' && source.scope === result.scope && !source.artifactUnavailable
           && /^[a-f0-9]{64}$/.test(source.sha256) && source.ref === `${source.sha256}.source`
-          && Number.isSafeInteger(source.byteLength) && source.byteLength >= 0
-          && source.byteLength <= result.limits.sourceBytes, 'loader source unavailable or limited');
+          && Number.isSafeInteger(source.byteLength) && source.byteLength >= 0,
+          'loader source unavailable or limited');
         const url = new URL(row.url);
         assert.ok(url.protocol === 'file:' && !url.search && !url.hash, 'unsupported loader source URL');
         const expected = pins.get(fileURLToPath(url));
         assert.ok(expected, 'loaded source lacks independent pin');
         assert.equal(source.sha256, expected, 'returned loader bytes differ from independent pin');
-        const bytes = readNativeArtifactBytes(join(trace.sourceRoot, source.ref), source.byteLength,
-          result.limits.processBytes - bytesRead, count => { bytesRead += count; });
-        assert.equal(digestBytes(bytes), source.sha256, 'retained loader source digest differs');
+        const pinned = source.byteLength > result.limits.sourceBytes;
+        assert.ok(!pinned || source.admission === 'independently-pinned-large-source-v1' &&
+          source.byteLength <= result.limits.pinnedSourceBytes, 'loader source unavailable or limited');
+        if (pinned) {
+          pinnedPaths.add(row.url);
+          assert.ok(pinnedPaths.size <= result.limits.pins, 'pinned loader source population limit');
+        }
+        const retainedHash = hashNativeArtifactBytes(join(trace.sourceRoot, source.ref), source.byteLength,
+          pinned ? result.limits.pinnedProcessBytes - pinnedBytesRead : result.limits.processBytes - bytesRead,
+          count => { if (pinned) pinnedBytesRead += count; else bytesRead += count; });
+        assert.equal(retainedHash, source.sha256, 'retained loader source digest differs');
         sources.push({ url: row.url, loadId: row.loadId, sha256: source.sha256,
           byteLength: source.byteLength, ref: source.ref });
       } catch (error) { gaps.push((error as Error).message.split('\n')[0]); }

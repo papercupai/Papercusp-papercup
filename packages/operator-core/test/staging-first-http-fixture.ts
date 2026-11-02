@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { fork, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Socket } from 'node:net';
 import { getOrgPg, getOrgPgApp, getOrgPgListener, _resetForTests } from '@papercusp/db-org';
@@ -10,13 +10,14 @@ import { readPgBackendCensus } from './_pg-backend-census';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
-import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 import { captureIsolatedWorker, isolatedTestFileWorkerOptions, retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
 let disposeScenario: (() => Promise<void>) | undefined;
+let retainLoadedSources: (() => void) | undefined;
 const socketOrigins = new Map<number, string>();
 const originalConnect = Socket.prototype.connect;
 // Evidence only: trace the native worker's real PG clients, including clients
@@ -38,6 +39,8 @@ async function stopHost(afterExit?: () => Promise<void>) {
   if (!host) { await afterExit?.(); return; }
   await stopPrivateOperatorHost(host, afterExit);
   assert.notEqual(readProcessIdentity(host.pid!), hostIdentity, 'private host survived cleanup');
+  retainLoadedSources?.();
+  retainLoadedSources = undefined;
 }
 
 async function main() {
@@ -168,7 +171,8 @@ async function main() {
   const isCurrentSuNative = ['current-su-native', 'current-su-native-carry'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
   const isCodexManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'codex-managed-tools';
   const isOmpManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'omp-managed-tools';
-  const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools || isOmpManagedTools;
+  const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools || isOmpManagedTools
+    || e.STAGING_FIRST_HTTP_SCENARIO === 'testing-background';
   const prepared = requiresPrepared
     ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
   assert.ok(!requiresPrepared || prepared,
@@ -188,6 +192,7 @@ async function main() {
     'committed reader must be in the executed bundle');
   const bundleSha256 = createHash('sha256').update(bundleBytes).digest('hex');
   let qualifySource: (() => ReturnType<typeof qualifyCommittedReaderSource>) | undefined;
+  let loadedSourceOptions: Parameters<typeof qualifyCommittedReaderSource>[0] | undefined;
   if (isCommittedReader) {
     const selection = resolvePreparedCommittedReaderSource(process.argv.slice(2), evidenceDir);
     // Compare the actual required private column/type/nullability/default
@@ -199,9 +204,10 @@ async function main() {
       `${row.table_schema}.${row.table_name}.${row.column_name}`,
       createHash('sha256').update(JSON.stringify({ ...row })).digest('hex'),
     ]));
-    qualifySource = () => qualifyCommittedReaderSource({ root, bundle,
+    loadedSourceOptions = { root, bundle,
       receiptPath: join(dirname(evidenceDir), 'prepare', 'operator-api-preflight.json'),
-      ...selection, schema, environment: e });
+      ...selection, schema, environment: e };
+    qualifySource = () => qualifyCommittedReaderSource(loadedSourceOptions!);
     writeFileSync(join(evidenceDir, 'committed-reader-source-preflight.json'), JSON.stringify(qualifySource()));
   }
   // The required source guard runs before preparation opens its private sidecar.
@@ -227,7 +233,8 @@ async function main() {
   // The real native request fixture grants writes only to its disposable state.
   // Apply the mount boundary to the whole operator/invoke/native lineage.
   const privateRoot = dirname(e.HOME!);
-  const hostEnv = privateBundleRuntimeEnv(e);
+  const traceOut = join(evidenceDir, 'committed-reader-host-source.json');
+  const hostEnv = privateBundleRuntimeEnv(e, loadedSourceOptions ? { traceOut } : undefined);
   if (blueprintRoute) {
     // `with-test-pg --isolated-runtime` deliberately scrubs ambient
     // PAPERCUSP_* keys. The blueprint scenario selects the maintained checkout
@@ -243,6 +250,7 @@ async function main() {
   // Use the maintained installed shim's explicit launcher override; its
   // default release checkout cannot certify this current-build candidate.
   hostEnv.PAPERCUSP_PSU_LAUNCHER = join(root, 'apps/operator/scripts/psu-launcher.mjs');
+  const hostStartedAtMs = Date.now();
   host = blueprintRoute
     ? spawn('bwrap', ['--die-with-parent', '--ro-bind', '/', '/', '--bind', privateRoot, privateRoot,
       '--bind', evidenceDir, evidenceDir, '--dev', '/dev', '--proc', '/proc', '--', process.execPath, bundle],
@@ -252,6 +260,14 @@ async function main() {
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
   hostIdentity = readProcessIdentity(host.pid!);
   assert.ok(hostIdentity, 'private host kernel identity required');
+  if (loadedSourceOptions) {
+    const selected = loadedSourceOptions;
+    retainLoadedSources = () => {
+      const observation = observeCommittedReaderLoadedSources({ ...selected, traceOut,
+        pid: host!.pid!, startedAtMs: hostStartedAtMs, finishedAtMs: Date.now() });
+      writeFileSync(join(evidenceDir, 'committed-reader-loaded-source.json'), JSON.stringify(observation), { mode: 0o600 });
+    };
+  }
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
   if (isCodexManagedTools || isOmpManagedTools) {
@@ -394,6 +410,16 @@ async function main() {
     await stopHost();
     console.log('PRIVATE_READ_CANCELLATION_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'testing-background') {
+    const receipt = await (await import('./testing-background-http-scenario')).measureTestingBackgroundScenario({
+      workspace, harness, base, headers, evidenceDir, root,
+    });
+    await stopHost();
+    console.log('TESTING_BACKGROUND_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostStopped: true, bundleSha256, health,
     }));
     return;
   }

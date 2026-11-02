@@ -30,7 +30,8 @@ import {
 import type { FleetTopUpRule } from '../../fleet/top-up-rule';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
-import { liveFleetMemberIds } from '../../fleet/fleet-roster';
+import { listFleetRosterDiagnosed, liveFleetMemberIds } from '../../fleet/fleet-roster';
+import { readFleetLaneHealthDiagnosed } from '../../fleet/lane-health';
 import { isWorkspaceWideLoopStanddownActive } from './release-pause-ttl';
 import { getLoopStatuses } from './loop';
 import {
@@ -1153,6 +1154,128 @@ function governorLaunchTransaction(args: {
   return transaction;
 }
 
+type FleetHeadcountLeaderAdmission =
+  | { live: true }
+  | { live: false; terminal: boolean; reason: string };
+
+/** A persisted leader id is not launch authority; require complete, current liveness. */
+async function readFleetHeadcountLeaderAdmission(args: {
+  fleetSlug: string;
+  workspaceId: string;
+  leaderOwnerId: string | null;
+}): Promise<FleetHeadcountLeaderAdmission> {
+  if (args.leaderOwnerId == null) {
+    return {
+      live: false,
+      terminal: true,
+      reason:
+        'headcount repair disarmed: the fleet has no durable leader identity; ' +
+        'a live authorized leader must supply a fresh mission before replacement resumes',
+    };
+  }
+
+  let roster;
+  try {
+    roster = await listFleetRosterDiagnosed({
+      fleetSlug: args.fleetSlug,
+      workspaceId: args.workspaceId,
+      leaderOwnerId: args.leaderOwnerId,
+    });
+  } catch (error) {
+    return {
+      live: false,
+      terminal: false,
+      reason:
+        'headcount repair held: registered leader liveness could not be read; ' +
+        (error instanceof Error ? error.message : String(error)),
+    };
+  }
+
+  const leader = roster.leaderLiveness;
+  const leaderEvidenceComplete = leader?.complete === true;
+  const leaderLive =
+    leaderEvidenceComplete &&
+    leader?.presenceRow === true &&
+    leader?.sessionState === 'live';
+  if (!leaderLive) {
+    const unknown = !leaderEvidenceComplete;
+    return {
+      live: false,
+      terminal: !unknown,
+      reason: unknown
+        ? 'headcount repair held: registered leader liveness is unknown; an unattended member must not inherit an unconfirmed lane'
+        : 'headcount repair disarmed: the registered leader is not positively live; ' +
+          'a live authorized leader must supply a fresh mission before replacement resumes',
+    };
+  }
+
+  return { live: true };
+}
+
+type FleetHeadcountRepairAdmission =
+  | { allowed: true }
+  | { allowed: false; terminal?: boolean; reason: string };
+
+/**
+ * Unattended repair acts on behalf of a live fleet leader and must launch only
+ * into a measured, currently claimable fleet lane. A stored leader id or a
+ * stale claim spec alone is not launch authority.
+ */
+async function readFleetHeadcountRepairAdmission(args: {
+  fleetSlug: string;
+  workspaceId: string;
+  leaderOwnerId: string | null;
+  harness?: string;
+}): Promise<FleetHeadcountRepairAdmission> {
+  const leader = await readFleetHeadcountLeaderAdmission(args);
+  if (!leader.live) {
+    return {
+      allowed: false,
+      ...(leader.terminal ? { terminal: true } : {}),
+      reason: leader.reason,
+    };
+  }
+
+  let lane;
+  try {
+    lane = await readFleetLaneHealthDiagnosed({
+      fleet: args.fleetSlug,
+      harness: args.harness,
+      workspaceId: args.workspaceId,
+    });
+  } catch (error) {
+    return {
+      allowed: false,
+      reason:
+        'headcount repair held: current fleet lane eligibility could not be read; ' +
+        (error instanceof Error ? error.message : String(error)),
+    };
+  }
+
+  const claimable = lane.laneHealth?.effective.claimable;
+  if (claimable == null) {
+    return {
+      allowed: false,
+      reason:
+        'headcount repair held: current fleet lane eligibility is unknown; ' +
+        (lane.unavailable?.detail ?? 'the family-complete claimable count was not measured'),
+    };
+  }
+  if (!(claimable > 0)) {
+    const spec = lane.laneHealth?.spec;
+    const specRef = spec
+      ? ' ' + spec.specId + '@' + (spec.revision ?? 'unknown')
+      : '';
+    return {
+      allowed: false,
+      reason:
+        'headcount repair held: fleet claim spec' + specRef +
+        ' has no currently claimable work; no member was pruned or launched',
+    };
+  }
+  return { allowed: true };
+}
+
 async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<void> {
   const { workspaceId } = ctx;
   // EI-23259368987233359, half 2 of 2 — THE BARRIER A MEMBER IS ACTUALLY OPENED
@@ -1215,6 +1338,38 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
       transactionId: next.transactionId,
       updatedAt: next.updatedAt,
     };
+  };
+  const recordAdmissionRefusal = async (
+    reason: string,
+    terminal: boolean,
+    launcherOwnerId: string | null,
+  ): Promise<void> => {
+    if (claimedLaunchSlotAt != null) {
+      await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: claimedLaunchSlotAt }).catch(() => {});
+      claimedLaunchSlotAt = null;
+    }
+    if (terminal) {
+      await disarmStaleMissionTarget({ workspaceId, fleetSlug, reason });
+    }
+    if (assessment) {
+      transaction = transactionForGovernorVerdict({
+        transaction,
+        liveMemberIds,
+        launcherOwnerId,
+        now: Date.now(),
+      });
+      const verdict = governorVerdictForAssessment(assessment, Date.now(), {
+        action: terminal ? 'none' : 'wait',
+        outcome: 'unverified',
+        reason,
+      });
+      recordGovernorVerdict(transaction, verdict);
+      transaction.recovery.nextAction = reason;
+      await persistTransaction(transaction);
+    }
+    if (!terminal) {
+      await recordFleetHeadcountAttempt({ workspaceId, fleetSlug, succeeded: false, error: reason });
+    }
   };
   try {
     const config = resolveFleetHeadcountProfile(attempt.config);
@@ -1340,6 +1495,19 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
       transaction,
       now,
     });
+
+    if (assessment.action === 'spawn' || assessment.action === 'prune') {
+      const admission = await readFleetHeadcountRepairAdmission({
+        fleetSlug,
+        workspaceId,
+        leaderOwnerId: fleet.leaderOwnerId,
+        harness: config.harness,
+      });
+      if (!admission.allowed) {
+        await recordAdmissionRefusal(admission.reason, admission.terminal === true, fleet.leaderOwnerId);
+        return;
+      }
+    }
 
     if (assessment.action === 'none' || assessment.action === 'wait' || assessment.action === 'retry') {
       transaction = transactionForGovernorVerdict({
@@ -1646,6 +1814,28 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
     // Launch preflight awaits provider/goal/slot reads. Respect a stop that
     // arrived meanwhile, and release the reservation without opening a process.
     if (!pruneOwnerId && await holdForDeliberateStop()) return;
+
+    // The earlier admission read precedes provider, goal, and slot preflight.
+    // Recheck the governing mission at the side-effect boundary so a plan archived
+    // or leader reaped during that work cannot open a stale replacement.
+    const finalPlanStatus = await terminalPlanStatusForFleet(workspaceId, config);
+    if (finalPlanStatus) {
+      await recordAdmissionRefusal(
+        `plan ${config.plan ?? '(unknown)'} is ${finalPlanStatus}; stale mission has no authorized assignment`,
+        true,
+        launcherOwnerId,
+      );
+      return;
+    }
+    const finalLeader = await readFleetHeadcountLeaderAdmission({
+      fleetSlug,
+      workspaceId,
+      leaderOwnerId: launcherOwnerId,
+    });
+    if (!finalLeader.live) {
+      await recordAdmissionRefusal(finalLeader.reason, finalLeader.terminal, launcherOwnerId);
+      return;
+    }
 
     // Persist the measurement before any prune or terminal spawn side effect.
     // The next transaction wave carries this snapshot forward for durable
@@ -1970,10 +2160,7 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
   }
 }
 
-/**
- * A plan in one of these states has no claimable work BY DEFINITION, so replacing a
- * dead member can only produce another member that boots, finds nothing, and dies.
- */
+/** A terminal or archived plan has no authorized assignment for governor replacements. */
 const TERMINAL_PLAN_STATUSES = new Set(['shipped', 'superseded']);
 
 /**
@@ -1990,7 +2177,8 @@ const TERMINAL_PLAN_STATUSES = new Set(['shipped', 'superseded']);
  *
  * FAILS OPEN, deliberately. A missing config field, an unmatched plan row, or a database
  * error returns null and the fleet is topped up as before: a fleet doing real work must
- * never be disarmed because a status lookup failed. Only a POSITIVE terminal reading disarms.
+ * never be disarmed because a status lookup failed. Only a positive terminal status or
+ * archived=true reading disarms.
  */
 async function terminalPlanStatusForFleet(
   workspaceId: string,
@@ -2000,19 +2188,43 @@ async function terminalPlanStatusForFleet(
   const harnessSlug = typeof config?.harness === 'string' ? config.harness : null;
   if (!planSlug || !harnessSlug) return null;
   try {
-    const rows = await getOrgPg().sql<{ status: string | null }[]>`
-      SELECT status
+    const rows = await getOrgPg().sql<{ status: string | null; archived: boolean }[]>`
+      SELECT status, archived
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${harnessSlug}
          AND plan_slug = ${planSlug}
        LIMIT 1
     `;
-    const status = rows[0]?.status ?? null;
+    const plan = rows[0];
+    if (plan?.archived === true) return 'archived';
+    const status = plan?.status ?? null;
     return status && TERMINAL_PLAN_STATUSES.has(status) ? status : null;
   } catch {
     return null;
   }
+}
+
+async function disarmStaleMissionTarget(args: {
+  workspaceId: string;
+  fleetSlug: string;
+  reason: string;
+}): Promise<void> {
+  await setFleetHeadcountTarget({
+    workspaceId: args.workspaceId,
+    fleetSlug: args.fleetSlug,
+    target: null,
+  });
+  await recordFleetHeadcountAttempt({
+    workspaceId: args.workspaceId,
+    fleetSlug: args.fleetSlug,
+    succeeded: false,
+    error: args.reason,
+  });
+  console.warn(
+    `[${FLEET_HEADCOUNT_EVENT_PREFIX}] disarmed ${args.fleetSlug}: ${args.reason}; ` +
+      'launch recipe preserved; a live authorized leader must supply and arm a fresh mission',
+  );
 }
 
 /** R5 (interrupted-member-recovery-hardening-2026-09-01): the per-fleet
@@ -2110,15 +2322,13 @@ export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<v
     // has the boot-baked model/account/headless/carry contract.
     const terminalStatus = await terminalPlanStatusForFleet(ctx.workspaceId, target.config);
     if (terminalStatus) {
-      await setFleetHeadcountTarget({
+      await disarmStaleMissionTarget({
         workspaceId: ctx.workspaceId,
         fleetSlug: target.fleetSlug,
-        target: null,
+        reason:
+          `plan ${target.config?.plan ?? '(unknown)'} is ${terminalStatus}; ` +
+          'stale mission has no authorized assignment',
       });
-      console.warn(
-        `[${FLEET_HEADCOUNT_EVENT_PREFIX}] disarmed ${target.fleetSlug}: plan `
-        + `${target.config?.plan ?? '(unknown)'} is ${terminalStatus}; launch recipe preserved`,
-      );
       continue;
     }
     await topUpOneFleet(ctx, target.fleetSlug);

@@ -272,6 +272,7 @@ import { attestCompletionConsumerView } from './complete-consumer-view';
 import { completionClaimBaseline } from '../../completion-claim-recheck';
 import { fabricatedPathsInCompletion } from './fabricated-paths';
 import { untouchedPathsInCompletion } from './untouched-paths';
+import { planAnchorAdvisory } from './plan-anchor-advisory';
 import { requirementDispositionShortfall } from './requirement-disposition';
 import {
   MAX_TEST_BINDING_LOOKBACK_MS,
@@ -1312,9 +1313,10 @@ async function siblingTypecheckGates(root: string): Promise<TypecheckGate[]> {
  * A basename-only completion is an underspecified path until the repository proves otherwise.
  * Keep the search bounded and fail closed: a unique match is useful evidence, while an
  * ambiguous, unreadable, or truncated scan must remain uncovered so the warning cannot suggest
- * a command for a file we did not actually identify.
+ * a command for a file we did not actually identify. The current sibling-gate roster needs
+ * 57,474 entries to complete a measured scan, so retain a bounded 100k ceiling with headroom.
  */
-const MAX_TYPECHECK_BASENAME_SCAN_ENTRIES = 50_000;
+const MAX_TYPECHECK_BASENAME_SCAN_ENTRIES = 100_000;
 const MAX_TYPECHECK_BASENAME_SCAN_DEPTH = 32;
 const TYPECHECK_BASENAME_PRUNED_DIRS = new Set([
   '.git',
@@ -3028,7 +3030,7 @@ export interface FinishWorkReceipt {
   errors?: string[];
 }
 
-function finishPlanStamp(workItem: Record<string, unknown>): FinishPlanStamp | null {
+function finishPlanStamp(workItem: { payload?: unknown }): FinishPlanStamp | null {
   const payload = workItem.payload as { plan_item?: Partial<FinishPlanStamp> } | null | undefined;
   const stamp = payload?.plan_item;
   if (!stamp?.plan_slug || !stamp.item_id || !stamp.harness_slug) return null;
@@ -4240,6 +4242,7 @@ async function completeOneTracked(
                 targetIds: pendingGradingAuditTargetIds,
                 ctx,
                 harness: existing.harness,
+                acceptanceRef: existing.id,
               }).catch((error) => ({
                 requestedTargetIds: [...pendingGradingAuditTargetIds],
                 receipts: pendingGradingAuditTargetIds.map((issueId) => ({
@@ -4638,7 +4641,7 @@ async function completeOneTracked(
   if (closeIntentRequested && !isAbandonedClose) {
     const { planSlug, planItemIds, harnessSlug: planHarnessSlug } = conformanceClosurePlanLink(
       existing,
-      finishPlanStamp(existing as unknown as Record<string, unknown>),
+      finishPlanStamp(existing),
     );
     if (planSlug) {
       try {
@@ -4678,7 +4681,7 @@ async function completeOneTracked(
   // `feature` is not evidence: plan promotion gives every item that kind.
   let nonCodeDeliverableClose = false;
   if (closeIntentRequested && successfulClose && !isAbandonedClose && !duplicateCloseCoverageException) {
-    const link = conformanceClosurePlanLink(existing, finishPlanStamp(existing as unknown as Record<string, unknown>));
+    const link = conformanceClosurePlanLink(existing, finishPlanStamp(existing));
     if (link.planSlug && link.planItemIds.length > 0) {
       try {
         const hit = await readNonCodeDeliverableCloseEvidence({
@@ -6520,6 +6523,11 @@ async function completeOneTracked(
   // ~1500-token door, so the one field telling the caller "this did NOT close"
   // never reached them). Warnings are cheap (short strings); ordering them first
   // costs nothing and makes them survive truncation whenever ANYTHING fits.
+  // P-009: compute only after settlement. This advice has no input into any
+  // acceptance gate, and text-derived payload.paths alone never enables it.
+  const anchorAdvisory = closeLanded && !stateError && !finishFailed
+    ? planAnchorAdvisory(existing.payload, it.completion.filesChanged)
+    : undefined;
   return {
     ok: !stateNotApplied && !finishFailed,
     id: it.id,
@@ -6535,6 +6543,7 @@ async function completeOneTracked(
     ...(planGateParkWarning ? { planGateParkWarning } : {}),
     ...(completionPrefill ? { completionPrefill } : {}),
     ...(completionBrief ? { completionBrief } : {}),
+    ...(anchorAdvisory ? { planAnchorAdvisory: anchorAdvisory } : {}),
     // EI-18850142725126359 fix #4 — reported ONLY when the close actually LANDED.
     // The text is written in the future tense ("will red the next checkpoint"),
     // which is true of a terminal row and false of a close that was rejected — and

@@ -27,6 +27,15 @@ configureLocks({
   getAdminBaseUrl: () => getHarnessAdminUrl(),
   getTxnTimeouts: () => txnTimeoutsConfig(),
   acquireDiagnostics: { beginAcquire, recordPoolMax },
+  onResourceExpired: async ({ resource, coordinationDomain }) => {
+    // Keep the event engine out of this early adapter's synchronous import graph.
+    const [{ emitResourceReleasedEvent }, { isWorkspaceScopedResource }] = await Promise.all([
+      import('../../harness/git-sync/git-sync-events'),
+      import('./coordination-domain'),
+    ]);
+    emitResourceReleasedEvent(resource,
+      isWorkspaceScopedResource(resource) && coordinationDomain !== '*' ? coordinationDomain : undefined);
+  },
 });
 
 // WI-832: inject the admin-pool default statement_timeout into the low-level db connection

@@ -128,11 +128,13 @@ const BATCH_SIZE = getResourceProfile().embedBatchSize;
  *
  * Chunking bounds a breach to ONE chunk and KEEPS what earlier chunks produced,
  * because `batchVectors[i] ?? per-row` below is per-INDEX: a null just sends that
- * one row down the per-row path. 16 keeps the amortised HTTP win while capping
- * the worst-case loss at a 45s budget instead of 269s (before the shared 180s
- * ceiling).
+ * one row down the per-row path. 8 keeps the amortised HTTP win while capping
+ * the worst-case loss at a 29s budget instead of 45s (before the shared 180s
+ * ceiling). The live :3384 sidecar took 41.8s for 16 unique 2,000-character
+ * gemma/document texts on 2026-11-02, leaving 3.2s before the old abort; an
+ * 8-text batch took 15.1s against its 29s deadline.
  */
-const BATCH_EMBED_CHUNK_SIZE = 16;
+const BATCH_EMBED_CHUNK_SIZE = 8;
 
 /**
  * WI-7327: per-row embed deadline.

@@ -2729,6 +2729,12 @@ export function controlSocketProbeOutcome(msg: any, ownerId: any): {
     ok: boolean;
     reason: string;
 } | null;
+export function controlSocketSelfHealAction({ metaMine, sockOnDisk, serverListening }: {
+    metaMine: any;
+    sockOnDisk: any;
+    serverListening: any;
+}): "rebind" | "healthy" | "reassert";
+export function closeControlServerForRebind(server: any, afterClose: any): void;
 export function decodeControl(payload: any): {
     ownerId: any;
     gated: boolean;
@@ -5358,6 +5364,11 @@ export function rearmWakeTurnOutcome(outcome: any, { submittedToCurrentChild }?:
  * owns that exact delivery; folded IDs that the re-arm does not own stay
  * retryable. */
 export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "completed" | "pending" | "clear" | "cancelled";
+/** Persist the re-arm controller's retry window with a failed Codex-home attempt. */
+export function codexHomeEnsureFailureMetadata(failure: any, capMs: any): {
+    retryable: boolean;
+    capMs: number | null;
+};
 /**
  * A minimal FIFO async mutex serializing the GATED-inject critical section within
  * a single host (EI-8822). Each control-socket connection runs its OWN async

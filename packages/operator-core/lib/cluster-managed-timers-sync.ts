@@ -51,7 +51,7 @@ import {
   defaultGetRegisteredSchedules,
   type RegisteredSchedule,
 } from './dbos/dbos-schedule-introspect';
-import { describeProcessRole } from './schedule-federation';
+import { describeProcessRole, parseObservedBackgroundActivities, type ObservedBackgroundActivity } from './schedule-federation';
 
 /** IPC message type the primary broadcasts to every worker each interval. */
 export const PRIMARY_MANAGED_TIMERS_SNAPSHOT_TYPE =
@@ -64,6 +64,7 @@ export interface PrimaryManagedTimersSnapshotMessage {
   role: string;
   /** The primary's `managedSetInterval` registry (ephemeral tier). */
   timers: ManagedEntry[];
+  backgroundActivities?: ObservedBackgroundActivity[];
   /** The primary's registered DBOS scheduled workflows (durable tier) — names + crontabs only. */
   dbosSchedules: RegisteredSchedule[];
   sentAt: number;
@@ -89,10 +90,13 @@ export function startPrimaryManagedTimersBroadcaster(opts: {
   now?: () => number;
   /** Test seam / override for defaultGetRegisteredSchedules. */
   getRegisteredSchedules?: () => Promise<RegisteredSchedule[]>;
+  getBackgroundActivities?: () => Promise<ObservedBackgroundActivity[]>;
 }): PrimaryManagedTimersBroadcasterHandle {
   const intervalMs = opts.intervalMs ?? 5_000;
   const now = opts.now ?? (() => Date.now());
   const getRegisteredSchedules = opts.getRegisteredSchedules ?? defaultGetRegisteredSchedules;
+  const getBackgroundActivities = opts.getBackgroundActivities ?? (async () =>
+    (await import('./startup-activity')).listObservedBackgroundActivities());
   const beat = async (): Promise<void> => {
     let dbosSchedules: RegisteredSchedule[] = [];
     try {
@@ -101,12 +105,16 @@ export function startPrimaryManagedTimersBroadcaster(opts: {
       // defaultGetRegisteredSchedules already swallows its own errors and returns
       // []; this is belt-and-braces so one registry can never take out the other.
     }
+    let backgroundActivities: ObservedBackgroundActivity[] | undefined;
+    try { backgroundActivities = await getBackgroundActivities(); }
+    catch { /* A missing callback slice must not suppress timer/DBOS visibility. */ }
     try {
       opts.broadcast({
         type: PRIMARY_MANAGED_TIMERS_SNAPSHOT_TYPE,
         pid: process.pid,
         role: describeProcessRole(),
         timers: listManaged(),
+        ...(backgroundActivities === undefined ? {} : { backgroundActivities }),
         dbosSchedules,
         sentAt: now(),
       });
@@ -136,6 +144,7 @@ export interface RemotePrimaryManagedTimersSnapshot {
   pid: number;
   role: string;
   timers: ManagedEntry[];
+  backgroundActivities?: ObservedBackgroundActivity[];
   dbosSchedules: RegisteredSchedule[];
   /** The primary's own `sentAt` (epoch ms) from the broadcast message. */
   sentAt: number;
@@ -175,6 +184,9 @@ export function startWorkerPrimaryManagedTimersCache(
       pid: m.pid,
       role: m.role,
       timers: m.timers as ManagedEntry[],
+      ...(m.backgroundActivities === undefined ? {} : {
+        backgroundActivities: parseObservedBackgroundActivities(m.backgroundActivities),
+      }),
       dbosSchedules: Array.isArray(m.dbosSchedules) ? (m.dbosSchedules as RegisteredSchedule[]) : [],
       sentAt: typeof m.sentAt === 'number' ? m.sentAt : now(),
       receivedAt: now(),

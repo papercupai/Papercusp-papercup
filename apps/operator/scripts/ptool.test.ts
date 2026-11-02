@@ -2784,6 +2784,8 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     ['facts:list', 'tools:invoke'],
     ['conversations:get', 'conversations:get'],
     ['conversations:get', 'tools:invoke'],
+    ['plans:edit', 'plans:edit'],
+    ['plans:edit', 'tools:invoke'],
   ])('delivers a valid %s after 35 seconds through %s without replay', async (toolName, route) => {
     vi.useFakeTimers();
     try {
@@ -2794,6 +2796,8 @@ describe('ptool keyed result recovery without concurrent replay', () => {
         'rubrics:get': { rubricRef: 'papercusp-app-performance' },
         'facts:list': { scope: 'workspace' },
         'conversations:get': { id: 'conversation-1' },
+        'plans:edit': { slug: 'scope-plan', itemId: 'P-001', anchors: [{ path: 'src/policy.ts',
+          change: { action: 'investigate', summary: 'Confirm the existing policy boundary', reason: 'Initial source scope' } }] },
       };
       const toolArgs = inputs[toolName];
       const args = route === 'tools:invoke' ? { name: toolName, args: toolArgs } : toolArgs;

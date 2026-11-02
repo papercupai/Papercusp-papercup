@@ -3391,8 +3391,10 @@ exec "$MUTATION_PROBE_REAL_PS" "$@"
  * $parent) to `for d in /*`, destroying ~370GB. Two independent defenses are
  * pinned here, each from both sides (refusal fires; the sanctioned path works):
  *
- *   1. The DESTRUCTIVE-SUBJECT GATE — a subject file or --test command containing
- *      destructive primitives is REFUSED before anything executes in mutation
+ *   1. The DESTRUCTIVE-SUBJECT GATE — a conservative static scan may find
+ *      destructive primitives in a subject file or --test command; the result
+ *      is a lexical candidate, not proof that destructive code executes. The
+ *      probe is REFUSED before anything runs in mutation
  *      modes, unless the caller picks --fake-destructive (PATH shims, nothing
  *      deletes) or --i-know-this-deletes --sandbox-root <dir> (bwrap, / read-only).
  *      Historical mode executes an unmutated source, so it warns instead of
@@ -3453,6 +3455,31 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
     expect(safe.out).toMatch(/fake-destructive: shims installed/);
     expect(safe.out).toMatch(/MUTATION_PROBE_RESULT verdict=caught/);
     expect(read()).toBe(commentOnlySubject);
+  });
+
+  it('labels a quoted SQL grammar literal as a lexical candidate, not executed code', () => {
+    const sqlSubject = join(dir, 'sql-intent-fingerprint.ts');
+    const source = [
+      "const statementTypes = new Set(['insert', 'truncate table']);",
+      "export const marker = 'beta';",
+      '',
+    ].join('\n');
+    const ranMarker = join(dir, 'quoted-sql-test-ran');
+    writeFileSync(sqlSubject, source);
+    const refused = runProbeIO([
+      '--file', sqlSubject,
+      '--mutate', 's/beta/BETA/',
+      '--test', `: > ${ranMarker}; grep -q beta {}`,
+    ]);
+
+    expect(refused.code).toBe(2);
+    expect(refused.out).toMatch(/static scan matched destructive-code candidates/i);
+    expect(refused.out).toMatch(/lexical matches, not evidence that destructive code ran/i);
+    expect(refused.out).toMatch(/Matched lexical candidates.*current subject:.*truncate/);
+    expect(refused.out).toMatch(/1:\s*const statementTypes.*'truncate table'/);
+    expect(refused.out).not.toMatch(/probe would EXECUTE destructive code/i);
+    expect(spawnSync('test', ['-e', ranMarker], { timeout: 5_000, killSignal: 'SIGKILL' }).status).not.toBe(0);
+    expect(readFileSync(sqlSubject, 'utf8')).toBe(source);
   });
 
   it('ignores TypeScript documentation comments but still refuses a destructive call', () => {
@@ -3561,10 +3588,10 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
     ]);
 
     expect(code).toBe(0);
-    expect(out).toMatch(/historical mode: destructive primitives detected/i);
+    expect(out).toMatch(/historical mode: static scan matched destructive-code candidates/i);
     expect(out).toMatch(/no mutant is produced/i);
     expect(out).toMatch(/HISTORICAL SOURCE CAUGHT/);
-    expect(out).toMatch(/destructive_primitives=rm/);
+    expect(out).toMatch(/destructive_lexical_candidates=rm/);
   });
 
   it('--fake-destructive runs the probe with shimmed deleters: the mutant is caught and the victim SURVIVES', () => {

@@ -9,6 +9,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
+const canonicalBackground = vi.hoisted(() => vi.fn(async () => ({ data: {
+  ok: true, mode: 'background', status: 'pending', detachedRunId: 'canonical-run',
+  taskId: 'canonical-task', statusRef: { tool: 'testing:run-status', args: { runId: 'canonical-run' } },
+} })));
+vi.mock('../testing/run', () => ({ default: {
+  args: { safeParse: (args: unknown) => ({ success: true, data: args }) }, handler: canonicalBackground,
+} }));
+
 // The response contract is independent of child-process execution. Keep this
 // regression deterministic by replacing only the launcher while preserving the
 // real command-resolution and cwd validation paths below.
@@ -19,6 +27,7 @@ vi.mock('./bash-jobs', async (importOriginal) => ({
 vi.mock('./exec-sandbox', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./exec-sandbox')>()),
   capabilityExecSandboxEnabled: vi.fn(async () => false),
+  capabilityExecSandboxPolicy: vi.fn(async () => ({ enabled: false, required: false })),
 }));
 vi.mock('../../../../../scripts/lib/tsc-baseline-gate.mjs', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../../../scripts/lib/tsc-baseline-gate.mjs')>()),
@@ -520,13 +529,8 @@ describe('capability:inspect — background launch response', () => {
     );
   });
 
-  it('routes a background integration test through the repository test router', async () => {
-    vi.mocked(startBackground).mockReturnValue({
-      id: 'bash-integration-router',
-      taskId: 'task-integration-router',
-      logPath: '/tmp/bash-integration-router.log',
-    } as never);
-
+  it('routes a background integration test through canonical input preparation', async () => {
+    const bashCalls = vi.mocked(startBackground).mock.calls.length;
     const result = await inspect.handler(
       { check: 'test', package: 'pkg', path: 'src/foo.integration.test.ts', run_in_background: true },
       inspectCtx(),
@@ -535,18 +539,13 @@ describe('capability:inspect — background launch response', () => {
 
     expect(payload).toMatchObject({
       ok: true,
-      bash_id: 'bash-integration-router',
-      status: 'running',
-      command: 'npm run test:file -- pkg/src/foo.integration.test.ts',
-      cwd: INSPECT_STATE,
+      mode: 'background', status: 'pending', detachedRunId: 'canonical-run',
     });
-    expect(vi.mocked(startBackground)).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: 'npm run test:file -- pkg/src/foo.integration.test.ts',
-        cwd: INSPECT_STATE,
-      }),
-      expect.any(Number),
+    expect(canonicalBackground).toHaveBeenLastCalledWith(
+      { files: [join(INSPECT_PACKAGE, 'src/foo.integration.test.ts')], background: true },
+      expect.objectContaining({ projectDir: INSPECT_STATE }),
     );
+    expect(vi.mocked(startBackground)).toHaveBeenCalledTimes(bashCalls);
   });
 
   it('normalizes a background repo-relative test path supplied with a package', async () => {
@@ -569,17 +568,11 @@ describe('capability:inspect — background launch response', () => {
 
     expect(payload).toMatchObject({
       ok: true,
-      bash_id: 'bash-package-repo-relative-test',
-      status: 'running',
-      command: 'npx vitest run src/foo.test.ts',
-      cwd: INSPECT_PACKAGE,
+      mode: 'background', status: 'pending', detachedRunId: 'canonical-run',
     });
-    expect(vi.mocked(startBackground)).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: 'npx vitest run src/foo.test.ts',
-        cwd: INSPECT_PACKAGE,
-      }),
-      expect.any(Number),
+    expect(canonicalBackground).toHaveBeenLastCalledWith(
+      { files: [join(INSPECT_PACKAGE, 'src/foo.test.ts')], background: true },
+      expect.objectContaining({ projectDir: INSPECT_STATE }),
     );
   });
 
@@ -598,17 +591,11 @@ describe('capability:inspect — background launch response', () => {
 
     expect(payload).toMatchObject({
       ok: true,
-      bash_id: 'bash-repo-relative-test',
-      status: 'running',
-      command: 'npx vitest run packages/operator-core/lib/foo.test.ts',
-      cwd: INSPECT_STATE,
+      mode: 'background', status: 'pending', detachedRunId: 'canonical-run',
     });
-    expect(vi.mocked(startBackground)).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: 'npx vitest run packages/operator-core/lib/foo.test.ts',
-        cwd: INSPECT_STATE,
-      }),
-      expect.any(Number),
+    expect(canonicalBackground).toHaveBeenLastCalledWith(
+      { files: [join(INSPECT_STATE, 'packages/operator-core/lib/foo.test.ts')], background: true },
+      expect.objectContaining({ projectDir: INSPECT_STATE }),
     );
   });
 });

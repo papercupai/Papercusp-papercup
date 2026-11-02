@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 // EI-24100872054224181: a testing:run { evidence } refused by the mutation-probe fence used to
 // register pending spec-evidence rows first and then FINISH them, leaving two never-settling
@@ -320,6 +321,43 @@ it('retains replay report bytes after the detached store consumes its temporary 
   expect(manifest.cleanup.complete).toBe(true);
   await expect(readFile(join(result.artifacts!.reports, 'report.json'), 'utf8')).resolves.toBe(report);
   await expect(readFile(join(result.artifacts!.reports, 'report-sidecar.txt'), 'utf8')).resolves.toBe(sidecar);
+});
+
+it('direct background core preserves dirty source hashes and one router launch through terminal custody', async () => {
+  const root = await makeTestRoot(true);
+  const source = "import { it } from 'vitest';\nit('dirty local subject', () => {});\n";
+  await writeFile(join(root, 'feature.test.ts'), source);
+  phases.snapshot.mockResolvedValue({ commit: 'fixture-head', porcelain: ' M feature.test.ts' });
+  const deadline = runArtifacts.testRunDeadline(60_000);
+  const request = buildDetachedTestRunRequest({ root, files: ['feature.test.ts'],
+    timeoutMs: 60_000, deadline, background: true });
+  const sink = dirname(request.detachedReportArtifacts![0]!.reportPath);
+  roots.push(sink);
+  const runRouterFn = vi.fn(async (args: string[], _root: string, env: NodeJS.ProcessEnv) => {
+    expect(env.PC_EXECUTED_INPUTS_DIR).toBeTruthy();
+    expect(env.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS).toBe(String(deadline.childCutoffAtMs));
+    const output = args.find(arg => arg.startsWith('--outputFile='))!.slice('--outputFile='.length);
+    await writeFile(output, JSON.stringify({ success: true, numPassedTests: 1, numFailedTests: 0,
+      numPendingTests: 0, testResults: [{ name: join(root, 'feature.test.ts'), status: 'passed',
+        assertionResults: [{ title: 'dirty local subject', fullName: 'dirty local subject', status: 'passed' }] }] }));
+    return { code: 0, signal: null, timedOut: false, aborted: false, output: '' };
+  });
+  // Execute the same core contract embedded in the detached child, with only the
+  // router process replaced. No timeout/recovery launch is permitted.
+  const result = await runTestFilesCore({ root, files: ['feature.test.ts'], runId: 'direct-dirty',
+    timeoutMs: 60_000, deadline, allowDetachedRecovery: false },
+  { runRouterFn, artifactBaseDir: root, reportDirectories: { [root]: sink } });
+  expect(result).toMatchObject({ ok: true, runId: 'direct-dirty', passed: 1 });
+  expect(runRouterFn).toHaveBeenCalledOnce();
+  expect(phases.detach).not.toHaveBeenCalled();
+  const sourcePacket = JSON.parse(await readFile(join(result.artifacts!.directory, 'source.json'), 'utf8'));
+  expect(sourcePacket.inputs[0]).toMatchObject({ path: 'feature.test.ts',
+    sha256: createHash('sha256').update(source).digest('hex') });
+  expect(JSON.parse(await readFile(result.artifacts!.manifest, 'utf8'))).toMatchObject({
+    childState: 'closed', cleanup: { complete: true }, deadline,
+  });
+  await rm(sink, { recursive: true, force: true });
+  expect(JSON.parse(await readFile(join(result.artifacts!.reports, 'report.json'), 'utf8')).numPassedTests).toBe(1);
 });
 
 it('R5 keeps a caller deadline within the foreground cap unchanged and foreground-only', async () => {

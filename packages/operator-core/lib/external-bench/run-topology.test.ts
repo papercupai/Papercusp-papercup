@@ -84,6 +84,114 @@ function fakeAgent(overrides: Partial<AgentRunOutput> = {}) {
 /** The declared ensemble selector every judge-best run must carry. */
 const SELECTOR = { id: 'fixture-judge', kind: 'judge-agent' as const };
 
+test.each(['costUsdMeasurementMissing', 'modelCallsMeasurementMissing', 'tokenUsageMeasurementMissing'])(
+  'unknown %s stops new tasks, preserves known spend and retains the attempted denominator', async missing => {
+    const agent = fakeAgent({ armMeta: { [missing]: true }, traceRef: 'native:unknown' });
+    const f = fakeSeam();
+    const persisted: string[] = [];
+    const result = await runTopology({ spec: resolveCoordinationSpec(loadBuiltinBlueprint('dist-broadcast').blueprint),
+      backlog: [task('unknown-first'), task('unfunded-next')], seam: f.seam, budget: { maxCostUsd: 1 },
+      rowMeta: ROW_META, runId: 'unknown-billing', seed: 1, now: fakeClock(), runAgent: agent.run, cap: 1,
+      onResult: row => { persisted.push(row.taskId); } });
+    assert.equal(agent.calls.length, 1);
+    assert.equal(result.accountingUnknown, true);
+    assert.equal(result.budgetExhausted, false, 'unknown is separate from measured exhaustion');
+    assert.equal(result.costUsdSpent, 0.01, 'retain the measured subtotal');
+    assert.deepEqual(result.attemptedTaskIds, ['unknown-first']);
+    assert.deepEqual(result.skippedTaskIds, ['unfunded-next']);
+    assert.deepEqual(persisted, ['unknown-first']);
+    assert.equal(result.rows[0].generationStatus, 'error');
+    assert.equal(result.rows[0].resolved, null);
+    assert.equal(result.rows[0].armMeta?.[missing], true);
+    assert.deepEqual(result.rows[0].traceRefs, ['native:unknown']);
+    assert.equal(f.graded.length, 0);
+    assert.equal(f.tornDown.length, 1);
+  });
+
+test.each(['pair', 'ensemble-solve', 'hier-lead-worker'])(
+  'unknown accounting stops later %s contributors before they spend', async blueprint => {
+    const spec = resolveCoordinationSpec(loadBuiltinBlueprint(blueprint).blueprint);
+    const agent = fakeAgent({ armMeta: { costUsdMeasurementMissing: true } });
+    const f = fakeSeam();
+    const result = await runTopology({ spec, backlog: [task('one')], seam: f.seam,
+      budget: { maxCostUsd: 1 }, rowMeta: ROW_META, runId: `unknown-${blueprint}`, seed: 1,
+      now: fakeClock(), runAgent: agent.run, cap: 1, ensembleSize: 3, ensembleSelector: SELECTOR });
+    assert.equal(agent.calls.length, 1, 'no navigator, second solver, judge or worker after an unknown contributor');
+    assert.equal(result.accountingUnknown, true);
+    assert.equal(result.costUsdSpent, 0.01);
+    assert.equal(f.graded.length, 0);
+    assert.equal(f.tornDown.length, f.cloned.length);
+  });
+
+test.each([['costUsd', Number.NaN], ['modelCalls', -1], ['tokensIn', Infinity]] as const)(
+  'invalid measured %s cannot poison the budget or authorize another native run', async (field, value) => {
+    const agent = fakeAgent({ [field]: value });
+    const result = await runTopology({ spec: resolveCoordinationSpec(loadBuiltinBlueprint('dist-broadcast').blueprint),
+      backlog: [task('invalid-first'), task('unfunded-next')], seam: fakeSeam().seam,
+      budget: { maxCostUsd: 1 }, rowMeta: ROW_META, runId: 'invalid-usage', seed: 1,
+      now: fakeClock(), runAgent: agent.run, cap: 1 });
+    assert.equal(agent.calls.length, 1);
+    assert.equal(result.accountingUnknown, true);
+    assert.equal(result.rows[0].generationStatus, 'error');
+    assert.ok(Number.isFinite(result.costUsdSpent) && result.costUsdSpent >= 0);
+    assert.ok(Number.isFinite(result.tokensSpent) && result.tokensSpent >= 0);
+    assert.ok(Number.isFinite(result.modelCallsSpent) && result.modelCallsSpent >= 0);
+  });
+
+test.each(['pair', 'ensemble-solve'])(
+  'unknown later %s contributor retains every known subtotal and invalidates the aggregate', async blueprint => {
+    const f = fakeSeam(), agent = fakeAgent();
+    const run = async (input: RunAgentInput<FakeHandle>) => {
+      const output = await agent.run(input);
+      return agent.calls.length === 2 ? { ...output, armMeta: { costUsdMeasurementMissing: true } } : output;
+    };
+    const result = await runTopology({ spec: resolveCoordinationSpec(loadBuiltinBlueprint(blueprint).blueprint),
+      backlog: [task('partial')], seam: f.seam, budget: { maxCostUsd: 1 }, rowMeta: ROW_META,
+      runId: 'partial-accounting', seed: 1, now: fakeClock(), runAgent: run, cap: 1,
+      ensembleSize: 3, ensembleSelector: SELECTOR });
+    assert.equal(agent.calls.length, 2);
+    assert.equal(result.accountingUnknown, true);
+    assert.equal(result.costUsdSpent, 0.02);
+    assert.equal(result.rows[0].costUsd, 0.02);
+    assert.equal(result.rows[0].armMeta?.costUsdMeasurementMissing, true);
+    assert.equal(result.rows[0].generationStatus, 'error');
+    assert.equal(result.rows[0].resolved, null);
+    assert.equal(f.graded.length, 0);
+  });
+
+test('a thrown native invocation cannot authorize another task with assumed zero spend', async () => {
+  let calls = 0;
+  const result = await runTopology({ spec: resolveCoordinationSpec(loadBuiltinBlueprint('dist-broadcast').blueprint),
+    backlog: [task('unknown-request'), task('unfunded-next')], seam: fakeSeam().seam,
+    budget: { maxCostUsd: 1 }, rowMeta: ROW_META, runId: 'thrown-native', seed: 1,
+    now: fakeClock(), cap: 1, runAgent: async () => { calls++; throw Error('native receipt lost'); } });
+  assert.equal(calls, 1);
+  assert.equal(result.accountingUnknown, true);
+  assert.equal(result.rows[0].armMeta?.costUsdMeasurementMissing, true);
+  assert.match(result.rows[0].generationError!, /native receipt lost/);
+  assert.deepEqual(result.skippedTaskIds, ['unfunded-next']);
+});
+
+test('a clone finishing after another unit reports unknown spend never dispatches a native agent', async () => {
+  let releaseClone!: () => void;
+  const ready = new Promise<void>(resolve => { releaseClone = resolve; });
+  const f = fakeSeam(), agent = fakeAgent({ armMeta: { costUsdMeasurementMissing: true } });
+  const result = await runTopology({ spec: resolveCoordinationSpec(loadBuiltinBlueprint('dist-broadcast').blueprint),
+    backlog: [task('first'), task('preparing')], seam: { ...f.seam, clone: async task => {
+      if (task.instanceId === 'preparing') await ready;
+      return f.seam.clone(task);
+    } }, budget: { maxCostUsd: 1 }, rowMeta: ROW_META, runId: 'concurrent-accounting', seed: 1,
+    now: fakeClock(), cap: 2, runAgent: async input => {
+      const output = await agent.run(input);
+      setTimeout(releaseClone, 0);
+      return output;
+    } });
+  assert.equal(agent.calls.length, 1);
+  assert.equal(result.accountingUnknown, true);
+  assert.equal(result.rows.length, 2, 'both allocated attempts remain visible');
+  assert.equal(f.tornDown.length, 2);
+});
+
 test('separate cache tokens exhaust topology headroom and remain in the scored total', async () => {
   const cached = { tokensCacheRead: 20, tokensCacheWrite: 5 };
   const agent = fakeAgent({ tokensIn: 10, tokensOut: 5, ...cached });

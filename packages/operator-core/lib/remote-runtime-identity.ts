@@ -20,11 +20,12 @@
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { parse as parseToml } from '@iarna/toml';
 import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from './runtime-vintage';
 import { getPosthogConfigWithSource } from './posthog-config';
 import { readProcessIdentity } from './process-identity';
@@ -208,9 +209,39 @@ function workerConfigDigest(config: Record<string, unknown>): string {
   return sha256(workerCanonical(normalized));
 }
 
+/** Read only unexpired local OAuth state; Wrangler still owns refresh and other auth modes. */
+async function freshWranglerOAuthToken(): Promise<string | null> {
+  // Preserve Wrangler's environment precedence and its non-default auth configuration.
+  if (['CF_API_TOKEN', 'CLOUDFLARE_API_KEY', 'CF_API_KEY', 'CLOUDFLARE_EMAIL', 'CF_EMAIL'].some(key => process.env[key]) ||
+      (process.env.WRANGLER_API_ENVIRONMENT && process.env.WRANGLER_API_ENVIRONMENT !== 'production') ||
+      (process.env.WRANGLER_COMPLIANCE_REGION && process.env.WRANGLER_COMPLIANCE_REGION !== 'public')) return null;
+  try {
+    const home = homedir();
+    const legacy = join(home, '.wrangler');
+    const legacyDirectory = await stat(legacy).then(info => info.isDirectory(), error => {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
+      throw error;
+    });
+    const configHome = process.env.XDG_CONFIG_HOME || (process.platform === 'darwin' ? join(home, 'Library', 'Preferences')
+      : process.platform === 'win32' ? join(process.env.APPDATA || join(home, 'AppData', 'Roaming'), 'xdg.config')
+      : join(home, '.config'));
+    if (!legacyDirectory && !isAbsolute(configHome)) return null;
+    // Matches Wrangler 4's getGlobalWranglerConfigPath/getAuthConfigFilePath. Do not
+    // try the XDG file when a legacy directory exists, even if its file is missing.
+    const config = parseToml(await readFile(join(legacyDirectory ? legacy : join(configHome, '.wrangler'),
+      'config', 'default.toml'), 'utf8'));
+    const token = str(config.oauth_token)?.trim();
+    const expiry = config.expiration_time;
+    const expiresAt = expiry instanceof Date ? expiry.getTime() : typeof expiry === 'string' ? Date.parse(expiry) : NaN;
+    return token && Number.isFinite(expiresAt) && expiresAt > Date.now() + 60_000 ? token : null;
+  } catch { return null; }
+}
+
 async function cloudflareWorkerToken(): Promise<string | null> {
   const fromEnv = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (fromEnv) return fromEnv;
+  const localOAuth = await freshWranglerOAuthToken();
+  if (localOAuth) return localOAuth;
   // Reuse Wrangler's supported credential loader, including refresh of its OAuth state.
   // --no-install forbids fetching a CLI; captured stdout/stderr never leave this function.
   try {
@@ -264,8 +295,9 @@ const cloudflareWorker: RemoteRuntimeProvider = {
       return body.result;
     };
     try {
-      const deployment = workerDeployment(await get('/deployments'));
-      const settings = record(await get('/settings'));
+      const [deploymentDoc, settingsDoc] = await Promise.all([get('/deployments'), get('/settings')]);
+      const deployment = workerDeployment(deploymentDoc);
+      const settings = record(settingsDoc);
       if (!deployment || !settings || !Array.isArray(settings.bindings)) return null;
       const settingsDigest = workerConfigDigest(settings);
       const versions = await Promise.all((deployment.versions as Array<{ version_id: string }>).map(async weight => {
@@ -280,8 +312,9 @@ const cloudflareWorker: RemoteRuntimeProvider = {
       if (versions.some(version => !version)) return null;
       // Re-read both mutable surfaces: a deploy or settings change during the measurement
       // makes it unknown, rather than constructing an identity that never served.
-      const after = workerDeployment(await get('/deployments'));
-      const settingsAfter = record(await get('/settings'));
+      const [afterDoc, settingsAfterDoc] = await Promise.all([get('/deployments'), get('/settings')]);
+      const after = workerDeployment(afterDoc);
+      const settingsAfter = record(settingsAfterDoc);
       if (!after || !settingsAfter || workerCanonical(after) !== workerCanonical(deployment) ||
         workerConfigDigest(settingsAfter) !== settingsDigest) return null;
       return JSON.stringify({ account, script, deployment, versions, settingsDigest });

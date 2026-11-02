@@ -13,6 +13,8 @@
 import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import { getOrgPg } from '@papercusp/db-org';
 import type { OrgTestDb } from '../../../../../test/_org-test-db';
+import { activeWorkspaceId } from '../../../../workspace-registry';
+import { getAmendReceipt, trackAmendRun } from '../../../../agent-tools/rubrics/amend-receipts';
 import {
   validIdempotencyKey,
   lookupStoredMcpResult,
@@ -115,6 +117,86 @@ describe('MCP result replay (audit P-046 / EI-68)', () => {
     const replayed = await lookupStoredMcpResult(OWNER_A, 'k1');
     expect(replayed!.content).toEqual(RESULT.content);
   });
+
+  it('reclaims a logical orphan through a legacy pending cache using the same transport key', async () => {
+    const outerKey = 'legacy-domain-orphan';
+    const logicalKey = 'same-logical-amendment';
+    const rubricRef = 'acceptance-replay-orphan';
+    const workspace = activeWorkspaceId();
+    const pending: StoredMcpResult = { content: [{ type: 'text', text: JSON.stringify({
+      ok: true, pending: true, idempotencyKey: logicalKey,
+      receipt: { registered: true, rubricRef, idempotencyKey: logicalKey },
+    }) }] };
+    // Seed a pre-fix cache row and an expired logical lease in isolated Postgres.
+    await db.adminSql`INSERT INTO harness_shared.mcp_tool_results
+      (owner_key, idempotency_key, tool_name, workspace_id, result, is_error)
+      VALUES (${OWNER_A}, ${outerKey}, 'rubrics:amend', ${workspace}, ${JSON.stringify(pending)}::text::jsonb, false)`;
+    await db.adminSql`INSERT INTO harness_shared.rubric_amend_receipts
+      (workspace_id, rubric_ref, idempotency_key, state, started_at)
+      VALUES (${workspace}, ${rubricRef}, ${logicalKey}, 'running', now() - interval '16 minutes')`;
+    // A cached pending response must not prevent the domain's atomic reclaim.
+    expect(await lookupStoredMcpResult(OWNER_A, outerKey)).toBeNull();
+    let executions = 0;
+    const committed = { ok: true, pending: false, idempotencyKey: logicalKey, applied: 'original' };
+    expect(await trackAmendRun(logicalKey, rubricRef, async () => {
+      executions++;
+      return committed;
+    })).toEqual(committed);
+    expect(await getAmendReceipt(rubricRef, logicalKey)).toMatchObject({ state: 'committed' });
+    const terminal = { content: [{ type: 'text', text: JSON.stringify(committed) }] };
+    await storeMcpResult({ ownerKey: OWNER_A, idempotencyKey: outerKey, toolName: 'rubrics:amend',
+      workspaceId: workspace, result: terminal });
+    expect(await lookupStoredMcpResult(OWNER_A, outerKey)).toMatchObject({ content: terminal.content });
+    // Both domain idempotency and terminal transport first-write-wins survive.
+    expect(await trackAmendRun(logicalKey, rubricRef, async () => {
+      executions++;
+      return { ok: true, duplicate: true };
+    })).toEqual(committed);
+    expect(executions).toBe(1);
+    await storeMcpResult({ ownerKey: OWNER_A, idempotencyKey: outerKey, toolName: 'rubrics:amend',
+      workspaceId: workspace, result: RESULT });
+    expect(await lookupStoredMcpResult(OWNER_A, outerKey)).toMatchObject({ content: terminal.content });
+  });
+
+  it.each(['text', 'structured', 'pre-door'] as const)(
+    'does not cache a new domain-pending receipt (%s)', async encoding => {
+      const payload = { ok: true, pending: true, idempotencyKey: 'logical-pending',
+        receipt: { registered: true, rubricRef: 'acceptance-replay', idempotencyKey: 'logical-pending' } };
+      const raw: StoredMcpResult = { content: [{ type: 'text', text: JSON.stringify(payload) }] };
+      const result: StoredMcpResult = encoding === 'structured'
+        ? { content: [{ type: 'text', text: 'Poll the receipt' }], structuredContent: payload }
+        : encoding === 'pre-door'
+          ? { content: [{ type: 'text', text: '{"schemaVersion":"papercusp.output-envelope/v1","state":"incomplete"}' }] }
+          : raw;
+      const key = `pending-${encoding}`;
+      await storeMcpResult({ ownerKey: OWNER_A, idempotencyKey: key, toolName: 'rubrics:amend',
+        workspaceId: activeWorkspaceId(), result, ...(encoding === 'pre-door' ? { replaySource: raw } : {}) });
+      const rows = await db.adminSql`SELECT result FROM harness_shared.mcp_tool_results
+        WHERE owner_key = ${OWNER_A} AND idempotency_key = ${key}`;
+      expect(rows).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ['pending-false', 'rubrics:amend', false, 'logical', false],
+    ['unrelated-tool', 'work_items:create', true, 'logical', false],
+    ['mismatched-receipt', 'rubrics:amend', true, 'different', false],
+    ['error', 'rubrics:amend', true, 'logical', true],
+  ] as const)('preserves first-write-wins for terminal or unrelated pending data (%s)',
+    async (label, toolName, pending, receiptKey, isError) => {
+      const key = `terminal-${label}`;
+      const result: StoredMcpResult = { content: [{ type: 'text', text: JSON.stringify({
+        ok: true, pending, idempotencyKey: 'logical',
+        receipt: { rubricRef: 'acceptance-replay', idempotencyKey: receiptKey },
+      }) }], ...(isError ? { isError } : {}) };
+      await storeMcpResult({ ownerKey: OWNER_A, idempotencyKey: key, toolName,
+        workspaceId: activeWorkspaceId(), result });
+      expect(await lookupStoredMcpResult(OWNER_A, key)).toMatchObject({ content: result.content });
+      await storeMcpResult({ ownerKey: OWNER_A, idempotencyKey: key, toolName,
+        workspaceId: activeWorkspaceId(), result: RESULT });
+      expect(await lookupStoredMcpResult(OWNER_A, key)).toMatchObject({ content: result.content });
+    },
+  );
 
   it('error results replay with isError preserved', async () => {
     await storeMcpResult({

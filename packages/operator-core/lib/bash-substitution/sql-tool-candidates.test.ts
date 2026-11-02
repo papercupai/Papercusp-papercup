@@ -54,6 +54,43 @@ it('OUTCOME-P-004', async () => {
   expect(await mineSqlCandidateSlice(opts, { fetch })).toMatchObject({ status: 'ok', cursor: { id: '1' } });
   expect(fetch.mock.calls[1]![0]).toMatchObject({ after: undefined });
 });
+it('persists a full census page with bounded bulk statements', async () => {
+  const observations = Array.from({ length: 250 }, (_, index) => {
+    const id = String(index + 1);
+    return observeSqlDemand({ workspaceId: 'test', harnessSlug: 'h', namespace: 'ledger', callId: id,
+      resultCallId: id, identityAuthority: 'ledger', provider: 'ledger', actor: 'su-actor', verifiedAgent: true,
+      at: '2026-10-24T00:00:00Z', origin: 'agent', status: 'ok', durationMs: 3,
+      sql: 'SELECT id FROM jobs', sourceComplete: true, copyRef: `tool-invocation:${id}` }, scope);
+  });
+  const persisted = observations.map((observation, index) => ({ observation,
+    source_id: String(index + 1), source_token: observation.sourceToken }));
+  const tx = vi.fn(async (parts: TemplateStringsArray, ..._values: unknown[]) => {
+    const query = parts.join('');
+    if (query.includes('SELECT to_char(cursor_at'))
+      return [{ cursor_at: null, cursor_id: null, pending_until: null }];
+    if (query.includes('SELECT observation')) return persisted;
+    return [];
+  });
+  const client = Object.assign(vi.fn(async () => []), {
+    begin: async (body: (t: unknown) => Promise<unknown>) => body(tx),
+  });
+  const opts: SqlMiningOptions = { workspaceId: 'test', harnessSlug: 'h', scope, authorize: async () => true,
+    now: Date.parse('2026-10-25T00:00:00Z'), rowBudget: 250, timeBudgetMs: 30_000,
+    client: client as unknown as SqlMiningOptions['client'] };
+  const fetch = vi.fn(async () => ({ observations, coverage: { ...coverage, scannedRows: 250, cap: 250 }, next: null,
+    last: { at: '2026-10-24T00:00:00Z', id: '250' },
+    sources: observations.map((observation, index) => ({ token: observation.sourceToken, id: String(index + 1) })) }));
+
+  expect(await mineSqlCandidateSlice(opts, { fetch })).toMatchObject({ status: 'ok', rows: 250, cursor: { id: '250' } });
+  const operationWrites = tx.mock.calls.filter(([parts]) => parts.join('').includes('INSERT INTO harness_shared.sql_intent_operations'));
+  expect(operationWrites).toHaveLength(1);
+  const batch = operationWrites[0]!.find(value => typeof value === 'string' && value.startsWith('['));
+  expect(JSON.parse(batch as string)).toHaveLength(250);
+  const exampleWrites = tx.mock.calls.filter(([parts]) => parts.join('').includes('INSERT INTO harness_shared.sql_intent_examples'));
+  expect(exampleWrites).toHaveLength(1);
+  const exampleBatch = exampleWrites[0]!.find(value => typeof value === 'string' && value.startsWith('['));
+  expect(JSON.parse(exampleBatch as string)).toHaveLength(250);
+});
 it('R17-DURABLE', async () => {
   const events: string[] = [], observation = row();
   const tx = Object.assign(vi.fn(async (parts: TemplateStringsArray) => {

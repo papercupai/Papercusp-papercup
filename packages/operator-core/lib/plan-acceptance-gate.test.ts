@@ -447,6 +447,8 @@ describe('evaluatePlanAcceptanceGate', () => {
     mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'some-rubric', template: 'rubric', template_slug: null }]));
     const v = await evaluatePlanAcceptanceGate('some-rubric');
     expect(v).toMatchObject({ satisfied: true, skipped: 'rubric-template-plan' });
+    expect(v.repairAction).toMatchObject({ kind: 'diagnostic', nextVerb: null });
+    expect(v.repairAction?.instruction).toContain('shipped retires the rubric');
   });
 
   it('a scheduled template INSTANCE is exempt', async () => {

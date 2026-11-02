@@ -28,8 +28,8 @@
 #    Restart only after EMBED_WATCHDOG_FAILURE_THRESHOLD consecutive failed
 #    probes. Any passing probe, or a skipped one, resets the count.
 #
-# A failed probe while /healthz proves the worker alive and its queue saturated
-# is deferred (not counted): the probe waited behind real work.
+# Saturation alone cannot distinguish busy from wedged. Defer a failed probe
+# only when successful gemma query inference advances in the same process.
 #
 # Everything external is overridable so the behaviour can be tested with stubs.
 set -uo pipefail
@@ -43,6 +43,7 @@ GRACE_SEC="${EMBED_WATCHDOG_STARTUP_GRACE_SEC:-180}"
 THRESHOLD="${EMBED_WATCHDOG_FAILURE_THRESHOLD:-2}"
 PROBE_TIMEOUT_SEC="${EMBED_WATCHDOG_PROBE_TIMEOUT_SEC:-15}"
 STATE_FILE="${EMBED_WATCHDOG_STATE_FILE:-${XDG_RUNTIME_DIR:-/tmp}/papercup-embed-sidecar-watchdog.failures}"
+PROGRESS_FILE="${STATE_FILE}.progress"
 NOW_EPOCH="${EMBED_WATCHDOG_NOW_EPOCH:-$(date +%s)}"
 
 reset_failures() {
@@ -60,6 +61,7 @@ if ! "$SYSTEMCTL" --user is-active --quiet "$UNIT"; then
   # Stopped, failed, or still in ExecStartPre: systemd's own Restart= policy
   # owns those states. Probing here is what turned a slow start into a loop.
   reset_failures
+  rm -f -- "$PROGRESS_FILE"
   exit 0
 fi
 
@@ -69,6 +71,7 @@ entered="${entered#@}"
 if [[ "$entered" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - entered < GRACE_SEC )); then
   echo "embed sidecar active for $(( NOW_EPOCH - entered ))s (< ${GRACE_SEC}s startup grace) — skipping probe"
   reset_failures
+  rm -f -- "$PROGRESS_FILE"
   exit 0
 fi
 
@@ -79,13 +82,30 @@ if "$CURL" -fsS --max-time "$PROBE_TIMEOUT_SEC" \
     "$BASE_URL/embed" \
   | "$JQ" -e '(.vectors | arrays | length == 1 and (.[0] | arrays | length > 0)) and (.cache | .hits == 0 and .coalesced == 0 and .inferred == 1)' >/dev/null; then
   reset_failures
+  rm -f -- "$PROGRESS_FILE"
   exit 0
 fi
 
-if "$CURL" -fsS --max-time 2 "$BASE_URL/healthz" \
-  | "$JQ" -e '(.ok == true) and (.workers.embedder.alive == true) and (.queue.saturated == true) and (.queue.depth > 0)' >/dev/null; then
-  echo 'embed worker probe failed while the live queue is saturated — deferring restart'
-  exit 0
+health="$("$CURL" -fsS --max-time 2 "$BASE_URL/healthz" 2>/dev/null || true)"
+progress="$(printf '%s' "$health" | "$JQ" -er '
+  select(.ok == true and .workers.embedder.alive == true and .queue.saturated == true and .queue.depth > 0)
+  | [.pid, .uptimeMs, .inferenceProgress["gemma:query"].completed]
+  | select(all(.[]; type == "number" and . >= 0 and floor == .))
+  | @tsv' 2>/dev/null || true)"
+if [[ -n "$progress" ]]; then
+  read -r pid uptime completed <<< "$progress"
+  previous="$(cat -- "$PROGRESS_FILE" 2>/dev/null || true)"
+  previous_pid='' previous_uptime='' previous_completed=''
+  read -r previous_pid previous_uptime previous_completed <<< "$previous"
+  printf '%s\n' "$progress" > "$PROGRESS_FILE"
+  if [[ "$previous_pid" == "$pid" && "$previous_uptime" =~ ^[0-9]+$ && "$previous_completed" =~ ^[0-9]+$ ]] \
+      && (( uptime >= previous_uptime && completed > previous_completed )); then
+    reset_failures
+    echo 'embed worker probe failed while successful gemma query inference advances — deferring restart'
+    exit 0
+  fi
+else
+  rm -f -- "$PROGRESS_FILE"
 fi
 
 failures=$(( $(read_failures) + 1 ))
@@ -96,5 +116,6 @@ if (( failures < THRESHOLD )); then
 fi
 
 reset_failures
+rm -f -- "$PROGRESS_FILE"
 echo "embed worker probe failed (${failures}/${THRESHOLD} consecutive) — restarting papercup-embed-sidecar"
 "$SYSTEMCTL" --user restart --no-block "$UNIT"

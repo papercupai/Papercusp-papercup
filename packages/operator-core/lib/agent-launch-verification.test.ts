@@ -17,7 +17,7 @@
  *
  * Run: npm run test:file -- packages/operator-core/lib/agent-launch-verification.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   FRESH_VERIFY_SILENCE_MS,
   LAUNCH_STATUSLINE_TOOLS,
@@ -67,6 +67,40 @@ const session = (over: Partial<FreshLaunchSessionProbe> = {}): FreshLaunchSessio
 };
 
 describe('verifyFreshLaunchStarted — the ACCEPTANCE CASE (adv_session 14842)', () => {
+  it.each(['session', 'process'] as const)(
+    'bounds a stalled %s evidence read by the original verification deadline (EI-27691319662534418)',
+    async (stage) => {
+      vi.useFakeTimers();
+      let releaseRead!: () => void;
+      const blockedRead = new Promise<never[]>((resolve) => { releaseRead = () => resolve([]); });
+      let settled = false;
+      const observed = verifyFreshLaunchStarted(ARGS, {
+        timeoutMs: 10,
+        pollMs: 20,
+        probe: stage === 'session'
+          ? () => blockedRead
+          : fixedProbe([session({ msSinceLastSignal: 60_000 })]),
+        probeProcessEvidence: () => blockedRead,
+      }).then(
+        (verdict) => { settled = true; return { verdict }; },
+        (error: unknown) => { settled = true; return { error }; },
+      );
+      try {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(settled, 'a stalled instrument must not leave launch completion pending forever').toBe(true);
+        expect(await observed).toMatchObject({ error: {
+          message: expect.stringMatching(/verification.*deadline/i),
+        } });
+      } finally {
+        // Observe late settlement too, without leaving a promise or fake clock
+        // behind when the pre-fix implementation fails the boundedness assertion.
+        releaseRead();
+        await observed;
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it('returns agentStarted:FALSE for a session that booted, beat twice, then went silent', async () => {
     // 14842's exact shape: a row exists, an owner id exists, only the two
     // statusline calls were ever made (so realCalls === 0), no presence row, and

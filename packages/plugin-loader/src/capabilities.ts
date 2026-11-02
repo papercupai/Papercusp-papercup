@@ -15,7 +15,9 @@
  *   - UnknownMethodError     — service has no method named X
  */
 
-import type { Capability, ServiceDef } from '@papercusp/plugin-sdk';
+import type { Capability, ServiceDef, ToolDefinition } from '@papercusp/plugin-sdk';
+import type { Principal } from '@papercusp/agent-mcp';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 export class MissingCapabilityError extends Error {
   constructor(public pluginName: string, public capability: Capability | string) {
@@ -36,7 +38,7 @@ export class UnknownMethodError extends Error {
 
 export interface CapabilityCheckContext {
   pluginName: string;
-  capabilities: Capability[];
+  capabilities: readonly Capability[];
   /**
    * User-granted capability set for this (plugin, harness) pair. When
    * present, capability checks AND the manifest-declared set with this
@@ -50,7 +52,138 @@ export interface CapabilityCheckContext {
    *
    * Rust-port-feedback item 3 — biggest single security improvement.
    */
-  granted?: Capability[];
+  granted?: readonly Capability[];
+  /** Informational identity only. A serialized copy never carries authority. */
+  invocation?: Readonly<{
+    id: string;
+    toolName: string;
+    principalSlug: string;
+    workspaceId: string;
+    parentInvocationId?: string;
+  }>;
+}
+
+export interface InvocationCapabilityInput {
+  pluginName: string;
+  capabilities: readonly Capability[];
+  granted: readonly Capability[];
+  /** Resolved by the host's transport authenticator, never from handler input. */
+  principal: Principal;
+  invocationId: string;
+  /** Trusted registered tool metadata, further restricting the plugin manifest. */
+  declaration: Pick<ToolDefinition, 'name' | 'capabilities' | 'expose'>;
+  /** Resource/operation approvals resolved by the host for this invocation. */
+  approvals: readonly Capability[];
+  expiresAt: number;
+  /** Revalidate the host's revocation/grant revision before each effect. */
+  isActive: () => boolean;
+  parent?: CapabilityCheckContext;
+}
+
+interface InvocationAuthority {
+  identity: NonNullable<CapabilityCheckContext['invocation']>;
+  caps: Readonly<Record<'manifest' | 'declaration' | 'installation' | 'caller' | 'approval', readonly string[]>>;
+  allowedTools: ReadonlySet<string>;
+  expiresAt: number;
+  isActive: () => boolean;
+  valid: boolean;
+  parents: readonly InvocationAuthority[];
+}
+
+// Only a host-created context has an entry here. JSON, spreads, and claimed
+// principal/bypass fields in handler input cannot manufacture that entry.
+const invocationAuthorities = new WeakMap<CapabilityCheckContext, InvocationAuthority>();
+// The package is also imported by browser UI hosts, where node builtins are
+// externalized. Legacy capability checks can load there, but authenticated
+// invocation execution requires native async context and must never fall back.
+const invocationScope = typeof AsyncLocalStorage === 'function'
+  ? new AsyncLocalStorage<readonly InvocationAuthority[]>()
+  : null;
+
+/**
+ * Extend the existing capability context with invocation-scoped restrictions.
+ * This is a trusted host seam, not an authenticator or a handler API. The host
+ * supplies its existing resolved Principal and installation/approval decisions.
+ * Every axis is mandatory here; the legacy manifest-only context remains for
+ * hosts that have not yet adopted invocation dispatch.
+ */
+export function createInvocationCapabilityContext(input: InvocationCapabilityInput): CapabilityCheckContext {
+  const ambient = invocationScope?.getStore() ?? [];
+  const explicitParent = input.parent && invocationAuthorities.get(input.parent);
+  const parents = [...new Set([...ambient, ...(explicitParent ? [explicitParent] : [])])];
+  const principal = input.principal;
+  const identity = Object.freeze({
+    id: input.invocationId,
+    toolName: input.declaration?.expose?.mcp?.name ?? input.declaration?.name,
+    principalSlug: principal?.slug,
+    workspaceId: principal?.workspaceId,
+    ...(parents.length ? { parentInvocationId: parents[parents.length - 1].identity.id } : {}),
+  });
+  const snapshot = (caps: readonly string[] | undefined) => Object.freeze([...(caps ?? [])]);
+  const capabilities = snapshot(input.capabilities) as readonly Capability[];
+  const granted = snapshot(input.granted) as readonly Capability[];
+  const ctx: CapabilityCheckContext = Object.freeze({
+    pluginName: input.pluginName, capabilities, granted, invocation: identity,
+  });
+  invocationAuthorities.set(ctx, {
+    identity,
+    caps: {
+      manifest: capabilities,
+      declaration: snapshot(input.declaration?.capabilities),
+      installation: granted,
+      caller: snapshot(principal?.capabilities && [...principal.capabilities]),
+      approval: snapshot(input.approvals),
+    },
+    allowedTools: new Set(principal?.allowedTools ?? []),
+    expiresAt: input.expiresAt,
+    isActive: input.isActive,
+    valid: invocationScope !== null && Boolean(identity.id && identity.toolName && identity.principalSlug && identity.workspaceId)
+      && (principal?.trust === 'trusted' || principal?.trust === 'verified')
+      && (!input.parent || Boolean(explicitParent))
+      && parents.every(p => p.identity.workspaceId === identity.workspaceId
+        && p.identity.principalSlug === identity.principalSlug),
+    parents,
+  });
+  return ctx;
+}
+
+function capSetAllows(caps: readonly string[], target: string): boolean {
+  return caps.some(declared => declared === target || matchWildcardCap(declared, target));
+}
+
+function invocationIsActive(authority: InvocationAuthority, toolName: string): boolean {
+  try {
+    return authority.valid && Number.isFinite(authority.expiresAt)
+      && Date.now() < authority.expiresAt && authority.isActive() === true
+      && authority.allowedTools.has(authority.identity.toolName)
+      && authority.allowedTools.has(toolName);
+  } catch {
+    // A failed revocation lookup is a denial, before the host effect.
+    return false;
+  }
+}
+
+function invocationAllows(authority: InvocationAuthority, cap: string | undefined, toolName: string, seen = new Set<InvocationAuthority>()): boolean {
+  if (seen.has(authority)) return true;
+  if (seen.size >= 64) return false;
+  seen.add(authority);
+  return invocationIsActive(authority, toolName)
+    && (cap === undefined || (!cap.includes('*') && Object.values(authority.caps).every(caps => capSetAllows(caps, cap))))
+    && authority.parents.every(parent => invocationAllows(parent, cap, toolName, seen));
+}
+
+/** Host dispatch and checked services use this to preserve limits across awaits. */
+export function runWithInvocationCapabilities<T>(ctx: CapabilityCheckContext, effect: () => T): T {
+  const authority = invocationAuthorities.get(ctx);
+  const scope = [...new Set([...(invocationScope?.getStore() ?? []), ...(authority ? [authority] : [])])];
+  if (!invocationScope || !authority || !scope.every(a => invocationAllows(a, undefined, authority.identity.toolName))) {
+    throw new MissingCapabilityError(ctx.pluginName, 'invocation:authenticated');
+  }
+  return invocationScope.run(scope, effect);
+}
+
+function runCapabilityEffect<T>(ctx: CapabilityCheckContext, effect: () => T): T {
+  return invocationAuthorities.has(ctx) ? runWithInvocationCapabilities(ctx, effect) : effect();
 }
 
 /**
@@ -71,25 +204,13 @@ export interface CapabilityCheckContext {
  */
 export function hasCapability(ctx: CapabilityCheckContext, cap: Capability | string): boolean {
   const target = String(cap);
-  // Tier 1 — manifest declared the cap.
-  let manifestOk = false;
-  if (ctx.capabilities.includes(target as Capability)) {
-    manifestOk = true;
-  } else {
-    for (const declared of ctx.capabilities) {
-      if (matchWildcardCap(String(declared), target)) { manifestOk = true; break; }
-    }
-  }
-  if (!manifestOk) return false;
-  // Tier 2 — user granted the cap (if a granted set is present). When
-  // `granted` is undefined the host is on the legacy single-tier path
-  // (CLI dev mode, tests). Operator hosts always populate it.
-  if (ctx.granted === undefined) return true;
-  if (ctx.granted.includes(target as Capability)) return true;
-  for (const g of ctx.granted) {
-    if (matchWildcardCap(String(g), target)) return true;
-  }
-  return false;
+  if (!capSetAllows(ctx.capabilities, target)) return false;
+  if (ctx.granted !== undefined && !capSetAllows(ctx.granted, target)) return false;
+  const authority = invocationAuthorities.get(ctx);
+  if (ctx.invocation !== undefined && !authority) return false;
+  const authorities = [...(invocationScope?.getStore() ?? []), ...(authority ? [authority] : [])];
+  const toolName = authority?.identity.toolName ?? authorities[authorities.length - 1]?.identity.toolName;
+  return authorities.every(a => invocationAllows(a, target, toolName!));
 }
 
 /**
@@ -192,7 +313,7 @@ export function wrapServiceWithCaps<T extends Record<string, (...a: any[]) => an
               ? methodDef.capability(...args)
               : methodDef.capability;
           requireCapability(ctx, requiredCap);
-          return realMethod.apply(target, args);
+          return runCapabilityEffect(ctx, () => realMethod.apply(target, args));
         };
       }
 
@@ -228,7 +349,7 @@ export function makeFetchProxy(
     if (!hasCapability(ctx, cap)) {
       return Promise.reject(new MissingCapabilityError(ctx.pluginName, cap));
     }
-    return realFetch(input as any, init);
+    return runCapabilityEffect(ctx, () => realFetch(input as any, init));
   }) as typeof fetch;
 }
 
@@ -246,7 +367,7 @@ export function makeSecretsProxy(
     async read(name: string): Promise<string> {
       const cap: Capability = `secrets:read:${name}`;
       requireCapability(ctx, cap);
-      return resolve(name);
+      return runCapabilityEffect(ctx, () => resolve(name));
     },
   };
 }

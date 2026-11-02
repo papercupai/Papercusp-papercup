@@ -2329,6 +2329,23 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
     }
   });
 
+  it('names requested tools omitted by the hit limit and recovers each exact schema', async () => {
+    const requested = ['work_items:link', 'coord:send', 'events:status'];
+    const out = await callHandler({ query: requested.join(', '), limit: 1 });
+
+    expect(out.hits.map(hit => hit.tool)).toEqual([requested[0]]);
+    expect(out.omittedTools).toEqual(requested.slice(1));
+    expect(out.truncated).toBe(true);
+    expect(out.howToCall).toContain('omittedTools');
+
+    for (const name of out.omittedTools!) {
+      const recovered = await callHandler({ query: name, limit: 1 });
+      expect(recovered.hits.map(hit => hit.tool)).toEqual([name]);
+      expect(recovered.hits[0].argSchema).toEqual(expect.any(String));
+      expect(recovered.omittedTools ?? []).toEqual([]);
+    }
+  });
+
   it('fills explicit tool-name matches that generic relevance ranking left out', async () => {
     const names = [
       'work_items:link',

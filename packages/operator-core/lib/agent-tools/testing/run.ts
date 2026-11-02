@@ -227,6 +227,16 @@ export function testingRunAbortCompletionReceipt(
     };
   }
 
+  if (payload?.mode === 'background') {
+    const detachedRunId = typeof payload.detachedRunId === 'string' ? payload.detachedRunId.trim() : '';
+    return detachedRunId && payload.detachedDurable === true
+      ? { status: 'recorded', effectRef: 'testing-run:' + runId + ':detached:' + detachedRunId,
+          reason: 'testing:run accepted one durable background run; its test verdict is pending',
+          diagnostics: { runId, detachedRunId, outcome: 'pending' } }
+      : { status: 'recovery-incomplete', reason: 'background test launch durability is unconfirmed',
+          failures: ['background-durability-unconfirmed'], diagnostics: { runId, detachedRunId } };
+  }
+
   if (error === undefined && typeof payload?.ok === 'boolean') {
     return {
       status: 'recorded',
@@ -500,6 +510,9 @@ export function buildDetachedTestRunRequest(opts: {
   workItemId?: string;
   /** The foreground testing:run ID whose timeout created this detached recovery. */
   originRunId?: string;
+  maxFailures?: number;
+  allowSiblingCheckoutFallback?: boolean;
+  background?: boolean;
 }): SpawnRequest {
   if (opts.deadline) {
     // Re-enter the maintained core, rather than the bare router: only the core
@@ -528,12 +541,15 @@ export function buildDetachedTestRunRequest(opts: {
       ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
       ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
       ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
-      ...(opts.privatePg ? { privatePg: true } : {}),
+      ...(opts.privatePg !== undefined ? { privatePg: opts.privatePg } : {}),
+      ...(opts.maxFailures !== undefined ? { maxFailures: opts.maxFailures } : {}),
+      ...(opts.allowSiblingCheckoutFallback !== undefined
+        ? { allowSiblingCheckoutFallback: opts.allowSiblingCheckoutFallback } : {}),
       ...(opts.reporterStageTrace ? { reporterStageTrace: true } : {}),
     };
     return {
       kind: 'vitest', testRunSource: 'local',
-      label: `testing:run caller-bound timeout recovery (${opts.files.join(', ')})`,
+      label: `testing:run ${opts.background ? 'background' : 'caller-bound timeout recovery'} (${opts.files.join(', ')})`,
       filePath: opts.files.length === 1 ? opts.files[0] : undefined,
       requestedFiles: requestedLedgerFilePaths(opts.root, opts.files),
       command: process.execPath,
@@ -4528,6 +4544,9 @@ export default defineTool({
       .describe(
         'Vitest -t REGEX over full test names. Escape literal names (including parentheses, + and [). Zero matches refuse with name_filter_no_match and return an escaped retry; skipped tests never count as a pass.',
       ),
+    background: z.boolean().optional().describe(
+      'Start one tracked background run immediately, without a foreground attempt or timeout replay. Returns a pending handle; poll testing:run-status with detachedRunId, then read testing:runs. Evidence stays pending until recoverEvidence reconciles the terminal run.',
+    ),
     timeoutMs: z
       .number()
       .int()
@@ -4535,7 +4554,7 @@ export default defineTool({
       .max(MAX_TIMEOUT_MS)
       .optional()
       .describe(
-        `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, A FOREGROUND run is capped at ${FOREGROUND_TIMEOUT_CEILING_MS - TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for the child process, reserving ${TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for provenance/evidence preparation, ledger readback, and finalization before the ~55s MCP transport cap. For a longer suite, follow the timeout response's detached recovery; integration files use the npm run test:file router.`,
+        `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms. Use background:true for long or dirty integration runs. A FOREGROUND run is capped at ${FOREGROUND_TIMEOUT_CEILING_MS - TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for the child process, reserving ${TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for preparation and finalization before the ~55s MCP transport cap.`,
       ),
     privatePg: z.boolean().optional().describe(
       'Run tests from one Papercusp router checkout inside scripts/with-test-pg.mjs. Automatically selected for files that call recordIsolatedIntegrationProof when no PAPERCUSP_TEST_PG_ADMIN_URL is set; pass false to opt out. Product PG is disposable; the durable test-ledger sink stays separate.',
@@ -4566,6 +4585,13 @@ export default defineTool({
     const handlerStartedAt = performance.now();
     const handlerStartedAtMs = Date.now();
     const phaseTimingsMs = createTestingRunPhaseTimings();
+    if (args.background && (args.changedPaths || args.recoverEvidence || args.remeasureEvidence
+      || args.nativeConsult || args.securityQualification)) {
+      return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
+    }
+    if (args.background && !args.files) {
+      return { data: { ok: false, error: 'background_requires_executed_files' } };
+    }
     const securitySelectionError = securityQualificationSelectionError(args);
     if (securitySelectionError) return { data: { ok: false, error: securitySelectionError } };
     if (args.securityQualification) {
@@ -4606,7 +4632,7 @@ export default defineTool({
       return { data: { ok: false, error: 'private_pg_requires_executed_files' } };
     }
     let deadline: TestRunDeadline | undefined;
-    if (args.taskDeadlineAtMs !== undefined || args.cleanupReserveMs !== undefined) {
+    if (args.background || args.taskDeadlineAtMs !== undefined || args.cleanupReserveMs !== undefined) {
       if (args.recoverEvidence || args.changedPaths || (!args.files && !args.remeasureEvidence)) {
         return { data: { ok: false, error: 'deadline_requires_executed_files' } };
       }
@@ -4893,7 +4919,7 @@ export default defineTool({
     const loopRefusal = await loopLaunchRefusal({
       workspaceId: ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : null,
       workItemId: attemptWorkItemId,
-      background: false,
+      background: args.background === true,
       timeoutMs: requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
     if (loopRefusal) return { data: { ...loopRefusal, runId, root: rootSelection.root } };
@@ -4920,6 +4946,36 @@ export default defineTool({
       }
     }
     setTestingRunPhaseDuration(phaseTimingsMs, 'preparationMs', preparationStartedAt);
+    if (args.background) {
+      const selected = normalizeTestFilePaths(files, rootSelection.root, undefined, { allowSiblingCheckoutFallback });
+      if (!selected.ok) return { data: { ...selected, runId, root: rootSelection.root,
+        error: selected.reason ? 'managed_app_path_unresolved' : 'ambiguous_workspace_path' } };
+      const groups = groupTestFilesByCheckout(selected.files, rootSelection.root);
+      const start = await startRunDurable(buildDetachedTestRunRequest({
+        root: rootSelection.root, files: selected.files, groups, deadline: deadline!, originRunId: runId,
+        background: true, timeoutMs: requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+        ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
+        ...(harnessSlug ? { harnessSlug } : {}),
+        ...(attemptWorkItemId ? { workItemId: attemptWorkItemId } : {}),
+        ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
+        ...(args.privatePg !== undefined ? { privatePg: args.privatePg } : {}),
+        ...(args.reporterStageTrace ? { reporterStageTrace: true } : {}),
+        ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
+        allowSiblingCheckoutFallback,
+      }));
+      return { data: {
+        ok: true, mode: 'background', status: 'pending', runId, root: rootSelection.root,
+        rootSource: rootSelection.source, deadline,
+        detachedRunId: start.snapshot.runId, detachedDurable: start.durable,
+        ...(start.snapshot.taskId ? { taskId: start.snapshot.taskId } : {}),
+        statusRef: { tool: 'testing:run-status', args: { runId: start.snapshot.runId } },
+        message: 'One background run was accepted. No test verdict is available yet; poll the returned handle before requesting another run.',
+        ...(prepared ? { evidenceBundle: {
+          ...deferredTestEvidenceRecoveryBundle(evidenceRequest!, runId, start.snapshot.runId, evidenceScope!.harnessSlug),
+          message: 'The background test run is pending. Recover evidence after its terminal test-ledger rows are available.',
+        } } : {}),
+      } };
+    }
     const runCore = () => runTestFilesCore({
       files,
       runId,

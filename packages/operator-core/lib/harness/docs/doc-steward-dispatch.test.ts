@@ -6,8 +6,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockGetFlag = vi.fn();
 const mockFire = vi.fn();
 const mockSql = vi.fn();
-vi.mock('@papercusp/flags/server', () => ({ getFlag: (...a: unknown[]) => mockGetFlag(...a) }));
-vi.mock('@papercusp/flags', () => ({ FLAGS: { DOC_STEWARD: 'papercusp-doc-steward' } }));
+const policy = vi.hoisted(() => ({ allowed: vi.fn(), observed: vi.fn(async (_scope, invoke) => invoke()) }));
+vi.mock('../../device-operator-actions', async original => ({
+  ...(await original<object>()), workspaceBackgroundActivityAllowed: policy.allowed,
+}));
+vi.mock('../../startup-activity', async original => ({
+  ...(await original<object>()), runObservedBackgroundActivity: policy.observed,
+}));
+vi.mock('@papercusp/flags/server', async original => ({ ...(await original<object>()), getFlag: (...a: unknown[]) => mockGetFlag(...a) }));
 vi.mock('../../blueprint/launch-blueprint', () => ({
   fireLaunchBlueprintForEvent: (...a: unknown[]) => mockFire(...a),
 }));
@@ -18,6 +24,7 @@ import {
   DOC_STEWARD_MAX_DOCS_PER_DISPATCH,
   type DriftedDoc,
 } from './doc-steward-dispatch';
+import { startupActivityFeatureId } from '../../schedule-inventory';
 
 const docs: DriftedDoc[] = [
   // P-005: workItems (the change cause) rides along in the batch.
@@ -31,6 +38,30 @@ describe('dispatchDocStewardForDrift (doc-steward P-008)', () => {
     mockFire.mockReset();
     mockSql.mockReset();
     mockSql.mockResolvedValue([{ n: '0' }]);
+    policy.allowed.mockReset().mockResolvedValue(true);
+    policy.observed.mockClear();
+  });
+
+  it('withholds a newer pause after cooldown lookup and never records an invocation', async () => {
+    mockGetFlag.mockResolvedValue(true);
+    mockSql.mockImplementationOnce(async () => { policy.allowed.mockResolvedValue(false); return [{ n: '0' }]; });
+    await expect(dispatchDocStewardForDrift('h', 'ws-1', docs)).resolves.toEqual([]);
+    expect(policy.allowed).toHaveBeenCalledWith('ws-1', startupActivityFeatureId({
+      source: 'in-process', installSlug: null, name: 'doc-steward-dispatch', detail: {},
+    }, { workspaceId: 'ws-1' }));
+    expect(mockFire).not.toHaveBeenCalled();
+    expect(policy.observed).not.toHaveBeenCalled();
+  });
+
+  it('records the actual sync invocation in its workspace while preserving the dispatch result', async () => {
+    mockGetFlag.mockResolvedValue(true);
+    mockFire.mockResolvedValue({ blueprintId: 'doc-steward' });
+    await expect(dispatchDocStewardForDrift('h', 'ws-1', docs)).resolves.toEqual(docs);
+    expect(policy.observed).toHaveBeenCalledWith({ workspaceId: 'ws-1',
+      featureId: startupActivityFeatureId({ source: 'in-process', installSlug: null, name: 'doc-steward-dispatch', detail: {} }, { workspaceId: 'ws-1' }),
+      source: 'sync', trigger: 'sync',
+    }, expect.any(Function));
+    expect(mockFire).toHaveBeenCalledOnce();
   });
 
   it('fires the `docs:drift` launch with the deduped drift batch when the flag is ON', async () => {

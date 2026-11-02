@@ -2115,14 +2115,51 @@ describe('runGitSync (real git, no submodule)', () => {
       ...quoted.map((path) => ['check-ignore', '--', path]),
     ]);
 
-    // One symlink descendant fails the WHOLE batch (exit 128): re-probe per path.
+    // Isolate a named fatal pathspec and retry the remaining verbatim paths together.
     calls.length = 0;
     const fallback = await classifyProtectedPathExclusions(runGit, repo, [...verbatim, 'linked-dir/x', ...quoted]);
 
     expect(fallback.ignoredUntracked).toEqual(ignored);
     expect(fallback.beyondSymlink).toEqual(new Set(['linked-dir/x']));
     expect(calls[0]).toEqual(['check-ignore', '--', ...verbatim, 'linked-dir/x']);
-    expect(calls).toHaveLength(1 + verbatim.length + 1 + quoted.length);
+    expect(calls[1]).toEqual(['check-ignore', '--', ...verbatim]);
+    expect(calls).toHaveLength(2 + quoted.length);
+  });
+
+  it('EI-27693013605402344: submodule and symlink exclusions do not fan out ordinary paths into single probes', async () => {
+    writeFileSync(join(repo, '.gitignore'), 'ignored-*\n');
+    mkdirSync(join(repo, 'real-dir'));
+    symlinkSync('real-dir', join(repo, 'linked-dir'));
+    git(repo, 'update-index', '--add', '--cacheinfo', '160000', git(repo, 'rev-parse', 'HEAD'), 'child');
+    const ordinary = Array.from({ length: 120 }, (_, i) => `protected-${i}.ts`);
+    const ignored = Array.from({ length: 20 }, (_, i) => `ignored-${i}`);
+    const childPaths = Array.from({ length: 11 }, (_, i) => `child/src/protected-${i}.ts`);
+    const paths = [...ordinary, ...ignored, ...childPaths, 'child', 'linked-dir/x'];
+    const calls: string[][] = [];
+    const runGit: RunGit = async (args, cwd) => {
+      calls.push([...args]);
+      return directRunGit(args, cwd);
+    };
+
+    const result = await classifyProtectedPathExclusions(runGit, repo, paths);
+
+    expect(result.ignoredUntracked).toEqual(new Set(ignored));
+    expect(result.inSubmodule).toEqual(new Set(childPaths));
+    expect(result.beyondSymlink).toEqual(new Set(['linked-dir/x']));
+    expect(result.inSubmodule.has('child')).toBe(false); // The gitlink itself stays protected.
+    expect(calls).toHaveLength(3); // One failed batch per invalid class, then one successful batch.
+    expect(calls.every((args) => args.length > 3)).toBe(true);
+    expect(calls.at(-1)).toEqual(['check-ignore', '--', ...ordinary, ...ignored, 'child']);
+  });
+
+  it('EI-27693013605402344: an unknown failure after isolating a submodule preserves every exclusion', async () => {
+    const runGit: RunGit = async (args) => args.includes('child/file.ts')
+      ? { code: 128, stdout: '', stderr: "fatal: Pathspec 'child/file.ts' is in submodule 'child'" }
+      : { code: 128, stdout: '', stderr: 'fatal: repository unavailable' };
+
+    const result = await classifyProtectedPathExclusions(runGit, repo, ['safe.ts', 'child/file.ts']);
+
+    expect(result).toEqual({ ignoredUntracked: new Set(), inSubmodule: new Set(), beyondSymlink: new Set() });
   });
 
   it('EI-24369292425690265: checks per-path protected paths with bounded concurrency', async () => {

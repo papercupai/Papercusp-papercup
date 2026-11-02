@@ -38,6 +38,7 @@
  * (leader-brief marking at-capacity members `idle_with_claimable`) that produced this item.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { workItemFixture } from '../../testing/work-item-fixture';
 
 const identity = vi.hoisted(() => ({ ownerId: 'me', workspaceId: 'ws-1' as string | null }));
 const fleetAdmission = vi.hoisted(() => ({
@@ -201,11 +202,9 @@ describe('concurrencyClaimWarning (pure)', () => {
     expect(w).toMatch(/PARKED/i);
   });
 
-  it('subtracts the item just claimed, so a re-claim never reports itself as another lane', () => {
-    // The verdict is read PRE-claim so this should not arise; asserting it means a later move of
-    // the read to post-claim cannot silently start double-counting the subject item.
-    const w = concurrencyClaimWarning(verdict(['WI-SELF'], 1), 'WI-SELF', 'me')!;
-    expect(w).not.toContain('holding: WI-SELF');
+  it('omits the warning for an already-counted claim, including an over-cap repeat', () => {
+    expect(concurrencyClaimWarning(verdict(['WI-SELF'], 1), 'WI-SELF', 'me')).toBeNull();
+    expect(concurrencyClaimWarning(verdict(['WI-SELF', 'WI-OTHER'], 1), 'WI-SELF', 'me')).toBeNull();
   });
 
   it('caps the named list but still reports the true totals', () => {
@@ -249,6 +248,42 @@ describe('concurrencyClaimWarning (pure)', () => {
 });
 
 describe('work_items:claim — an at-cap by-id claim SUCCEEDS and WARNS (by-id-ungated)', () => {
+  it.each([false, true])(
+    'does not warn on a member reclaiming its dispatched item at cap1 (checkpoint=%s)',
+    async (withCheckpoint) => {
+      const items = new Map<string, ReturnType<typeof workItemFixture>>();
+      getWorkItemM.mockImplementation(async (id) => items.get(id) ?? null);
+      claimM.mockImplementation(async (id, assignee) => {
+        const item = workItemFixture({ id, assignee });
+        items.set(id, item);
+        if (!store.held.some((held) => held.id === id)) store.held.push({ id });
+        return item;
+      });
+      if (withCheckpoint) {
+        getClaimTimeCheckpointHint.mockResolvedValue({ checkpoint: 'dispatch preparation', checkpointAgeMs: 100 });
+      }
+
+      const dispatched = await body({ id: 'WI-DISPATCHED', assignee: 'member-7' });
+      expect(dispatched.results[0]).toMatchObject({ ok: true, workItem: { assignee: 'member-7' } });
+      expect(dispatched.results[0].concurrencyWarning).toBeUndefined();
+
+      identity.ownerId = 'member-7';
+      const reclaimed = await body({ id: 'WI-DISPATCHED' });
+      expect(reclaimed.results[0]).toMatchObject({ ok: true, workItem: { assignee: 'member-7' } });
+      expect(reclaimed.results[0].concurrencyWarning).toBeUndefined();
+      expect(reclaimed.results[0].concurrency).toBeUndefined();
+      expect(store.held).toEqual([{ id: 'WI-DISPATCHED' }]);
+      if (withCheckpoint) expect(reclaimed.results[0].checkpoint).toBe('dispatch preparation');
+
+      const extra = await body({ id: 'WI-EXTRA' });
+      expect(extra.results[0]).toMatchObject({ ok: true, concurrency: {
+        activeClaims: 1, maxConcurrentClaims: 1, heldIds: ['WI-DISPATCHED'],
+      } });
+      expect(extra.results[0].concurrencyWarning).toMatch(/CONCURRENCY CAP/);
+      expect(claimM).toHaveBeenCalledTimes(3);
+    },
+  );
+
   it('claims past the cap successfully AND attaches the warning + the verdict', async () => {
     store.held = [{ id: 'WI-HELD' }];
     const b = await body({ id: 'WI-OVER' });

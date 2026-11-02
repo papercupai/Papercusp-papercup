@@ -41,7 +41,118 @@ function artifactFixture(kind: 'legacy' | 'portal-candidate') {
   return { root, bundle, file, version, identity };
 }
 
+// Run the maintained shell entrypoints with only their outward transports replaced.
+// Copying the scripts and helpers keeps a regressed incremental collector inside
+// this fixture's bundle tree rather than the shared desktop build directory.
+function isolatedPublisher(kind: 'legacy' | 'portal-candidate') {
+  const fixture = artifactFixture(kind);
+  const desktop = path.join(fixture.root, 'desktop');
+  const scripts = path.join(desktop, 'bin');
+  fs.mkdirSync(scripts, { recursive: true });
+  fs.cpSync(path.join(bin, 'lib'), path.join(scripts, 'lib'), { recursive: true });
+  for (const entry of ['publish-platform-incremental.sh', 'restore-release-page.sh', 'publish-release-history.sh']) {
+    fs.copyFileSync(path.join(bin, entry), path.join(scripts, entry));
+  }
+  const bundle = path.join(desktop, 'src-tauri/target/release/bundle');
+  fs.mkdirSync(path.dirname(bundle), { recursive: true });
+  fs.cpSync(fixture.bundle, bundle, { recursive: true });
+  const home = path.join(fixture.root, 'home');
+  const tools = path.join(fixture.root, 'tools');
+  fs.mkdirSync(home);
+  fs.mkdirSync(tools);
+  const calls = path.join(fixture.root, 'outward-calls');
+  for (const tool of ['curl', 'gcloud', 'aws', 'npx']) {
+    fs.writeFileSync(path.join(tools, tool), `#!/bin/sh\nprintf '%s %s\\n' '${tool}' "$*" >> "$OUTWARD_CALLS"\nexit 97\n`, { mode: 0o755 });
+  }
+  const protectedRoot = path.join(fixture.root, 'public');
+  const feeds = spawnSync('bash', ['-c', '. "$1"; for channel in alpha beta stable nightly; do desktop_channel_feed_paths "$channel" latest.json; desktop_channel_feed_paths "$channel" latest-server.json; done', 'feeds', path.join(bin, 'lib/gen-latest-manifest.sh')], { encoding: 'utf8' });
+  expect(feeds.status, feeds.stderr).toBe(0);
+  const targets = [...new Set([
+    ...feeds.stdout.trim().split('\n'), 'index.html',
+    ...fs.readdirSync(path.join(bundle, 'deb')).flatMap(name => [name, `${name}.sig`]),
+  ])];
+  for (const target of targets) {
+    const file = path.join(protectedRoot, target);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `existing-public-object:${target}`);
+  }
+  const protectedBytes = () => Object.fromEntries(targets.map(target => [target,
+    createHash('sha256').update(fs.readFileSync(path.join(protectedRoot, target))).digest('hex'),
+  ]));
+  const before = protectedBytes();
+  const run = (entry: string, channel: string, selection: string) => {
+    const tag = `desktop-v${fixture.version}${channel === 'stable' ? '' : `-${channel}`}`;
+    scratch.push(`/tmp/papercusp-cut-start-${tag}.txt`, `/tmp/papercusp-artifacts-${tag}.txt`);
+    return spawnSync('bash', [path.join(scripts, entry), fixture.version, channel, 'linux'], {
+      encoding: 'utf8', timeout: 30_000,
+      env: {
+        ...process.env, HOME: home, PATH: `${tools}:${process.env.PATH}`, OUTWARD_CALLS: calls,
+        PAPERCUSP_DESKTOP_INTERFACE: selection, PAPERCUSP_UPDATE_BASE_URL: '', PAPERCUSP_RELEASE_HOST: '',
+        PAPERCUSP_RELEASE_STORAGE_ENV: path.join(home, 'no-storage.env'), PAPERCUSP_RELEASE_GCS_BUCKET: '',
+        PAPERCUSP_SKIP_PLATFORM_SMOKE: '0', PAPERCUSP_RELEASE_CUT_START_NS: '', PAPERCUSP_RELEASE_TAG: '',
+        CARGO_TARGET_DIR: path.join(fixture.root, 'cargo-target'),
+        DRY_RUN: '0',
+      },
+    });
+  };
+  const configureHost = () => {
+    fs.mkdirSync(path.join(home, '.papercusp'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.papercusp/release-host.env'), 'PAPERCUSP_UPDATE_BASE_URL=https://downloads.example.test/test-prefix\n');
+  };
+  return { ...fixture, home, calls, run, before, protectedBytes, configureHost };
+}
+
 describe('public desktop interface hold at real release entrypoints', () => {
+  it.each(['alpha', 'beta', 'stable', 'nightly'])('incremental %s rejects candidate selection before merge outputs or outward calls', (channel) => {
+    const f = isolatedPublisher('legacy');
+    const result = f.run('publish-platform-incremental.sh', channel, 'portal-candidate');
+    expect(result.status, result.stderr).toBe(4);
+    expect(result.stderr).toMatch(/PUBLIC DESKTOP INTERFACE HOLD/);
+    expect(fs.readdirSync(f.home)).toEqual([]);
+    expect(fs.existsSync(f.calls)).toBe(false);
+    expect(f.protectedBytes()).toEqual(f.before);
+    const tag = `desktop-v${f.version}${channel === 'stable' ? '' : `-${channel}`}`;
+    expect(fs.existsSync(`/tmp/papercusp-cut-start-${tag}.txt`)).toBe(false);
+  });
+
+  it('restore refuses candidate selection before invoking its recorder', () => {
+    const f = isolatedPublisher('legacy');
+    const result = f.run('restore-release-page.sh', 'alpha', 'portal-candidate');
+    expect(result.status, result.stderr).toBe(4);
+    expect(result.stderr).toMatch(/PUBLIC DESKTOP INTERFACE HOLD/);
+    expect(fs.existsSync(f.calls)).toBe(false);
+    expect(f.protectedBytes()).toEqual(f.before);
+  });
+
+  it.each(['alpha', 'beta', 'stable', 'nightly'])('incremental %s rejects candidate-marked artifacts with a legacy caller before smoke or live-feed reads', (channel) => {
+    const f = isolatedPublisher('portal-candidate');
+    f.configureHost();
+    const result = f.run('publish-platform-incremental.sh', channel, 'legacy');
+    expect(result.status, result.stderr).toBe(4);
+    expect(result.stderr).toMatch(/PUBLIC DESKTOP INTERFACE HOLD/);
+    expect(fs.existsSync(f.calls)).toBe(false);
+    expect(f.protectedBytes()).toEqual(f.before);
+  });
+
+  it('the same incremental route admits legacy identity and still enforces artifact freshness', () => {
+    const f = isolatedPublisher('legacy');
+    f.configureHost();
+    const result = f.run('publish-platform-incremental.sh', 'alpha', 'legacy');
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).not.toMatch(/PUBLIC DESKTOP INTERFACE HOLD/);
+    expect(result.stderr).toMatch(/predates this cut|stale/);
+    expect(fs.existsSync(f.calls)).toBe(false);
+    expect(f.protectedBytes()).toEqual(f.before);
+  });
+
+  it('the same restore route admits legacy selection and invokes its recorder', () => {
+    const f = isolatedPublisher('legacy');
+    const result = f.run('restore-release-page.sh', 'alpha', 'legacy');
+    expect(result.status, result.stderr).toBe(97);
+    expect(fs.readFileSync(f.calls, 'utf8')).toMatch(/^npx tsx .*record-release-cli\.ts --restore-page\n$/);
+    expect(f.protectedBytes()).toEqual(f.before);
+  });
+
   it('rejects candidate-marked installer bytes even when the caller requests legacy', () => {
     process.env.PAPERCUSP_DESKTOP_INTERFACE = 'legacy';
     const f = artifactFixture('portal-candidate');

@@ -102,6 +102,24 @@ describe('first-touch source-link diagnostics', () => {
     expect(diagnostics.phaseOutcomes[phase]).toBe('error');
     expect(diagnostics.phaseErrors?.[phase]).toBe('Error: [57014]: canceling statement due to statement timeout');
   });
+
+  it('keeps both repo-file source-link shapes on GIN-indexable JSON predicates', async () => {
+    const statements: string[] = [];
+    const tx = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      statements.push(statement);
+      return [];
+    });
+    const sql = { begin: async (run: (tx: unknown) => unknown) => run(tx) } as unknown as Parameters<typeof readPushSourceLinks>[2];
+
+    await readPushSourceLinks(input, ['lib/target.ts'], sql);
+
+    const statement = statements.find(value => value.includes('FROM harness_shared.spec_evidence_bindings'));
+    expect(statement).toBeDefined();
+    expect(statement ?? '').toContain("(b.details->'currentMeasurement'->'sourcePaths') ? p.path");
+    expect(statement ?? '').toContain("(b.details->'measurementPin'->'files') @> jsonb_build_array");
+    expect(statement ?? '').toContain("COALESCE(f->>'rootHarnessSlug', b.details->'currentMeasurement'->>'rootHarnessSlug', b.harness_slug)");
+  });
 });
 
 describe('shared snapshot-backed push channel', () => {

@@ -25,6 +25,7 @@ export interface SqlMiningResult {
 }
 const positive = (v: number | undefined, fallback: number, max: number) =>
   Number.isFinite(v) ? Math.min(max, Math.max(1, Math.floor(v!))) : fallback;
+const SQL_CENSUS_WRITE_BATCH_SIZE = 250;
 
 export async function mineSqlCandidateSlice(opts: SqlMiningOptions, deps: SqlMiningDeps = {}): Promise<SqlMiningResult> {
   const scopeId = miningScopeId(opts.scope, opts.harnessSlug);
@@ -57,23 +58,43 @@ export async function mineSqlCandidateSlice(opts: SqlMiningOptions, deps: SqlMin
         check();
         if (page.observations.length > rowBudget) throw new Error('sql_mining_window_cap');
         const refs = new Map(page.sources.map(s => [s.token, s.id]));
+        const operationRows: Array<{ source_token: string; source_id: string; day: string; observation: unknown }> = [];
+        const exampleRows: Array<{ source_token: string; captured_at: string; expires_at: string; example: unknown }> = [];
+        const capturedAt = new Date(now).toISOString();
+        const expiresAt = new Date(now + EXAMPLE_LIFETIME_MS).toISOString();
         for (const row of page.observations) {
           check();
           const sourceId = refs.get(row.sourceToken);
           if (!sourceId || !/^\d+$/.test(sourceId)) throw new Error('sql_mining_source_missing');
+          operationRows.push({ source_token: row.sourceToken, source_id: sourceId, day: row.day,
+            observation: minimizeSqlObservation(row) });
+          if (row.intent.status === 'supported') {
+            exampleRows.push({ source_token: row.sourceToken, captured_at: capturedAt, expires_at: expiresAt,
+              example: { canonical: row.intent.canonical, features: row.intent.features } });
+          }
+        }
+        for (let start = 0; start < operationRows.length; start += SQL_CENSUS_WRITE_BATCH_SIZE) {
+          check();
+          const batch = operationRows.slice(start, start + SQL_CENSUS_WRITE_BATCH_SIZE);
           await tx`INSERT INTO harness_shared.sql_intent_operations
             (workspace_id,scope_id,source_token,source_id,day,observation)
-            VALUES (${opts.workspaceId},${scopeId},${row.sourceToken},${sourceId}::bigint,${row.day}::date,
-              ${JSON.stringify(minimizeSqlObservation(row))}::jsonb)
+            SELECT ${opts.workspaceId},${scopeId},x.source_token,x.source_id::bigint,x.day::date,x.observation
+            FROM jsonb_to_recordset(${JSON.stringify(batch)}::jsonb)
+              AS x(source_token text,source_id text,day text,observation jsonb)
             ON CONFLICT (workspace_id,scope_id,source_token) DO UPDATE SET observation=EXCLUDED.observation`;
-          if (row.intent.status === 'supported') {
-            await tx`INSERT INTO harness_shared.sql_intent_examples
-              (workspace_id,scope_id,source_token,captured_at,expires_at,example)
-              VALUES (${opts.workspaceId},${scopeId},${row.sourceToken},${new Date(now).toISOString()}::timestamptz,
-                ${new Date(now + EXAMPLE_LIFETIME_MS).toISOString()}::timestamptz,
-                ${JSON.stringify({ canonical: row.intent.canonical, features: row.intent.features })}::jsonb)
-              ON CONFLICT DO NOTHING`;
-          }
+          check();
+        }
+        for (let start = 0; start < exampleRows.length; start += SQL_CENSUS_WRITE_BATCH_SIZE) {
+          check();
+          const batch = exampleRows.slice(start, start + SQL_CENSUS_WRITE_BATCH_SIZE);
+          await tx`INSERT INTO harness_shared.sql_intent_examples
+            (workspace_id,scope_id,source_token,captured_at,expires_at,example)
+            SELECT ${opts.workspaceId},${scopeId},x.source_token,x.captured_at::timestamptz,
+              x.expires_at::timestamptz,x.example
+            FROM jsonb_to_recordset(${JSON.stringify(batch)}::jsonb)
+              AS x(source_token text,captured_at text,expires_at text,example jsonb)
+            ON CONFLICT DO NOTHING`;
+          check();
         }
         stage = 'aggregate';
         const cap = positive(opts.windowRowBudget, 20_000, 100_000);

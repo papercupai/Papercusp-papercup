@@ -187,6 +187,33 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(body.models).toEqual({}); // warmAtBoot:false + no embeds yet ⇒ all cold
   });
 
+  it('healthz counts successful model completions separately from cache hits and failures', async () => {
+    handle = createEmbedSidecarServer({
+      port: 0, warmAtBoot: false, concurrency: 1, log: () => {},
+      builders: { ...fakeBuilders, gemma: async () => async text => {
+        if (text === 'failed-inference') throw new Error('model failed');
+        return [1, 2];
+      } },
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+    const health = async () => (await (await fetch(`${baseUrl}/healthz`)).json()).inferenceProgress;
+    const embed = async (text: string, kind = 'query') => fetch(`${baseUrl}/embed`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemma', kind, texts: [text] }),
+    });
+    expect(await health()).toEqual({});
+    expect((await embed('successful-inference')).status).toBe(200);
+    const completed = await health();
+    expect(completed['gemma:query']).toMatchObject({ completed: 1, lastCompletedAtMs: expect.any(Number) });
+    expect((await embed('successful-inference')).status).toBe(200);
+    expect(await health()).toEqual(completed);
+    expect((await embed('failed-inference')).status).toBe(500);
+    expect(await health()).toEqual(completed);
+    expect((await embed('document-inference', 'document')).status).toBe(200);
+    expect((await health())['gemma:query']).toEqual(completed['gemma:query']);
+    expect((await health())['gemma:document'].completed).toBe(1);
+  });
+
   it('GET /healthz reports the ACTIVE rerank (device, dtype) pair, and it is always coherent (P-009 D-006)', async () => {
     await boot();
     const body = (await (await fetch(`${baseUrl}/healthz`)).json()) as {

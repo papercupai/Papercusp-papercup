@@ -647,6 +647,8 @@ const NESTED_CLI_POLICY: Record<string, NestedPolicy> = {
   "posttooluse-frozen-candidate-edit-nudge.mjs": "as-owner",
   "posttooluse-proof-stale-nudge.mjs": "as-owner",
   "posttooluse-tsc-verdict-stale-nudge.mjs": "as-owner",
+  // Nested shared-tree edits still need the editor's immediate resource-guard advisory.
+  "posttooluse-resource-governor-nudge.mjs": "as-owner",
   "pc_nested_cli.sh": "helper",
   "pc_nested_cli.mjs": "helper",
   // Keys the su's dialog ticket on the SID, but runs only from ask-gate-mirror.sh AFTER

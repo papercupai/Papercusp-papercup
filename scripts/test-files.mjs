@@ -634,14 +634,17 @@ export function perGroupVitestEnv(env, groupIndex, groupCount) {
 
 /** The router knows the population before launch, including groups which never
  * start. Keep the unsealed declaration readable if the router is hard-killed. */
-export function createRouterProofCustody(groups, env, repoRoot) {
+export async function createRouterProofCustody(groups, env, repoRoot) {
   if (!env.PC_EXECUTED_SOURCE_MAP_OUT?.trim() && !env.PAPERCUSP_TEST_ARTIFACT_DIR) return null;
   // Keep ordinary router supervision independent of the native custody subject.
   // In mutation probes its test child must exercise the intended overlay; an
   // eager parent import would instead load committed scheduler bytes even when
   // this run never requested custody. Active custody still uses the same helper
   // and remains subject to the committed-source loader's normal checks.
-  const { retainNativeProofPacket } = createRequire(import.meta.url)('./lib/budgeted-task-scheduler.mjs');
+  // Keep this lazy, but use the module's native ESM loader. The committed-source
+  // fence can substitute a dirty ESM helper; its CommonJS compile hook must
+  // refuse because it cannot safely make that substitution.
+  const { retainNativeProofPacket } = await import('./lib/budgeted-task-scheduler.mjs');
   const base = env.PAPERCUSP_TEST_ARTIFACT_DIR || join(homedir(), '.papercusp', 'test-artifacts', 'testing-run');
   mkdirSync(base, { recursive: true, mode: 0o700 });
   const directory = mkdtempSync(join(base, 'native-router-'));
@@ -815,6 +818,12 @@ export function hasVitestWorkerTerminationWarning(output) {
   return plain.split(/\r?\n/).some((line) =>
     /^\[vitest-pool\]: (?:Timeout terminating|Failed to terminate) .*\bworker\b/.test(line.trim()),
   );
+}
+
+/** Vitest can also force-exit its main process with passing assertions (EI-27702384737902667). */
+export function hasVitestCloseTimeoutWarning(output) {
+  const plain = stripVitestAnsi(output ?? '');
+  return plain.split(/\r?\n/).some((line) => /^close timed out after \d+ms$/.test(line.trim()));
 }
 
 /**
@@ -2829,7 +2838,17 @@ export function readTestChildDiagnostic(rootPid, {
       const entries = readdirImpl(`/proc/${pid}/fd`).filter(fd => /^\d+$/.test(fd))
         .sort((a, b) => Number(a) - Number(b));
       if (entries.length > 8) detailTruncated = true;
-      files = entries.slice(0, 8).map(fd => {
+      const selected = entries.slice(0, 8);
+      // The blocked read may use a descriptor above the low-fd sample (for
+      // example getdents64 on fd 22). Keep that link within the existing cap.
+      // This is only a sampling hint: not every syscall's first argument is
+      // a descriptor, and procfs observations can race with close/reuse.
+      const firstArgument = Number(syscall?.arguments?.[0]);
+      if (Number.isSafeInteger(firstArgument) && firstArgument >= 0) {
+        const candidate = entries.find(fd => Number(fd) === firstArgument);
+        if (candidate !== undefined && !selected.includes(candidate)) selected[selected.length - 1] = candidate;
+      }
+      files = selected.map(fd => {
         let target = null;
         try { target = readlinkImpl(`/proc/${pid}/fd/${fd}`); }
         catch { unreadableFields += 1; unavailable.push(`fd:${fd}`); }
@@ -3956,7 +3975,7 @@ export async function main(
   const receiptChildEnv = receiptFile
     ? { ...process.env, PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile }
     : process.env;
-  if (!dry) proofCustody = createRouterProofCustodyImpl(groups, receiptChildEnv, repoRoot);
+  if (!dry) proofCustody = await createRouterProofCustodyImpl(groups, receiptChildEnv, repoRoot);
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
   // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
   // doc for the full incident). Each iteration always records its outcome and moves on; the final
@@ -4339,11 +4358,20 @@ export async function main(
     }
     const runOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
     const workerTerminationWarning = hasVitestWorkerTerminationWarning(runOutput);
+    const closeTimeoutWarning = hasVitestCloseTimeoutWarning(runOutput);
     if (workerTerminationWarning) {
       console.error(
         'TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR — Vitest reported a worker that did not ' +
           'terminate within teardownTimeout. Assertions may have passed, but this test process did ' +
           'not finish cleanly; refusing an overall green result.',
+      );
+    }
+    if (closeTimeoutWarning) {
+      console.error(
+        'TEST_FILE_CLOSE_TIMEOUT_FINALIZATION_ERROR — Vitest forced process exit after a close ' +
+          'timeout. Assertions may have passed, but this test process did not finish cleanly; ' +
+          'refusing an overall green result. Reproduce with --reporter=default ' +
+          '--reporter=hanging-process to identify the remaining resources.',
       );
     }
     // EI-21902345477441137: a watchdog reap kills the child via signal, so `result.status` is
@@ -4471,7 +4499,7 @@ export async function main(
       unmatchedCount: 0,
       failed: groupFailed,
       launchError: false,
-      finalizationError: Boolean(result.governedFinalizationError || workerTerminationWarning),
+      finalizationError: Boolean(result.governedFinalizationError || workerTerminationWarning || closeTimeoutWarning),
       // EI-21902345477441137: distinct from `failed` — a reaped run produced no verdict at all,
       // so it must never contribute to `anyFailed` (that would be the exact bug this fixes) nor
       // silently read as a clean pass (that would hide a genuine resource-limit problem).

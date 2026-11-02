@@ -1382,6 +1382,7 @@ export async function composeOrient(
    *  rather than inventing a total it cannot know. */
   let claimableOracleTotal: number | undefined;
   let claimableHarnessScope: ClaimableHarnessScope | undefined;
+  let claimableOracleIds = new Set<string>();
   if (monitor) {
     // EI-8300: a monitor tick doesn't self-select work — skip the claimable read
     // entirely (no round-trip), not just cap its output.
@@ -1433,6 +1434,11 @@ export async function composeOrient(
       // Oracle unavailable ⇒ previous behaviour, never an empty backlog.
       list = await boundedCore(listLane({}), [], 'orient:claimable:list-fallback');
     } else {
+      claimableOracleIds = new Set(
+        issueRows
+          .map((row) => (row as { id?: unknown } | null)?.id)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0),
+      );
       // Reserve room for the feature lane first: features are few and would
       // otherwise be truncated away by a full issue window.
       const feat = featureRows ?? [];
@@ -1464,7 +1470,6 @@ export async function composeOrient(
   // EI-20287600163306401: callers that already consumed the inbox can pass zero
   // to suppress this duplicate fold. The nested coord:inbox tool requires a
   // positive limit, so the early promise above skips it instead of forwarding zero.
-  const inbox = (await inboxPromise) as { summary?: unknown; entries?: unknown } | undefined;
 
   // work_items:list returns the bare array (its `result` schema), but be defensive
   // about the wrapped shapes the unwrap may yield.
@@ -1491,9 +1496,18 @@ export async function composeOrient(
   // rather than breaking orientation — this list was always advisory (see the
   // `claimable` doc comment), never a live guarantee.
   let claimable = claimableRaw;
-  if (!monitor && claimableRaw.length > 0) {
+  // work_items:claimable already applies every issue-family claim floor in one
+  // repeatable-read snapshot. Observe list-sourced rows only (feature rows and the
+  // whole-list fallback), and overlap that best-effort read with the inbox promise.
+  const rowsToObserve = claimableOracleIds.size > 0
+    ? claimableRaw.filter((row) => {
+        const id = (row as { id?: unknown } | null)?.id;
+        return typeof id !== 'string' || !claimableOracleIds.has(id);
+      })
+    : claimableRaw;
+  if (!monitor && rowsToObserve.length > 0) {
     try {
-      const ids = claimableRaw
+      const ids = rowsToObserve
         .map((row) => (row as { id?: unknown } | null)?.id)
         .filter((id): id is string => typeof id === 'string' && id.length > 0);
       if (ids.length > 0) {
@@ -1518,6 +1532,7 @@ export async function composeOrient(
       /* fail-open: keep the unfiltered list rather than break orientation */
     }
   }
+  const inbox = (await inboxPromise) as { summary?: unknown; entries?: unknown } | undefined;
 
   /** EI-20113865649946366 (owner criterion, 2026-08-10: a trim must announce itself
    *  AND name the fetch path — a DISCLOSED trim is fine, a SILENT one is the bug).

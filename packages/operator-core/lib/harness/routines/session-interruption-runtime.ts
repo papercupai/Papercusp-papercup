@@ -2,6 +2,7 @@
  * host-event WAL/ingest, session lifecycle JSON, and governed exact-resume door. */
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { pgDateOrNull } from '../../connected-apps/pg-dates';
 import { findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 import { readWorkItemAwaitTargets, isWakeSource,
   readHeldWorkItems } from '../../events/await/wake-source-predicate';
@@ -103,7 +104,7 @@ export async function sweepSessionInterruptions(ctx: SystemActionCtx, dryRun = f
     const liveness = host ? 'live' : processState(row.pid);
     const [awaits, statuses, held, gates, pause, delivery] = await Promise.all([
       // policy=wake is load-bearing: notify-only interest must not suppress work.
-      sql<Array<{ subscriber_id: string; event_key: string; expires_ts: Date | null;
+      sql<Array<{ subscriber_id: string; event_key: string; expires_ts: Date | string | null;
         timeout_behavior: string | null; once: boolean }>>`
         SELECT subscriber_id, event_key, expires_ts, timeout_behavior, once
           FROM harness_shared.event_awaits WHERE subscriber_id = ${owner} AND policy = 'wake'
@@ -113,7 +114,8 @@ export async function sweepSessionInterruptions(ctx: SystemActionCtx, dryRun = f
       readAssumeCallerPause(owner), hasPendingDeliberateWakeDelivery(owner),
     ]);
     const shaped = awaits.map(a => ({ subscriberId: a.subscriber_id, eventKey: a.event_key,
-      expiresTs: a.expires_ts?.toISOString() ?? null, timeoutBehavior: a.timeout_behavior, once: a.once }));
+      expiresTs: pgDateOrNull(a.expires_ts, 'event_awaits.expires_ts')?.toISOString() ?? null,
+      timeoutBehavior: a.timeout_behavior, once: a.once }));
     const targets = await readWorkItemAwaitTargets(shaped, sql);
     const loop = statuses.get(owner);
     return { ownerId: owner, nativeSessionId: row.session_id, liveness,

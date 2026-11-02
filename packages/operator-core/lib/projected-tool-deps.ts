@@ -102,6 +102,7 @@ import { trackDetached } from './detached-imports';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { installedPerUseChokepoint, nativeCaptureChokepoint } from './agent-tools/per-use-chokepoint';
 import { beginToolTrace, runToolTrace, finishToolTrace } from './observability/runtime';
+import { pluginInvocationChokepoint } from './plugin-invocation-policy';
 
 /**
  * The role-scoped `papercusp` MCP surface can be discovered alongside the
@@ -2343,8 +2344,16 @@ const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => 
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
   resolvePremises: resolveDispatchPremises,
-  aroundInvoke: request => runToolTrace(request, () => nativeCaptureChokepoint({ ...request,
-    invoke: () => installedPerUseChokepoint(request) })),
+  aroundInvoke: request => runToolTrace(request, async () => {
+    const invoke = () => nativeCaptureChokepoint({ ...request,
+      invoke: () => installedPerUseChokepoint(request) });
+    if (!request.tool.pluginInstallation) return invoke();
+    // Registered security cutover: P-019 owns enabling after qualification.
+    // Unknown control state enforces the strict adapter rather than authorizing.
+    let enforce = true;
+    try { enforce = await getFlag(FLAGS.PLUGIN_INVOCATION_POLICY, 'system'); } catch { /* fail closed */ }
+    return enforce ? pluginInvocationChokepoint({ ...request, invoke }) : invoke();
+  }),
   // D-030 kernel seat: the generic dispatcher invokes this before any
   // decorators and immediately before handler execution. The resolver is
   // replaceable by the activation/control owner without changing the shared

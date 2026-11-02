@@ -34,8 +34,10 @@ import { getWorkItem } from '../../work-items';
 import { workItemFixture } from '../../testing/work-item-fixture';
 
 vi.mock('../../events/await/store', () => ({ findAnnouncementsForKey: vi.fn() }));
-vi.mock('../../work-items', () => ({
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-items')>()),
   getWorkItem: vi.fn(),
+  getWorkItemDetail: vi.fn(),
   isSettledWorkItemState: vi.fn(() => false),
 }));
 vi.mock('../../work-item-checkpoint', () => ({ getWorkItemCheckpoint: vi.fn(async () => null) }));
@@ -368,6 +370,7 @@ describe('hydrateRefs (injected resolvers — DB-free)', () => {
       [false, 'not_found'],
     ]);
     expect(out[0].label).toContain('WI-4070');
+    expect(out[0].resolvedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   });
 
   it('preserves terminal subject metadata from a resolver', async () => {

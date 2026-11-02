@@ -131,6 +131,30 @@ describe('problem-specific expertise qualification', () => {
     expect(scorer.mock.calls[0][1]).toEqual([primary, issue, 'request:deliver\nDeliver a distributed request.']);
   });
 
+  it('reports bounded scoring causes without exposing provider errors or changing unknown scores', async () => {
+    const contracts = [{ name: 'request:deliver', description: 'Deliver a distributed request.' }];
+    const onFailure = vi.fn();
+    const deadline = Date.now() + 4000;
+    const question = 'Which writer changed the lease?';
+    const texts = ['lease writer and distributed request delivery'];
+    const scorer = vi.fn(async () => { throw Object.assign(new Error('private provider payload'), { name: 'RerankDeadlineError' }); });
+    expect(await scoreSubjectEvidence(question, texts, deadline, { scorer, contracts, onFailure })).toEqual([null]);
+    expect(onFailure).toHaveBeenLastCalledWith({ reason: 'scorer-error', errorCode: 'ETIMEDOUT' });
+    expect(JSON.stringify(onFailure.mock.calls)).not.toContain('private provider payload');
+    onFailure.mockClear();
+    expect(await scoreSubjectEvidence('missing:contract', texts, deadline, { scorer, contracts, onFailure })).toEqual([null]);
+    expect(onFailure).toHaveBeenLastCalledWith({ reason: 'missing-contract' });
+    onFailure.mockClear();
+    expect(await scoreSubjectEvidence(question, texts, Date.now() - 1, { scorer, contracts, onFailure })).toEqual([null]);
+    expect(onFailure).toHaveBeenLastCalledWith({ reason: 'deadline' });
+    onFailure.mockClear();
+    expect(await scoreSubjectEvidence(question, texts, deadline, { scorer: async () => [], contracts, onFailure })).toEqual([null]);
+    expect(onFailure).toHaveBeenLastCalledWith({ reason: 'score-shape' });
+    expect(await scoreSubjectEvidence(question, texts, deadline, {
+      scorer: async () => [], contracts, onFailure: () => { throw new Error('diagnostic failure'); },
+    })).toEqual([null]);
+  });
+
   it('nominates competing primary actions without matching their operational boilerplate', () => {
     const contracts = [
       { name: 'db:migrate', description: 'Apply a SQL migration.' },

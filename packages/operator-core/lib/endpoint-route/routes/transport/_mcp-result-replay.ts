@@ -222,6 +222,30 @@ export function isPendingMcpResult(result: StoredMcpResult | null | undefined): 
   return result?._meta?.state === PENDING_MCP_RESULT_STATE;
 }
 
+/** Rubric receipts have their own atomic claim/reclaim, unlike transport reservations. */
+function isPendingDomainMcpResult(result: StoredMcpResult | null, toolName: string): boolean {
+  if (!result || result.isError || isPendingMcpResult(result) || toolName !== 'rubrics:amend') return false;
+  const source = result.replaySource ?? result;
+  if (source.isError) return false;
+  const isReceipt = (value: unknown): boolean => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const payload = value as Record<string, unknown>;
+    if (payload.ok !== true || payload.pending !== true || !validIdempotencyKey(payload.idempotencyKey)) return false;
+    const receipt = payload.receipt;
+    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return false;
+    const identity = receipt as Record<string, unknown>;
+    return typeof identity.rubricRef === 'string' && identity.rubricRef.trim().length > 0 &&
+      identity.idempotencyKey === payload.idempotencyKey;
+  };
+  // Prefer the pre-door/structured result: projection can omit pending or the receipt.
+  if (source.structuredContent !== undefined) return isReceipt(source.structuredContent);
+  return source.content.some(item => {
+    if (item.type !== 'text') return false;
+    try { return isReceipt(JSON.parse(item.text)); }
+    catch { return false; }
+  });
+}
+
 export async function lookupStoredMcpResult(
   ownerKey: string,
   idempotencyKey: string,
@@ -254,7 +278,7 @@ export async function lookupStoredMcpResult(
     };
   };
   const finishAcquisition = beginPhase('pool_acquisition');
-  let rows: Array<{ result: unknown; is_error: boolean }>;
+  let rows: Array<{ result: unknown; is_error: boolean; tool_name: string }>;
   try {
     rows = await withAcquisitionDeadline(
       ({ disarm, expired }) => sql.begin(async (tx) => {
@@ -269,13 +293,25 @@ export async function lookupStoredMcpResult(
 
         const finishStatement = beginPhase('statement');
         try {
-          const selected = await tx<Array<{ result: unknown; is_error: boolean }>>`
-            SELECT result, is_error
+          const selected = await tx<Array<{ result: unknown; is_error: boolean; tool_name: string }>>`
+            SELECT result, is_error, tool_name
               FROM harness_shared.mcp_tool_results
              WHERE owner_key = ${ownerKey} AND idempotency_key = ${idempotencyKey}
                AND (created_at > now() - make_interval(secs => ${REPLAY_TTL_MS / 1000})
                  OR tool_name = ${DURABLE_CREATION_TOOL})
           `;
+          const prior = selected[0];
+          if (prior && isPendingDomainMcpResult(decodeStoredMcpResult(prior.result, prior.is_error), prior.tool_name)) {
+            // Repair pre-fix caches inside this bounded transaction. Compare the
+            // exact observed value so a concurrent terminal receipt cannot be
+            // removed. The domain's logical key, not this cache, owns reclaim.
+            const priorJson = typeof prior.result === 'string' ? prior.result : JSON.stringify(prior.result);
+            await tx`DELETE FROM harness_shared.mcp_tool_results
+              WHERE owner_key = ${ownerKey} AND idempotency_key = ${idempotencyKey}
+                AND tool_name = ${prior.tool_name} AND result = ${priorJson}::text::jsonb`;
+            finishStatement();
+            return [];
+          }
           finishStatement();
           return selected;
         } catch (error) {
@@ -421,6 +457,9 @@ export async function storeMcpResult(args: {
   result: StoredMcpResult;
   replaySource?: Omit<StoredMcpResult, 'replaySource'> | null;
 }): Promise<void> {
+  // A foreground domain receipt is not a committed operation result. Let a
+  // same-key retry reach its logical receipt, which arbitrates running/reclaim.
+  if (isPendingDomainMcpResult(args.replaySource ?? args.result, args.toolName)) return;
   const { sql } = getOrgPg();
   // Size gate: skip storing pathologically large results (operator-scalability P1-2
   // / app-wide-load-traps F-A1). The store is synchronous on the event loop; large

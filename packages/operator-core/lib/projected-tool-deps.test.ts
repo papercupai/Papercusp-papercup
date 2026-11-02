@@ -63,6 +63,28 @@ function ctx(over: Partial<UnifiedToolContext> = {}): UnifiedToolContext {
   return { workspaceId: 'default', ...over } as UnifiedToolContext;
 }
 
+describe('PROJECTED_DEPS plugin invocation security cutover', () => {
+  it.each([true, false])('enforces only when the registered control is ON (%s)', async enabled => {
+    const invoke = vi.fn(async () => ({ content: [] }));
+    vi.mocked(getFlag).mockImplementation(async flag => flag === FLAGS.PLUGIN_INVOCATION_POLICY ? enabled : false);
+    try {
+      const result = await PROJECTED_DEPS.aroundInvoke!({
+        tool: { pluginName: 'security-fixture', capabilities: ['tasks:write'],
+          pluginInstallation: { version: '1.0.0', path: '/fixture/security', source: 'global' } } as never,
+        toolName: 'security-fixture:write', input: {}, ctx: ctx(), callId: 'security-fixture-call', invoke,
+      });
+      if (enabled) {
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result)).toContain('plugin_invocation_authority_required');
+        expect(invoke).not.toHaveBeenCalled();
+      } else {
+        expect(result.isError).not.toBe(true); expect(invoke).toHaveBeenCalledOnce();
+      }
+      expect(getFlag).toHaveBeenCalledWith(FLAGS.PLUGIN_INVOCATION_POLICY, 'system');
+    } finally { vi.mocked(getFlag).mockReset(); }
+  });
+});
+
 afterEach(() => {
   vi.clearAllMocks();
   __resetFailureLoopCircuitBreakerForTests();
@@ -370,10 +392,10 @@ describe('PROJECTED_DEPS.checkCapabilityEnvelope — enforce/observe wiring (gap
       args: {},
     });
     expect(v).toBeNull();
-    expect(getFlag).not.toHaveBeenCalled();
+    expect(getFlag).not.toHaveBeenCalledWith(FLAGS.CAPABILITY_ENVELOPE, expect.anything());
   });
 
-  it('ALLOWS a within-envelope fleet call (posture auto) without reading the flag (hot path stays sync)', async () => {
+  it('ALLOWS a within-envelope fleet call (posture auto) without reading the enforcement flag', async () => {
     const v = await PROJECTED_DEPS.checkCapabilityEnvelope!({
       toolName: 'plans.set-status',
       capabilities: ['plans:write'],
@@ -381,7 +403,10 @@ describe('PROJECTED_DEPS.checkCapabilityEnvelope — enforce/observe wiring (gap
       args: {},
     });
     expect(v).toEqual({ decision: 'allow', posture: 'auto', applied: true });
-    expect(getFlag).not.toHaveBeenCalled();
+    // Like the adjacent exemption test, assert THIS policy's flag. The
+    // unrelated lazy auth-config/testing-full-access refresh may settle here
+    // after a prior real dispatch; it cannot change this envelope decision.
+    expect(getFlag).not.toHaveBeenCalledWith(FLAGS.CAPABILITY_ENVELOPE, expect.anything());
   });
 
   it('DENIES a beyond-envelope (protected) fleet call when the enforce flag is ON', async () => {

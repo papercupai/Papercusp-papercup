@@ -25,7 +25,7 @@ function transactionHarness(options: {
 }) {
   const statements: Array<{ text: string; values: unknown[] }> = [];
   const emptySqlFragment = Symbol('empty-sql-fragment');
-  const tx = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+  const tx = Object.assign((strings: TemplateStringsArray, ...values: unknown[]) => {
     // Postgres.js's SQL tag can compose a nested empty fragment. Keep that
     // fragment out of the mocked query log instead of treating it as a query.
     if (strings.length === 1 && strings[0] === '' && values.length === 0) return emptySqlFragment;
@@ -74,7 +74,7 @@ function transactionHarness(options: {
       text.includes("payload->'observation'->'retracted' IS NULL")
     ) return Promise.resolve([]);
     throw new Error(`unexpected query: ${text}`);
-  }) as never;
+  }, { unsafe: (text: string) => ({ sqlFragment: text }) }) as never;
   h.boundedOrgTxn.mockImplementation(async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx));
   return { statements };
 }

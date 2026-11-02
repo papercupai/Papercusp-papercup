@@ -95,12 +95,20 @@ export async function dispatchDocStewardForDrift(
     if (await recentOrActiveDocStewardExists(workspaceId, harnessSlug)) return [];
     const batch = staleDocs.slice(0, DOC_STEWARD_MAX_DOCS_PER_DISPATCH);
     const { fireLaunchBlueprintForEvent } = await import('../../blueprint/launch-blueprint');
-    await fireLaunchBlueprintForEvent('docs:drift', {
+    const [{ workspaceBackgroundActivityAllowed }, { startupActivityFeatureId }, { runObservedBackgroundActivity }] = await Promise.all([
+      import('../../device-operator-actions'), import('../../schedule-inventory'), import('../../startup-activity'),
+    ]);
+    const featureId = startupActivityFeatureId({ source: 'in-process', installSlug: null,
+      name: DOC_STEWARD_DISPATCH_NAME, detail: {} }, { workspaceId });
+    // A pause/disable committed during flag/cooldown/import resolution wins.
+    if (!await workspaceBackgroundActivityAllowed(workspaceId, featureId)) return [];
+    await runObservedBackgroundActivity({ workspaceId, featureId, source: 'sync', trigger: 'sync' },
+      () => fireLaunchBlueprintForEvent('docs:drift', {
       installSlug: harnessSlug,
       workspaceId,
       kickoff: `[${DOC_STEWARD_DISPATCH_NAME}] Re-sync ${batch.length} drifted doc(s) in ${harnessSlug} to the current code: ${batch.map((d) => d.docId).join(', ')}. For entries with sourceFile, edit that canonical repo file under a work-item/file lock, then re-anchor/verify the docId; do NOT copy it into docs:author or publish private docs.`,
       extra: ['--doc-drift', JSON.stringify({ docs: batch })],
-    });
+      }));
     return batch;
   } catch {
     // best-effort: doc-steward dispatch must never break the sweep

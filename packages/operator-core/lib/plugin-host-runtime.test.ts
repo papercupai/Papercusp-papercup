@@ -5,8 +5,14 @@
  * test feeds the runtime a fixed set of fake `LoadedPlugin` records and
  * asserts on the lifecycle / action / spawn behavior.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { LoadedPlugin } from '@papercusp/plugin-loader';
+import type { PluginSpawn } from '@papercusp/plugin-sdk';
+const grants = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock('./plugin-grants', () => ({ getGrantsForPluginInHarness: grants.read }));
 import {
   _injectPluginHostForTests,
   _resetPluginHostForTests,
@@ -70,6 +76,7 @@ function makePlugin(overrides: Partial<LoadedPlugin['plugin']> = {}): LoadedPlug
 }
 
 beforeEach(() => {
+  grants.read.mockReset().mockResolvedValue([]);
   _resetPluginHostForTests();
 });
 
@@ -315,6 +322,7 @@ describe('ctx.spawn capability gating', () => {
   });
 
   it('runs an allowed binary and captures stdout', async () => {
+    grants.read.mockResolvedValue(['compute:exec:echo']);
     let result: any = null;
     const p = makePlugin({
       name: 'echo-runner',
@@ -333,6 +341,7 @@ describe('ctx.spawn capability gating', () => {
   });
 
   it('honors prefix-wildcard cap (compute:exec:ec*)', async () => {
+    grants.read.mockResolvedValue(['compute:exec:ec*']);
     let result: any = null;
     const p = makePlugin({
       name: 'wildcard-tester',
@@ -344,6 +353,44 @@ describe('ctx.spawn capability gating', () => {
     _injectPluginHostForTests([p]);
     await warmUpPluginsForSlug(SLUG_ARGS);
     expect(result?.code).toBe(0);
+  });
+
+  it.each(['revoked', 'unavailable'] as const)('denies a retained spawn context after grants become %s', async (state) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const root = mkdtempSync(join(tmpdir(), 'plugin-grant-effect-'));
+    const cap = `compute:exec:${process.execPath}`;
+    grants.read.mockResolvedValue([cap]);
+    let spawn!: PluginSpawn;
+    const p = makePlugin({
+      name: 'grant-effect',
+      capabilities: [cap] as never,
+      async init(ctx) { spawn = ctx.spawn!; },
+    });
+    _injectPluginHostForTests([p]);
+    try {
+      await warmUpPluginsForSlug(SLUG_ARGS);
+      const script = "require('node:fs').writeFileSync(process.argv[1], 'effect')";
+      const allowed = join(root, 'allowed'), forbidden = join(root, 'forbidden');
+      const result = await spawn(process.execPath, ['-e', script, allowed], { cwd: root });
+      expect(result.code).toBe(0);
+      expect(existsSync(allowed)).toBe(true);
+      if (state === 'revoked') grants.read.mockResolvedValue([]);
+      else grants.read.mockRejectedValue(new Error('authoritative store unavailable'));
+      await expect(spawn(process.execPath, ['-e', script, forbidden], { cwd: root }))
+        .rejects.toThrow('missing capability');
+      expect(existsSync(forbidden)).toBe(false);
+      if (state === 'unavailable') expect(warning).toHaveBeenCalledWith(
+        '[plugin-grants] read failed for grant-effect@0.1.0 in test-harness:',
+        'authoritative store unavailable',
+      );
+      else expect(warning).not.toHaveBeenCalled();
+      expect(grants.read).toHaveBeenLastCalledWith('grant-effect', '0.1.0', SLUG_ARGS.installSlug, {
+        requireAuthoritative: true,
+      });
+    } finally {
+      warning.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

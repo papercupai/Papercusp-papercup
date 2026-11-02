@@ -140,4 +140,48 @@ describe('plans:set-specs structured plan acceptance references', () => {
     await expect(verifyPlanAcceptanceRef('D-001', 'P-006', revisionExists)).resolves.toEqual({ ok: true });
     expect(revisionExists).not.toHaveBeenCalled();
   });
+
+  it('accepts same-harness legacy plan decision URIs and rejects malformed or cross-harness forms', async () => {
+    const revisionExists = vi.fn(async () => false);
+    await expect(
+      verifyPlanAcceptanceRef(
+        'plan://papercusp/accepted-plan#D-002',
+        'P-006',
+        revisionExists,
+        'papercusp',
+      ),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      verifyPlanAcceptanceRef(
+        'plan://other-harness/accepted-plan#D-002',
+        'P-006',
+        revisionExists,
+        'papercusp',
+      ),
+    ).resolves.toMatchObject({ ok: false, code: 'plan-acceptance-ref-harness-mismatch' });
+    await expect(
+      verifyPlanAcceptanceRef('plan://papercusp/accepted-plan#P-006', 'P-006', revisionExists, 'papercusp'),
+    ).resolves.toMatchObject({ ok: false, code: 'malformed-plan-acceptance-ref' });
+    expect(revisionExists).not.toHaveBeenCalled();
+  });
+
+  it('passes legacy decision provenance through the writer without dropping evidence', async () => {
+    handlerMocks.setSpecClause.mockResolvedValue({ status: 'created' });
+    const legacySpec = {
+      ...clause,
+      acceptanceRef: 'plan://papercusp/accepted-plan#D-002',
+      requiredEvidence: ['operator log records the decision path'],
+    };
+    const args = tool.args.parse({ harness: 'papercusp', slug: 'active-plan', spec: legacySpec });
+
+    await tool.handler(args as never, { workspaceId: 'test-workspace' } as never);
+
+    expect(handlerMocks.getPlanRevisionSnapshot).not.toHaveBeenCalled();
+    expect(handlerMocks.setSpecClause).toHaveBeenCalledWith(expect.objectContaining({
+      acceptanceRef: 'plan://papercusp/accepted-plan#D-002',
+      requiredEvidence: ['operator log records the decision path'],
+      harnessSlug: 'papercusp',
+      planSlug: 'active-plan',
+    }));
+  });
 });

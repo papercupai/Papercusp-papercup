@@ -3974,8 +3974,12 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
   ])('does not confuse a booted Codex with a completed carry (persists=$persists, deferred=$deferred, stuckOnce=$stuckOnce)', async ({ persists, deferred, stuckOnce }) => {
     const root = mkdtempSync(join(tmpdir(), 'psu-carry-completion-'));
     const codexHome = join(root, 'codex');
+    const sourceNativeId = '1f0e2c3d-4b5a-4678-9012-abcdefabcdef';
     const nativeId = '01a0f68e-3037-7dc3-b898-a1cc12441884';
+    const sourceNativeFile = join(codexHome, 'sessions', '2026', '10', '01', `rollout-2026-10-01T09-00-00-${sourceNativeId}.jsonl`);
     const nativeFile = join(codexHome, 'sessions', '2026', '10', '01', `rollout-2026-10-01T10-00-00-${nativeId}.jsonl`);
+    mkdirSync(dirname(sourceNativeFile), { recursive: true });
+    writeFileSync(sourceNativeFile, `${JSON.stringify({ type: 'response_item', timestamp: new Date(Date.now() - 10_000).toISOString(), payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'source turn' }] } })}\n`);
     const ownerId = `su-carry-completion-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
     const eventLog = eventLogPathForOwner(ownerId);
@@ -4013,6 +4017,8 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
     const clock = vi.spyOn(Date, 'now').mockImplementation(() =>
       (bootStartedAt ?? wallNow()) - bootTimeMs);
     const signalSource = new EventEmitter();
+    const nativeIdByPid = new Map<number, string>();
+    let spawnedChildren = 0;
     const done = hostThroughPty({
       command: execPath, args: ['-e', childCode], cwd: root,
       env: {
@@ -4030,10 +4036,12 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
       },
-      ownerId, io, bridgeTty: false, signalSource,
+      ownerId, advSessionId: 77, io, bridgeTty: false, signalSource,
       spawnPty: (file, args, options, realSpawn) => {
         bootStartedAt = wallNow();
         const spawned = realSpawn(file, args, options);
+        nativeIdByPid.set(spawned.pid, spawnedChildren === 0 ? sourceNativeId : nativeId);
+        spawnedChildren += 1;
         return new Proxy(spawned, {
           get(target, property) {
             if (property === 'onData') {
@@ -4050,6 +4058,10 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
           },
         });
       },
+      resolveRespawnNativeId: (pid: number) => {
+        const resolved = nativeIdByPid.get(pid) ?? null;
+        return resolved === nativeId && !existsSync(nativeFile) ? null : resolved;
+      },
       mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId: null, launchContextPath: '/test/carry.md' }),
       onRespawn: report, emitCompacted: emit, nativePersistenceTimeoutMs: 200, onExit: () => {},
     });
@@ -4065,6 +4077,36 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
           ? row.kind === 'respawn-carry-delivered'
           : row.kind === 'respawn-carry-dropped' && row.reason === 'codex-startup-still-starting'))).toBe(true);
       }, { timeout: 9000 });
+      if (persists && !stuckOnce) {
+        const rows = hostRows();
+        expect(rows.find((row) => row.kind === 'respawned')).toMatchObject({
+          mode: 'carry-respawn',
+          managedCarryLineage: {
+            ownerId,
+            advSessionId: 77,
+            sourceNativeId,
+            sourceNativeRef: sourceNativeFile,
+            sourceChildGeneration: 1,
+            targetChildGeneration: 2,
+            targetNativeId: null,
+            targetNativeRef: null,
+          },
+        });
+        expect(rows.find((row) => row.kind === 'respawn-carry-delivered')).toMatchObject({
+          nativeId,
+          nativeRef: nativeFile,
+          managedCarryLineage: {
+            ownerId,
+            advSessionId: 77,
+            sourceNativeId,
+            sourceNativeRef: sourceNativeFile,
+            sourceChildGeneration: 1,
+            targetChildGeneration: 2,
+            targetNativeId: nativeId,
+            targetNativeRef: nativeFile,
+          },
+        });
+      }
       const boots = () => readFileSync(join(root, 'boots'), 'utf8');
       const freshEpochRetries = () => hostRows().filter((row) => row.kind === 'respawn-carry-fresh-epoch-retry');
       if (stuckOnce) {
@@ -4091,6 +4133,24 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
           expect(order).toEqual([]);
           expect(emit).not.toHaveBeenCalled();
           confirm();
+          // The late binding callback schedules the announcement under the
+          // host's injection mutex. Binding confirmation is logged before that
+          // async work runs, so wait for its completion event before asserting
+          // the observable emit order.
+          await vi.waitFor(() => {
+            expect(hostRows().find((row) => row.kind === 'respawn-compaction-announced-after-binding'))
+              .toMatchObject({ nativeId });
+          }, { timeout: 1_000 });
+        }
+        if (!stuckOnce) {
+          await vi.waitFor(() => {
+            expect(hostRows().find((row) => row.kind === 'respawn-binding-confirmed')).toMatchObject({
+              ownerId,
+              advSessionId: '77',
+              childGeneration: 2,
+              nativeId,
+            });
+          }, { timeout: 1_000 });
         }
         expect(order).toEqual(['reanchor', 'emit']);
         expect(report).toHaveBeenCalledOnce();

@@ -209,14 +209,22 @@ export async function fireReactionInProcess(opts: {
   try {
     // Context and liveness helpers import reactions without firing a tool.
     // Keep the product graph behind the actual dispatch boundary.
-    const { PROJECTED_DEPS } = await import('../projected-tool-deps');
+    const [{ PROJECTED_DEPS }, { runObservedBackgroundActivity }] = await Promise.all([
+      import('../projected-tool-deps'), import('../startup-activity'),
+    ]);
     const result = await withWorkspace(workspaceId, async (tx) => {
+      // Scope/dispatcher initialization can wait. A newer disable still wins here.
+      if (!await reactionBackgroundActivityAllowed(workspaceId, opts.fire, opts.cause.ruleId))
+        return { ok: true as const, withheld: true as const };
       const ctx: UnifiedToolContext = {
         ...buildReactionCtx(opts.parentCtx, workspaceId, opts.cause, opts.capability),
         tx,
       };
-      return dispatchProjectedTool(projected, fireTool, opts.args, ctx, PROJECTED_DEPS);
+      return runObservedBackgroundActivity({ workspaceId,
+        featureId: startupReactionFeatureId(workspaceId, opts.cause.ruleId), source: 'event', trigger: 'event',
+      }, () => dispatchProjectedTool(projected, fireTool, opts.args, ctx, PROJECTED_DEPS));
     });
+    if ('withheld' in result) return result;
     if (!result.ok) {
       return { ok: false, error: result.error ? `${result.error.code}: ${result.error.message}` : 'reaction failed' };
     }

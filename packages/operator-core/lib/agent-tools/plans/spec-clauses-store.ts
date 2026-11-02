@@ -5,7 +5,14 @@ import { isRecordedTestLayer } from '@papercusp/test-config/execution-details';
 import { isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from '../../pg-timestamp';
 import { resolveSpecScopeSlug } from './adhoc-spec-scope';
-import { resolvePlanScope } from './source';
+import type { resolvePlanScope as ResolvePlanScope } from './source';
+
+// The plan runtime reaches rubric checks and testing:run, whose schema imports
+// our proof-id constant through testing/evidence. Keep schema-only imports free
+// of that runtime cycle; actual store operations still resolve the same scope.
+async function resolvePlanScope(...args: Parameters<typeof ResolvePlanScope>) {
+  return (await import('./source')).resolvePlanScope(...args);
+}
 
 export const SPEC_BEHAVIOR_CLASSES = [
   'happy-path',

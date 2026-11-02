@@ -1057,9 +1057,22 @@ export function compactSchemaForResult(
           assumptions: 'assumptions?',
         } as Record<string, string>)[name]
       : undefined;
+    const directObject = objectProperties(node);
+    const primitiveRequiredFields = directObject && directObject.required.size > 0 &&
+      [...directObject.required].every((field) => {
+        const child = directObject.properties[field] as JsonSchemaNode | undefined;
+        const type = child ? schemaType(child) : '';
+        return type.length > 0 && type !== 'object' && !type.startsWith('array');
+      });
     return {
       index,
       base: compactBase ?? `${name}${projection.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`,
+      // A nested segment can fit locally but still be clipped by the overall
+      // schema ceiling. Shed its long primitive constraints before losing a
+      // required sibling key at that final boundary.
+      shortBase: primitiveRequiredFields
+        ? `${name}${projection.required.has(name) ? '' : '?'}:${schemaType(node)}${nestedObjectFieldHint(node, 0, false)}`
+        : null,
       // Completion controls are structurally small but carry long prose. Keep
       // their names and types ahead of nested verification evidence; the prose
       // duplicates their call-site constraints without adding callable shape.
@@ -1073,9 +1086,10 @@ export function compactSchemaForResult(
   const callConstraints = compactCallConstraintAnnotationForResult(root);
   const prefix = `${callConstraints ? `${callConstraints}; ` : ''}${projection.unionHint ? `one-of:${projection.unionHint}; ` : ''}${projection.conditionalHint ? `${projection.conditionalHint}; ` : ''}${aliasHint ? `${aliasHint}; ` : ''}`;
   const withDescriptions = new Set(parts.filter((part) => part.description).map((part) => part.index));
+  const shortened = new Set<number>();
   const render = (includedDescriptions: ReadonlySet<number>): string =>
     `${prefix}${parts
-      .map((part) => `${part.base}${includedDescriptions.has(part.index) ? part.description?.text ?? '' : ''}`)
+      .map((part) => `${shortened.has(part.index) ? part.shortBase : part.base}${includedDescriptions.has(part.index) ? part.description?.text ?? '' : ''}`)
       .join('; ')}`;
 
   let text = render(withDescriptions);
@@ -1088,6 +1102,16 @@ export function compactSchemaForResult(
       .sort((a, b) => (a.description!.priority - b.description!.priority) || (a.index - b.index));
     for (const part of removable) {
       withDescriptions.delete(part.index);
+      text = render(withDescriptions);
+      if (text.length <= maxChars) break;
+    }
+  }
+  if (text.length > maxChars) {
+    const candidates = parts
+      .filter((part) => part.shortBase && part.shortBase.length < part.base.length)
+      .sort((a, b) => (b.base.length - b.shortBase!.length) - (a.base.length - a.shortBase!.length));
+    for (const part of candidates) {
+      shortened.add(part.index);
       text = render(withDescriptions);
       if (text.length <= maxChars) break;
     }

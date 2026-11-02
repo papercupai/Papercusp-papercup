@@ -81,7 +81,12 @@ export async function getGrantsForPluginInHarness(
   pluginVersion: string,
   harnessSlug: string,
   /** Optional sql override for tests; production callers omit. */
-  opts?: { sql?: ReturnType<typeof getOrgPg>['sql']; skipLegacy?: boolean },
+  opts?: {
+    sql?: ReturnType<typeof getOrgPg>['sql'];
+    skipLegacy?: boolean;
+    /** Runtime authorization must observe current PG grants or deny. */
+    requireAuthoritative?: boolean;
+  },
 ): Promise<string[]> {
   const out = new Set<string>();
   try {
@@ -93,10 +98,13 @@ export async function getGrantsForPluginInHarness(
         AND harness_slug IN (${harnessSlug}, '')
     `;
     for (const r of rows) out.add(r.capability);
-  } catch {
+  } catch (error) {
+    if (opts?.requireAuthoritative) throw error;
     // PG unavailable — caller still gets file-fallback below.
   }
-  if (!opts?.skipLegacy) {
+  // Legacy grants cannot resurrect a revoked grant in strict dispatch. Keep
+  // compatibility reads separate from the host's authorization decision.
+  if (!opts?.requireAuthoritative && !opts?.skipLegacy) {
     for (const g of readLegacyGrants()) {
       if (g.pluginName !== pluginName) continue;
       if (g.pluginVersion !== pluginVersion && g.pluginVersion !== '0.0.0') continue;

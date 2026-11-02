@@ -228,6 +228,9 @@ export const commands = {
 	 *  the global shortcut.
 	 */
 	openDocsSearchPalette: () => __TAURI_INVOKE<void>("open_docs_search_palette"),
+	startupPolicyStatus: () => typedError<Status, string>(__TAURI_INVOKE("startup_policy_status")),
+	startupPolicySetLogin: (enabled: boolean) => typedError<Status, string>(__TAURI_INVOKE("startup_policy_set_login", { enabled })),
+	startupPolicySetKeepRunning: (enabled: boolean) => typedError<Status, string>(__TAURI_INVOKE("startup_policy_set_keep_running", { enabled })),
 	/**
 	 *  WI-4827 — open a same-origin app `route` in the MAIN operator window and
 	 *  dismiss the Quick Panel palette (Spotlight-style). Invoked from the panel
@@ -404,6 +407,13 @@ export type OperatorDeadPayload = {
 	window_secs: number,
 };
 
+export type Policy = {
+	revision: number,
+	startAtLogin: boolean | null,
+	keepRunningAfterClose: boolean,
+	cleanStop: boolean,
+};
+
 export type PtySpawnOpts = {
 	command: string,
 	args?: string[],
@@ -421,6 +431,16 @@ export type PtySpawnResult = {
 export type Registry = {
 	current: string,
 	workspaces: Workspace[],
+};
+
+export type Status = {
+	policy: Policy,
+	loginEnabled: boolean | null,
+	loginError: string | null,
+	bootEnabled: boolean | null,
+	bootInstalled: boolean | null,
+	bootMechanism: string,
+	bootHandoff: string,
 };
 
 /**

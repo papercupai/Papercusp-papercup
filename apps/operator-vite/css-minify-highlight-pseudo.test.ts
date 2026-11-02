@@ -34,13 +34,13 @@ import viteConfig from './vite.config';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe('operator-vite CSS minification does not warn on ::highlight() pseudo-elements', () => {
-  it('vite.config.ts pins build.cssMinify to esbuild (not the lightningcss default)', () => {
-    const resolved = typeof viteConfig === 'function' ? viteConfig({ command: 'build', mode: 'production' }) : viteConfig;
+  it('vite.config.ts pins build.cssMinify to esbuild (not the lightningcss default)', async () => {
+    const resolved = await (typeof viteConfig === 'function' ? viteConfig({ command: 'build', mode: 'production' }) : viteConfig);
     expect(resolved.build?.cssMinify).toBe('esbuild');
   });
 
-  it('keeps stale optimized-dependency requests from blanking long-open embeds', () => {
-    const resolved = typeof viteConfig === 'function' ? viteConfig({ command: 'serve', mode: 'development' }) : viteConfig;
+  it('keeps stale optimized-dependency requests from blanking long-open embeds', async () => {
+    const resolved = await (typeof viteConfig === 'function' ? viteConfig({ command: 'serve', mode: 'development' }) : viteConfig);
     expect(resolved.optimizeDeps?.ignoreOutdatedRequests).toBe(true);
   });
 

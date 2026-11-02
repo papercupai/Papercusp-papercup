@@ -28,6 +28,7 @@ const healthCadence = vi.hoisted(() => ({
   canRun: vi.fn(async () => true),
   pulse: vi.fn(async () => ({ outcome: 'noop' })),
   wedge: vi.fn(async () => ({ outcome: 'noop' })),
+  observe: vi.fn(async (_scope: unknown, invoke: () => Promise<unknown>) => invoke()),
 }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: healthCadence.getFlag }));
 vi.mock('../workspace-registry', () => ({ readRegistry: healthCadence.readRegistry }));
@@ -37,8 +38,9 @@ vi.mock('../device-operator-actions', () => ({ workspaceBackgroundActivityAllowe
 vi.mock('../scorecard-emission-pulse', () => ({ runScorecardEmissionPulse: healthCadence.pulse,
   checkOverwatchEmissionWedge: healthCadence.wedge }));
 vi.mock('./managed-tick-alarm', () => ({ installManagedTickAlarm: vi.fn() }));
+vi.mock('../startup-activity', () => ({ runObservedBackgroundActivity: healthCadence.observe }));
 
-beforeEach(() => { healthCadence.canRun.mockReset().mockResolvedValue(true); });
+beforeEach(() => { healthCadence.canRun.mockReset().mockResolvedValue(true); healthCadence.observe.mockClear(); });
 
 afterEach(() => {
   disarmInProcessPeriodicChecks();
@@ -110,10 +112,26 @@ describe('shared optional workspace effects', () => {
     for (const workspaceId of ['paused-ws', 'active-ws']) {
       const featureId = startupActivityFeatureId({ source: 'routines', installSlug: operatorHomeHarnessSlug(), name, detail: {} }, { workspaceId });
       expect(healthCadence.canRun).toHaveBeenCalledWith(workspaceId, featureId);
+      if (workspaceId === 'active-ws') expect(healthCadence.observe).toHaveBeenCalledWith({ workspaceId, featureId,
+        source: 'timer', trigger: 'timer' }, expect.any(Function));
     }
+    expect(healthCadence.observe).toHaveBeenCalledOnce();
     await check.tick();
     expect(effect).toHaveBeenCalledTimes(3);
-    expect(healthCadence.canRun).toHaveBeenCalledTimes(4);
+    expect(healthCadence.canRun).toHaveBeenCalledTimes(7);
+  });
+
+  it.each(['system-health', 'scorecard-emission-pulse'])('honors a late disable before %s invokes or records a start', async name => {
+    healthCadence.getFlag.mockResolvedValue(true);
+    healthCadence.readRegistry.mockReturnValue({ workspaces: [{ id: 'late-disabled-ws' }] });
+    healthCadence.tick.mockReset().mockResolvedValue({});
+    healthCadence.sample.mockReset().mockResolvedValue({ overdue: false });
+    healthCadence.pulse.mockReset().mockResolvedValue({ outcome: 'noop' });
+    healthCadence.wedge.mockReset().mockResolvedValue({ outcome: 'noop' });
+    healthCadence.canRun.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await buildDefaultChecks().find(check => check.name === name)!.tick();
+    for (const effect of [healthCadence.tick, healthCadence.sample, healthCadence.pulse, healthCadence.wedge, healthCadence.observe])
+      expect(effect).not.toHaveBeenCalled();
   });
 
   it('withholds failed policy reads without leaking the provider error or blocking another workspace', async () => {

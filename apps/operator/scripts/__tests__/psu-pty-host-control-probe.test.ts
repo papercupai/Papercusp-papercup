@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { controlSocketProbeOutcome, decodeControl } from '../psu-pty-host.mjs';
+import { closeControlServerForRebind, controlSocketProbeOutcome, controlSocketSelfHealAction, decodeControl } from '../psu-pty-host.mjs';
 
 describe('psu-pty-host control socket probe', () => {
   it('decodes an owner-bound no-op probe and rejects a different owner', () => {
@@ -24,5 +24,19 @@ describe('psu-pty-host control socket probe', () => {
       reason: 'ownerId-mismatch',
     });
     expect(controlSocketProbeOutcome({ ...message, mode: 'turn' }, 'su-probe-owner')).toBeNull();
+  });
+
+  it('rebinds when the socket path exists but its server is not listening', () => {
+    expect(controlSocketSelfHealAction({ metaMine: true, sockOnDisk: true, serverListening: false })).toBe('rebind');
+    expect(controlSocketSelfHealAction({ metaMine: true, sockOnDisk: true, serverListening: true })).toBe('healthy');
+
+    let closeCalls = 0;
+    let rebindCalls = 0;
+    closeControlServerForRebind({
+      listening: false,
+      close: () => { closeCalls += 1; },
+    }, () => { rebindCalls += 1; });
+    expect(closeCalls).toBe(0);
+    expect(rebindCalls).toBe(1);
   });
 });

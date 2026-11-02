@@ -49,16 +49,15 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   };
 });
 
-vi.mock('./source', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./source')>();
-  return {
-    ...actual,
-    resolvePlanScope: async (options: { harnessSlug?: string; workspaceId?: string } = {}) => {
-      h.planScopeOptions.push(options);
-      return { workspaceId: options.workspaceId ?? 'workspace-test', harnessSlug: 'papercusp' };
-    },
-  };
-});
+// Scope is this store's only source-module dependency. Importing the real module
+// inside its mock starts the plan/event runtime on the first read, defeats this
+// unit suite's in-memory boundary, and can outlive the test that owns the fixture.
+vi.mock('./source', () => ({
+  resolvePlanScope: async (options: { harnessSlug?: string; workspaceId?: string } = {}) => {
+    h.planScopeOptions.push(options);
+    return { workspaceId: options.workspaceId ?? 'workspace-test', harnessSlug: 'papercusp' };
+  },
+}));
 
 // Retraction pushes scorecard invalidations after commit in production. Keep this
 // unit suite on its in-memory seam; the sync server's own integration tests cover

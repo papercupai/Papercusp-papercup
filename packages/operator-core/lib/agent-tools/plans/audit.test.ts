@@ -60,16 +60,12 @@ vi.mock('../../plan-types/pins', async (orig) => ({
   ...(await orig<typeof import('../../plan-types/pins')>()),
   pinnedPlanTypeResolver: vi.fn(async () => null),
 }));
-// `./source` is mocked wholesale, so the factory must cover EVERY export this
-// test's import graph reaches — not just the ones audit.ts itself calls.
-// add-decision.ts (pulled in via rubrics.ts) imports VALID_PLAN_SLUG, and a
-// partial factory makes that read `undefined` and crashes collection before a
-// single test runs. The literal is inlined because vi.mock factories are
-// hoisted and may not close over top-level variables; keep it in step with the
-// real export in ./source.ts.
-vi.mock('./source', () => ({
+// Preserve source exports used anywhere in this test's import graph, while
+// replacing the database read this fixture controls. A wholesale export list
+// goes stale when a transitive importer adds another source helper.
+vi.mock('./source', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./source')>()),
   getPlanRow: vi.fn(),
-  VALID_PLAN_SLUG: /^(?:[A-Za-z0-9._-]+|[A-Za-z0-9._-]+@run-\d+)$/,
 }));
 vi.mock('./spec-clauses-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./spec-clauses-store')>()),

@@ -21,6 +21,7 @@ import { AgentMcpConnectionError, connectAgentMcp } from '../packages/operator-c
 import { linuxPgrpFromProcStat, linuxStartTicksFromProcStat, readProcessIdentity } from '../packages/operator-core/lib/process-identity';
 import { readVerifierSourceReceiptSync } from '../packages/operator-core/lib/verifier-source';
 import { buildMcpCallParams, buildMcpSessionQuery, resolveMcpCallOrigin, resolveMcpRole, superuserTokenPaths } from './mcp-call.mjs';
+import { readNativeProcessTraceArtifacts } from './lib/budgeted-task-scheduler.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 let execMemo: typeof execFile.__promisify__ | null = null;
@@ -562,10 +563,14 @@ async function runIsolatedIdentity(flags: Record<string, string>) {
   await writeFile(superuserTokenPath(), randomBytes(32).toString('base64url'), { mode: 0o600, flag: 'wx' });
   console.error('IDENTITY_PRIVATE_PHASE build');
   const bundle = await buildPrivateOperatorApiBundle(ROOT, evidenceDir, { timeoutMs: 240_000, maxMs: 420_000 });
-  const hostEnv = privateBundleRuntimeEnv(process.env);
+  const traceOut = resolve(evidenceDir, 'identity-host-source.json');
+  const hostEnv = privateBundleRuntimeEnv(process.env, { traceOut, pinnedSources: [{
+    path: bundle.path, sha256: bundle.sha256, byteLength: (await stat(bundle.path)).size,
+  }] });
   // Allocate the retained log before the process: an existing/unwritable path
   // must never strand a host outside the try/finally cleanup boundary.
   const log = await open(resolve(evidenceDir, 'host.log'), 'wx', 0o600);
+  const hostStartedAtMs = Date.now();
   const host = spawn(process.execPath, [bundle.path], { cwd: ROOT, env: hostEnv, detached: true, stdio: ['ignore', log.fd, log.fd] });
   let hostError: Error | undefined;
   host.on('error', error => { hostError = error; });
@@ -596,6 +601,22 @@ async function runIsolatedIdentity(flags: Record<string, string>) {
       lifecycle.hostStopped = readProcessIdentity(host.pid!) !== processIdentity;
       if (!(lifecycle.hostStopped) || (lifecycle.remainingGroupPids as number[]).length) throw new Error('isolated cleanup incomplete');
     } catch (error) { (lifecycle.failures as unknown[]).push({ stage: 'cleanup', diagnostic: identityFailure(error) }); process.exitCode = 1; }
+    // Reuse the existing authenticated event reader. Retain actual event refs
+    // after cleanup, including failed starts; this is not source/evaluation or
+    // complete runtime qualification and must never supply an acceptance pass.
+    const finishedAtMs = Date.now();
+    try {
+      const trace = readNativeProcessTraceArtifacts(traceOut, hostStartedAtMs, finishedAtMs);
+      lifecycle.nativeSourceTrace = { scope: 'authenticated-native-event-artifacts-only', acceptance: 'unknown',
+        out: traceOut, sourceRoot: trace.sourceRoot, startedAtMs: hostStartedAtMs, finishedAtMs,
+        population: trace.population,
+        events: trace.rows.map(({ row, bytes }) => ({ event: row.event, pid: row.pid,
+          processIdentity: row.processIdentity, atMs: row.atMs,
+          ref: createHash('sha256').update(bytes).digest('hex') + '.json' })),
+        pending: ['loader-source-pin-binding', 'module-evaluation', 'runtime-config', 'private-pg',
+          'sidecars', 'complete-runtime-closure'] };
+      if (!trace.population.complete) throw new Error('isolated native trace population incomplete');
+    } catch (error) { (lifecycle.failures as unknown[]).push({ stage: 'native-source-trace', diagnostic: identityFailure(error) }); process.exitCode = 1; }
     await log.close();
     await writeFile(resolve(evidenceDir, 'lifecycle.json'), JSON.stringify(lifecycle, null, 2));
     console.error('IDENTITY_PRIVATE_PHASE stopped');

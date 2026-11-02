@@ -4641,8 +4641,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       return {
         kind: 'drop',
         reason:
-          `timed-out await delivery #${d.id} suppressed because newer active exact-key await(s) ` +
-          `${timeoutFreshness.staleAwaitIds.join(', ')} replaced the expired registration`,
+          `timed-out await delivery #${d.id} suppressed because expired await(s) ` +
+          `${timeoutFreshness.staleAwaitIds.join(', ')} were replaced by newer active exact-key registrations`,
       };
     }
 

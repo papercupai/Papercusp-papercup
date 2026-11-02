@@ -13,11 +13,16 @@ import { executeOperationalRun } from '../agent-tools/testing/record-run';
 import { acquireTrackedSessionSource } from '../session-port/service';
 import { adaptNativeSessionJsonl } from '../session-port/native-adapter';
 import type { SessionBackend } from '../session-port/types';
+import { lineagePartyKeys } from '../acceptance-author-identity';
+import { goalTenureGradingMetaFromRouting } from './grading-cascade';
+import { assertGoalTenurePickup } from './goal-tenure-pickup.test-helper';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const profilePath = process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE;
 type Profile = { origin: string; runtimeUnits: string[];
-  consultBrief: { questions: string[]; existingConversationId?: string } };
+  consultBrief?: { questions: string[]; existingConversationId?: string };
+  goalTenureGrading?: { goalId: string; existingConversationId: string } };
+const liveProfile = profilePath ? JSON.parse(readFileSync(resolve(root, profilePath), 'utf8')) as Profile : undefined;
 
 function call(name: string, args: Record<string, unknown>, origin: string) {
   const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' };
@@ -54,20 +59,23 @@ async function nativeBrief(owner: string, origin: string) {
   // Answering sessions can finish and archive before acceptance is refreshed.
   // Reuse the production reader's exact-incarnation and archive-integrity checks.
   const snapshot = await acquireTrackedSessionSource(source);
-  const first = adaptNativeSessionJsonl(backend, snapshot.bytes.toString('utf8'), nativeSession)
-    .turns.find(turn => turn.role === 'user');
+  const turns = adaptNativeSessionJsonl(backend, snapshot.bytes.toString('utf8'), nativeSession).turns;
+  const first = turns.find(turn => turn.role === 'user');
   const text = first?.blocks.flatMap(block => 'text' in block ? [String(block.text)] : []).join('\n') ?? '';
-  return { nativeSession, path: snapshot.fileIdentity?.path ?? null,
-    source: snapshot.source, archiveRelpath: snapshot.relpath, sha256: snapshot.sha256, text };
+  return { ownerId: owner, nativeSession, path: snapshot.fileIdentity?.path ?? null,
+    source: snapshot.source, archiveRelpath: snapshot.relpath, sha256: snapshot.sha256, text,
+    hasResponse: turns.some(turn => turn.role === 'assistant') };
 }
 
 describe.skipIf(!profilePath)('consult dispatch through the current production router', () => {
-  it('records an organic dispatch and a fresh brief containing the selected expert turns', async () => {
+  it.skipIf(!liveProfile?.consultBrief)('records an organic dispatch and a fresh brief containing the selected expert turns', async () => {
     const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8')) as Profile;
+    const consultBrief = profile.consultBrief;
+    if (!consultBrief) throw new Error('consultBrief profile required');
     expect(profile.origin).toBe('http://127.0.0.1:3170');
     expect(profile.runtimeUnits).toContain('hono-host:3170');
-    expect(profile.consultBrief.existingConversationId || profile.consultBrief.questions.length).toBeTruthy();
-    expect(profile.consultBrief.questions.length).toBeLessThanOrEqual(2);
+    expect(consultBrief.existingConversationId || consultBrief.questions.length).toBeTruthy();
+    expect(consultBrief.questions.length).toBeLessThanOrEqual(2);
     expect(process.env.PAPERCUSP_SID, 'preserve the authenticated session identity').toBeTruthy();
     const recordContext = { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: root };
     expect(resolveAgentWorkspaceRoot(recordContext), 'Recorder must measure this committed test tree').toBe(root);
@@ -89,10 +97,10 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
       run: async () => {
         const observations: Array<Record<string, unknown>> = [];
         let proof: { conversationId: string; sourceOwner: string; answeringOwner: string; nativeSession: string } | undefined;
-        const attempts = profile.consultBrief.existingConversationId ? [''] : profile.consultBrief.questions;
+        const attempts = consultBrief.existingConversationId ? [''] : consultBrief.questions;
         for (const question of attempts) {
-          const consult = profile.consultBrief.existingConversationId
-            ? { conversation_id: profile.consultBrief.existingConversationId }
+          const consult = consultBrief.existingConversationId
+            ? { conversation_id: consultBrief.existingConversationId }
             : call('consult:get_feedback', { question, archive_floor: 2, allow_dispatch: true,
             request_key: `cbp-live-brief-${randomUUID()}`, harness: 'papercusp',
             origin_task_ref: 'WI-6554700010009934' }, profile.origin);
@@ -156,7 +164,7 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
               error instanceof Error ? error.stack : String(error));
             throw error;
           } finally {
-            if (!profile.consultBrief.existingConversationId) call('consult:close', { conversation_id: id, outcome: 'cant_help',
+            if (!consultBrief.existingConversationId) call('consult:close', { conversation_id: id, outcome: 'cant_help',
               reason: 'Owned acceptance fixture captured its dispatch; stop the review cascade.' }, profile.origin);
           }
         }
@@ -173,4 +181,52 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
     if (!measured.ok) throw new Error(JSON.stringify(measured));
     expect(measured.testRunIds).toHaveLength(1);
   }, 720_000);
+
+  it.skipIf(!liveProfile?.goalTenureGrading)('observes an independent residual grader in its actual native session', async () => {
+    const profile = liveProfile!;
+    const target = profile.goalTenureGrading!;
+    expect(profile.origin).toBe('http://127.0.0.1:3170');
+    expect(profile.runtimeUnits).toContain('hono-host:3170');
+    expect(target.goalId.trim()).toBeTruthy();
+    expect(target.existingConversationId.trim()).toBeTruthy();
+    const measured = await executeOperationalRun({
+      filePath: 'packages/operator-core/lib/consult/dispatch.live.e2e.test.ts',
+      name: 'Read-only native residual-grader pickup observation', framework: 'operational',
+      command: ['npm', 'run', 'test:file', '--', 'packages/operator-core/lib/consult/dispatch.live.e2e.test.ts'],
+      runtimeUnits: profile.runtimeUnits,
+      run: async () => {
+        // Selectors identify existing evidence; this observer creates no goal,
+        // holder activity, grader launch or settled scorecard.
+        const [request] = rows(`SELECT routing, cascade_cursor FROM harness_shared.consult_state
+          WHERE workspace_id = 'papercusp-workspace'
+            AND conversation_id = ${literal(target.existingConversationId)} LIMIT 1`, profile.origin);
+        expect(request, 'exact persisted residual-grading request required').toBeDefined();
+        const meta = goalTenureGradingMetaFromRouting(request!.routing);
+        expect(meta?.goalId).toBe(target.goalId);
+        expect(meta?.workspaceId).toBe('papercusp-workspace');
+        const routing = request!.routing as { selection?: {
+          selected?: Array<{ ownerId?: string; answeringOwnerId?: string }> } };
+        const selected = routing.selection?.selected?.[Number(request!.cascade_cursor)];
+        expect(selected?.answeringOwnerId, 'queued requests do not establish pickup').toBeTruthy();
+        const native = await nativeBrief(selected!.answeringOwnerId!, profile.origin);
+        expect(native, 'native answering-session custody required').toBeDefined();
+        const partyKeys = await lineagePartyKeys([
+          selected!.ownerId!, selected!.answeringOwnerId!, ...meta!.holderOwnerIds,
+        ], { workspaceId: 'papercusp-workspace' });
+        const proof = assertGoalTenurePickup({ workspaceId: 'papercusp-workspace', goalId: target.goalId,
+          conversationId: target.existingConversationId, routing: request!.routing,
+          cursor: Number(request!.cascade_cursor), native: native!, partyKeys });
+        console.info('GOAL_TENURE_NATIVE_PICKUP_PROOF', JSON.stringify({ ...proof,
+          nativeTranscriptPath: native!.path, nativeSource: native!.source,
+          nativeArchiveRelpath: native!.archiveRelpath }));
+        return { exitCode: 0, summary: JSON.stringify(proof), assertions: [
+          { id: 'residual-grader-native-pickup', passed: true, evidence: JSON.stringify(proof) },
+        ] };
+      },
+    }, { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: root });
+    console.info('GOAL_TENURE_NATIVE_PICKUP_RUN', JSON.stringify(measured));
+    expect(measured).toMatchObject({ ok: true, status: 'pass', runtimeEnvironmentMeasured: true });
+    if (!measured.ok) throw new Error(JSON.stringify(measured));
+    expect(measured.testRunIds).toHaveLength(1);
+  }, 180_000);
 });

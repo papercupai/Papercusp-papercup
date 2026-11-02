@@ -37,6 +37,7 @@ import {
   type RubricCheckResult,
 } from '../../check-results-ledger';
 import { judgeLedgerRow, ledgerCheckBindings, ledgerRowMatchesBinding, type LedgerFillCriterion } from '../../scorecard-ledger-fill';
+import { retainMeasurementProvenance } from '../../measurement-provenance';
 import { evaluateCriterionProbeChecks, type CheckedCriterion } from '../../rubrics-criterion-checks';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { dispatchPaletteTarget } from '../../capabilities/invoke';
@@ -181,13 +182,32 @@ export async function rescoreRubric(
     const evaluateProbes = deps.evaluateProbes ?? evaluateCriterionProbeChecks;
     // One evaluation per criterion. The evaluator fails closed for a whole batch (right for a
     // scorecard, which must not grade around an unjudged check), but a re-score that dropped every
-    // probe because one timed out would leave the rest unmeasured. An unjudgeable criterion keeps
-    // its prior ledger rows and is named in probeError. `unknown` ratings run the probe without
+    // probe because one timed out would leave the rest unmeasured. An unjudgeable attempt records
+    // an error for each child; older successes remain history, never the current grade. `unknown` ratings run the probe without
     // asserting a rating it could contradict.
     for (const criterion of probeCriteria) {
-      const evaluation = await evaluateProbes({ criteria: [criterion], ratings: { [criterion.key]: { rating: 'unknown' } }, dispatchTool });
-      if (evaluation.ok) results.push(...probeCheckResults(rubricRef, evaluation.checkRuns, [criterion]));
-      else probeErrors.push(`${evaluation.criterionKey ?? criterion.key}: ${evaluation.error}: ${evaluation.detail}`);
+      const startedAt = new Date().toISOString();
+      let failure: string | undefined;
+      try {
+        const evaluation = await evaluateProbes({ criteria: [criterion], ratings: { [criterion.key]: { rating: 'unknown' } }, dispatchTool });
+        if (evaluation.ok) results.push(...probeCheckResults(rubricRef, evaluation.checkRuns, [criterion]));
+        else failure = `${evaluation.criterionKey ?? criterion.key}: ${evaluation.error}: ${evaluation.detail}`;
+      } catch (error) {
+        failure = `${criterion.key}: probe threw: ${String(error)}`;
+      }
+      if (failure) {
+        probeErrors.push(failure);
+        const finishedAt = new Date().toISOString();
+        const check = criterion.check as { probe?: unknown; all?: unknown[] };
+        for (const [index, binding] of (ledgerCheckBindings(criterion) ?? []).entries()) {
+          results.push({ verdict: 'error', measuredAt: finishedAt,
+            durationMs: Date.parse(finishedAt) - Date.parse(startedAt), detail: failure.slice(0, 2000),
+            check: { id: binding.id, rubricRef, criterionKey: criterion.key, kind: 'probe', value: null,
+              unit: binding.unit ?? null, provenance: retainMeasurementProvenance({
+                procedure: check.all?.[index] ?? check.probe, result: { error: failure }, startedAt, finishedAt,
+              }) } });
+        }
+      }
     }
   }
   const probeError = probeErrors.length > 0

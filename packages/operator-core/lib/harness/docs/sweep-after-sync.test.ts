@@ -6,15 +6,61 @@
  * is best-effort PG/git glue; the COALESCING — N drifted docs → exactly one message — is
  * the behavior that matters and is fully captured here).
  */
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+const syncPolicy = vi.hoisted(() => ({ allowed: vi.fn(), workspace: vi.fn(), observed: vi.fn(async (_scope, invoke) => invoke()) }));
+vi.mock('../../device-operator-actions', async original => ({
+  ...(await original<object>()), workspaceBackgroundActivityAllowed: syncPolicy.allowed,
+}));
+vi.mock('../../startup-activity', async original => ({
+  ...(await original<object>()), runObservedBackgroundActivity: syncPolicy.observed,
+}));
+vi.mock('../workspace-for-harness', async original => ({
+  ...(await original<object>()), resolveWorkspaceForHarness: syncPolicy.workspace,
+}));
 import { drainDetached } from '../../detached-imports';
 import {
   buildDocDriftDigest,
   DOC_DRIFT_DIGEST_MAX_NAMED,
   enqueueDocFreshnessSweepAfterSync,
+  runDocFreshnessSweepAfterSync,
   type SweepAfterSyncInput,
 } from './sweep-after-sync';
 import type { DriftedDoc } from './doc-steward-dispatch';
+import { startupActivityFeatureId } from '../../schedule-inventory';
+
+describe('post-sync execution admission', () => {
+  beforeEach(() => {
+    syncPolicy.allowed.mockReset().mockResolvedValue(true);
+    syncPolicy.workspace.mockReset().mockResolvedValue('resolved-workspace');
+    syncPolicy.observed.mockClear();
+  });
+
+  it('uses the resolved workspace and observes only the admitted sync callback', async () => {
+    await expect(runDocFreshnessSweepAfterSync({ harnessSlug: 'h', workspaceId: 'requested', repoRoot: null })).resolves.toBeNull();
+    const featureId = startupActivityFeatureId({ source: 'in-process', installSlug: null,
+      name: 'doc-freshness-sweep', detail: {} }, { workspaceId: 'resolved-workspace' });
+    expect(syncPolicy.allowed).toHaveBeenCalledWith('resolved-workspace', featureId);
+    expect(syncPolicy.observed).toHaveBeenCalledWith({ workspaceId: 'resolved-workspace', featureId,
+      source: 'sync', trigger: 'sync' }, expect.any(Function));
+  });
+
+  it('withholds paused queued work after async workspace resolution', async () => {
+    syncPolicy.workspace.mockImplementationOnce(async () => {
+      syncPolicy.allowed.mockResolvedValue(false);
+      return 'resolved-workspace';
+    });
+    await expect(runDocFreshnessSweepAfterSync({ harnessSlug: 'h', workspaceId: 'requested', repoRoot: null })).resolves.toBeNull();
+    expect(syncPolicy.allowed).toHaveBeenCalledOnce();
+    expect(syncPolicy.observed).not.toHaveBeenCalled();
+  });
+
+  it('never executes or records an unresolved workspace', async () => {
+    syncPolicy.workspace.mockRejectedValueOnce(new Error('workspace unavailable'));
+    await expect(runDocFreshnessSweepAfterSync({ harnessSlug: 'h', workspaceId: 'requested', repoRoot: null })).rejects.toThrow('workspace unavailable');
+    expect(syncPolicy.allowed).not.toHaveBeenCalled();
+    expect(syncPolicy.observed).not.toHaveBeenCalled();
+  });
+});
 
 const doc = (docId: string, source: string): DriftedDoc => ({
   docId,

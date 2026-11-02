@@ -45,6 +45,22 @@ beforeEach(() => {
 });
 
 describe('startPrimaryManagedTimersBroadcaster (PRIMARY side)', () => {
+  it('publishes callback placement through the same snapshot and preserves other slices on reader failure', async () => {
+    const invocation = { workspaceId: 'workspace-a', featureId: `activity-${'a'.repeat(64)}`,
+      source: 'routine' as const, running: true as const, stopStatus: null, cancellable: false as const };
+    const sent: unknown[] = [];
+    const h = startPrimaryManagedTimersBroadcaster({ getRegisteredSchedules: noSchedules,
+      getBackgroundActivities: async () => [invocation], broadcast: message => sent.push(message) });
+    try { await vi.waitFor(() => expect(sent[0]).toMatchObject({ backgroundActivities: [invocation] })); }
+    finally { h.stop(); }
+    const failed: unknown[] = [];
+    const unavailable = startPrimaryManagedTimersBroadcaster({ getRegisteredSchedules: noSchedules,
+      getBackgroundActivities: async () => { throw new Error('unavailable'); }, broadcast: message => failed.push(message) });
+    try { await vi.waitFor(() => expect(failed[0]).toMatchObject({ timers: [], dbosSchedules: [] }));
+      expect(failed[0]).not.toHaveProperty('backgroundActivities'); }
+    finally { unavailable.stop(); }
+  });
+
   it('broadcasts immediately, then every intervalMs, with the latest listManaged() snapshot', async () => {
     vi.useFakeTimers();
     try {
@@ -166,6 +182,19 @@ function fakeWorkerChannel() {
 }
 
 describe('startWorkerPrimaryManagedTimersCache + getCachedPrimaryManagedTimers (WORKER side)', () => {
+  it('validates and redacts callback placement before serving a primary snapshot', () => {
+    const ch = fakeWorkerChannel();
+    const cache = startWorkerPrimaryManagedTimersCache({ now: () => 1000, on: ch.on, off: ch.off });
+    const invocation = { workspaceId: 'workspace-a', featureId: `activity-${'a'.repeat(64)}`,
+      source: 'event', running: true, stopStatus: 'draining', cancellable: false };
+    try {
+      ch.deliver({ type: PRIMARY_MANAGED_TIMERS_SNAPSHOT_TYPE, pid: 12345, role: 'bg-host', timers: [],
+        backgroundActivities: [{ ...invocation, args: 'private' }, { ...invocation, featureId: 'invalid' }] });
+      expect(getCachedPrimaryManagedTimers()?.backgroundActivities).toEqual([invocation]);
+      expect(JSON.stringify(getCachedPrimaryManagedTimers())).not.toContain('private');
+    } finally { cache.stop(); }
+  });
+
   it('caches the latest snapshot message + its receipt time', () => {
     const ch = fakeWorkerChannel();
     const cache = startWorkerPrimaryManagedTimersCache({ now: () => 1_000, on: ch.on, off: ch.off });

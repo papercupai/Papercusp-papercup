@@ -292,7 +292,7 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
-  it('one unjudgeable probe criterion does not drop the others; it keeps its prior rows', async () => {
+  it('a failed current probe supersedes historical success and leaves independent probes running', async () => {
     const { deps, record } = depsFor([probeCriterion('slow'), probeCriterion('steady')], [], []);
     const evaluateProbes = vi.fn(async (input: { criteria: ReadonlyArray<{ key: string }> }) => {
       const key = input.criteria[0]!.key;
@@ -304,8 +304,24 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
     // One evaluation per criterion, so the timeout is isolated to its own criterion.
     expect(evaluateProbes.mock.calls.map(([input]) => input.criteria.map((c) => c.key))).toEqual([['slow'], ['steady']]);
     const recorded = (record.mock.calls[0] as unknown as [RubricCheckResult[]])[0];
-    expect(recorded.map((r) => [r.check.criterionKey, r.verdict])).toEqual([['steady', 'pass']]);
+    expect(recorded.map((r) => [r.check.criterionKey, r.verdict])).toEqual([['slow', 'error'], ['steady', 'pass']]);
+    expect(recorded[0]).toMatchObject({ check: { id: 'slow:0', value: null, provenance: {
+      procedure: { snapshot: expect.stringContaining('routines:list') },
+    } }, detail: expect.stringContaining('call_timeout') });
     expect(out.probeError).toBe('1 of 2 probe criteria unjudged; slow: probe_run_failed: call_timeout after 30000ms');
+  });
+
+  it('records thrown probe errors for every child rather than leaving an old green current', async () => {
+    const criterion = probeCriterion('throws');
+    criterion.check.all.push({ ...criterion.check.all[0]! });
+    const { deps, record, emit } = depsFor([criterion], [row('throws', 5, 1)], []);
+    deps.evaluateProbes = vi.fn(async () => { throw new Error('fixture transport failed'); }) as never;
+    await rescoreRubric({ rubricRef: RUBRIC, workspaceId: 'ws-test', harnessSlug: 'papercusp' }, deps);
+    const results = (record.mock.calls[0] as unknown as [RubricCheckResult[]])[0];
+    expect(results.map(r => [r.check.id, r.verdict, r.check.value])).toEqual([
+      ['throws:0', 'error', null], ['throws:1', 'error', null],
+    ]);
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it('the routine handler refuses a payload with no rubricRef', async () => {

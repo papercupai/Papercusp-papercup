@@ -29,6 +29,7 @@ import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { announcementExpectedVerdict } from '../../events/await/announcement-verdict';
 import { getPredicateWatch } from '../../events/await/predicate-watch';
 import {
+  EVENT_CATALOG,
   familyAdmitsKey,
   keyMatchesCatalog,
   mergeInstalledEventCatalog,
@@ -679,25 +680,35 @@ export default defineTool({
     let catalogEmitter: string | null = null;
     let catalogProbeFailure: 'timeout' | 'aborted' | 'error' | null = null;
     if (!patternAwait && !announcedGate) {
-      const harnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
-      const probe = await withBoundedTimeout(
-        (async () => {
-          const installed = await readInstalledUnitEvents({
-            harnessSlug: typeof harnessRaw === 'string' && harnessRaw !== '*' ? harnessRaw : undefined,
-            workspaceId: identity.workspaceId ?? undefined,
-          });
-          return mergeInstalledEventCatalog(installed).entries as readonly EventCatalogEntry[];
-        })(),
-        { fallback: null, timeoutMs: 1_500, label: 'events-await:orphanKey' },
-      );
-      // A degraded probe is not evidence that the key has no catalogued emitter.
-      // Keep the failure class for the wait brief instead of turning uncertainty
-      // into a confident orphan verdict.
-      if (probe.degraded || probe.value === null) {
-        catalogProbeFailure = probe.reason ?? 'error';
+      // Builtin emitters are a synchronous platform guarantee. Resolve them before
+      // optional installed-unit discovery so a slow pack scan cannot hide a known
+      // builtin owner or turn discovery failure into an unknown-owner result.
+      const builtinEmitter = EVENT_CATALOG.find(
+        (entry) => entry.exists && familyAdmitsKey(entry, eventKey),
+      )?.emitter;
+      if (builtinEmitter) {
+        catalogEmitter = builtinEmitter;
       } else {
-        unknownEventKey = !keyMatchesCatalog(eventKey, probe.value);
-        catalogEmitter = probe.value.find((entry) => familyAdmitsKey(entry, eventKey))?.emitter ?? null;
+        const harnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+        const probe = await withBoundedTimeout(
+          (async () => {
+            const installed = await readInstalledUnitEvents({
+              harnessSlug: typeof harnessRaw === 'string' && harnessRaw !== '*' ? harnessRaw : undefined,
+              workspaceId: identity.workspaceId ?? undefined,
+            });
+            return mergeInstalledEventCatalog(installed).entries as readonly EventCatalogEntry[];
+          })(),
+          { fallback: null, timeoutMs: 1_500, label: 'events-await:orphanKey' },
+        );
+        // A degraded probe is not evidence that the key has no catalogued emitter.
+        // Keep the failure class for the wait brief instead of turning uncertainty
+        // into a confident orphan verdict.
+        if (probe.degraded || probe.value === null) {
+          catalogProbeFailure = probe.reason ?? 'error';
+        } else {
+          unknownEventKey = !keyMatchesCatalog(eventKey, probe.value);
+          catalogEmitter = probe.value.find((entry) => familyAdmitsKey(entry, eventKey))?.emitter ?? null;
+        }
       }
     }
 

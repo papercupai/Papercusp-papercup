@@ -10,12 +10,16 @@
  */
 import { notifySyncInvalidate } from './sync-sse';
 import { readOperatorState, updateOperatorState } from './operator-state-pg';
-import { recordStartupActivityHistory, savedBackgroundActivitySchema, savedStartupActivityPolicy, savedStartupActivityStateSchema, startupPauseIsActive,
+import { observedBackgroundActivityStatus, stopObservedBackgroundActivity,
+  recordStartupActivityHistory, savedBackgroundActivitySchema, savedStartupActivityPolicy, savedStartupActivityStateSchema, startupPauseIsActive,
   workspaceBackgroundActivityFeatureId, workspaceBackgroundActivityPolicy } from './startup-activity';
 import { collectScheduleInventory, reactionStartupFeature, scheduleStartupFeature, startupActivityFeatureId, startupPolicySchema, type StartupActivityPolicy } from './schedule-inventory';
 import { getSystemActionEntry, SYSTEM_TARGET_PREFIX } from './harness/routines/system-actions';
 import { activeWorkspaceId } from './workspace-registry';
-import type { SessionUser } from './auth';
+import { getSessionUser, resolveSessionToken, SESSION_COOKIE, type SessionUser } from './auth';
+import { callOwnerProcess, ownerRpcAvailable, registerOwnerRpcHandler } from './cluster-owner-rpc';
+import { loopbackFetch } from './loopback-fetch';
+import { ownHonoPort } from './schedule-federation';
 import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
 import { getManaged, stopManagedInvocation, type ManagedStopStatus } from '@papercusp/scheduled-registry';
@@ -187,42 +191,113 @@ async function resolveBackgroundActivityFeature(featureId: string, workspace: st
     return typeof role === 'string' && role.startsWith(SYSTEM_TARGET_PREFIX)
       && !!getSystemActionEntry(role.slice(SYSTEM_TARGET_PREFIX.length))?.requiredForControl;
   });
-  if (!row) {
+  if (!row || matches.some(candidate => candidate.detail.invocationSource === 'event')) {
     const { listReactionRules } = await import('./events/registry');
     const rule = listReactionRules().find(candidate => reactionStartupFeature(candidate, workspace).id === featureId);
     if (rule) {
       const { builtinReactionControlPurpose } = await import('./events/builtin-actions');
       feature = reactionStartupFeature(rule, workspace);
       requiredForControl = !!builtinReactionControlPurpose(rule.fire);
-    }
+    } else if (row) feature = null; // A stale callback cannot recreate a removed event registration.
   }
   if (!feature || feature.scope.kind !== 'workspace' || feature.scope.id !== workspace
     || requiredForControl)
     throw Object.assign(new Error('Startup feature cannot be controlled here'), { code: 'startup_policy_forbidden' });
-  return { feature, row };
+  return { feature, row, matches };
 }
 
-/** Stop the current local invocation. This never writes the saved automatic-start policy. */
-export async function stopFeatureBackgroundActivity(featureId: string, principal: SessionUser): Promise<{
+const backgroundStopRpcKind = 'startup-background-stop';
+const backgroundStopResultSchema = z.object({
+  status: z.enum(['pending', 'draining', 'completed', 'failed', 'unavailable']),
+  policy: startupPolicySchema,
+});
+const backgroundStopRpcSchema = z.object({
+  featureId: z.string().regex(/^activity-[a-f0-9]{64}$/),
+  cookie: z.string().min(1).max(4096),
+}).strict();
+
+/** Register on both request workers and the background primary. Transport never
+ * grants workspace authority: the owner re-resolves the original session cookie.
+ */
+export function registerBackgroundActivityControl(): void {
+  registerOwnerRpcHandler(backgroundStopRpcKind, async payload => {
+    const request = backgroundStopRpcSchema.parse(payload);
+    const principal = await getSessionUser(new Headers({ cookie: request.cookie }));
+    if (!principal) throw new Error('Startup runtime authority unavailable');
+    return stopFeatureBackgroundActivity(request.featureId, principal, { runtimePid: process.pid });
+  });
+}
+
+/** Stop an observed invocation, locally or through the existing authenticated
+ * endpoint/owner IPC. This never writes the saved automatic-start policy.
+ */
+export async function stopFeatureBackgroundActivity(featureId: string, principal: SessionUser,
+  options: { headers?: Headers; runtimePid?: number } = {},
+): Promise<{
   status: ManagedStopStatus; policy: StartupActivityPolicy; reason?: string;
 }> {
   const workspace = assertBackgroundActivityAuthority(principal);
   if (!/^activity-[a-f0-9]{64}$/.test(featureId))
     throw Object.assign(new Error('Invalid startup policy request'), { code: 'startup_policy_invalid' });
-  const { feature, row } = await resolveBackgroundActivityFeature(featureId, workspace);
+  if (options.runtimePid !== undefined && (!Number.isSafeInteger(options.runtimePid) || options.runtimePid < 1))
+    throw Object.assign(new Error('Invalid startup runtime'), { code: 'startup_policy_invalid' });
+  const { feature, row, matches } = await resolveBackgroundActivityFeature(featureId, workspace);
   const policy = savedStartupActivityPolicy(feature,
     await readOperatorState('operator_paused', workspace, { fresh: true }) ?? {}, workspace);
   const live = row?.source === 'managed' ? getManaged(row.name) : undefined;
-  if (!live || live.instanced || live.activity?.kind !== 'workspace'
-    || live.activity.workspaceId !== workspace || live.activity.featureId !== featureId)
-    return { status: 'unavailable', policy, reason: 'runtime-control-unavailable' };
+  const managed = live && !live.instanced && live.activity?.kind === 'workspace'
+    && live.activity.workspaceId === workspace && live.activity.featureId === featureId;
+  const scope = { workspaceId: workspace, featureId };
+  const observed = observedBackgroundActivityStatus(scope);
+  const unavailable = () => ({ status: 'unavailable' as const, policy, reason: 'runtime-control-unavailable' });
+  const placements = matches.filter(candidate => candidate.source === 'external-process'
+    && candidate.detail.federated === true && candidate.detail.reachable === true
+    && Number.isSafeInteger(candidate.detail.pid) && (candidate.detail.pid as number) > 0
+    && Number.isSafeInteger(candidate.detail.port) && (candidate.detail.port as number) > 0
+    && (candidate.detail.port as number) <= 65535
+    && (options.runtimePid === undefined || candidate.detail.pid === options.runtimePid));
+  const remote = placements.find(candidate => candidate.detail.running === true) ?? placements[0];
+  if ((options.runtimePid !== undefined && options.runtimePid !== process.pid)
+    || (options.runtimePid === undefined && !(managed && live.running)
+      && !observed && remote)) {
+    // Placement comes from the existing live inventory, never a caller-supplied
+    // port, command, principal or workspace. The receiving process checks its PID
+    // and scoped runtime again; stale placement never grants workspace authority.
+    if (!remote || remote.detail.pid === process.pid || !options.headers) return unavailable();
+    const token = await resolveSessionToken(options.headers);
+    if (!token) return unavailable();
+    const cookie = `${SESSION_COOKIE}=${encodeURIComponent(token)}`;
+    try {
+      let result: unknown;
+      if (remote.detail.port === ownHonoPort()) {
+        if (!ownerRpcAvailable()) return unavailable();
+        const response = await callOwnerProcess({ targetPid: remote.detail.pid as number,
+          kind: backgroundStopRpcKind, payload: { featureId, cookie } });
+        if (!response.ok) return unavailable();
+        result = response.result;
+      } else {
+        const response = await loopbackFetch(`http://127.0.0.1:${remote.detail.port}/api/agent-mcp/operator-pause-flag`, {
+          method: 'PATCH', headers: { cookie, 'content-type': 'application/json' },
+          body: JSON.stringify({ featureId, action: 'stop', runtimePid: remote.detail.pid }),
+          signal: AbortSignal.timeout(15_000),
+        }, { backoffsMs: [] });
+        if (!response.ok) return unavailable();
+        result = await response.json();
+      }
+      const parsed = backgroundStopResultSchema.safeParse(result);
+      return parsed.success ? parsed.data : unavailable();
+    } catch { return unavailable(); }
+  }
+  if (!managed && !observed)
+    return unavailable();
   const audit = (status: 'pending' | 'draining' | 'completed' | 'failed') => recordStartupActivityHistory({
     featureId, operation: 'stop', status, at: new Date().toISOString(), actor: 'user',
     trigger: 'settings', source: 'settings', reason: 'user-choice', previous: policy, resulting: policy,
   }, principal.id, 'user', { sql: getOrgPg().sql, workspaceId: workspace });
   // Persist intent before touching the runtime. An audit outage cannot produce an unaudited stop.
   await audit('pending');
-  const request = stopManagedInvocation(row!.name);
+  const request = managed && (live.running || !observed)
+    ? stopManagedInvocation(row!.name) : stopObservedBackgroundActivity(scope);
   if (request.status === 'unavailable') {
     await audit('failed');
     return { status: 'unavailable', policy, reason: 'runtime-control-unavailable' };

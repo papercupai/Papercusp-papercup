@@ -588,11 +588,15 @@ describe('executeWake — superseded timeout await delivery (EI-2709081959473176
       wakeHandle: advHandle(),
     });
 
-    await expect(executeWake(delivery, deps({
+    const result = await executeWake(delivery, deps({
       findSupersededTimeoutAwaitIdsFn: lookup,
       findPty: findPty as never,
       write,
-    }))).resolves.toMatchObject({ kind: 'drop', reason: expect.stringContaining('newer active exact-key await') });
+    }));
+    expect(result).toEqual({
+      kind: 'drop',
+      reason: `timed-out await delivery #${delivery.id} suppressed because expired await(s) 41 were replaced by newer active exact-key registrations`,
+    });
     expect(lookup).toHaveBeenCalledWith('su-abc', [41]);
     expect(findPty).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
@@ -7577,7 +7581,8 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
 
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
     const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
-    const annotated = 'complete WI-6054, then continue the drain   ⚠ LIVE: WI-6054 status=done';
+    const annotated =
+      'complete WI-6054, then continue the drain   ⚠ STATUS SNAPSHOT: WI-6054 status=done source=unknown lookup_completed_at=unknown';
     expect(data).toContain(annotated);
     expect(data).toContain('STALE-NOTE CONTRADICTION');
     expect(data).toContain('⚠ TERMINAL ↪ WI-6054 [bug/done');

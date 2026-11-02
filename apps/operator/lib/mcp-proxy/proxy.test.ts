@@ -6496,6 +6496,20 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     ).toBe(true);
   });
 
+  it("keeps native tool authorization in the reserve without promoting context hooks or continuation writes", () => {
+    const body = Buffer.from(JSON.stringify({ owner: "su-test", tool: "apply_patch" }));
+    for (const path of [
+      "/api/agent-mcp/tool-guard",
+      "/api/agent-mcp/tool-guard/",
+      "/api/agent-mcp/tool-guard?client=codex",
+    ]) {
+      expect(isReservedControlPlanePath(path)).toBe(true);
+      expect(isReservedControlPlaneCall(body, path)).toBe(true);
+      expect(isCriticalContinuationCall(body, path)).toBe(false);
+    }
+    expect(isReservedControlPlanePath("/api/agent-mcp/mid-turn-context")).toBe(false);
+  });
+
   it("recognizes PUI identity and psu lifecycle REST paths while leaving the repeating heartbeat unreserved", () => {
     const ordinaryBody = Buffer.from(JSON.stringify({ ownerId: "su-test" }));
     expect(isReservedControlPlanePath("/api/adv/sessions/resumable")).toBe(
@@ -7006,6 +7020,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     "/api/agent-mcp/console/bootstrap-su/options",
     "/api/agent-mcp/console/bootstrap-su",
     "/api/tui/identity",
+    "/api/agent-mcp/tool-guard",
   ])(
     "admits REST control-plane path %s from the reserve while ordinary traffic sheds",
     async (path) => {
@@ -7015,7 +7030,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       });
       const upstream = track(
         http.createServer(
-          (_req, res) => void gate.then(() => res.end('{"result":"ok"}')),
+          (req, res) => void gate.then(() => res.end(req.url === "/api/agent-mcp/tool-guard"
+            ? JSON.stringify({ ok: true, text: "plan_execution_not_ready: fixture authority denial" })
+            : '{"result":"ok"}')),
         ),
       );
       await listen(upstream);
@@ -7045,7 +7062,13 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       await new Promise((r) => setTimeout(r, 40));
       releaseUpstream();
       expect((await heldOrdinary).status).toBe(200);
-      expect((await heldPreflight).status).toBe(200);
+      const preflight = await heldPreflight;
+      expect(preflight.status).toBe(200);
+      if (path === "/api/agent-mcp/tool-guard") {
+        expect(JSON.parse(preflight.body)).toEqual({
+          ok: true, text: "plan_execution_not_ready: fixture authority denial",
+        });
+      }
     },
   );
 

@@ -1017,6 +1017,30 @@ describe('native affected-task parent receipt transport', () => {
       expect(readFileSync(join(result.root, reporter.artifact!.ref))).toEqual(bytes);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  it('binds the main reporter with shared-PID thread evidence and rejects a thread-only reporter', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-reporter-thread-'));
+    try {
+      const { input } = nativeReporterObservation(root, 'passed');
+      const source = `${input.processTrace.out}.native-processes`;
+      const entries = readdirSync(source).filter(name => name.endsWith('.json')).map(name => ({
+        name, row: JSON.parse(readFileSync(join(source, name), 'utf8')),
+      }));
+      const reporterEvents = entries.filter(({ row }) => row.pid === input.processTrace.rootPid &&
+        ['node-entry', 'node-exit'].includes(row.event));
+      expect(reporterEvents.filter(({ row }) => row.event === 'node-entry')).toHaveLength(1);
+      for (const { row } of reporterEvents) {
+        const bytes = Buffer.from(JSON.stringify({ ...row, threadId: 1, processIdentity: 'worker-thread-context' }));
+        writeFileSync(join(source, `${createHash('sha256').update(bytes).digest('hex')}.json`), bytes);
+      }
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input);
+      expect(result.observation.processTrace.reporter.status).toBe('bound');
+      expect(result.observation.processTrace.events.some(row => row.threadId === 1)).toBe(true);
+      for (const { name } of reporterEvents) rmSync(join(source, name));
+      const threadOnly = writeBudgetedTaskNativeExecutionReceipt(join(root, 'thread-only'), input);
+      expect(threadOnly.observation.processTrace.reporter.status).toBe('unknown');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('binds a nested reporter through its observed lifecycle shell and rejects an unclosed span', () => {
     const root = mkdtempSync(join(tmpdir(), 'native-reporter-lifecycle-'));
     try {

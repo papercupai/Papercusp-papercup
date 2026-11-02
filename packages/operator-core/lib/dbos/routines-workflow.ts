@@ -832,6 +832,17 @@ async function routineFireImpl(
       SELECT name FROM harness_shared.routines WHERE id = ${routineId} AND workspace_id = ${workspaceId} LIMIT 1
     `)[0]?.name;
     if (!name || !await routineBackgroundActivityAllowed({ workspaceId, installSlug, name, targetRole })) return;
+    const invokeObserved = async <T>(invoke: () => T | Promise<T>): Promise<T | undefined> => {
+      const [{ runObservedBackgroundActivity }, { startupActivityFeatureId }] = await Promise.all([
+        import('../startup-activity'), import('../schedule-inventory'),
+      ]);
+      // This read belongs in each executing step, never in its replayed output.
+      if (!await routineBackgroundActivityAllowed({ workspaceId, installSlug, name, targetRole })) return undefined;
+      return runObservedBackgroundActivity({ workspaceId,
+        featureId: startupActivityFeatureId({ source: 'routines', installSlug, name, detail: {} }, { workspaceId }),
+        source: 'routine', trigger: provenance?.origin === 'manual' ? 'manual' : provenance?.origin === 'scheduler' ? 'timer' : 'unknown',
+      }, invoke);
+    };
     // Checkpoint immediately so the executor reaper can distinguish "workflow
     // never entered user code" from a legitimate long-running first action.
     await DBOS.runStep(
@@ -902,7 +913,7 @@ async function routineFireImpl(
     if (rescheduleIntervalSec != null && targetOwnerId) {
       await DBOS.runStep(
         async () => {
-          const res = await fireLoopWake({
+          const res = await invokeObserved(() => fireLoopWake({
             routineId,
             routineName: routineName ?? routineId,
             workspaceId,
@@ -910,7 +921,8 @@ async function routineFireImpl(
             targetOwnerId,
             payloadTemplate,
             intervalSec: rescheduleIntervalSec,
-          });
+          }));
+          if (!res) return { fired: false, reason: 'background-activity-withheld' };
           if (!res.fired) {
             console.warn(`[routines] loop ${routineId} fire WITHHELD (${res.reason}: ${res.detail ?? ''})`);
           }
@@ -969,7 +981,7 @@ async function routineFireImpl(
         // so a replay never re-runs the SQL.
         const { sql } = getOrgPg();
         try {
-          actionResult = (await entry.fn(systemActionCtx)) ?? undefined;
+          actionResult = (await invokeObserved(() => entry.fn(systemActionCtx))) ?? undefined;
           if (actionResult?.replayAbandoned) {
             // WI-10004472: this recovery replay could not reproduce the step sequence
             // the original execution recorded. ANY further DBOS operation (the settle
@@ -1026,7 +1038,7 @@ async function routineFireImpl(
             // wipes an error an action manages ITSELF (git-sync records its own).
             const { sql } = getOrgPg();
             try {
-              const result = await fn(systemActionCtx);
+              const result = await invokeObserved(() => fn(systemActionCtx));
               // WI-10005164: a fail-soft sub-pass failure is recorded, not cleared.
               if (result?.softError) await recordRunnerLastError(sql, routineId, result.softError);
               else
@@ -1093,14 +1105,14 @@ async function routineFireImpl(
           const ws = encodeURIComponent(workspaceId);
           const url = `${operatorBase()}/api/harness/${encodeURIComponent(installSlug)}/invoke?role=${encodeURIComponent(targetRole)}&ws=${ws}`;
           void recordFire(installSlug, targetRole, 'firing', 'attempt').catch(() => {});
-          void loopbackFetch(url, {
+          void invokeObserved(() => loopbackFetch(url, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ kickoff }),
-          })
+          }))
             .then(
               (r) =>
-                recordFire(installSlug, targetRole, r.ok ? 'ok' : `error: HTTP ${r.status}`, r.ok ? 'ok' : 'error'),
+                r ? recordFire(installSlug, targetRole, r.ok ? 'ok' : `error: HTTP ${r.status}`, r.ok ? 'ok' : 'error') : undefined,
               (e) => {
                 const detail = String(e instanceof Error ? e.message : e).slice(0, 180);
                 console.warn(`[routines] role spawn failed (${installSlug}/${targetRole}): ${detail}`);

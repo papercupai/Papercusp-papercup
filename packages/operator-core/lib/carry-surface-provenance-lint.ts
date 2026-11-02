@@ -374,8 +374,8 @@ const OWNER_DIRECTIVE_NOUN_RE = /\bowner\s+(?:directive|mandate)s?\b/i;
 
 /**
  * EI-22454606387399213: a provenance preamble can explicitly DENY owner
- * authority — "these constraints are NOT owner directives" or "no applicable
- * owner directive" — without carrying one of the per-constraint downgrade tags
+ * authority — "these constraints are NOT owner directives", "no applicable
+ * owner directive", or "no new owner directive" — without per-constraint downgrade tags
  * that {@link isProvenanceWithdrawal} requires. Treat only these explicit
  * copular and negative-existence forms as disclaimers. A looser
  * "not ... owner directive" exemption would also hide real references such as
@@ -386,7 +386,7 @@ const OWNER_DIRECTIVE_NOUN_RE = /\bowner\s+(?:directive|mandate)s?\b/i;
  * "this is not an owner directive; do not deploy" remains actionable.
  */
 const NEGATED_OWNER_DIRECTIVE_DISCLAIMER_RE =
-  /\b(?:(?:is|are|was|were)\s+(?:explicitly\s+)?(?:not|never)\s+(?:an?\s+)?owner\s+(?:directive|mandate)s?|no\s+(?:applicable\s+)?owner\s+(?:directive|mandate)s?)\b/i;
+  /\b(?:(?:is|are|was|were)\s+(?:explicitly\s+)?(?:not|never)\s+(?:an?\s+)?owner\s+(?:directive|mandate)s?|no\s+(?:(?:applicable|new)\s+)?owner\s+(?:directive|mandate)s?)\b/i;
 
 function isNegatedOwnerDirectiveDisclaimer(line: string): boolean {
   return NEGATED_OWNER_DIRECTIVE_DISCLAIMER_RE.test(line);

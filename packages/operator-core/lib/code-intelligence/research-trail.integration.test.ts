@@ -67,17 +67,23 @@ describe('caller-session research replay through the push boundary', () => {
       expect(await readResearchTrail(ws!, who!, hive!)).toEqual({ subjects: [], reason: 'trail not captured for this client' });
     }
   });
-  it('bounds a slow capture without cancelling its eventual persistence operation', async () => {
+  it('keeps a slow capture off the response path while bounding eventual persistence', async () => {
     vi.useFakeTimers();
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let finish!: () => void;
+    let captureStarted = false;
     const capture = new Promise<void>(resolve => { finish = resolve; });
-    const deps: PushChannelDeps = { research: () => capture, snapshot: async () => null,
+    const deps: PushChannelDeps = { research: () => { captureStarted = true; return capture; }, snapshot: async () => null,
       enabled: async () => false, legs: () => new Map(), commit: async () => '' };
     try {
-      const response = codeIntelPushText(input({ calls: [{ tool: 'Read', toolInput: { file_path: 'code.ts' } }] }), deps);
-      await vi.advanceTimersByTimeAsync(101);
+      let responseSettled = false;
+      const response = codeIntelPushText(input({ calls: [{ tool: 'Read', toolInput: { file_path: 'code.ts' } }] }), deps)
+        .then(value => { responseSettled = true; return value; });
+      await Promise.resolve();
+      expect(captureStarted).toBe(true);
+      expect(responseSettled).toBe(true);
       expect(await response).toBe('');
+      await vi.advanceTimersByTimeAsync(501);
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('code-intel-research-trail'));
       finish();
       await capture;

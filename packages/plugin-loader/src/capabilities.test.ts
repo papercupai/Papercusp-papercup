@@ -1,9 +1,12 @@
 /**
  * Tests for capability proxy + fetch/secrets gates. Run with:
- *   cd packages/papercusp-plugin-loader && npx tsx --test src/capabilities.test.ts
+ *   npm test --workspace=@papercusp/plugin-loader -- src/capabilities.test.ts
  */
-import { describe, it } from 'vitest';
+import { afterEach, describe, it, vi } from 'vitest';
 import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   hasCapability,
   requireCapability,
@@ -12,6 +15,10 @@ import {
   makeSecretsProxy,
   MissingCapabilityError,
   UnknownMethodError,
+  createInvocationCapabilityContext,
+  runWithInvocationCapabilities,
+  type InvocationCapabilityInput,
+  type CapabilityCheckContext,
 } from './capabilities.ts';
 import type { ServiceDef } from '@papercusp/plugin-sdk';
 
@@ -195,5 +202,249 @@ describe('makeSecretsProxy', () => {
       () => proxy.read('OPENAI_API_KEY'),
       (e: Error) => e instanceof MissingCapabilityError,
     );
+  });
+});
+
+describe('host-owned invocation capability intersection', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function input(overrides: Partial<InvocationCapabilityInput> = {}): InvocationCapabilityInput {
+    return {
+      pluginName: 'fixture',
+      capabilities: ['tasks:read', 'tasks:write'],
+      granted: ['tasks:read', 'tasks:write'],
+      principal: {
+        kind: 'system', slug: 'fixture-caller', workspaceId: 'fixture-workspace',
+        authMethod: 'bearer-token', trust: 'verified',
+        capabilities: new Set(['tasks:read', 'tasks:write']),
+        allowedTools: new Set(['fixture:parent', 'fixture:child']),
+      },
+      invocationId: 'fixture-invocation',
+      declaration: { name: 'fixture:parent', capabilities: ['tasks:read', 'tasks:write'] },
+      approvals: ['tasks:read', 'tasks:write'],
+      expiresAt: Date.now() + 60_000, isActive: () => true,
+      ...overrides,
+    };
+  }
+
+  function markerService(ctx: CapabilityCheckContext, cap: 'tasks:read' | 'tasks:write' = 'tasks:write') {
+    const dir = mkdtempSync(join(tmpdir(), 'invocation-capabilities-'));
+    dirs.push(dir);
+    const path = join(dir, 'effect');
+    const service = wrapServiceWithCaps(ctx, {
+      perform: (_untrusted?: unknown) => { writeFileSync(path, 'authorized effect'); return path; },
+    }, { name: 'fixture', methods: { perform: { capability: cap } } });
+    return { path, service };
+  }
+
+  it('permits an actual effect when all independent authority axes agree', () => {
+    const { path, service } = markerService(createInvocationCapabilityContext(input()));
+    assert.equal(service.perform(), path);
+    assert.equal(readFileSync(path, 'utf8'), 'authorized effect');
+  });
+
+  for (const axis of ['manifest', 'declaration', 'installation', 'caller', 'tool', 'approval'] as const) {
+    it(`denies before a filesystem effect when the ${axis} grant is missing`, () => {
+      const denied = input();
+      if (axis === 'manifest') denied.capabilities = [];
+      if (axis === 'declaration') denied.declaration = { ...denied.declaration, capabilities: [] };
+      if (axis === 'installation') denied.granted = [];
+      if (axis === 'caller') denied.principal = { ...denied.principal, capabilities: new Set() };
+      if (axis === 'tool') denied.principal = { ...denied.principal, allowedTools: new Set() };
+      if (axis === 'approval') denied.approvals = [];
+      const { path, service } = markerService(createInvocationCapabilityContext(denied));
+      assert.throws(() => service.perform({
+        principal: input().principal, granted: ['tasks:write'],
+        approvals: ['tasks:write'], bypass: true, force: true,
+      }), MissingCapabilityError);
+      assert.equal(existsSync(path), false);
+    });
+  }
+
+  it('requires an exact tool allowlist, including when it is absent', () => {
+    for (const allowedTools of [undefined, new Set(['fixture:*']), new Set(['fixture:child'])]) {
+      const hostInput = input();
+      hostInput.principal = { ...hostInput.principal, allowedTools };
+      const { path, service } = markerService(createInvocationCapabilityContext(hostInput));
+      assert.throws(() => service.perform(), MissingCapabilityError);
+      assert.equal(existsSync(path), false);
+    }
+  });
+
+  it('denies missing installation and approval axes even for untyped host input', () => {
+    for (const axis of ['granted', 'approvals', 'declaration'] as const) {
+      const hostInput = input();
+      delete (hostInput as any)[axis];
+      const { path, service } = markerService(createInvocationCapabilityContext(hostInput));
+      assert.throws(() => service.perform(), MissingCapabilityError);
+      assert.equal(existsSync(path), false);
+    }
+  });
+
+  it('does not turn serialized or copied invocation identity into authority', () => {
+    const ctx = createInvocationCapabilityContext(input());
+    for (const forged of [{ ...ctx }, JSON.parse(JSON.stringify(ctx))]) {
+      const { path, service } = markerService(forged);
+      assert.throws(() => service.perform(), MissingCapabilityError);
+      assert.throws(() => runWithInvocationCapabilities(forged, () => writeFileSync(path, 'forged')), MissingCapabilityError);
+      assert.equal(existsSync(path), false);
+    }
+  });
+
+  it('uses the registered MCP exposure name for the exact allowlist', () => {
+    const hostInput = input();
+    hostInput.declaration = { ...hostInput.declaration, name: 'fixture.implementation', expose: { mcp: { name: 'fixture:parent' } } };
+    const { path, service } = markerService(createInvocationCapabilityContext(hostInput));
+    service.perform();
+    assert.equal(existsSync(path), true);
+    hostInput.principal = { ...hostInput.principal, allowedTools: new Set(['fixture.implementation']) };
+    const denied = markerService(createInvocationCapabilityContext(hostInput));
+    assert.throws(() => denied.service.perform(), MissingCapabilityError);
+    assert.equal(existsSync(denied.path), false);
+  });
+
+  it('snapshots grants so mutating the source principal cannot widen a saved wrapper', () => {
+    const hostInput = input({ approvals: ['tasks:read'] });
+    const ctx = createInvocationCapabilityContext(hostInput);
+    (hostInput.approvals as string[]).push('tasks:write');
+    (hostInput.principal.allowedTools as Set<string>).add('fixture:other');
+    const { path, service } = markerService(ctx);
+    assert.throws(() => service.perform(), MissingCapabilityError);
+    assert.equal(existsSync(path), false);
+    assert.throws(() => (ctx.capabilities as string[]).push('secrets:read:PRIVATE'), TypeError);
+  });
+
+  it('revalidates revoked and expired contexts even for a previously saved method', () => {
+    let active = true;
+    const ctx = createInvocationCapabilityContext(input({ isActive: () => active }));
+    const { path, service } = markerService(ctx);
+    const saved = service.perform;
+    active = false;
+    assert.throws(() => saved(), MissingCapabilityError);
+    assert.equal(existsSync(path), false);
+    for (const extra of [
+      { expiresAt: Date.now() - 1 }, { expiresAt: Number.NaN },
+      { isActive: () => { throw new Error('revocation lookup unavailable'); } },
+      { principal: { ...input().principal, trust: 'unverified-loopback' as const } },
+    ]) {
+      const denied = markerService(createInvocationCapabilityContext(input(extra)));
+      assert.throws(() => denied.service.perform(), MissingCapabilityError);
+      assert.equal(existsSync(denied.path), false);
+    }
+  });
+
+  it('keeps resource approvals independent of broader declarations and caller grants', async () => {
+    const caps = ['secrets:read:FIXTURE_*'] as const;
+    const hostInput = input({ capabilities: caps, granted: caps, approvals: ['secrets:read:FIXTURE_PUBLIC'] });
+    hostInput.declaration = { ...hostInput.declaration, capabilities: [...caps] };
+    hostInput.principal = { ...hostInput.principal, capabilities: new Set(caps) };
+    const reads: string[] = [];
+    const secrets = makeSecretsProxy(createInvocationCapabilityContext(hostInput), async name => {
+      reads.push(name); return 'authorized secret';
+    });
+    assert.equal(await secrets.read('FIXTURE_PUBLIC'), 'authorized secret');
+    await assert.rejects(() => secrets.read('FIXTURE_PRIVATE'), MissingCapabilityError);
+    assert.deepEqual(reads, ['FIXTURE_PUBLIC']);
+  });
+
+  it('attenuates explicit children and rechecks parent revocation', () => {
+    let active = true;
+    const parent = createInvocationCapabilityContext(input({ approvals: ['tasks:read'], isActive: () => active }));
+    const child = createInvocationCapabilityContext(input({
+      parent, declaration: { ...input().declaration, name: 'fixture:child' }, invocationId: 'child',
+    }));
+    const allowed = markerService(child, 'tasks:read');
+    allowed.service.perform();
+    assert.equal(existsSync(allowed.path), true);
+    const denied = markerService(child);
+    assert.throws(() => denied.service.perform(), MissingCapabilityError);
+    assert.equal(existsSync(denied.path), false);
+    active = false;
+    assert.equal(hasCapability(child, 'tasks:read'), false);
+    let entered = false;
+    assert.throws(() => runWithInvocationCapabilities(child, () => { entered = true; }), MissingCapabilityError);
+    assert.equal(entered, false);
+  });
+
+  it('refuses a child that changes principal or workspace or supplies a forged parent', () => {
+    const parent = createInvocationCapabilityContext(input());
+    for (const override of [
+      { principal: { ...input().principal, slug: 'other-caller' } },
+      { principal: { ...input().principal, workspaceId: 'other-workspace' } },
+      { parent: { ...parent } },
+    ]) {
+      const { path, service } = markerService(createInvocationCapabilityContext(input({ parent, ...override })));
+      assert.throws(() => service.perform(), MissingCapabilityError);
+      assert.equal(existsSync(path), false);
+    }
+  });
+
+  it('cannot omit its ambient parent, including after an await and after returning the child', async () => {
+    const parent = createInvocationCapabilityContext(input({ approvals: ['tasks:read'] }));
+    const child = await runWithInvocationCapabilities(parent, async () => {
+      await Promise.resolve();
+      return createInvocationCapabilityContext(input({ declaration: { ...input().declaration, name: 'fixture:child' } }));
+    });
+    const { path, service } = markerService(child);
+    assert.throws(() => service.perform(), MissingCapabilityError);
+    assert.equal(existsSync(path), false);
+  });
+
+  it('limits prebuilt and legacy child services inside asynchronous checked service calls', async () => {
+    const parent = createInvocationCapabilityContext(input({ approvals: ['tasks:read'] }));
+    const children = [createInvocationCapabilityContext(input()), {
+      pluginName: 'legacy', capabilities: ['tasks:read', 'tasks:write'] as const,
+    }];
+    for (const ctx of children) {
+      const child = markerService(ctx);
+      const outer = wrapServiceWithCaps(parent, {
+        async read() { await Promise.resolve(); return child.service.perform(); },
+      }, { name: 'outer', methods: { read: { capability: 'tasks:read' } } });
+      await assert.rejects(() => outer.read(), MissingCapabilityError);
+      assert.equal(existsSync(child.path), false);
+    }
+  });
+
+  it('intersects the parent exact tool allowlist and isolates concurrent invocations', async () => {
+    const hostInput = input();
+    hostInput.principal = { ...hostInput.principal, allowedTools: new Set(['fixture:parent']) };
+    const narrow = createInvocationCapabilityContext(hostInput);
+    const wide = createInvocationCapabilityContext(input());
+    const child = createInvocationCapabilityContext(input({ declaration: { ...input().declaration, name: 'fixture:child' } }));
+    const denied = markerService(child);
+    const allowed = markerService(child);
+    await Promise.all([
+      runWithInvocationCapabilities(narrow, async () => {
+        await Promise.resolve();
+        assert.throws(() => denied.service.perform(), MissingCapabilityError);
+      }),
+      runWithInvocationCapabilities(wide, async () => {
+        await Promise.resolve(); allowed.service.perform();
+      }),
+    ]);
+    assert.equal(existsSync(denied.path), false);
+    assert.equal(readFileSync(allowed.path, 'utf8'), 'authorized effect');
+  });
+
+  it('imports in a browser without native async context and refuses strict execution', async () => {
+    vi.resetModules();
+    vi.doMock('node:async_hooks', () => ({ AsyncLocalStorage: undefined }));
+    try {
+      const browser = await import('./capabilities.ts');
+      assert.equal(browser.hasCapability({ pluginName: 'legacy', capabilities: ['tasks:read'] }, 'tasks:read'), true);
+      const strict = browser.createInvocationCapabilityContext(input());
+      assert.equal(browser.hasCapability(strict, 'tasks:write'), false);
+      const dir = mkdtempSync(join(tmpdir(), 'invocation-browser-'));
+      dirs.push(dir);
+      const path = join(dir, 'forbidden');
+      assert.throws(() => browser.runWithInvocationCapabilities(strict, () => writeFileSync(path, 'bad')), browser.MissingCapabilityError);
+      assert.equal(existsSync(path), false);
+    } finally {
+      vi.doUnmock('node:async_hooks');
+      vi.resetModules();
+    }
   });
 });

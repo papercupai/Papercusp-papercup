@@ -232,7 +232,19 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
   // whole sweep is best-effort (the caller swallows any throw), so a derive failure for an
   // unregistered harness degrades to "no sweep", never a silent cross-workspace read (D-003).
   const workspaceId = await resolveWorkspaceForHarness(harnessSlug, input.workspaceId);
+  const [{ workspaceBackgroundActivityAllowed }, { startupActivityFeatureId }, { runObservedBackgroundActivity }] = await Promise.all([
+    import('../../device-operator-actions'), import('../../schedule-inventory'), import('../../startup-activity'),
+  ]);
+  const featureId = startupActivityFeatureId({ source: 'in-process', installSlug: null,
+    name: DOC_FRESHNESS_SWEEP_NAME, detail: {} }, { workspaceId });
+  // This fence belongs at actual queue execution, after workspace/import resolution.
+  if (!await workspaceBackgroundActivityAllowed(workspaceId, featureId)) return null;
+  return runObservedBackgroundActivity({ workspaceId, featureId, source: 'sync', trigger: 'sync' },
+    () => runAdmittedDocFreshnessSweep(input, workspaceId));
+}
 
+async function runAdmittedDocFreshnessSweep(input: SweepAfterSyncInput, workspaceId: string): Promise<SweepResult | null> {
+  const { harnessSlug } = input;
   const repoRoot = input.repoRoot === undefined
     ? await projectDirForSlug(harnessSlug, workspaceId)
     : input.repoRoot;

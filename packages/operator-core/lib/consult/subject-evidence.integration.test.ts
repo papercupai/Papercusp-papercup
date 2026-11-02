@@ -8,6 +8,7 @@ import { _resetForTests } from '@papercusp/db-org';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { orgTemplateKey, provisionOrgTemplate } from '../../test/_org-test-db';
 import { flushFallbackObservations } from '../degradation/fallback-observations';
+import { linuxProcStateFromStat, linuxStartTicksFromProcStat } from '../process-identity';
 import { buildSidecarAwareReranker, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
 import { isEmbedSidecarRunning, probeSidecarHealth, readEmbedSidecarRecord, stopEmbedSidecar } from '../memory/embed-sidecar-spawn';
 import { scoreSubjectEvidence, subjectEvidenceQuery, SUBJECT_EVIDENCE_MIN_SCORE } from './relevance-router';
@@ -145,6 +146,41 @@ describe('registered subject evidence with the real local scorer', () => {
       pairInputs: { index: number; text: string; textChars: number; admissionTextChars: number }[];
       callStartedAtMs: number; callFinishedAtMs: number; elapsedMs: number; reason: string }[] = [];
     let scorerFailureCaptured = false;
+    // HTTP health cannot distinguish an event-loop stall from a stopped or
+    // unscheduled owned process. Retain kernel evidence before teardown, with
+    // the existing start-time identity fence so a reused PID is never sampled.
+    const diagnosticRead = (path: string): string | null => {
+      try { return readFileSync(path, 'utf8').trim(); }
+      catch { return null; }
+    };
+    const ownedPid = privateHome && process.platform === 'linux' && Number.isInteger(health?.pid)
+      ? health.pid as number : null;
+    const initialStat = ownedPid ? diagnosticRead(`/proc/${ownedPid}/stat`) : null;
+    const ownedStartTicks = initialStat ? linuxStartTicksFromProcStat(initialStat) : null;
+    const kernelScorerState = () => {
+      if (!ownedPid || !ownedStartTicks) return { status: 'unavailable' };
+      const stat = diagnosticRead(`/proc/${ownedPid}/stat`);
+      if (!stat) return { status: 'unavailable', pid: ownedPid };
+      if (linuxStartTicksFromProcStat(stat) !== ownedStartTicks) {
+        return { status: 'identity-changed', pid: ownedPid };
+      }
+      const cgroup = diagnosticRead(`/proc/${ownedPid}/cgroup`)
+        ?.split('\n').find(line => line.startsWith('0::'))?.slice(3);
+      return { status: 'present', pid: ownedPid, startTicks: ownedStartTicks,
+        state: linuxProcStateFromStat(stat),
+        waitChannel: diagnosticRead(`/proc/${ownedPid}/wchan`),
+        schedstat: diagnosticRead(`/proc/${ownedPid}/schedstat`),
+        observerSchedstat: diagnosticRead('/proc/thread-self/schedstat'),
+        cgroup: cgroup ?? null,
+        cgroupEvents: cgroup ? diagnosticRead(`/sys/fs/cgroup${cgroup}/cgroup.events`) : null,
+        cpuStat: cgroup ? diagnosticRead(`/sys/fs/cgroup${cgroup}/cpu.stat`) : null,
+        memoryEvents: cgroup ? diagnosticRead(`/sys/fs/cgroup${cgroup}/memory.events`) : null };
+    };
+    if (ownedPid) {
+      expect(kernelScorerState(), 'owned scorer kernel identity must be readable before measurements')
+        .toMatchObject({ status: 'present', pid: ownedPid, startTicks: expect.any(String),
+          schedstat: expect.any(String) });
+    }
     const readScorerState = async (callStartedAtMs?: number) => {
       const health = url ? await probeSidecarHealth(url, 1000).catch(() => null) as {
         pid?: number; uptimeMs?: number;
@@ -156,7 +192,8 @@ describe('registered subject evidence with the real local scorer', () => {
         admission?: { mode?: string };
         queue?: { depth?: number; active?: number; saturated?: boolean };
       } | null : null;
-      if (!privateDb) return { health, admission: null };
+      const kernel = kernelScorerState();
+      if (!privateDb) return { health, kernel, admission: null };
       const sql = postgres(privateDb.url, { max: 1, connect_timeout: 3, onnotice: () => {} });
       try {
         await sql`SET statement_timeout = '3000ms'`;
@@ -196,9 +233,9 @@ describe('registered subject evidence with the real local scorer', () => {
           embedderWorker: health.workers?.embedder ?? null,
           rerankerWorker: health.workers?.reranker ?? null,
         } : null;
-        return { sidecar, admission: { database: privateDb.name, observedAtMs: Date.now(), callStartedAtMs, admissions, activity } };
+        return { sidecar, kernel, admission: { database: privateDb.name, observedAtMs: Date.now(), callStartedAtMs, admissions, activity } };
       } catch (error) {
-        return { health, admission: { database: privateDb.name,
+        return { health, kernel, admission: { database: privateDb.name,
           error: error instanceof Error ? error.message : String(error) } };
       } finally {
         await sql.end({ timeout: 5 });
@@ -212,13 +249,15 @@ describe('registered subject evidence with the real local scorer', () => {
       let samplePromise: Promise<void> | undefined;
       const samplePhase = async () => {
         if (!url) return;
+        const kernelBefore = kernelScorerState();
         try {
           const response = await fetch(`${url.replace(/\/$/, '')}/healthz`, {
             signal: AbortSignal.timeout(1000),
           });
           const elapsedMs = Date.now() - callStartedAt;
           if (!response.ok) {
-            phaseSamples.push({ elapsedMs, healthAvailable: false, healthStatus: response.status });
+            phaseSamples.push({ elapsedMs, healthAvailable: false, healthStatus: response.status,
+              kernelBefore, kernelAfter: kernelScorerState() });
             return;
           }
           const health = await response.json() as {
@@ -231,6 +270,7 @@ describe('registered subject evidence with the real local scorer', () => {
             queue?: { depth?: number; active?: number; saturated?: boolean };
           } | null;
           phaseSamples.push({ sampledAtMs: Date.now(), elapsedMs, healthAvailable: true, healthStatus: response.status,
+            kernelBefore, kernelAfter: kernelScorerState(),
             admission: health?.admission ?? null,
             queue: health?.queue ?? null,
             scorerGate: health?.rerankScorerGate ?? null,
@@ -243,6 +283,7 @@ describe('registered subject evidence with the real local scorer', () => {
         } catch (error) {
           phaseSamples.push({ sampledAtMs: Date.now(), elapsedMs: Date.now() - callStartedAt,
             healthAvailable: false,
+            kernelBefore, kernelAfter: kernelScorerState(),
             probeError: error instanceof Error ? error.message : String(error) });
         }
       };
@@ -354,7 +395,8 @@ describe('registered subject evidence with the real local scorer', () => {
     const { cases: measured, summary } = evaluateSubjectCases(measurements, SUBJECT_EVIDENCE_MIN_SCORE);
     console.info('subject-held-out-metrics', JSON.stringify(measured));
     console.info('subject-held-out-summary', JSON.stringify(summary));
-    expect(natural.summary.unavailable, 'natural-question measurements must be available').toBe(0);
+    expect(natural.summary.unavailable,
+      `natural-question measurements must be available: ${JSON.stringify({ runtime, failures })}`).toBe(0);
     expect(natural.cases[0].selected).toEqual(['lease-auditor']);
     expect(natural.cases[1].selected).toEqual([]);
     expect(natural.summary.falseExpertSelections).toBe(0);

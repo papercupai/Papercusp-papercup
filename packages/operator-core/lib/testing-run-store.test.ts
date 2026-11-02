@@ -1767,6 +1767,7 @@ describe('durable detached snapshot lifecycle', () => {
       status: 'pass',
       finished_at: new Date(1_700_000_001_000 + index * 1_000),
       output_tail: null,
+      execution_details: measuredPass(file_path, 'three-of-four-ledger-run'),
     }));
     const sql = vi.fn(async (strings: TemplateStringsArray) => {
       const statement = strings.join(' ');
@@ -2094,6 +2095,77 @@ describe('durable detached snapshot lifecycle', () => {
     expect(recovered).toMatchObject({ runId, status: 'running', exitCode: null, finishedAt: null });
     expect(recovered?.requestedFiles).toEqual(requestedFiles);
     expect(recovered?.output).not.toContain('recovered pass');
+  });
+
+  it('waits for the delayed sixth file and router exit across sequential config groups', async () => {
+    const runId = 'five-integration-files-then-unit-group';
+    const requestedFiles = [
+      ...Array.from({ length: 5 }, (_, index) => `lib/group-one-${index + 1}.integration.test.ts`),
+      'lib/group-two.test.ts',
+    ];
+    const ledgerRows = requestedFiles.slice(0, 5).map((file_path, index) => ({
+      file_path,
+      status: 'pass',
+      finished_at: new Date(1_700_000_001_000 + index * 1_000),
+      output_tail: null,
+      execution_details: measuredPass(file_path, runId),
+    }));
+    let taskState = 'running';
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+        return [{
+          run_id: runId, task_id: 'task-sequential-configs', kind: 'vitest',
+          label: 'integration group then unit group', file_path: null,
+          command: ['node', 'scripts/test-files.mjs', ...requestedFiles],
+          status: 'running', exit_code: null,
+          started_at: new Date(1_700_000_000_000), finished_at: null,
+          output: '', truncated: false, task_state: taskState, task_deadline_at: null,
+          task_exit_code: taskState === 'exited' ? 0 : null,
+          task_ended_at: taskState === 'exited' ? new Date(1_700_000_011_000) : null,
+          task_detail: { requestedFiles },
+        }];
+      }
+      if (statement.includes('FROM harness_shared.task_ledger')) {
+        return [{ state: taskState, exit_code: taskState === 'exited' ? 0 : null,
+          requested_files: requestedFiles }];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        return [{ run_id: runId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    // The integration group has passed; the unit group has not started yet.
+    const firstGroup = await store.getRunAsync(runId, sql);
+    expect(firstGroup).toMatchObject({ status: 'running', exitCode: null, finishedAt: null });
+    expect(firstGroup?.requestedFiles).toEqual(requestedFiles);
+    expect(firstGroup?.provisionalVerdict).toBeUndefined();
+    await expect(store.getTestRunLedgerRecoveryAsync(runId, sql)).resolves.toBeNull();
+    expect(updates).toHaveLength(0);
+
+    ledgerRows.push({
+      file_path: requestedFiles[5]!, status: 'pass',
+      finished_at: new Date(1_700_000_010_000), output_tail: null,
+      execution_details: measuredPass(requestedFiles[5]!, runId),
+    });
+    const secondGroup = await store.getRunAsync(runId, sql);
+    expect(secondGroup).toMatchObject({ status: 'running', exitCode: null, finishedAt: null,
+      provisionalVerdict: { status: 'pass', fileCount: 6 } });
+    await expect(store.getTestRunLedgerRecoveryAsync(runId, sql)).resolves.toBeNull();
+    expect(updates).toHaveLength(0);
+
+    taskState = 'exited';
+    await expect(store.getRunAsync(runId, sql)).resolves.toMatchObject({
+      status: 'pass', exitCode: 0, finishedAt: 1_700_000_010_000,
+    });
+    await expect(store.getTestRunLedgerRecoveryAsync(runId, sql)).resolves.toMatchObject({
+      status: 'pass', fileCount: 6, files: requestedFiles.map(filePath => ({ filePath })),
+    });
+    expect(updates).toHaveLength(1);
   });
 
   it.each([

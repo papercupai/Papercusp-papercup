@@ -636,7 +636,7 @@ export default defineTool({
       // WI-42443: `processes:kill { taskId }`, not capability:bash_kill — that verb is absent
       // from trimmed surfaces (su) and refused for some principals, so naming it here routes
       // the caller to something it cannot invoke (the EI-21543657511391052 defect, third site).
-      .describe('Run detached; returns a bash_id immediately. Poll with capability:bash_output, stop with processes:kill { taskId }.'),
+      .describe('Run detached. Exact test files on an unrestricted host use testing:run background:true and return a testing:run-status handle. Other checks return bash_id for capability:bash_output. Stop with processes:kill { taskId }.'),
     runInBackground: z
       .boolean()
       .optional()
@@ -718,6 +718,31 @@ export default defineTool({
     // command is still real code execution and must not raw-downgrade for a
     // confined session.
     const sandboxPolicy = await capabilityExecSandboxPolicy(ctx);
+
+    // Let the canonical core prepare dirty tested inputs and retain source custody.
+    // Sandbox-bound callers retain their existing confined execution path below.
+    const testPaths = args.onlyPaths?.length ? args.onlyPaths : args.path ? [args.path] : [];
+    if (runInBackground && args.check === 'test' && !sandboxPolicy.enabled && !sandboxPolicy.required
+      && testPaths.length > 0 && testPaths.every(path => /\.[cm]?[jt]sx?$/.test(path))) {
+      const packageSelection = args.package === undefined ? null : validatePackageArg(args.package, baseDir, defaultResolveWorkspaceAlias);
+      if (packageSelection && !packageSelection.ok) return err('bad_package', packageSelection.reason);
+      const packageCwd = packageSelection?.abs ?? baseDir;
+      const packageRel = relative(baseDir, packageCwd);
+      const files = testPaths.map(path => {
+        const normalized = normalizeTestPathToken(path);
+        const repoRelative = Boolean(packageRel) && (normalized === packageRel || normalized.startsWith(`${packageRel}/`));
+        return resolve(repoRelative ? baseDir : packageCwd, normalized);
+      });
+      const testing = (await import('../testing/run')).default;
+      const request = testing.args.safeParse({
+        files, background: true, ...(args.timeout !== undefined ? { timeoutMs: args.timeout } : {}),
+      });
+      if (!request.success) return err('bad_args', request.error.message);
+      const response = await testing.handler(request.data, ctx);
+      return 'data' in response
+        ? { content: [{ type: 'text' as const, text: JSON.stringify(response.data) }] }
+        : response;
+    }
 
     // EI-20019651513530828: pin the tsc child's heap. operator-core overflows node's
     // DEFAULT ~4GB old-space and is killed BEFORE emitting any diagnostics, which reads

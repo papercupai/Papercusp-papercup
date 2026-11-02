@@ -843,6 +843,52 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
     expect(probeKeyFireEvidence).not.toHaveBeenCalled();
   });
 
+  it('resolves concurrent consult reply ids from builtins before installed-event discovery', async () => {
+    const events = [
+      'consult:reply:' + 'a'.repeat(64),
+      'consult:reply:' + 'b'.repeat(64),
+    ];
+    const idByEvent = new Map(events.map((event, index) => [event, 99 + index]));
+    vi.mocked(registerAwait).mockImplementation(async (input) => ({
+      id: idByEvent.get(input.eventKey) ?? 99,
+      workspaceId: 'ws-x',
+      subscriberId: 'su-awaiter',
+      eventKey: input.eventKey,
+      policy: 'wake',
+      note: null,
+      wakeHandle: null,
+      timeoutBehavior: 'wake',
+      expiresTs: '2030-01-01T00:00:00.000Z',
+      createdAt: '2026-09-22T00:00:00.000Z',
+      firedAt: null,
+      firedReason: null,
+      cancelledAt: null,
+      cancelReason: null,
+      once: true,
+      minSleepSec: null,
+      urgency: false,
+      payloadFilter: null,
+      scopeKind: null,
+      scopeRef: null,
+    } as AwaitRow));
+    vi.mocked(readInstalledUnitEvents).mockImplementation(() => new Promise<never[]>(() => {}));
+    try {
+      const outputs = await Promise.all(events.map((event) => call({ event })));
+
+      expect(readInstalledUnitEvents).not.toHaveBeenCalled();
+      for (const out of outputs) {
+        expect(out.ok).toBe(true);
+        expect(out.unknown_event_key).toBeUndefined();
+        expect(out.operational_brief.owner).toMatchObject({
+          status: 'known',
+          value: expect.stringContaining('consult verbs'),
+        });
+      }
+    } finally {
+      vi.mocked(readInstalledUnitEvents).mockResolvedValue([]);
+    }
+  });
+
   describe('EI-18676056143796303 — fire-history evidence overrides the membership verdict', () => {
     it('SUPPRESSES the orphan warning when a SIBLING key in the family has fired (the coord:inbox-wake case)', async () => {
       // The incident: an agent was woken BY coord:inbox-wake:<self>, re-registered
@@ -957,11 +1003,12 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
   it('keeps a catalog probe failure distinct from confirmed absence in the pending wait brief', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(readInstalledUnitEvents).mockRejectedValueOnce(new Error('catalog read failed'));
+    const event = 'unregistered-unit:probe';
     vi.mocked(registerAwait).mockResolvedValueOnce({
       id: 99,
       workspaceId: 'ws-x',
       subscriberId: 'su-awaiter',
-      eventKey: 'release:green:papercusp',
+      eventKey: event,
       policy: 'wake',
       note: null,
       wakeHandle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 },
@@ -980,7 +1027,7 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
       scopeRef: null,
     } as AwaitRow);
 
-    const out = await call({ event: 'release:green:papercusp' });
+    const out = await call({ event });
 
     expect(out.ok).toBe(true);
     expect(out.await_id).toBe(99);

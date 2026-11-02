@@ -45,19 +45,20 @@ export async function runFrontierSweCurrentArm(
   const adapter = await startFrontierSweLaunchAdapter(deps.launch);
   const result: TopologyRunResult = { arm: deps.spec.arm, runId: deps.runId,
     startedAtMs: now(), finishedAtMs: now(), rows: [], modelCallsSpent: 0, tokensSpent: 0, costUsdSpent: 0,
-    budgetExhausted: false, attemptedTaskIds: [], skippedTaskIds: [] };
+    accountingUnknown: false, budgetExhausted: false, attemptedTaskIds: [], skippedTaskIds: [] };
   try {
     // Current protocols freeze caps PER assignment. One shared adapter owns the
     // run; each task gets its own topology pass. The lifetime governor owns the
     // aggregate cap across tasks, seeds and arms.
     for (const task of backlog) {
-      if (deps.launch.signal?.aborted) { result.skippedTaskIds.push(task.instanceId); continue; }
+      if (result.accountingUnknown || deps.launch.signal?.aborted) { result.skippedTaskIds.push(task.instanceId); continue; }
       const pass = await runTopology<FrontierSweEnvHandle>({ ...deps, backlog: [task], cap: 1,
         seam: adapter.seam, rowMeta: frontierSweRowMeta(deps.rowMeta), now, runAgent: adapter.runAgent });
       result.rows.push(...pass.rows); result.attemptedTaskIds.push(...pass.attemptedTaskIds);
       result.skippedTaskIds.push(...pass.skippedTaskIds); result.modelCallsSpent += pass.modelCallsSpent;
       result.tokensSpent += pass.tokensSpent; result.costUsdSpent += pass.costUsdSpent;
       result.budgetExhausted ||= pass.budgetExhausted;
+      result.accountingUnknown ||= pass.accountingUnknown;
     }
     result.finishedAtMs = now();
     return result;

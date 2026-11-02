@@ -975,6 +975,9 @@ export {
   MissingCapabilityError,
   UnknownMethodError,
   type CapabilityCheckContext,
+  createInvocationCapabilityContext,
+  runWithInvocationCapabilities,
+  type InvocationCapabilityInput,
 } from './capabilities';
 
 // (hookbus.ts — the WordPress-style addAction/addFilter bus — was RETIRED by

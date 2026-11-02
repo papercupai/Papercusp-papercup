@@ -1,14 +1,16 @@
 /** Diagnostic preload: capture V8's actual parsed source bytes in the main
- * isolate and workers, including workers with execArgv: []. This is a parsed
- * source census, not a claim about native libraries, file opens, subprocesses,
+ * isolate and attached workers, including workers with execArgv: []. Only the
+ * main thread owns the receipt; worker sources arrive through NodeWorker events.
+ * This parsed-source census is not a claim about native libraries, file opens, subprocesses,
  * unexecuted branches, or the original bytes before a TS loader transforms them.
  * Run with PAPERCUSP_RUNTIME_SOURCE_CAPTURE=<new private file> node --import ...
- * Each process needs its own destination. A complete process-tree witness must
- * reconcile these receipts with an independently observed process population.
+ * A complete process-tree witness must reconcile these receipts with an
+ * independently observed process population.
  */
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import inspector from 'node:inspector';
+import { isMainThread } from 'node:worker_threads';
 
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
@@ -169,4 +171,5 @@ export function startRuntimeSourceCapture(destination) {
   });
 }
 
-if (process.env.PAPERCUSP_RUNTIME_SOURCE_CAPTURE) startRuntimeSourceCapture(process.env.PAPERCUSP_RUNTIME_SOURCE_CAPTURE);
+if (isMainThread && process.env.PAPERCUSP_RUNTIME_SOURCE_CAPTURE)
+  startRuntimeSourceCapture(process.env.PAPERCUSP_RUNTIME_SOURCE_CAPTURE);

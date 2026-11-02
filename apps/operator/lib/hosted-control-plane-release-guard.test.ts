@@ -10,6 +10,7 @@ const sourceRoot = resolve(__dirname, '../../..');
 const installerPath = 'apps/operator/scripts/systemd/deploy-hosted-control-plane.sh';
 const templatePath = 'apps/operator/scripts/systemd/papercusp-hosted-control-plane.service.in';
 const freshnessPath = 'apps/operator/bin/bundle-host-freshness.mjs';
+const artifactPath = 'packages/operator-core/lib/release/operator-artifact.ts';
 let temp: string;
 let repo: string;
 let green: string;
@@ -121,11 +122,13 @@ beforeEach(() => {
   temp = mkdtempSync(join(tmpdir(), 'hosted-release-'));
   repo = join(temp, 'release');
   mkdirSync(repo);
-  for (const path of [installerPath, templatePath, freshnessPath]) {
+  for (const path of [installerPath, templatePath, freshnessPath, artifactPath]) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     copyFileSync(join(sourceRoot, path), join(repo, path));
   }
-  writeFileSync(join(repo, '.gitignore'), 'apps/operator/dist-hosted-control-plane/\n');
+  writeFileSync(join(repo, '.gitignore'), 'apps/operator/dist-hosted-control-plane/\nnode_modules/\n');
+  mkdirSync(join(repo, 'node_modules'));
+  writeFileSync(join(repo, 'node_modules/.package-lock.json'), '{"lockfileVersion":3,"packages":{}}\n');
   writeFileSync(join(repo, 'apps/operator/bin/serve.ts'), '// pinned entry\n');
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Release test');

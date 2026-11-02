@@ -679,6 +679,81 @@ async function cascadeRow(id: string, ws = WS) {
 }
 
 describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
+  it('recovers a reviewer whose thread read and durable decline were both denied (EI-27697470834897410)', async () => {
+    const hookRoot = new URL('../../../../apps/operator/scripts/hooks/inject/', import.meta.url);
+    const { runInjection } = await import(fileURLToPath(new URL('core.mjs', hookRoot)));
+    const adapter = await import(fileURLToPath(new URL('adapters/codex.mjs', hookRoot)));
+    const routedAt = new Date(NOW.getTime() - 60_000).toISOString();
+    const id = await seedConsult({
+      latency: 'hard-blocked', expiresAt: FUTURE, updatedAt: routedAt,
+      routing: menuSnapshot(['resp-1', 'resp-2'], ['resp-1-fork', 'resp-2-fork']),
+    });
+    const calls = [
+      ['conversations:get', { id }],
+      ['consult:decline', { conversation_id: id, reason: 'Cannot read the review evidence' }],
+    ] as const;
+    // Typed read/control routing must still honor a real identity refusal.
+    const guardRequests: string[] = [];
+    const fetchImpl = (async (_url: unknown, init: RequestInit) => {
+      guardRequests.push(JSON.parse(String(init.body)).input.cmd);
+      return Response.json({ ok: true, text: 'Refused by identity reviewer rule consult-access: denied' });
+    }) as typeof fetch;
+    for (const [verb, args] of calls) {
+      const cmd = [`ptool ${verb} --json - <<'JSON'`, JSON.stringify(args), 'JSON'].join('\n');
+      const output = await runInjection({ adapter, nativeEvent: 'pre-tool-use',
+        event: { tool_name: 'exec_command', tool_input: { cmd } },
+        env: { PAPERCUSP_SID: 'resp-1-fork' }, fetchImpl });
+      expect(JSON.parse(output!).hookSpecificOutput).toMatchObject({
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('identity reviewer rule consult-access'),
+      });
+    }
+    expect(guardRequests).toHaveLength(2);
+
+    const { deps, reachCalls, emits } = makeDeps({ withReach: true });
+    const detector = consultExpiryFindSilentResponders({
+      getPresence: async () => ({ lastActiveAt: new Date(NOW.getTime() - 1_000).toISOString() }),
+      resolveSessionStates: async () => new Map([['resp-1-fork', { sessionState: 'parked' }]]),
+      getThreadStore: (workspace) => {
+        expect(workspace).toBe(WS);
+        return {
+          getThreadByParent: async () => ({ thread_id: id }) as never,
+          // A requester's report of the failure is not reviewer engagement.
+          listRecentPosts: async () => ({ total: 1, posts: [{ author_id: 'req-1' }] }),
+        };
+      },
+      now: () => NOW,
+    });
+    deps.findSilentResponders = (rows) => detector(rows.filter((row) => row.conversationId === id));
+    const stops: unknown[] = [];
+    deps.stopAnsweringSession = async (target) => { stops.push(target); return 'stopped blocked reviewer'; };
+
+    const result = await sweepExpiredConsults(deps);
+
+    expect(await cascadeRow(id)).toMatchObject({
+      state: 'awaiting_responder', closed_at: null, responder_id: 'resp-2', cascade_cursor: 1,
+      cascade_digest: [expect.objectContaining({ ownerId: 'resp-1', kind: 'dispatch_failed' })],
+    });
+    expect(reachCalls.filter((call) => call.conversationId === id)).toEqual([
+      expect.objectContaining({ responder: 'resp-2', conversationId: id }),
+    ]);
+    expect(stops).toEqual([{ workspaceId: WS, conversationId: id,
+      answeringOwnerId: 'resp-1-fork', sourceOwnerId: 'resp-1' }]);
+    expect(result.answerFailures.filter((failure) => failure.conversationId === id)).toEqual([
+      { conversationId: id, reason: 'answer-pickup-stalled', stopOutcome: 'stopped blocked reviewer', recorded: true },
+    ]);
+    const [row] = await rootSql`SELECT dispatch_attempts FROM harness_shared.consult_state
+      WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    const attempts = typeof row!.dispatch_attempts === 'string'
+      ? JSON.parse(row!.dispatch_attempts) : row!.dispatch_attempts;
+    expect(attempts.at(-1)).toMatchObject({
+      dispatched: false, answeringOwnerId: 'resp-1-fork', sourceOwnerId: 'resp-1',
+      answerFailure: { cascadeCursor: 0, reason: 'answer-pickup-stalled' },
+      attempts: [expect.objectContaining({ outcome: 'failed' })],
+    });
+    expect(emits).toEqual([]); // Recovery is neither an answer nor an approval.
+  });
+
   it('advances a non-due silent responder as an implicit decline without terminal expiry', async () => {
     const routedAt = new Date(NOW.getTime() - 60_000).toISOString();
     const id = await seedConsult({

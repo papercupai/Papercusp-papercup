@@ -103,6 +103,7 @@ import {
   type OwnerRpcClusterLike,
 } from '@papercusp/operator-core/lib/cluster-owner-rpc';
 import nodeCluster from 'node:cluster';
+import { registerBackgroundActivityControl } from '@papercusp/operator-core/lib/device-operator-actions';
 import {
   assertPgReadAllStatsCapabilityAtBoot,
   startSinglePrimaryGuard,
@@ -985,6 +986,7 @@ const clusterHandle = sidecarMode ? null : startCluster({
       // no call can ever stamp both — measured live as intent_event_id and goal_ref
       // never co-occurring, which red the fleet gate via lint:plane-ratchet.
       // ALWAYS-ON when true-clustered: a correctness fix, like the cache above.
+      registerBackgroundActivityControl();
       if (clusterWorkers > 1) {
         startWorkerStampPublisher();
         startWorkerStampReceiver();
@@ -1092,6 +1094,7 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
   const ownerRpcRelay = startPrimaryOwnerRpcRelay({
     cluster: nodeCluster as unknown as OwnerRpcClusterLike,
   });
+  registerBackgroundActivityControl();
   const shutdown = (sig: 'SIGTERM' | 'SIGINT'): void => {
     // P-005: the true-cluster PRIMARY is the process that runs the auto-implement
     // dispatch loop (it owns the background machinery). It serves no HTTP, so it

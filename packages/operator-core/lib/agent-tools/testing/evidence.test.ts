@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +10,7 @@ import {
   finishTestEvidence,
   recoverTestEvidence,
   recoverTestEvidenceSchema,
+  remeasureTestEvidenceSchema,
   retractRefusedTestEvidence,
   testEvidenceOutcome,
   testEvidenceSchema,
@@ -73,6 +75,16 @@ const detachedRunSnapshot = (runId: string, status: RunSnapshot['status'], exitC
 });
 
 describe('test-time evidence continuity', () => {
+  it('registers evidence schemas without entering the plan runtime before initialization', () => {
+    for (const schema of [testEvidenceSchema, recoverTestEvidenceSchema, remeasureTestEvidenceSchema]) {
+      expect(z.toJSONSchema(schema)).toMatchObject({ type: 'object' });
+    }
+    expect(testEvidenceSchema.safeParse(request).success).toBe(true);
+    expect(testEvidenceSchema.safeParse({
+      ...request, bindings: [{ ...binding, sourcePaths: ['../outside.ts'] }],
+    }).success).toBe(false);
+  });
+
   it.each([false, true])('keeps an observed unit run from settling a claimed integration binding (recovery=%s)', async (recovery) => {
     const d = deps();
     d.ledger.mockResolvedValue([{ id: 42, file_path: binding.testPath, status: 'pass',

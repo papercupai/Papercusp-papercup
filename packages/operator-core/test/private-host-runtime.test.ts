@@ -11,13 +11,42 @@ import * as ts from 'typescript';
 import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 import { readProcessIdentity } from '../lib/process-identity';
+import { hashNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
-afterEach(() => {
+function cleanupPrivateHostTestDirectories(directories: string[], failed: boolean) {
+  if (failed) {
+    console.error(`[private-host-runtime] retained failure evidence: ${JSON.stringify(directories)}`);
+    return;
+  }
+  for (const dir of directories) rmSync(dir, { recursive: true, force: true });
+}
+
+afterEach(({ task }) => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  cleanupPrivateHostTestDirectories(dirs.splice(0), task.result?.state === 'fail');
+});
+
+it.each([false, true])('preserves private-host failure evidence and cleans successful fixtures (failed=%s)', failed => {
+  const root = mkdtempSync(join(tmpdir(), 'private-builder-cleanup-')); dirs.push(root);
+  const journal = join(root, 'hono-host.mjs.build-steps.jsonl');
+  const original = '{"step":"compile","event":"start"}\n';
+  writeFileSync(journal, original);
+  const report = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    cleanupPrivateHostTestDirectories([root], failed);
+    if (failed) {
+      expect(readFileSync(journal, 'utf8')).toBe(original);
+      expect(report).toHaveBeenCalledWith(expect.stringContaining(JSON.stringify([root])));
+    } else {
+      expect(existsSync(root)).toBe(false);
+      expect(report).not.toHaveBeenCalled();
+    }
+  } finally {
+    report.mockRestore();
+  }
 });
 
 
@@ -154,13 +183,98 @@ it.skipIf(process.platform !== 'linux')('runs the private artifact census in pla
   expect(own.filter(row => ['module-load-error', 'module-load-limit', 'module-load-unavailable'].includes(row.event))).toEqual([]);
 });
 
+it('observes a real private Node host through an explicitly fresh trace after removing inherited test preloads', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-host-selected-trace-'));
+  dirs.push(root);
+  const bundle = join(root, 'host.mjs'), traceOut = join(root, 'host-source.json');
+  const source = 'console.log(JSON.stringify({ pid: process.pid, argv: process.argv }));';
+  writeFileSync(bundle, source);
+  const inherited = { ...process.env, NODE_OPTIONS: '--import tsx',
+    PC_EXECUTED_SOURCE_MAP_OUT: join(root, 'inherited.json') };
+  const env = privateBundleRuntimeEnv(inherited, { traceOut });
+  expect(env.NODE_OPTIONS).not.toContain('tsx');
+  expect(inherited.NODE_OPTIONS).toBe('--import tsx');
+  const startedAtMs = Date.now();
+  const child = JSON.parse(execFileSync(process.execPath, [bundle], { cwd: root, env,
+    encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024 }));
+  const trace = readNativeProcessTraceArtifacts(traceOut, startedAtMs, Date.now());
+  expect(trace.population.complete).toBe(true);
+  expect(existsSync(inherited.PC_EXECUTED_SOURCE_MAP_OUT + '.native-processes')).toBe(false);
+  const own = trace.rows.map(({ row }) => row).filter(row => row.pid === child.pid);
+  expect(own.filter(row => row.event === 'node-entry')).toEqual([expect.objectContaining({ cwd: root,
+    argv: child.argv, reporterOut: traceOut, executable: process.execPath })]);
+  expect(new Set(own.map(row => row.processIdentity)).size).toBe(1);
+  expect(own.find(row => row.event === 'node-exit')).toMatchObject({ code: 0, exitListenersComplete: true });
+  expect(own.filter(row => row.event === 'module-load-return')).toEqual([expect.objectContaining({
+    url: pathToFileURL(bundle).href, source: expect.objectContaining({ status: 'hashed',
+      scope: 'node-loader-returned-source', sha256: createHash('sha256').update(source).digest('hex') }),
+  })]);
+  expect(() => privateBundleRuntimeEnv(inherited, { traceOut })).toThrow('fresh channel');
+  expect(() => privateBundleRuntimeEnv(inherited, { traceOut: 'relative.json' })).toThrow('absolute channel');
+  const occupied = join(root, 'occupied.json');
+  writeFileSync(occupied, 'existing evidence');
+  expect(() => privateBundleRuntimeEnv(inherited, { traceOut: occupied })).toThrow('fresh channel');
+});
+
+it.each(['matched', 'wrong-digest', 'wrong-size', 'unrelated'] as const)(
+  'streams only independently admitted large loader bytes (%s)', control => {
+    const root = mkdtempSync(join(tmpdir(), 'private-large-loader-')); dirs.push(root);
+    const bundle = join(root, 'host.mjs'), traceOut = join(root, 'source.json');
+    // A surrogate pair crosses the producer chunk boundary. Its UTF-8 bytes
+    // must remain identical to the loader return, including in retained data.
+    const source = '/*' + ' '.repeat(16 * 1024 - 3) + '😀' + ' '.repeat(16 * 1024 ** 2)
+      + '*/console.log("loaded");';
+    const byteLength = Buffer.byteLength(source), sha256 = createHash('sha256').update(source).digest('hex');
+    writeFileSync(bundle, source);
+    const env = privateBundleRuntimeEnv(process.env, { traceOut, pinnedSources: [{
+      path: control === 'unrelated' ? join(root, 'different.mjs') : bundle,
+      sha256: control === 'wrong-digest' ? '0'.repeat(64) : sha256,
+      byteLength: control === 'wrong-size' ? byteLength - 1 : byteLength,
+    }] });
+    const started = Date.now();
+    expect(execFileSync(process.execPath, [bundle], { cwd: root, env, encoding: 'utf8', timeout: 15_000 })).toBe('loaded\n');
+    const trace = readNativeProcessTraceArtifacts(traceOut, started, Date.now());
+    expect(trace.population.complete).toBe(true);
+    const retained = trace.rows.find(({ row }) => row.event === 'module-load-return')!.row.source;
+    if (control === 'matched') {
+      expect(retained).toMatchObject({ status: 'hashed', sha256, byteLength,
+        admission: 'independently-pinned-large-source-v1' });
+      let bytesRead = 0;
+      expect(hashNativeArtifactBytes(join(trace.sourceRoot, retained.ref), byteLength, byteLength,
+        count => { bytesRead += count; })).toBe(sha256);
+      expect(bytesRead).toBe(byteLength);
+      expect(() => hashNativeArtifactBytes(join(trace.sourceRoot, retained.ref), byteLength, byteLength - 1))
+        .toThrow('native artifact byte limit');
+    } else {
+      expect(retained.status).toBe(control === 'unrelated' ? 'limit' : 'unavailable');
+      expect(retained.ref).toBeUndefined();
+      expect(readdirSync(trace.sourceRoot).filter(name => name.endsWith('.source'))).toEqual([]);
+    }
+  });
+
+it('refuses malformed or unbounded source admissions before allocating the host trace', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-source-admission-')); dirs.push(root);
+  const traceOut = join(root, 'source.json');
+  const pin = { path: join(root, 'host.mjs'), sha256: 'a'.repeat(64), byteLength: 81_830_447 };
+  for (const pins of [[{ ...pin, byteLength: 128 * 1024 ** 2 + 1 }],
+    [pin, pin], [pin, { ...pin, path: join(root, 'b') }, { ...pin, path: join(root, 'c') },
+      { ...pin, path: join(root, 'd') }], [{ ...pin, path: 'relative.mjs' }],
+    [{ ...pin, sha256: 'invalid' }]]) {
+    expect(() => privateBundleRuntimeEnv(process.env, { traceOut, pinnedSources: pins }))
+      .toThrow('Invalid bounded native loader source pins');
+    expect(existsSync(traceOut + '.native-processes')).toBe(false);
+  }
+});
+
 it('retains teardown signal evidence on a forced-exit timeout and removes its listeners', async () => {
   vi.useFakeTimers();
   const directory = mkdtempSync(join(tmpdir(), 'private-stop-evidence-'));
   dirs.push(directory);
   const trace = join(directory, 'host-stop.jsonl');
+  // Synthetic event emitters have no kernel process. A made-up PID can belong
+  // to a real host process and make teardown inspect unrelated descendants.
   const child = Object.assign(new EventEmitter(), {
-    pid: 12345, exitCode: null, signalCode: null, stdout: null, stderr: null,
+    pid: undefined, exitCode: null, signalCode: null, stdout: null, stderr: null,
     kill: vi.fn(() => false),
   }) as unknown as import('node:child_process').ChildProcess;
   const observations: unknown[] = [];
@@ -170,7 +284,7 @@ it('retains teardown signal evidence on a forced-exit timeout and removes its li
   });
   const rejected = expect(stopped).rejects.toMatchObject({
     message: 'Private host forced exit did not settle',
-    privateHostStop: { pid: 12345, phase: 'forced exit', sigtermAccepted: false,
+    privateHostStop: { pid: null, phase: 'forced exit', sigtermAccepted: false,
       sigkillAccepted: false, exitObserved: false, closeObserved: false },
   });
   await Promise.all([rejected, vi.advanceTimersByTimeAsync(21)]);
@@ -387,7 +501,7 @@ it.skipIf(process.platform !== 'linux')('distinguishes a real stopped child and 
 it('waits for delayed exit before cleanup and separately waits for pipe closure', async () => {
   vi.useFakeTimers();
   const child = Object.assign(new EventEmitter(), {
-    pid: 12345, exitCode: null as number | null, signalCode: null,
+    pid: undefined, exitCode: null as number | null, signalCode: null,
     stdout: { destroyed: false, readableEnded: false }, stderr: null,
     kill: vi.fn(() => true),
   });
@@ -412,7 +526,7 @@ it('waits for delayed exit before cleanup and separately waits for pipe closure'
 it('retains a stdio timeout after process exit and safely stops an already closed host again', async () => {
   vi.useFakeTimers();
   const child = Object.assign(new EventEmitter(), {
-    pid: 12345, exitCode: 0, signalCode: null,
+    pid: undefined, exitCode: 0, signalCode: null,
     stdout: { destroyed: false, readableEnded: false }, stderr: null,
     kill: vi.fn(() => true),
   });
@@ -432,7 +546,7 @@ it('retains a stdio timeout after process exit and safely stops an already close
 it('retains a signal exception without running dependent cleanup', async () => {
   const denied = Object.assign(new Error('signal denied'), { code: 'EPERM' });
   const child = Object.assign(new EventEmitter(), {
-    pid: 12345, exitCode: null, signalCode: null, stdout: null, stderr: null,
+    pid: undefined, exitCode: null, signalCode: null, stdout: null, stderr: null,
     kill: vi.fn(() => { throw denied; }),
   });
   const cleanup = vi.fn();
@@ -1028,7 +1142,7 @@ it('hands a verified Git clone to the real source guard without its donor archiv
     stderr: 'bundle-host.sh: pinned source receipt requires its archive marker\n' });
   const environment = privateGitCloneBundleEnv(root, selectedCommit, env);
   expect(environment).toEqual({ NODE_OPTIONS: env.NODE_OPTIONS, OTHER: 'keep' });
-  expect(run(environment)).toMatchObject({ status: 0, stdout: git(['rev-parse', '--short', 'HEAD']) + '\n' });
+  expect(run(environment)).toMatchObject({ status: 0, stdout: git(['rev-parse', '--short', 'HEAD']) });
   expect(env.VERIFY_TAURI_SOURCE_RECEIPT).toBe('/donor/source.json');
   expect(() => privateGitCloneBundleEnv(root, '0'.repeat(40), env)).toThrow('differs from the selected commit');
   mkdirSync(join(root, 'nested'));

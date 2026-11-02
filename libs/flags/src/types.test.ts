@@ -63,6 +63,9 @@ describe('flag registry invariants', () => {
     expect(FLAG_DEFAULTS[FLAGS.OPEN_SIGNUP]).toBe(false);
     expect(FLAG_DEFAULTS[FLAGS.TUTORIAL_VOICE_ISSUANCE]).toBe(false);
     expect(DARK_FLAGS.get(FLAGS.TUTORIAL_VOICE_ISSUANCE)?.case).toBe('owner-authority');
+    expect(FLAG_DEFAULTS[FLAGS.PLUGIN_INVOCATION_POLICY]).toBe(false);
+    expect(DARK_FLAGS.get(FLAGS.PLUGIN_INVOCATION_POLICY)?.case).toBe('owner-authority');
+    expect(DARK_FLAGS.get(FLAGS.PLUGIN_INVOCATION_POLICY)?.reason).toContain('P-019');
   });
 
   it('endpoint authorization tiers stay ON by default', () => {

@@ -100,6 +100,58 @@ describe("vm-release boot ordering (D-043 / P-050)", () => {
   });
 });
 
+describe("native startup history provenance", () => {
+  it.each(['manual', 'login', 'boot', 'supervisor', 'upgrade', 'repair', 'unknown'])("accepts the bounded %s marker", trigger => {
+    expect(serve.nativeStartupTrigger(['--ensure', `--startup-trigger=${trigger}`])).toBe(trigger);
+  });
+
+  it.each([
+    [], ['--startup-trigger=secret /private/path'], ['--startup-trigger='],
+    ['--startup-trigger=manual', '--startup-trigger=supervisor'],
+    ['--startup-trigger=manual', '--startup-trigger=manual'], ['--startup-trigger', 'manual'],
+  ].map(argv => ({ argv })))("keeps missing or ambiguous provenance unknown: $argv", ({ argv }) => {
+    expect(serve.nativeStartupTrigger(argv)).toBe('unknown');
+  });
+
+  it("records only in the local backend's actual-listen callback after singleton reuse", () => {
+    const main = serveSrc.slice(serveSrc.indexOf('async function main():'));
+    const listen = main.indexOf('server = serve(');
+    const write = main.indexOf('await recordNativeListeningStart(nativeStartupTrigger(argv), listenedAt, {');
+    expect(main.indexOf('if (ensure) {')).toBeLessThan(listen);
+    expect(write).toBeGreaterThan(listen);
+    expect(main.slice(listen, write)).toContain('if (!hostedControlPlane && !REQUEST_ONLY_SIDECAR)');
+    expect(main.slice(write, write + 600)).toContain('native startup history unavailable');
+    expect(main).toContain('await waitForBootMigrationGate()');
+    expect(main).toContain('await awaitMigrationsAppliedForRequestGate({ timeoutMs: Number.POSITIVE_INFINITY })');
+  });
+
+  it('retains the actual listen time across a delayed migration without writing early', async () => {
+    let ready!: () => void;
+    const migrations = new Promise<void>(resolve => { ready = resolve; });
+    const recordStart = vi.fn(async () => {});
+    const at = '2026-10-31T12:00:00.000Z';
+    const pending = serve.recordNativeListeningStart('login', at, {
+      waitForMigrations: () => migrations, recordStart,
+    });
+    try {
+      await Promise.resolve();
+      expect(recordStart).not.toHaveBeenCalled();
+      ready();
+      await pending;
+      expect(recordStart).toHaveBeenCalledExactlyOnceWith('login', at);
+    } finally { ready(); await pending; }
+  });
+
+  it('does not attempt audit persistence when migration readiness fails', async () => {
+    const recordStart = vi.fn(async () => {});
+    const failure = new Error('migration withheld');
+    await expect(serve.recordNativeListeningStart('boot', '2026-10-31T12:00:00.000Z', {
+      waitForMigrations: async () => { throw failure; }, recordStart,
+    })).rejects.toBe(failure);
+    expect(recordStart).not.toHaveBeenCalled();
+  });
+});
+
 describe("embedded PG host credential continuity (EI-25943879774522083)", () => {
   const credentialsFile = () => join(pcDir(), "embedded-pg-credentials.json");
 

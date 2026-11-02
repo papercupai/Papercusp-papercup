@@ -138,7 +138,12 @@ TimeoutStopSec=10
 CPUQuota=800%
 CPUWeight=1500
 MemoryAccounting=yes
-MemoryHigh=8G
+# EI-27697305155283725: the supported CPU fallback with both embedding models
+# resident measured ~8.3 GiB. An 8 GiB soft limit trapped live inference in
+# __mem_cgroup_handle_over_high reclaim (swap is disabled), despite the 12 GiB
+# hard budget. Raising only the soft threshold to 10 GiB stopped reclaim and
+# restored uncached inference on the same process; retain the hard budget below.
+MemoryHigh=10G
 MemoryMax=12G
 MemorySwapMax=0
 # Treat a cgroup memory-limit event as one failed sidecar instance so

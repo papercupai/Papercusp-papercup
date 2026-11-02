@@ -2256,6 +2256,10 @@ export function planAcceptanceRepairAction(
   };
   const instruction = verdict.message ?? 'Read the current scoped acceptance gate before choosing a repair.';
   if (verdict.satisfied) {
+    if (verdict.skipped === 'rubric-template-plan') return {
+      kind: 'diagnostic', nextVerb: null,
+      instruction: 'This is a standing rubric, exempt from grading itself. Keep it active while it is used for measurement; shipped retires the rubric. Retire it only when its measurement role has ended.',
+    };
     return verdict.skipped === 'already-shipped'
       ? { kind: 'terminal', nextVerb: null, instruction: 'Already shipped; do not reopen acceptance.' }
       : {

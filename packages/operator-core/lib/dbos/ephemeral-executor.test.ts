@@ -5,7 +5,19 @@
  * ephemeral routine (category 'ephemeral-harness'), the floor clamp, fire→liveness recording
  * (incl. the error path), event-driven sync/unarm, and disarm.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+const productionPolicy = vi.hoisted(() => ({
+  allowed: vi.fn(async () => true),
+  observed: vi.fn(async (_scope: unknown, invoke: () => Promise<unknown>) => invoke()),
+}));
+vi.mock('../device-operator-actions', async original => ({
+  ...await original<typeof import('../device-operator-actions')>(),
+  routineBackgroundActivityAllowed: productionPolicy.allowed,
+}));
+vi.mock('../startup-activity', async original => ({
+  ...await original<typeof import('../startup-activity')>(),
+  runObservedBackgroundActivity: productionPolicy.observed,
+}));
 import {
   configureScheduledRegistry,
   resetScheduledRegistry,
@@ -20,6 +32,7 @@ import {
   refreshEphemeralExecutor,
   syncEphemeralRoutine,
   unarmEphemeralRoutine,
+  productionEphemeralExecutorDeps,
   type EphemeralExecutorDeps,
   type EphemeralRoutineSpec,
 } from './ephemeral-executor';
@@ -55,6 +68,25 @@ function installFakeRegistry(): void {
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 describe('execution policy at an armed ephemeral timer', () => {
+  it('rechecks after production action resolution, observes only an invoked action and preserves its result', async () => {
+    productionPolicy.allowed.mockReset().mockResolvedValue(true);
+    productionPolicy.observed.mockClear();
+    const action = vi.fn(async () => ({ diagnostics: { invoked: true } }));
+    registerSystemAction('ephemeral-history-test', action, { scheduling: 'on-demand' });
+    const routine = spec({ targetRole: 'system:ephemeral-history-test' });
+    const deps = productionEphemeralExecutorDeps();
+    productionPolicy.allowed.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await expect(deps.fire(routine)).resolves.toEqual({ diagnostics: { backgroundActivityWithheld: true } });
+    expect(action).not.toHaveBeenCalled();
+    expect(productionPolicy.observed).not.toHaveBeenCalled();
+    await expect(deps.fire(routine)).resolves.toEqual({ diagnostics: { invoked: true } });
+    expect(action).toHaveBeenCalledOnce();
+    expect(productionPolicy.observed).toHaveBeenCalledWith({ workspaceId: routine.workspaceId,
+      featureId: startupActivityFeatureId({ source: 'routines', installSlug: routine.installSlug, name: routine.name, detail: {} }, { workspaceId: routine.workspaceId }),
+      source: 'routine', trigger: 'timer',
+    }, expect.any(Function));
+  });
+
   it('binds the managed timer to the routine inventory identity in its own workspace', async () => {
     installFakeRegistry();
     const item = spec();

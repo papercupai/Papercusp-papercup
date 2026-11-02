@@ -28,12 +28,9 @@ export interface BusyJson {
   holder_intent?: string;
   /** True when the holder declared THIS path among their current_files. */
   holder_focused?: boolean;
-  /** EI-10433: true when the lock's OWN stated intent and the holder's CURRENT
-   *  declared coord intent are on clearly different threads AND the holder is
-   *  not focused on this path — i.e. the holder acquired this lock for one task,
-   *  has since declared they moved to another, and never released it. A blocked
-   *  peer reads this as "likely orphaned, not actively contended" so it needn't
-   *  cross-reference coord:presence by hand or wait out the full TTL. */
+  /** EI-10433: true when the holder declared a clearly different coord intent
+   *  AFTER acquiring this lock and is not focused on this path. Missing or
+   *  malformed timestamps fail closed: a stale declaration cannot prove a move. */
   holder_intent_diverged?: boolean;
   /**
    * P-026 / D-055 A1 — the holder's GOAL and ASSUMPTIONS, in the one shape every
@@ -102,6 +99,16 @@ export function intentsDiverged(lockIntent: string, holderIntent: string): boole
   return true;
 }
 
+function intentDeclaredAfterLockAcquisition(
+  intentDeclaredAt: string | null | undefined,
+  acquiredAt: Date | undefined,
+): boolean {
+  if (!intentDeclaredAt || !acquiredAt) return false;
+  const declaredAtMs = Date.parse(intentDeclaredAt);
+  const acquiredAtMs = acquiredAt.getTime();
+  return Number.isFinite(declaredAtMs) && Number.isFinite(acquiredAtMs) && declaredAtMs > acquiredAtMs;
+}
+
 /**
  * Enrich busy rows with the holder's declared coord intent (presence) and, when
  * the blocked caller is identified, their P-026 {@link HolderContext}.
@@ -159,12 +166,14 @@ export async function enrichBusy(
     // orphaned". Both directions are silent. The signal only means anything while it is
     // what the holder SAID they are on, independent of what they hold.
     if (p?.currentFiles?.includes(b.path)) json.holder_focused = true;
-    // EI-10433: flag a likely-orphaned lock — the holder's CURRENT declared
-    // intent has moved off the lock's OWN stated intent and they aren't focused
-    // on this path, so it's stale rather than actively contended.
+    // EI-10433: flag a likely-orphaned lock only when the holder declared their
+    // divergent intent AFTER this lock was acquired and they are not focused on
+    // this path. An older broad intent says nothing about whether this lock is
+    // still active work; unknown acquisition times therefore suppress the hint.
     if (
       json.holder_intent &&
       json.holder_focused !== true &&
+      intentDeclaredAfterLockAcquisition(p?.intentDeclaredAt, b.acquired_ts) &&
       intentsDiverged(b.intent, json.holder_intent)
     ) {
       json.holder_intent_diverged = true;

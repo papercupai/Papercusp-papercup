@@ -3211,6 +3211,12 @@ describe('deferred scratch quota recovery', () => {
 
   it('bounds a scratch quota write when filesystem mutex admission stalls', async () => {
     const workspaceId = 'ws-Q';
+    // Production quota admission pins its filesystem mutex under XDG_RUNTIME_DIR. Keep the
+    // holder on that same sandboxed root; the fixture's generic lock override alone would
+    // otherwise leave the holder and writer on different roots when XDG_RUNTIME_DIR is set.
+    const runtimeDir = join(sandbox, 'runtime');
+    process.env.XDG_RUNTIME_DIR = runtimeDir;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(runtimeDir, 'papercusp', 'fs-mutex-locks');
     const stateRoot = resolveScratchQuotaStateRoot();
     rmSync(stateRoot, { recursive: true, force: true });
     const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));

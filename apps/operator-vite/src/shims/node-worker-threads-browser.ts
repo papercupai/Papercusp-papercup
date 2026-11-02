@@ -38,6 +38,7 @@ export const parentPort = null;
 export const workerData = undefined;
 export const isMainThread = true;
 export const threadId = 0;
+export const resourceLimits = Object.freeze({});
 // packages/operator-core/lib/release/admission-offthread.ts passes it as a Worker env.
 export const SHARE_ENV = Symbol.for('nodejs.worker_threads.SHARE_ENV');
 export default new Proxy({}, trap) as never;

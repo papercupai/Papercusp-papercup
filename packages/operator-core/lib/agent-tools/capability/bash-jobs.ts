@@ -20,6 +20,7 @@
  * holds its shell in the CLI process.
  */
 
+import { createHash, randomBytes } from 'node:crypto';
 import { execFile, spawn as childSpawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream, mkdirSync, readdirSync, readFileSync, type WriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -36,9 +37,14 @@ import { resolveAgentMcpBaseUrl, resolveSpawnHostOperatorBaseUrl } from '../../m
 import {
   composeStreamingRedactors,
   createStreamingPatternRedactor,
+  SYSTEMD_RUNNER_BASH_JOB_ID_ENV,
+  SYSTEMD_RUNNER_MARKER_SECRET_ENV,
   SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
   SYSTEMD_RUNNER_REDACTIONS_ENV,
+  SYSTEMD_RUNNER_SCOPE_UNIT_ENV,
+  SYSTEMD_RUNNER_TASK_ID_ENV,
 } from '../../systemd-scope-env-runner.mjs';
+import { readJobLogTerminal, type JobLogTerminalIdentity } from '../../task-manager/job-log-terminal';
 import { redactSelfIdentifyingSecrets, SELF_IDENTIFYING_SECRET_PATTERN } from '../../sensitive-text';
 import {
   absCgroupDir,
@@ -921,14 +927,49 @@ function appendOutput(job: BashJob, chunk: string): void {
 export const JOB_LOG_END_MARKER_PREFIX = '[capability:bash] JOB END';
 export const JOB_LOG_DIED_MARKER_PREFIX = '[capability:bash] JOB DIED';
 
-export function formatJobLogEndMarker(status: BashStatus, exitCode: number | null, endedAtMs: number): string {
+export function formatJobLogEndMarker(
+  status: BashStatus,
+  exitCode: number | null,
+  endedAtMs: number,
+  identity?: JobLogTerminalIdentity,
+): string {
+  const identityFields = identity
+    ? ` task=${identity.taskId} bash=${identity.bashJobId} scope=${identity.scopeUnit}` +
+      ` invocation=${identity.invocationId} nonce=${identity.nonce}`
+    : '';
   return (
     `\n${JOB_LOG_END_MARKER_PREFIX}: status=${status} exit=${exitCode ?? 'null'} at ${new Date(endedAtMs).toISOString()}` +
+    identityFields +
     ' — this line marks the job reaching an OBSERVED terminal state; if it is ABSENT, no terminal marker has ' +
     'been durably recorded yet: the job may still be running, or it may have died before its close handler wrote ' +
     'JOB END. Check capability:bash_output/task ledger; recovery writes JOB DIED after a ledger-confirmed ' +
     'unobserved death.\n'
   );
+}
+
+/** Preserve a runner identity on the host's later normalized marker only when
+ *  every durable job pin and the runner-only nonce hash match this BashJob. */
+function runnerIdentityForNormalizedMarker(
+  job: BashJob,
+  expectedNonceHash: string | null,
+): JobLogTerminalIdentity | undefined {
+  if (!expectedNonceHash || !job.taskId || !job.scopeUnit) return undefined;
+  const marker = readJobLogTerminal(job.logPath);
+  if (
+    !marker ||
+    marker.taskId !== job.taskId ||
+    marker.bashJobId !== job.id ||
+    marker.scopeUnit !== job.scopeUnit ||
+    !marker.invocationId ||
+    marker.nonce !== expectedNonceHash
+  ) return undefined;
+  return {
+    taskId: marker.taskId,
+    bashJobId: marker.bashJobId,
+    scopeUnit: marker.scopeUnit,
+    invocationId: marker.invocationId,
+    nonce: marker.nonce,
+  };
 }
 
 /**
@@ -2727,6 +2768,11 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   }
   const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'bash-job');
   const runnerOwnsLog = enrolment.confined && enrolment.unitKind === 'service';
+  const runnerMarkerIdentityEnabled = runnerOwnsLog && Boolean(enrolment.scopeUnit);
+  const runnerMarkerSecret = runnerMarkerIdentityEnabled ? randomBytes(32).toString('hex') : null;
+  const runnerMarkerNonceHash = runnerMarkerSecret
+    ? createHash('sha256').update(runnerMarkerSecret).digest('hex')
+    : null;
 
   // Physical drills are long-running and must survive the interactive caller.
   // Force the marker AFTER caller-provided env so a native PTY or a forged
@@ -2739,6 +2785,10 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // workload must not see even empty internal control fields.
   delete childEnv[SYSTEMD_RUNNER_OUTPUT_PATH_ENV];
   delete childEnv[SYSTEMD_RUNNER_REDACTIONS_ENV];
+  delete childEnv[SYSTEMD_RUNNER_TASK_ID_ENV];
+  delete childEnv[SYSTEMD_RUNNER_BASH_JOB_ID_ENV];
+  delete childEnv[SYSTEMD_RUNNER_SCOPE_UNIT_ENV];
+  delete childEnv[SYSTEMD_RUNNER_MARKER_SECRET_ENV];
   Object.assign(childEnv, {
     [CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV]: enrolment.enrolled ? enrolment.taskId : '',
     // EI-21434250273517260: the systemd-enrolled task is intentionally durable
@@ -2762,6 +2812,12 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     ).toString(
       'base64',
     );
+    if (runnerMarkerSecret && enrolment.scopeUnit) {
+      childEnv[SYSTEMD_RUNNER_TASK_ID_ENV] = enrolment.taskId;
+      childEnv[SYSTEMD_RUNNER_BASH_JOB_ID_ENV] = id;
+      childEnv[SYSTEMD_RUNNER_SCOPE_UNIT_ENV] = enrolment.scopeUnit;
+      childEnv[SYSTEMD_RUNNER_MARKER_SECRET_ENV] = runnerMarkerSecret;
+    }
   }
 
   // EI-16635 / P-002: startBackground jobs are durable whether the caller asks
@@ -3000,6 +3056,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       logPath,
       detail: {
         bashJobId: id,
+        ...(runnerMarkerNonceHash ? { runnerMarkerNonceHash } : {}),
         ...(opts.dispatchCallId ? { dispatchCallId: opts.dispatchCallId } : {}),
         sandboxed: Boolean(opts.sandboxEnabled),
         goalRef: opts.goalRef ?? null,
@@ -3048,7 +3105,12 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     // EI-18764990059061608: see formatJobLogEndMarker's doc — this is what lets a
     // raw `cat`/Read of `logPath` (bypassing bash_output's own `status` field)
     // tell "finished" from "nothing written yet" without a second call.
-    const terminalMarker = formatJobLogEndMarker(job.status, job.exitCode, job.endedAt);
+    const terminalMarker = formatJobLogEndMarker(
+      job.status,
+      job.exitCode,
+      job.endedAt,
+      runnerIdentityForNormalizedMarker(job, runnerMarkerNonceHash),
+    );
     // The terminal marker is durable LOG metadata, not command output. Keeping
     // it out of the retained buffer preserves the ordinary-call result exactly
     // as command stdout+stderr while capability:bash_output reports terminal
@@ -3116,7 +3178,12 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     appendPhaseTiming();
     appendPreflightSnapshot();
     // EI-18764990059061608: see formatJobLogEndMarker's doc.
-    const terminalMarker = formatJobLogEndMarker(job.status, job.exitCode, job.endedAt);
+    const terminalMarker = formatJobLogEndMarker(
+      job.status,
+      job.exitCode,
+      job.endedAt,
+      runnerIdentityForNormalizedMarker(job, runnerMarkerNonceHash),
+    );
     try {
       job.logStream?.write(terminalMarker);
     } catch {

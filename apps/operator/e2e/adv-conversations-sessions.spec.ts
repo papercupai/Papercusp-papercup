@@ -375,8 +375,9 @@ test.describe('/adv Conversations + Sessions e2e', () => {
 
     const chat = page.getByTestId('session-chat-modal');
     await expect(chat).toBeVisible({ timeout: 30_000 });
-    await expect(chat.getByText(ordinaryOwnerTurn, { exact: true })).toBeVisible();
-    await expect(chat.getByText(ownerQuote, { exact: true })).toBeVisible();
+    const conversation = chat.getByTestId('session-chat-conversation');
+    await expect(conversation.getByText(ordinaryOwnerTurn, { exact: true })).toBeVisible();
+    await expect(conversation.getByText(ownerQuote, { exact: true })).toBeVisible();
     await expect(chat.getByText('The ordinary owner request remains in the conversation.', { exact: true })).toBeVisible();
     await expect(chat.getByText('The quoted peer diagnostic remains available for discussion.', { exact: true })).toBeVisible();
     await expect(chat.getByText(peerDiagnostic, { exact: true })).toHaveCount(0);

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
-import type { RunAgentInput } from './run-topology';
+import type { AgentRunOutput, RunAgentInput } from './run-topology';
 import type { FrontierSweEnvHandle } from './frontier-swe-seam';
 import type { BenchTask } from './types';
 import { resolveCoordinationSpec } from './coordination-topology';
@@ -15,7 +15,7 @@ function fixture() {
   const backlog: BenchTask[] = ['t1', 't2'].map(instanceId => ({ benchmark: 'frontier-swe', instanceId,
     problemStatement: 'Solve the task', graderMeta: {} }));
   let clock = 0;
-  const runAgent = vi.fn(async (_input: RunAgentInput<FrontierSweEnvHandle>) => ({
+  const runAgent = vi.fn(async (_input: RunAgentInput<FrontierSweEnvHandle>): Promise<AgentRunOutput> => ({
     submission: {}, status: 'completed' as const, modelCalls: 1, tokensIn: 10, tokensOut: 10, costUsd: 3, turns: 1,
     executionPath: 'modernization-launch-adapter' }));
   const stop = vi.fn(async () => ({ errors: [] as string[] }));
@@ -61,6 +61,22 @@ describe('current FrontierSWE per-assignment protocol execution', () => {
     expect(f.runAgent).toHaveBeenCalledOnce(); expect(result.skippedTaskIds).toEqual(['t2']);
     expect(f.stop).toHaveBeenCalledOnce();
   });
+  it.each(['costUsdMeasurementMissing', 'modelCallsMeasurementMissing', 'tokenUsageMeasurementMissing'])(
+    'does not reset the unknown %s fence between independently capped tasks', async missing => {
+      const f = fixture();
+      f.runAgent.mockResolvedValueOnce({ submission: {}, status: 'completed', modelCalls: 1,
+        tokensIn: 10, tokensOut: 10, costUsd: 0.1, turns: 1, armMeta: { [missing]: true } });
+      const result = await runFrontierSweCurrentArm(f.deps);
+      expect(f.runAgent).toHaveBeenCalledOnce();
+      expect(result.accountingUnknown).toBe(true);
+      expect(result.costUsdSpent).toBe(0.1);
+      expect(result.attemptedTaskIds).toEqual(['t1']);
+      expect(result.skippedTaskIds).toEqual(['t2']);
+      expect(result.rows[0]).toMatchObject({ generationStatus: 'error', resolved: null,
+        armMeta: { [missing]: true } });
+      expect(f.grade).not.toHaveBeenCalled(); expect(f.teardown).toHaveBeenCalledOnce();
+      expect(f.stop).toHaveBeenCalledOnce();
+    });
   it('allocates no services when loading the controlled task roster fails', async () => {
     const f = fixture(); f.deps.backlog = undefined; io.load.mockImplementationOnce(() => { throw new Error('controls missing'); });
     await expect(runFrontierSweCurrentArm(f.deps)).rejects.toThrow('controls missing');

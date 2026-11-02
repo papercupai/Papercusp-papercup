@@ -15,14 +15,30 @@ export type PlanAcceptanceRefInspection =
 
 /**
  * Interpret the structured plan-revision reference form while preserving the
- * older free-form acceptance references (for example decision IDs and BAR refs).
+ * older free-form acceptance references (for example plan decision URIs,
+ * decision IDs, and BAR refs).
  */
+const LEGACY_PLAN_DECISION_REF_RE = /^plan:\/\/([^/\s#]+)\/([^/\s#]+)#D-\d{3,}$/;
+
 export function inspectPlanAcceptanceRef(
   value: string | null | undefined,
   expectedPlanItemId: string,
+  expectedHarnessSlug?: string,
 ): PlanAcceptanceRefInspection {
   const ref = value?.trim();
   if (!ref?.startsWith('plan:')) return { kind: 'unstructured' };
+
+  const legacyDecisionRef = LEGACY_PLAN_DECISION_REF_RE.exec(ref);
+  if (legacyDecisionRef) {
+    if (expectedHarnessSlug && legacyDecisionRef[1] !== expectedHarnessSlug) {
+      return {
+        kind: 'invalid',
+        code: 'plan-acceptance-ref-harness-mismatch',
+        reason: `The legacy plan decision reference belongs to harness ${legacyDecisionRef[1]}, but this clause belongs to ${expectedHarnessSlug}.`,
+      };
+    }
+    return { kind: 'unstructured' };
+  }
 
   const match = /^plan:([^@\s#]+)@(\d+)#(P-\d{3,})$/.exec(ref);
   if (!match) {
@@ -55,8 +71,9 @@ export async function verifyPlanAcceptanceRef(
   value: string | null | undefined,
   expectedPlanItemId: string,
   revisionExists: (planSlug: string, revision: number) => Promise<boolean>,
+  expectedHarnessSlug?: string,
 ): Promise<{ ok: true } | { ok: false; code: string; reason: string }> {
-  const inspected = inspectPlanAcceptanceRef(value, expectedPlanItemId);
+  const inspected = inspectPlanAcceptanceRef(value, expectedPlanItemId, expectedHarnessSlug);
   if (inspected.kind === 'invalid') return { ok: false, code: inspected.code, reason: inspected.reason };
   if (inspected.kind === 'unstructured') return { ok: true };
   if (!(await revisionExists(inspected.planSlug, inspected.revision))) {

@@ -22,7 +22,14 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSession, mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy, type AdvSessionExpectedBinding } from './adv-sessions';
 import { getSessionPort } from './session-port/store';
 import type { SessionBackend, SessionPortContractSummary } from './session-port/types';
-import { findLiveHost, findLiveHostAsync, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
+import {
+  findLiveHost,
+  findLiveHostAsync,
+  injectIntoHost,
+  readHostEventTail,
+  type PsuPtyHost,
+  type PtyHostEvent,
+} from './events/await/psu-pty-discovery';
 import { fetchSelfWake } from './agent-tools/coordination/presence-selfwake';
 import {
   accountFromArgv,
@@ -1389,6 +1396,8 @@ export async function claimAgentLaunch(opts: {
   launchedBy?: string | null;
   /** Stored atomically with a new claim so a replay can verify the request identity. */
   initialSummary?: Record<string, unknown>;
+  /** Keep legacy empty/uncertain claims fenced; only an explicitly unstarted claim can be leased. */
+  preserveAmbiguousClaims?: boolean;
   /** Callers whose duplicate-launch safety depends on this ledger can refuse on write failure. */
   failClosed?: boolean;
   now?: number;
@@ -1418,13 +1427,46 @@ export async function claimAgentLaunch(opts: {
              summary = EXCLUDED.summary
        WHERE existing.launched_at < ${now - AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS}
          AND (
-           existing.summary = '{}'::jsonb
+           (
+             ${opts.preserveAmbiguousClaims !== true}
+             AND existing.summary = '{}'::jsonb
+           )
+           OR (
+             -- The spawning protocol persists a token-CAS attempt BEFORE any
+             -- native spawn. An expired, explicitly empty pre-attempt receipt
+             -- can be replaced atomically: the old token can no longer advance
+             -- or release it. This also repairs the legacy progress write that
+             -- lost its token; that writer's next CAS already fails closed.
+             -- Missing fields are uncertainty, never negative spawn evidence.
+             EXCLUDED.summary ->> 'requestKind' = 'capability:launch-agent'
+             AND EXCLUDED.summary ->> 'launchState' = 'claimed'
+             AND COALESCE(EXCLUDED.summary ->> 'claimToken', '') <> ''
+             AND existing.summary ->> 'requestKind' = 'capability:launch-agent'
+             AND existing.summary ->> 'launchState' = 'spawning'
+             AND existing.summary -> 'spawnAttempted' = 'false'::jsonb
+             AND existing.summary -> 'nativeSpawnAttempted' = '[]'::jsonb
+             AND existing.summary -> 'memberResults' = '{}'::jsonb
+             AND existing.summary -> 'processHandles' = '{}'::jsonb
+             AND existing.summary -> 'tasks' = '[]'::jsonb
+           )
            OR (
              existing.summary -> 'agentStarted' = 'null'::jsonb
              AND existing.launched_at < ${now - AGENT_LAUNCH_UNCONFIRMED_CLAIM_LEASE_MS}
              AND (
                jsonb_typeof(existing.summary -> 'tasks') IS DISTINCT FROM 'array'
                OR jsonb_array_length(existing.summary -> 'tasks') = 0
+             )
+             AND (
+               jsonb_typeof(existing.summary -> 'processHandles') IS DISTINCT FROM 'object'
+               OR existing.summary -> 'processHandles' = '{}'::jsonb
+             )
+             AND (
+               ${opts.preserveAmbiguousClaims !== true}
+               OR (
+                 existing.summary ->> 'requestKind' = 'capability:launch-agent'
+                 AND existing.summary ->> 'launchState' = 'claimed'
+                 AND existing.summary ->> 'spawnAttempted' IS DISTINCT FROM 'true'
+               )
              )
            )
          )
@@ -1454,11 +1496,12 @@ export async function claimAgentLaunch(opts: {
   }
 }
 
-/** Record what the winning launch actually did, so a later replay of the same key
- *  can report it instead of a bare "already launched". Best-effort. */
+/** Record what the winning launch actually did, preserving its ownership token
+ *  across progress writes so later owned writes and cleanup retain their CAS. */
 export async function recordAgentLaunchResult(opts: {
   workspaceId: string;
   idempotencyKey: string | null | undefined;
+  claimToken?: string;
   summary: Record<string, unknown>;
 }): Promise<boolean> {
   const key = opts.idempotencyKey?.trim();
@@ -1468,7 +1511,11 @@ export async function recordAgentLaunchResult(opts: {
     const updated = await sql<Array<{ idempotency_key: string }>>`
       UPDATE harness_shared.agent_launch_idempotency
          SET summary = ${JSON.stringify(opts.summary)}::text::jsonb
+           || CASE WHEN summary ? 'claimToken'
+                THEN jsonb_build_object('claimToken', summary -> 'claimToken')
+                ELSE '{}'::jsonb END
        WHERE workspace_id = ${opts.workspaceId} AND idempotency_key = ${key}
+         AND (${opts.claimToken ?? null}::text IS NULL OR summary ->> 'claimToken' = ${opts.claimToken ?? null})
       RETURNING idempotency_key
     `;
     return updated.some((row) => row.idempotency_key === key);
@@ -1492,6 +1539,7 @@ export async function recordAgentLaunchResult(opts: {
 export async function releaseAgentLaunchClaim(opts: {
   workspaceId: string;
   idempotencyKey: string | null | undefined;
+  claimToken?: string;
 }): Promise<boolean> {
   const key = opts.idempotencyKey?.trim();
   if (!key) return false;
@@ -1500,6 +1548,7 @@ export async function releaseAgentLaunchClaim(opts: {
     const released = await sql<Array<{ idempotency_key: string }>>`
       DELETE FROM harness_shared.agent_launch_idempotency
        WHERE workspace_id = ${opts.workspaceId} AND idempotency_key = ${key}
+         AND (${opts.claimToken ?? null}::text IS NULL OR summary ->> 'claimToken' = ${opts.claimToken ?? null})
       RETURNING idempotency_key
     `;
     return released.length > 0;
@@ -2020,9 +2069,29 @@ export async function verifyFreshLaunchStarted(
   } = {},
 ): Promise<FreshLaunchVerdict> {
   const begun = Date.now();
+  const deadline = begun + timeoutMs;
+  // The polling clock cannot bound an awaited database/host read by itself.
+  // Keep one deadline across both instruments so a blocked probe reaches the
+  // caller's unconfirmed path instead of stranding durable launch completion.
+  const readWithinDeadline = async <T>(stage: string, read: () => T | Promise<T>): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(read),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(
+            `fresh-launch verification deadline exceeded during ${stage} evidence read`,
+          )), Math.max(0, deadline - Date.now()));
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
   let sessions: FreshLaunchSessionProbe[] = [];
   for (;;) {
-    sessions = await probe({ workspaceId, launcherOwnerId, since, expectedOwnerIds, expectedAttestations });
+    sessions = await readWithinDeadline('session', () =>
+      probe({ workspaceId, launcherOwnerId, since, expectedOwnerIds, expectedAttestations }));
     if (expectedOwnerIds?.length) {
       const wanted = new Set(expectedOwnerIds);
       sessions = sessions.filter((session) => session.ownerId != null && wanted.has(session.ownerId));
@@ -2119,7 +2188,9 @@ export async function verifyFreshLaunchStarted(
     (s) => s.successfulCalls === 0 && !s.hasPresence && s.msSinceLastSignal != null && s.msSinceLastSignal >= silenceMs,
   );
   if (silent.length > 0 && silent.length === sessions.length) {
-    const processEvidence = await probeProcessEvidence?.() ?? [];
+    const processEvidence = probeProcessEvidence
+      ? await readWithinDeadline('process', probeProcessEvidence)
+      : [];
     const active = processEvidence.filter((item) => item.pidAlive && item.logGrowing);
     if (active.length > 0) {
       return {
@@ -2374,6 +2445,102 @@ export async function probeFreshLaunchSessions({
  * injectKickoffAfterResume. (A FORK mints a fresh identity we cannot poll by a
  * known ownerId, so verification is scoped to an in-place resume.)
  */
+function codexNativeTranscriptRefMatches(value: unknown, nativeId: string): value is string {
+  if (typeof value !== 'string' || value.trim() !== value ||
+      !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(nativeId)) return false;
+  const normalized = value.replace(/\\/g, '/');
+  const filename = normalized.slice(normalized.lastIndexOf('/') + 1).toLowerCase();
+  const suffix = `${nativeId.toLowerCase()}.jsonl`;
+  return filename === suffix || filename.endsWith(`-${suffix}`);
+}
+
+function managedCarryLineageOf(event: PtyHostEvent): Record<string, unknown> | null {
+  const value = event.managedCarryLineage;
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function matchesManagedCarrySource(
+  lineage: Record<string, unknown>,
+  ownerId: string,
+  advSessionId: number,
+  hostStartedAt: number,
+  expectedSessionId: string,
+  targetGeneration: number,
+): boolean {
+  const sourceGeneration = Number(lineage.sourceChildGeneration);
+  return lineage.ownerId === ownerId &&
+    Number(lineage.advSessionId) === advSessionId &&
+    Number(lineage.hostStartedAt) === hostStartedAt &&
+    lineage.sourceNativeId === expectedSessionId &&
+    codexNativeTranscriptRefMatches(lineage.sourceNativeRef, expectedSessionId) &&
+    Number.isSafeInteger(sourceGeneration) && sourceGeneration >= 0 &&
+    sourceGeneration + 1 === targetGeneration &&
+    Number(lineage.targetChildGeneration) === targetGeneration;
+}
+
+async function verifyManagedCarryResumeLineage(
+  ownerId: string,
+  expectedSessionId: string,
+  actualSessionId: string,
+  host: PsuPtyHost,
+  readAdvSession: typeof getAdvSession,
+  readHostEvents: typeof readHostEventTail,
+): Promise<boolean> {
+  const advSessionId = Number(host.advSessionId);
+  const hostStartedAt = Number(host.startedAt);
+  const targetGeneration = Number(host.childGeneration);
+  if (host.ownerId !== ownerId ||
+      !Number.isSafeInteger(advSessionId) || advSessionId <= 0 ||
+      !Number.isFinite(hostStartedAt) || hostStartedAt <= 0 ||
+      !Number.isSafeInteger(targetGeneration) || targetGeneration <= 0) return false;
+
+  try {
+    const events = readHostEvents(ownerId);
+    let deliveredIndex = -1;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index] as Record<string, unknown>;
+      const lineage = managedCarryLineageOf(events[index]);
+      if (event.kind !== 'respawn-carry-delivered' || event.mode !== 'carry-respawn' ||
+          event.ownerId !== ownerId || event.nativeId !== actualSessionId ||
+          event.turnStartVerified !== true || !lineage ||
+          !matchesManagedCarrySource(lineage, ownerId, advSessionId, hostStartedAt,
+            expectedSessionId, targetGeneration) ||
+          lineage.targetNativeId !== actualSessionId ||
+          !codexNativeTranscriptRefMatches(lineage.targetNativeRef, actualSessionId) ||
+          lineage.sourceNativeRef === lineage.targetNativeRef ||
+          event.nativeRef !== lineage.targetNativeRef) continue;
+      deliveredIndex = index;
+      break;
+    }
+    if (deliveredIndex < 0) return false;
+
+    let respawnRecorded = false;
+    let bindingConfirmed = false;
+    for (let index = 0; index < deliveredIndex; index += 1) {
+      const event = events[index] as Record<string, unknown>;
+      if (event.kind === 'respawned' && event.mode === 'carry-respawn') {
+        const lineage = managedCarryLineageOf(events[index]);
+        if (lineage && matchesManagedCarrySource(lineage, ownerId, advSessionId,
+          hostStartedAt, expectedSessionId, targetGeneration)) respawnRecorded = true;
+      }
+      if (event.kind === 'respawn-binding-confirmed' && event.ownerId === ownerId &&
+          Number(event.advSessionId) === advSessionId &&
+          Number(event.hostStartedAt) === hostStartedAt &&
+          Number(event.childGeneration) === targetGeneration &&
+          event.nativeId === actualSessionId) bindingConfirmed = true;
+    }
+    if (!respawnRecorded || !bindingConfirmed) return false;
+
+    const row = await readAdvSession(advSessionId);
+    return Boolean(row && Number(row.id) === advSessionId && row.coordOwnerId === ownerId &&
+      row.agent === 'codex' && row.sessionId === actualSessionId);
+  } catch {
+    return false;
+  }
+}
+
 export async function verifyResumeStarted(
   ownerId: string,
   {
@@ -2384,6 +2551,7 @@ export async function verifyResumeStarted(
     findHost = findLiveHostAsync,
     readAdvSession = getAdvSession,
     readPort = getSessionPort,
+    readHostEvents = readHostEventTail,
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
   }: {
     /** Exact native transcript UUID the new backend process must carry. */
@@ -2395,6 +2563,7 @@ export async function verifyResumeStarted(
     findHost?: typeof findLiveHost | typeof findLiveHostAsync;
     readAdvSession?: typeof getAdvSession;
     readPort?: typeof getSessionPort;
+    readHostEvents?: typeof readHostEventTail;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<{
@@ -2403,6 +2572,7 @@ export async function verifyResumeStarted(
   expectedSessionId: string | null;
   actualSessionId: string | null;
   mismatch: boolean;
+  managedCarry?: boolean;
 }> {
   const begun = Date.now();
   let portExpected: string | null = null;
@@ -2418,6 +2588,19 @@ export async function verifyResumeStarted(
         // Keep missing physical identity unknown instead of certifying argv.
         if (expected == null || actual != null) {
           const mismatch = expected != null && actual !== expected;
+          if (mismatch && expected != null && actual != null &&
+              await verifyManagedCarryResumeLineage(
+                ownerId, expected, actual, host, readAdvSession, readHostEvents,
+              )) {
+            return {
+              started: true,
+              waitedMs: Date.now() - begun,
+              expectedSessionId: expected,
+              actualSessionId: actual,
+              mismatch: false,
+              managedCarry: true,
+            };
+          }
           return {
             started: !mismatch,
             waitedMs: Date.now() - begun,

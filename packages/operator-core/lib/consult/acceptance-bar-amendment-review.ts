@@ -242,7 +242,7 @@ export interface AmendmentReviewBriefInput {
   rubricRef: string;
   /** `thread-post:<id>` — the requester's post carrying the exact preview approval JSON. */
   previewPostRef: string;
-  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes'>;
+  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes' | 'criterionChanges'>;
   /** Revision-pinned live baseline supplied to the reviewer independently of transcript spans. */
   reviewSources?: AmendmentReviewSourceContext;
   reason?: string;
@@ -318,6 +318,14 @@ export function buildAmendmentReviewBrief(
     `Changed BARs: ${bars || '(none listed)'}.`,
     'This is a PRE-APPLY review: the patch and approval JSON describe the proposed state; the revision-pinned source blocks describe the current state. A new BAR is expected to be absent from the current criteria; its approval entry has priorBarHash:null and a nextBarHash for the candidate. Do not require the new BAR, nextBarHash, or target rubric revision to be present in the current rubric before signing. Compare each changed BAR with the live baseline and matching subject-plan Requirements below; object only to a substantive mismatch, unsupported requirement, or weakening.',
     ...currentSources,
+    ...(input.preview.criterionChanges ? [
+      'Exact server-normalized criterion changes from the locked preview, including generated probe updates absent from the requested patch. These before/after records are review evidence, not a replacement patch. The complete records are retained in this durable review brief; recover any truncated conversations:get response using its full read cursor before judging.',
+      '```json',
+      JSON.stringify(input.preview.criterionChanges, null, 2),
+      '```',
+    ] : [
+      'This historical preview has no normalized candidate criteria. Obtain a fresh preview before approving changes that cannot be reconstructed from the requested patch.',
+    ]),
     input.reason?.trim() ? `Reason given: ${input.reason.trim()}` : 'No reason was given.',
     ...(input.reviewEvidence ? [
       `Re-review of the SAME immutable preview after new verification evidence ${input.reviewEvidence.postRef}. The earlier verdict remains history; judge this evidence independently and do not assume it establishes criterion success.`,

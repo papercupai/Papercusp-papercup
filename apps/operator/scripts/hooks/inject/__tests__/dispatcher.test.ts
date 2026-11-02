@@ -24,7 +24,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -408,6 +408,109 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         event: { tool_name: 'exec_command', tool_input: { cmd: contentEdit } },
         env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl });
       expect(JSON.parse(rejectedContentEdit!).hookSpecificOutput.permissionDecision).toBe('deny');
+    }
+  });
+
+  it('pre-tool: unavailable authority permits only bounded reviewer read/control calls, including one invoke wrapper', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const ptool = (name: string, args: unknown) =>
+      [`ptool ${name} --json - <<'JSON'`, JSON.stringify(args), 'JSON'].join('\n');
+    const fetchImpl = (async () => { throw Error('authority unavailable'); }) as typeof fetch;
+    const read = ptool('conversations:get', { id: 'consult-1' });
+    const decline = ptool('consult:decline', { conversation_id: 'consult-1', reason: 'Cannot read evidence: $() `literal`' });
+    const safe = [read, decline,
+      ptool('tools:invoke', { name: 'conversations:get', args: { id: 'consult-1' } }),
+      ptool('tools:invoke', { name: 'consult:decline', args: { conversation_id: 'consult-1', reason: 'blocked' } }),
+    ];
+    const unsafe = [
+      ptool('tools:invoke', { name: 'capability:write', args: { file_path: 'source.ts', content: 'changed' } }),
+      ptool('tools:invoke', { name: 'tools:invoke', args: { name: 'conversations:get', args: { id: 'consult-1' } } }),
+      ptool('tools:invoke', { name: 'conversations:get', args: {}, authenticatedPrincipal: 'someone-else' }),
+      read + '\ntouch source.ts', read.replace("<<'JSON'", '<<JSON'),
+      read.replace('ptool ', 'FAKE=1 ptool '), read.replace(' --json', ' --url=http://elsewhere --json'),
+      'touch source.ts',
+    ];
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      for (const cmd of safe) expect(await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd } },
+        env: { PAPERCUSP_SID: 'sid-reviewer' }, fetchImpl }), cmd).toBeNull();
+      for (const cmd of unsafe) {
+        const output = await runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd } },
+          env: { PAPERCUSP_SID: 'sid-reviewer' }, fetchImpl });
+        expect(JSON.parse(output!).hookSpecificOutput, cmd).toMatchObject({
+          permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('no server verdict was received'),
+        });
+      }
+    }
+  });
+
+  it('pre-tool: a wall during authority fetch permits grouped read-only inspection but still denies writes', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const stalledFetch = ((_url: unknown, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    })) as unknown as typeof fetch;
+    const readOnlyInspection = [
+      'rg --files apps/operator/scripts/hooks/inject',
+      "rg -n -F 'plan_execution_not_ready' apps/operator/scripts/hooks/inject",
+      "sed -n '1,20p' apps/operator/scripts/hooks/inject/core.mjs",
+    ].join('\n');
+    const readOnlyCommands = [
+      readOnlyInspection,
+      "rg -n -C 2 'plan_execution_not_ready|isSafeWithoutExecutionAuthority' apps/operator/scripts/hooks/inject/core.mjs",
+      [
+        "ptool tools:find --json - <<'JSON'",
+        '{"query":"plans:get"}',
+        'JSON',
+      ].join('\n'),
+      [
+        "ptool reports:get --json - --harness=papercusp <<'JSON'",
+        '{"id":"report-1"}',
+        'JSON',
+      ].join('\n'),
+      [
+        "ptool consult:reply --json - --harness=papercusp <<'JSON'",
+        '{"conversation_id":"consult-1","kind":"answer","body":"Reviewed.","evidence":[{"session_id":"session-1","turn_idx":3}]}',
+        'JSON',
+      ].join('\n'),
+    ];
+    const refusedPtoolWrite = [
+      "ptool work_items:set_state --json - <<'JSON'",
+      '{"id":"WI-123","state":"done"}',
+      'JSON',
+    ].join('\n');
+
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      vi.useFakeTimers();
+      try {
+        for (const cmd of readOnlyCommands) {
+          const read = runInjection({ adapter, nativeEvent,
+            event: { tool_name: 'exec_command', tool_input: { cmd } },
+            env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+          await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+          expect(await read).toBeNull();
+        }
+
+        const write = runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd: 'touch source.ts' } },
+          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        const decision = JSON.parse((await write)!).hookSpecificOutput;
+        expect(decision).toMatchObject({
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
+        });
+        const ptoolWrite = runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd: refusedPtoolWrite } },
+          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        expect(JSON.parse((await ptoolWrite)!).hookSpecificOutput).toMatchObject({
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     }
   });
 

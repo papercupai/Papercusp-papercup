@@ -11,6 +11,7 @@ import {
   SCHEDULE_SOURCES,
   collectStartupActivity,
   scheduleStartupFeature,
+  startupActivityFeatureId,
   reactionStartupFeature,
   checkStartupActivityCensus,
   STARTUP_ACTIVITY_ENTRYPOINTS,
@@ -23,6 +24,8 @@ import type { DbosScheduledEntry } from './dbos/dbos-schedule-introspect';
 import { EXTERNAL_SCHEDULES, SYNC_TRIGGERED_SCHEDULES } from './schedule-descriptors.mjs';
 import { runWithWorkspace } from './workspace-als';
 import { startupReactionFeatureId } from './events/reaction-id';
+import { _setCachedPrimaryManagedTimersForTests } from './cluster-managed-timers-sync';
+import { ownHonoPort } from './schedule-federation';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its allow/baseline sets only.
 import { BASELINE, ALLOWLIST, ALLOWLIST_DIRS } from '../../../scripts/check-no-raw-setinterval.mjs';
@@ -70,6 +73,28 @@ const startupRow = (over: Partial<ScheduleInventoryRow> = {}): ScheduleInventory
 });
 
 describe('startup activity disclosure', () => {
+  it.each(['routine', 'event'] as const)('merges remote %s callbacks with their registered identity and excludes foreign workspaces', async source => {
+    const rule = { id: 'remote-follow-up', on: 'work:done', fire: 'activity:report' };
+    const registeredRoutine = routine({ name: 'remote-work' });
+    const registration = startupRow({ source: 'routines', name: registeredRoutine.name, installSlug: registeredRoutine.install_slug });
+    const id = source === 'event' ? reactionStartupFeature(rule, 'workspace-a').id
+      : startupActivityFeatureId(registration, { workspaceId: 'workspace-a' });
+    const invocation = { workspaceId: 'workspace-a', featureId: id, source, running: true as const,
+      stopStatus: 'draining' as const, cancellable: false as const };
+    const snapshot = await runWithWorkspace('workspace-a', () => collectStartupActivity({ ...emptyInventory,
+      getRoutines: async () => source === 'routine' ? [registeredRoutine] : [],
+      getSiblingManaged: async () => [{ port: 3271, pid: 12345, label: 'bg-host:3271', process: 'bg-host', ok: true,
+        timers: [], dbosSchedules: [], stallWaker: null, elapsedMs: 0,
+        backgroundActivities: [invocation, { ...invocation, workspaceId: 'workspace-b', featureId: `activity-${'b'.repeat(64)}` }] }],
+    }, { reactions: async () => source === 'event' ? [reactionStartupFeature(rule, 'workspace-a')] : [],
+      native: async () => [], history: async () => [], census: async () => [], policy: async feature => feature.desired }));
+    expect(snapshot.features).toHaveLength(1);
+    expect(snapshot.features[0]).toMatchObject({ id, origin: source === 'event' ? 'event' : 'routines',
+      observed: 'running', scope: { kind: 'workspace', id: 'workspace-a' },
+      desired: { automatic: true }, stop: { status: 'draining', cancellable: false } });
+    expect(snapshot.features[0].entrypointIds).toContain(source === 'event' ? 'event-dispatch' : 'routine-dispatch');
+  });
+
   it('exposes measured stop state without passing through arbitrary runtime text', () => {
     const pending = scheduleStartupFeature(startupRow({ source: 'managed',
       detail: { running: true, cancellable: true, stopStatus: 'pending' } }));
@@ -128,12 +153,14 @@ describe('startup activity disclosure', () => {
       ...emptyInventory, getRoutines: async () => [item],
       getManaged: () => [{ name: 'ephemeral:opaque-id', category: 'ephemeral-harness', intervalMs: 1000,
         activity: { kind: 'workspace', workspaceId: 'workspace-a', featureId },
+        stopStatus: 'draining', cancellable: false,
         armedAt: 0, lastFireAt: 1, lastError: null, running: true, runningSince: 1,
         skippedWhileRunning: 0, fires: 1, shed: false, instanced: false, instances: 1, classification: null }],
     }));
     const matches = snapshot.features.filter(feature => feature.id === featureId);
     expect(matches).toHaveLength(1);
-    expect(matches[0]).toMatchObject({ origin: 'routines', observed: 'running', scope: { kind: 'workspace', id: 'workspace-a' } });
+    expect(matches[0]).toMatchObject({ origin: 'routines', observed: 'running', scope: { kind: 'workspace', id: 'workspace-a' },
+      stop: { status: 'draining', cancellable: false } });
     expect(matches[0].entrypointIds).toEqual(expect.arrayContaining(['routine-dispatch', 'managed-fire-on-arm']));
   });
 
@@ -256,6 +283,21 @@ describe('startup entrypoint census', () => {
     const features = population.map(id => ({ id, entrypointIds: [id] }));
     expect(checkStartupActivityCensus(population, dispositions, features).complete).toBe(true);
     expect(checkStartupActivityCensus(population, dispositions.slice(1), features).complete).toBe(false);
+  });
+  it('discovers native Rust registration adapters independently of the census', () => {
+    const base = 'papercusp-desktop/src-tauri/src';
+    const writers = new Set(STARTUP_ACTIVITY_ENTRYPOINTS.map(entry => entry.writer));
+    const discovered = readdirSync(resolve(REPO_ROOT, base), { recursive: true, encoding: 'utf8' })
+      .filter(file => file.endsWith('.rs'))
+      .map(file => `${base}/${file.replaceAll('\\', '/')}`)
+      .filter(file => /AutoLaunchBuilder|\.autolaunch\s*\(|impl LoginAdapter for NativeLogin/.test(sourceText(file)));
+    expect(discovered).toContain('papercusp-desktop/src-tauri/src/startup_policy.rs');
+    expect(discovered).toContain('papercusp-desktop/src-tauri/src/main.rs');
+    for (const file of discovered) expect(writers.has(file), `unregistered native startup adapter ${file}`).toBe(true);
+    const login = STARTUP_ACTIVITY_ENTRYPOINTS.find(entry => entry.id === 'native-login')!;
+    // main.rs only observes the current OS choice; this command owns mutation.
+    expect(login.writer).toBe('papercusp-desktop/src-tauri/src/startup_policy.rs');
+    expect(login.witness).toBe('pub fn startup_policy_set_login');
   });
   it('requires the entire independently discovered writer population exactly once', () => {
     const population = ['native-login', 'boot-service', 'event-dispatch', 'managed-fire-on-arm', 'sync-trigger'];
@@ -476,6 +518,13 @@ describe('collectScheduleInventory', () => {
     const repair = rows.find((r) => r.name === 'doc-steward-dispatch')!;
     expect(repair.armed).toBe(false);
     expect(repair.detail).toMatchObject({ flag: 'papercusp-doc-steward' });
+    for (const row of rows) {
+      const a = scheduleStartupFeature(row, { workspaceId: 'sync-a', deviceId: 'one' });
+      const b = scheduleStartupFeature(row, { workspaceId: 'sync-a', deviceId: 'two' });
+      expect(a.scope).toEqual({ kind: 'workspace', id: 'sync-a' });
+      expect(a.id).toBe(b.id);
+      expect(scheduleStartupFeature(row, { workspaceId: 'sync-b', deviceId: 'one' }).id).not.toBe(a.id);
+    }
   });
 
   it('the DEFAULT sync-triggered manifest carries the doc drift pipeline', async () => {
@@ -763,6 +812,35 @@ describe('schedule descriptors ⇄ recurring writers (P-006 C-10)', () => {
  * its passes ran 6+ days undetected.
  */
 describe('collectScheduleInventory — sibling-process federation', () => {
+  it('includes its own primary snapshot, preserves stop metadata, and reports stale snapshots as unknown', async () => {
+    const id = `activity-${'c'.repeat(64)}`;
+    const snapshot = { pid: 12345, role: 'operator', timers: [{
+      name: 'primary-optional', category: 'global-sweep' as const, intervalMs: 1000, armedAt: 1,
+      lastFireAt: 2, lastError: null, running: true, runningSince: 2, skippedWhileRunning: 0,
+      fires: 1, shed: false, instanced: false, instances: 1, classification: null,
+      activity: { kind: 'workspace' as const, workspaceId: 'primary-workspace', featureId: id },
+      stopStatus: 'draining' as const, cancellable: false,
+    }], dbosSchedules: [], sentAt: Date.now(), receivedAt: Date.now() };
+    const siblings: import('./schedule-federation').SiblingManagedTimers[] = [];
+    try {
+      _setCachedPrimaryManagedTimersForTests(snapshot);
+      const deps = { ...emptySources, getSiblingManaged: async () => siblings };
+      const rows = await collectScheduleInventory(deps);
+      const row = rows.find(candidate => candidate.name === 'primary-optional')!;
+      expect(row.detail).toMatchObject({ pid: 12345, port: ownHonoPort(), federated: true,
+        stopStatus: 'draining', cancellable: false });
+      expect(scheduleStartupFeature(row)).toMatchObject({ id, scope: { kind: 'workspace', id: 'primary-workspace' },
+        observed: 'running', stop: { status: 'draining', cancellable: false } });
+      expect(siblings).toEqual([]);
+      _setCachedPrimaryManagedTimersForTests({ ...snapshot, receivedAt: Date.now() - 20_000 });
+      const stale = await collectScheduleInventory(deps);
+      expect(stale.some(candidate => candidate.name === 'primary-optional')).toBe(false);
+      expect(stale.find(candidate => candidate.source === 'external-process')).toMatchObject({
+        armed: null, detail: { reachable: false, pid: 12345, port: ownHonoPort() },
+      });
+    } finally { _setCachedPrimaryManagedTimersForTests(null); }
+  });
+
   const federated = (over: Record<string, unknown> = {}) => ({
     port: 3271,
     pid: 4242,

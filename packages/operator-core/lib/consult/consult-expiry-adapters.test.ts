@@ -356,13 +356,34 @@ describe('consultExpiryFindSilentResponders', () => {
       requesterOverlap: { total: 1, posts: [{ author_id: 'su-reserved' }] },
     };
     const rows = Object.keys(histories).map((conversationId) => ({
-      workspaceId: ROW_WS, conversationId, answeringOwnerId: 'su-reserved', routedAt,
+      workspaceId: ROW_WS, conversationId, sourceOwnerId: 'su-source', answeringOwnerId: 'su-reserved', routedAt,
       requesterId: conversationId === 'requesterOverlap' ? 'su-reserved' : 'su-requester',
       priorResponderIds: ['su-prior-source', 'su-prior-fork', ...(conversationId === 'overlap' ? ['su-reserved'] : [])],
     }));
+    const taskRows = rows.map((row) => ({
+      taskId: 'task-' + row.conversationId,
+      workspaceId: ROW_WS,
+      class: 'agent-session',
+      state: 'running',
+      startedAt: new Date(now.getTime() - 60 * 60_000).toISOString(),
+      endedAt: null,
+      logPath: '/logs/' + row.conversationId,
+      detail: {
+        consultAnswer: {
+          conversationId: row.conversationId,
+          sourceOwnerId: row.sourceOwnerId,
+          answeringOwnerId: row.answeringOwnerId,
+        },
+      },
+    } as unknown as TaskRow));
+    const mtimes = new Map<string, number>();
+    for (const row of rows) mtimes.set('/logs/' + row.conversationId, now.getTime() - 32 * 60_000);
+
     const found = await consultExpiryFindSilentResponders({
       getPresence: async () => ({ lastActiveAt: new Date(now.getTime() - 60_000).toISOString() }),
       resolveSessionStates: async () => new Map([['su-reserved', { sessionState }]]),
+      listAnsweringTasks: async () => taskRows,
+      statMtimeMs: (path) => mtimes.get(path) ?? null,
       getThreadStore: () => ({
         getThreadByParent: async (parent) => ({ thread_id: parent.ref }) as never,
         listRecentPosts: async (threadId) => histories[threadId as keyof typeof histories],
@@ -466,18 +487,45 @@ describe('consultExpiryFindSilentResponders', () => {
     const staleRoute = new Date(now.getTime() - 30 * 60_000).toISOString();
     const freshRoute = new Date(now.getTime() - 30 * 60_000 + 1).toISOString();
     const rows = [
-      { workspaceId: ROW_WS, conversationId: 'conv-live-stale', answeringOwnerId: 'su-live-stale', routedAt: staleRoute },
-      { workspaceId: ROW_WS, conversationId: 'conv-live-fresh', answeringOwnerId: 'su-live-fresh', routedAt: freshRoute },
-      { workspaceId: ROW_WS, conversationId: 'conv-live-posted', answeringOwnerId: 'su-live-posted', routedAt: staleRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-live-stale', sourceOwnerId: 'su-source', answeringOwnerId: 'su-live-stale', routedAt: staleRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-live-fresh', sourceOwnerId: 'su-source', answeringOwnerId: 'su-live-fresh', routedAt: freshRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-live-posted', sourceOwnerId: 'su-source', answeringOwnerId: 'su-live-posted', routedAt: staleRoute },
     ];
     const verdicts = new Map(rows.map((row) => [row.answeringOwnerId, { sessionState: 'live' }]));
     const threadReads: string[] = [];
+    const taskRows = new Map<string, TaskRow>();
+    const mtimes = new Map<string, number>();
+    for (const row of rows) {
+      const logPath = '/logs/' + row.conversationId;
+      taskRows.set(row.answeringOwnerId, {
+        taskId: 'task-' + row.conversationId,
+        workspaceId: ROW_WS,
+        class: 'agent-session',
+        state: 'running',
+        startedAt: new Date(now.getTime() - 60 * 60_000).toISOString(),
+        endedAt: null,
+        logPath,
+        detail: {
+          consultAnswer: {
+            conversationId: row.conversationId,
+            sourceOwnerId: 'su-source',
+            answeringOwnerId: row.answeringOwnerId,
+          },
+        },
+      } as unknown as TaskRow);
+      mtimes.set(logPath, now.getTime() - 31 * 60_000);
+    }
 
     const found = await consultExpiryFindSilentResponders({
-      // A live busy turn need not update presence after the consult route; the
-      // bounded window + empty thread are the pickup evidence for this branch.
+      // No exact-task log write after routing through the pickup window is the
+      // no-pickup signal; an empty thread alone is not sufficient.
       getPresence: async () => ({ lastActiveAt: null }),
       resolveSessionStates: async () => verdicts,
+      listAnsweringTasks: async (_workspaceId, answeringOwnerId) => {
+        const task = taskRows.get(answeringOwnerId);
+        return task ? [task] : [];
+      },
+      statMtimeMs: (path) => mtimes.get(path) ?? null,
       getThreadStore: () => ({
         getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
         listRecentPosts: async (threadId) => {
@@ -493,6 +541,66 @@ describe('consultExpiryFindSilentResponders', () => {
       expect.arrayContaining(['thread-conv-live-stale', 'thread-conv-live-posted']),
     );
     expect(threadReads).not.toContain('thread-conv-live-fresh');
+  });
+
+  it('uses exact answering task log progress to distinguish busy and stalled responders', async () => {
+    const now = new Date('2026-08-27T06:00:00.000Z');
+    const routedAt = new Date(now.getTime() - 2 * 60 * 60_000).toISOString();
+    const rows = [
+      { workspaceId: ROW_WS, conversationId: 'conv-active', sourceOwnerId: 'su-source', answeringOwnerId: 'su-active', routedAt },
+      { workspaceId: ROW_WS, conversationId: 'conv-stalled', sourceOwnerId: 'su-source', answeringOwnerId: 'su-stalled', routedAt },
+      { workspaceId: ROW_WS, conversationId: 'conv-missing-log', sourceOwnerId: 'su-source', answeringOwnerId: 'su-missing-log', routedAt },
+      { workspaceId: ROW_WS, conversationId: 'conv-unreadable-log', sourceOwnerId: 'su-source', answeringOwnerId: 'su-unreadable-log', routedAt },
+    ];
+    const mtimes = new Map<string, number | null>([
+      ['/logs/conv-active', now.getTime() - 15 * 60_000],
+      ['/logs/conv-stalled', now.getTime() - 91 * 60_000],
+      ['/logs/conv-unreadable-log', null],
+    ]);
+    const taskRows = new Map<string, TaskRow>();
+    for (const row of rows) {
+      const logPath = row.conversationId === 'conv-missing-log'
+        ? null
+        : '/logs/' + row.conversationId;
+      taskRows.set(row.answeringOwnerId, {
+        taskId: 'task-' + row.conversationId,
+        workspaceId: ROW_WS,
+        class: 'agent-session',
+        state: 'running',
+        startedAt: new Date(now.getTime() - 3 * 60 * 60_000).toISOString(),
+        endedAt: null,
+        logPath,
+        detail: {
+          consultAnswer: {
+            conversationId: row.conversationId,
+            sourceOwnerId: 'su-source',
+            answeringOwnerId: row.answeringOwnerId,
+          },
+        },
+      } as unknown as TaskRow);
+    }
+    const threadReads: string[] = [];
+    const found = await consultExpiryFindSilentResponders({
+      getPresence: async () => ({ lastActiveAt: null }),
+      resolveSessionStates: async () =>
+        new Map(rows.map((row) => [row.answeringOwnerId, { sessionState: 'live' }])),
+      listAnsweringTasks: async (_workspaceId, answeringOwnerId) => {
+        const task = taskRows.get(answeringOwnerId);
+        return task ? [task] : [];
+      },
+      statMtimeMs: (path) => mtimes.get(path) ?? null,
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => ({ thread_id: 'thread-' + parent.ref }) as never,
+        listRecentPosts: async (threadId) => {
+          threadReads.push(threadId);
+          return { total: 0 };
+        },
+      }),
+      now: () => now,
+    })(rows);
+
+    expect(found).toEqual(new Set(['conv-stalled']));
+    expect(threadReads).toEqual(['thread-conv-stalled']);
   });
 
   it.each(['ended', 'recorded'] as const)(
@@ -599,14 +707,41 @@ describe('consultExpiryFindSilentResponders', () => {
     const now = new Date('2026-08-27T06:00:00.000Z');
     const staleRoute = new Date(now.getTime() - 30 * 60_000).toISOString();
     const rows = [
-      { workspaceId: ROW_WS, conversationId: 'conv-parked-stale', answeringOwnerId: 'su-parked-stale', routedAt: staleRoute },
-      { workspaceId: ROW_WS, conversationId: 'conv-parked-fresh', answeringOwnerId: 'su-parked-fresh', routedAt: now.toISOString() },
+      { workspaceId: ROW_WS, conversationId: 'conv-parked-stale', sourceOwnerId: 'su-source', answeringOwnerId: 'su-parked-stale', routedAt: staleRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-parked-fresh', sourceOwnerId: 'su-source', answeringOwnerId: 'su-parked-fresh', routedAt: now.toISOString() },
     ];
+    const taskRows = new Map<string, TaskRow>();
+    const mtimes = new Map<string, number>();
+    for (const row of rows) {
+      const logPath = '/logs/' + row.conversationId;
+      taskRows.set(row.answeringOwnerId, {
+        taskId: 'task-' + row.conversationId,
+        workspaceId: ROW_WS,
+        class: 'agent-session',
+        state: 'running',
+        startedAt: new Date(now.getTime() - 60 * 60_000).toISOString(),
+        endedAt: null,
+        logPath,
+        detail: {
+          consultAnswer: {
+            conversationId: row.conversationId,
+            sourceOwnerId: 'su-source',
+            answeringOwnerId: row.answeringOwnerId,
+          },
+        },
+      } as unknown as TaskRow);
+      mtimes.set(logPath, now.getTime() - 31 * 60_000);
+    }
 
     const found = await consultExpiryFindSilentResponders({
       getPresence: async () => ({ lastActiveAt: null }),
       resolveSessionStates: async () =>
         new Map(rows.map((row) => [row.answeringOwnerId, { sessionState: 'parked' }])),
+      listAnsweringTasks: async (_workspaceId, answeringOwnerId) => {
+        const task = taskRows.get(answeringOwnerId);
+        return task ? [task] : [];
+      },
+      statMtimeMs: (path) => mtimes.get(path) ?? null,
       getThreadStore: () => ({
         getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
         listRecentPosts: async () => ({ total: 0 }),

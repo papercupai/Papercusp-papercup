@@ -1596,8 +1596,8 @@ export async function reconcileAgentReviewGrade(
     // system identities to their verified submitter first, then measure that person's
     // liveness before the ledger-derived transition. An unverified system identity has no
     // revision target; a confirmed dead session must not be selected either. A thrown
-    // oracle failure happens before any transition write, and an in-band unknown still
-    // lets the claim store validate an ordinary submitter transfer.
+    // oracle failure happens before any transition write. An in-band unknown retains
+    // reviewer custody; the claim store accepting an id is not proof its session lives.
     const submitterIsSynthetic = current.submittedBy.startsWith('system:');
     const revisionSubmitter = current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER
       ? null
@@ -1612,6 +1612,7 @@ export async function reconcileAgentReviewGrade(
         }))
       : null;
     const submitterEnded = submitterLiveness?.sessionState === 'ended';
+    const submitterUnmeasured = changed && revisionSubmitter !== null && submitterLiveness === null;
     const merged = await measure('mergeWorkItemPayload', () => deps.mergeWorkItemPayload(
       workItem.id,
       {
@@ -1662,14 +1663,15 @@ export async function reconcileAgentReviewGrade(
       const currentHolderIsSubmitter = workItem.assignee !== null && (
         workItem.assignee === current.submittedBy || workItem.assignee === revisionSubmitter
       );
-      if (!revisionSubmitter || submitterEnded) {
+      if (!revisionSubmitter || submitterEnded || submitterUnmeasured) {
         returnedToSubmitter = false;
         reviewerRetained = workItem.assignee !== null && !currentHolderIsSubmitter;
-        if (workItem.assignee && currentHolderIsSubmitter) {
+        if (workItem.assignee && currentHolderIsSubmitter && !submitterUnmeasured) {
           // A prior partial transition may already have left the stale submitter holding
           // the row. Drop only that expected holder; when the reviewer holds it, preserve
           // the claim so they can apply the recorded verdict (for example, close an item
-          // whose reported defect was already fixed).
+          // whose reported defect was already fixed). Unknown liveness never authorizes
+          // releasing a submitter's existing claim.
           const expectedAssignee = workItem.assignee;
           await measure('releaseClaim', () => deps.releaseWorkItem(workItem.id, {
             ...(workItem.harness ? { harness: workItem.harness } : {}),

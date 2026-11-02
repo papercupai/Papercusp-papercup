@@ -53,6 +53,24 @@ export function readNativeArtifactBytes(file, byteLength, byteLimit, recordRead 
   });
 }
 
+/** Authenticate a retained large source with the same descriptor and directory
+ * race guards as readNativeArtifactBytes, without allocating its full length. */
+export function hashNativeArtifactBytes(file, byteLength, byteLimit, recordRead = () => {}) {
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0 ||
+      !Number.isSafeInteger(byteLimit) || byteLimit < byteLength)
+    throw new Error('native artifact byte limit');
+  return withNativeArtifactFile(file, byteLength, fd => {
+    const hash = createHash('sha256'), buffer = Buffer.alloc(64 * 1024);
+    let length = 0;
+    while (length < byteLength) {
+      const count = readSync(fd, buffer, 0, Math.min(buffer.length, byteLength - length), null);
+      if (!count) throw new Error('native artifact changed during capture');
+      length += count; recordRead(count); hash.update(buffer.subarray(0, count));
+    }
+    return hash.digest('hex');
+  });
+}
+
 function withNativeArtifactFile(file, byteLength, consume) {
   const directory = dirname(file), root = lstatSync(directory);
   if (!root.isDirectory() || root.isSymbolicLink() || realpathSync(directory) !== resolve(directory))
@@ -110,7 +128,8 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
       const row = JSON.parse(bytes.toString("utf8"));
       if (row.schemaVersion !== 1 || row.kind !== "native-node-process-event" ||
           !Number.isSafeInteger(row.pid) || !Number.isSafeInteger(row.ppid) ||
-          !Number.isSafeInteger(row.atMs) || typeof row.processIdentity !== "string")
+          !Number.isSafeInteger(row.atMs) || typeof row.processIdentity !== "string" ||
+          row.threadId !== undefined && (!Number.isSafeInteger(row.threadId) || row.threadId < 0))
         throw new Error("malformed native process event");
       if (row.atMs >= startedAtMs && row.atMs <= finishedAtMs) rows.push({ row, bytes });
     }
@@ -1014,7 +1033,7 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
         retainedSources.set(pin.sha256, artifact);
         loaderSources.bytesRetained += bytes.length;
       }
-      loaderSources.entries.push({ processIdentity: row.processIdentity, pid: row.pid,
+      loaderSources.entries.push({ processIdentity: row.processIdentity, pid: row.pid, threadId: row.threadId,
         loadId: row.loadId, url: row.url, artifact });
     } catch (error) { sourceGaps.add(`native-loader-source-rejected:${error?.code ?? error?.message ?? 'unknown'}`); }
   }
@@ -1032,7 +1051,7 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
     if (input.command.length !== 3 || !npmName(input.command[0]) ||
         !["run", "run-script"].includes(input.command[1]) || !input.command[2])
       throw new Error("unsupported original npm invocation");
-    const events = processTrace.events;
+    const events = processTrace.events.filter(row => row.threadId === undefined || row.threadId === 0);
     const entries = events.filter(row => row.event === "node-entry" && row.pid === input.processTrace?.rootPid);
     if (entries.length !== 1) throw new Error("root npm entry absent or ambiguous");
     const entry = entries[0], script = input.command[2];
@@ -1138,7 +1157,7 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
         !["onTestRunEnd", "onExit"].includes(run.terminalHook) ||
         ![null, "passed", "failed", "interrupted"].includes(run.reason))
       throw new Error("malformed or out-of-interval reporter observation");
-    const events = processTrace.events;
+    const events = processTrace.events.filter(row => row.threadId === undefined || row.threadId === 0);
     const entries = events.filter(row => row.event === "node-entry" && row.pid === run.pid);
     if (entries.length !== 1 || entries[0].ppid !== run.ppid || entries[0].atMs > run.startedAtMs)
       throw new Error("reporter process entry absent, unrelated or ambiguous");
@@ -1833,7 +1852,8 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
       same(parent.before.inputs, parent.after.inputs),
     "complete native npm parent and process trace required for ordered evidence");
     const rootEntry = await readProcessEvent(trace, root.entry, "node-entry");
-    require(rootEntry.pid === root.pid && rootEntry.processIdentity === root.processIdentity &&
+    require((rootEntry.threadId === undefined || rootEntry.threadId === 0) &&
+      rootEntry.pid === root.pid && rootEntry.processIdentity === root.processIdentity &&
       rootEntry.cwd === execution.cwd && Array.isArray(rootEntry.argv) && rootEntry.argv.length === 4 &&
       ["npm", "npm-cli.js"].includes(basename(rootEntry.argv[1] ?? "")) &&
       rootEntry.argv[2] === "run" && rootEntry.argv[3] === task.script &&
@@ -1931,7 +1951,8 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
         "Vitest reporter must be bound to the observed original npm test lifecycle");
         const reporterEntry = await readProcessEvent(trace, reporterProcess.entry, "node-entry");
         const reporterExit = await readProcessEvent(trace, reporterProcess.exit, "node-exit");
-        require(reporterEntry.pid === reporterProcess.pid && reporterEntry.ppid === reporterProcess.ppid &&
+        require((reporterEntry.threadId === undefined || reporterEntry.threadId === 0) &&
+          reporterEntry.pid === reporterProcess.pid && reporterEntry.ppid === reporterProcess.ppid &&
           reporterEntry.processIdentity === reporterProcess.processIdentity &&
           reporterEntry.cwd === execution.cwd,
         "native Vitest process entry identity differs");

@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { recordExpertiseRoutingInvocation, readExpertiseRoutingRecorderHealth, EXPERTISE_ROUTING_PATH } from '../endpoint-route/telemetry';
 import { readExpertiseExecutionHealth } from './consult-routing-health';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
+import { _pendingFallbackObservationCount } from '../degradation/fallback-observations';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { resolveProseProfileSelection } from '../search/prose-vector-dims';
 import {
@@ -70,6 +71,10 @@ const deps = (embedTheta: number | null, over: Partial<ConsultRouteDeps> = {}): 
   // Analytic vector fixtures isolate the PG/vector contract. Subject scenarios
   // override this seam with independent positive/counterexample evidence.
   scoreSubjectEvidence: async (_subject, texts) => texts.map(() => 1),
+  // This fixture measures transcript SQL and analytic ranking. Production
+  // symbol resolution runs host git/snapshot probes with its own telemetry;
+  // its separate suites exercise that boundary with controlled dependencies.
+  resolveCodeSymbols: null,
   ...over,
 });
 
@@ -199,6 +204,12 @@ beforeAll(async () => {
 afterAll(async () => {
   try { await rootSql?.end({ timeout: 5 }); }
   finally { await fixtureDb?.drop(); }
+});
+
+afterEach(() => {
+  // Fail in the originating case, before an unbound observation's timer can
+  // try the protected live admin pool during an unrelated later test.
+  expect(_pendingFallbackObservationCount()).toBe(0);
 });
 
 const baseParams = { workspaceId: WS, requesterId: 'agent-self', question: 'how does the consult router work?' };
@@ -469,15 +480,23 @@ describe('bounded subject evidence against real transcript SQL', () => {
   });
 
   it('distinguishes failed/malformed scores from a measured no-expert case', async () => {
-    for (const scoreSubjectEvidence of [async () => { throw new Error('scorer unavailable'); }, async () => [], async (_q: string, texts: string[]) => texts.map(() => NaN)]) {
+    const cases = [
+      { scoreSubjectEvidence: async () => { throw Object.assign(new Error('private scorer payload'), { name: 'RerankDeadlineError' }); }, failure: { reason: 'scorer-error', errorCode: 'ETIMEDOUT', count: 1 } },
+      { scoreSubjectEvidence: async () => [], failure: { reason: 'score-shape', count: 1 } },
+      { scoreSubjectEvidence: async (_q: string, texts: string[]) => texts.map(() => NaN), failure: { reason: 'invalid-score', count: 1 } },
+    ];
+    for (const { scoreSubjectEvidence, failure } of cases) {
       const result = await routeConsult({ ...baseParams, question }, deps(0, { scoreSubjectEvidence }));
       expect(result.verdict).toBe('relevance_unmeasured');
       expect(result.snapshot.degraded).toBe('evidence-unavailable');
       expect(result.qualified).toEqual([]);
+      expect(result.snapshot.subjectValidation?.failures).toContainEqual(failure);
+      expect(JSON.stringify(result.snapshot)).not.toContain('private scorer payload');
     }
     const measured = await routeConsult({ ...baseParams, question }, deps(0, { scoreSubjectEvidence: async (_q, texts) => texts.map(() => 0.1) }));
     expect(measured.verdict).toBe('no_qualified_responder');
     expect(measured.snapshot.subjectValidation?.unmeasured).toBe(0);
+    expect(measured.snapshot.subjectValidation?.failures).toBeUndefined();
   });
 
   it('caps scored owners and leaves overflow explicitly unmeasured', async () => {
@@ -794,11 +813,7 @@ describe('routeConsult — routing + blend', () => {
             { subject: 'src/backup.ts', status: 'unmeasured', score: null },
           ],
         });
-      expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-unrelated')?.subjectEvidenceCoverage)
-        .toMatchObject({
-          status: 'unmeasured',
-          evidence: subjectRefs.map(subject => ({ subject, status: 'unmeasured', score: null })),
-        });
+      expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-unrelated')).toBeUndefined();
       expect(scoredTexts.some(text => text.includes('scorecards emit'))).toBe(false);
 
       const incomplete = await routeConsult({
@@ -818,6 +833,42 @@ describe('routeConsult — routing + blend', () => {
       const checked = incomplete.snapshot.candidates.filter(candidate => candidate.subjectEvidenceCoverage);
       expect(checked.length).toBeGreaterThanOrEqual(2);
       expect(checked.every(candidate => candidate.subjectEvidenceCoverage?.status === 'unmeasured')).toBe(true);
+    } finally {
+      await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${owners}::text[])`;
+    }
+  });
+
+  it('retrieves explicit anchors before turn and subject-owner bounds without requiring every anchor in one turn', async () => {
+    const subjectRefs = ['plan-census-license', 'src/census-license.ts'];
+    const owners = Array.from({ length: SUBJECT_EVIDENCE_OWNER_LIMIT + 1 }, (_, i) => `anchor-crowd-${i}`);
+    owners.push('anchor-complete', 'anchor-partial', 'anchor-near');
+    try {
+      for (const owner of owners.slice(0, SUBJECT_EVIDENCE_OWNER_LIMIT + 1)) {
+        await insertTurn(owner, 0, DAY, { text: 'subjectcensus unrelated review of a different license plan.' });
+      }
+      await insertTurn('anchor-near', 0, DAY, {
+        text: 'subjectcensus plan-census-license-followup src/census-license.ts.backup',
+      });
+      await insertTurn('anchor-partial', 0.1, DAY, { text: 'subjectcensus reviewed plan-census-license behavior.' });
+      await insertTurn('anchor-complete', 0.2, DAY, { text: 'subjectcensus reviewed plan-census-license behavior.' });
+      await insertTurn('anchor-complete', 0.3, DAY, { text: 'subjectcensus reviewed src/census-license.ts behavior.' });
+      const score = vi.fn(async (_subject: string, texts: string[]) => texts.map(() => 0.95));
+      const request = { ...baseParams, question: 'subjectcensus', subjectRefs, turnLimit: 3 };
+      const result = await routeConsult(request, deps(0, { scoreSubjectEvidence: score }));
+      expect(result.qualified.map(candidate => candidate.ownerId)).toEqual(['anchor-complete']);
+      expect(result.snapshot.candidates.map(candidate => candidate.ownerId).sort()).toEqual(['anchor-complete', 'anchor-partial']);
+      expect(score).toHaveBeenCalledTimes(2);
+      expect(result.qualified[0]?.subjectEvidenceCoverage).toMatchObject({
+        status: 'supported', required: subjectRefs,
+        evidence: subjectRefs.map(subject => ({ subject, status: 'supported', anchor: { exact: true } })),
+      });
+      expect(result.snapshot.candidates.find(candidate => candidate.ownerId === 'anchor-partial')?.subjectEvidenceCoverage)
+        .toMatchObject({ status: 'unmeasured' });
+      // The lexical fallback uses the same population filter and remains unqualified.
+      const lexical = await routeConsult(request, deps(null));
+      expect(lexical.qualified).toEqual([]);
+      expect(lexical.snapshot).toMatchObject({ degraded: 'embed-unavailable', fallback: 'lexical' });
+      expect(lexical.snapshot.candidates.map(candidate => candidate.ownerId).sort()).toEqual(['anchor-complete', 'anchor-partial']);
     } finally {
       await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${owners}::text[])`;
     }

@@ -816,7 +816,8 @@ export async function readCurrentBenchRepeatedSessionControl(
   const arm = protocol.arms.find(arm => arm.id === options.armId);
   const repeated = arm?.control?.repeatedSession;
   if (arm?.control?.topology !== 'repeated-session') return undefined;
-  if (options.armId !== 'baseline' || !repeated) throw new Error('Repeated sessions require the frozen stock baseline.');
+  if (!repeated || arm.agent !== options.agent || !['codex', 'claude'].includes(arm.agent))
+    throw new Error('Repeated sessions require the frozen stock baseline.');
   const treatment = protocol.arms.find(arm => arm.id === repeated.matchedCostOf);
   const rows = (await read({ ...scope, runId: protocol.runId, suite: task.benchmark })).filter(row =>
     row.taskId === task.instanceId && row.arm === repeated.matchedCostOf && row.seed === options.seed);
